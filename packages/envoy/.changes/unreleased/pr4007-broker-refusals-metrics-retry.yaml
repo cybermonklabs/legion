@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  The secrets broker records every refusal. Each 4xx answer of the API port and of the airlock's
+  proxy port writes one `broker: answer refused` line at WARNING, naming the code, the secret
+  names the request named, the caller's class and identity, and an answer id. Every answer
+  carries that id in `X-Broker-Answer-Id`, a JSON refusal body carries it as `answer_id`, and
+  `agent-secrets` ends a refusal with `(answer <id>)`, so a refused caller has something to quote.
+  A 429 and the device grant's `slow_down` and `authorization_pending` are counted and write no
+  line.
+  The broker serves Prometheus metrics on a port of its own, `BROKER_METRICS_LISTEN_ADDR`
+  (`127.0.0.1:13382` by default), and on no other port: `broker_answers_total`,
+  `broker_mint_attempts_total`, `broker_unservable_secrets` and `broker_policy_store_reads_total`.
+  `agent-secrets secret create`, `secret set` and `secret retag` refuse a `github-app`,
+  `google-login`, `google-service-account` or `azure-login` value that the kind's minter would
+  refuse, through the one decoder the minters use. The broker reads each kind secret's value once
+  for each new version, kind or shape, and refuses a value the decoder refuses as
+  `value-malformed`, before any mint.
+  A mint call that fails with a 5xx, a transport failure or a rate limit is made again: at most 3
+  attempts of 5 s each, at most 10 s of added wait for each mint, and at most 60 retries a minute
+  for the whole process. The `broker: mint failed` line names the attempts made.
