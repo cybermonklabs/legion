@@ -268,7 +268,17 @@ func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
 	}
 
 	// A rebuild is for a history that does not load, so the document's is made one, with no room
-	// holding it: the refusal of a closed issue's rebuild comes after both checks (RebuildDocument).
+	// holding it: the refusal of a closed issue's rebuild comes after both checks (RebuildDocument),
+	// and the first refuses a document any room of this service holds (ErrDocumentLive), so no room
+	// at all may hold it here, not only alice's. The settlement her keystroke armed runs on the
+	// closed issue as on an open one, and its warm-up can load the document into a room of its own
+	// once hers has closed, which would stay resident until it idles out (roomIdleTimeout). So the
+	// test waits for that settlement to end, as nothing here arms another, and evicts the room it
+	// may have left (Evict closes nothing where no room is).
+	f.waitForNoSettlement(t)
+	if err := f.service.Evict(ctx, f.artifactID); err != nil {
+		t.Fatalf("evict a room the settlement of alice's keystroke may have loaded: %v", err)
+	}
 	waitFor(t, roomWait(t), "no room to hold the document", func() bool { return !roomResident(f.service, f.artifactID) })
 	if _, err := f.database.Pool.Exec(ctx, `update doc_updates set update = '\xff'::bytea where artifact_id = $1`, f.artifactID); err != nil {
 		t.Fatalf("make the document's history one that does not load: %v", err)

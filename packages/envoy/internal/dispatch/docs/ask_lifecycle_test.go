@@ -463,7 +463,10 @@ func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 
 // A reopen writes the withdrawn blocks back to open, so a document that had nothing else pending
 // renders as its latest version again, and the settlement the close and the reopen left owed
-// writes no version.
+// writes no version. That holds because no settlement ran while the issue was closed: the settle
+// delay here is an hour, and nothing resumes the documents. A settlement on the closed issue would
+// have saved the blocks resolved, and the reopen's settlement would then write a version with
+// them open again.
 func TestWritingAReopensAskStatesBackLeavesNoVersionToWrite(t *testing.T) {
 	service, original := newTestService(t)
 	service.settle = time.Hour
