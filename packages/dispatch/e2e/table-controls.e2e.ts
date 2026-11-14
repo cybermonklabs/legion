@@ -1078,6 +1078,160 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
+/** What holds the keyboard focus, as a press's outcome reads: the body (the focus is lost), or
+ *  the focused control's name and whether the window shows it. */
+async function focusOutcome(
+  page: Page
+): Promise<{ lost: boolean; label: string; inView: boolean }> {
+  return page.evaluate(() => {
+    const element = document.activeElement;
+    if (!(element instanceof HTMLElement) || element === document.body) {
+      return { lost: true, label: element?.tagName ?? "nothing", inView: false };
+    }
+    const box = element.getBoundingClientRect();
+    return {
+      lost: false,
+      label: (element.getAttribute("aria-label") ?? element.textContent ?? element.tagName)
+        .trim()
+        .slice(0, 60),
+      inView:
+        box.width > 0 &&
+        box.height > 0 &&
+        box.bottom > 0 &&
+        box.top < window.innerHeight &&
+        box.right > 0 &&
+        box.left < window.innerWidth,
+    };
+  });
+}
+
+// SLOW(>=2s): three pages' own controls, each pressed from the keyboard at two widths.
+test("the Agents page, the Delivery page and the project List keep the keyboard focus when a press takes its own control away, at 1440 and 390", async ({
+  page,
+}) => {
+  await seedAgents();
+  await setLiveSessions([plannerSession, reviewerSession]);
+  await seedDeliveryFixture();
+  const first = await createIssue({ project: "CORE", title: "Preserve the caller identity" });
+  const second = await createIssue({ project: "CORE", title: "Document release verification" });
+  const adopted = await createIssue({ project: "CORE", title: "Adopt the interrupted member" });
+  const epic = await createIssue({ project: "CORE", title: "The interrupted action's epic" });
+  // An issue whose title the new epic below repeats, so the server answers it as a possible
+  // duplicate and the List draws its Create anyway and Cancel new epic notice.
+  await createIssue({ project: "CORE", title: "Recover one created epic" });
+  const main = page.getByTestId("main-content");
+  const lost: string[] = [];
+  /** Reads where the focus went once a press settles, and keeps the ones it lost. */
+  const after = async (where: string, press: string) => {
+    await expect
+      .poll(async () => (await focusOutcome(page)).lost, { timeout: 2_000 })
+      .toBe(false)
+      .catch(() => undefined);
+    const outcome = await focusOutcome(page);
+    if (outcome.lost) lost.push(`${where}: after ${press} the focus is on ${outcome.label}`);
+    else if (!outcome.inView) {
+      lost.push(`${where}: after ${press} the focused "${outcome.label}" is out of view`);
+    }
+  };
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const at = `${size.width}x${size.height}`;
+
+    // The Agents page's own Clear selection, in its select-all header: it goes with the selection.
+    await page.goto("/agents");
+    await main
+      .getByRole("checkbox", { name: /^Select .* for broadcast$/ })
+      .first()
+      .check();
+    const clear = main.getByRole("button", { exact: true, name: "Clear selection" });
+    await clear.focus();
+    await page.keyboard.press("Enter");
+    await expect(clear).toHaveCount(0);
+    await after(`Agents page at ${at}`, "Enter on Clear selection");
+
+    // The Delivery page's Window control: a new preset remounts it under a new key. The seeded
+    // window is a custom range, the last option, so ArrowUp picks the last preset.
+    await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+    const windowSelect = main.getByRole("combobox", { name: "Window" });
+    await windowSelect.focus();
+    await page.keyboard.press("ArrowUp");
+    await expect(page).not.toHaveURL(/from=2024-06-01/);
+    await after(`Delivery page at ${at}`, "ArrowUp on the Window select");
+
+    // The Delivery page's clear brush window: it goes with the brush.
+    await page.goto(
+      `/delivery?${DELIVERY_WINDOW}&mode=list&ws=2024-06-01T06%3A00%3A00Z&we=2024-06-01T18%3A00%3A00Z`
+    );
+    const brush = main.getByRole("button", { exact: true, name: "clear brush window" });
+    await brush.focus();
+    await page.keyboard.press("Enter");
+    await expect(brush).toHaveCount(0);
+    await after(`Delivery page at ${at}`, "Enter on clear brush window");
+
+    // The project List's interrupted-action notice: Dismiss and Finish each take the notice
+    // with them. The action is the record a stopped New epic leaves, here naming an open epic,
+    // so Finish adopts its member and ends.
+    const interruptedNotice = async (id: string) => {
+      await page.goto("/projects/CORE/issues");
+      await page.evaluate(
+        ({ action }) => {
+          localStorage.setItem(
+            "dispatch.project-table.CORE",
+            JSON.stringify({ action: { ...action, startedAt: Date.now() } })
+          );
+        },
+        {
+          action: {
+            id,
+            keys: [adopted.key],
+            kind: "newEpic",
+            project: "CORE",
+            target: epic.key,
+            writes: {},
+          },
+        }
+      );
+      await page.reload();
+      const notice = page.getByRole("region", { name: "Interrupted table action" });
+      await expect(notice).toHaveCount(1);
+      return notice;
+    };
+    for (const press of ["Dismiss", "Finish"]) {
+      const notice = await interruptedNotice(`interrupted-${press}-${at}`);
+      await notice.getByRole("button", { exact: true, name: press }).focus();
+      await page.keyboard.press("Enter");
+      await expect(notice).toHaveCount(0);
+      await after(`project List at ${at}`, `Enter on the interrupted action's ${press}`);
+    }
+
+    // The project List's possible-duplicate notice: Cancel new epic and Create anyway each take
+    // the notice with them.
+    for (const press of ["Cancel new epic", "Create anyway"]) {
+      await page.goto("/projects/CORE/issues");
+      await main.getByRole("checkbox", { exact: true, name: `Select ${first.key}` }).check();
+      await main.getByRole("checkbox", { exact: true, name: `Select ${second.key}` }).check();
+      await page.getByRole("button", { exact: true, name: "New epic from these" }).click();
+      await page
+        .getByRole("dialog", { name: "Name the new epic" })
+        .getByRole("textbox", { name: "Name" })
+        .fill("Recover one created epic");
+      await page.getByRole("button", { exact: true, name: "Create epic" }).click();
+      const button = main.getByRole("button", { exact: true, name: press });
+      await expect(button, `project List at ${at}: no possible-duplicate notice`).toHaveCount(1);
+      await button.focus();
+      await page.keyboard.press("Enter");
+      await expect(button).toHaveCount(0);
+      await after(`project List at ${at}`, `Enter on ${press}`);
+    }
+  }
+  // The architect's ruling ff1a60f5, on every control of the pages this change draws: a press
+  // that takes its own focused control away hands the focus on, and never to the body.
+  expect(lost, lost.join("; ")).toEqual([]);
+});
+
 /** The project List's narrowable columns and what shape each one's panel takes. No column of
  *  either table is a date or a number that narrows by two ends: Created and Updated narrow by
  *  the age bands they are grouped into, and Open asks by its own counts, so both are columns of
