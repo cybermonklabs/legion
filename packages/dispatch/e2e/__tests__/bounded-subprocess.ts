@@ -24,13 +24,13 @@
  * module under `__tests__/` runs nowhere by itself, and `e2e/tools/row-map.ts` can import it, as
  * it already imports `e2e/__tests__/playwright-listing.ts`.
  *
- * What a bound is. A bound stops a child that is stuck. It is no budget for a slow one. No row
- * fails because a child is slow. The end-line row and the late-open row of
- * `delivery-live-probe.test.ts` read the probe's own `open` and `end` lines, and its never-opens
- * row reads how long the probe held a connection its server never answered, against bounds at
- * half the 1 s and half the 45 s that row tells apart, which leaves each half its time to load.
- * So a child that is slow and ends is not a defect. A bound exists so that a child which will
- * never end fails with a name, and fails before the job that runs it is killed from outside.
+ * What a bound is. A bound stops a child that is stuck. It is no budget for a slow one. The
+ * end-line and late-open rows of `delivery-live-probe.test.ts` read the probe's own `open` and
+ * `end` lines. Two of its rows read a probe's time against its flag: a hold of a connection never
+ * answered, and SIGINT to exit while a read receives nothing. Each holds it to at least half the
+ * flag's 1 s and under three times the largest correct reading under load, by the rule below,
+ * so only a probe three times slower than any correct one measured fails there. A bound exists
+ * so that a child which will never end fails with a name, before its job is killed from outside.
  *
  * The rule for each value: each bound is at least three times the largest reading of its kind.
  * The readings behind `short`, `listing` and `generation` were taken under load in a pod with two
