@@ -752,6 +752,67 @@ func TestHandoffCompleteAnswersALeftCompletionNamingNoRecordAsNoLongerTheRolesPh
 	}
 }
 
+// An implementer whose issue has left implementing completes it in the shape the `legion` tool
+// sends for an implement record that names no head, or for none at all: the commit its shared
+// workspace stands on, a sibling role's, and no record (pi-shared's handoff-record.ts, its module
+// doc's left-phase rule). The engine decides it as every completion of a left phase that names no
+// record (workflow's leftItsPhase): an implementer that left implementing before it completed - it
+// moved the issue back to planning - would have its completion recorded, so one naming no record
+// is answered HANDOFF_RECORD_REQUIRED, and one whose completion of implementing was taken is
+// answered HANDOFF_NOT_CURRENT_PHASE. The implementer's row stays as it stood either way, so the
+// sibling's commit is never recorded as the implementer's handoff commit.
+func TestHandoffCompleteRefusesAnImplementersLeftCompletionNamingNoRecord(t *testing.T) {
+	sibling := strings.Repeat("c0de", 10)
+	for _, tc := range []struct {
+		name string
+		// stand moves LEGION-208 from implementing, its implementer working, to where the late
+		// completion finds it, and answers that phase.
+		stand func(t *testing.T, h *harness, implementer liveClaim) phase.Phase
+		code  string
+	}{
+		{
+			name: "it left implementing before it completed, moving the issue back to planning",
+			stand: func(t *testing.T, h *harness, implementer liveClaim) phase.Phase {
+				if moved := h.request(http.MethodPost, "/legion/v1/phase/backward", PhaseBackwardRequest{
+					GrantID: implementer.grant(t), To: phase.Planning, Reason: "the plan misses a case",
+				}, nil); moved.Code != http.StatusOK {
+					t.Fatalf("the implementer's backward move to planning = %d: %s", moved.Code, moved.Body)
+				}
+				return phase.Planning
+			},
+			code: "HANDOFF_RECORD_REQUIRED",
+		},
+		{
+			name: "its completion of implementing taken, the issue in testing",
+			stand: func(t *testing.T, h *harness, implementer liveClaim) phase.Phase {
+				completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented",
+					Commit: headSHA, HandoffID: implementer.writeHandoff("implement", 1), HandoffVersion: 1}))
+				return phase.Testing
+			},
+			code: "HANDOFF_NOT_CURRENT_PHASE",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+			seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+			at := tc.stand(t, h, implementer)
+			assertIssuePhase(t, h, at)
+			before := phaseRowOf(t, h, "LEGION-208", claim.RoleImplementer)
+
+			// The row is read before the answer, so a completion that was recorded shows what it
+			// recorded.
+			recorder := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: sibling})
+			if after := phaseRowOf(t, h, "LEGION-208", claim.RoleImplementer); !reflect.DeepEqual(after, before) {
+				t.Fatalf("the implementer's row after its completion at %s (answered %d) = %+v, want it as it stood, %+v", sibling, recorder.Code, after, before)
+			}
+			refused(t, recorder, http.StatusConflict, tc.code)
+			assertIssuePhase(t, h, at)
+		})
+	}
+}
+
 func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)

@@ -87,6 +87,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -130,13 +131,6 @@ func lateRepeatTask(marker string) string {
 	return "LATE-COMPLETION: " + marker + " with the legion tool."
 }
 
-// The author of the commits the driver makes in the panes' workspace: jj pushes no commit that
-// names no author, so the commit of a pushed round names one.
-const (
-	lateAuthorName  = "Late completion live proof"
-	lateAuthorEmail = "late-completion@legion.invalid"
-)
-
 // lateCompletionLive is one run of the proof: the booted daemon over the real Dispatch, the one
 // issue, the three panes' stand-ins, and what steps 2, 4 and 5 recorded for step 6 to judge.
 type lateCompletionLive struct {
@@ -161,6 +155,8 @@ type lateCompletionLive struct {
 	// workspace is the panes' shared working directory, a jj repository (initWorkspace), and
 	// testerCommit the tester's commit step 2 makes its `@-`.
 	workspace, testerCommit string
+	// run is the runner of every git and jj command the driver makes (initWorkspace).
+	run fixturegit.Runner
 	// implementerCall, testerCall and reviewerCall are the calls armed before the boot, on the
 	// task each pane's first turn is started with.
 	implementerCall, testerCall, reviewerCall *paneCall
@@ -325,39 +321,36 @@ func (r *lateCompletionLive) token(role claim.Role) claim.Token {
 }
 
 // initWorkspace makes the panes' working directory the issue's jj workspace as its implementer
-// leaves a pushed round: a repository made with jj's own `git init`, whose `@-` is the
-// implementer's commit, on `legion/<issue>` of an origin of the run's own (a bare git repository
-// under work), with `legion/<issue>@origin` at that commit, so the jj a pane's tool runs there
-// finds `@-` on the branch at origin. That commit is the pull request's head, which every record
-// names. The origin takes the branch with a fetch of its own from the workspace, and the
-// workspace then fetches the origin, which leaves both where a push leaves them: a pod's git runs
-// its leak guard on every push (/opt/legion/bin/git), which needs the pod's own environment, and
-// a run's own origin under TMPDIR publishes nothing for it to guard.
+// leaves a pushed round: a repository made with jj's own `git init`, colocated as jj makes one by
+// default, whose `@-` is the implementer's commit, on `legion/<issue>` of an origin of the run's
+// own (a bare git repository under work), with `legion/<issue>@origin` at that commit, so the jj a
+// pane's tool runs there finds `@-` on the branch at origin. That commit is the pull request's
+// head, which every record names. The origin takes the branch with a fetch of its own from the
+// workspace, and the workspace then fetches the origin, which leaves both where a push leaves
+// them: a pod's git runs its leak guard on every push (/opt/legion/bin/git), which needs the pod's
+// own environment, and a run's own origin under TMPDIR publishes nothing for it to guard. Every
+// command runs under fixturegit.Isolated of the panes' HOME: the panes are told that HOME and no
+// XDG_CONFIG_HOME (localRuntime's paneEnvironment), so their jj reads the repository
+// configuration under the same home as the driver's, and opens the same repository in the same
+// working directory.
 func (r *lateCompletionLive) initWorkspace(work string) {
 	t := r.t
 	t.Helper()
+	r.run = fixturegit.Isolated(t, r.home)
 	r.workspace = r.rt.workDir(r.key)
 	if err := os.MkdirAll(r.workspace, 0o700); err != nil {
 		t.Fatalf("make the panes' working directory %s: %v", r.workspace, err)
 	}
 	origin := filepath.Join(work, "origin.git")
 	branch := "legion/" + r.key
-	r.workspaceJJ("git", "init")
+	r.run.Run(r.workspace, fixturegit.JJInit("", true)...)
 	writeProofFile(t, filepath.Join(r.workspace, "implementation.txt"), "The change "+r.key+" asks for.\n")
 	r.workspaceJJ("commit", "-m", "implement "+r.key, "implementation.txt")
 	r.workspaceJJ("bookmark", "set", branch, "-r", "@-")
 	r.head = r.workspaceJJ("log", "-r", "@-", "--no-graph", "-T", "commit_id")
 	ref := "refs/heads/" + branch
-	for _, args := range [][]string{
-		{"init", "--quiet", "--bare", origin},
-		{"--git-dir", origin, "fetch", "--quiet", r.workspaceJJ("git", "root"), ref + ":" + ref},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + r.home}
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-		}
-	}
+	r.run.Run(work, fixturegit.InitBare(origin, "")...)
+	r.run.Run(work, "git", "--git-dir", origin, "fetch", "--quiet", r.workspaceJJ("git", "root"), ref+":"+ref)
 	r.workspaceJJ("git", "remote", "add", "origin", origin)
 	r.workspaceJJ("git", "fetch", "--remote", "origin")
 	if pushed := r.pushedHead(); pushed != r.head {
@@ -366,20 +359,11 @@ func (r *lateCompletionLive) initWorkspace(work string) {
 	r.note("the panes' workspace %s stands on the implementer's commit %s, which %s@origin is (%s)", r.workspace, r.head, branch, origin)
 }
 
-// workspaceJJ runs jj in the panes' workspace under their HOME, as the driver's own author, and
-// answers its trimmed stdout; a failure ends the step with both streams.
+// workspaceJJ runs jj in the panes' workspace under the driver's runner and answers its trimmed
+// stdout; a failure ends the step with its stderr.
 func (r *lateCompletionLive) workspaceJJ(args ...string) string {
 	r.t.Helper()
-	cmd := exec.Command("jj", args...)
-	cmd.Dir = r.workspace
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + r.home, "JJ_USER=" + lateAuthorName, "JJ_EMAIL=" + lateAuthorEmail}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		r.t.Fatalf("jj %s in %s: %v\n%s%s", strings.Join(args, " "), r.workspace, err, out, stderr.String())
-	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(r.run.Out(r.workspace, append([]string{"jj"}, args...)...))
 }
 
 // pushedHead is `legion/<issue>@origin` as the workspace's jj records it, the revset the tool's

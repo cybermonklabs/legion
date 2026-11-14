@@ -308,7 +308,8 @@ export function createLegionTool(deps: {
    * on, the one it left, the newest Dispatch handoff record of that phase and the head its body
    * names under `head`, which for the implementer's round, while the issue stands in
    * implementing, must be the commit its workspace stands on, pushed to `legion/<issue>@origin`;
-   * otherwise, and for a left phase with no record, the commit the workspace stands on. Throws
+   * otherwise, and for a left phase with no record or an implementer's left record naming no head,
+   * the commit the workspace stands on, alone. Throws
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
    * is not pushed, or its record's head is not that pushed commit. */

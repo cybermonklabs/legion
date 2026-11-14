@@ -620,14 +620,16 @@ the issue has moved on, the one it left, the newest
 record of the phase's word, read from the pane's Dispatch (the envoy.json its session reads),
 refused — posting nothing — when a phase the role works has none (write it, then complete again)
 or Dispatch does not answer (complete again once it does), with the head that record's own `head`
-field names reported as the completion's commit, and none reported when the body holds no
-readable head; while the issue stands in implementing, the implementer's round is refused
+field names reported as the completion's commit, and none reported for the planner, the tester
+and the reviewer when the body holds no readable head; while the issue stands in implementing,
+the implementer's round is refused
 when its record names no head (record the handoff again, then complete again), when the commit
 the workspace stands on, `@-`, is not on `legion/<issue>@origin` (push it, then complete again),
 and when the record's head is not that pushed `@-` (record the handoff again with `head` set to
 it, then complete again); a phase the role left reads nothing of the workspace every role of the
 issue shares, whose `@-` is then often a sibling's commit; retro, the merger, a left phase with no
-record and every other phase report the commit the workspace stands on, `@-`. It then posts
+record and every other phase report the commit the workspace stands on, `@-`, and so does an
+implementer whose left record names no head, which sends `@-` alone, naming no record. It then posts
 `POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,
 `handoffVersion`, `commit` and `wakeAt` where they apply). A
 report on a look of a closed issue's production check is the one call that finds neither: the

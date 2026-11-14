@@ -206,6 +206,7 @@ type WorkspaceReads = "nothing" | "@-" | "@- and origin";
 type DaemonAnswer =
   | "200"
   | "409 HANDOFF_NOT_CURRENT_PHASE"
+  | "409 HANDOFF_RECORD_REQUIRED"
   | "409 ACCEPTANCE_IS_SIGN_OFF"
   | "409 CHECK_LOOK_NOT_SERVED"
   | "404 ISSUE_NOT_FOUND"
@@ -389,6 +390,12 @@ function sentLine(report: HandoffReport): string {
     : `record ${report.handoffId} version ${report.handoffVersion}, commit ${report.commit}`;
 }
 
+/** Whether `report` sends the workspace's `@-`, `SIBLING`, beside a record: what the module doc's
+ * left-phase rule says no completion of a phase its role left does. */
+function standingBesideRecord(report: HandoffReport | Error): boolean {
+  return !(report instanceof Error) && report.handoffId !== undefined && report.commit === SIBLING;
+}
+
 test("every role in every phase: a phase the issue has left runs no workspace check, and reads its head from its record", async () => {
   const wrong: string[] = [];
   let rows = 0;
@@ -398,11 +405,12 @@ test("every role in every phase: a phase the issue has left runs no workspace ch
       const want = COMPLETIONS[role][phase];
       const { sends } = want;
       const at = `the ${role} at ${phase}`;
-      // The rule the rows hold, read off the table: a role whose phase the issue has left runs no
-      // workspace check, and never takes `@-` for the head of a record. A left phase with a
-      // record reports that record and reads nothing of the workspace; `@-` is sent for a left
-      // phase only where that phase writes no record (the merger's merging, the implementer's
-      // retro), as it is wherever such a phase's completion is sent.
+      // The module doc's left-phase rule, read off the table: a role whose phase the issue has
+      // left runs no workspace check, and a left phase with a record reports that record and
+      // reads nothing of the workspace. Dispatch holds a record naming a head for every word here,
+      // so neither shape the rule sends `@-` alone for is a row of this table (LEFT_WITHOUT_HEAD
+      // below holds them): `@-` is sent for a left phase only where that phase writes no record
+      // (the merger's merging, the implementer's retro).
       if (WORKER[phase] !== role) {
         if (want.reads === "@- and origin") wrong.push(`${at} runs the workspace check`);
         if (typeof sends === "object" && "record" in sends && want.reads !== "nothing") {
@@ -411,13 +419,19 @@ test("every role in every phase: a phase the issue has left runs no workspace ch
       }
       const { jj, asked } = siblingWorkspace();
       const dispatch = everyRecord();
-      const sent = await findHandoffReport({
+      const report = await findHandoffReport({
         phase,
         role,
         env,
         jj,
         latestHandoff: dispatch.latestHandoff,
-      }).then(sentLine, (error: Error) => `nothing: ${error.message}`);
+      }).catch((error: Error) => error);
+      const sent = report instanceof Error ? `nothing: ${report.message}` : sentLine(report);
+      // The rule read off what was sent: no row sends the workspace's `@-` beside a left phase's
+      // record.
+      if (WORKER[phase] !== role && standingBesideRecord(report)) {
+        wrong.push(`${at} sends the workspace's @- beside its record: ${sent}`);
+      }
       const reads = asked.length === 0 ? "nothing" : asked.join(" and ");
       let wanted: string;
       let right: boolean;
@@ -440,6 +454,112 @@ test("every role in every phase: a phase the issue has left runs no workspace ch
     }
   }
   expect(rows).toBe(LEGION_ROLES.length * LEGION_PHASES.length);
+  expect(wrong).toEqual([]);
+});
+
+/** What Dispatch holds of the implement phase the implementer left, in the two shapes the
+ * left-phase rule sends `@-` alone for (the module doc): no record at all, or a newest record
+ * whose body names no readable head. */
+type LeftImplementRecord = "no record" | { readonly body: string };
+
+interface LeftWithoutHeadRow {
+  readonly record: LeftImplementRecord;
+  /** Where the issue stands when the implementer completes. */
+  readonly phase: LegionPhase;
+  /** Whether the implementer's completion of implementing was taken: true for one whose
+   * completion moved the issue on to testing, false for one that left implementing before it
+   * completed (it asked to move the issue back to planning). */
+  readonly completed: boolean;
+  readonly daemon: DaemonAnswer;
+}
+
+/**
+ * The implementer's completion of the implement phase it left, in each shape the left-phase rule
+ * sends `@-` alone for, with the shared workspace standing on `SIBLING`. It is a second table
+ * beside COMPLETIONS, whose role-by-phase key holds one Dispatch for every cell (a record naming a
+ * head for every word), so it cannot hold these. Each shape has a row for an implementer that left
+ * implementing before it completed and one whose completion of implementing was taken; a record
+ * naming no head is one written before records carried `head`, or one that is not JSON at all.
+ * Every row sends `@-` and no record, reading `@-` alone of the workspace. `daemon` documents the
+ * contract, as COMPLETIONS' does, and is not asserted here: the workflow records a left phase's
+ * completion only for a role whose row holds no completion of it (`leftItsPhase`), so it refuses
+ * the unfinished implementer's, which it would record and which names no record,
+ * `409 HANDOFF_RECORD_REQUIRED`, and answers the finished one's `409 HANDOFF_NOT_CURRENT_PHASE`;
+ * neither is recorded. internal/api's handoff_test.go holds the route to both
+ * (TestHandoffCompleteRefusesAnImplementersLeftCompletionNamingNoRecord).
+ */
+const LEFT_WITHOUT_HEAD: readonly LeftWithoutHeadRow[] = [
+  {
+    record: "no record",
+    phase: "planning",
+    completed: false,
+    daemon: "409 HANDOFF_RECORD_REQUIRED",
+  },
+  {
+    record: "no record",
+    phase: "testing",
+    completed: true,
+    daemon: "409 HANDOFF_NOT_CURRENT_PHASE",
+  },
+  {
+    record: { body: body() },
+    phase: "planning",
+    completed: false,
+    daemon: "409 HANDOFF_RECORD_REQUIRED",
+  },
+  {
+    record: { body: body() },
+    phase: "testing",
+    completed: true,
+    daemon: "409 HANDOFF_NOT_CURRENT_PHASE",
+  },
+  {
+    record: { body: "not json at all" },
+    phase: "planning",
+    completed: false,
+    daemon: "409 HANDOFF_RECORD_REQUIRED",
+  },
+  {
+    record: { body: "not json at all" },
+    phase: "testing",
+    completed: true,
+    daemon: "409 HANDOFF_NOT_CURRENT_PHASE",
+  },
+];
+
+test("an implementer whose left implement phase has no record, or a record naming no head, sends @- alone", async () => {
+  const wrong: string[] = [];
+  for (const { record, phase, completed } of LEFT_WITHOUT_HEAD) {
+    const holds =
+      record === "no record" ? "no implement record" : `an implement record of body ${record.body}`;
+    const at = `the implementer at ${phase} ${completed ? "after its completion was taken" : "before it completed"}, with ${holds}`;
+    const { jj, asked } = siblingWorkspace();
+    const dispatch = fakeLatestHandoff(async () => {
+      if (record === "no record") {
+        throw new DispatchServiceError("HANDOFF_NOT_FOUND", 404, "no implement handoff");
+      }
+      const { id, version } = RECORDS.implement;
+      return { id, version, body: record.body };
+    });
+    const report = await findHandoffReport({
+      phase,
+      role: "implementer",
+      env,
+      jj,
+      latestHandoff: dispatch.latestHandoff,
+    }).catch((error: Error) => error);
+    const sent = report instanceof Error ? `nothing: ${report.message}` : sentLine(report);
+    if (standingBesideRecord(report)) {
+      wrong.push(`${at} sends the workspace's @- beside its record: ${sent}`);
+    }
+    const reads = asked.length === 0 ? "nothing" : asked.join(" and ");
+    const wanted = sentLine({ commit: SIBLING });
+    if (sent !== wanted || reads !== "@-" || dispatch.reads.join() !== "LEGION-208 implement") {
+      wrong.push(
+        `${at} sent ${sent}, reading ${reads} of the workspace and [${dispatch.reads.join(", ")}] of Dispatch; want ${wanted}, reading @-`
+      );
+    }
+  }
   expect(wrong).toEqual([]);
 });
 
@@ -561,20 +681,6 @@ test("an implementer whose record names no readable head is refused naming what 
     );
     // Nothing of the workspace is read: the record is what has to change.
     expect(calls).toEqual([]);
-  }
-});
-
-test("an implementer whose left implement record names no readable head sends it with @-, unchecked", async () => {
-  // A record written before records carried `head`: the daemon requires an implementer's commit,
-  // so the completion goes with `@-`, the commit main sent there, and the daemon answers it as main
-  // did. `@-` is read and never held to the branch, since it is often a sibling role's commit.
-  for (const text of [body(), "not json at all"]) {
-    const { jj, calls } = fakeJj(false);
-    const { latestHandoff } = recordingDispatch({ ...RECORD, body: text });
-    await expect(
-      findHandoffReport({ phase: "testing", role: "implementer", env, jj, latestHandoff })
-    ).resolves.toEqual({ commit: STANDING, handoffId: RECORD.id, handoffVersion: RECORD.version });
-    expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
   }
 });
 
