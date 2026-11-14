@@ -1369,6 +1369,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
     capabilities: [],
     repositories: { owners: ["acme"], mapped: [], refused: [], withoutWebhookApp: [], caches: [] },
     consumers: [],
+    questionsForController: [],
     settings: { review_round_cap: 3, worker_boot_timeout_seconds: 900 },
     ...overrides,
   });
