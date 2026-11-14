@@ -1080,8 +1080,8 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. It was the highest of the bands
 // when it was taken, this daemon's own contract then; settingSourcesContract stands above it
-// now, so a caller in a pod at 111 is served the measure and not the two fields
-// settingSourcesContract gates.
+// now, so a caller in a pod from 111 to below settingSourcesContract is served the measure and
+// not the two fields settingSourcesContract gates.
 const quietTimeContract = 111
 
 // settingSourcesContract is the daemon contract that added `settingSources` and the `daemon`
@@ -1090,7 +1090,7 @@ const quietTimeContract = 111
 // before sjawhar/legion#2788 refuses the whole body for a key it does not name. It is the
 // highest of the seventeen bands, this daemon's own contract, so the only caller served the two
 // is one at it.
-const settingSourcesContract = 112
+const settingSourcesContract = 130
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

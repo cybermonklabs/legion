@@ -40,7 +40,15 @@ type Failure struct {
 	Error string `json:"error"`
 }
 
+// refusalNoter is a writer that asks to be told the code of the refusal written through it: the
+// completion route's completionAnswer, whose log line names it (handoffComplete). writeFailure
+// tells it, since the code is in hand here and the writer would otherwise read the body back.
+type refusalNoter interface{ noteRefusal(code string) }
+
 func writeFailure(w http.ResponseWriter, status int, code, message string) {
+	if noter, ok := w.(refusalNoter); ok {
+		noter.noteRefusal(code)
+	}
 	writeJSON(w, status, Failure{Code: code, Error: message})
 }
 

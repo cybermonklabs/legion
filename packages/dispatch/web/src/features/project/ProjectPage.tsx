@@ -299,7 +299,7 @@ export function ProjectPage(): ReactNode {
             // belong to Dispatch's own list and board, and none of them reaches the daemon.
             <LegionView project={route.project} />
           ) : issueView === "list" ? (
-            <IssuesTable key={route.project} project={route.project} />
+            <IssuesTable key={route.project} listing={{ project: route.project }} />
           ) : (
             <>
               <IssueFilters key={route.project} project={route.project} />

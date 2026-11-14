@@ -406,8 +406,9 @@ class, `auth.conf`, `nats.conf` blocks and selector labels the values give. A ch
 vendors the new archive with its published SHA-256. `TestClusteredNatsHubCluster` runs three
 nats-server processes on the `nats.conf` and `auth.conf` that render gave, with command-line
 overrides only for what a pod fixes (each process's ports, routes, PID file and server name, and
-the store directory in its copy of `nats.conf`) and with no NetworkPolicy, which nothing enforces
-on loopback: the three form one cluster and serve the users; a three-copy stream keeps every
+the store directory in its copy of `nats.conf`), plus `-D` (debug logging), so a failed run prints
+each server's Raft election and vote lines, and with no NetworkPolicy, which nothing enforces on
+loopback: the three form one cluster and serve the users; a three-copy stream keeps every
 acknowledged message exactly once across a SIGKILL of its leader; the exporter, run with the
 chart's arguments, serves one `nats_stream_last_seq` series per server holding a copy; the real
 reloader, run with the chart's arguments, applies a users change with no server restart and no
