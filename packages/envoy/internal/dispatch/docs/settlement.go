@@ -757,7 +757,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the
 	// room's state, and the room updates the settlement stored marked stored (commitSettlement); a
-	// settlement that writes no version takes out none.
+	// settlement that writes no version takes out none. The room forgets the author of each ask
+	// block the commit indexed under the same hold, so no reader that finds the block's ask row
+	// committed then finds the room still owing its author.
 	committed := authorCapture{state: state}
 	if versioning {
 		committed = st.credit.capture
@@ -766,7 +768,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		// This runs before the publish below, the order Ledger.Commit keeps for every other
 		// version write, so a subscriber acting on this version's artifact.version event acts
 		// after it.
-		if err == nil && state.roomGeneration == st.generation {
+		if err != nil {
+			return
+		}
+		st.credit.consumeAskAuthorsLocked(st.reconciliation.indexedAskBlocks)
+		if state.roomGeneration == st.generation {
 			state.settleFailures = 0
 			state.unsettled = len(state.inflight) > 0
 			if !state.unsettled {
@@ -776,7 +782,6 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}); err != nil {
 		return settleDone, st.commitFailed(advanced, fmt.Errorf("commit document settlement: %w", err))
 	}
-	st.credit.consumeAskAuthors(st.reconciliation.indexedAskBlocks)
 	st.finishSlots()
 	for _, event := range st.published {
 		s.events.Publish(event)

@@ -1622,8 +1622,8 @@ func stampBlockIDs(doc *crdt.Doc, origin any) (*pmdoc.Node, int, []stampedAsk, e
 
 // settlementVersionCredit is whom a settlement's version credits, taken before the tree it records:
 // capture, its authors in order, and actor, whom its derived events name. state is the room the
-// capture was taken from (consumeAskAuthors). askSources, copied once the settlement holds the
-// tree it reconciles, names who introduced each new ask block in it.
+// capture was taken from (consumeAskAuthorsLocked). askSources, copied once the settlement holds
+// the tree it reconciles, names who introduced each new ask block in it.
 type settlementVersionCredit struct {
 	capture    authorCapture
 	state      *roomState
@@ -1733,19 +1733,15 @@ func settlementAuthors(state *roomState, owed map[string]model.Actor, recorded, 
 	return credit
 }
 
-// consumeAskAuthors forgets the room's recorded author of each block a committed settlement indexed
-// or found indexed: its ask row names the author from then on. The settlement's transaction
-// deleted the durable record of the same authors (deleteSettledAskAuthors).
-func (credit settlementVersionCredit) consumeAskAuthors(blockIDs []string) {
-	if len(blockIDs) == 0 {
-		return
-	}
-	state := credit.state
-	state.mu.Lock()
+// consumeAskAuthorsLocked forgets the room's recorded author of each block a committed settlement
+// indexed or found indexed: its ask row names the author from then on. The settlement's transaction
+// deleted the durable record of the same authors (deleteSettledAskAuthors). The caller holds
+// credit.state.mu across the transaction's commit (commitConsuming), so the room never owes the
+// author of a block whose ask row a reader can already find.
+func (credit settlementVersionCredit) consumeAskAuthorsLocked(blockIDs []string) {
 	for _, blockID := range blockIDs {
-		delete(state.askAuthors, blockID)
+		delete(credit.state.askAuthors, blockID)
 	}
-	state.mu.Unlock()
 }
 
 // settleNext names what follows a settlement once settleRoomWithin has returned. The timer's

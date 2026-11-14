@@ -299,7 +299,10 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // WHAT THIS LAYER THEREFORE DOES NOT SEE: a colour change confined to fewer than 20
         // pixels, which is a patch of about 4 by 4. That is the sentence to read this bound
         // by. It sees any change above that, down to one 8-bit step, because the per-pixel
-        // bound is zero.
+        // bound is zero. A glyph is such a patch too: the sidebar's Inbox badge reading 6
+        // where its baseline read 5 is 14 pixels. So a badge's number is held only where a
+        // row's `ready` locator names it, as the `broadcast` row's does
+        // (`e2e/review-routes.ts`), and never by this bound.
         //
         // What a real change gives is NOT one number, and a reader judging whether 20 is
         // safe needs the small end of it rather than the large. Two controls, each one

@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A document room drops the author it owes a decision block in the same locked step that commits the block's ask,
+  so nothing that reads the committed ask can find the room still owing that author.
+time: 2026-11-14T12:22:59Z
+custom:
+    Issue: pr2697

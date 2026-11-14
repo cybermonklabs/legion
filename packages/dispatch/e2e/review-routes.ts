@@ -156,7 +156,30 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "broadcast",
     path: (seed) => `/agents/broadcasts/${seed.broadcast}`,
     pattern: "/agents/broadcasts/:id",
-    ready: (page) => [page.getByRole("region", { name: "Broadcast" })],
+    // The region, and the Inbox count as the page's own write leaves it. The page marks the
+    // Planner's reply to this broadcast read as soon as it draws it (`useMarkShownRepliesRead`,
+    // `web/src/features/agents/unread.ts`), and the shell's Inbox count takes that mark in a
+    // round trip later: the PUT's answer moves only the Agents badge, and the count's own read
+    // is refetched when the server's `user_agent_state` event for the write comes back over the
+    // socket (`web/src/api/event-refresh.ts`). Until then the count still holds the reply as
+    // unread. The region is up long before that, so a page read on it alone is read mid-change:
+    // run 43588641976's trace has the light shot begin at 04.828 with the badge at 7 and the
+    // refetch answering at 04.860, and a local build of this tree read 7 at the end of the
+    // settling in every run, against the 6 the page settles on.
+    //
+    // 6 is this corpus's count once that mark is in: the four open asks waiting on alice (the
+    // runbook document's question among them, which waits on CORE's default assignee) and the
+    // two threads still unread - the Planner's reply to "How far is the plan?" and the Tester's
+    // to the @-mention on CORE-3 (`e2e/workspace.ts`). A change to the corpus that moves it
+    // times this row out on this locator, which names the number. The shot alone does not
+    // catch it: a badge reading 6 against a baseline reading 5 is 14 pixels, under the bound of
+    // 20 (`e2e/visual.e2e.ts`). That is how this row's baseline, taken in #2902 while three asks
+    // waited on alice, still read 5 after #3707 gave her the runbook's question too, until run
+    // 43588641976's corner drift added 9 pixels to those 14.
+    ready: (page) => [
+      page.getByRole("region", { name: "Broadcast" }),
+      page.getByRole("link", { exact: true, name: "Inbox 6" }),
+    ],
   },
   {
     kind: "reviewed",
