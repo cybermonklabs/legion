@@ -97,9 +97,10 @@ func silenceToken(t *testing.T, role claim.Role) claim.Token {
 	return token
 }
 
-// seedSilence writes rec as the store holds it: the issue and its admission slot, the role's
-// phase row with the completion it carries, the claim with the moment its agent last stepped,
-// the task it holds and the start already queued for it.
+// seedSilence writes rec as the store holds it: the issue, the admission slot its phase keeps
+// (record.KeepsSlot: none past its review) and its open tree, the role's phase row with the
+// completion it carries, the claim with the moment its agent last stepped, the task it holds and
+// the start already queued for it.
 func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Issue {
 	t.Helper()
 	issue := record.Issue{Key: silenceIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -113,7 +114,11 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 		return issue
 	}
 	seedIssue(t, pool, issue)
-	seedSlot(t, pool, record.Slot{Issue: silenceIssue, Index: 0, AdmittedAt: silenceClock()})
+	if record.KeepsSlot(issue) {
+		seedSlot(t, pool, record.Slot{Issue: silenceIssue, Index: 0, AdmittedAt: silenceClock()})
+	} else {
+		seedTreeLifecycle(t, pool, silenceIssue)
+	}
 	token := silenceToken(t, claim.RoleTester)
 	seedPhase(t, pool, record.PhaseRow{Issue: silenceIssue, Role: claim.RoleTester, Claim: token,
 		Entry: rec.entry, EntryTask: rec.entryTask, EntryRaisedAt: silenceStep(), CompletedAt: rec.completedAt})
