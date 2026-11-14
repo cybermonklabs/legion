@@ -47,7 +47,7 @@ func TestTheGuardTestMainRanKeptTheGatedProofsInputs(t *testing.T) {
 	want := []string{"LEGION_GH_PATH", "LEGION_REAL_GITHUB"}
 	kept := slices.Sorted(slices.Values(guardedAtStart))
 	if !slices.Equal(kept, want) {
-		t.Errorf("TestMain's guard kept %q, want the gated proofs' inputs %q", kept, want)
+		t.Errorf("TestMain's guard kept %q, want the gated proof's inputs %q", kept, want)
 	}
 }
 
@@ -84,7 +84,7 @@ func TestTheGuardKeepsTheGatedProofsInputs(t *testing.T) {
 	}
 	for name, value := range inputs {
 		if got := os.Getenv(name); got != value {
-			t.Errorf("%s=%q after Guard, want the gated proofs' input %q kept", name, got, value)
+			t.Errorf("%s=%q after Guard, want the gated proof's input %q kept", name, got, value)
 		}
 	}
 	for name := range pod {

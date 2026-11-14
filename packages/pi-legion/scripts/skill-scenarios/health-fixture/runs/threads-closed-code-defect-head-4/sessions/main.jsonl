@@ -1,0 +1,2 @@
+{"timestamp": "2026-11-14T04:00:00Z", "message": {"role": "assistant", "content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "echo hi > /tmp/own.json"}}]}}
+{"timestamp": "2026-11-14T04:00:05Z", "message": {"role": "assistant", "content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "cat /tmp/own.json"}}]}}

@@ -103,9 +103,9 @@ export interface LegionClaimBoot {
  * after a registration are logged and `stop` the agent, since neither changes on retry. Any other
  * refusal of the registration (a 5xx) is logged and rejects, as a request that never reached the
  * daemon does unlogged: both leave the agent to the daemon's registration deadline. A claim the
- * listener refuses is logged and stops the agent in exactly the same words, now after the daemon
- * may have delivered a task: the relaunch re-sends a delivery that is pending and unconfirmed,
- * the path a death inside a turn already takes.
+ * listener refuses is logged and stops the agent in that same sentence, naming its own step,
+ * now after the daemon may have delivered a task: the relaunch re-sends a delivery that is
+ * pending and unconfirmed, the path a death inside a turn already takes.
  */
 export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClaimBoot> {
   const { daemon } = host;
@@ -124,8 +124,14 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
   // as it answers rather than waiting out the bound. The claim step itself still runs after
   // ready (claimRoleAtFirstTurn).
   const firstTurn = listenForFirstTurn(host);
+  // Which step the boot stands in, for the one sentence every failure after the registration is
+  // reported in: the steps below run under one `try`, and the role claim reports itself in that
+  // same sentence after this function has settled, so without the step a reader of the line can
+  // tell none of them apart.
+  let step = "afterRegister";
   try {
     await host.afterRegister?.(claim);
+    step = "setCapability";
     host.setCapability({
       sessionID: host.registration.sessionId,
       tree: claim.tree,
@@ -142,7 +148,9 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       secret: claim.secret,
       generation: claim.generation,
     };
+    step = "claims/ready";
     await callReadyWithRetry("claims/ready", () => daemon.ready(ready));
+    step = "onRoleRegained";
     host.onRoleRegained(async (role, reason) => {
       if (role !== claim.claimToken) return;
       try {
@@ -155,18 +163,57 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       }
     });
   } catch (error) {
-    stopAfterRegistration(host, claim.claimToken, error);
+    stopAfterRegistration(host, claim.claimToken, step, error);
     return { claimed: Promise.resolve() };
   }
   return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, firstTurn) };
 }
 
+/** The opening of the sentence below, which the skill-scenario rig reads a stopped half's own
+ * output for (`scripts/skill-scenarios/score.ts`'s `unscored`, telling an agent that was stopped
+ * from one that chose). The rig imports this constant rather than writing the words again: a
+ * rewording here would otherwise turn that reading off with no test failing anywhere. */
+export const CLAIM_BOOT_FAILED_OPENING = "claim boot failed at ";
+
+/** `endpoint` with nothing of a credential in it: its scheme, its host and its port, and no
+ * userinfo, path, query or fragment. A `daemon_url` may carry userinfo — the daemon's own
+ * `baseURL` refuses a query and a fragment and nothing else
+ * (`packages/daemon/internal/config/config.go`) — and the line below goes to the pane's stderr,
+ * where an operator and every later reader of the log see it. An address that is no URL, or one
+ * with no host, is reported as `xxxxx`, since printing it as it stands is what this exists to
+ * stop. It is not the daemon's own masking of that setting (`internal/api/settings.go`'s
+ * `endpointOf`), which keeps the path and writes `xxxxx@` where userinfo stood: this drops
+ * both, and the line keeps only the scheme, host and port the boot dialled. The two share only
+ * the word `xxxxx` for an address they cannot read.
+ */
+function addressOf(endpoint: string): string {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return "xxxxx";
+  }
+  return url.host === "" ? "xxxxx" : `${url.protocol}//${url.host}`;
+}
+
 /** The one path every failure after a registration takes, wherever it happens: the boot's own
  * steps and the deferred role claim, which runs after the boot has settled, report it in the
- * same sentence and stop the session, since neither changes on retry. */
-function stopAfterRegistration(host: LegionClaimHost, role: string, error: unknown): void {
+ * same sentence and stop the session, since neither changes on retry. The sentence names `step`
+ * because one sentence over four of them leaves a reader of the log unable to say which stopped
+ * the session: six runs of 2026-11-11 reported `ECONNREFUSED` with no step in the line, and
+ * whether the refused dial was the daemon's or Envoy's could be read from nothing. It names the
+ * daemon the registration was made with too, the address every step of the boot itself dials,
+ * masked to its scheme, host and port (`addressOf`);
+ * the Envoy listener the role claim dials is the host's own and this module never sees it, so
+ * the step is what tells the two addresses apart. */
+function stopAfterRegistration(
+  host: LegionClaimHost,
+  role: string,
+  step: string,
+  error: unknown
+): void {
   host.log(
-    `claim boot failed after claims/register registered ${role}; ${host.stopping}: ${messageFor(error)}`
+    `${CLAIM_BOOT_FAILED_OPENING}${step} after claims/register registered ${role} with the daemon at ${addressOf(host.daemon.endpoint)}; ${host.stopping}: ${messageFor(error)}`
   );
   host.stop();
 }
@@ -206,7 +253,9 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
  * bound is a backstop and keeps no process alive for its own sake.
  *
  * A refusal is logged and stops the session, the one failure path every other failure after a
- * registration takes. The promise answers when the step has run, either way, and never rejects.
+ * registration takes, with `claimRole` as the step it names, which is what tells this failure
+ * from the boot's own in a log holding one line. The promise answers when the step has run,
+ * either way, and never rejects.
  */
 function claimRoleAtFirstTurn(
   host: LegionClaimHost,
@@ -223,7 +272,7 @@ function claimRoleAtFirstTurn(
       try {
         await host.claimRole(role);
       } catch (error) {
-        stopAfterRegistration(host, role, error);
+        stopAfterRegistration(host, role, "claimRole", error);
       }
       done.resolve();
     })();

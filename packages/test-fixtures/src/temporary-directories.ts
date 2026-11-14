@@ -82,7 +82,7 @@ export function temporaryDirectories(
   const made: string[] = [];
   afterEach(() => {
     removeEvery(made.splice(0));
-  });
+  }, HOOK_BOUND_MS);
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -126,13 +126,36 @@ export function temporaryDirectory(
   );
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
-  });
+  }, HOOK_BOUND_MS);
   afterAll(() => {
     removeTree(directory);
-  });
+  }, HOOK_BOUND_MS);
   return directory;
 }
 
+/** The bound every hook of this file takes, in place of Bun's 5 s default. Removing a tree is
+ * work that grows with what a suite made and with what else the host is doing: measured on
+ * 2026-11-11, `packages/pi-legion/scripts/skill-scenarios/score.test.ts`, whose directory holds
+ * about ninety run directories each with a bare clone, had its removal killed at 5 s whenever
+ * four copies of that suite ran at once, and the failure reads `(fail) (unnamed)` with
+ * `a beforeEach/afterEach hook timed out for this test` and names neither the hook nor the
+ * directory. A removal is not a test, so a bound that fails it says nothing about the code under
+ * test; this one is long enough that only a removal that will never finish reaches it.
+ *
+ * It reaches every caller of this file, which on 2026-11-11 is 107 test files and harnesses
+ * across broker-client, claude-envoy, envoy-client, pi-envoy, pi-legion and dispatch's e2e
+ * harness, so the cost is worth naming once: a hook
+ * of one of those that genuinely hangs now fails after two minutes rather than five seconds, and
+ * Bun's message still names neither the hook nor its work. Raise this number only for a removal
+ * larger than the one it was measured against; a hook that reaches it is a hook to read rather
+ * than a bound to raise.
+ *
+ * What holds it: "the fixture's own bound is what lets a hook finish a removal of more than five
+ * seconds" (`temporary-directories.test.ts`), which runs a `bun test` of its own over a tree
+ * whose removal outlasts five seconds and reads that run's own measurement of it. The row is in
+ * a run of its own because a hook Bun kills fails with no assertion and no name, so this number
+ * dropped back to the default can be read in no other way. */
+const HOOK_BOUND_MS = 120_000;
 /** `-`, the one character the name template trims from a caller's prefix. */
 const DASH = 45;
 

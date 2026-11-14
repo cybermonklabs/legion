@@ -27,10 +27,12 @@ const registration = {
  * it is asked for, in order, beside the daemon's requests. The boot registers its first-turn
  * signal at the registration, before `claims/ready`, and this host keeps it rather than firing
  * it: a case fires it with `firstTurn()`, and a case that leaves it unfired is a session no turn
- * ever started. */
+ * ever started. `endpoint` is the address the client is built over, which only a case reading
+ * what the log says about it names. */
 function claimHost(options: {
   readonly register?: () => Response;
   readonly ready?: () => Response;
+  readonly endpoint?: string;
   readonly overrides?: Partial<LegionClaimHost>;
 }) {
   const steps: string[] = [];
@@ -45,7 +47,7 @@ function claimHost(options: {
     return options.ready?.() ?? new Response(null, { status: 204 });
   }) as typeof fetch;
   const host: LegionClaimHost = {
-    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    daemon: createLegionDaemonClient(options.endpoint ?? "http://daemon.test", stub),
     registration,
     setCapability: (capability) => {
       steps.push("setCapability");
@@ -189,9 +191,126 @@ test("a claim the listener refuses is logged naming the claim token and what sto
     "stop",
   ]);
   expect(lines).toEqual([
-    `claim boot failed after claims/register registered ${claimToken}; exiting so the daemon launches it again: Envoy role ${claimToken} is held by live session ses_other`,
+    `claim boot failed at claimRole after claims/register registered ${claimToken} with the daemon at http://daemon.test; exiting so the daemon launches it again: Envoy role ${claimToken} is held by live session ses_other`,
   ]);
 });
+
+// Catches: the one sentence that served every failure after the registration, naming neither
+// the step it died at nor the daemon it was talking to. Six runs of 2026-11-11 were stopped
+// through it with `ECONNREFUSED` and nothing in the line said whether the dial that was refused
+// was the daemon's `claims/ready` or Envoy's role claim, so not one of the six could be
+// attributed. The boot's own steps and the role claim that runs after it are the two ends of
+// that sentence: the row above is the second, and this is the first.
+test("a failure in the boot's own steps names that step and the daemon it dialled", async () => {
+  const { host, lines, steps } = claimHost({
+    ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
+  });
+
+  await bootLegionClaim(host);
+
+  expect(lines).toEqual([
+    `claim boot failed at claims/ready after claims/register registered ${claimToken} with the daemon at http://daemon.test; exiting so the daemon launches it again: POST /legion/v1/claims/ready failed with 403: Invalid session secret`,
+  ]);
+  expect(steps.at(-1)).toBe("stop");
+});
+
+// Catches: the daemon's address written to the pane's stderr as it stands. A `daemon_url` may
+// carry userinfo — the daemon's own `baseURL` refuses a query and a fragment and nothing else
+// (`packages/daemon/internal/config/config.go`) — and this line reaches the pane's log and the
+// operator reading it, so a credential in that address would be read by everyone who reads
+// either. What the line names is the scheme, the host and the port alone; the daemon's own
+// masking of that setting (`internal/api/settings.go`'s `endpointOf`) keeps the path and writes
+// `xxxxx@`, and this line keeps neither.
+test("a host whose endpoint carries userinfo logs the masked address and not the credential", async () => {
+  // The userinfo is built rather than written: the shared public leak check reads a URL
+  // carrying a password as a credential, whatever the host, and refuses the push that adds it.
+  const password = ["pw", "example"].join("-");
+  const { host, lines } = claimHost({
+    endpoint: `http://legion:${password}@daemon.test:13370`,
+    ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
+  });
+
+  await bootLegionClaim(host);
+
+  expect(lines).toEqual([
+    `claim boot failed at claims/ready after claims/register registered ${claimToken} with the daemon at http://daemon.test:13370; exiting so the daemon launches it again: POST /legion/v1/claims/ready failed with 403: Invalid session secret`,
+  ]);
+  expect(lines.join("\n")).not.toContain(password);
+});
+
+// And the two addresses the masking cannot read a host out of, each reported as `xxxxx`: one
+// `new URL` refuses (no scheme), and one it reads with an empty host (a scheme, then text with
+// no `//`), where `protocol//host` would print `legion://`. Catches: either branch dropped — the
+// first prints the address as it stands, credential and all, and the second prints a scheme
+// with no host, which names no daemon. The client dials the address it was made with, so the
+// host here reports an address of its own beside it, as one configured that way would.
+test("a host whose endpoint is no URL, or names no host, logs xxxxx and not the credential", async () => {
+  const password = ["pw", "example"].join("-");
+  for (const endpoint of [
+    `//legion:${password}@daemon.test:13370`,
+    `legion:${password}@daemon.test:13370`,
+  ]) {
+    const { host, lines } = claimHost({
+      ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
+    });
+
+    await bootLegionClaim({ ...host, daemon: { ...host.daemon, endpoint } });
+
+    expect([endpoint, lines]).toEqual([
+      endpoint,
+      [
+        `claim boot failed at claims/ready after claims/register registered ${claimToken} with the daemon at xxxxx; exiting so the daemon launches it again: POST /legion/v1/claims/ready failed with 403: Invalid session secret`,
+      ],
+    ]);
+  }
+});
+
+// One row per step of the boot that no other row fails in, since the sentence above names a
+// variable the boot moves from step to step: `claims/ready` is the row above and `claimRole` the
+// one above that, and a step whose own assignment is dropped is reported under the step before
+// it — the failure then names a call that answered. `afterRegister` is the initial value, so a
+// boot that names no step at all reports its first failure as that step and nothing says so.
+for (const { step, overrides } of [
+  {
+    step: "afterRegister",
+    overrides: {
+      afterRegister: async () => {
+        throw new Error("the host's own startup refused");
+      },
+    },
+  },
+  {
+    step: "setCapability",
+    overrides: {
+      setCapability: () => {
+        throw new Error("the host's own startup refused");
+      },
+    },
+  },
+  {
+    step: "onRoleRegained",
+    overrides: {
+      onRoleRegained: () => {
+        throw new Error("the host's own startup refused");
+      },
+    },
+  },
+] satisfies { step: string; overrides: Partial<LegionClaimHost> }[]) {
+  test(`a host whose ${step} throws is stopped, with ${step} named as the step`, async () => {
+    const { host, lines, steps } = claimHost({ overrides });
+
+    const booted = await bootLegionClaim(host);
+
+    expect(lines).toEqual([
+      `claim boot failed at ${step} after claims/register registered ${claimToken} with the daemon at http://daemon.test; exiting so the daemon launches it again: the host's own startup refused`,
+    ]);
+    expect(steps.at(-1)).toBe("stop");
+    expect(steps.some((taken) => taken.startsWith("claimRole"))).toBe(false);
+    // A boot that stopped in one of its own steps still settles its answer, as every other
+    // stopped boot does, so a caller waiting on the claim is not left waiting.
+    await booted.claimed;
+  });
+}
 
 test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener and no claim, whatever turn the registered signal reports", async () => {
   const { host, steps, firstTurn } = claimHost({

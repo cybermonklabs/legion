@@ -1148,7 +1148,7 @@ with no step gated the root architect is told `Design gate steps: none.` in its 
 a changes request is still told to the architect, once, without closing the gate.
 Whether a human must approve a pull request before it merges is the repository's own branch-protection or CODEOWNERS rule: Legion neither reads nor writes it.
 Retro commits nothing, so the head that merges is the head the reviewer approved, and no Legion check compares the two in any case:
-a repository that wants a later push reviewed says so in its own rulesets.
+a repository that wants a later push reviewed says so in its own rulesets, which is the owner's ruling on dispatch://INFRA-714/ask/beea7685.
 The merger merges the pull request itself, as the implement App and at the head it read, which it names as the head GitHub must match (`gh pr merge <n> --squash --match-head-commit <head>`;
 on a base with a merge queue it enqueues the pull request with GraphQL `enqueuePullRequest` and `expectedHeadOid` instead, since `gh pr merge` there turns auto-merge on while a required check is pending, and it then watches the pull request until GitHub merges it or takes it out of the queue).
 Merging at a named head is how bors and Prow's Tide merge only what they tested.

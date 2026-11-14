@@ -31,6 +31,27 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 ```
 
 - The issue's Dispatch status stays `needs_review` in `accepting`; `sign_off` moves it to `retro`.
+- An approval may stand with text threads open, and then your acceptance is the only gate on the
+  head that closes them, since no Legion check compares the head that merges with the approved
+  one. The reviewer leaves each text finding as the inline review thread it already wrote and
+  publishes that head and those threads to the implementer's role topic at its approval, whatever
+  phase the record shows; the implementer fixes the text and pushes it once in its own live
+  session, only while its own read of the record shows `reviewing` after that approval or
+  `accepting`; and the reviewer then resolves each thread, approves the head the fix landed on
+  and publishes that head to your role topic (steps 1 to 3 of
+  `skill://legion-worker/references/review-threads.md`). A fix pushed while the issue is still in
+  `reviewing` sets the first approval aside, so the `review-stuck` notice naming the fix head is
+  a step of that loop: ask the reviewer for the decision as for any such notice, and its approval
+  of the fix head ends the round once GitHub reports that head mergeable.
+  **Hold `sign_off` until the reviewer's message naming the fix head arrives**, and accept on
+  that second approval, reading it on GitHub yourself.
+  Where you doubt the reviewer's call between a text and a behavioural finding, read the threads
+  yourself and send the issue back with `request_backward_move` rather than accepting; a thread
+  the fix cannot close reaches you the same way (*A review thread that cannot be closed*, below).
+- Accept on a result current at the approved head, or on one current at an earlier head whose
+  approval says the reviewer read the push above it and that the push changes no code that runs;
+  without that statement, or where the push changed code that runs, the result is stale and the
+  issue goes back.
 - A `catch-up` whose `reason` names an issue as waiting for your acceptance is the wake for it: it
   is in `accepting`, and the `phase-finished` that moved it there may never have reached you (a
   failed architect's notice is dropped, so a retried one learns of the wait from its catch-up
@@ -147,12 +168,18 @@ move and you tell it which; from `accepting` you send an issue back only to `imp
 
 ## A conflicting head
 
-What returns the tree to review is a changed diff: a conflict-resolution merge whose
-fingerprint (the unchanged-diff check,
-`skill://legion-worker/references/conflicts-and-rewrites.md`) differs from the approved head's.
-A conflict merge whose fingerprint is unchanged does not, and no Legion check compares the head
-that merges with the approved one: a repository that wants a later push reviewed says so in its
-own rulesets.
+What returns the tree to review is a changed diff: a conflict-resolution merge whose fingerprint
+(the unchanged-diff check, `skill://legion-worker/references/conflicts-and-rewrites.md`) differs
+from the approved head's goes back through a round, and a conflict-resolution merge whose
+fingerprint is unchanged needs no round of its own, since the reviewer's confirmation of the new
+head, naming both heads and the fingerprint, carries the approval across it. No Legion check
+compares the head that merges with the approved one: a repository that wants a later push
+reviewed says so in its own rulesets.
+A passing result carries across
+one push above the head the reviewer approved when that push's own diff changes no code that runs
+and the reviewer's approval of the new head states that reading — the diff it read, that it
+changes no code that runs, the head each result ran at and the head it approves. Any other push
+above the approved head goes back through the tester, by your `request_backward_move`.
 
 Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
 (`gh pr view <n> --json mergeable,mergeStateStatus`). From `testing`, `reviewing`, `accepting`,
@@ -170,14 +197,22 @@ round's findings at the new head; the reviewer approves the new head by SHA, or 
 round if it had not approved; the daemon carries the issue through your acceptance and retro to
 the merger's merge.
 
-## A review thread GitHub will not resolve
+## A review thread that cannot be closed
 
-GitHub lets only the pull request author's App resolve a thread, so the implementer resolves every
-thread with plain `gh`: the ones it answers and the bot threads the reviewer accepted and named to
-it. The reviewer resolves none. If the implementer reports that GitHub refused its
-`resolveReviewThread`, open a `dispatch ask` naming the thread's id or URL and GitHub's message, for
-a human to resolve it by hand, with options for resolved / could not. The merger does not complete
-while that ask is open; the merge itself checks no thread state
+The reviewer resolves each thread it opened, with plain `gh`, once it has read the fix that
+closed it: its own threads and the bot threads it accepted. The implementer replies and resolves
+none. A thread whose text fix the implementer cannot make — the sentence is false because the
+code is wrong, or closing it would change code that runs — is a behavioural finding, and it
+reaches you from whichever of the two found it, with `envoy_publish` to your role topic. You
+move the issue back with `request_backward_move`, the reason naming the thread, and you are the
+only one who can: a review submitted while the issue stands outside `reviewing` records nothing
+and moves nothing (`packages/daemon/internal/workflow/review.go`), so a `REQUEST_CHANGES` there
+is the record of the finding on GitHub and no more. A fix whose own diff changes code that runs
+reaches you the same way and goes back to `testing`, since every result above it is stale.
+If the reviewer reports that GitHub refused its `resolveReviewThread`, open a
+`dispatch ask` naming the thread's id or URL and GitHub's message, for a human to resolve it by
+hand, with options for resolved / could not. The merger does not complete while that ask is open;
+the merge itself checks no thread state
 (`skill://legion-worker/references/merge-gate.md`).
 
 ## The close

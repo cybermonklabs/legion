@@ -806,9 +806,9 @@ its first turn is the daemon's `catch-up` notice, and the root's primary documen
 It also proves three changes-requested rounds, each posted by the reviewer pane and ended by that reviewer's completion
 — a review ends when its reviewer completes it, so the round returns to implementing only once the reviewer's handoff is recorded on the Dispatch issue under the reviewer's claim session, and each review, like the final approval, names the issue branch's head at that round's reviewer completion, the implementer's last pushed head (the order the Go reviewer prompt gives;
 the proof names only the decision); in round one the proof human, a GitHub App and so a bot account like a CI bot and none of Legion's role Apps, also opens a file-level review thread (the run reads the thread's author back and stops, naming it, when the devbox `gh` posted as anything else, such as the user after its App routing failed).
-The implementer answers that thread in round one's correction and resolves it with its own `gh` (the pull request author's `resolveReviewThread`), as it does every thread it answers;
-the round-two reviewer adjudicates it, replying in its own words and naming its node id to the implementer as accepted (the review App cannot resolve a thread, so the reviewer names the threads it accepts and the implementer resolves them with plain `gh`;
-this one it already had), so the thread then carries the reviewer's reply and stays resolved.
+The implementer answers that thread in round one's correction and leaves it open, since it resolves no thread it answers;
+the round-two reviewer adjudicates it, replying in its own words and resolving the thread itself (the reviewer resolves the threads it has judged, with its own `gh`), so the thread then carries the reviewer's reply and reads resolved,
+and the run reads it open after round one and resolved after round two.
 No word of a reply resolves anything.
 Each round names one concrete correction the spec permits (a distinct line appended to the smoke file, the one product file the implementer's pull request changed, which the run records and requires to be exactly one;
 the correction counts only in that file's patch on the pull request) and reaches testing only on that round's own implementer handoff (the daemon's phase record must hold the implementer's handoff for that round when the issue reaches testing, and the pushed commit carrying the handoff that every planner, implementer, tester, and reviewer completion reported is authored and committed by that role's own App, read from the issue's workspace).
@@ -2577,14 +2577,14 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   A message in the reviewer's session must carry the architect's `reply_role` and arrive after completion; earlier round reports cannot count.
   These messages are kept as `architect-ask.jsonl`; an ask before the driver's steer is noted as the stronger pass.
   Once asked, the reviewer requests changes with exactly one inline thread and a review naming its handoff head.
-  The implementer appends the requested line, answers the thread and resolves it with its own `gh`; the tester verifies it.
-  Before the re-review the proof bot (the proof human, a GitHub App that is none of Legion's role Apps) opens a second thread, and the reviewer is told to reply on it and name its node id to the implementer as accepted over Envoy, which resolves it with its own `gh`.
+  The implementer appends the requested line and answers the thread, resolving nothing; the tester verifies it.
+  Before the re-review the proof bot (the proof human, a GitHub App that is none of Legion's role Apps) opens a second thread, and the reviewer is told to reply on it and resolve it itself, as it resolves the thread its own round 1 review opened.
   The re-review's decision is the reviewer's own; a second request for changes fails the proof.
-  Both threads are recorded at approval (the reviewer's also after the correction;
-  the bot's may still be open there, since the approval does not wait for the implementer's resolution).
+  Both threads are recorded at approval (the reviewer's also after the correction, where it reads open;
+  either may still be open at that read, since the reviewer resolves each in its round).
   The approval moves the issue to `accepting`, read directly:
   no worker starts (the implementer's claim holds no retro task, `claim_pending_phase`;
-  its state alone says nothing, since it may still be resolving the bot's thread), the daemon queues no status write and Dispatch keeps `needs_review`, the root holds no admission slot there, its work being past its review, while `admission.trees` still names its tree, and the architect holds the reviewer's `phase-finished` notice, its acceptance cue
+  its state alone says nothing, since the implementer may still be in the turn its own completion ended), the daemon queues no status write and Dispatch keeps `needs_review`, the root holds no admission slot there, its work being past its review, while `admission.trees` still names its tree, and the architect holds the reviewer's `phase-finished` notice, its acceptance cue
 
 - `children-first-acceptance`
 
@@ -2599,13 +2599,13 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - `review-thread`
 
-  threads are resolved by id, by the pull request's author, on no magic word (LEGION-631):
-  after the correction round the reviewer's thread read `isResolved: true` with the implementer's reply as its newest submitted comment (the pull request author's `resolveReviewThread`, run by the implementer's own `gh` before it completed);
-  at the approval it still read resolved with the reviewer's own reply newest;
-  the bot's thread, which the reviewer answered and named by node id to the implementer over Envoy (the review App cannot resolve one), reads resolved with the reviewer's reply (`bot-thread-resolved.json`;
-  the implementer, live after its phase, resolved it with its own `gh`, so the approval need not have waited for it), and the implementer's session holds the reviewer's delivery naming the id (`bot-thread-named-to-implementer.jsonl`);
+  threads are resolved by id, by the reviewer that judged them, on no magic word (LEGION-631):
+  after the correction round the reviewer's thread read `isResolved: false` with the implementer's reply as its newest submitted comment, since the implementer answers and resolves none;
+  at the approval it read resolved with the reviewer's own reply newest, the reviewer having read the fix and closed its own thread;
+  the bot's thread, which the reviewer adjudicated, answered and resolved with its own `gh`, reads resolved with the reviewer's reply (`bot-thread-resolved.json`;
+  GitHub does not refuse the review App that resolution, probed on this pull request at 2026-11-08T03:13:33Z, which answered `isResolved: true`);
   `POST /legion/v1/threads/resolve` on the daemon answers 404 (`threads-resolve-404.json`): no daemon route resolves a thread (acceptance 4).
-  Controls: the implementer's record left unresolved, and the reviewer's record with a later implementer reply appended, both fail;
+  Controls: the implementer's record read resolved, and the reviewer's record with a later implementer reply appended, both fail;
   the bot's record left unresolved, or stripped of the reviewer's reply, fails
 
 - `completion-closed`
@@ -2844,7 +2844,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The close suspends every role of tree 1, architect to merger, within 1800 s, since the daemon's suspension of a role in a turn waits for that turn to end, and a wait that runs out names each role still unsuspended with whether its suspension is held for a turn;
   tree 1's events carry its architect's `issue.claimed`, and done leaves its root issue unclaimed.
   Before the merge, `reviewThreads` shows every thread resolved, the reviewer's and the bot's included (`review-threads-at-merge.json`):
-  the end state the implementer's `gh` left, its own threads and the bot's the reviewer named to it, since the merger resolves nothing and reads no thread state.
+  the end state the reviewer's `gh` left, the thread its own review opened and the bot's it adjudicated, since the merger resolves nothing and reads no thread state.
   Control: the same record with the reviewer's thread unresolved fails
 
 - `production-check-bound`
@@ -6202,7 +6202,7 @@ a token reaches one only where the daemon can run neither `agent-secrets` nor a 
 A run refuses before its first write anywhere:
 Stage 3, 4b.13b, the Claude Code backend and Stage 4b check both Apps (`read_app_logins`), Stage 4a, which acts as the implement App alone, checks that one.
 `TestRealGitHubCredentialSurface` sources this lib and runs its `require_app_inputs implement`, `app_token_command` and `check_github_apps implement` (through `liveProofImplementApp` and `proveLiveProofApps` in `packages/daemon/internal/api/real_github_test.go`;
-`proveLiveProofApps` checks the very block the proofs act with), so it holds no copy of the App, its checks or its token command, and it proves the implement App as the stage proofs do before it acts: it takes the implement inputs and no others, so no review input, the key command included, is read for it.
+`proveLiveProofApps` checks the very block the proof acts with), so it holds no copy of the App, its checks or its token command, and it proves the implement App as the stage proofs do before it acts: it takes the implement inputs and no others, so no review input, the key command included, is read for it.
 Stage 4a hands its Go harness the implement App's id, its secret and that App's `app_token_command`, which the harness's token manager runs with `sh -c`, so it holds no copy of the token command either.
 The checks run in the C locale whatever the caller's, so a UTF-8 locale does not admit fullwidth digits or accented letters.
 `require_app_inputs` also fills `app_key_unsets`, the `env` argument list (`-u NAME` …) every proof passes to a process it starts, so no such process inherits an App credential, the proof human's included.

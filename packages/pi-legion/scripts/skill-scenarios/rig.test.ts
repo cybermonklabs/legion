@@ -1,5 +1,14 @@
 import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -13,11 +22,43 @@ setDefaultTimeout(60_000);
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
 // one warning names docker for the whole file.
 const withoutDocker = skipWithout("docker");
+// The routes rule reads a label's daemon's routes with daemon-pane.go, which `go run` compiles.
+const withoutGo = skipWithout("go");
+/** This checkout, the one the head label is built from. */
+const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
 
 // rig.sh's install_model_route, run with the checkout's real installers: the route a label's
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
 const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
+const rigScript = readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8");
+/** rig.sh's own top-level assignment of `name`, the line as the script writes it, so a harness
+ * that builds a world with the script's functions builds it with the script's own values. */
+function assignment(name: string): string {
+  const found = new RegExp(`^${name}=.*$`, "m").exec(rigScript);
+  if (found === null) throw new Error(`rig.sh assigns no ${name} at the start of a line`);
+  return found[0];
+}
+/** rig.sh's definition of `name`, from `name() {` to the `}` that closes it, with the lines of
+ * each here-document it holds skipped: `fn` ends a definition at the first line that is `}`
+ * alone, which a here-document's own text can be — fixture_cli writes greet.ts, whose functions
+ * end so. */
+function definition(name: string): string {
+  const lines = rigScript.split("\n");
+  const start = lines.indexOf(`${name}() {`);
+  if (start < 0) throw new Error(`rig.sh defines no ${name}()`);
+  let delimiter: string | undefined;
+  for (const [index, line] of lines.entries()) {
+    if (index <= start) continue;
+    if (delimiter !== undefined) {
+      if (line === delimiter) delimiter = undefined;
+    } else if (line === "}") return lines.slice(start, index + 1).join("\n");
+    else delimiter = /(?<!<)<<(?!<)-?\s*(['"]?)(\w+)\1/.exec(line)?.[2];
+  }
+  throw new Error(`rig.sh's ${name}() has no closing }`);
+}
+/** The login every answer of a world names a user by (rig.sh's `world_login`). */
+const WORLD_LOGIN = assignment("world_login").replace(/^world_login='(.*)'$/, "$1");
 const work = temporaryDirectory("skill-scenarios-rig");
 const operatorHome = path.join(work, "operator-home");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
@@ -194,6 +235,35 @@ describe("install_model_route", () => {
     expect(readFileSync(path.join(agent, "config.yml"), "utf8")).toContain(
       "  default: box-gateway/claude-opus-5-5\n"
     );
+  });
+
+  // Catches: a profile whose one model is disabled because the operator's block carries a bundled
+  // provider's name, which Oh My Pi refuses to start on ("No model available matching
+  // enabledModels (anthropic/claude-opus-4-8) with usable credentials").
+  test("provider leaves its own name out of the disabled providers", () => {
+    const dir = profileDir();
+    // The operator's own block, under a bundled provider's name: the deployment's gateway block
+    // is often `anthropic`, since that is the API it speaks.
+    const file = providerFile("!cat /run/user/1000/box/gateway-key");
+    writeFileSync(
+      file,
+      `${readFileSync(file, "utf8")}  anthropic:
+    baseUrl: http://gateway.internal.example:4000
+    apiKey: "!cat /run/user/1000/box/gateway-key"
+    api: anthropic-messages
+`
+    );
+    const { code, stderr } = route(dir, {
+      LEGION_E2E_MODEL_ROUTE: "provider",
+      LEGION_E2E_MODEL_PROVIDER_FILE: file,
+      LEGION_E2E_MODEL_PROVIDER: "anthropic",
+    });
+    expect({ code, stderr: code === 0 ? "" : stderr }).toEqual({ code: 0, stderr: "" });
+    const agent = path.join(dir, "home/.omp/profiles/skills-test/agent");
+    const config = readFileSync(path.join(agent, "config.yml"), "utf8");
+    expect(config).toContain("enabledModels:\n  - anthropic/claude-opus-4-8\n");
+    expect(config).toContain("disabledProviders:\n  - amazon-bedrock\n");
+    expect(config).not.toContain("  - anthropic\n");
   });
 
   test("provider without LEGION_E2E_MODEL_PROVIDER_FILE fails, naming the variable", () => {
@@ -525,6 +595,2516 @@ describe("next_run", () => {
   // Catches: a first batch that fails because $work/runs does not exist yet.
   test("1 when the label has no run of the scenario", () => {
     expect(next(freshDir("numbering-empty"), "spec-rewrite", "s1").stdout).toBe("1\n");
+  });
+
+  // Catches: numbering that reads $work/runs alone. A run that ended is in the archive
+  // (archive_run), so a later batch numbered from runs/ alone would take its number, and the
+  // archive would replace it with the new run when that one ended.
+  test("counts the runs the archive holds", () => {
+    const work = freshDir("numbering-archive");
+    mkdirSync(path.join(work, "runs", "spec-writing-s1-3"), { recursive: true });
+    mkdirSync(path.join(work, "archive", "runs", "spec-writing-s1-12"), { recursive: true });
+    expect(next(work, "spec-writing", "s1").stdout).toBe("13\n");
+  });
+});
+
+// Each serial run's exit removes what the run made at the top of the machine's shared scratch,
+// by the record scratch_before took when it started, and records it for health.ts; anything that
+// was there before the run, a previous batch's file included, stays. Each row stands a directory
+// of its own in for /tmp (shared_scratch).
+describe("scratch_clean", () => {
+  function cleaned(parallel: string) {
+    const shared = freshDir("shared-scratch");
+    const R = freshDir("scratch-run");
+    writeFileSync(path.join(shared, "pre-batch.json"), "from an earlier batch\n");
+    const result = bash(
+      [
+        fn("note"),
+        fn("scratch_before"),
+        fn("scratch_clean"),
+        "R=$1 shared_scratch=($2)",
+        "scratch_before",
+        'echo run >"$2/LWEVAL-1-review.json"',
+        'mkdir "$2/a-dir" && echo run >"$2/a-dir/inside"',
+        "scratch_clean",
+      ].join("\n"),
+      [R, shared],
+      { SKILL_SCENARIOS_PARALLEL: parallel }
+    );
+    return { shared, R, result };
+  }
+
+  // Catches: a file one run leaves in /tmp still there when the next starts, and an entry from
+  // before the run deleted with the run's own.
+  test("a serial run's files leave the shared scratch, and what was there before it stays", () => {
+    const { shared, R, result } = cleaned("1");
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(readdirSync(shared)).toEqual(["pre-batch.json"]);
+    expect(
+      readFileSync(path.join(R, "scratch-created.txt"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => line.replace(/^\S+ /, ""))
+        .sort()
+    ).toEqual([path.join(shared, "LWEVAL-1-review.json"), path.join(shared, "a-dir")]);
+  });
+
+  // Catches: a cleanup at a parallelism above 1, which would delete files a concurrent run is
+  // still using and record them as this run's.
+  test("runs side by side leave the shared scratch as it is, and say so", () => {
+    const { shared, R, result } = cleaned("2");
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("only serial runs (SKILL_SCENARIOS_PARALLEL=1) clean");
+    expect(readdirSync(shared).sort()).toEqual(["LWEVAL-1-review.json", "a-dir", "pre-batch.json"]);
+    expect(existsSync(path.join(R, "scratch-created.txt"))).toBe(false);
+  });
+});
+
+// A run's exit moves its directory out of the runs directory every run of a batch is made in,
+// so a later run's agent finds no finished sibling beside its own (the 2026-11-14 agents, every
+// push refused, read the pointer files of runs that had ended).
+describe("archive_run", () => {
+  const archive = (work: string, R: string) =>
+    bash(`${fn("archive_run")}\nwork=$1 R=$2\narchive_run`, [work, R]);
+
+  // Catches: a run left in runs/ when it ends, and a rerun's archive nested inside the archived
+  // run of its name rather than replacing it, as cmd_run replaces a run in runs/.
+  test("a run that ended leaves runs/ for the archive, replacing the archived run of its name", () => {
+    const work = freshDir("archive");
+    const R = path.join(work, "runs", "threads-closed-text-fixes-head-1");
+    mkdirSync(path.join(R, "sessions"), { recursive: true });
+    writeFileSync(path.join(R, "out.txt"), "exit=0\n");
+    mkdirSync(path.join(work, "runs", "threads-closed-text-fixes-head-2"));
+    const archived = path.join(work, "archive", "runs", "threads-closed-text-fixes-head-1");
+    mkdirSync(archived, { recursive: true });
+    writeFileSync(path.join(archived, "earlier"), "");
+    expect(archive(work, R)).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(readdirSync(path.join(work, "runs"))).toEqual(["threads-closed-text-fixes-head-2"]);
+    expect(readdirSync(archived).sort()).toEqual(["out.txt", "sessions"]);
+  });
+
+  // Catches: a live read's directory, which is no run of runs/, moved with the runs.
+  test("a directory outside runs/ stays where it is", () => {
+    const work = freshDir("archive-live");
+    const R = path.join(work, "live-read", "head");
+    mkdirSync(R, { recursive: true });
+    expect(archive(work, R).code).toBe(0);
+    expect(existsSync(R)).toBe(true);
+    expect(existsSync(path.join(work, "archive"))).toBe(false);
+  });
+});
+
+// A Legion pod's `git` is a leak-check wrapper (/opt/legion/bin/git): every push runs the leak
+// guard, which finds the shared check through PUBLIC_LEAK_CHECK. A run's HOME and configuration
+// home are its own and hold no pointer file, so a pane without the variable had every push of the
+// 2026-11-14 batch refused with `LEAK CHECK SETUP ERROR`. Each row builds a run's pane with
+// base_env under a `git` of the row's own first on the caller's PATH.
+describe("push_guard", () => {
+  /** A `git` that, as Legion's wrapper does, runs a push with `-c core.hooksPath=<hooks>`. */
+  const WRAPPER =
+    '#!/bin/sh\n# a push runs with -c core.hooksPath=/opt/legion/githooks\nexec /usr/bin/git "$@"\n';
+  /** A `git` that runs the real one and nothing else. */
+  const PLAIN = '#!/bin/sh\nexec /usr/bin/git "$@"\n';
+  /** base_env for a run of its own, with `git` first on the caller's PATH and the caller's
+   * PUBLIC_LEAK_CHECK `check` (none for undefined): its status, its stderr and its pane's lines. */
+  function pane(git: string, check: string | undefined, callerPath?: string) {
+    const dir = freshDir("push-guard");
+    const bin = path.join(dir, "caller-bin");
+    mkdirSync(bin);
+    writeFileSync(path.join(bin, "git"), git, { mode: 0o755 });
+    const R = path.join(dir, "run");
+    const result = bash(
+      [
+        fn("fail"),
+        fn("push_guard"),
+        fn("base_env"),
+        "R=$1 P=$2 profile=skills-test",
+        "base_env",
+      ].join("\n"),
+      [R, profileDir()],
+      {
+        PATH: callerPath ?? `${bin}:${childEnv.PATH}`,
+        USER: "rig",
+        ...(check === undefined ? {} : { PUBLIC_LEAK_CHECK: check }),
+      }
+    );
+    const file = path.join(R, "pane.env");
+    const lines = existsSync(file) ? readFileSync(file, "utf8").split("\n") : [];
+    return { ...result, R, lines };
+  }
+  const check = () => {
+    const file = path.join(freshDir("leak-check"), "public-leak-check.sh");
+    writeFileSync(file, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    return file;
+  };
+
+  // Catches: a pane that drops the caller's PUBLIC_LEAK_CHECK, as base_env's did.
+  test("a wrapper git and a readable check: the pane names the check", () => {
+    const named = check();
+    const { code, stderr, lines } = pane(WRAPPER, named);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(lines).toContain(`PUBLIC_LEAK_CHECK=${named}`);
+  });
+
+  // Catches: a world built whose guard would refuse every push, which measures nothing.
+  test("a wrapper git and no readable check: the run is refused, naming the variable", () => {
+    for (const named of [undefined, path.join(freshDir("leak-check"), "missing.sh")]) {
+      const { code, stderr } = pane(WRAPPER, named);
+      expect(code).toBe(1);
+      expect(stderr).toContain(
+        `is a leak-check wrapper, which refuses every push whose leak check it cannot find, and PUBLIC_LEAK_CHECK names no readable check (${named ?? "unset"})`
+      );
+    }
+  });
+
+  // Catches: a rig that demands a check where no wrapper would run one, or invents a variable.
+  test("any other git and no check: nothing is added and nothing is refused", () => {
+    const { code, stderr, lines } = pane(PLAIN, undefined);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(lines.filter((line) => line.startsWith("PUBLIC_LEAK_CHECK="))).toEqual([]);
+  });
+
+  // Catches: a fix that gets the run's pushes through by getting around the guard. Under
+  // Legion's own wrappers and the caller's check, a push from the run's pane passes the guard,
+  // and the same push carrying a credential the shared check refuses is refused by it. The key
+  // is built from two parts here so this file's own push carries no such line.
+  const guard = "/opt/legion/bin/git";
+  const shared = process.env.PUBLIC_LEAK_CHECK ?? "";
+  test.skipIf(!existsSync(guard) || !existsSync("/opt/legion/bin/legion") || !existsSync(shared))(
+    "a push from a run's pane passes the guard, and one carrying a secret is refused by it",
+    () => {
+      const { code, stderr, R, lines } = pane(PLAIN, shared, `/opt/legion/bin:/usr/bin:/bin`);
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      const vars = Object.fromEntries(
+        lines
+          .filter((line) => line.includes("="))
+          .map((line) => {
+            const at = line.indexOf("=");
+            return [line.slice(0, at), line.slice(at + 1)];
+          })
+      );
+      const real = (...args: string[]) =>
+        Bun.spawnSync([
+          "/usr/bin/git",
+          "-c",
+          "user.name=A",
+          "-c",
+          "user.email=a@example.invalid",
+          ...args,
+        ]);
+      const remote = path.join(R, "remote.git");
+      const src = path.join(R, "src");
+      expect(real("init", "-q", "--bare", remote).exitCode).toBe(0);
+      expect(real("init", "-q", src).exitCode).toBe(0);
+      writeFileSync(path.join(src, "README.md"), "The widgets CLI.\n");
+      expect(real("-C", src, "add", "-A").exitCode).toBe(0);
+      expect(real("-C", src, "commit", "-qm", "init").exitCode).toBe(0);
+      const push = () => {
+        const made = Bun.spawnSync(
+          ["/bin/sh", "-c", 'git -C "$1" push "$2" HEAD:refs/heads/main', "-", src, remote],
+          {
+            env: vars,
+          }
+        );
+        return { code: made.exitCode, err: made.stderr.toString() };
+      };
+      const clean = push();
+      expect(clean).toMatchObject({ code: 0 });
+      expect(clean.err).not.toContain("LEAK CHECK SETUP ERROR");
+      writeFileSync(path.join(src, "keys.txt"), `aws ${"AKIA"}${"QZXWVUTSRQPONMLK"}\n`);
+      expect(real("-C", src, "add", "-A").exitCode).toBe(0);
+      expect(real("-C", src, "commit", "-qm", "keys").exitCode).toBe(0);
+      const secret = push();
+      expect(secret.code).not.toBe(0);
+      expect(secret.err).toContain("LEAK CHECK: refusing");
+    }
+  );
+});
+
+// Every worker run's Envoy role topics are its Legion project's and its issue's, and worker_boot
+// gives all three worker scenarios the same issue key. So the project is the only thing that keeps
+// one run's Envoy messages out of another's session, and `skills<label>r<n>` does not: it names no
+// scenario. Measured on 2026-11-06, with the batch's NATS given through SKILL_SCENARIOS_NATS_URL
+// and so left running between batches, a run of the scenario threads-closed replaced, numbered 2
+// of the label head, was delivered the Envoy message the reviewer run
+// reviewer-text-findings-text-only-head-2 published 44 minutes earlier, under the project both
+// were given, skillsheadr2: it named the bot thread PRRT_kwDOrig0001, which exists only in the
+// reviewer scenario's world, and the agent resolved it. A run that reads another run's
+// instructions measures nothing about its own rule.
+describe("run_project", () => {
+  const project = (scenario: string, runCase: string, label: string, n: string) =>
+    bash(`${fn("run_project")}\nrun_project "$1" "$2" "$3" "$4"`, [scenario, runCase, label, n]);
+
+  // Catches: a project built from the label and the run number alone, which two worker scenarios
+  // of one label and number share, so Envoy delivers each run's messages to both.
+  test("two scenarios of one label and run number get projects of their own", () => {
+    const reviewer = project("reviewer-text-findings", "text-only", "head", "2");
+    const closed = project("threads-closed", "text-fixes", "head", "2");
+    const tester = project("tester-proof", "", "head", "2");
+    expect(reviewer.code).toBe(0);
+    expect(closed.code).toBe(0);
+    expect(tester.code).toBe(0);
+    expect(new Set([reviewer.stdout, closed.stdout, tester.stdout]).size).toBe(3);
+  });
+
+  // Catches: a project that keeps a hyphen or an upper-case letter from the scenario, the case or
+  // the label, which isLegionProjectToken refuses, so no role token can be minted for the run.
+  test("each project is a Legion project token", () => {
+    for (const [scenario, runCase, label] of [
+      ["reviewer-text-findings", "text-only", "head"],
+      ["threads-closed", "code-defect", "base"],
+      ["tester-proof", "", "ablate-R2"],
+    ] as const)
+      expect(project(scenario, runCase, label, "3").stdout.trim()).toMatch(/^[a-z0-9]+$/);
+  });
+
+  // Catches: a project that drops the case, so the two cases of one scenario, which run as two
+  // batches against the same NATS, share their role topics.
+  test("two cases of one scenario get projects of their own", () => {
+    expect(project("threads-closed", "text-fixes", "head", "1").stdout).not.toBe(
+      project("threads-closed", "code-defect", "head", "1").stdout
+    );
+  });
+});
+
+// A cased scenario's case reaches four places that must agree: cmd_batch refuses a case before it
+// starts a service, cmd_run puts it in the run's directory name, the run writes it to
+// <run>/case.txt, and score.ts reads the name and the file and holds them to each other. All four
+// read it through scenario_case.
+describe("scenario_case", () => {
+  const cases = (scenario: string, env: Record<string, string> = {}) =>
+    bash(
+      `${fn("fail")}\n${fn("scenario_case")}\n${fn("askgate_case")}\n${fn("reviewer_case")}\n${fn("threads_case")}\nscenario_case "$1"`,
+      [scenario],
+      env
+    );
+
+  // Catches: a reviewer case the rig takes in one place and refuses in another.
+  test("reviewer-text-findings takes text-only and defect", () => {
+    for (const name of ["text-only", "defect"])
+      expect(cases("reviewer-text-findings", { SKILL_SCENARIOS_REVIEWER_CASE: name })).toEqual({
+        code: 0,
+        stdout: `${name}\n`,
+        stderr: "",
+      });
+  });
+
+  // Catches: a batch that runs the wrong world because the variable is unset or misspelt, which
+  // would score as the reviewer's own verdict.
+  test("an unset or unknown reviewer case fails, naming the variable and both cases", () => {
+    const unset: Record<string, string> = {};
+    for (const env of [unset, { SKILL_SCENARIOS_REVIEWER_CASE: "text" }]) {
+      const result = cases("reviewer-text-findings", env);
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("SKILL_SCENARIOS_REVIEWER_CASE");
+      expect(result.stderr).toContain("not text-only or defect");
+    }
+  });
+
+  // Catches: a generalisation that drops askgate's own cases, or that gives an uncased scenario a
+  // case and so a directory name no scorer reads.
+  test("askgate keeps its cases, and a scenario that takes none prints nothing", () => {
+    expect(cases("askgate", { SKILL_SCENARIOS_ASKGATE_CASE: "nochange-block" }).stdout).toBe(
+      "nochange-block\n"
+    );
+    expect(cases("askgate", { SKILL_SCENARIOS_ASKGATE_CASE: "nope" }).code).toBe(1);
+    expect(cases("tester-proof", { SKILL_SCENARIOS_REVIEWER_CASE: "defect" })).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
+  });
+
+  // Catches: a threads-closed batch that runs no case at all, which the issue's check runs with
+  // no variable set, or one that takes a misspelt case for the measured arm.
+  test("threads-closed takes both cases, runs text-fixes unset, and fails on any other word", () => {
+    for (const name of ["text-fixes", "code-defect"])
+      expect(cases("threads-closed", { SKILL_SCENARIOS_THREADS_CASE: name })).toEqual({
+        code: 0,
+        stdout: `${name}\n`,
+        stderr: "",
+      });
+    expect(cases("threads-closed")).toEqual({ code: 0, stdout: "text-fixes\n", stderr: "" });
+    const result = cases("threads-closed", { SKILL_SCENARIOS_THREADS_CASE: "text" });
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("SKILL_SCENARIOS_THREADS_CASE");
+    expect(result.stderr).toContain("not text-fixes or code-defect");
+  });
+
+  // Catches: a batch that starts its services and its runs before it reads the case (cmd_batch
+  // calls scenario_case before it loads a label or locks the services).
+  test("a batch of a cased scenario refuses an unset case before it starts anything", () => {
+    const dir = freshDir("reviewer-batch");
+    const result = Bun.spawnSync(
+      ["bash", path.join(import.meta.dir, "rig.sh"), "batch", "reviewer-text-findings", "1", "x"],
+      { env: { ...childEnv, SKILL_SCENARIOS_WORK: dir } }
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("SKILL_SCENARIOS_REVIEWER_CASE");
+    expect(existsSync(path.join(dir, "services"))).toBe(false);
+  });
+});
+
+// The three records a worker run's score reads what the run did from: the pushes, the gh and bun
+// stand-ins' calls, and the daemon stand-in's answers. The fixture leaves the push log empty,
+// because the remote's post-receive hook has already written its own two pushes into it and
+// those are the world being built, not acts of the run; it creates neither of the other two,
+// because each is opened by the stand-in that keeps it, with one line of its own, and a record
+// that is not there at all is the score's way of saying nothing wrote it (score.ts's
+// `unscored`: a missing record is a rig error naming it, one holding no line of the run's own a
+// reading of the run). Catches: a rig that pre-creates a record, which made a
+// stand-in that never ran read as a run that called nothing — a code-defect head passed on an
+// empty calls.jsonl, and the missing-file rig error fired only for a run that never got a
+// world.
+describe("fixture_head_commit", () => {
+  test("it empties the push log and creates no record of its own", () => {
+    const dir = freshDir("fixture-records");
+    writeFileSync(path.join(dir, "pushes.log"), "the fixture's own push\n");
+    const result = bash(
+      `${fn("fixture_head_commit")}\nfixture_git() { :; }\nR=$1 worker_key=LWEVAL-1\nfixture_head_commit`,
+      [dir]
+    );
+    expect(result.code).toBe(0);
+    expect(readFileSync(path.join(dir, "pushes.log"), "utf8")).toBe("");
+    for (const file of ["calls.jsonl", "daemon.log"])
+      expect(existsSync(path.join(dir, file))).toBe(false);
+  });
+});
+
+// The two text findings a round's world carries are named constants (rig.sh's
+// text_finding_doc_line and text_finding_trigger), and every world passes round_world the pair it
+// means to have. round_world takes no default, because a default is what made the negative
+// control's own text invisible: `${5-…}` kept the push-trigger comment out of the code-defect
+// world through an unset fifth argument, and `${5:-…}` would have put it back, adding a second
+// text-only finding to the control with no test anywhere to notice.
+describe("round_world and the worlds' own text findings", () => {
+  /** WORLD built with GUARD, with round_world stubbed: the arguments it was given, and what the
+   * stub had to set for the rest of the world to build (round_world's own outputs). */
+  function built(world: string, guard: string) {
+    const dir = freshDir(`world-text-${world}`);
+    const result = bash(
+      [
+        fn("fail"),
+        fn(world),
+        fn("resolution_protection_routes"),
+        fn("blocked_at"),
+        'round_world() { printf "%s\\n" "$@" >"$R/round-args"; C1=0123456789abcdef0123;',
+        "  worker_pr=1001; worker_pr_url=https://example.invalid/pull/1001;",
+        '  resolve_route=\'{"match":"r"}\'; }',
+        "fixture_body() { :; }",
+        "fixture_checks() { :; }",
+        "fixture_write() { :; }",
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
+        "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
+        `${world} 1 100 "$2"`,
+      ].join("\n"),
+      [dir, guard]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    const written = readFileSync(path.join(dir, "round-args"), "utf8");
+    return written.split("\n").slice(0, -1);
+  }
+
+  // Catches: a world that takes a finding from a default rather than naming it, so an edit to the
+  // default moves a world that never mentions it.
+  test("each world names the text findings it carries", () => {
+    expect(built("review_world", "")).toEqual(["1", "100", "", "THE-DOC-LINE", "THE-TRIGGER"]);
+    expect(built("review_world", "dropped")).toEqual([
+      "1",
+      "100",
+      "dropped",
+      "THE-DOC-LINE",
+      "THE-TRIGGER",
+    ]);
+    expect(built("approved_world", "")).toEqual(["1", "100", "", "THE-DOC-LINE", "THE-TRIGGER"]);
+  });
+
+  // Catches: a negative control that quietly gains a text finding. Its one finding is the code's,
+  // and the fifth argument it passes is the empty trigger — an honest workflow comment — which is
+  // a finding it is the control for not having.
+  test("the dropped guard's world documents R2 and carries an honest workflow comment", () => {
+    expect(built("approved_world", "dropped")).toEqual([
+      "1",
+      "100",
+      "dropped",
+      "A blank name, like no name at all, prints the usage line on stderr and exits 2.",
+      "",
+    ]);
+  });
+
+  // Catches: a round_world that answers a caller naming no text at all, which is the default
+  // coming back.
+  test("round_world refuses a call that names no doc line and trigger", () => {
+    const result = bash(`${fn("fail")}\n${fn("round_world")}\nround_world 1 100 ''`);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("expected INDEX START GUARD DOC_LINE TRIGGER");
+  });
+});
+
+// What worker_boot hands the daemon stand-in and the pane. Catches: a project computed a second
+// time here
+// rather than taken from the run (the recorder would subscribe to one project's topics while the
+// agents published on another's, and every send would read as never made); a repository or a
+// branch handed to either of them here, which is a second place the world's own names could
+// drift from the world (rig.sh's worker world comment: both read $R/world.json, so the boot
+// hands each the run directory and no name of its own); and a boot that names no phase, which
+// serves the role's own phase to a loop the daemon starts no phase for.
+describe("worker_boot", () => {
+  /** The `gh` rig.sh's standins leaves in $R/bin: the stand-in behind a wrapper, as the pane's
+   * PATH reaches it, with the arguments it was given kept beside the run so a row can see what
+   * the boot ran it for. */
+  const recordingGh = (dir: string) =>
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >>"${path.join(dir, "pane-gh-args")}"`,
+      `exec "${process.execPath}" "${path.join(import.meta.dir, "gh-standin.ts")}" gh "$@"`,
+      "",
+    ].join("\n");
+
+  /** worker_boot for ROLE in PHASE, with every process it starts stubbed, on a run whose world
+   * fixture_write wrote, and the boot's own result unjudged. `gh` writes the pane's own gh,
+   * `panePath` the PATH the pane file carries, which is where the boot looks for it, and
+   * `paneRun` the run that file records calls under: a row breaks one of the three to say what
+   * a run whose agents could reach no stand-in must leave behind. */
+  function bootResult(
+    role: string,
+    phase: string,
+    {
+      completed = "",
+      gh = recordingGh,
+      panePath = (dir: string) => `${path.join(dir, "bin")}:${childEnv.PATH}`,
+      paneRun = (dir: string) => dir,
+    } = {}
+  ) {
+    const dir = freshDir(`worker-boot-${role}`);
+    mkdirSync(path.join(dir, "logs"), { recursive: true });
+    mkdirSync(path.join(dir, "bin"), { recursive: true });
+    writeFileSync(path.join(dir, "logs", "daemon.log"), "listening on http://127.0.0.1:4321\n");
+    writeFileSync(path.join(dir, "bin", "gh"), gh(dir), { mode: 0o755 });
+    // The pane the daemon would give, carrying the Envoy address a pane whose environment
+    // configures none gets (daemon-pane.ts's DEFAULT_ENVOY_URL), the PATH it hands the agent
+    // (daemon-pane.ts's `path`, the run's own bin first), the run every call of that agent's is
+    // recorded under (base_env's SKILL_SCENARIO_RUN, which the daemon's pane keeps), and the
+    // batch's services file, carrying the listener it started: the two addresses the run's
+    // pane.env is built from.
+    writeFileSync(
+      path.join(dir, "worker.env"),
+      `ENVOY_URL=http://127.0.0.1:9020\nPI_NO_TITLE=1\nSKILL_SCENARIO_RUN=${paneRun(dir)}\nPATH=${panePath(dir)}\n`
+    );
+    writeFileSync(
+      path.join(dir, "services.env"),
+      "ENVOY_URL=http://127.0.0.1:34567\nENVOY_NATS_URL=nats://127.0.0.1:4222\n"
+    );
+    const result = bash(
+      [
+        fn("fail"),
+        fn("worker_boot"),
+        fn("fixture_write"),
+        fn("concluded_checks"),
+        'start_process() { printf "%s\\n" "$*" >"$R/started-$1"; }',
+        "await_start() { :; }",
+        "base_env() { :; }",
+        "standins() { :; }",
+        "launch() { :; }",
+        'bun() { printf "%s\\n" "$*" >>"$R/bun-args"; }',
+        "R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=$3 worker_base=main booted='' daemon_pid=''",
+        "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
+        "worker_pr_url=https://example.invalid/pull/1001",
+        "services_env=$R/services.env work=$R/work dispatch_port=1 profile=$R/p co=$R/c",
+        assignment("world_author_name"),
+        assignment("world_author_email"),
+        assignment("world_login"),
+        "fixture_write '[]' '\"\"' '[]'",
+        'worker_boot the-run "$4" "$5" "$6" "$7"',
+      ].join("\n"),
+      [dir, import.meta.dir, "example/widgets", "skillsproject1", role, phase, completed]
+    );
+    return { dir, result };
+  }
+
+  /** A boot that went through: the run directory, what it handed the daemon stand-in, what it
+   * handed the pane (worker-pane.ts, through the stubbed `bun`), and that world's own
+   * repository and branch. */
+  function boot(role: string, phase: string, completed = "") {
+    const { dir, result } = bootResult(role, phase, { completed });
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    const bunArgs = readFileSync(path.join(dir, "bun-args"), "utf8").trim().split("\n");
+    return {
+      dir,
+      started: readFileSync(path.join(dir, "started-daemon"), "utf8").trim(),
+      bunArgs,
+      pane: bunArgs.find((line) => line.includes("worker-pane.ts")) ?? "",
+      world: JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")),
+    };
+  }
+
+  // Catches: a rig word in the identity a worker agent's own jj commits carry, which its push puts
+  // into the history every later role reads (`Rig Worker`, as the pane once named it): it is the
+  // world's author, in the pane file `launch` hands the agent and in the jj configuration it
+  // names, and the class of what the rig writes into a repository holds it to no word of the
+  // rig's ("what the rig writes into a run's world" below).
+  test("the agent's jj identity is the world's author, in the pane and in its jj configuration", () => {
+    const { dir } = boot("implementer", "reviewing");
+    const pane = readFileSync(path.join(dir, "pane.env"), "utf8").split("\n");
+    const identity = pane.filter((line) => /^JJ_(USER|EMAIL)=/.test(line));
+    expect(identity).toEqual([
+      expect.stringMatching(/^JJ_USER=[A-Z][a-z]+ [A-Z][a-z]+$/),
+      expect.stringMatching(/^JJ_EMAIL=\S+@example\.invalid$/),
+    ]);
+    const config = readFileSync(path.join(dir, "jj.toml"), "utf8");
+    for (const line of identity) expect(config).toContain(`"${line.replace(/^JJ_\w+=/, "")}"`);
+    expect([...identity, config].filter((text) => /fixture|\brig\b/i.test(text))).toEqual([]);
+  });
+
+  // Catches: the pane's own ENVOY_URL left in beside the batch's, which is one fact in two
+  // lines of one file. `launch` runs the agent under `env -i` with those lines, so the address
+  // the session reaches is whichever came last, and a reader of pane.env is told two. The
+  // run's Envoy is the listener the batch started, and the daemon's pane default is no address
+  // of this rig's.
+  test("the pane file names the batch's Envoy listener, once", () => {
+    const { dir } = boot("implementer", "accepting");
+    const pane = readFileSync(path.join(dir, "pane.env"), "utf8").split("\n");
+    expect(pane.filter((line) => line.startsWith("ENVOY_URL="))).toEqual([
+      "ENVOY_URL=http://127.0.0.1:34567",
+    ]);
+    // The rest of the pane the daemon gave is kept whole.
+    expect(pane).toContain("PI_NO_TITLE=1");
+    expect(pane).toContain("ENVOY_NATS_URL=nats://127.0.0.1:4222");
+  });
+
+  // Catches: a run whose record of its calls nothing opens, where a run that called no gh and
+  // no bun leaves no calls.jsonl at all and scores as the rig error of a record nothing wrote
+  // rather than as the run that called nothing (score.ts's `unscored`). The line is the gh
+  // stand-in's own, which gh-standin.test.ts holds it to; this is the boot asking for it,
+  // before the agent starts — and asking the gh the pane's PATH resolves to, in the pane's own
+  // environment, not the stand-in script by its path, so the line says the run's own gh reached
+  // the stand-in. The record lands under the run the pane file names and the boot adds nothing
+  // to that environment, so a record at all is that environment having been the agent's.
+  test("the gh the pane's PATH resolves to opens the record of the run's calls", () => {
+    const { dir, result } = bootResult("merger", "merging");
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    // The arguments the pane's own gh was run with, which the wrapper kept: the flag alone.
+    expect(existsSync(path.join(dir, "pane-gh-args"))).toBe(true);
+    expect(readFileSync(path.join(dir, "pane-gh-args"), "utf8")).toBe("--open\n");
+    expect(existsSync(path.join(dir, "calls.jsonl"))).toBe(true);
+    expect(
+      readFileSync(path.join(dir, "calls.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as unknown)
+    ).toMatchObject([{ opened: "calls.jsonl" }]);
+    // The stand-in is reached through that wrapper and never run by its own path.
+    expect(readFileSync(path.join(dir, "bun-args"), "utf8")).not.toContain("gh-standin.ts");
+  });
+
+  // Catches: an opening line the rig writes where no call of the run could have been recorded.
+  // The record is opened by running the pane's own gh, so a wrapper that cannot start leaves no
+  // record at all, which score.ts's `unscored` reads as the rig error it is (score.test.ts's
+  // "reviewer-text-findings: a missing stand-in record is a rig error"), rather than a record
+  // holding the opening line alone, which it reads as the run that called nothing
+  // ("reviewer-text-findings: an empty stand-in record is a reading of the run, named in its row").
+  test("a pane gh that cannot start opens no record, and the boot says so", () => {
+    // A wrapper that cannot start: the interpreter it execs is not there, as a $R/bin/gh
+    // written against a bun that has gone would be.
+    const { dir, result } = bootResult("merger", "merging", {
+      gh: () => '#!/bin/sh\nexec /nonexistent/bun /nonexistent/gh-standin.ts gh "$@"\n',
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(`skill-scenarios: worker_boot: the pane's gh (${dir}/bin/gh)`);
+    expect(existsSync(path.join(dir, "calls.jsonl"))).toBe(false);
+  });
+
+  // The other half of that rule: a pane PATH the stand-in is not on. Every call the agent made
+  // would reach the real gh or nothing, and none of them would be recorded, so the record stays
+  // absent here too.
+  test("a pane PATH that reaches no gh opens no record, and the boot says so", () => {
+    const { dir, result } = bootResult("merger", "merging", {
+      panePath: (run: string) => path.join(run, "empty"),
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      `skill-scenarios: worker_boot: ${dir}/pane.env names no PATH with a gh on it`
+    );
+    expect(existsSync(path.join(dir, "calls.jsonl"))).toBe(false);
+  });
+
+  // The third way the opening line could say what is not so: a pane that names no run. The
+  // stand-in records under SKILL_SCENARIO_RUN, which it reads from the environment `launch`
+  // gives the agent and the boot hands it unchanged, so a pane file that lost the variable
+  // records no call of the agent's either, and leaves no record here.
+  test("a pane file that names no run opens no record, and the boot says so", () => {
+    const { dir, result } = bootResult("merger", "merging", { paneRun: () => "" });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("gh-standin: SKILL_SCENARIO_RUN is unset");
+    expect(result.stderr).toContain(`skill-scenarios: worker_boot: the pane's gh (${dir}/bin/gh)`);
+    expect(existsSync(path.join(dir, "calls.jsonl"))).toBe(false);
+  });
+
+  test("the stand-in is given the run's project, the run's own directory and the phase", () => {
+    const { dir, started, world } = boot("implementer", "accepting");
+    expect(started.split(" ").slice(-5)).toEqual([
+      "skillsproject1",
+      "LWEVAL-1",
+      dir,
+      "implementer",
+      "accepting",
+    ]);
+    // The repository is no argument of the boot: the stand-in reads it, and the branch beside
+    // it, out of the world in that directory.
+    expect(started.split(" ")).not.toContain(world.repo);
+    expect(world).toMatchObject({ repo: "example/widgets", base: "main" });
+  });
+
+  // Catches: a stand-in started without the rig's work directory, which keeps no facts cache
+  // there and so runs `go run` for each fact at every boot (daemon-pane.ts's `factsCache`).
+  test("the stand-in is given the rig's work directory for its facts cache", () => {
+    const { dir, started } = boot("tester", "");
+    expect(started.split(" ").slice(0, 3)).toEqual([
+      "daemon",
+      "env",
+      `SKILL_SCENARIOS_WORK=${dir}/work`,
+    ]);
+  });
+
+  // Catches: a world statement that never reaches the stand-in. threads-closed's implementer
+  // completed its round before the run began, which is what makes either label's daemon refuse
+  // its completion 409 HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts's COMPLETED_ROWS); a boot
+  // that dropped COMPLETED would have the head stand-in take the implementer as a role that left
+  // its phase with nothing on its row.
+  test("the stand-in is given the roles the world says completed their phase", () => {
+    const { started } = boot("implementer", "reviewing", "implementer");
+    expect(started.split(" ").slice(-2)).toEqual(["reviewing", "implementer"]);
+  });
+
+  // The pane's addressing is the world's own, as the stand-in's record is, and worker-pane.ts
+  // reads both out of the world in the run directory it is given first. A worker follows
+  // the addressing its system prompt carries: the pane named skills-rig/project on trunk while
+  // every world is example/widgets on main, and recorded runs posted their review to the
+  // repository the addressing named, where the scorer's repository rule read it as no review at
+  // all (rig.sh's worker world comment holds that story).
+  test("the pane is given the run directory and no repository or branch of its own", () => {
+    const { dir, pane, world } = boot("reviewer", "accepting");
+    const given = pane.split(" ");
+    expect(given[1]).toBe(dir);
+    expect(given.at(-1)).toBe(`${dir}/c`);
+    expect(given).not.toContain(world.repo);
+    expect(given).not.toContain(world.base);
+  });
+
+  // A boot that names no phase leaves the phase to the stand-in, which serves the role's own.
+  test("a boot that names no phase hands the stand-in an empty one", () => {
+    const { dir, started } = boot("tester", "");
+    expect(started.split(" ").slice(-2)).toEqual([dir, "tester"]);
+  });
+});
+
+// Catches: a recorder that computes a project of its own instead of taking the run's. It would
+// subscribe to the topics of a project nothing publishes on, and every message of the run would
+// read as never sent — a silent failure of each row, not an error of the rig.
+describe("start_recorder", () => {
+  test("it subscribes to the topics of the project it was given", () => {
+    const dir = freshDir("recorder");
+    writeFileSync(path.join(dir, "services.env"), "ENVOY_NATS_URL=nats://127.0.0.1:4222\n");
+    const result = bash(
+      [
+        fn("start_recorder"),
+        'start_process() { printf "%s\\n" "$*" >"$R/started"; }',
+        "await_start() { :; }",
+        "R=$1 here=$2 services_env=$R/services.env",
+        'start_recorder "$3"',
+      ].join("\n"),
+      [dir, import.meta.dir, "skillsproject1"]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(dir, "started"), "utf8").trim()).toEndWith(
+      "legion-skillsproject1-"
+    );
+  });
+});
+
+// The second half of the loop after an approval. In code-defect the implementer's own act is to
+// tell the architect and send the reviewer nothing, so a wake of none ends the loop where the
+// rule ends it. Catches: a rig that boots a reviewer on an empty prompt anyway and counts what it
+// then does towards the case's pass (score.ts's !approvedAny, resolves.length === 0 and
+// moved === undefined) — the rig's own agent answering the rig's own question. In text-fixes the
+// implementer must have sent a wake, so the reviewer is booted whatever it sent and the empty
+// wake stays the fail on toldReviewer it already was.
+describe("run_threads_closed", () => {
+  /** The loop run for CASE on a wake of WAKE, with both agents and the services stubbed: each
+   * worker_boot it made, in order, the prompt the reviewer half would have been given, and the
+   * record of that wake the run keeps. */
+  function loop(threadsCase: string, wake: string) {
+    const dir = freshDir(`threads-loop-${threadsCase}`);
+    writeFileSync(path.join(dir, "threads.json"), "[]\n");
+    writeFileSync(path.join(dir, "wake.json"), wake);
+    const result = bash(
+      [
+        fn("note"),
+        fn("run_threads_closed"),
+        "start_recorder() { :; }",
+        "worker_run_world() { pr=1001; head=0123456789ab; }",
+        "seed_ts() { :; }",
+        'reviewer_wake() { cat "$R/wake.json"; }',
+        'worker_boot() { printf "%s\\n" "$*" >>"$R/boots"; }',
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets",
+        'run_threads_closed the-run skillsproject1 1 100 "$2"',
+      ].join("\n"),
+      [dir, threadsCase]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return {
+      boots: readFileSync(path.join(dir, "boots"), "utf8").trim().split("\n"),
+      prompt: readFileSync(path.join(dir, "prompt.txt"), "utf8"),
+      wake: JSON.parse(readFileSync(path.join(dir, "reviewer-wake.json"), "utf8")),
+    };
+  }
+
+  test("code-defect boots no reviewer when the implementer sent it nothing", () => {
+    expect(loop("code-defect", "[]\n").boots).toEqual([
+      "the-run-implementer skillsproject1 implementer accepting implementer",
+    ]);
+  });
+
+  test("code-defect boots the reviewer when the implementer woke it", () => {
+    expect(loop("code-defect", '[{"message":"pushed 0123456789ab"}]\n').boots).toEqual([
+      "the-run-implementer skillsproject1 implementer accepting implementer",
+      "the-run-reviewer skillsproject1 reviewer accepting implementer",
+    ]);
+  });
+
+  // Catches, beside the empty wake: a text-fixes loop booted in `accepting`, where its approved
+  // head's running check would have left main's engine in `reviewing` (rig.sh's approved_world),
+  // so the push that sets the approval aside and the fix head's approval that ends the round are
+  // a path no run of this rig could take (review 5887659447, finding 3). code-defect stays in
+  // `accepting` (the two rows above): its control reads the message to the architect as the one
+  // route, which a `REQUEST_CHANGES` in `reviewing` would not leave it.
+  test("text-fixes boots both halves in reviewing, and the reviewer on an empty wake, which it fails on", () => {
+    expect(loop("text-fixes", "[]\n").boots).toEqual([
+      "the-run-implementer skillsproject1 implementer reviewing implementer",
+      "the-run-reviewer skillsproject1 reviewer reviewing implementer",
+    ]);
+  });
+
+  // The reviewer's own wake is the implementer's message and nothing else (review-threads.md
+  // step 2), and Envoy delivers each message of it, so the prompt is one delivery line per
+  // message in the order Envoy accepted them. Catches: a prompt built from the last message
+  // alone, which drops a wake the run did send; one that invents a head the implementer never
+  // named; and a run that boots its reviewer on a prompt of some other run's making.
+  test("the reviewer's prompt is one delivery line per message, in Envoy's own order", () => {
+    const { prompt, wake } = loop(
+      "text-fixes",
+      `${JSON.stringify([
+        { message: "The text fixes are pushed: the head to read is 0123456789ab." },
+        { message: "Both threads carry my reply." },
+      ])}\n`
+    );
+    expect(prompt).toBe(
+      "Implementer → reviewer, LWEVAL-1. The text fixes are pushed: the head to read is 0123456789ab.\n" +
+        "Implementer → reviewer, LWEVAL-1. Both threads carry my reply.\n"
+    );
+    // <run>/reviewer-wake.json keeps what the reviewer was given and nothing else: the prompt is
+    // in prompt.txt, which the agent is booted on.
+    expect(wake).toEqual({
+      wake: [
+        { message: "The text fixes are pushed: the head to read is 0123456789ab." },
+        { message: "Both threads carry my reply." },
+      ],
+    });
+  });
+
+  // Catches: a rig that writes the implementer's own prompt for the reviewer when the
+  // implementer published nothing, which would hand the second half a wake nobody sent.
+  test("an implementer that published nothing leaves the reviewer an empty prompt", () => {
+    const { prompt, wake } = loop("text-fixes", "[]\n");
+    expect(prompt).toBe("");
+    expect(wake).toEqual({ wake: [] });
+  });
+});
+
+// `rig.sh health <run dir>...`: whether each run's world could take what its agents did, read
+// through completion-answers.ts, which the score's refused-completion rule reads too. Each row
+// builds run directories as a batch leaves them: named as cmd_run names a run, with an out.txt
+// and a daemon.log that each stand-in of the run opened with its own line before its agent's.
+describe("health", () => {
+  const complete = (status: number, code?: string, role?: string, phase?: string) => ({
+    at: "2026-11-13T18:00:00.000Z",
+    path: "/legion/v1/handoff/complete",
+    status,
+    ...(code === undefined ? {} : { code }),
+    ...(role === undefined ? {} : { role }),
+    ...(phase === undefined ? {} : { phase }),
+  });
+  const NOT_CURRENT = "HANDOFF_NOT_CURRENT_PHASE";
+  /** A run directory named `name`, under a directory of its own, whose daemon.log holds one
+   * opening line per boot, each followed by that boot's lines; `finished` false leaves out.txt
+   * with no `exit=` line, as a run that never ended leaves it; `checkout` is the checkout its
+   * built-from names, none for "". */
+  function run(name: string, boots: object[][], { finished = true, checkout = "" } = {}) {
+    const dir = path.join(freshDir("health"), name);
+    mkdirSync(dir);
+    writeFileSync(
+      path.join(dir, "out.txt"),
+      finished ? "the agent's output\nexit=0\n" : "the agent's output\n"
+    );
+    if (checkout !== "") writeFileSync(path.join(dir, "built-from"), `checkout ${checkout}\n`);
+    writeFileSync(
+      path.join(dir, "daemon.log"),
+      boots
+        .flatMap((lines) => [{ at: "2026-11-13T17:59:00.000Z", opened: "daemon.log" }, ...lines])
+        .map((line) => `${JSON.stringify(line)}\n`)
+        .join("")
+    );
+    return dir;
+  }
+  function health(...dirs: string[]) {
+    // The go caches of the caller's, which the routes rule's `go run` compiles with: a HOME of
+    // its own would have go fetch and build the daemon module from nothing.
+    const go = Object.fromEntries(
+      ["GOCACHE", "GOMODCACHE", "GOPATH", "GOFLAGS", "GOTOOLCHAIN"].flatMap((name) => {
+        const value = process.env[name];
+        return value === undefined ? [] : [[name, value]];
+      })
+    );
+    const result = Bun.spawnSync(
+      ["bash", path.join(import.meta.dir, "rig.sh"), "health", ...dirs],
+      { env: { ...childEnv, ...go, SKILL_SCENARIOS_WORK: freshDir("health-work") } }
+    );
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  }
+  /** The verdict line health printed for the run directory `dir`. */
+  const verdict = (stdout: string, dir: string) =>
+    stdout.split("\n").find((line) => line.startsWith(`${path.basename(dir)}  `));
+
+  // Catches: a refusal the world should not have given, read as a healthy run, and a reason
+  // that does not say which refusal it was.
+  test("a run with a refused completion is unhealthy, named with its status and code", () => {
+    const dir = run("reviewer-text-findings-defect-head-1", [
+      [complete(400, "HANDOFF_RECORD_REQUIRED", "reviewer"), complete(200, undefined, "reviewer")],
+    ]);
+    const { code, stdout } = health(dir);
+    expect(code).toBe(1);
+    expect(verdict(stdout, dir)).toBe(
+      "reviewer-text-findings-defect-head-1  unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 400 HANDOFF_RECORD_REQUIRED, which the head label's daemon does not answer it with in this world"
+    );
+    expect(stdout).toEndWith("health: 1 of 1 runs unhealthy\n");
+  });
+
+  // Catches: a health that calls the daemon's own deliberate refusal unhealthy. threads-closed's
+  // implementer, whose round stands, is refused 409 HANDOFF_NOT_CURRENT_PHASE by either label's
+  // daemon.
+  test("a threads-closed run whose only refusal is the implementer's not-current-phase is healthy", () => {
+    const named = run("threads-closed-text-fixes-head-1", [
+      [complete(409, NOT_CURRENT, "implementer")],
+      [complete(200, undefined, "reviewer")],
+    ]);
+    const { code, stdout } = health(named);
+    expect(code).toBe(0);
+    expect(verdict(stdout, named)).toBe("threads-closed-text-fixes-head-1  healthy");
+    expect(stdout).toEndWith("health: 0 of 1 runs unhealthy\n");
+  });
+
+  // Catches: a completion line that names no role given the role of the agent booted in its
+  // place, which read this head threads-closed 409 HANDOFF_NOT_CURRENT_PHASE as the implementer's,
+  // the one role that answer is allowed to; and a line naming a role the scenario boots none of
+  // read as a role's. Whose completion either was is unknown, so each fails closed, whatever
+  // its answer.
+  test("a completion line naming no role, or a role the scenario never boots, is unhealthy", () => {
+    const unnamed = run("threads-closed-text-fixes-head-3", [[complete(409, NOT_CURRENT)]]);
+    const taken = run("threads-closed-code-defect-head-3", [[complete(200, undefined)]]);
+    const stranger = run("reviewer-text-findings-defect-base-1", [
+      [complete(200, undefined, "tester"), complete(200, undefined, "reviewer")],
+    ]);
+    const { code, stdout } = health(unnamed, taken, stranger);
+    expect(code).toBe(1);
+    expect(verdict(stdout, unnamed)).toBe(
+      "threads-closed-text-fixes-head-3  unhealthy: unkeyable completion: a completion line names no role (POST /legion/v1/handoff/complete answered 409 HANDOFF_NOT_CURRENT_PHASE), so whose completion it was is unknown"
+    );
+    expect(verdict(stdout, taken)).toContain(
+      "unhealthy: unkeyable completion: a completion line names no role (POST /legion/v1/handoff/complete answered 200)"
+    );
+    expect(verdict(stdout, stranger)).toContain(
+      "unhealthy: unkeyable completion: a completion line names the tester, a role reviewer-text-findings boots none of"
+    );
+    expect(stdout).toEndWith("health: 3 of 3 runs unhealthy\n");
+  });
+
+  // Catches: the same code read as allowed whatever role it answered. The head daemon refuses a
+  // reviewer 409 HANDOFF_NOT_CURRENT_PHASE only once its row holds a completion, which no
+  // threads-closed world gives it before the run, so a head reviewer refused so with no earlier
+  // 200 of its own is a world the daemon would not have served.
+  test("a head threads-closed reviewer refused not-current-phase is unhealthy", () => {
+    const named = run("threads-closed-text-fixes-head-2", [
+      [complete(409, NOT_CURRENT, "implementer")],
+      [complete(409, NOT_CURRENT, "reviewer")],
+    ]);
+    const { code, stdout } = health(named);
+    expect(code).toBe(1);
+    expect(verdict(stdout, named)).toContain(
+      "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE"
+    );
+  });
+
+  // Catches: one exemption for every label. Main `ff2a10ef` refuses a reviewer whose round has
+  // moved the issue 409 HANDOFF_NOT_CURRENT_PHASE, which is how the base daemon takes that
+  // completion; this checkout records it, so the same answer on the head label, with no earlier
+  // 200 of the reviewer's, is a refusal the head daemon never gives a reviewer here.
+  test("a reviewer-text-findings reviewer refused not-current-phase is healthy on base and not on head", () => {
+    const base = run("reviewer-text-findings-text-only-base-1", [
+      [complete(409, NOT_CURRENT, "reviewer")],
+    ]);
+    const head = run("reviewer-text-findings-text-only-head-1", [
+      [complete(409, NOT_CURRENT, "reviewer")],
+    ]);
+    const { code, stdout } = health(base, head);
+    expect(code).toBe(1);
+    expect(verdict(stdout, base)).toBe("reviewer-text-findings-text-only-base-1  healthy");
+    expect(verdict(stdout, head)).toContain(
+      "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE, which the head label's daemon"
+    );
+    expect(stdout).toEndWith("health: 1 of 2 runs unhealthy\n");
+  });
+
+  // Catches: a head reviewer's late refusal read by its code alone. This checkout's route reads
+  // back the review record a late reviewer names, and its engine records that completion 200
+  // unless the reviewer's row already holds one: a completion of its own taken earlier in the
+  // run, after which the engine refuses a repeat 409 HANDOFF_NOT_CURRENT_PHASE
+  // (completion-answers.ts's `ANSWERS`, `AFTER_TAKEN`). So that refusal is the head daemon's
+  // answer after an earlier 200 of the same reviewer on the run's log alone: not with none, not
+  // with the 200 after it, and not after another role's 200. The head route refuses no reviewer
+  // 409 HANDOFF_RECORD_MISMATCH in this rig, `accepting` included, since the phase its completion
+  // is of is `reviewing`, which writes a record.
+  test("a head reviewer refused not-current-phase is healthy only as a repeat of its own earlier 200", () => {
+    const fixes = run("threads-closed-text-fixes-head-4", [
+      [complete(409, NOT_CURRENT, "implementer", "reviewing")],
+      [
+        complete(200, undefined, "reviewer", "reviewing"),
+        complete(409, NOT_CURRENT, "reviewer", "accepting"),
+      ],
+    ]);
+    const review = run("reviewer-text-findings-text-only-head-3", [
+      [
+        complete(200, undefined, "reviewer", "reviewing"),
+        complete(409, NOT_CURRENT, "reviewer", "implementing"),
+      ],
+    ]);
+    const alone = run("threads-closed-code-defect-head-1", [
+      [complete(409, NOT_CURRENT, "implementer", "accepting")],
+      [complete(409, NOT_CURRENT, "reviewer", "accepting")],
+    ]);
+    const before = run("threads-closed-text-fixes-head-8", [
+      [complete(409, NOT_CURRENT, "implementer", "reviewing")],
+      [
+        complete(409, NOT_CURRENT, "reviewer", "accepting"),
+        complete(200, undefined, "reviewer", "accepting"),
+      ],
+    ]);
+    const another = run("threads-closed-code-defect-head-6", [
+      [complete(200, undefined, "implementer", "accepting")],
+      [complete(409, NOT_CURRENT, "reviewer", "accepting")],
+    ]);
+    const MISMATCH = "HANDOFF_RECORD_MISMATCH";
+    const accepting = run("threads-closed-code-defect-head-2", [
+      [complete(409, NOT_CURRENT, "implementer", "accepting")],
+      [complete(409, MISMATCH, "reviewer", "accepting")],
+    ]);
+    const { code, stdout } = health(fixes, review, alone, before, another, accepting);
+    expect(code).toBe(1);
+    expect(verdict(stdout, fixes)).toBe("threads-closed-text-fixes-head-4  healthy");
+    expect(verdict(stdout, review)).toBe("reviewer-text-findings-text-only-head-3  healthy");
+    const refused = (answer: string) =>
+      `unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered ${answer}, which the head label's daemon does not answer it with in this world`;
+    for (const dir of [alone, before, another])
+      expect(verdict(stdout, dir)).toBe(`${path.basename(dir)}  ${refused(`409 ${NOT_CURRENT}`)}`);
+    expect(verdict(stdout, accepting)).toBe(
+      `threads-closed-code-defect-head-2  ${refused(`409 ${MISMATCH}`)}`
+    );
+    expect(stdout).toEndWith("health: 4 of 6 runs unhealthy\n");
+  });
+
+  // Catches: a run whose stand-in answered 404 a route its label's daemon registers read as
+  // healthy, which read every head run of the kept batch healthy though each logged the plugin's
+  // `claims/turn-outcome` answered 404; and the same 404 read as unhealthy where the label's
+  // daemon registers no such route, which is that daemon's own answer. A daemon's routes are read
+  // out of the source of the checkout the run's built-from names: this checkout's for the head,
+  // and for the other label a checkout holding a daemon's API source alone that registers no
+  // `claims/turn-outcome`, as main `ff2a10ef`'s does not. A line naming no method (the kept
+  // batch's, written before the stand-in logged one) is held to every route of its path; a 404 of
+  // a route no daemon registers is any daemon's own answer; and a run with a 404 whose built-from
+  // names no checkout is unhealthy, since whose answer it was is unknown.
+  test.skipIf(withoutGo)(
+    "a 404 of a route the run's label's daemon registers is unhealthy, and of one it does not, healthy",
+    () => {
+      const older = path.join(freshDir("health"), "older-daemon");
+      const api = path.join(older, "packages", "daemon", "internal", "api");
+      mkdirSync(api, { recursive: true });
+      writeFileSync(
+        path.join(api, "server.go"),
+        'package api\n\nfunc routes() {\n\tmux.HandleFunc("GET /legion/v1/state", s.state)\n\tmux.HandleFunc("POST /legion/v1/claims/ready-for-update", s.readyForUpdate)\n}\n'
+      );
+      const notFound = (route: string, method?: string) => ({
+        at: "2026-11-13T18:00:00.000Z",
+        ...(method === undefined ? {} : { method }),
+        path: route,
+        status: 404,
+        role: "reviewer",
+      });
+      const turnOutcome = "/legion/v1/claims/turn-outcome";
+      const head = run("threads-closed-code-defect-head-7", [[notFound(turnOutcome)]], {
+        checkout: CHECKOUT,
+      });
+      const update = run(
+        "threads-closed-code-defect-head-8",
+        [[notFound("/legion/v1/claims/ready-for-update", "POST")]],
+        { checkout: CHECKOUT }
+      );
+      const base = run("threads-closed-code-defect-base-7", [[notFound(turnOutcome, "POST")]], {
+        checkout: older,
+      });
+      const nowhere = run("threads-closed-code-defect-head-9", [[notFound("/nowhere", "POST")]], {
+        checkout: CHECKOUT,
+      });
+      const unknown = run("threads-closed-code-defect-head-10", [[notFound(turnOutcome, "POST")]]);
+      const { code, stdout } = health(head, update, base, nowhere, unknown);
+      expect(code).toBe(1);
+      expect(verdict(stdout, head)).toBe(
+        `threads-closed-code-defect-head-7  unhealthy: unserved route: the stand-in answered a request of ${turnOutcome} 404, a route the head label's daemon registers (${CHECKOUT})`
+      );
+      expect(verdict(stdout, update)).toBe(
+        `threads-closed-code-defect-head-8  unhealthy: unserved route: the stand-in answered POST /legion/v1/claims/ready-for-update 404, a route the head label's daemon registers (${CHECKOUT})`
+      );
+      expect(verdict(stdout, base)).toBe("threads-closed-code-defect-base-7  healthy");
+      expect(verdict(stdout, nowhere)).toBe("threads-closed-code-defect-head-9  healthy");
+      expect(verdict(stdout, unknown)).toContain(
+        `unhealthy: routes unknown: the stand-in answered ${turnOutcome} 404, and which routes the head label's daemon registers cannot be read: `
+      );
+      expect(stdout).toContain("health: routes: 3 of 5 runs\n");
+      expect(stdout).toEndWith("health: 3 of 5 runs unhealthy\n");
+    }
+  );
+
+  // Catches: a run whose stand-in answered a turn outcome that failed the claim read as healthy.
+  // The daemon fails a claim whose provider refused turns up to its launch failure limit, stops
+  // its process and takes its secret, so what the run did after is no world the daemon serves;
+  // a turn outcome answered without failing the claim is no such run.
+  test("a run whose turn outcome failed the claim is unhealthy", () => {
+    const outcome = (failed: boolean) => ({
+      at: "2026-11-13T18:00:00.000Z",
+      method: "POST",
+      path: "/legion/v1/claims/turn-outcome",
+      status: 200,
+      role: "reviewer",
+      failed,
+    });
+    const spent = run("threads-closed-code-defect-head-11", [[outcome(false), outcome(true)]]);
+    const kept = run("threads-closed-code-defect-head-12", [[outcome(false), outcome(false)]]);
+    const { code, stdout } = health(spent, kept);
+    expect(code).toBe(1);
+    expect(verdict(stdout, spent)).toBe(
+      "threads-closed-code-defect-head-11  unhealthy: failed claim: the stand-in answered the reviewer's turn outcome at 2026-11-13T18:00:00.000Z with failed, so the daemon would have failed that claim"
+    );
+    expect(verdict(stdout, kept)).toBe("threads-closed-code-defect-head-12  healthy");
+    expect(stdout).toContain("health: failed claim: 1 of 2 runs\n");
+  });
+
+  // Catches: a code outside the run's own entry read as allowed because some entry allows it.
+  test("a refusal whose code is outside the run's entry is unhealthy", () => {
+    const dir = run("threads-closed-code-defect-base-2", [
+      [complete(409, "HANDOFF_RECORD_MISMATCH", "implementer")],
+    ]);
+    const { code, stdout } = health(dir);
+    expect(code).toBe(1);
+    expect(verdict(stdout, dir)).toContain(
+      "unhealthy: refused completion: POST /legion/v1/handoff/complete of the implementer answered 409 HANDOFF_RECORD_MISMATCH"
+    );
+  });
+
+  // Catches: a run that never finished read as healthy on a log that says nothing went wrong.
+  test("a run with no exit= line is unhealthy", () => {
+    const dir = run(
+      "reviewer-text-findings-text-only-head-2",
+      [[complete(200, undefined, "reviewer")]],
+      {
+        finished: false,
+      }
+    );
+    const { code, stdout } = health(dir);
+    expect(code).toBe(1);
+    expect(verdict(stdout, dir)).toBe(
+      "reviewer-text-findings-text-only-head-2  unhealthy: unfinished: out.txt has no exit= line"
+    );
+  });
+
+  // Catches: a reviewer-text-findings world that took no completion read as healthy. Its world
+  // must take at least one of the reviewer's; threads-closed's requires none, and a run of it
+  // with no completion at all is healthy.
+  test("reviewer-text-findings needs a completion taken, and threads-closed needs none", () => {
+    const none = run("reviewer-text-findings-defect-head-2", [[]]);
+    const taken = run("reviewer-text-findings-defect-head-3", [
+      [complete(200, undefined, "reviewer")],
+    ]);
+    const quiet = run("threads-closed-code-defect-head-1", [[]]);
+    const { code, stdout } = health(none, taken, quiet);
+    expect(code).toBe(1);
+    expect(verdict(stdout, none)).toBe(
+      "reviewer-text-findings-defect-head-2  unhealthy: no completion taken: no completion of the reviewer was answered as the head label's daemon answers one it takes"
+    );
+    expect(verdict(stdout, taken)).toBe("reviewer-text-findings-defect-head-3  healthy");
+    expect(verdict(stdout, quiet)).toBe("threads-closed-code-defect-head-1  healthy");
+  });
+
+  // Catches: a usage error read as a verdict. No argument, a path that is no directory, and a
+  // directory that is no run of a scenario and label health reads each exit 2 and print no run.
+  test("a usage error exits 2 and prints no verdict", () => {
+    const healthy = run("threads-closed-text-fixes-head-4", [[]]);
+    for (const args of [
+      [],
+      [healthy, path.join(freshDir("health"), "missing")],
+      [healthy, freshDir("tester-proof-head")],
+      [run("threads-closed-text-fixes-ablate-1", [[]])],
+      ["--tmp-snapshot", path.join(freshDir("health"), "missing"), healthy],
+    ]) {
+      const { code, stdout, stderr } = health(...args);
+      expect([args, code, stdout]).toEqual([args, 2, ""]);
+      expect(stderr).toContain("usage: rig.sh health [--tmp-snapshot <file>] <run dir>...");
+    }
+  });
+
+  /** The world's repository and the route that refuses, as rig.sh's fixture_write writes them:
+   * GitHub's 404 for the protection of the unprotected base, and a route that answers. */
+  const WORLD = {
+    key: "LWEVAL-1",
+    repo: "example/widgets",
+    pr: 1001,
+    branch: "legion/LWEVAL-1",
+    base: "main",
+    head: "0123456789abcdef0123",
+  };
+  const ROUTES = [
+    {
+      match: "^gh api .*/branches/main/protection",
+      stderr: "gh: Branch not protected (HTTP 404)\n",
+      exit: 1,
+    },
+    { match: "^gh pr view", stdout: { number: 1001 } },
+  ];
+  /** One tool call of an agent, made at `at`, with the text of its result. */
+  type Step = { tool: string; args: object; result?: string; at?: string };
+  /** A run named `name` as a worker batch leaves it: its pane file recording it under `ran`, the
+   * directory its transcripts' paths are written under (a run read from the archive or from a
+   * copy is read under another); the transcript `steps` under `sessions/<agent>` (the run's own
+   * for ""), its gh calls, the world's routes and repository, a reviewer completion taken, and,
+   * given `before`, the shared scratch's entries when it started (rig.sh's scratch_before). */
+  function worldRun(
+    name: string,
+    {
+      steps = [],
+      agent = "",
+      calls = [],
+      before,
+    }: { steps?: Step[]; agent?: string; calls?: object[]; before?: string[] }
+  ) {
+    const dir = run(name, [[complete(200, undefined, "reviewer")]]);
+    const ran = `/recorded/work/runs/${name}`;
+    writeFileSync(
+      path.join(dir, "pane.env"),
+      `HOME=${ran}/home\nTMPDIR=${ran}/tmp\nSKILL_SCENARIO_RUN=${ran}\nPATH=${ran}/bin:/usr/bin\n`
+    );
+    if (before !== undefined)
+      writeFileSync(path.join(dir, "scratch-before.txt"), before.map((one) => `${one}\n`).join(""));
+    const sessions = path.join(dir, "sessions", agent);
+    mkdirSync(sessions, { recursive: true });
+    const entries = [
+      { type: "session", id: "s1" },
+      ...steps.flatMap((step, index) => [
+        {
+          type: "message",
+          timestamp: step.at ?? "2026-11-14T00:00:00.000Z",
+          message: {
+            role: "assistant",
+            content: [{ type: "toolCall", id: `c${index}`, name: step.tool, arguments: step.args }],
+          },
+        },
+        ...(step.result === undefined
+          ? []
+          : [
+              {
+                type: "message",
+                message: {
+                  role: "toolResult",
+                  toolCallId: `c${index}`,
+                  toolName: step.tool,
+                  content: [{ type: "text", text: step.result }],
+                },
+              },
+            ]),
+      ]),
+    ];
+    writeFileSync(
+      path.join(sessions, "2026-11-14T00-00-00-000Z_s1.jsonl"),
+      entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")
+    );
+    writeFileSync(
+      path.join(dir, "calls.jsonl"),
+      [{ at: "2026-11-14T00:00:00.000Z", opened: "calls.jsonl" }, ...calls]
+        .map((call) => `${JSON.stringify(call)}\n`)
+        .join("")
+    );
+    writeFileSync(path.join(dir, "fixtures.json"), JSON.stringify({ routes: ROUTES }));
+    writeFileSync(path.join(dir, "world.json"), JSON.stringify(WORLD));
+    return { dir, ran };
+  }
+  /** A gh call as the gh stand-in records it. */
+  const gh = (by: string, argv: string[], exit: number, route: string | null, review?: object) => ({
+    at: "2026-11-14T00:00:01.000Z",
+    as: "gh",
+    by,
+    argv,
+    route,
+    ...(review === undefined ? {} : { review }),
+    exit,
+  });
+
+  // Catches: a rule that reads more than it means. This run stays in its own directory, HOME and
+  // TMPDIR under the path its pane file records (a `>` inside a quoted sed script, a here-document
+  // body naming another run, and prose in a file's content are no writes or reaches), was shown
+  // the leak check's source and a clean push's `LEAK CHECK:` lines, and met only the gh refusals
+  // reviewer-text-findings declares for a reviewer: the base's protection 404, and the 422 of a
+  // submit, with a `--jq` failure over an answer the world gave. Every rule passes it.
+  test("a run that stayed in its own world and met only declared refusals is healthy", () => {
+    const name = "reviewer-text-findings-text-only-head-5";
+    const ran = `/recorded/work/runs/${name}`;
+    const { dir } = worldRun(name, {
+      steps: [
+        {
+          tool: "bash",
+          args: {
+            command: `cat ${ran}/ws/README.md > ${ran}/tmp/copy && cp /etc/hostname ${ran}/ws/h 2>/dev/null && env | sed 's/=x/=<set>/'`,
+          },
+        },
+        {
+          tool: "bash",
+          args: {
+            command: `cat > ${ran}/tmp/body.md <<'EOF'\nsee /recorded/work/runs/threads-closed-text-fixes-base-1/out.txt\nEOF`,
+          },
+        },
+        {
+          tool: "write",
+          args: { path: `${ran}/tmp/LWEVAL-1-review.json`, content: "writes /tmp/x in prose" },
+        },
+        { tool: "edit", args: { input: `[${ran}/ws/docs/cli.md#5C66]\nPUT 1.=1:\n+text\n` } },
+        {
+          tool: "read",
+          args: { path: "/opt/leak-check/public-leak-check.sh" },
+          result: '26:  echo "LEAK CHECK ERROR: $*. The check could not finish (exit 2)." >&2\n',
+        },
+        {
+          tool: "bash",
+          args: { command: `jj -R ${ran}/ws git push --bookmark legion/LWEVAL-1` },
+          result: "LEAK CHECK: read 1 commit(s) in 0s\nLEAK CHECK: clean: the push\n",
+        },
+      ],
+      calls: [
+        gh(
+          "reviewer",
+          ["api", "repos/example/widgets/branches/main/protection"],
+          1,
+          ROUTES[0]?.match ?? ""
+        ),
+        gh(
+          "reviewer",
+          ["api", "-X", "POST", "repos/example/widgets/pulls/1001/reviews/6001/events"],
+          1,
+          null
+        ),
+        gh(
+          "reviewer",
+          ["pr", "view", "1001", "--json", "comments", "-q", ".comments[]"],
+          1,
+          "^gh pr view"
+        ),
+      ],
+    });
+    const { code, stdout } = health(dir);
+    expect(verdict(stdout, dir)).toBe(`${name}  healthy`);
+    for (const rule of ["push guard", "gh", "another run", "another run's write"])
+      expect(stdout).toContain(`health: ${rule}: 0 of 1 runs\n`);
+    // No write of it left its own directory: a `>` inside a quoted sed script redirects nothing.
+    expect(stdout).toContain(
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 0 of 1 runs\n"
+    );
+    expect(code).toBe(0);
+  });
+
+  // Catches: a push the guard refused, or a guard that could not start, read as a healthy run.
+  // No world of this rig plants a secret, so either is the guard refusing what a production pod
+  // lets through; the 2026-11-14 batch met the first in every base run and in five head ones.
+  test("a push-guard refusal an agent was shown is unhealthy, naming the transcript and the line", () => {
+    const setup = worldRun("threads-closed-text-fixes-head-4", {
+      agent: "reviewer",
+      steps: [
+        {
+          tool: "bash",
+          args: { command: "jj git push --bookmark legion/LWEVAL-1" },
+          result:
+            "Changes to push to origin:\ngit: LEAK CHECK SETUP ERROR: the push to origin: the shared public leak check could not be found: PUBLIC_LEAK_CHECK names none\n",
+        },
+      ],
+    }).dir;
+    const refused = worldRun("threads-closed-code-defect-base-4", {
+      steps: [
+        {
+          tool: "bash",
+          args: { command: "git push origin HEAD" },
+          result:
+            "LEAK CHECK: refusing the push to origin: the shared public leak check refused it\n  LEAK CHECK: Nothing was pushed.\n",
+        },
+      ],
+    }).dir;
+    const { code, stdout } = health(setup, refused);
+    expect(code).toBe(1);
+    expect(verdict(stdout, setup)).toBe(
+      'threads-closed-text-fixes-head-4  unhealthy: push guard: sessions/reviewer/2026-11-14T00-00-00-000Z_s1.jsonl holds the guard\'s refusal "git: LEAK CHECK SETUP ERROR: the push to origin: the shared public leak check could not be found: PUBLIC_LEAK_CHECK names none"'
+    );
+    expect(verdict(stdout, refused)).toContain(
+      "unhealthy: push guard: sessions/2026-11-14T00-00-00-000Z_s1.jsonl holds the guard's refusal \"LEAK CHECK: refusing the push to origin"
+    );
+    expect(stdout).toContain("health: push guard: 2 of 2 runs\n");
+  });
+
+  // Catches: a refusal of the gh stand-in read as healthy because it is no completion: its own
+  // fallback 404 for a call no route of the world answers, which is the world missing an answer
+  // GitHub gives (the 2026-11-14 batch's `gh api repos/<repo>`), and a production refusal met by
+  // a role the scenario does not declare it for (the base's protection 404 is the reviewer's
+  // merge-gate read, and no implementer's).
+  test("a gh refusal the scenario does not declare for the role is unhealthy", () => {
+    const unrouted = worldRun("reviewer-text-findings-defect-base-3", {
+      calls: [gh("reviewer", ["api", "repos/example/widgets", "--jq", ".default_branch"], 1, null)],
+    }).dir;
+    const role = worldRun("threads-closed-code-defect-base-2", {
+      calls: [
+        gh(
+          "implementer",
+          ["api", "repos/example/widgets/branches/main/protection"],
+          1,
+          ROUTES[0]?.match ?? ""
+        ),
+      ],
+    }).dir;
+    const { code, stdout } = health(unrouted, role);
+    expect(code).toBe(1);
+    expect(verdict(stdout, unrouted)).toBe(
+      "reviewer-text-findings-defect-base-3  unhealthy: gh refusal: calls.jsonl:2, `gh api repos/example/widgets --jq .default_branch` of the reviewer, exited 1: gh: Not Found (HTTP 404) (no route of the world answers it), which reviewer-text-findings does not declare for that role"
+    );
+    expect(verdict(stdout, role)).toContain(
+      "of the implementer, exited 1: gh: Branch not protected (HTTP 404), which threads-closed does not declare for that role"
+    );
+    expect(stdout).toContain("health: gh: 2 of 2 runs\n");
+  });
+
+  // Catches: a run that reached another run's directory measured as its own: the 2026-11-14
+  // agents, refused every push, read the pointer file of a sibling in the same runs directory,
+  // and of a run of another batch. Any agent's transcript counts, a later half's too.
+  test("a tool call naming another run's directory is unhealthy, wherever that run is", () => {
+    const sibling = worldRun("threads-closed-text-fixes-base-2", {
+      agent: "reviewer",
+      steps: [
+        {
+          tool: "read",
+          args: {
+            path: "/recorded/work/runs/threads-closed-text-fixes-head-1/state/home/.config/public-leak-check/path",
+          },
+        },
+      ],
+    }).dir;
+    const batch = worldRun("reviewer-text-findings-defect-base-4", {
+      steps: [
+        {
+          tool: "bash",
+          args: { command: "ls /elsewhere/archive/runs/reviewer-text-findings-defect-base-2/tmp" },
+        },
+      ],
+    }).dir;
+    const { code, stdout } = health(sibling, batch);
+    expect(code).toBe(1);
+    expect(verdict(stdout, sibling)).toBe(
+      "threads-closed-text-fixes-base-2  unhealthy: another run: a read call in sessions/reviewer/2026-11-14T00-00-00-000Z_s1.jsonl names /recorded/work/runs/threads-closed-text-fixes-head-1/state/home/.config/public-leak-check/path, under /recorded/work/runs/threads-closed-text-fixes-head-1"
+    );
+    expect(verdict(stdout, batch)).toContain(
+      "unhealthy: another run: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names /elsewhere/archive/runs/reviewer-text-findings-defect-base-2/tmp, under /elsewhere/archive/runs/reviewer-text-findings-defect-base-2"
+    );
+    expect(stdout).toContain("health: another run: 2 of 2 runs\n");
+  });
+
+  // Catches: a run's own write outside its directory read as a verdict on it, which voids the run
+  // that wrote a file rather than the one a file reached; a later run's read of an earlier run's
+  // write let through, here placed only in a subagent's transcript, one level under a later
+  // half's; reads judged in the order the runs were listed rather than by their times, which reads
+  // the run that read the path before anyone wrote it as contaminated; a read of an entry the
+  // shared scratch held when the run started let through; and a write that climbs out of the run
+  // read as the run's own.
+  test("a read of another run's write, or of scratch from before the run, is unhealthy; a run's own writes are not", () => {
+    const writer = worldRun("threads-closed-text-fixes-head-5", {
+      before: [],
+      steps: [
+        {
+          tool: "write",
+          args: { path: "/tmp/LWEVAL-1-review.json", content: "{}" },
+          at: "2026-11-14T01:00:00.000Z",
+        },
+        {
+          tool: "bash",
+          args: {
+            command: "gh api -X POST repos/x/pulls/1/reviews --input /tmp/LWEVAL-1-review.json",
+          },
+          at: "2026-11-14T01:01:00.000Z",
+        },
+        {
+          tool: "write",
+          args: {
+            path: "/recorded/work/runs/threads-closed-text-fixes-head-5/ws/../../../../../tmp/placeholder",
+            content: "",
+          },
+          at: "2026-11-14T01:02:00.000Z",
+        },
+      ],
+    }).dir;
+    const reader = worldRun("threads-closed-code-defect-head-5", {
+      before: ["/tmp/LWEVAL-1-review.json"],
+      agent: "reviewer/2026-11-14T02-00-00-000Z_s2",
+      steps: [
+        {
+          tool: "bash",
+          args: { command: "cat /tmp/LWEVAL-1-review.json" },
+          at: "2026-11-14T02:00:00.000Z",
+        },
+      ],
+    }).dir;
+    const earlier = worldRun("threads-closed-code-defect-head-4", {
+      before: [],
+      steps: [
+        {
+          tool: "bash",
+          args: { command: "cat /tmp/LWEVAL-1-review.json 2>/dev/null" },
+          at: "2026-11-14T00:30:00.000Z",
+        },
+      ],
+    }).dir;
+    const stale = worldRun("threads-closed-code-defect-head-3", {
+      before: ["/tmp/pre-batch.json"],
+      steps: [
+        {
+          tool: "read",
+          args: { path: "/tmp/pre-batch.json" },
+          at: "2026-11-14T03:00:00.000Z",
+        },
+      ],
+    }).dir;
+    const { code, stdout } = health(reader, writer, earlier, stale);
+    expect(code).toBe(1);
+    expect(verdict(stdout, writer)).toBe("threads-closed-text-fixes-head-5  healthy");
+    expect(verdict(stdout, earlier)).toBe("threads-closed-code-defect-head-4  healthy");
+    expect(verdict(stdout, reader)).toBe(
+      "threads-closed-code-defect-head-5  unhealthy: another run's write: a bash call in sessions/reviewer/2026-11-14T02-00-00-000Z_s2/2026-11-14T00-00-00-000Z_s1.jsonl at 2026-11-14T02:00:00.000Z reads /tmp/LWEVAL-1-review.json, which threads-closed-text-fixes-head-5 wrote at 2026-11-14T01:00:00.000Z (write in sessions/2026-11-14T00-00-00-000Z_s1.jsonl)"
+    );
+    expect(verdict(stdout, stale)).toBe(
+      "threads-closed-code-defect-head-3  unhealthy: shared scratch from before the run: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl at 2026-11-14T03:00:00.000Z reads /tmp/pre-batch.json, which no run given wrote before it and /tmp/pre-batch.json was in /tmp when the run started (scratch-before.txt)"
+    );
+    expect(stdout).toContain("health: another run's write: 2 of 4 runs\n");
+    expect(stdout).toContain(
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs\n"
+    );
+  });
+
+  // The tester's fixture of 2026-11-14 (health-fixture/): twenty-one runs covering the fifteen
+  // completion worlds (fields in either order, a log line that is no JSON, a role-less 409, a
+  // head reviewer's late refusal after its own 200 and one before it), a
+  // later run reading an earlier run's /tmp write, a read of an entry from before the batch, a run
+  // reading its own file, another run's path named only in a subagent's transcript, and a push
+  // the guard could not check; its `expected` is the tester's own verdict, run for run, and its
+  // `tmp-snapshot` the /tmp entries before the batch. Catches: a health that disagrees with that
+  // independent reading on any run of it.
+  test("the tester's fixture reads as the tester read it, run for run", () => {
+    const fixture = path.join(import.meta.dir, "health-fixture");
+    const names = readdirSync(path.join(fixture, "runs")).sort();
+    const { stdout } = health(
+      "--tmp-snapshot",
+      path.join(fixture, "tmp-snapshot"),
+      ...names.map((name) => path.join(fixture, "runs", name))
+    );
+    const expected = Object.fromEntries(
+      readFileSync(path.join(fixture, "expected"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => line.split(" ") as [string, string])
+    );
+    expect(names.map((name) => [name, verdict(stdout, path.join(fixture, "runs", name))])).toEqual(
+      names.map((name) => [
+        name,
+        expect.stringMatching(
+          expected[name] === "healthy"
+            ? new RegExp(`^${name}  healthy$`)
+            : new RegExp(`^${name}  unhealthy: `)
+        ),
+      ])
+    );
+    expect(stdout).toEndWith("health: 14 of 21 runs unhealthy\n");
+  });
+});
+
+// Catches: a world with no `gh pr list` route, so a role with no pull request number reads
+// `gh: Not Found (HTTP 404)` where the worker skill has it find the one open pull request of its
+// branch (`gh pr list --repo <repo> --head legion/<KEY> --state open --json number`), which reads
+// as a branch with no pull request open on it; and a world that answers neither of the two
+// base-branch reads the merge gate prescribes, where GitHub answers both and the rule has a
+// refused read reported rather than guessed around (91 of them in the batch of 2026-11-10).
+describe("fixture_write", () => {
+  /** The world fixture_write writes under a directory of its own, open against BASE, and
+   * `gh <args…>` answered out of it by the stand-in. Every world of this rig is on one base,
+   * which fixture_write writes into each of its answers from `$worker_base`, so a row that
+   * builds another base reads whether those answers are the world's own. */
+  function world(base = "main") {
+    const dir = freshDir("fixture-routes");
+    const result = bash(
+      [
+        fn("fixture_write"),
+        fn("concluded_checks"),
+        `R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=${base}`,
+        assignment("world_login"),
+        "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
+        "worker_pr_url=https://example.invalid/pull/1001",
+        "fixture_write '[]' '\"\"' '[]'",
+      ].join("\n"),
+      [dir]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return (...args: string[]) =>
+      Bun.spawnSync(["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args], {
+        env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+      });
+  }
+
+  // The two reads of skill://legion-worker/references/merge-gate.md, each with the jq that rule
+  // writes: an unprotected base answers an empty list of rules and a branch whose required
+  // checks are none, so both print nothing and exit 0. A 404 at either is a refused read, which
+  // the rule has the reviewer report to the architect and never guess around.
+  test("the world answers the base branch's rulesets and its protection, as GitHub does", () => {
+    const gh = world();
+    const rules = gh(
+      "api",
+      "--paginate",
+      "repos/example/widgets/rules/branches/main",
+      "--jq",
+      '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
+    );
+    expect([rules.exitCode, rules.stdout.toString()]).toEqual([0, ""]);
+    const branch = gh(
+      "api",
+      "repos/example/widgets/branches/main",
+      "--jq",
+      ".protection.required_status_checks.checks[].context"
+    );
+    expect([branch.exitCode, branch.stdout.toString()]).toEqual([0, ""]);
+    // And the branch read answers the branch itself, as GitHub answers an unprotected one.
+    const read = gh("api", "repos/example/widgets/branches/main");
+    expect(JSON.parse(read.stdout.toString())).toMatchObject({
+      name: "main",
+      protected: false,
+      protection: { enabled: false, required_status_checks: { checks: [] } },
+    });
+  });
+
+  // Catches: the protection endpoint answered from the branch route, whose regex matches that
+  // path too. `…/branches/main/protection` is GitHub's own protection read, and GitHub answers
+  // a branch nothing protects 404 `Branch not protected` there; the branch object and a 200
+  // tell a reviewer this base's protection in a body that answers another call, and the rule
+  // has a refused read reported to the architect rather than guessed around.
+  test("the world refuses the base branch's protection endpoint, as GitHub refuses an unprotected branch's", () => {
+    const refused = world()("api", "repos/example/widgets/branches/main/protection");
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stdout.toString()).toBe("");
+    expect(refused.stderr.toString()).toBe("gh: Branch not protected (HTTP 404)\n");
+  });
+
+  test("the world answers a listing of the pull requests open on its branch", () => {
+    const listed = world()(
+      "pr",
+      "list",
+      "--repo",
+      "example/widgets",
+      "--head",
+      "legion/LWEVAL-1",
+      "--state",
+      "open",
+      "--json",
+      "number",
+      "--jq",
+      ".[0].number"
+    );
+    expect(listed.stdout.toString().trim()).toBe("1001");
+    expect(listed.exitCode).toBe(0);
+  });
+
+  // Catches: the pull request's base written here as the word every world of this rig happens
+  // to carry rather than as the world's own `$worker_base`. The base is the other side of the
+  // diff the stand-in serves from the run's own remote, the branch the merge gate's two reads
+  // are of, and the default branch the pane's addressing names (worker-pane.ts), so a world
+  // built on another base and answering `main` tells each of those a branch this pull request
+  // is not open against. This world is built on `trunk`, and every answer that names the base
+  // names it.
+  test("the pull request is open against the world's own base branch, not a word of this rig's", () => {
+    const gh = world("trunk");
+    const view = gh("pr", "view", "1001", "--json", "baseRefName", "--jq", ".baseRefName");
+    expect([view.exitCode, view.stdout.toString().trim()]).toEqual([0, "trunk"]);
+    const api = gh("api", "repos/example/widgets/pulls/1001", "--jq", ".base.ref");
+    expect([api.exitCode, api.stdout.toString().trim()]).toEqual([0, "trunk"]);
+    const branch = gh("api", "repos/example/widgets/branches/trunk", "--jq", ".name");
+    expect([branch.exitCode, branch.stdout.toString().trim()]).toEqual([0, "trunk"]);
+  });
+});
+
+// A world is its routes in order: the gh stand-in answers the first one whose regex matches
+// "gh <argv…>" (gh-standin.ts), so a route moved above another changes what every agent of the
+// scenario is told with nothing else in the rig changing, and no row of this file read that
+// order before. Catches: the `resolveReviewThread` mutation answered by the `reviewThreads`
+// query's route, which would tell an implementer its resolution listed the threads; a review
+// submission answered by the route that lists the reviews already on the pull request, which
+// would hand a reviewer the fixture's own approval as the review it just created; a REST thread
+// reply answered by fixture_write's catch-all POST, whose id is no comment's; and a world whose
+// `reviewThreads` serves fixture_write's empty list in place of the threads the approval left.
+describe("the worlds' routes, in the order the stand-in matches them", () => {
+  /** WORLD built for real under a run directory of its own, with two steps stubbed out:
+   * `fixture_workspace`, which clones the issue workspace with jj and which no route of any
+   * world reads, and `fixture_cli`, whose heredoc holds a line that is `}` alone, which
+   * `scriptFunctions` reads as the end of the function. The stub writes the two files that step
+   * writes, since the diff of the world's own remote is one of the answers below, and no route
+   * reads what is in them. */
+  function built(world: string, guard = ""): string {
+    const dir = freshDir(`world-routes-${world}`);
+    const result = bash(
+      [
+        fn("fail"),
+        ...[
+          "fixture_open",
+          "fixture_git",
+          "fixture_docs_before",
+          "fixture_first_commit",
+          "fixture_round_files",
+          "fixture_head_commit",
+          "fixture_implement",
+          "fixture_test_handoff",
+          "fixture_checks",
+          "fixture_body",
+          "fixture_write",
+          "concluded_checks",
+          "resolution_protection_routes",
+          "blocked_at",
+          "round_world",
+          world,
+        ].map(fn),
+        'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
+        "fixture_workspace() { :; }",
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
+        assignment("world_author_name"),
+        assignment("world_author_email"),
+        assignment("world_login"),
+        "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
+        `${world} 1 100 "$2"`,
+      ].join("\n"),
+      [dir, guard]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return dir;
+  }
+  /** What the gh stand-in answers for `gh <args…>` in the world under `dir`: its status, its
+   * stdout and its stderr, which is where a refusal's own text goes. */
+  function call(dir: string, ...args: string[]) {
+    const made = Bun.spawnSync(
+      ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+      {
+        env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+      }
+    );
+    return {
+      code: made.exitCode,
+      out: made.stdout.toString().trim(),
+      err: made.stderr.toString(),
+    };
+  }
+  /** The same answer without its stderr, for the rows that read what the world served. */
+  function answer(dir: string, ...args: string[]) {
+    const { code, out } = call(dir, ...args);
+    return { code, out };
+  }
+  /** A thread resolved as review-threads.md resolves one, reading the mutation's own answer
+   * back: the call every world's `resolveReviewThread` route answers. */
+  const RESOLVE = [
+    "api",
+    "graphql",
+    "-f",
+    'query=mutation { resolveReviewThread(input: {threadId: "PRRT_kwDOfix001"}) { thread { isResolved } } }',
+    "--jq",
+    ".data.resolveReviewThread.thread.isResolved",
+  ];
+  /** The pull request's review threads listed as review-threads.md lists them, reading `jq` out
+   * of the answer: the call the world's `reviewThreads` route answers. */
+  const threadQuery = (jq: string) => [
+    "api",
+    "graphql",
+    "-f",
+    "query=query { repository { pullRequest { reviewThreads(first: 50) { nodes { id path } } } } }",
+    "--jq",
+    jq,
+  ];
+  const IDS = '[.data.repository.pullRequest.reviewThreads.nodes[].id] | join(",")';
+
+  test("the approved world resolves, lists, replies and creates a review, each by its own route", () => {
+    const dir = built("approved_world");
+    expect(answer(dir, ...RESOLVE)).toEqual({ code: 0, out: "true" });
+    expect(answer(dir, ...threadQuery(IDS))).toEqual({
+      code: 0,
+      out: "PRRT_kwDOfix001,PRRT_kwDOfix002",
+    });
+    const reply = [
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1001/comments/5001/replies",
+      "-f",
+      "body=fixed",
+    ];
+    expect(answer(dir, ...reply, "--jq", ".id")).toEqual({ code: 0, out: "7001" });
+    // The submission's route takes the verdict's `--method POST` on either side of the path, and
+    // the read of the reviews already there takes neither: one route for the POST, one for the
+    // GET, and the POST's first. Each create carries its verdict, so neither is a pending review,
+    // which GitHub would refuse a second of while the first stands.
+    for (const argv of [
+      ["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews"],
+      ["api", "repos/example/widgets/pulls/1001/reviews", "--method", "POST"],
+    ])
+      expect(answer(dir, ...argv, "-f", "event=APPROVE", "--jq", ".id")).toEqual({
+        code: 0,
+        out: "5002",
+      });
+    expect(
+      answer(dir, "api", "repos/example/widgets/pulls/1001/reviews", "--jq", ".[0].state")
+    ).toEqual({ code: 0, out: "APPROVED" });
+    // No world routes `gh pr diff`: it is the diff of the run's own remote at the call, which is
+    // the change the implementer's commit carries over the branch the pull request is open
+    // against.
+    expect(answer(dir, "pr", "diff", "1001", "--name-only")).toEqual({
+      code: 0,
+      out: [".github/workflows/greet.yml", "docs/cli.md", "greet.test.ts", "greet.ts"].join("\n"),
+    });
+  });
+
+  test("the review round's world resolves a thread and lists the bot's, each by its own route", () => {
+    const dir = built("review_world");
+    expect(answer(dir, ...RESOLVE)).toEqual({ code: 0, out: "true" });
+    expect(answer(dir, ...threadQuery(IDS))).toEqual({ code: 0, out: "PRRT_kwDOrig0001" });
+  });
+
+  // Catches: a world GitHub could not produce, and one that leaves the reviewing path
+  // unexercised. Main's engine keeps the record in `reviewing` until GitHub reports the approved
+  // head `CLEAN`, `UNSTABLE` or `HAS_HOOKS` (review 5887659447, finding 3); a head `BLOCKED` with
+  // every check green and an approval standing is one whose base requires conversation
+  // resolution while a thread is open, so a world serving that state must answer that rule at
+  // both reads the merge gate makes of its base — the branch's rules and the branch itself, and
+  // the protection endpoint — with no required check, so the gate's reads of its checks print
+  // nothing and exit 0. A world whose head is `CLEAN` keeps the unprotected base. Every head's
+  // checks are concluded: `BLOCKED` comes from the threads, not from CI.
+  test("a BLOCKED head's base requires conversation resolution, every check green, and a CLEAN head's base is unprotected", () => {
+    for (const [world, guard, blocked] of [
+      ["review_world", "", true],
+      ["review_world", "dropped", true],
+      ["approved_world", "", true],
+      ["approved_world", "dropped", false],
+    ] as const) {
+      const dir = built(world, guard);
+      const head = headOf(dir);
+      const states = '[.check_runs[] | .name + "=" + .status] | join(",")';
+      const checks = call(dir, "pr", "checks", "1001");
+      expect([
+        world,
+        guard,
+        answer(dir, "api", `repos/example/widgets/commits/${head}/check-runs`, "--jq", states),
+        checks.code,
+        checks.out.split("\n").map((line) => line.split("\t")[1]),
+        answer(
+          dir,
+          "pr",
+          "view",
+          "1001",
+          "--json",
+          "mergeStateStatus",
+          "--jq",
+          ".mergeStateStatus"
+        ),
+        answer(dir, "api", "repos/example/widgets/pulls/1001", "--jq", ".mergeable_state"),
+      ]).toEqual([
+        world,
+        guard,
+        { code: 0, out: "test=completed,lint=completed" },
+        0,
+        ["pass", "pass"],
+        { code: 0, out: blocked ? "BLOCKED" : "CLEAN" },
+        { code: 0, out: blocked ? "blocked" : "clean" },
+      ]);
+      // The rule, at each read of the base, and the merge gate's own reads of its required
+      // checks (skill://legion-worker/references/merge-gate.md), which name none either way.
+      const base = "repos/example/widgets/branches/main";
+      const rules = "repos/example/widgets/rules/branches/main";
+      expect([
+        world,
+        guard,
+        answer(dir, "api", base, "--jq", ".protected"),
+        answer(dir, "api", base, "--jq", ".protection.required_conversation_resolution.enabled"),
+        answer(
+          dir,
+          "api",
+          `${base}/protection`,
+          "--jq",
+          ".required_conversation_resolution.enabled"
+        ),
+        answer(
+          dir,
+          "api",
+          rules,
+          "--jq",
+          '[.[] | select(.type=="pull_request") | .parameters.required_review_thread_resolution] | any'
+        ),
+        answer(dir, "api", base, "--jq", ".protection.required_status_checks.checks[].context"),
+        answer(
+          dir,
+          "api",
+          rules,
+          "--jq",
+          '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
+        ),
+      ]).toEqual([
+        world,
+        guard,
+        { code: 0, out: String(blocked) },
+        { code: 0, out: blocked ? "true" : "null" },
+        blocked ? { code: 0, out: "true" } : { code: 1, out: "" },
+        { code: 0, out: String(blocked) },
+        { code: 0, out: "" },
+        { code: 0, out: "" },
+      ]);
+    }
+  });
+
+  // Catches: a world that carries a behavioural defect of its own, which is what the
+  // reviewer-text-findings scenario states it does not. Measured on 2026-11-12: with no
+  // `oven-sh/setup-bun` step, `bun` is absent on `ubuntu-latest` and the job can never pass, so
+  // a run that refused the change for it was right about the world and the arm scored it a
+  // failure. The comment above the trigger is the text finding the scenario is built on, so the
+  // row holds both: the install is there, and the comment still names a trigger `on:` does not.
+  test("the round's workflow installs bun and keeps the comment that names a trigger it has not", () => {
+    const dir = built("approved_world");
+    const workflow = readFileSync(
+      path.join(dir, "src", ".github", "workflows", "greet.yml"),
+      "utf8"
+    );
+    expect(workflow).toContain("uses: oven-sh/setup-bun@");
+    expect(workflow).toContain("run: bun test greet.test.ts");
+    expect(workflow).toContain("THE-TRIGGER");
+    expect(workflow.indexOf("uses: oven-sh/setup-bun@")).toBeLessThan(
+      workflow.indexOf("run: bun test greet.test.ts")
+    );
+  });
+
+  /** The route GitHub submits one review of this world's pull request on, as `gh api` takes it:
+   * without the leading slash, which `submit` writes, and with it, which a route copied from
+   * GitHub's own documentation carries. */
+  const submitRoute = (id: number) => `repos/example/widgets/pulls/1001/reviews/${id}/events`;
+  /** The create of a review on the world's pull request whose body names no `event`, which is
+   * what leaves a pending one (gh-standin.ts's `pendingReview`), at `commit_id`. The id the
+   * world answers it with is the id that review is then submitted under. */
+  function createPending(dir: string, commit: string) {
+    const created = call(
+      dir,
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1001/reviews",
+      "-f",
+      `commit_id=${commit}`,
+      "-f",
+      "body=two findings"
+    );
+    expect([created.code, created.err]).toEqual([0, ""]);
+  }
+  /** The submit of a review on the world's pull request, with its status, its answer and its
+   * stderr: the call a round makes on `…/reviews/<id>/events`. */
+  function submit(dir: string, id: number, event: string) {
+    return call(dir, "api", "--method", "POST", submitRoute(id), "-f", `event=${event}`);
+  }
+  /** The world's own head, which is what a create naming no commit is pending at and what each
+   * row below creates its review at. */
+  function headOf(dir: string): string {
+    const read = JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")) as { head: string };
+    return read.head;
+  }
+
+  // The submit endpoint is routed by no world and answered by the stand-in for all of them
+  // (gh-standin.ts's reviewSubmission), so each world refuses the submit of a review no run of
+  // its own left pending, which is every review these worlds carry. Catches: that refusal
+  // written into one world, which is how review_world — the world both reviewer-text-findings
+  // cases boot — came to answer the call with fixture_write's generic POST route, `{id:6001}`
+  // and exit 0: a reviewer that approved wrongly and then sent REQUEST_CHANGES there had that
+  // change request read as the verdict standing, and the defect control passed a round that
+  // approved. Each world is asked with the id its own create answers (rig.sh), since the
+  // refusal is of the review and not of an id this file picked, and with each verdict a round
+  // submits, since an approval answered here is the same invention as a change request.
+  for (const [world, id] of [
+    ["review_world", 6001],
+    ["approved_world", 5002],
+  ] as const)
+    test(`${world} refuses the submit of a review that is not pending`, () => {
+      const dir = built(world);
+      for (const event of ["APPROVE", "REQUEST_CHANGES"]) {
+        const refused = submit(dir, id, event);
+        expect(refused.code).toBe(1);
+        expect(refused.err).toContain("(HTTP 422)");
+        expect(refused.err).toContain("Can not submit a review that is not pending.");
+        expect(refused.out).toBe("");
+      }
+    });
+
+  // The four rows below ask of a world rig.sh builds what gh-standin.test.ts asks of a run
+  // directory it writes itself, and neither is a copy of the other: these calls go through the
+  // world's own routes, in the order the stand-in matches them, which is what the submit
+  // endpoint's refusal survived every suite for — a world routed that call and answered it
+  // ahead of the stand-in. The rows there vary the stand-in's own state cheaply, where a world
+  // of this rig has one shape.
+  // The one review a run left pending is the one this endpoint answers, and GitHub answers
+  // every other id 422. Catches: a stand-in that answers whatever id a submit names once the
+  // run has a pending review, which would hand a round that submitted the wrong review an
+  // approval of the head the right one was created at.
+  test("a submit answers the review this run left pending, and refuses every other id", () => {
+    const dir = built("review_world");
+    const head = headOf(dir);
+    createPending(dir, head);
+    const other = submit(dir, 5003, "APPROVE");
+    expect(other.code).toBe(1);
+    expect(other.err).toContain("(HTTP 422)");
+    expect(other.out).toBe("");
+    const submitted = submit(dir, 6001, "APPROVE");
+    expect(submitted.code).toBe(0);
+    expect(JSON.parse(submitted.out)).toEqual({
+      id: 6001,
+      commit_id: head,
+      state: "APPROVED",
+    });
+  });
+
+  // The rows below ask each world rig.sh builds, through its own routes in the order the stand-in
+  // matches them, what gh-standin.test.ts asks of a run directory it writes itself: a world's
+  // route answering ahead of the stand-in is how the submit endpoint came to be answered
+  // `{id:6001}` with no head on it, so each answer is asked of both worlds, with the id each
+  // world's create answers.
+  const WORLD_IDS = [
+    ["review_world", 6001],
+    ["approved_world", 5002],
+  ] as const;
+  const REVIEWS = "repos/example/widgets/pulls/1001/reviews";
+
+  // GitHub keeps one pending review per user and pull request and refuses the create of a second
+  // while one stands. Catches: a world that takes the second create and makes it the pending
+  // review, which answered a round that read the head again and created a second review 200 and
+  // then submitted a review GitHub never created, at the head that second create named.
+  for (const [world, id] of WORLD_IDS)
+    test(`${world} refuses a second pending create while one stands, and submits the first`, () => {
+      const dir = built(world);
+      const head = headOf(dir);
+      createPending(dir, head);
+      const again = call(dir, "api", REVIEWS, "-f", `commit_id=${"7".repeat(40)}`, "-f", "body=b");
+      expect(again).toEqual({
+        code: 1,
+        out: "",
+        err: "gh: Unprocessable Entity (HTTP 422)\nUser can only have one pending review per pull request\n",
+      });
+      const submitted = submit(dir, id, "REQUEST_CHANGES");
+      expect(submitted.code).toBe(0);
+      expect(JSON.parse(submitted.out)).toEqual({
+        id,
+        commit_id: head,
+        state: "CHANGES_REQUESTED",
+      });
+    });
+
+  // GitHub's create takes the events APPROVE, REQUEST_CHANGES and COMMENT, or none, and requires
+  // a body for the second and third. Catches: a world whose create route answers an `approve`, a
+  // `PENDING` or a bodyless change request 200 with an id, where GitHub answers 422 and creates
+  // nothing — so nothing is left pending for the submit after them either.
+  for (const [world, id] of WORLD_IDS)
+    test(`${world} refuses the creates GitHub refuses`, () => {
+      const dir = built(world);
+      for (const fields of [
+        ["-f", "event=approve", "-f", "body=looks good"],
+        ["-f", "event=PENDING"],
+        ["-f", "event=REQUEST_CHANGES", "-f", `commit_id=${headOf(dir)}`],
+      ]) {
+        const refused = call(dir, "api", "--method", "POST", REVIEWS, ...fields);
+        expect([fields, refused.code, refused.out, refused.err]).toEqual([
+          fields,
+          1,
+          "",
+          expect.stringContaining("gh: Unprocessable Entity (HTTP 422)\n"),
+        ]);
+      }
+      expect(submit(dir, id, "APPROVE").err).toContain(
+        "Can not submit a review that is not pending."
+      );
+    });
+
+  // GitHub answers `GET …/reviews/<id>` with that review as it stands. Catches: the read of the
+  // review the run itself created answered by a route — `[]` in review_world, the list of
+  // reviews in approved_world — which `text-only-head-3` and `defect-base-3` of review
+  // 5887659447 got for `--jq '{id,state,commit_id}'`, and exited 1 on.
+  for (const [world, id] of WORLD_IDS)
+    test(`${world} answers a GET of the review the run created with that review`, () => {
+      const dir = built(world);
+      const head = headOf(dir);
+      const read = () =>
+        answer(
+          dir,
+          "api",
+          `${REVIEWS}/${id}`,
+          "--jq",
+          "{id,state,commit_id,user:.user.login,body}"
+        );
+      createPending(dir, head);
+      const pending = read();
+      expect([pending.code, JSON.parse(pending.out)]).toEqual([
+        0,
+        { id, state: "PENDING", commit_id: head, user: WORLD_LOGIN, body: "two findings" },
+      ]);
+      expect(submit(dir, id, "APPROVE").code).toBe(0);
+      expect(JSON.parse(read().out)).toMatchObject({ id, state: "APPROVED", commit_id: head });
+    });
+
+  // GitHub answers `PATCH …/pulls/<n>` with the pull request as the PATCH left it. Catches: the
+  // generic write route's `{id:6001, html_url}` answered to it, which 23 recorded PATCH calls read
+  // `.body` back from as null (review 5887659447, finding 6).
+  for (const [world] of WORLD_IDS)
+    test(`${world} answers a PATCH of the pull request's body with the pull request`, () => {
+      const dir = built(world);
+      const patched = answer(
+        dir,
+        "api",
+        "-X",
+        "PATCH",
+        "repos/example/widgets/pulls/1001",
+        "-f",
+        "body=the fixed body",
+        "--jq",
+        "{number,body}"
+      );
+      expect([patched.code, JSON.parse(patched.out)]).toEqual([
+        0,
+        { number: 1001, body: "the fixed body" },
+      ]);
+      expect(answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toBe(
+        "the fixed body"
+      );
+    });
+
+  // The verb decides what the call is, in every spelling gh takes it in and by the reader the
+  // score reads the same call with (`isPost`): a call naming GET is a read of that path
+  // whatever its fields say, so it is answered by the route that lists the pull request's
+  // reviews, it submits nothing, and the review it did not submit is still pending for the call
+  // that does. That last call is written with the leading slash `gh api` takes either way,
+  // which is how the route reads wherever it is copied from GitHub's own documentation.
+  // Catches: a GET answered as the submission of the pending review, which gh never sent and
+  // GitHub never answers; a GET read as the submit that left no pending review behind it, where
+  // the submit that follows would be refused 422; and a submit read as none for its leading
+  // slash, which fixture_write's generic POST route would then answer `{id:6001}` with no head
+  // on it — the approval at no head this endpoint exists to stop.
+  test("a GET of the submit route submits nothing, and a submit written with a leading slash submits", () => {
+    const dir = built("review_world");
+    const head = headOf(dir);
+    createPending(dir, head);
+    for (const verb of [["-X", "GET"], ["--method=GET"], ["-XGET"]])
+      expect(answer(dir, "api", ...verb, submitRoute(6001), "-f", "event=APPROVE")).toEqual({
+        code: 0,
+        out: "[]",
+      });
+    const submitted = call(
+      dir,
+      "api",
+      "--method",
+      "POST",
+      `/${submitRoute(6001)}`,
+      "-f",
+      "event=APPROVE"
+    );
+    expect(submitted.code).toBe(0);
+    expect(JSON.parse(submitted.out)).toEqual({
+      id: 6001,
+      commit_id: head,
+      state: "APPROVED",
+    });
+  });
+
+  // The create is chosen by the call's verb and by no regex of its own, through the world's own
+  // routes: gh sends a call carrying a field or an `--input` as a POST, so each spelling below
+  // is the create `--method POST` is, it is answered by the create route, and the review it
+  // leaves pending is the one the submit that follows is answered with. Catches: a world whose
+  // create route asks for `(-X|--method) ?POST` written out, which sent a create written
+  // `-f commit_id=<head>`, `--method=POST`, `-XPOST` or in lower case to the GET route under it
+  // — `[]` in review_world, the reviews already there in approved_world — so no pending review
+  // was recorded and the submit that followed was refused 422 where GitHub answers 200.
+  for (const [name, verb] of [
+    ["no method at all", []],
+    ["--method=POST", ["--method=POST"]],
+    ["-XPOST", ["-XPOST"]],
+    ["--method post", ["--method", "post"]],
+  ] as const)
+    test(`a create written with ${name} is the create of a pending review`, () => {
+      const dir = built("review_world");
+      const head = headOf(dir);
+      const created = call(
+        dir,
+        "api",
+        ...verb,
+        "repos/example/widgets/pulls/1001/reviews",
+        "-f",
+        `commit_id=${head}`,
+        "-f",
+        "body=two findings"
+      );
+      expect([created.code, created.err]).toEqual([0, ""]);
+      expect(JSON.parse(created.out)).toMatchObject({ id: 6001, state: "PENDING" });
+      const submitted = submit(dir, 6001, "APPROVE");
+      expect(submitted.code).toBe(0);
+      expect(JSON.parse(submitted.out)).toEqual({ id: 6001, commit_id: head, state: "APPROVED" });
+    });
+
+  // The comparison the rule has a role read (review-threads.md step 2) is the run's own
+  // remote's, answered before the routes, and a call that writes to that path is no comparison:
+  // the stand-in reads the verb with the score's own reader (`methodOf`), so a write in any
+  // spelling gh takes falls through to the routes, where fixture_write's write route answers it.
+  // Catches: a comparison read off the path alone, which would answer a write with the two
+  // refs' diff and tell the caller its call succeeded; and a verb read by a regex of the
+  // stand-in's own, which read `--method POST` and left `--method=post` and `-XPOST` answered
+  // as comparisons.
+  test("a comparison is the run's own remote's, and a POST to that path is no comparison", () => {
+    const dir = built("review_world");
+    const range = "repos/example/widgets/compare/main...legion/LWEVAL-1";
+    expect(answer(dir, "api", range, "--jq", ".status")).toEqual({ code: 0, out: "ahead" });
+    for (const verb of [["--method", "POST"], ["--method=post"], ["-XPOST"]])
+      expect(answer(dir, "api", ...verb, range, "--jq", ".id")).toEqual({ code: 0, out: "6001" });
+  });
+
+  // The three answers the approval's world gives on its own reviews path, which a round reads
+  // its work back from. Catches: a body edit applied to every object a route answers with that
+  // carries a `body`, so after the implementer's own edit the approval already on the pull
+  // request read back as the pull request's text; a create answered `{id, html_url}` alone,
+  // which says nothing about whether the review was submitted and at what head — the answer
+  // the threads-closed head arm's round read before it submitted a second time; and a read of
+  // one review answered with the whole list, which is no answer to the call that was made.
+  test("the approved world answers a body edit, a create and one review each as GitHub does", () => {
+    const dir = built("approved_world");
+    const head = headOf(dir);
+    const reviewBody = () =>
+      answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001", "--jq", ".body").out;
+    const approval = reviewBody();
+    expect(approval).toContain("Approved at this head.");
+    // The body's check line says what the check ran and what it read, as a recorded result
+    // reads (fixture_checks), so a reviewer reading the body reads a check that names its run.
+    expect(answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toContain(
+      "pass at " +
+        head.slice(0, 12) +
+        ", recorded by implementer. Ran `bun greet.ts '  Ada  '` and read `Hello, Ada!`, so the name is trimmed"
+    );
+    expect(answer(dir, "pr", "edit", "1001", "--body", "the fixed body").code).toBe(0);
+    expect(answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body")).toEqual({
+      code: 0,
+      out: "the fixed body",
+    });
+    expect(reviewBody()).toBe(approval);
+    // One review by its id is that review and not the list of them, which is what the reviews
+    // route answers the path above it.
+    expect(
+      answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001", "--jq", ".state")
+    ).toEqual({ code: 0, out: "APPROVED" });
+    expect(
+      answer(dir, "api", "repos/example/widgets/pulls/1001/reviews", "--jq", "length")
+    ).toEqual({ code: 0, out: "1" });
+    // And a path under one review — its comments — is no read of that review: it falls to the
+    // reviews route, a list, as GitHub answers a list there.
+    expect(
+      answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001/comments", "--jq", "type")
+    ).toEqual({ code: 0, out: "array" });
+    // The create: the id, the URL and the user are the world's, and the state and the head the
+    // review was created at are the call's own (gh-standin.ts).
+    const created = call(
+      dir,
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1001/reviews",
+      "-f",
+      `commit_id=${head}`
+    );
+    expect(created.code).toBe(0);
+    expect(JSON.parse(created.out)).toEqual({
+      id: 5002,
+      html_url: "https://github.com/example/widgets/pull/1001#pullrequestreview-5002",
+      user: { login: WORLD_LOGIN },
+      state: "PENDING",
+      commit_id: head,
+    });
+  });
+
+  // <run>/threads.json is what threadsClosed reads the scenario's threads from, and the route
+  // and the pull request's body are what the agents read them from: three copies of one fact.
+  // Catches: a world whose record and whose answers name different threads, where an
+  // implementer would reply on threads the score does not count and the score would ask for
+  // replies on threads no agent can see.
+  test("the approved world's threads.json is the threads its route serves and its body names", () => {
+    const dir = built("approved_world");
+    const threads = JSON.parse(readFileSync(path.join(dir, "threads.json"), "utf8")) as {
+      id: string;
+      path: string;
+    }[];
+    expect(threads.map((thread) => [thread.id, thread.path])).toEqual([
+      ["PRRT_kwDOfix001", "docs/cli.md"],
+      ["PRRT_kwDOfix002", ".github/workflows/greet.yml"],
+    ]);
+    const served = answer(
+      dir,
+      ...threadQuery(
+        '[.data.repository.pullRequest.reviewThreads.nodes[] | .id + " " + .path] | join(",")'
+      )
+    );
+    expect(served.out).toBe(threads.map((thread) => `${thread.id} ${thread.path}`).join(","));
+    const body = answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out;
+    expect(body).toContain(`**Threads:** 0 resolved, ${threads.length} unresolved.`);
+    for (const thread of threads) expect(body).toContain(`- Thread ${thread.id}: still open`);
+  });
+
+  // The negative control's world: one thread, on the sentence the dropped guard makes false, and
+  // no text finding of its own. Catches a control that gains the two text findings the measured
+  // arm carries, which would give it a thread a text fix closes.
+  test("the dropped guard's world carries the one thread no text fix closes", () => {
+    const dir = built("approved_world", "dropped");
+    expect(
+      (JSON.parse(readFileSync(path.join(dir, "threads.json"), "utf8")) as { id: string }[]).map(
+        (thread) => thread.id
+      )
+    ).toEqual(["PRRT_kwDOfix101"]);
+  });
+});
+
+// Everything the rig writes into a repository an agent of a run reads is the world's, and the
+// world says nothing of the rig: the measurement's own words in a world tell the agent what it is
+// being measured on. Measured in the batch review 5887659447 audited (finding 2): the heredoc
+// writing the world's `.github/workflows/greet.yml` carried the rig's explanation — "The
+// scenario's premise is a change carrying text findings … is the text finding the run is there
+// to find" — into all 20 reviewer-text-findings transcripts and 15 of the 20 threads-closed
+// ones, and agents reasoned from it. The commits carried rig words too (`Fixture`, `rig`, jj's
+// `Rig Worker`), and `git log` is something the world writes; so did gh's answers, whose user was
+// `rig[bot]`. So the row is over the class and not that one comment: it builds every world rig.sh
+// writes a repository for, for real, and reads every file of each repository's tree, its whole
+// history (`git log --all -p`, each commit's author, committer and message, and jj's for the
+// issue workspace), the hook the rig writes into the bare remote, and every answer the world's
+// gh routes serve (`fixtures.json`), with the run's own directory masked, since that path is the
+// operator's and no text of the rig's.
+describe("what the rig writes into a run's world", () => {
+  /** The rig's own vocabulary, which names the measurement and nothing a repository of the
+   * world would hold (the architect's ruling of round 15, item b). */
+  const RIG_WORDS = /scenario|premise|there to find|fixture|\bthe run\b|\brig\b/i;
+  /** jj's own record of each commit of the issue workspace: author, committer and message. */
+  const JJ_COMMITS =
+    'author.name() ++ " <" ++ author.email() ++ ">\\n" ++ committer.name() ++ " <" ++ committer.email() ++ ">\\n" ++ description ++ "\\n"';
+  /** Every text an agent can read in each of `repositories` under `dir`, by where it is: each
+   * file of its tree (`<repository>/<path>`), the whole of its history (`<repository> history`
+   * from git, `<repository> jj history` from jj), and, for a bare repository, which has no tree,
+   * each hook the rig wrote into it. A command that fails throws, so a repository the build did
+   * not make is no repository read as clean. */
+  function texts(dir: string, repositories: string[]): Map<string, string> {
+    const env = { ...childEnv, GIT_CONFIG_GLOBAL: "/dev/null", JJ_CONFIG: "/dev/null" };
+    const read = (cwd: string, ...argv: string[]) => {
+      const made = Bun.spawnSync(argv, { cwd, env });
+      if (made.exitCode !== 0) throw new Error(`${argv.join(" ")} in ${cwd}: ${made.stderr}`);
+      return made.stdout.toString();
+    };
+    const found = new Map<string, string>();
+    const keep = (where: string, text: string) => found.set(where, text.replaceAll(dir, "<run>"));
+    for (const repository of repositories) {
+      const at = path.join(dir, repository);
+      const jj = existsSync(path.join(at, ".jj"));
+      const bare = !jj && !existsSync(path.join(at, ".git"));
+      if (!jj || existsSync(path.join(at, ".git")))
+        keep(
+          `${repository} history`,
+          read(at, "git", "log", "--all", "-p", "--format=%an <%ae>%n%cn <%ce>%n%B")
+        );
+      if (jj)
+        keep(
+          `${repository} jj history`,
+          read(
+            at,
+            "jj",
+            "log",
+            "--ignore-working-copy",
+            "--no-graph",
+            "-r",
+            "all()",
+            "-T",
+            JJ_COMMITS
+          )
+        );
+      const files = bare
+        ? readdirSync(path.join(at, "hooks"))
+            .filter((hook) => !hook.endsWith(".sample"))
+            .map((hook) => path.join("hooks", hook))
+        : readdirSync(at, { recursive: true, encoding: "utf8" }).filter(
+            (name) => ![".git", ".jj"].includes(name.split(path.sep)[0] ?? "")
+          );
+      for (const name of files)
+        if (statSync(path.join(at, name)).isFile())
+          keep(`${repository}/${name}`, readFileSync(path.join(at, name), "utf8"));
+    }
+    return found;
+  }
+  /** WORLD built for real under a run directory of its own, with rig.sh's own functions and
+   * values: no step stubbed, the issue workspace cloned with jj, and fixture_cli read whole
+   * (`definition`). */
+  function builtWorld(world: string, guard: string): string {
+    const dir = freshDir(`world-words-${world}`);
+    const values = [
+      "worker_repo",
+      "worker_base",
+      "world_author_name",
+      "world_author_email",
+      "world_login",
+    ];
+    const result = bash(
+      [
+        ...[
+          "fail",
+          "fixture_open",
+          "fixture_git",
+          "fixture_docs_before",
+          "fixture_first_commit",
+          "fixture_round_files",
+          "fixture_head_commit",
+          "fixture_implement",
+          "fixture_test_handoff",
+          "fixture_workspace",
+          "fixture_checks",
+          "fixture_body",
+          "fixture_write",
+          "concluded_checks",
+          "resolution_protection_routes",
+          "blocked_at",
+          "round_world",
+          world,
+        ].map(fn),
+        definition("fixture_cli"),
+        ...[...values, "text_finding_doc_line", "text_finding_trigger"].map(assignment),
+        "R=$1 worker_key=LWEVAL-1",
+        `${world} 1 100 "$2"`,
+      ].join("\n"),
+      [dir, guard]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return dir;
+  }
+
+  // Catches: a sentence of the rig's in any file a world writes into a repository — the greet.yml
+  // comment that told every agent what it was there to find — a rig word in a commit's identity
+  // or message, which `git log` and `jj log` show the agent (the worker world's `Fixture`, the
+  // brainstorm repository's `rig` and the issue workspace's `Rig Worker`), and one in any answer
+  // the world's gh routes serve, which the agent reads as GitHub's: the world's user was
+  // `rig[bot]`, in `gh api user` and in each review the run created.
+  test("no file, commit, commit identity or gh answer of a run's world holds a word of the rig's", () => {
+    const read = new Map<string, string>();
+    for (const [world, guard] of [
+      ["tester_proof_world", ""],
+      ["review_world", ""],
+      ["review_world", "dropped"],
+      ["approved_world", ""],
+      ["approved_world", "dropped"],
+    ] as const) {
+      const name = `${world}${guard === "" ? "" : ` ${guard}`}`;
+      const dir = builtWorld(world, guard);
+      for (const [where, text] of texts(dir, ["src", "remote.git", "ws"]))
+        read.set(`${name}: ${where}`, text);
+      const { routes } = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8")) as {
+        routes: { match: string; stdout?: unknown; stderr?: string }[];
+      };
+      for (const [index, route] of routes.entries())
+        read.set(
+          `${name}: route ${index} (${route.match})`,
+          `${JSON.stringify(route.stdout ?? "")}\n${route.stderr ?? ""}`.replaceAll(dir, "<run>")
+        );
+    }
+    const brainstorm = freshDir("world-words-brainstorm");
+    mkdirSync(path.join(brainstorm, "cwd"));
+    const built = bash(
+      [
+        definition("run_brainstorm"),
+        "own_dispatch() { :; }",
+        "dispatch_session() { :; }",
+        assignment("world_author_name"),
+        assignment("world_author_email"),
+        "R=$1",
+        "run_brainstorm brainstorm-1",
+      ].join("\n"),
+      [brainstorm]
+    );
+    expect(built).toMatchObject({ code: 0, stderr: "" });
+    for (const [where, text] of texts(brainstorm, ["cwd"]))
+      read.set(`run_brainstorm: ${where}`, text);
+    // What was read: every repository of each world, its tree, its history and the remote's hook,
+    // so a build that left one out is no repository read as clean.
+    expect([...read.keys()]).toEqual(
+      expect.arrayContaining([
+        "approved_world: src/.github/workflows/greet.yml",
+        "approved_world: src/docs/cli.md",
+        "approved_world: src/greet.ts",
+        "approved_world: src history",
+        "approved_world: remote.git history",
+        "approved_world: remote.git/hooks/post-receive",
+        "approved_world: ws/.github/workflows/greet.yml",
+        "approved_world: ws jj history",
+        "review_world dropped: ws/docs/cli.md",
+        "tester_proof_world: ws/greet.test.ts",
+        "run_brainstorm: cwd/todo.py",
+        "run_brainstorm: cwd/README.md",
+        "run_brainstorm: cwd history",
+      ])
+    );
+    // And the gh answers: every world's routes, `gh api user` among them, so a world whose
+    // fixtures.json the walk did not read is no answer read as clean.
+    for (const world of ["tester_proof_world", "review_world", "approved_world dropped"])
+      expect([...read.keys()]).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(new RegExp(`^${world}: route \\d+ .*api user`)),
+        ])
+      );
+    for (const [where, text] of read)
+      if (where.endsWith("history"))
+        expect([where, text]).toEqual([where, expect.stringMatching(/@example\.invalid>/)]);
+    const words = [...read].flatMap(([where, text]) => {
+      const word = RIG_WORDS.exec(text);
+      return word === null
+        ? []
+        : [
+            `${where}: "${word[0]}" in "${text.slice(Math.max(0, word.index - 40), word.index + 40)}"`,
+          ];
+    });
+    expect(words).toEqual([]);
   });
 });
 
@@ -1215,35 +3795,342 @@ describe("require_superpowers", () => {
 });
 
 // launch with a stand-in tmux that starts the pane's command a moment later, as a real tmux server
-// does, and a stand-in mise that prints the omp command line it was given.
+// does, and a stand-in mise that runs the agent it was given, here a script of the row's own in
+// place of omp, inside the namespace launch.sh starts it in (private_world).
 describe("launch", () => {
-  // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
-  // once, and extra omp arguments placed anywhere but after the prompt.
-  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
-    const run = freshDir("launch-run");
-    const bin = freshDir("launch-bin");
-    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
+  const standIns = `
+tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
+sleep() { command sleep 0.05; }`;
+  /** A work directory holding the run `name` under runs/, with the run's prompt and pane file,
+   * another live run and an archived one, each with a file of its own, and the label's profile;
+   * `agent` is the body of the shell script that stands in for omp. */
+  function launched(work: string, name: string, agent: string, args: string[] = []) {
+    const run = path.join(work, "runs", name);
+    const bin = path.join(work, "bin");
+    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir), { recursive: true });
     writeFileSync(path.join(run, "prompt.txt"), "The person answered your asks on LWEVAL-2.\n");
     writeFileSync(path.join(run, "pane.env"), `PATH=${bin}:${process.env.PATH ?? ""}\n`);
     writeFileSync(path.join(run, "out.txt"), "the first turn\nexit=0\n");
+    writeFileSync(path.join(run, "daemon.log"), '{"at":"t","opened":"daemon.log"}\n');
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
-    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(path.join(bin, "pin", "bin", "omp"), `#!/bin/sh\n${agent}\n`, { mode: 0o755 });
     writeFileSync(
       path.join(bin, "mise"),
-      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nshift 3\necho "$@"\n`,
+      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nshift 3\nexec "$@"\n`,
       { mode: 0o755 }
     );
-    const standIns = `
-tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
-sleep() { command sleep 0.05; }`;
+    for (const [dir, file] of [
+      [path.join(work, "runs", "threads-closed-text-fixes-head-9"), "pointer"],
+      [path.join(work, "archive", "runs", "threads-closed-text-fixes-base-1"), "pointer"],
+      [path.join(work, "profiles", "head"), "checkout"],
+    ] as const) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, file), `${dir}\n`);
+    }
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
-      [run],
+      [
+        fn("fail"),
+        fn("pinned_omp"),
+        fn("launch"),
+        assignment("private_world"),
+        standIns,
+        "R=$1 work=$2 tag=t pin=omp@pin",
+        `launch ${name} "\${@:3}"`,
+      ].join("\n"),
+      [run, work, ...args],
       { PATH: `${bin}:${childEnv.PATH}` }
     );
+    return { run, result, out: readFileSync(path.join(run, "out.txt"), "utf8") };
+  }
+
+  // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
+  // once, and extra omp arguments placed anywhere but after the prompt.
+  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
+    const work = freshDir("launch-turn");
+    const { result, out } = launched(work, "spec-writing-s1-1", 'echo "$0 $*"', ["--continue"]);
     expect(result.code).toBe(0);
-    expect(readFileSync(path.join(run, "seen"), "utf8")).toBe(
-      `${bin}/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${run}/sessions\nexit=0\n`
+    expect(out).toBe(
+      `${work}/bin/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${work}/runs/spec-writing-s1-1/sessions\nexit=0\n`
     );
+  });
+
+  // Catches: an agent that can list and read the other runs of its batch, live or archived, which
+  // the 2026-11-14 agents did for a sibling's pointer file; one that writes into the /tmp every
+  // run shares; one that runs as uid 0; and a namespace that binds the run's directory in the
+  // wrong order, which leaves the host's run directory without a file the agent wrote there.
+  test("the agent sees its own run alone and its own /tmp, as this user, and its writes land in the run", () => {
+    const work = freshDir("launch-world");
+    const marker = `rig-launch-${path.basename(work)}`;
+    const others = `${work}/runs/threads-closed-text-fixes-head-9/pointer ${work}/archive/runs/threads-closed-text-fixes-base-1/pointer`;
+    const { run, result, out } = launched(
+      work,
+      "threads-closed-text-fixes-head-1",
+      [
+        `echo "uid=$(id -u)"`,
+        `echo "runs=$(ls ${work}/runs)"`,
+        `echo "archive=$(ls -A ${work}/archive)"`,
+        `for f in ${others}; do cat "$f" >/dev/null 2>&1 && echo "read $f"; done`,
+        `echo "profile=$(cat ${work}/profiles/head/checkout)"`,
+        `echo "log=$(cat ${work}/runs/threads-closed-text-fixes-head-1/daemon.log)"`,
+        `echo scratch >/tmp/${marker}`,
+        `echo record >${work}/runs/threads-closed-text-fixes-head-1/agent-wrote`,
+      ].join("\n")
+    );
+    expect(result.code).toBe(0);
+    expect(out.split("\n")).toEqual([
+      `uid=${process.getuid?.()}`,
+      "runs=threads-closed-text-fixes-head-1",
+      "archive=",
+      `profile=${work}/profiles/head`,
+      'log={"at":"t","opened":"daemon.log"}',
+      "exit=0",
+      "",
+    ]);
+    // On the host, after the agent exited: what it wrote is in the run, its /tmp is the run's
+    // own, and the machine's /tmp and the other runs are as they were.
+    expect(readFileSync(path.join(run, "agent-wrote"), "utf8")).toBe("record\n");
+    expect(readFileSync(path.join(run, "daemon.log"), "utf8")).toBe(
+      '{"at":"t","opened":"daemon.log"}\n'
+    );
+    expect(readFileSync(path.join(run, "tmp", marker), "utf8")).toBe("scratch\n");
+    expect(existsSync(path.join("/tmp", marker))).toBe(false);
+    expect(readdirSync(path.join(work, "runs")).sort()).toEqual([
+      "threads-closed-text-fixes-head-1",
+      "threads-closed-text-fixes-head-9",
+    ]);
+  });
+
+  // Catches: a /tmp one run shares with the next: a file the first run's agent writes to /tmp is
+  // absent from the second run's.
+  test("a file one run writes to /tmp is absent in the next run", () => {
+    const work = freshDir("launch-next");
+    const marker = `rig-next-${path.basename(work)}`;
+    const first = launched(work, "threads-closed-text-fixes-head-1", `echo first >/tmp/${marker}`);
+    expect(first.result.code).toBe(0);
+    const second = launched(
+      work,
+      "threads-closed-text-fixes-head-2",
+      `cat /tmp/${marker} 2>/dev/null || echo absent`
+    );
+    expect(second.out).toBe("absent\nexit=0\n");
+    expect(existsSync(path.join("/tmp", marker))).toBe(false);
+  });
+});
+
+// A batch's Postgres and its NATS are the servers SKILL_SCENARIOS_POSTGRES_URL and
+// SKILL_SCENARIOS_NATS_URL name when both are set, and otherwise two containers it starts. The
+// harness gives services_up a docker that records its command line and answers `docker port`, so
+// the container branch runs where there is no docker, and a pg_sql that answers every query with
+// 100, the max_connections of a server that admits 100.
+describe("services_up and services_down", () => {
+  const stubs = `
+until_true() { shift 2; "$@"; }
+pg_sql() { printf '%s\\n' 100; }
+nats_ready() { :; }
+start_listener() { envoy_port=4100; }
+go() { printf 'go %s\\n' "$*" >>"$S/go-calls"; }
+docker() {
+  printf 'docker %s\\n' "$*" >>"$S/docker-calls"
+  case $1 in port) case $2 in *-pg) echo 127.0.0.1:55432 ;; *) echo 127.0.0.1:54222 ;; esac ;; esac
+}`;
+  const given = {
+    SKILL_SCENARIOS_POSTGRES_URL: "postgres://rig:secret@127.0.0.1:5432/postgres?sslmode=disable",
+    SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+  };
+  function up(env: Record<string, string>) {
+    const S = freshDir("services-up");
+    const result = bash(
+      `${fn("note")}\n${fn("fail")}\n${fn("given_services")}\n${fn("safe_url")}\n${fn("services_up")}\n${stubs}\nS=$1 root=$2 tag=rig-test\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
+      [S, root],
+      env
+    );
+    return { S, ...result };
+  }
+
+  // Catches: a batch that starts a container although the operator gave it both servers, which is
+  // every batch in a Legion pod and in a builds Job, where there is no docker at all.
+  test("both URLs set: no container, the Postgres recorded 0600 for each run, the given NATS in the services env", () => {
+    const { S, code, stdout, stderr } = up({ ...given, SKILL_SCENARIOS_PARALLEL: "2" });
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(existsSync(path.join(S, "docker-calls"))).toBe(false);
+    expect(readFileSync(path.join(S, "postgres-url"), "utf8")).toBe(
+      `${given.SKILL_SCENARIOS_POSTGRES_URL}\n`
+    );
+    expect(statSync(path.join(S, "postgres-url")).mode & 0o777).toBe(0o600);
+    expect(readFileSync(path.join(S, "env"), "utf8")).toContain(
+      "ENVOY_NATS_URL=nats://127.0.0.1:4222\n"
+    );
+    // The listener is still built from the checkout.
+    expect(readFileSync(path.join(S, "go-calls"), "utf8")).toContain("build -o");
+    // No message prints the password.
+    expect(stdout).toContain("Postgres postgres://rig@127.0.0.1:5432/postgres?sslmode=disable");
+    expect(stdout).not.toContain("secret");
+  });
+
+  // Catches: a batch that starts its runs against a given server with too few connections, where
+  // each run's Dispatch server takes 30 and the run that cannot get them fails for the rig's fault.
+  test("a parallelism the given Postgres cannot serve is refused, naming both numbers", () => {
+    const { S, code, stderr } = up({ ...given, SKILL_SCENARIOS_PARALLEL: "3" });
+    expect(code).toBe(1);
+    expect(stderr).toContain("needs 110 connections");
+    expect(stderr).toContain("which admits 100");
+    expect(stderr).toContain("set SKILL_SCENARIOS_PARALLEL to 2 or lower");
+    // It refuses before it builds anything.
+    expect(existsSync(path.join(S, "go-calls"))).toBe(false);
+  });
+
+  // Catches: a batch on a box with docker that takes one of the two URLs, or none, and stops
+  // starting its containers.
+  test("neither URL, or one without the other: the two containers, and no Postgres recorded", () => {
+    const none: Record<string, string> = {};
+    for (const env of [none, { SKILL_SCENARIOS_NATS_URL: given.SKILL_SCENARIOS_NATS_URL }]) {
+      const { S, code, stdout } = up({ ...env, SKILL_SCENARIOS_PARALLEL: "1" });
+      expect(code).toBe(0);
+      const calls = readFileSync(path.join(S, "docker-calls"), "utf8");
+      expect(calls).toContain("--name rig-test-pg");
+      expect(calls).toContain("max_connections=50");
+      expect(calls).toContain("--name rig-test-nats");
+      expect(existsSync(path.join(S, "postgres-url"))).toBe(false);
+      expect(readFileSync(path.join(S, "env"), "utf8")).toContain(
+        "ENVOY_NATS_URL=nats://127.0.0.1:54222\n"
+      );
+      expect(stdout).toContain(
+        "Postgres postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable"
+      );
+    }
+  });
+
+  function down(env: Record<string, string>) {
+    const S = freshDir("services-down");
+    for (const file of ["env", "postgres-url", "up"]) writeFileSync(path.join(S, file), "");
+    const result = bash(
+      `${fn("given_services")}\n${fn("services_down")}\nstop_tree() { printf 'stop_tree %s\\n' "$*" >>"$S/stopped"; }\ndocker() { printf 'docker %s\\n' "$*" >>"$S/docker-calls"; }\nS=$1 tag=rig-test\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nlistener_pid=4242\nservices_down`,
+      [S],
+      env
+    );
+    return { S, ...result };
+  }
+
+  // Catches: a teardown that removes a server it was given, or the databases on it.
+  test("both URLs set: the listener stops, the batch's own files go, and no docker runs", () => {
+    const { S, code } = down(given);
+    expect(code).toBe(0);
+    expect(existsSync(path.join(S, "docker-calls"))).toBe(false);
+    expect(readFileSync(path.join(S, "stopped"), "utf8")).toBe("stop_tree 4242\n");
+    for (const file of ["env", "postgres-url", "up"]) {
+      expect(existsSync(path.join(S, file))).toBe(false);
+    }
+  });
+
+  // Catches: a teardown that leaves the batch's own containers running.
+  test("neither URL: the batch's two containers are removed", () => {
+    const { S, code } = down({});
+    expect(code).toBe(0);
+    expect(readFileSync(path.join(S, "docker-calls"), "utf8")).toBe(
+      "docker rm -fv rig-test-nats rig-test-pg\n"
+    );
+  });
+});
+
+// The probes services_up waits on: one for a given server as for a started container.
+describe("nats_ready and the URL helpers", () => {
+  /** A server on 127.0.0.1 that writes TEXT to every connection, as a process of its own: bash()
+   * runs synchronously, so a listener in this process would never reach its accept. */
+  async function greeting(text: string) {
+    const child = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        'const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open: (socket) => void socket.write(process.env.GREETING ?? ""), data: () => {} } });\nconsole.log(server.port);',
+      ],
+      { env: { ...childEnv, GREETING: text }, stdout: "pipe", stderr: "inherit" }
+    );
+    const reader = child.stdout.getReader();
+    const { value } = await reader.read();
+    reader.releaseLock();
+    return {
+      port: Number(new TextDecoder().decode(value).trim()),
+      stop: async () => {
+        child.kill();
+        await child.exited;
+      },
+    };
+  }
+
+  // Catches: a probe that takes any process holding the port for a NATS, so a batch starts against
+  // a dead one.
+  test("the INFO line a NATS sends on connect, and nothing else, is ready", async () => {
+    const probe = (port: number) =>
+      bash(`${fn("nats_ready")}\nnats_ready "nats://127.0.0.1:$1"`, [String(port)]).code;
+    const nats = await greeting('INFO {"server_id":"rig"}\r\n');
+    const other = await greeting("+OK\r\n");
+    try {
+      expect(probe(nats.port)).toBe(0);
+      expect(probe(other.port)).toBe(1);
+    } finally {
+      await nats.stop();
+      await other.stop();
+    }
+    // Port 1, where nothing listens, is the rig's own address for that.
+    expect(probe(1)).toBe(1);
+  });
+
+  // Catches: a message that prints the password of a server the operator gave, and a run's
+  // database URL that drops the query a given URL carries (sslmode, say).
+  test("safe_url drops the password, pg_database_url swaps the database and keeps the query", () => {
+    const { stdout } = bash(
+      `${fn("safe_url")}\n${fn("pg_database_url")}\nsafe_url "$1"\npg_database_url "$1" run_x\npg_database_url "$2" run_x`,
+      [
+        "postgres://rig:secret@db.example:5432/postgres?sslmode=disable",
+        "postgres://127.0.0.1:5432",
+      ]
+    );
+    expect(stdout).toBe(
+      "postgres://rig@db.example:5432/postgres?sslmode=disable\n" +
+        "postgres://rig:secret@db.example:5432/run_x?sslmode=disable\n" +
+        "postgres://127.0.0.1:5432/run_x\n"
+    );
+  });
+});
+
+// scripts/e2e/plan-pointer-drive.ts composes the implementer's pane through this rig's own
+// composer (daemon-pane.ts's `workerPane`), and no tsconfig of this repository covers
+// scripts/e2e: the drive's `compose` step passed a claim with no `repository` and no
+// `defaultBranch` — the two fields that composer requires and daemon-pane.go refuses a request
+// without — and nothing typechecked it, so the drive failed where it ran and nowhere else.
+// This row is that typecheck, over the one file of that directory this rig's modules reach, and
+// the pi-legion job of .github/workflows/ci.yaml runs it with every other row of this file
+// (`bun run test` in packages/pi-legion), on a pull request that changes the drive and nothing
+// else: that job's `pi_legion` filter names this file, and ci_job_reads.py declares it a read of
+// the gate, so the two say the same thing and check-ci-filters.sh holds them to it. The program
+// is written here rather than committed
+// because the file belongs to no package: the compiler options are packages/pi-legion's own,
+// with the paths and type roots a configuration outside the tree needs.
+describe("the e2e drives that compose a pane through this rig", () => {
+  test("plan-pointer-drive.ts typechecks, claim and all", () => {
+    const dir = freshDir("e2e-typecheck");
+    const config = path.join(dir, "tsconfig.json");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          lib: ["ES2023"],
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          strict: true,
+          noEmit: true,
+          types: ["bun"],
+          typeRoots: [path.join(root, "node_modules", "@types")],
+          skipLibCheck: true,
+          baseUrl: root,
+          paths: { "@legion/contracts": ["packages/contracts/src/index.ts"] },
+        },
+        files: [path.join(root, "scripts", "e2e", "plan-pointer-drive.ts")],
+      })
+    );
+    const tsc = Bun.spawnSync(["bunx", "tsc", "-p", config], { cwd: root, env: childEnv });
+    expect(`${tsc.stdout.toString()}${tsc.stderr.toString()}`).toBe("");
+    expect(tsc.exitCode).toBe(0);
   });
 });

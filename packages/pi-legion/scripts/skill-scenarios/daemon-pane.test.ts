@@ -1,9 +1,26 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import {
+  claimRefusal,
+  countDefault,
+  DAEMON_MODULE,
+  labelRoutes,
+  RIG_GH_TOKEN,
+  runDaemonPane,
+  serves,
+  workerPane,
+} from "./daemon-pane";
 
 // Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
 // and runs, so a host with no go runs none of them.
@@ -44,17 +61,26 @@ const inherited = {
   PATH: `${outerBin}:/usr/bin`,
 };
 
+/** The claim every row asks for a pane of: the rig's project and issue, and the repository and
+ * default branch of the world rig.sh builds ($worker_repo and $worker_base). They are the
+ * world's own because the pane's addressing names them, and the claim's gh bundle is the
+ * directory of that repository's owner. */
+const claim = {
+  project: "skillsrig",
+  issue: "LWEVAL-1",
+  role: "tester",
+  repository: "example/widgets",
+  defaultBranch: "main",
+} as const;
+
 // The pane environment comes from the daemon's own functions, compiled and run by `go run`, which
 // can take minutes on a cold build cache.
 test.skipIf(skip)(
   "strips an inherited Anthropic key and GitHub token, and gives the pane the claim's gh files and no grant file",
   () => {
-    const workerEnv = workerPane(
-      { rig, port: 13399, profile: "rig-profile" },
-      inherited,
-      { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
-      { daemonModule: DAEMON_MODULE }
-    ).env;
+    const workerEnv = workerPane({ rig, port: 13399, profile: "rig-profile" }, inherited, claim, {
+      daemonModule: DAEMON_MODULE,
+    }).env;
 
     expect(workerEnv).not.toHaveProperty("ANTHROPIC_API_KEY");
     expect(workerEnv).not.toHaveProperty("LEGION_GRANT");
@@ -65,7 +91,7 @@ test.skipIf(skip)(
     expect(workerEnv).not.toHaveProperty("LEGION_GIT_PATH");
     expect(workerEnv).not.toHaveProperty("LEGION_JJ_PATH");
     const ghRoot = `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh`;
-    const ghConfigDir = `${ghRoot}/skills-rig`;
+    const ghConfigDir = `${ghRoot}/example`;
     expect(workerEnv).toMatchObject({
       GEMINI_API_KEY: "gemini-key",
       OPENAI_API_KEY: "openai-key",
@@ -117,7 +143,7 @@ test.skipIf(skip)(
     const workerEnv = workerPane(
       { rig, port: 13399, profile: "rig-envoy-profile" },
       inherited,
-      { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+      claim,
       { daemonModule: DAEMON_MODULE }
     ).env;
 
@@ -155,7 +181,7 @@ test.skipIf(skip)(
       workerPane(
         { rig, port: 13399, profile: "rig-seed-profile" },
         { ...inherited, ENVOY_NATS_URL: "nats://other-nats.internal.example:4222" },
-        { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+        claim,
         { daemonModule: DAEMON_MODULE }
       )
     ).toThrow(
@@ -178,12 +204,9 @@ test.skipIf(skip)(
     );
 
     expect(() =>
-      workerPane(
-        { rig, port: 13399, profile: "rig-no-nats-profile" },
-        inherited,
-        { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
-        { daemonModule: DAEMON_MODULE }
-      )
+      workerPane({ rig, port: 13399, profile: "rig-no-nats-profile" }, inherited, claim, {
+        daemonModule: DAEMON_MODULE,
+      })
     ).toThrow("envoy: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)");
   },
   600_000
@@ -196,7 +219,6 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "refuses a script as the first gh on PATH and takes the gh the rig names",
   () => {
-    const claim = { project: "skillsrig", issue: "LWEVAL-1", role: "tester" } as const;
     const launch = { rig, port: 13399, profile: "rig-profile" };
     const shimmed = { ...inherited, PATH: `${scriptBin}:${outerBin}:/usr/bin` };
     expect(() => workerPane(launch, shimmed, claim, { daemonModule: DAEMON_MODULE })).toThrow(
@@ -210,3 +232,565 @@ test.skipIf(skip)(
   },
   600_000
 );
+
+// Catches: a pane whose addressing names a repository and a branch of the rig's own rather than
+// the world's. It named `skills-rig/project` on `trunk` while every world rig.sh builds is
+// `example/widgets` on `main`, and a worker follows its addressing: recorded runs posted their
+// review to the repository the addressing named, which the scorer's repository rule read as no
+// review at all (rig.sh's worker world comment holds that story). The gh bundle is the same
+// fact: its one directory is the owner of that repository, so no part of the pane names a
+// second one.
+test.skipIf(skip)(
+  "the addressing names the world's own repository and default branch",
+  () => {
+    const pane = workerPane({ rig, port: 13399, profile: "rig-profile" }, inherited, claim, {
+      daemonModule: DAEMON_MODULE,
+      systemPrompt: true,
+    });
+    expect(pane.systemPromptArgument).toContain(
+      "Your issue's repository is example/widgets (default branch main); the project's repositories are example/widgets."
+    );
+    expect(pane.systemPromptArgument).not.toContain("skills-rig");
+    expect(pane.env.GH_CONFIG_DIR).toBe(
+      `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh/example`
+    );
+  },
+  600_000
+);
+
+// And a world that names no default branch is refused rather than panes built on an empty one.
+// Catches: the pane composed with `defaultBranch: ""`, whose addressing then reads "default
+// branch " with nothing after it — a worker follows its addressing, and a branch it cannot read
+// is one it would guess. The repository is read the same way, by the parser that refuses an
+// empty name, so this is the branch's own refusal beside it.
+test.skipIf(skip)(
+  "a world that names no default branch is refused",
+  () => {
+    expect(() =>
+      workerPane(
+        { rig, port: 13399, profile: "rig-profile" },
+        inherited,
+        {
+          ...claim,
+          defaultBranch: "",
+        },
+        {
+          daemonModule: DAEMON_MODULE,
+          systemPrompt: true,
+        }
+      )
+    ).toThrow("the rig's world names no default branch, which the pane's addressing names");
+  },
+  600_000
+);
+
+// The phase a worker runs in is the daemon's own: the first phase of the transition table
+// workflow.RoleFor gives the role, with the word of the handoff record that phase ends with, and
+// a role the table gives no phase is an error rather than an empty answer. daemon-standin.ts
+// reads both from this command, so a wrong answer there would seed every run's phase wrongly.
+test.skipIf(skip)(
+  "phase names the phase a role works and the handoff word it ends with",
+  () => {
+    expect(runDaemonPane(DAEMON_MODULE, ["phase", "implementer"])).toBe(
+      "implementing\nimplement\n"
+    );
+    expect(runDaemonPane(DAEMON_MODULE, ["phase", "tester"])).toBe("testing\ntest\n");
+    expect(() => runDaemonPane(DAEMON_MODULE, ["phase", "nobody"])).toThrow(
+      '"nobody" works no phase'
+    );
+  },
+  600_000
+);
+
+// The refusal a worker's completion of a phase its role does not run gets is the daemon's own
+// sentence, which the stand-in answers with and the skill has the worker quote to its
+// architect. This row holds the reading to the daemon's source: it takes the format out of the
+// source itself and fills it, so a reading that drifted from the daemon — a different sentence,
+// the arguments in another order — fails here. This checkout's engine builds that refusal with
+// `intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)`, whose sentence intake's
+// `func NotCurrentPhase` writes with its parameters in the same order.
+const ENGINE = path.join(DAEMON_MODULE, "internal", "workflow", "engine.go");
+const INTAKE = path.join(DAEMON_MODULE, "internal", "intake", "facts.go");
+/** The format the daemon builds its HANDOFF_NOT_CURRENT_PHASE message with, read out of its
+ * source, and the pieces of text around its verbs. */
+function refusalFormat(): { format: string; pieces: string[] } {
+  expect(readFileSync(ENGINE, "utf8")).toContain(
+    "intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)"
+  );
+  const [, format = ""] =
+    /func NotCurrentPhase\(role claim\.Role, p phase\.Phase, issue string\)[^{]*\{[^}]*Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt\.Sprintf\("((?:[^"\\]|\\.)*)", role, p, issue\)/.exec(
+      readFileSync(INTAKE, "utf8")
+    ) ?? [];
+  return { format, pieces: format.split(/%[a-z]/) };
+}
+test.skipIf(skip)(
+  "refusal not-current-phase prints the daemon's own refusal, read from the daemon's code",
+  () => {
+    const { format, pieces } = refusalFormat();
+    expect(format).not.toBe("");
+    // Filled with the role, the issue's phase and the issue's key, in that order (refusalFormat).
+    const filled = ["implementer", "accepting", "LWEVAL-1"].reduce(
+      (text, value) => text.replace(/%[a-z]/, value),
+      format
+    );
+    expect(
+      runDaemonPane(DAEMON_MODULE, [
+        "refusal",
+        "not-current-phase",
+        "implementer",
+        "accepting",
+        "LWEVAL-1",
+      ])
+    ).toBe(`HANDOFF_NOT_CURRENT_PHASE\n${filled}\n`);
+    expect(pieces[1]).toBeDefined();
+  },
+  600_000
+);
+
+// And no file of the rig writes that sentence itself: a copy of it passes the row above on the
+// day it is made and goes stale the day the daemon's wording moves, with nothing to say so. What
+// a copy would carry is the words the engine writes between the role and the phase, which are
+// this refusal's own. The tail every workflow refusal ends with — `; this completion changed
+// nothing` — is no test of it: the stand-in restates two other refusals of the daemon's, the
+// record-required and record-mismatch ones, and carries that tail in each.
+test("no file of the rig restates the daemon's refusal", () => {
+  const own = refusalFormat().pieces[1] ?? "";
+  expect(own.trim().length).toBeGreaterThan(10);
+  for (const file of [
+    "daemon-standin.ts",
+    "daemon-standin.test.ts",
+    "daemon-pane.go",
+    "daemon-pane.ts",
+    "rig.sh",
+    "score.ts",
+  ]) {
+    expect(readFileSync(path.join(import.meta.dir, file), "utf8")).not.toContain(own);
+  }
+});
+
+// The two shapes the daemon has built that refusal in, one row each, and a source in neither,
+// each read through sources of the row's own: the files the `refusal` command takes after its
+// three arguments, an engine source and an intake package directory (daemon-pane.go's main),
+// which are the daemon's own for every other caller. Parsed, never compiled or linked: the
+// reading is `parser.ParseFile` of each, so a substitute needs the shape of the daemon's code
+// and nothing it declares. Catches: either shape's branch dropped (this checkout's engine no
+// longer writes the base's, so no other row reaches it), parameters filled in the format's order
+// rather than mapped to the engine's arguments, and a reading that answers a daemon in neither
+// shape with a sentence rather than a refusal to boot.
+/** Runs the `refusal` command over `engine`, the engine's body, and over an intake package
+ * holding `intake` when given, and answers what it printed. */
+function refusalOver(name: string, engine: string, intake?: string): string {
+  const engineFile = path.join(rig, `engine-${name}.go`);
+  writeFileSync(engineFile, `package workflow\n\nfunc complete() error {\n\treturn ${engine}\n}\n`);
+  const intakeDir = path.join(rig, `intake-${name}`);
+  mkdirSync(intakeDir, { recursive: true });
+  if (intake !== undefined)
+    writeFileSync(path.join(intakeDir, "facts.go"), `package intake\n\n${intake}\n`);
+  return runDaemonPane(DAEMON_MODULE, [
+    "refusal",
+    "not-current-phase",
+    "implementer",
+    "accepting",
+    "LWEVAL-1",
+    engineFile,
+    intakeDir,
+  ]);
+}
+test.skipIf(skip)(
+  "the refusal reading fills the intake package's sentence with the engine's arguments",
+  () => {
+    // The format takes the issue first; the engine's call names it last.
+    expect(
+      refusalOver(
+        "intake-shape",
+        "intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)",
+        'func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {\n\treturn &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("%s: the %s may not finish %s", issue, role, p)}\n}'
+      )
+    ).toBe("HANDOFF_NOT_CURRENT_PHASE\nLWEVAL-1: the implementer may not finish accepting\n");
+  },
+  600_000
+);
+test.skipIf(skip)(
+  "the refusal reading fills the base label's refused call",
+  () => {
+    expect(
+      refusalOver(
+        "refused-shape",
+        'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("the %s may not finish %s of %s", fact.Role, issue.Phase, issue.Key))'
+      )
+    ).toBe("HANDOFF_NOT_CURRENT_PHASE\nthe implementer may not finish accepting of LWEVAL-1\n");
+  },
+  600_000
+);
+test.skipIf(skip)(
+  "the refusal reading refuses a daemon in neither shape, naming both",
+  () => {
+    expect(() => refusalOver("neither-shape", "nil")).toThrow(
+      'holds no refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(…)) call and no intake.NotCurrentPhase(…) call'
+    );
+  },
+  600_000
+);
+
+// The guards that reading stands on, one row each. Every one of them answers a daemon that
+// writes its refusal in a shape this program cannot fill, which today's daemon does not, so a
+// row reaches them only through sources of its own (above). Catches: any of them dropped, each
+// of the first four of which survived the mutation pass of 3d88a1ed for want of this path. A
+// dropped guard answers a drifted daemon with a sentence built out of nothing — an empty
+// argument, a `%!s(MISSING)` verb, a format some other printer wrote — or with a panic, and the
+// stand-in would teach every agent that sentence.
+const SHARED =
+  'func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {\n\treturn &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("%s may not finish %s of %s", role, p, issue)}\n}';
+const SUBSTITUTE_ENGINES: readonly {
+  readonly file: string;
+  readonly shape: string;
+  readonly call: string;
+  readonly intake?: string;
+  readonly says: string;
+}[] = [
+  {
+    file: "unknown-argument",
+    shape: "an argument this program has no value for",
+    call: 'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("%s may not complete %s", fact.Role, issue.Tree))',
+    says: "fills the HANDOFF_NOT_CURRENT_PHASE message with issue.Tree, which this program has no value for",
+  },
+  {
+    file: "more-verbs",
+    shape: "a format with more verbs than the arguments it names",
+    call: 'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("%s may not complete %s of %s at %s", fact.Role, issue.Phase, issue.Key))',
+    says: "takes other arguments than the 3 it names",
+  },
+  {
+    file: "one-argument",
+    shape: "a refused call of another arity",
+    call: 'refused("HANDOFF_NOT_CURRENT_PHASE")',
+    says: 'holds no refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(…)) call',
+  },
+  {
+    // Three arguments, the engine's own message among them: a reading that takes any call of
+    // two or more reads the sentence out of a call whose third argument it never looked at.
+    file: "three-arguments",
+    shape: "a refused call of three arguments",
+    call: 'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("the %s does not run phase %s of %s", fact.Role, issue.Phase, issue.Key), cause)',
+    says: 'holds no refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(…)) call',
+  },
+  {
+    file: "other-printer",
+    shape: "a message another printer built",
+    call: 'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Errorf("%s may not complete %s", fact.Role, issue.Phase))',
+    says: 'holds no refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(…)) call',
+  },
+  {
+    file: "no-intake-function",
+    shape: "an intake call whose package holds no NotCurrentPhase",
+    call: "intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)",
+    intake: "func OtherRefusal() *Refusal { return nil }",
+    says: "holds no func NotCurrentPhase returning a HANDOFF_NOT_CURRENT_PHASE refusal",
+  },
+  {
+    file: "intake-arity",
+    shape: "an intake call of another arity than the function it calls",
+    call: "intake.NotCurrentPhase(fact.Role, issue.Phase)",
+    intake: SHARED,
+    says: "calls intake.NotCurrentPhase with 2 arguments",
+  },
+  {
+    file: "intake-no-parameter",
+    shape: "an intake sentence filled with no parameter of its function",
+    call: "intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)",
+    intake:
+      'func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {\n\treturn &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("%s may not finish %s", role, tree)}\n}',
+    says: "fills the HANDOFF_NOT_CURRENT_PHASE message with tree, which is none of NotCurrentPhase's parameters",
+  },
+];
+for (const { file, shape, call, intake, says } of SUBSTITUTE_ENGINES) {
+  test.skipIf(skip)(
+    `the refusal reading refuses ${shape} and invents no sentence`,
+    () => {
+      expect(() => refusalOver(file, call, intake)).toThrow(says);
+    },
+    600_000
+  );
+}
+
+/** A substitute checkout whose daemon's API package holds `body` in one file, read through
+ * daemon-pane.ts's `labelRoutes`. */
+function routesOver(name: string, body: string): readonly string[] {
+  const checkout = path.join(rig, `routes-${name}`);
+  const api = path.join(checkout, "packages", "daemon", "internal", "api");
+  mkdirSync(api, { recursive: true });
+  writeFileSync(path.join(api, "server.go"), `package api\n\nfunc routes() {\n${body}\n}\n`);
+  // A test file registers nothing the daemon serves.
+  writeFileSync(
+    path.join(api, "server_test.go"),
+    'package api\n\nfunc testRoutes() {\n\tmux.HandleFunc("POST /only/in/a/test", nil)\n}\n'
+  );
+  return labelRoutes(checkout);
+}
+
+// The routes the rig reads a label's daemon as serving, which the stand-in answers by and health
+// holds every 404 to, read out of that daemon's own source. Catches: a registration read in one
+// of its two shapes alone, a pattern read twice, a test file's registration read as the daemon's,
+// the mux's catch-all `/` read as a route, another pattern with no method read as one method's,
+// and a package registering none read as a daemon that serves nothing, under which the stand-in
+// would answer every request 404 and health would call each the daemon's own answer.
+test.skipIf(skip)(
+  "the routes reading takes each pattern a HandleFunc or Handle call registers, and refuses what it cannot read",
+  () => {
+    expect(
+      routesOver(
+        "both-shapes",
+        [
+          '\tmux.HandleFunc("POST /legion/v1/claims/turn-outcome", s.turnOutcome)',
+          '\tmux.Handle("GET /legion/v1/state", handler)',
+          '\tmux.HandleFunc("POST /legion/v1/claims/turn-outcome", s.turnOutcome)',
+          '\tmux.HandleFunc("/", notFound)',
+          "\tm.Handle(ctx, event)",
+        ].join("\n")
+      )
+    ).toEqual(["GET /legion/v1/state", "POST /legion/v1/claims/turn-outcome"]);
+    expect(() => routesOver("methodless", '\tmux.HandleFunc("/legion/v1/state", s.state)')).toThrow(
+      'registers ["/legion/v1/state"] with no method'
+    );
+    expect(() => routesOver("none", "\tm.Handle(ctx, event)")).toThrow(
+      "registers no route with a HandleFunc or Handle call naming its pattern"
+    );
+  },
+  600_000
+);
+
+// Catches: a request matched against a route by its path alone where the log names the method,
+// and a `{name}` segment matched literally, which would read an operator route's 404 as no
+// daemon's route; and a request whose log names no method (an older stand-in's) refused any route
+// of its path.
+test("a request is served by a route of its method and of its path, segment by segment", () => {
+  const routes = [
+    "POST /legion/v1/claims/turn-outcome",
+    "POST /legion/v1/operator/claims/{token}/stop",
+  ];
+  expect(serves(routes, "POST", "/legion/v1/claims/turn-outcome")).toBe(true);
+  expect(serves(routes, "GET", "/legion/v1/claims/turn-outcome")).toBe(false);
+  expect(serves(routes, undefined, "/legion/v1/claims/turn-outcome")).toBe(true);
+  expect(serves(routes, "POST", "/legion/v1/operator/claims/legion-a-b-c/stop")).toBe(true);
+  expect(serves(routes, "POST", "/legion/v1/operator/claims//stop")).toBe(false);
+  expect(serves(routes, "POST", "/legion/v1/claims/turn-outcome/more")).toBe(false);
+  expect(serves(routes, "POST", "/legion/v1/claims")).toBe(false);
+});
+
+// The facts cache the stand-in's boot reads through (daemon-pane.ts's `cachedRead`), kept under
+// the rig's work directory. Catches: a key that leaves out a source's bytes, under which a
+// changed daemon is answered with what its older source said; a hit that runs the program again
+// rather than reading the file, which is the boot cost the cache is for; and a key holding the
+// checkout's absolute path, under which a second checkout of the same sources reads nothing.
+test.skipIf(skip)(
+  "a read is kept under a key of its sources, and a changed source is read again",
+  () => {
+    const kept = process.env.SKILL_SCENARIOS_WORK;
+    const cacheWork = path.join(rig, "facts-work");
+    process.env.SKILL_SCENARIOS_WORK = cacheWork;
+    try {
+      const cached = () =>
+        readdirSync(path.join(cacheWork, "daemon-facts")).filter((name) => name.endsWith(".out"));
+      expect(routesOver("cached", '\tmux.HandleFunc("POST /one", s.one)')).toEqual(["POST /one"]);
+      expect(cached()).toHaveLength(1);
+      expect(
+        routesOver(
+          "cached",
+          '\tmux.HandleFunc("POST /one", s.one)\n\tmux.HandleFunc("POST /two", s.two)'
+        )
+      ).toEqual(["POST /one", "POST /two"]);
+      const [first, second] = cached();
+      expect(second).toBeDefined();
+      // The newest answer is the one a hit now reads: overwritten, it is what the read answers.
+      const newest = [first, second].find((name) =>
+        readFileSync(path.join(cacheWork, "daemon-facts", name ?? ""), "utf8").includes("/two")
+      );
+      writeFileSync(path.join(cacheWork, "daemon-facts", newest ?? ""), "POST /from/the/file\n");
+      const again = path.join(rig, "routes-cached");
+      expect(labelRoutes(again)).toEqual(["POST /from/the/file"]);
+      const copy = path.join(rig, "routes-cached-copy");
+      cpSync(again, copy, { recursive: true });
+      expect(labelRoutes(copy)).toEqual(["POST /from/the/file"]);
+      expect(cached()).toHaveLength(2);
+    } finally {
+      if (kept === undefined) delete process.env.SKILL_SCENARIOS_WORK;
+      else process.env.SKILL_SCENARIOS_WORK = kept;
+    }
+  },
+  600_000
+);
+
+// The claim refusals the stand-in answers a refused caller with, read out of the daemon's claim
+// source. Catches: a sentence this program writes for itself, and a declaration of another shape
+// read as a refusal.
+test.skipIf(skip)(
+  "the claim refusal reading takes the daemon's own refusal and refuses what it cannot read",
+  () => {
+    const checkout = path.join(rig, "claim-refusals");
+    const claim = path.join(checkout, "packages", "daemon", "internal", "claim");
+    mkdirSync(claim, { recursive: true });
+    writeFileSync(
+      path.join(claim, "wire.go"),
+      'package claim\n\nvar (\n\tInvalidSecret = Refusal{Status: http.StatusForbidden, Message: "no such secret here"}\n\tStaleGeneration = refusalOf(409)\n)\n'
+    );
+    expect(claimRefusal(checkout, "InvalidSecret")).toEqual({
+      status: 403,
+      message: "no such secret here",
+    });
+    expect(() => claimRefusal(checkout, "StaleGeneration")).toThrow(
+      'which is no Refusal{Status: http.<Status>, Message: "<message>"}'
+    );
+    expect(() => claimRefusal(checkout, "InvalidBootToken")).toThrow(
+      "declares no claim refusal InvalidBootToken"
+    );
+    expect(claimRefusal(path.resolve(DAEMON_MODULE, "../.."), "InvalidSecret").status).toBe(403);
+  },
+  600_000
+);
+
+// The launch failure limit the stand-in fails a claim's refused turns at, read out of the daemon's
+// config source. Catches: a number this program writes for itself, and an entry of another shape
+// read as a default.
+test.skipIf(skip)(
+  "the count default reading takes the daemon's own default and refuses what it cannot read",
+  () => {
+    const checkout = path.join(rig, "count-defaults");
+    const config = path.join(checkout, "packages", "daemon", "internal", "config");
+    mkdirSync(config, { recursive: true });
+    writeFileSync(
+      path.join(config, "config.go"),
+      'package config\n\nvar countKeys = []struct{ key string; defaultValue int }{\n\t{"launch_failure_limit", 7},\n\t{"prompt_failure_limit", limit},\n}\n'
+    );
+    expect(countDefault(checkout, "launch_failure_limit")).toBe(7);
+    expect(() => countDefault(checkout, "prompt_failure_limit")).toThrow(
+      "gives prompt_failure_limit a default of limit, which is no integer literal"
+    );
+    expect(() => countDefault(checkout, "worker_wake_burst")).toThrow(
+      'holds no {"worker_wake_burst", <default>, …} entry'
+    );
+  },
+  600_000
+);
+
+// worker-pane.ts reads the repository its addressing names, and the branch it gives as the
+// default, out of the run's own world (rig.sh's worker world comment), so the rig names neither
+// a second time. Catches: a pane built on names of its own, which is the addressing defect
+// above in the one file that composes a real run's pane.
+test.skipIf(skip)(
+  "worker-pane.ts addresses the pane at the world the run's world.json names",
+  () => {
+    const dir = path.join(rig, "worker-pane");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "LWEVAL-1",
+        repo: "widgets-org/widgets",
+        pr: 1001,
+        branch: "legion/LWEVAL-1",
+        base: "trunk",
+        head: "0".repeat(40),
+      })
+    );
+    // The pane's real gh is the run's recording stand-in, which rig.sh's standins writes here
+    // and worker-pane.ts names: the daemon is asked for a pane, so the file has to be there.
+    mkdirSync(path.join(dir, "bin"), { recursive: true });
+    writeFileSync(path.join(dir, "bin", "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    writeFileSync(
+      path.join(dir, "base.env"),
+      Object.entries({ ...inherited, HOME: path.join(dir, "home") })
+        .map(([key, value]) => `${key}=${value}\n`)
+        .join("")
+    );
+    const built = Bun.spawnSync([
+      "bun",
+      path.join(import.meta.dir, "worker-pane.ts"),
+      dir,
+      path.join(dir, "base.env"),
+      "13399",
+      "rig-profile",
+      "skillsrig",
+      "LWEVAL-1",
+      "tester",
+      path.resolve(import.meta.dir, "../../../.."),
+    ]);
+    expect(built.stderr.toString()).toBe("");
+    expect(built.exitCode).toBe(0);
+    expect(readFileSync(path.join(dir, "system-args"), "utf8")).toContain(
+      "Your issue's repository is widgets-org/widgets (default branch trunk)"
+    );
+    expect(readFileSync(path.join(dir, "worker.env"), "utf8")).toContain(
+      `GH_CONFIG_DIR=${dir}/state/secrets/legion-skillsrig-lweval-1-tester-gh/widgets-org\n`
+    );
+  },
+  600_000
+);
+
+// And a world that names no branch at all is refused there too, by the same parse: the row above
+// covers the branch the pane is given, this one the branch no world holds. Catches: `base` given
+// a default of its own (`main`), where a world written without it would compose a pane addressed
+// at a branch the world never named and a worker would follow it — the addressing defect the row
+// above catches, arriving through the reader rather than through the caller. The refusal is the
+// world parse, which runs before the daemon is asked for anything, so this row needs no go.
+test("worker-pane.ts refuses a world that names no default branch", () => {
+  const dir = path.join(rig, "worker-pane-no-base");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "world.json"),
+    JSON.stringify({
+      key: "LWEVAL-1",
+      repo: "widgets-org/widgets",
+      pr: 1001,
+      branch: "legion/LWEVAL-1",
+      head: "0".repeat(40),
+    })
+  );
+  writeFileSync(
+    path.join(dir, "base.env"),
+    Object.entries({ ...inherited, HOME: path.join(dir, "home") })
+      .map(([key, value]) => `${key}=${value}\n`)
+      .join("")
+  );
+  const built = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "worker-pane.ts"),
+    dir,
+    path.join(dir, "base.env"),
+    "13399",
+    "rig-profile",
+    "skillsrig",
+    "LWEVAL-1",
+    "tester",
+    path.resolve(import.meta.dir, "../../../.."),
+  ]);
+  expect(built.stderr.toString()).toContain(`${dir}/world.json is no world`);
+  expect(built.exitCode).toBe(2);
+  expect(existsSync(path.join(dir, "worker.env"))).toBe(false);
+});
+
+// And a world.json that is no JSON at all is refused the same way, by the one reader every
+// program of the run reads the world with (gh-call.ts's `worldOf`). Catches: a reader whose
+// `JSON.parse` throws uncaught, which ends the program with a stack trace and exit 1 rather than
+// the documented "is no world" and 2 the gh stand-in gives for the same file — a reader of the
+// run's output then has a crash where it should have the file and the program that stopped.
+test("worker-pane.ts refuses a world.json that is no JSON, naming the file", () => {
+  const dir = path.join(rig, "worker-pane-no-json");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "world.json"), "{not json");
+  writeFileSync(path.join(dir, "base.env"), "");
+  const built = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "worker-pane.ts"),
+    dir,
+    path.join(dir, "base.env"),
+    "13399",
+    "rig-profile",
+    "skillsrig",
+    "LWEVAL-1",
+    "tester",
+    path.resolve(import.meta.dir, "../../../.."),
+  ]);
+  expect(built.stderr.toString()).toStartWith(`worker-pane.ts: ${dir}/world.json is no world: `);
+  expect(built.exitCode).toBe(2);
+  expect(existsSync(path.join(dir, "worker.env"))).toBe(false);
+});

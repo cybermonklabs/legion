@@ -4,10 +4,24 @@
 // daemon-pane.ts runs it with `go run -overlay` as a main inside a checkout's packages/daemon, the
 // one place the daemon's internal packages can be imported from.
 //
-//	phase <role>             prints the phase the role's worker runs in, the first phase
-//	                         workflow.RoleFor gives to the role, then on a second line the word of
-//	                         the handoff record that phase ends with (handoffWords), empty for a
-//	                         phase that ends with none
+//	phase <role>             prints the phase the role's worker runs in, then on a second line the
+//	                         word of the handoff record that phase ends with (handoffWords), empty
+//	                         for a phase that ends with none: the first phase workflow.RoleFor
+//	                         gives to the role
+//	refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]]
+//	                         prints the code of the daemon's refusal of a completion of a phase
+//	                         the role does not run, then on a second line the daemon's own
+//	                         message for it, read out of the daemon's source (notCurrentPhase)
+//	routes [<api package dir>]
+//	                         prints each route the daemon's API registers, `<METHOD> <path>` one
+//	                         to a line in byte order, read out of the daemon's source (routes)
+//	count-default <key> [<config source>]
+//	                         prints the default of the count setting `key` (legion.yaml), read
+//	                         out of the daemon's source (countDefault)
+//	claim-refusal <name> [<claim package dir>]
+//	                         prints the status of the claim refusal `name` (claim.InvalidSecret,
+//	                         claim.StaleGeneration, …), then on a second line its message, read out
+//	                         of the daemon's source (claimRefusal)
 //	pane                     reads a paneRequest (JSON) on stdin, writes the claim's gh bundle
 //	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON)
 package main
@@ -16,9 +30,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,7 +58,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | pane < request.json"
+const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]] | routes [<api package dir>] | count-default <key> [<config source>] | claim-refusal <name> [<claim package dir>] | pane < request.json"
 
 func main() {
 	args := os.Args[1:]
@@ -45,6 +66,43 @@ func main() {
 	switch {
 	case len(args) == 2 && args[0] == "phase":
 		err = printPhase(claim.Role(args[1]))
+	case len(args) >= 5 && len(args) <= 7 && args[0] == "refusal" && args[1] == "not-current-phase":
+		// The engine source the refusal is read out of, and the intake package the engine's
+		// shared refusals are built in: the daemon's own, and the ones a caller names otherwise.
+		// A caller names them so that a test can hold this reading to substitutes of its own and
+		// watch each shape and each guard below fire — the guards answer a daemon that writes
+		// the refusal in some other shape, which today's daemon does not, and the base label's
+		// shape is one today's daemon no longer writes, so without sources of its own not one of
+		// them can be reached (daemon-pane.test.ts). The rig itself names none and reads the
+		// daemon's files.
+		engine, intakeDir := defaultEngineFile, defaultIntakeDir
+		if len(args) >= 6 {
+			engine = args[5]
+		}
+		if len(args) == 7 {
+			intakeDir = args[6]
+		}
+		err = printNotCurrentPhase(args[2], args[3], args[4], engine, intakeDir)
+	case (len(args) == 1 || len(args) == 2) && args[0] == "routes":
+		// The package the routes are read out of: the daemon's own, and the one a caller names
+		// otherwise, for the reason the refusal's sources are named (above).
+		dir := defaultAPIDir
+		if len(args) == 2 {
+			dir = args[1]
+		}
+		err = printRoutes(dir)
+	case (len(args) == 2 || len(args) == 3) && args[0] == "count-default":
+		file := defaultConfigFile
+		if len(args) == 3 {
+			file = args[2]
+		}
+		err = printCountDefault(args[1], file)
+	case (len(args) == 2 || len(args) == 3) && args[0] == "claim-refusal":
+		dir := defaultClaimDir
+		if len(args) == 3 {
+			dir = args[2]
+		}
+		err = printClaimRefusal(args[1], dir)
 	case len(args) == 1 && args[0] == "pane":
 		err = pane()
 	default:
@@ -66,15 +124,492 @@ var handoffWords = map[phase.Phase]string{
 	phase.Planning: "plan", phase.Implementing: "implement", phase.Testing: "test", phase.Reviewing: "review",
 }
 
+// printPhase prints the first phase of the transition table `role` works and that phase's handoff
+// word.
 func printPhase(role claim.Role) error {
 	for _, p := range phase.All {
-		if workflow.RoleFor(p) == role {
-			fmt.Println(p)
-			fmt.Println(handoffWords[p])
-			return nil
+		if workflow.RoleFor(p) != role {
+			continue
 		}
+		fmt.Println(p)
+		fmt.Println(handoffWords[p])
+		return nil
 	}
 	return fmt.Errorf("%q works no phase", role)
+}
+
+// defaultAPIDir is the package the daemon registers its HTTP routes in, read relative to the
+// module this program is run inside, and taken as an argument as defaultEngineFile is.
+const defaultAPIDir = "internal/api"
+
+// printRoutes prints the routes the daemon's API registers (routes), one to a line.
+func printRoutes(dir string) error {
+	registered, err := routes(dir)
+	if err != nil {
+		return err
+	}
+	for _, route := range registered {
+		fmt.Println(route)
+	}
+	return nil
+}
+
+// routes is every route the API package at `dir` registers, each as the pattern its registration
+// names (`<METHOD> <path>`), in byte order and once each: the string literal a
+// `<mux>.HandleFunc(…)` or `<mux>.Handle(…)` call of the package's own files names first. It is
+// read out of the source rather than listed in the rig, so the stand-in of each label answers the
+// routes that label's daemon serves (daemon-standin.ts), and a route the daemon adds is one the
+// rig reads with no edit. The pattern `/` names no route: it is the mux's remainder, every request
+// no other pattern matches, which the daemon's catch-all answers 404 ("no route"), as the stand-in
+// answers a route its label does not serve. Any other pattern naming no method is an error, since
+// what it serves is every method of a path and the rig reads a route as one method and one path;
+// so is a package registering none, never an empty set: the stand-in would answer every route 404
+// and health would call that the daemon's own answer.
+func routes(dir string) ([]string, error) {
+	sources, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return nil, fmt.Errorf("list the daemon's %s: %w", dir, err)
+	}
+	seen := map[string]bool{}
+	var methodless []string
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
+		if err != nil {
+			return nil, fmt.Errorf("read the daemon's %s: %w", source, err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, isCall := node.(*ast.CallExpr)
+			if !isCall || len(call.Args) != 2 {
+				return true
+			}
+			selector, isSelector := call.Fun.(*ast.SelectorExpr)
+			if !isSelector || (selector.Sel.Name != "HandleFunc" && selector.Sel.Name != "Handle") {
+				return true
+			}
+			pattern, isText := stringLiteral(call.Args[0])
+			switch {
+			case !isText || pattern == "/":
+			case strings.Contains(pattern, " "):
+				seen[pattern] = true
+			default:
+				methodless = append(methodless, pattern)
+			}
+			return true
+		})
+	}
+	if len(methodless) > 0 {
+		return nil, fmt.Errorf("%s registers %q with no method, a route this reading cannot name as one method and one path", dir, methodless)
+	}
+	if len(seen) == 0 {
+		return nil, fmt.Errorf("%s registers no route with a HandleFunc or Handle call naming its pattern: the daemon registers its routes some other way now", dir)
+	}
+	registered := make([]string, 0, len(seen))
+	for pattern := range seen {
+		registered = append(registered, pattern)
+	}
+	slices.Sort(registered)
+	return registered, nil
+}
+
+// defaultConfigFile is where the daemon reads legion.yaml and keeps each setting's default, read
+// relative to the module, and taken as an argument as defaultEngineFile is.
+const defaultConfigFile = "internal/config/config.go"
+
+// printCountDefault prints the default of the count setting `key` (countDefault).
+func printCountDefault(key, file string) error {
+	value, err := countDefault(key, file)
+	if err != nil {
+		return err
+	}
+	fmt.Println(value)
+	return nil
+}
+
+// countDefault is the default the daemon gives the count setting `key` when legion.yaml leaves it
+// out, read out of the source at `file`: the integer literal beside the key's string literal in
+// the entry of the daemon's table of count keys that names it (`{"<key>", <default>, …}`). The rig
+// runs with no legion.yaml, so that default is the value the daemon runs with. An entry of
+// another shape, or none, is an error, never a number this invents.
+func countDefault(key, file string) (int, error) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+	if err != nil {
+		return 0, fmt.Errorf("read the daemon's %s: %w", file, err)
+	}
+	value, found := 0, false
+	var read error
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		if found || read != nil {
+			return false
+		}
+		entry, isLiteral := node.(*ast.CompositeLit)
+		if !isLiteral || len(entry.Elts) < 2 {
+			return true
+		}
+		if named, isText := stringLiteral(entry.Elts[0]); !isText || named != key {
+			return true
+		}
+		number, isNumber := entry.Elts[1].(*ast.BasicLit)
+		if !isNumber || number.Kind != token.INT {
+			read = fmt.Errorf("%s gives %s a default of %s, which is no integer literal", file, key, types.ExprString(entry.Elts[1]))
+			return false
+		}
+		value, read = strconv.Atoi(number.Value)
+		found = read == nil
+		return false
+	})
+	if read != nil {
+		return 0, read
+	}
+	if !found {
+		return 0, fmt.Errorf("%s holds no {%q, <default>, …} entry: the daemon keeps that default some other way now", file, key)
+	}
+	return value, nil
+}
+
+// defaultEngineFile is where the daemon builds the workflow's refusals, read relative to the
+// module this program is run inside (daemon-pane.ts). Every reader below takes the file as an
+// argument rather than this constant, so a caller — a test — can hold the reading to a
+// substitute of its own.
+const defaultEngineFile = "internal/workflow/engine.go"
+
+// defaultIntakeDir is the package a refusal the engine shares with the completion route is built
+// in (`intake.NotCurrentPhase`), read relative to the module as defaultEngineFile is, and taken
+// as an argument for the same reason.
+const defaultIntakeDir = "internal/intake"
+
+// notCurrentPhaseCode is the refusal the daemon answers a completion of a phase the completing
+// role does not run with.
+const notCurrentPhaseCode = "HANDOFF_NOT_CURRENT_PHASE"
+
+// printNotCurrentPhase prints that refusal's code and the daemon's own message for it, for the
+// stand-in to answer such a completion with (daemon-standin.ts).
+func printNotCurrentPhase(role, issuePhase, issue, engineFile, intakeDir string) error {
+	message, err := notCurrentPhase(role, issuePhase, issue, engineFile, intakeDir)
+	if err != nil {
+		return err
+	}
+	fmt.Println(notCurrentPhaseCode)
+	fmt.Println(message)
+	return nil
+}
+
+// notCurrentPhase is the sentence the daemon sends a worker whose completion names a phase its
+// role does not run, read out of the daemon's own code rather than restated here: the skill has
+// the worker quote that sentence to its architect, so a stand-in answering a sentence of its own
+// would teach every agent a message the daemon never sends, and a copy goes stale the day the
+// daemon's wording moves with nothing to say so. The engine builds it in one place, in one of two
+// shapes (refusalMessage), so this reads that call's format and fills it with the arguments the
+// engine itself names. A daemon that writes the refusal in some other shape is an error here,
+// never a sentence this invents.
+func notCurrentPhase(role, issuePhase, issue, engineFile, intakeDir string) (string, error) {
+	format, arguments, err := refusalMessage(notCurrentPhaseCode, engineFile, intakeDir)
+	if err != nil {
+		return "", err
+	}
+	named := map[string]string{"fact.Role": role, "issue.Phase": issuePhase, "issue.Key": issue}
+	values := make([]any, 0, len(arguments))
+	for _, argument := range arguments {
+		value, ok := named[argument]
+		if !ok {
+			return "", fmt.Errorf("%s fills the %s message with %s, which this program has no value for", engineFile, notCurrentPhaseCode, argument)
+		}
+		values = append(values, value)
+	}
+	message := fmt.Sprintf(format, values...)
+	if strings.Contains(message, "%!") {
+		return "", fmt.Errorf("%s's %s message %q takes other arguments than the %d it names", engineFile, notCurrentPhaseCode, format, len(arguments))
+	}
+	return message, nil
+}
+
+// refusalMessage is the format string of the engine's refusal `code` and the argument
+// expressions the engine fills it with, as the daemon writes them, in one of the two shapes the
+// engine has built that refusal in:
+//   - `refused(code, fmt.Sprintf(<format>, <arguments>...))` in the engine itself, main
+//     `ff2a10ef`'s, the base label's;
+//   - `intake.NotCurrentPhase(<arguments>...)` in the engine, this checkout's, whose sentence the
+//     intake package builds, shared with the completion route: its `func NotCurrentPhase` returns
+//     a refusal of `code` whose `Message` is `fmt.Sprintf(<format>, <parameters>...)`, and each
+//     parameter it fills the format with is replaced by the engine's argument in that place.
+//
+// The first is read first; finding neither is an error naming both.
+func refusalMessage(code, engineFile, intakeDir string) (string, []string, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), engineFile, nil, 0)
+	if err != nil {
+		return "", nil, fmt.Errorf("read the daemon's %s: %w", engineFile, err)
+	}
+	format, arguments, found := "", []string(nil), false
+	var shared *ast.CallExpr
+	ast.Inspect(file, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		call, isCall := node.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		if shared == nil && isIntakeNotCurrentPhase(call) {
+			shared = call
+			return true
+		}
+		name, isName := call.Fun.(*ast.Ident)
+		if !isName || name.Name != "refused" || len(call.Args) != 2 {
+			return true
+		}
+		if refused, isText := stringLiteral(call.Args[0]); !isText || refused != code {
+			return true
+		}
+		text, filled, isSprintf := sprintfOf(call.Args[1])
+		if !isSprintf {
+			return true
+		}
+		format, found = text, true
+		for _, argument := range filled {
+			arguments = append(arguments, types.ExprString(argument))
+		}
+		return false
+	})
+	if found {
+		return format, arguments, nil
+	}
+	if shared == nil {
+		return "", nil, fmt.Errorf("%s holds no refused(%q, fmt.Sprintf(…)) call and no intake.NotCurrentPhase(…) call: the daemon writes that refusal some other way now", engineFile, code)
+	}
+	return sharedRefusal(code, shared, intakeDir)
+}
+
+// isIntakeNotCurrentPhase says whether `call` is `intake.NotCurrentPhase(…)`.
+func isIntakeNotCurrentPhase(call *ast.CallExpr) bool {
+	selector, isSelector := call.Fun.(*ast.SelectorExpr)
+	if !isSelector || selector.Sel.Name != "NotCurrentPhase" {
+		return false
+	}
+	pkg, isIdent := selector.X.(*ast.Ident)
+	return isIdent && pkg.Name == "intake"
+}
+
+// sharedRefusal is the format and the engine's arguments of the refusal `code` the engine builds
+// with `call`, `intake.NotCurrentPhase(…)`: the format of the `Message` the intake package's
+// `func NotCurrentPhase` writes beside `Code: code`, and, for each parameter that format is
+// filled with, the engine's argument in that parameter's place.
+func sharedRefusal(code string, call *ast.CallExpr, intakeDir string) (string, []string, error) {
+	sources, err := filepath.Glob(filepath.Join(intakeDir, "*.go"))
+	if err != nil {
+		return "", nil, fmt.Errorf("list the daemon's %s: %w", intakeDir, err)
+	}
+	missing := fmt.Errorf("%s holds no func NotCurrentPhase returning a %s refusal whose Message is fmt.Sprintf(…) of its parameters: the daemon writes that refusal some other way now", intakeDir, code)
+	var function *ast.FuncDecl
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
+		if err != nil {
+			return "", nil, fmt.Errorf("read the daemon's %s: %w", source, err)
+		}
+		for _, decl := range file.Decls {
+			if fn, isFunc := decl.(*ast.FuncDecl); isFunc && fn.Recv == nil && fn.Name.Name == "NotCurrentPhase" && fn.Body != nil {
+				function = fn
+			}
+		}
+	}
+	if function == nil {
+		return "", nil, missing
+	}
+	var parameters []string
+	for _, field := range function.Type.Params.List {
+		for _, name := range field.Names {
+			parameters = append(parameters, name.Name)
+		}
+	}
+	if len(parameters) != len(call.Args) {
+		return "", nil, fmt.Errorf("the engine calls intake.NotCurrentPhase with %d arguments, and %s's takes %d", len(call.Args), intakeDir, len(parameters))
+	}
+	format, filled, found := "", []ast.Expr(nil), false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		literal, isLiteral := node.(*ast.CompositeLit)
+		if !isLiteral {
+			return true
+		}
+		var coded bool
+		var message ast.Expr
+		for _, element := range literal.Elts {
+			field, isField := element.(*ast.KeyValueExpr)
+			if !isField {
+				continue
+			}
+			key, isKey := field.Key.(*ast.Ident)
+			if !isKey {
+				continue
+			}
+			switch key.Name {
+			case "Code":
+				text, isText := stringLiteral(field.Value)
+				coded = isText && text == code
+			case "Message":
+				message = field.Value
+			}
+		}
+		if !coded || message == nil {
+			return true
+		}
+		format, filled, found = sprintfOf(message)
+		return !found
+	})
+	if !found {
+		return "", nil, missing
+	}
+	arguments := make([]string, 0, len(filled))
+	for _, expression := range filled {
+		name, isName := expression.(*ast.Ident)
+		place := -1
+		if isName {
+			for at, parameter := range parameters {
+				if parameter == name.Name {
+					place = at
+				}
+			}
+		}
+		if place < 0 {
+			return "", nil, fmt.Errorf("%s fills the %s message with %s, which is none of NotCurrentPhase's parameters", intakeDir, code, types.ExprString(expression))
+		}
+		arguments = append(arguments, types.ExprString(call.Args[place]))
+	}
+	return format, arguments, nil
+}
+
+// sprintfOf is the format literal and the arguments of `expression` when it is
+// `fmt.Sprintf(<format literal>, <arguments>...)`, and false for any other expression.
+func sprintfOf(expression ast.Expr) (string, []ast.Expr, bool) {
+	sprintf, isCall := expression.(*ast.CallExpr)
+	if !isCall {
+		return "", nil, false
+	}
+	printer, isSelector := sprintf.Fun.(*ast.SelectorExpr)
+	if !isSelector || printer.Sel.Name != "Sprintf" || len(sprintf.Args) == 0 {
+		return "", nil, false
+	}
+	text, isText := stringLiteral(sprintf.Args[0])
+	if !isText {
+		return "", nil, false
+	}
+	return text, sprintf.Args[1:], true
+}
+
+// defaultClaimDir is the package the daemon keeps its claim refusals in, read relative to the
+// module, and taken as an argument as defaultEngineFile is.
+const defaultClaimDir = "internal/claim"
+
+// statuses are the HTTP statuses a claim refusal is written with, by the name net/http gives each:
+// the standard library's own constants, so a refusal of another status is an error here.
+var statuses = map[string]int{
+	"StatusBadRequest": http.StatusBadRequest, "StatusUnauthorized": http.StatusUnauthorized,
+	"StatusForbidden": http.StatusForbidden, "StatusConflict": http.StatusConflict,
+	"StatusGone": http.StatusGone, "StatusPreconditionFailed": http.StatusPreconditionFailed,
+}
+
+// printClaimRefusal prints the claim refusal `name`'s status and message (claimRefusal).
+func printClaimRefusal(name, dir string) error {
+	status, message, err := claimRefusal(name, dir)
+	if err != nil {
+		return err
+	}
+	fmt.Println(status)
+	fmt.Println(message)
+	return nil
+}
+
+// claimRefusal is the status and the message of the claim refusal the package at `dir` declares
+// as `<name> = Refusal{Status: http.<Status>, Message: "<message>"}`: the answer a claim route
+// gives a caller it refuses, read out of the source rather than restated in the rig, so the
+// stand-in's refusal is the daemon's own sentence (daemon-standin.ts). A declaration of another
+// shape, or none, is an error, never a sentence this invents.
+func claimRefusal(name, dir string) (int, string, error) {
+	sources, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return 0, "", fmt.Errorf("list the daemon's %s: %w", dir, err)
+	}
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
+		if err != nil {
+			return 0, "", fmt.Errorf("read the daemon's %s: %w", source, err)
+		}
+		for _, decl := range file.Decls {
+			general, isGeneral := decl.(*ast.GenDecl)
+			if !isGeneral || general.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range general.Specs {
+				value, isValue := spec.(*ast.ValueSpec)
+				if !isValue || len(value.Names) != 1 || value.Names[0].Name != name || len(value.Values) != 1 {
+					continue
+				}
+				status, message, read := refusalLiteral(value.Values[0])
+				if !read {
+					return 0, "", fmt.Errorf("%s declares %s as %s, which is no Refusal{Status: http.<Status>, Message: \"<message>\"}", source, name, types.ExprString(value.Values[0]))
+				}
+				return status, message, nil
+			}
+		}
+	}
+	return 0, "", fmt.Errorf("%s declares no claim refusal %s: the daemon refuses that caller some other way now", dir, name)
+}
+
+// refusalLiteral is the status and the message of `Refusal{Status: http.<Status>, Message:
+// "<message>"}`, and false for any other expression.
+func refusalLiteral(expression ast.Expr) (int, string, bool) {
+	literal, isLiteral := expression.(*ast.CompositeLit)
+	if !isLiteral {
+		return 0, "", false
+	}
+	if kind, isIdent := literal.Type.(*ast.Ident); !isIdent || kind.Name != "Refusal" {
+		return 0, "", false
+	}
+	status, message := 0, ""
+	for _, element := range literal.Elts {
+		field, isField := element.(*ast.KeyValueExpr)
+		if !isField {
+			return 0, "", false
+		}
+		key, isKey := field.Key.(*ast.Ident)
+		if !isKey {
+			return 0, "", false
+		}
+		switch key.Name {
+		case "Status":
+			named, isSelector := field.Value.(*ast.SelectorExpr)
+			if !isSelector {
+				return 0, "", false
+			}
+			status = statuses[named.Sel.Name]
+		case "Message":
+			text, isText := stringLiteral(field.Value)
+			if !isText {
+				return 0, "", false
+			}
+			message = text
+		}
+	}
+	return status, message, status != 0 && message != ""
+}
+
+// stringLiteral is the text of an interpreted string literal, and false for any other expression.
+func stringLiteral(expression ast.Expr) (string, bool) {
+	literal, isLiteral := expression.(*ast.BasicLit)
+	if !isLiteral || literal.Kind != token.STRING {
+		return "", false
+	}
+	text, err := strconv.Unquote(literal.Value)
+	return text, err == nil
 }
 
 // paneRequest is the claim a pane is launched for, and the rig's stand-ins for what the daemon
@@ -92,15 +627,22 @@ type paneRequest struct {
 	// BootTokenFile is the rig's boot token file, the one its stand-in daemon checks.
 	BootTokenFile string `json:"bootTokenFile"`
 	// GHToken is the GitHub token the rig stands in for the claim's App token: it is rendered
-	// into the claim's gh bundle (runtime.GHConfigDir), the one directory of rigOwner, which the
-	// pane's GH_CONFIG_DIR names, as the daemon's tmux runtime writes it at spawn; the pane's
-	// LEGION_GH_PATH is realGH's: GHPath when the rig names one, else the first gh on Path,
-	// refused when that is a script, as the daemon resolves it at boot. "" is a daemon
+	// into the claim's gh bundle (runtime.GHConfigDir), the one directory of Repository's owner,
+	// which the pane's GH_CONFIG_DIR names, as the daemon's tmux runtime writes it at spawn; the
+	// pane's LEGION_GH_PATH is realGH's: GHPath when the rig names one, else the first gh on
+	// Path, refused when that is a script, as the daemon resolves it at boot. "" is a daemon
 	// with no GitHub credential: no files, and no gh variable on the pane.
 	GHToken string `json:"ghToken"`
 	// Path is the PATH the daemon would start under; the pane's PATH is it behind the pane's
 	// launcher directory (workerbin.Path).
 	Path string `json:"path"`
+	// Repository is the GitHub repository of the run's own world and DefaultBranch the branch
+	// that world opens its pull request against. The pane's addressing names them, as a real
+	// pane's names its issue's, and its gh bundle is the directory of this repository's owner.
+	// Why they are the world's own and no name of this program's: the worker world comment of
+	// rig.sh, which holds that story once.
+	Repository    string `json:"repository"`
+	DefaultBranch string `json:"defaultBranch"`
 	// GHPath is the real gh the rig names for the pane, as an operator names one with
 	// LEGION_GH_PATH: its recording stand-in. "" is the daemon's own resolution, the first gh on
 	// Path, refused when that is a script.
@@ -125,11 +667,19 @@ func pane() error {
 	if err := decoder.Decode(&req); err != nil {
 		return fmt.Errorf("read the request: %w", err)
 	}
+	repository, err := ghrepo.Parse("the rig's repository", req.Repository)
+	if err != nil {
+		return err
+	}
+	if req.DefaultBranch == "" {
+		return errors.New("the rig's world names no default branch, which the pane's addressing names")
+	}
 	role := claim.Role(req.Role)
 	token, err := claim.NewToken(req.Project, req.Issue, role)
 	if err != nil {
 		return err
 	}
+	owner := repository.Owner()
 	ghRoot, gh := "", ""
 	if req.GHToken != "" {
 		// ghconfig's one writer of a role's gh bundle, so the rig's directory is the daemon's layout;
@@ -138,7 +688,7 @@ func pane() error {
 		// alone, where a daemon serving more holds a `<owner>/<repo>` directory beside it per sibling
 		// repository.
 		ghRoot = runtime.GHConfigDir(req.StateDir, token)
-		bundle := ghconfig.Bundle{Default: rigOwner, Dirs: map[string]ghconfig.Rendered{rigOwner: ghconfig.Render(req.GHToken, "", time.Time{})}}
+		bundle := ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: ghconfig.Render(req.GHToken, "", time.Time{})}}
 		if _, err := ghconfig.WriteBundle(ghRoot, bundle); err != nil {
 			return fmt.Errorf("write the claim's gh files: %w", err)
 		}
@@ -149,7 +699,7 @@ func pane() error {
 	spec := runtime.SpawnSpec{Claim: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1}
 	variables, err := tmux.PaneVariables(spec, tmux.PaneInputs{
 		StateDir: req.StateDir, Workspace: req.Workspace, DaemonURL: req.DaemonURL, EnvoyURL: req.EnvoyURL,
-		NATSURLs: req.NATSURLs, GHOwnersDir: ghRoot, GHDefault: rigOwner, GH: gh,
+		NATSURLs: req.NATSURLs, GHOwnersDir: ghRoot, GHDefault: owner, GH: gh,
 	}, []runtime.SecretFile{{Variable: "LEGION_BOOT_TOKEN", Path: req.BootTokenFile}})
 	if err != nil {
 		return err
@@ -160,24 +710,12 @@ func pane() error {
 		res.Env[name] = value
 	}
 	if req.SystemPrompt {
-		if res.SystemPromptArgument, err = systemPromptArgument(req, token); err != nil {
+		if res.SystemPromptArgument, err = systemPromptArgument(req, token, repository); err != nil {
 			return err
 		}
 	}
 	return json.NewEncoder(os.Stdout).Encode(res)
 }
-
-// rigOwner is the one GitHub owner of the rig's project, a placeholder whose directory of the gh
-// bundle holds the rig's token.
-const rigOwner = "skills-rig"
-
-// rigRepository and rigDefaultBranch are the repository and default branch a rig worker's
-// addressing names, as a real pane's does for its issue; the branch is not `main`, since the skills
-// tell a worker never to assume one.
-const (
-	rigRepository    = rigOwner + "/project"
-	rigDefaultBranch = "trunk"
-)
 
 // realGH is the real gh the pane is told as LEGION_GH_PATH: named, the gh the rig names (its
 // stand-in, as an operator's LEGION_GH_PATH is taken as given), else the daemon's resolution at
@@ -223,8 +761,11 @@ func firstBytes(path string, n int) ([]byte, error) {
 }
 
 // systemPromptArgument composes the pane's role prompt as the daemon does (specs.SpawnSpec): the
-// role prompts snapshotted under the state directory, the role's parts, then its addressing.
-func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
+// role prompts snapshotted under the state directory, the role's parts, then its addressing. The
+// addressing names `repository`, the world's own, and the world's default branch, so the
+// repository a worker is told to work in is the one its gh calls reach and the one the
+// architect's note in its prompt names.
+func systemPromptArgument(req paneRequest, token claim.Token, repository ghrepo.Repository) (string, error) {
 	role := claim.Role(req.Role)
 	if claim.IsTreeArchitect(role, req.Issue, req.Issue) {
 		return "", errors.New("a tree architect is also told its design gate policy, which the rig does not stand in for")
@@ -237,14 +778,10 @@ func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	repository, err := ghrepo.Parse("the rig's repository", rigRepository)
-	if err != nil {
-		return "", err
-	}
 	addressing, err := daemon.AddressingFragment(req.Project, supervise.Claim{
 		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1,
-	}, repository, rigDefaultBranch, api.RepositoriesView{
-		Mapped: []api.MappedRepositoryView{{Repo: rigRepository, Default: true}},
+	}, repository, req.DefaultBranch, api.RepositoriesView{
+		Mapped: []api.MappedRepositoryView{{Repo: repository.String(), Default: true}},
 	})
 	if err != nil {
 		return "", err

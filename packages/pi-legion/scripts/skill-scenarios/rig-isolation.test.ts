@@ -202,7 +202,9 @@ const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).diges
 /** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data
  * and config directories when the caller names them: jq is a mise shim on a devbox, which finds
  * nothing under a fresh HOME without them. A caller that names neither gets neither, so the
- * developer's own home decides nothing here. */
+ * developer's own home decides nothing here. The caller's PUBLIC_LEAK_CHECK goes through where it
+ * names one: on a Legion pod the `git` on PATH is the leak-check wrapper, and rig.sh refuses a run
+ * whose wrapper has no check to run (its push_guard). */
 const miseData =
   process.env.MISE_DATA_DIR ??
   (process.env.XDG_DATA_HOME === undefined
@@ -217,6 +219,9 @@ const env = {
   ...(process.env.XDG_CONFIG_HOME === undefined
     ? {}
     : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+  ...(process.env.PUBLIC_LEAK_CHECK === undefined
+    ? {}
+    : { PUBLIC_LEAK_CHECK: process.env.PUBLIC_LEAK_CHECK }),
   STUB_DIR: stub,
   SKILL_SCENARIOS_WORK: work,
   SKILL_SCENARIOS_ASKGATE_CASE: "facts",
@@ -296,7 +301,8 @@ beforeAll(async () => {
   runs = await Promise.all(
     [1, 2].map(async (n) => {
       const { code, stderr } = await runRig(["run", "askgate", "on", String(n), String(n), start]);
-      return { n, code, stderr, dir: path.join(work, "runs", `askgate-facts-on-${n}`) };
+      // A run that has ended is in the archive (rig.sh's archive_run).
+      return { n, code, stderr, dir: path.join(work, "archive", "runs", `askgate-facts-on-${n}`) };
     })
   );
   servers = lines(path.join(stub, "servers.log")).map((line) => {
@@ -382,7 +388,8 @@ test.skipIf(withoutPython)(
     const { code, stderr } = await runRig(["run", "askgate", "stale", "1", "3", start]);
     expect(code).toBe(1);
     expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
-    expect(existsSync(path.join(work, "runs", "askgate-facts-stale-1"))).toBe(false);
+    for (const runs of [["runs"], ["archive", "runs"]])
+      expect(existsSync(path.join(work, ...runs, "askgate-facts-stale-1"))).toBe(false);
     expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
   }
 );
@@ -397,7 +404,7 @@ test.skipIf(withoutPython)(
       SKILL_SCENARIOS_ASKGATE_CASE: "link",
     });
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-    const dir = path.join(work, "runs", "askgate-link-on-1");
+    const dir = path.join(work, "archive", "runs", "askgate-link-on-1");
     const prompt = readFileSync(path.join(dir, "prompt.txt"), "utf8");
     const quoted = /export-host\.crontab runs .*\(its line (\d+): `([^`]+)`\)/.exec(prompt);
     const [, line = "", text = ""] = quoted ?? [];

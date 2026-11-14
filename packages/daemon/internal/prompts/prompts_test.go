@@ -54,7 +54,8 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		{"tester", claim.RoleTester, false, []string{"core/common.md", "core/tester.md", "mechanics/headless.md", "tester.md"}, []string{"tester.md", "worker-common.md"}, []string{`op: "handoff_complete"`, `verdict: "pass"`, `verdict: "fail"`,
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
-			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on"}},
+			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on",
+			"your approval of the head that commit made is read by no daemon check"}},
 		// The merge the merger is told to run names the head GitHub must match, on a queue base and
 		// off it, and carries the message it writes itself; its completion is an ordinary phase
 		// completion, refused only on the grounds every phase worker's is (dispatch://INFRA-714, R2).
@@ -209,7 +210,10 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 // merges. Nor does any carry the rules that removal replaced: that the approved and the merged
 // head keep .legion/, and that the daemon strips the leftovers from the next issue's branch. No
 // prompt names READY either: the merger submits the merge itself (dispatch://INFRA-714, R2), so
-// the refusals READY answered with went with it.
+// the refusals READY answered with went with it, and the daemon holds the commits above the
+// approved head to nothing — the repository's branch rules decide the merge, the owner's ruling
+// (dispatch://INFRA-714/ask/beea7685) — so no prompt carries the merger's own fileset check any
+// more.
 func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 	stateDir := t.TempDir()
 	composer, err := New(stateDir)
@@ -605,7 +609,7 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		"once the branch has an open pull request",
 		"an empty one when your work is complete",
 		"tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-		"The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
+		"The merger and the reviewer push nothing, so this step never falls to either; each reports a mismatch it sees to the architect.",
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger} {

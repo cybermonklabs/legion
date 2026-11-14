@@ -4,6 +4,7 @@ import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type * as seedModule from "./seed";
+import type * as handoffSeedsModule from "./seed-handoffs";
 
 // e2e/api.ts, which seed.ts calls, reads its port when it loads: set it as rig.sh's seed_ts does,
 // then load seed.ts. PLAYWRIGHT_BASE_URL would point api.ts somewhere else. Both go back to what
@@ -13,6 +14,7 @@ import type * as seedModule from "./seed";
 // registered, so a write at module scope would stay written for every later file.
 restoreEnvironment(["DISPATCH_E2E_PORT", "PLAYWRIGHT_BASE_URL"]);
 let seed: typeof seedModule;
+let handoffSeeds: typeof handoffSeedsModule;
 
 const origin = "http://127.0.0.1:18777";
 const work = temporaryDirectory("skill-scenarios-seed");
@@ -21,6 +23,7 @@ beforeAll(async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   delete process.env.PLAYWRIGHT_BASE_URL;
   seed = await import("./seed");
+  handoffSeeds = await import("./seed-handoffs");
 });
 let dirs = 0;
 function freshDir(name: string): string {
@@ -1059,13 +1062,13 @@ describe("tester-proof", () => {
     const body = { schemaVersion: 1, phase: "implement", issue: "LWEVAL-2" };
     writeFileSync(path.join(dir, "implement.json"), JSON.stringify(body));
     const commit = "1111111111111111111111111111111111111111";
-    await seed.implementHandoff(file, path.join(dir, "implement.json"), commit);
+    await handoffSeeds.phaseHandoff(file, path.join(dir, "implement.json"), "implement", commit);
     expect(dispatch.handoffs).toEqual([
       expect.objectContaining({
         issue_key: "LWEVAL-2",
         phase: "implement",
         version: 1,
-        author: seed.IMPLEMENTER,
+        author: handoffSeeds.IMPLEMENTER,
         body: JSON.stringify(body),
       }),
     ]);
@@ -1076,10 +1079,10 @@ describe("tester-proof", () => {
         role: "implementer",
         verdict: "pass",
         commit_sha: commit,
-        actor: seed.IMPLEMENTER,
+        actor: handoffSeeds.IMPLEMENTER,
       }),
     ]);
-    expect(seed.IMPLEMENTER.id).not.toBe(runSession.id);
+    expect(handoffSeeds.IMPLEMENTER.id).not.toBe(runSession.id);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       issue: "LWEVAL-2",
       implement: { id: dispatch.handoffs[0]?.id, version: 1 },
@@ -1093,10 +1096,87 @@ describe("tester-proof", () => {
     await seed.testerProofIssue(file);
     writeFileSync(path.join(dir, "implement.json"), "[1]");
     await expect(
-      seed.implementHandoff(file, path.join(dir, "implement.json"), "1".repeat(40))
+      handoffSeeds.phaseHandoff(file, path.join(dir, "implement.json"), "implement", "1".repeat(40))
     ).rejects.toThrow("holds no JSON object");
     expect(dispatch.handoffs).toEqual([]);
     expect(dispatch.results).toEqual([]);
+  });
+
+  // Catches: a tester result the reviewer's approval gate would not read (another check, another
+  // commit, the run's own session), or one that drops the implementer's record from the fixture.
+  test("records the tester's handoff and result at the head, beside the implementer's", async () => {
+    const dir = freshDir("seed");
+    const file = path.join(dir, "fixture.json");
+    await seed.testerProofIssue(file);
+    writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
+    const commit = "3333333333333333333333333333333333333333";
+    await handoffSeeds.phaseHandoff(file, path.join(dir, "implement.json"), "implement", commit);
+    const body = { schemaVersion: 1, phase: "test", issue: "LWEVAL-2" };
+    writeFileSync(path.join(dir, "test.json"), JSON.stringify(body));
+    await handoffSeeds.phaseHandoff(file, path.join(dir, "test.json"), "test", commit);
+    expect(dispatch.handoffs[1]).toMatchObject({
+      issue_key: "LWEVAL-2",
+      phase: "test",
+      version: 1,
+      author: handoffSeeds.TESTER,
+      body: JSON.stringify(body),
+    });
+    expect(dispatch.results[1]).toMatchObject({
+      issue_key: "LWEVAL-2",
+      check: "k1",
+      role: "tester",
+      verdict: "pass",
+      commit_sha: commit,
+      actor: handoffSeeds.TESTER,
+    });
+    expect(handoffSeeds.TESTER.id).not.toBe(handoffSeeds.IMPLEMENTER.id);
+    expect(handoffSeeds.TESTER.id).not.toBe(runSession.id);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      issue: "LWEVAL-2",
+      implement: { id: dispatch.handoffs[0]?.id, version: 1 },
+      test: { id: dispatch.handoffs[1]?.id, version: 1 },
+    });
+  });
+
+  // Catches: a tester body that is no JSON object reaching Dispatch, which implement-handoff
+  // refuses and tester-result must refuse the same way.
+  test("refuses a tester body that is no JSON object, and writes nothing", async () => {
+    const dir = freshDir("seed");
+    const file = path.join(dir, "fixture.json");
+    await seed.testerProofIssue(file);
+    writeFileSync(path.join(dir, "test.json"), '"a string"');
+    await expect(
+      handoffSeeds.phaseHandoff(file, path.join(dir, "test.json"), "test", "4".repeat(40))
+    ).rejects.toThrow("holds no JSON object");
+    expect(dispatch.handoffs).toEqual([]);
+    expect(dispatch.results).toEqual([]);
+  });
+
+  // Catches: a review handoff recorded under the run's own session, which the agent reading the
+  // approval would read as its own, or one that records a result against the issue's check,
+  // which a reviewer records none of.
+  test("records the review handoff under the reviewer's session, and no result", async () => {
+    const dir = freshDir("seed");
+    const file = path.join(dir, "fixture.json");
+    await seed.testerProofIssue(file);
+    const body = { schemaVersion: 1, phase: "review", issue: "LWEVAL-2", decision: "approved" };
+    writeFileSync(path.join(dir, "review.json"), JSON.stringify(body));
+    await handoffSeeds.phaseHandoff(file, path.join(dir, "review.json"), "review");
+    expect(dispatch.handoffs).toEqual([
+      expect.objectContaining({
+        issue_key: "LWEVAL-2",
+        phase: "review",
+        version: 1,
+        author: handoffSeeds.REVIEWER,
+        body: JSON.stringify(body),
+      }),
+    ]);
+    expect(dispatch.results).toEqual([]);
+    expect(handoffSeeds.REVIEWER.id).not.toBe(runSession.id);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      issue: "LWEVAL-2",
+      review: { id: dispatch.handoffs[0]?.id, version: 1 },
+    });
   });
 
   // Catches: a capture that keeps only the metadata Dispatch lists, or loses the newest-first order
@@ -1106,7 +1186,12 @@ describe("tester-proof", () => {
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
     writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
-    await seed.implementHandoff(file, path.join(dir, "implement.json"), "2".repeat(40));
+    await handoffSeeds.phaseHandoff(
+      file,
+      path.join(dir, "implement.json"),
+      "implement",
+      "2".repeat(40)
+    );
     dispatch.handoffs.push({
       id: "h-test",
       issue_key: "LWEVAL-2",
@@ -1116,7 +1201,7 @@ describe("tester-proof", () => {
       created_at: "2026-10-24T10:50:00.000001Z",
       body: '{"phase":"test"}',
     });
-    await seed.captureHandoffs(file, dir);
+    await handoffSeeds.captureHandoffs(file, dir);
     const captured = JSON.parse(readFileSync(path.join(dir, "handoffs.json"), "utf8"));
     expect(
       captured.map((record: { id: string; body: string }) => [record.id, record.body])

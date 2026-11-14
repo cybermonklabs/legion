@@ -24,9 +24,9 @@ later phase keeps it current rather than replacing it:
 
 ## Verification
 
-**Threads:** <n> resolved, 0 unresolved. Each answered and resolved individually by the implementer, the pull request's author, never in bulk (the reviewer names the bot threads it accepted; it resolves none itself):
-- Thread <node id>: fixed in <commit-sha> — <one line>; resolved at <head-sha>.
-- Thread <node id>: not a defect — <reason>; resolved at <head-sha>.
+**Threads:** <n> resolved, <n> unresolved. Each answered individually and resolved individually, never in bulk, by the reviewer that judged the finding (the implementer replies on each thread it answers, records it below at the head that answered it, and resolves none; the count is the reviewer's, which writes the unresolved count and one entry per open thread when it approves, and writes the count again once its resolutions bring it to zero):
+- Thread <node id>: fixed in <commit-sha> — <one line>; answered at <head-sha>.
+- Thread <node id>: not a defect — <reason>; answered at <head-sha>.
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
@@ -44,6 +44,10 @@ order. Each is the line `dispatch result` printed when the result was recorded, 
 **Fast-follow:** "none", or one named cleanup item in a file this pull request does not touch, and where it will land.
 
 **Chain:** stacked on <base bookmark> frozen at <sha> / not stacked.
+
+## Contract change census
+
+<written only when the change adds a refusal, makes a field required, removes or renames a field, or changes a signature at a process or package boundary; see below>
 ```
 
 ## Never waiting on CI
@@ -87,6 +91,37 @@ repos/{owner}/{repo}/pulls/{number} --jq .body`, edit, then `--method PATCH ... 
 word for word, and `none` is a finding while one stands. The merger reads `Outcome` and
 `Not proven / risk` from the body at the head it merges, and a stale `Outcome` that no
 longer describes the diff is a finding against the implementer, not a line the merger rewrites.
+
+When the reviewer approves with text threads open, it writes the `Threads:` count and one entry
+per open thread into that same body, in the form the template carries: `- Thread <node id>: still
+open — <what remains>; unresolved at <head-sha>.` The architect reads that section until it
+accepts, and what the approval leaves there stands until the fix lands. The implementer, in its
+own live session, pushes one commit of the text fixes and rewrites each of those entries with its
+disposition at the head that push made (`fixed in <commit-sha> — <one line>; answered at
+<head-sha>`); it resolves nothing, so it leaves the count as the approval wrote it. The reviewer,
+which resolves each thread it opened, then writes the count again, `<n> resolved, 0 unresolved`,
+in the body before it approves the head the fix landed on
+(`skill://legion-worker/references/review-threads.md` gives the loop, and its *The PR body's
+`Threads` section* says who writes what there). `Fast-follow:` stays
+`none` for such a thread: its fix is in a file this pull request touches and is pushed before the
+merge, which is not what that line is for. An open text thread is not an unproven claim, so `Not
+proven / risk` gains nothing from it and the merger quotes nothing new.
+
+**A contract change carries its census.** A pull request that adds a refusal, makes a field
+required, removes or renames a field, or changes a signature at a process or package boundary
+writes a `## Contract change census` section, and the implementer writes it when it opens the
+body: the search commands that find every caller of the contract, each hit with its disposition,
+and, where the change refuses something a caller does today, the rollout line — warn first, or an
+immediate refusal naming the vulnerability it closes. The reviewer re-runs those commands at the
+head and compares the hits with the list, so a hit the body does not list, a hit without a
+disposition, and a rollout line of neither kind are each a finding, and the section's absence from
+such a pull request is a finding of its own
+(`packages/daemon/internal/prompts/roles/core/reviewer.md`, which the tester reads with it). Under
+a warn-first rollout the negative control of each check's result is the warning itself: the
+refused input or call produces a message naming the change to make, exits 0, and records the
+would-be refusal. A pull request that changes no contract writes no such section. From the retro
+of dispatch://INFRA-1167, where the reviewer asked for a census no file under `skills/` had told
+the implementer to write, and the round it cost is the cost this rule removes.
 
 ## What a result is
 
@@ -136,6 +171,18 @@ A push moves the head, with no Dispatch write of anyone's, so each check with no
 recorded again at the new head. `dispatch results --issue <issue>` prints each check with the
 results recorded against it and the commit each one was recorded at;
 `dispatch read --issue <issue>` names each requirement of the spec no check serves.
+
+**A result goes stale at a new head whoever made the commit** — the implementer's push, the
+tester's — so the commits that move the
+head are batched and each result is recorded after them rather than before, and a proof too
+expensive to re-run carries to a new head only on a diff that shows no code changed; otherwise it
+is run again (the retro of dispatch://INFRA-1306, dispatch://INFRA-1306/comment/9a86f976, whose
+evidence is sjawhar/legion#2210). The one commit of text fixes the implementer pushes after an
+approval that left threads open is read by that same diff rule: a passing result stays current
+across it when its diff changes no code that runs, and the reviewer's approval of the new head
+says it read that diff, what the diff changes, the head each result ran at and the head it
+approves (`skill://legion-worker/references/merge-gate.md`).
+
 
 **An issue is proved by its own checks.** Approval is gated by the `before_merge` checks of its
 own Verification document, read at its own head, so a result a child recorded proves nothing for
@@ -222,8 +269,12 @@ and decides there, the only gate on such an issue.
   Record both in the `Thermo` line.
 - **No deferrals** is the body's rule (*PR body, review, and the merge gate* in
   `skill://legion-worker`): a wording nit, and any clear fix in a file this pull request touches,
-  is made in the running round: a later round costs a CI pass and a re-read of the whole
-  change. A requirement on the `Not proven / risk:` line is unmet, not declared away, unless only
+  is made in this pull request and before it merges, and deferred to no other issue: a later
+  round costs a CI pass and a re-read of the whole change. The implementer makes the ones it
+  finds in the round it is running; one the reviewer raises as a text finding is the
+  implementer's to make in the one commit it pushes after an approval that leaves that thread
+  open, the fix the reviewer's resolution waits for: the same pull request, before the same
+  merge. A requirement on the `Not proven / risk:` line is unmet, not declared away, unless only
   the deploy can show it and the plan names its observation;
   the `Fast-follow:` line never carries one, and reads `none` or names only cleanup in files
   this pull request does not touch. A base frozen for others to stack on is

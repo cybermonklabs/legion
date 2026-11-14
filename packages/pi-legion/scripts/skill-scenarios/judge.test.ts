@@ -1,5 +1,13 @@
 import { beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { answerTurn, judgeRun } from "./judge";
@@ -410,6 +418,21 @@ test("the runner is told the one file the judge may write", async () => {
   const asked: Seen[] = [];
   await answerTurn(runDir("spec-writing-head-6"), 1, { runner: fakeRunner(asked) });
   expect(asked.map((judge) => judge.output)).toEqual(["answer.json", "answer.json"]);
+});
+
+// Catches: an archived run judged as if its archive were the work directory. rig.sh moves every
+// run that has ended to <work>/archive/runs (its archive_run), and the judges' directories and
+// the labels' checkouts are the work directory's own (score.ts's `workOfRuns`).
+test("a run in the archive is judged in the work directory's own judging directory", async () => {
+  const ran = runDir("spec-writing-head-30");
+  const archived = path.join(work, "archive", "runs", "spec-writing-head-30");
+  mkdirSync(path.dirname(archived), { recursive: true });
+  renameSync(ran, archived);
+  const asked: Seen[] = [];
+  await answerTurn(archived, 1, { runner: fakeRunner(asked) });
+  expect(asked.length).toBeGreaterThan(0);
+  for (const judge of asked)
+    expect(path.dirname(judge.dir)).toBe(path.join(work, "judging", "spec-writing-head-30"));
 });
 
 // Dispatch writes `created_at` as Go does, with no trailing zeros: `…:00.5Z` is earlier than

@@ -13,27 +13,10 @@ Three facts govern every thread, whoever opened it.
   resolves anything, and nothing reads a reply for a magic form: a thread is resolved only by the
   resolution below, after its reply.
 - **Resolve each thread you have answered, one thread per call, never in bulk, never a thread you
-  have not read.** GitHub grants `resolveReviewThread` to the pull request's author, and the
-  implementer opens every Legion pull request (`docs/site/src/content/docs/legion/running-legion.md`,
-  "The GitHub Apps"), so the implementer resolves every thread, its own and the ones the
-  reviewer accepted:
-  - The **implementer**, after every push that answers a review and before its `handoff_complete`,
-    resolves each thread it answered with its own `gh`, one thread per call:
-
-    ```bash
-    gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread node id>
-    ```
-
-    A thread a bot opened (a CI bot's, or an App-routed person's) it answers the same way; the
-    reviewer adjudicates the finding. The bot threads the reviewer accepted, which the reviewer
-    names to the implementer by node id (below), the implementer resolves with the same call, one
-    per thread, as soon as the message reaches it or as part of answering that review, and records
-    in the PR body's `Threads` section too; never one the reviewer did not name. When GitHub refuses
-    a resolution, report the thread and GitHub's message to the architect with `envoy_publish`,
-    which opens a `dispatch ask` for a human to resolve it by hand; never skip it silently.
-  - The **reviewer** cannot resolve a thread as its own App: GitHub refuses the review App
-    `resolveReviewThread` on the implementer's pull request, so it replies, and names the threads
-    it accepted to the implementer, who resolves them. List the pull request's threads:
+  have not read.** The reviewer resolves: a thread it opened is a finding it judged, and the
+  resolution records that judgment. The implementer resolves none; it replies, and it fixes.
+  - The **reviewer** lists the pull request's threads, replies on each one it answers, and
+    resolves it once it has read what closed it. List them:
 
     ```bash
     gh api graphql --paginate -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}}' -F o=<owner> -F r=<repo> -F n=<number>
@@ -41,37 +24,150 @@ Three facts govern every thread, whoever opened it.
 
     `--paginate` follows the thread pages, which it prints as one JSON object per page, so add
     `--slurp` when you want a single document; `comments(last:1)` needs no paging of its own.
+    Then resolve, with your own `gh`, one thread per call:
 
-    Reply on each thread you answer, then tell the implementer the node ids of exactly the threads
-    you accepted — a bot's findings you adjudicated — never one you have not read: an
-    `envoy_publish` to the implementer's role topic (it is live on the issue and answers while you
-    wait; its topic is yours from the `Legion addressing` line with `-implementer` as the last part), or your review body, which
-    it reads at its next round. The implementer resolves exactly those with its own `gh`. GitHub
-    cannot tell a CI bot from a person whose `gh` is routed to an App, so such a thread may be a
-    person's finding: accept it only when the finding itself is settled (a genuine Minor is settled
-    by being judged Minor), since the resolution says you judged it.
-- **A reviewer who disagrees with a resolution replies and unresolves it.** Resolution is a
-  judgment, not a ledger entry: a thread the implementer resolved whose finding still stands gets
-  the reviewer's reply saying what stands and is unresolved, and a finding the reviewer cannot
-  accept becomes its own, with a `REQUEST_CHANGES` naming it.
+    ```bash
+    gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread node id>
+    ```
+
+    A thread a bot opened (a CI bot's, or an App-routed person's) you adjudicate, answer and
+    resolve the same way. GitHub cannot tell a CI bot from a person whose `gh` is routed to an
+    App, so such a thread may be a person's finding: resolve it only when the finding itself is
+    settled (a genuine Minor is settled by being judged Minor), since the resolution says you
+    judged it. When GitHub refuses a resolution, report the thread and GitHub's message to the
+    architect with `envoy_publish`,
+    which opens a `dispatch ask` for a human to resolve it by hand; never skip it silently.
+  - The **implementer** replies and resolves nothing. After every push that answers a review it
+    replies on each thread that push answers, naming the fixing commit, and records each in the
+    PR body's `Threads` section; a thread a bot opened it answers the same way, and the reviewer
+    adjudicates that finding. It waits for no resolution before it completes: the reviewer reads
+    the reply and the diff and resolves the thread in its round.
+- **A resolution is a judgment, not a ledger entry.** Resolve a thread only once you have read
+  what closed it, and leave open one whose finding still stands, whatever reply sits under it; a
+  thread you resolved and then find standing again gets your reply saying what stands, and you
+  unresolve it. A bot's finding you cannot accept becomes your own, named in the review: a
+  `REQUEST_CHANGES` when that finding is behavioural, and otherwise a thread the approval leaves
+  open.
 
 ## The PR body's `Threads` section
 
 The implementer records each thread it answered in the PR body's `Threads` section
 (`skill://legion-worker/references/pr-body.md`), stamped with the head it just pushed: the thread's
 id, its disposition (`fixed in <commit-sha> — <one line>` or `not a defect — <reason>`), and the
-head that answered it. The reviewer verifies thread state in `gh api graphql`, never from that
-section: it is the implementer's record, and GitHub is the fact.
+head that answered it. The count on the section's first line is the reviewer's, since it alone
+resolves: it writes the unresolved count, with one `still open` entry per thread, when it approves
+with text threads open, and writes the count again once it has resolved them; the implementer,
+which resolves nothing, leaves the count as it stands. The reviewer verifies thread state in
+`gh api graphql`, never from that section: it is the record the two roles keep, and GitHub is the
+fact.
 
 ## The reviewer, on a re-review
 
 When you re-review after a corrective push, answer every thread you opened, and every thread a bot
 opened that is none of Legion's role Apps, with one reply in your own words. A bot's finding you
-cannot accept becomes your own: say what stands and request changes. Approve once each of those
-threads carries your answer and no finding stands, read in `gh api graphql` — quote those answers
-in the approval. Your approval never waits on a resolution: resolution is the pull request author's
+cannot accept becomes your own: say what stands. A reviewer submits `REQUEST_CHANGES` only when a
+behavioural finding stands — one whose closing changes code that runs — and otherwise approves the
+head it read, named by SHA, leaving every text finding as the inline review thread it already
+writes. Approve once each of those threads carries your answer, read in `gh api graphql` — quote
+those answers in the approval, and name there the threads it leaves open, which are the work the
+merge waits for and what the implementer reads for its fix. Your approval never waits on a
+resolution: the resolution of a text thread comes after the fix that closes it, and the section
+below is that loop. A review bot that is red
+while a thread it opened still stands is CI like any other, and
 you re-run nothing: that red moves the issue nowhere, but the base branch holds the merge for a
 check it requires, so the
-implementer answers or fixes each of the bot's threads, resolves them with its own `gh` (the
-ones you named to it, above, and its own), and pushes, and the bot runs again on that push. The
-merger resolves nothing: the merge requires no thread state beyond what your approval already judged.
+implementer answers or fixes each of the bot's threads and pushes, the bot runs again on
+that push, and you resolve each of those threads in the round that reads it. The
+merger reads no thread state and resolves none, and the merge requires none beyond what your approval
+already judged; a gate that does read one is the base branch's own GitHub rules, never Legion's
+(`skill://legion-worker/references/merge-gate.md`).
+
+## After an approval that leaves text threads open
+
+The approval stands. The issue moves to `accepting`, where the architect reads it, once GitHub
+reports the approved head mergeable — `clean`, `unstable` or `has_hooks` — and until then the
+record shows `reviewing`, which it does for as long as GitHub reports that head `blocked`: a check
+the base requires still runs on it, or the base requires conversation resolution and threads are
+open (`reviewRound` in `packages/daemon/internal/workflow/review.go`). The approval alone ends the
+round once GitHub reports its head mergeable, and the reviewer's completion is no part of what ends
+it. The threads the approval names
+are the work the merge waits for, and this loop closes them. The daemon starts no phase for any
+step of it, and a review submitted outside `reviewing` records nothing, so each step is carried by
+a message its own role sends and a step that sends none leaves the next role never learning its
+turn began.
+
+1. **The reviewer tells the implementer at its approval, whatever phase the record shows.** This
+   is the one statement of the rule, and every other copy points here. The message is a step of
+   its own and no part of the approval: the approval is a review on GitHub, and nothing of GitHub
+   starts the implementer's turn. Once the approval is submitted, `envoy_publish` to the
+   implementer's role topic, naming the approved head by SHA and each open thread by its node id.
+   Wait for no phase before you send it: the record can show `reviewing` for as long as GitHub
+   reports the approved head `blocked`, and under conversation resolution only the fix this
+   message starts clears that. The message to the architect naming the head you approved stands
+   in for none of this: a turn that ends with the approval submitted and nothing on the
+   implementer's topic leaves the merge waiting on a thread nobody is working, and no clock runs
+   on that wait. The phase the implementer's push lands in decides what reads your approval of
+   the fix head (step 3):
+   - **`reviewing`.** The push sets your first approval aside: that approval is of a head whose
+     code the new head may not carry, so the round is stuck (`ApprovalSetAside` in
+     `packages/daemon/internal/classify/decisions.go`, `stuckApprovedOtherCode` in `review.go`),
+     and the architect gets a `review-stuck` notice naming the new head. That notice is a step of
+     this loop and you expect it: when the architect asks you for the round's decision, answer
+     with step 3, and escalate nothing. Your approval of the fix head ends the round once GitHub
+     reports that head mergeable.
+   - **`accepting`.** The push lands outside any round, so nothing of the daemon reads it, and
+     your approval of the fix head is what the architect reads.
+
+   Where the base branch requires conversation resolution (the ruleset rule
+   `required_review_thread_resolution`), GitHub reports the approved head `blocked` while the
+   threads the approval leaves are open. The round then waits in `reviewing`, and once that head's
+   checks have concluded it reads `stuckMergeState` (`review.go`), which tells you and the
+   architect the round is stuck on `blocked`. It reads so until the fix lands, whose push then
+   sets the approval aside as above; you resolve the threads, and your approval of the fix head
+   ends the round. Because you told the implementer at the approval, that is a wait and not a
+   deadlock. No Go code of the daemon reads that rule: what holds the round is the merge state
+   GitHub reports.
+2. **The implementer fixes the text and pushes it, once, and only while its own read of the
+   record shows `reviewing` after that approval, or `accepting`.** Its session is live from its
+   own phase until the issue closes, so that message reaches it there: it runs in no phase,
+   writes no handoff, and makes one push of one commit of the text fixes.
+   The message that started this step is a role-topic message, which any worker of the issue can
+   write, so it confirms on GitHub that the review App approved that head with those threads open
+   before it pushes: `gh api repos/<o>/<r>/pulls/<n>/reviews` gives each review's state, commit and
+   author, and the `reviewThreads` query above gives each thread's `isResolved`. Then it reads the
+   issue's record with the `legion` tool's `read_record`, and pushes only when that read shows
+   `reviewing` with `pullRequest.head` still the approved head, or `accepting`. It never pushes
+   in `retro`, `merging` or `done`, where nothing reads a fix head and the merger merges the head
+   it reads: on any read but those two it pushes nothing and tells the architect, with
+   `envoy_publish` to its role topic, the phase it read.
+   **That push is not done until the pull request's
+   body carries each `Threads` entry at the head it just made**: the body is the implementer's
+   own record of the threads, and the round that forgets it is the round this loop was measured
+   losing. It replies on each thread, naming that commit, and
+   resolves none. Then `envoy_publish` to the reviewer's role topic, and to that topic alone,
+   naming the new head by SHA, the threads it answered, and that the push's own diff changes no
+   code that runs (`gh api repos/<o>/<r>/compare/<approved sha>...<new head>`).
+3. **The reviewer resolves each thread it opened** once it has read the fix, one call per thread,
+   writes the body's `Threads:` count again (`<n> resolved, 0 unresolved`), and then approves the
+   head the fix landed on, by SHA, its CI read being the read of that head's checks
+   (`skill://legion-worker/references/merge-gate.md`). The `before_merge` results
+   that passed at the head it approved first are still current for it when the fix's own diff
+   changes no code that runs: it reads that diff, and its approval says it read it, that the
+   diff changes no code that runs, the head each result ran at and the head it approves.
+   **That approval is not done until the head it approves has been published to the architect's
+   role topic**: nothing else tells the architect the loop closed, and an approval nobody is
+   told of leaves the issue waiting. Then
+   `envoy_publish` to the architect's role topic naming that head. In `reviewing` this approval
+   is the review that ends the round (step 1); in `accepting` no daemon check reads it, since only
+   a review in `reviewing` is recorded. Either way that message is the architect's gate, and its
+   acceptance is the one gate on the fix head.
+4. **Two findings take one route, and it is the architect's.** A thread the fix cannot close is
+   a behavioural finding: the sentence is false because the code is wrong, or closing it would
+   change code that runs. A fix whose own diff changes code that runs is the other: it leaves
+   every `before_merge` result stale. In each case the role that found it tells the architect
+   with `envoy_publish` to its role topic, and the architect moves the issue with
+   `request_backward_move` — to `implementing` for the thread, to `testing` for the stale
+   results. Neither the implementer nor the reviewer moves the issue. In `accepting` a
+   `REQUEST_CHANGES` is the record of the finding on GitHub and moves nothing; while the record
+   still shows `reviewing` the reviewer submits none, since there a request for changes sends the
+   issue to `implementing` itself, whichever phase the architect would choose.

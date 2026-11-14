@@ -25,8 +25,9 @@ made after the approval must be reviewed again is the repository's own rule, and
 commit, so no head carries one for a retro to remove.
 
 Work on the existing issue branch: never rebase it onto another base, never make another branch or
-bookmark, and push nothing, because the merger merges this branch's head and a push of yours
-would put a commit above the head the reviewer approved.
+bookmark, and push nothing. Retro commits nothing, so there is nothing of yours to push, and a
+head the reviewer has not read is a head nobody reviewed: the architect accepted this one and the
+merger merges this branch's head.
 
 ## When retro stops
 

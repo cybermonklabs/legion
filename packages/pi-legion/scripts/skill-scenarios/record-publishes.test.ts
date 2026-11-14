@@ -1,0 +1,455 @@
+import { expect, test } from "bun:test";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import type { Socket } from "bun";
+import { connect } from "nats";
+
+// The recorder reads the bus, so a host with no NATS server runs none of this.
+const skip = skipWithout("nats-server");
+
+const work = temporaryDirectory("skill-scenarios-record");
+
+/** A NATS server on a port the kernel picks, and the recorder subscribed to it, writing the run's
+ * record. It returns the publisher's connection, a reader of the record and a stop for both.
+ *
+ * Nothing here is faked: the thing under test is what a subscriber of a real bus sees, which is
+ * the reading that was wrong twice. Each check therefore ends by publishing a message of its own
+ * after the ones it is about and waiting for that message to be recorded — the server keeps one
+ * connection's publishes in order, so the record holding the last one holds every verdict this
+ * recorder reached about the ones before it, duplicates dropped and other runs passed over. The
+ * wait reads the file until that message is there, which no clock of the test decides. */
+async function recording(name: string, prefix: string) {
+  const dir = path.join(work, name);
+  mkdirSync(dir, { recursive: true });
+  const server = Bun.spawn(["nats-server", "-p", "0", "-a", "127.0.0.1"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const listening = /Listening for client connections on [\d.]+:(\d+)/;
+  const reader = server.stderr.getReader();
+  let printed = "";
+  while (!listening.test(printed)) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`nats-server exited before it listened: ${printed}`);
+    printed += new TextDecoder().decode(value);
+  }
+  const url = `nats://127.0.0.1:${listening.exec(printed)?.[1]}`;
+  const file = path.join(dir, "published.jsonl");
+  await Bun.write(file, "");
+  const recorder = Bun.spawn(
+    ["bun", path.join(import.meta.dir, "record-publishes.ts"), file, prefix],
+    { env: { ...process.env, SKILL_SCENARIOS_NATS_URL: url }, stdout: "pipe", stderr: "pipe" }
+  );
+  const printing = recorder.stdout.getReader();
+  let said = "";
+  while (!said.includes("recording")) {
+    const { value, done } = await printing.read();
+    if (done) throw new Error(`the recorder exited before it subscribed: ${said}`);
+    said += new TextDecoder().decode(value);
+  }
+  const client = await connect({ servers: url });
+  const written = async () =>
+    (await Bun.file(file).text())
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  /** The run's messages, without the recorder's own opening and closing lines. */
+  const messages = async () => (await written()).filter((line) => "topic" in line);
+  /** Every line of the record once the message naming `last` is one of them. */
+  const recorded = async (last: string) => {
+    for (;;) {
+      const lines = await messages();
+      if (lines.some((line) => String(line.message).includes(last))) return lines;
+      await Bun.sleep(20);
+    }
+  };
+  /** The record as the rig's stop leaves it: TERM, which the recorder answers with its closing
+   * line, and then what the file holds. */
+  const stopped = async () => {
+    recorder.kill("SIGTERM");
+    const status = await recorder.exited;
+    return { status, lines: await written() };
+  };
+  /** The record as the loss of the bus leaves it: the server killed under the recorder, which
+   * ends its subscription, and then what the file holds. The recorder makes no reconnect, so
+   * this is the end the rig never asks for. */
+  const serverLost = async () => {
+    server.kill("SIGKILL");
+    const status = await recorder.exited;
+    return { status, lines: await written(), said: await new Response(recorder.stderr).text() };
+  };
+  return {
+    client,
+    recorded,
+    written,
+    stopped,
+    serverLost,
+    stop: async () => {
+      await client.close();
+      recorder.kill();
+      server.kill();
+    },
+  };
+}
+
+/** An envelope as the listener publishes one: its own topic, which stays the role topic on every
+ * subject a copy travels on, with the message as `payload_summary` (a message of one line) or
+ * `payload` (a longer one). Each call mints an id of its own, as Envoy does, since the recorder
+ * writes one line per id: two envelopes built from one id are one message to it, which is what
+ * a copy of a forward is and what two messages of a run never are. A test that wants the same
+ * message twice publishes the one envelope twice. */
+let minted = 0;
+const envelope = (topic: string, summary: string, payload = "") => {
+  minted += 1;
+  return {
+    event_id: `e-${minted}`,
+    source: "agent",
+    source_session: "01a0f2cc",
+    topic,
+    dedupe_key: `publish.${minted}`,
+    issued_at: Date.UTC(2026, 8, 30, 17, 42, 0),
+    payload_summary: summary,
+    payload,
+  };
+};
+
+// Catches: a recorder that reads the subject a copy arrived on rather than the envelope's own
+// topic. A role message with a live holder never travels on its role subject — the publish route
+// forwards it to that session's agent subject and repeats the forward until the receipt
+// (`packages/envoy/cmd/listener/confirmed.go`) — and one with no holder is stored on the role's
+// kept subject, so a recorder keyed on the role subject records neither, which is what the run of
+// 2026-11-09T13:09Z showed: both agents published, the listener accepted both, and the record was
+// empty. Catches too a recorder that writes a repeated forward twice, and one that times a
+// message by its own clock: `at` is the envelope's `issued_at`, which is when Envoy accepted the
+// message, and both scenarios that read this record order their steps by it — the reviewer's
+// wake against its read of the record, the implementer's against the push — so a time taken when
+// a line was appended, after a repeat or a drain, would order a run by the recorder's own delays.
+test.skipIf(skip)(
+  "a role message is recorded once, from the envelope's topic, on whatever subject it arrives",
+  async () => {
+    const run = await recording("subjects", "legion-proof-lweval-1-");
+    try {
+      const topic = "notifications.role.legion-proof-lweval-1-reviewer";
+      const forwarded = envelope(topic, "the fixes are pushed: head abc1234");
+      // The kept lane's copy, the agent subject's copy, and the forward repeated for a receipt.
+      run.client.publish(
+        "notifications.envoy.kept.role.legion-proof-lweval-1-reviewer",
+        JSON.stringify(forwarded)
+      );
+      run.client.publish("notifications.agent.01a0f2cc", JSON.stringify(forwarded));
+      run.client.publish("notifications.agent.01a0f2cc", JSON.stringify(forwarded));
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(
+          envelope("notifications.role.legion-proof-lweval-1-architect", "the loop is closed")
+        )
+      );
+      await run.client.flush();
+      const lines = await run.recorded("the loop is closed");
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toMatchObject({
+        at: new Date(forwarded.issued_at).toISOString(),
+        topic,
+        message: "the fixes are pushed: head abc1234",
+        sender: "01a0f2cc",
+      });
+      // The record's own two ends, which tell a reader it is whole: the recorder wrote the
+      // first when it had subscribed, and the second when the rig stopped it (score.ts's
+      // `unscored` reads a record without both as a rig error).
+      const whole = await run.stopped();
+      expect(whole.lines[0]).toMatchObject({ recording: "legion-proof-lweval-1-" });
+      expect(whole.lines.at(-1)).toMatchObject({ closed: "stopped" });
+      // A stop is the end this file is written for, so it is no failure: a non-zero status with
+      // the same log is how a reader would be told a recorder died when it had not.
+      expect(whole.status).toBe(0);
+    } finally {
+      await run.stop();
+    }
+  },
+  120_000
+);
+
+// Catches: a recorder that keeps another run's messages, which would score a wake this run never
+// sent — each run of a batch has a Legion project of its own for that reason (rig.sh's
+// run_project) — and one that keeps a message of this run's project that reached no role topic
+// at all, which is a message no role of the loop reads and no step of it was taken by. And one
+// that finds this run's project anywhere in the role token rather than at its start, where a
+// topic of a project this one's name is inside — `x-legion-mine-lweval-1-`, the shape a batch
+// of runs whose tokens share a tail gives — would be recorded as this run's own wake. And one
+// that drops the body of a message longer than one line, which the listener carries as the
+// envelope's payload while its summary holds the first line alone.
+test.skipIf(skip)(
+  "another run's topic and another lane of this one are not recorded, and a message of more than one line is recorded whole",
+  async () => {
+    const run = await recording("filter", "legion-mine-lweval-1-");
+    try {
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(
+          envelope("notifications.role.legion-other-lweval-1-reviewer", "another run's wake")
+        )
+      );
+      // This run's own project and role, on a lane that is not the role lane. `notifications.`
+      // and a four-letter word is as long as `notifications.role.`, so a recorder that read the
+      // project out of the nineteenth character on and never asked which lane it was would take
+      // this for a wake of the reviewer.
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(
+          envelope("notifications.chat.legion-mine-lweval-1-reviewer", "a word in another lane")
+        )
+      );
+      // The role token of another project, with this run's own token inside it: a recorder
+      // that asks whether the token holds the prefix rather than whether it starts with it
+      // records a message no role of this run was ever addressed by.
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(
+          envelope("notifications.role.x-legion-mine-lweval-1-reviewer", "another project's wake")
+        )
+      );
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(
+          envelope(
+            "notifications.role.legion-mine-lweval-1-reviewer",
+            "the fixes are pushed",
+            "the fixes are pushed\nthe head to read is def5678"
+          )
+        )
+      );
+      await run.client.flush();
+      const lines = await run.recorded("def5678");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        topic: "notifications.role.legion-mine-lweval-1-reviewer",
+        message: "the fixes are pushed\nthe head to read is def5678",
+      });
+    } finally {
+      await run.stop();
+    }
+  },
+  120_000
+);
+
+// Catches: a recorder that passes over a message of this run it cannot read. What it could not
+// read is this reader's limit and never an act an agent did not do, so the line goes into the
+// record and `unscored` reads the run as a rig error (score.ts), where a silent skip would score
+// the message as never sent.
+test.skipIf(skip)(
+  "a message of this run the recorder cannot read is written as unreadable",
+  async () => {
+    const run = await recording("unreadable", "legion-odd-lweval-1-");
+    try {
+      const topic = "notifications.role.legion-odd-lweval-1-reviewer";
+      // An envelope with no `issued_at` and no body: a frame of this topic that the listener's own
+      // shape does not describe.
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify({ event_id: "e-odd", topic, source_session: "01a0f2cc" })
+      );
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(envelope(topic, "the fixes are pushed: head abc1234"))
+      );
+      await run.client.flush();
+      const lines = await run.recorded("the fixes are pushed");
+      expect((await run.written()).some((line) => line.unreadable === topic)).toBe(true);
+      expect(lines).toHaveLength(1);
+    } finally {
+      await run.stop();
+    }
+  },
+  120_000
+);
+
+// Catches: a recorder that records a message Envoy accepted but nobody can attribute. A publish
+// with no `source_session` is one Envoy takes (`packages/envoy/AGENTS.md`: it acts as no session
+// and is not refused), so it is no defect of the listener — but the score reads who sent a
+// message by that session against each half's own transcript, so a message without one cannot be
+// read as any half's. It is written as `unreadable`, which makes its run a rig error, rather than
+// recorded with a blank sender that a transcript without a header would match. The key absent
+// and the key empty are the same message to this reader, and a parse that asks only for a
+// string takes the empty one: it would be recorded with a blank sender, and `publishes` reads
+// the sender against a half's own session id, so that line is a message of nobody's that a
+// reader of either half passes over in silence.
+test.skipIf(skip)(
+  "a message whose session is absent or empty is unreadable, not a blank sender",
+  async () => {
+    const run = await recording("no-session", "legion-void-lweval-1-");
+    try {
+      const topic = "notifications.role.legion-void-lweval-1-reviewer";
+      const { source_session, ...sessionless } = envelope(topic, "a wake from no session");
+      run.client.publish("notifications.agent.01a0f2cc", JSON.stringify(sessionless));
+      // The same message with the key present and empty, which is the other shape a publish
+      // that names no session reaches a reader in.
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify({ ...envelope(topic, "a wake from a blank session"), source_session: "" })
+      );
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(envelope(topic, "the fixes are pushed: head abc1234"))
+      );
+      await run.client.flush();
+      const lines = await run.recorded("the fixes are pushed");
+      expect((await run.written()).filter((line) => line.unreadable === topic)).toHaveLength(2);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ sender: "01a0f2cc" });
+    } finally {
+      await run.stop();
+    }
+  },
+  120_000
+);
+
+// Catches: a recorder that writes one line per text rather than one per message. Two messages
+// of a run can carry one text — a wake sent again because the first went unanswered, the same
+// sentence to two roles — and Envoy mints an id for each, while a forward repeated for a
+// receipt and a kept copy drained later carry the id of the one message they are copies of. So
+// the id is what tells a copy from a second message, and a record keyed on the text would hide
+// a message an agent sent.
+test.skipIf(skip)(
+  "two messages carrying one text are two lines",
+  async () => {
+    const run = await recording("twice", "legion-twice-lweval-1-");
+    try {
+      const topic = "notifications.role.legion-twice-lweval-1-reviewer";
+      const said = "the fixes are pushed: head abc1234";
+      run.client.publish("notifications.agent.01a0f2cc", JSON.stringify(envelope(topic, said)));
+      run.client.publish("notifications.agent.01a0f2cc", JSON.stringify(envelope(topic, said)));
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(
+          envelope("notifications.role.legion-twice-lweval-1-architect", "the loop is closed")
+        )
+      );
+      await run.client.flush();
+      const lines = await run.recorded("the loop is closed");
+      expect(lines).toHaveLength(3);
+      expect(lines.filter((line) => line.message === said)).toHaveLength(2);
+    } finally {
+      await run.stop();
+    }
+  },
+  120_000
+);
+
+// Catches: a recorder that ends quietly when the bus goes away, which is the one end that must
+// leave the record unfinished. It makes no reconnect, because core NATS loses whatever was
+// published while a connection is down: what the run sent in the gap is unknown, so the record
+// must carry no `closed` line and the process must exit non-zero, which is what tells the rig
+// its recorder died. A recorder that wrote the closing line here, or exited 0, would have every
+// run of that record scored as a loop whose agents sent nothing (score.ts's `unscored`).
+test.skipIf(skip)(
+  "a bus that goes away ends the recorder with no closing line and a failure",
+  async () => {
+    const run = await recording("dropped", "legion-lost-lweval-1-");
+    try {
+      const topic = "notifications.role.legion-lost-lweval-1-reviewer";
+      run.client.publish(
+        "notifications.agent.01a0f2cc",
+        JSON.stringify(envelope(topic, "the fixes are pushed: head abc1234"))
+      );
+      await run.client.flush();
+      await run.recorded("the fixes are pushed");
+      const went = Bun.nanoseconds();
+      const lost = await run.serverLost();
+      expect(lost.status).toBe(1);
+      expect(lost.lines.some((line) => "closed" in line)).toBe(false);
+      expect(lost.lines[0]).toMatchObject({ recording: "legion-lost-lweval-1-" });
+      expect(lost.said).toContain("the subscription ended before the run did");
+      // And it ends when the bus goes rather than sitting out a reconnect: `reconnect: false`
+      // is what makes the end immediate, and a client that reconnected would wait out its
+      // attempts first — ten of them, two seconds apart, in nats.js — with the rig believing
+      // all that while that it was recording and the run's messages going nowhere. Ten seconds
+      // is far past the end this makes and far short of that wait, so the bound can hide the
+      // fault on a loaded host and never invent one.
+      expect((Bun.nanoseconds() - went) / 1e9).toBeLessThan(10);
+    } finally {
+      await run.stop();
+    }
+  },
+  120_000
+);
+
+// Catches: a recorder that says it is recording before the server has taken its subscription.
+// The rig boots its first agent on that line (rig.sh's start_recorder waits for it), so a line
+// written while the subscription was still on its way leaves whatever that agent published
+// first reaching no record, and the score reads a wake that was sent as one that never was.
+// `await nats.flush()` is what makes the line true: it is answered when the server has answered.
+//
+// This one check speaks the protocol by hand, where every check above runs against a real
+// nats-server, because what it measures is not what a subscriber sees but when the recorder
+// says it is subscribed, and a real server answers the flush far too fast for any reader to
+// see the difference. nats.js opens with the server's INFO, then the client's CONNECT and a
+// PING of its own, which this answers; the flush is the PING after the SUB, and this holds its
+// answer until the record has been looked at. A host with no nats-server runs this one too.
+test("the record opens only once the server has taken the subscription", async () => {
+  const dir = path.join(work, "flush");
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "published.jsonl");
+  await Bun.write(file, "");
+  let held: Socket<undefined> | undefined;
+  let subscribed = false;
+  let answering = false;
+  const bus = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(socket) {
+        socket.write(
+          `INFO ${JSON.stringify({
+            server_id: "held",
+            server_name: "held",
+            version: "2.10.0",
+            proto: 1,
+            host: "127.0.0.1",
+            port: 0,
+            headers: true,
+            max_payload: 1048576,
+          })}\r\n`
+        );
+      },
+      data(socket, data) {
+        for (const line of new TextDecoder().decode(data).split("\r\n")) {
+          if (line.startsWith("SUB ")) subscribed = true;
+          if (line !== "PING") continue;
+          // The client's own PING, which `connect` waits for, is answered; the one the flush
+          // sends after the subscription is held until the check has looked at the record. A
+          // recorder that made no flush sends no second PING at all, which is why what this
+          // waits for below is the subscription and not the PING.
+          if (!subscribed || answering) socket.write("PONG\r\n");
+          else held = socket;
+        }
+      },
+    },
+  });
+  const recorder = Bun.spawn(
+    ["bun", path.join(import.meta.dir, "record-publishes.ts"), file, "legion-held-lweval-1-"],
+    {
+      env: { ...process.env, SKILL_SCENARIOS_NATS_URL: `nats://127.0.0.1:${bus.port}` },
+      stdout: "pipe",
+      stderr: "pipe",
+    }
+  );
+  try {
+    // The subscription is at this bus and nothing has answered it, which is the moment the
+    // record must still be empty. Nothing shows a line unwritten in no time at all, so this
+    // waits a little: the wait can hide the fault on a slow host and never invent one.
+    while (!subscribed) await Bun.sleep(20);
+    await Bun.sleep(250);
+    expect(await Bun.file(file).text()).toBe("");
+    answering = true;
+    held?.write("PONG\r\n");
+    while ((await Bun.file(file).text()) === "") await Bun.sleep(20);
+    expect(JSON.parse((await Bun.file(file).text()).split("\n")[0] ?? "")).toMatchObject({
+      recording: "legion-held-lweval-1-",
+    });
+  } finally {
+    recorder.kill();
+    bus.stop(true);
+  }
+}, 120_000);

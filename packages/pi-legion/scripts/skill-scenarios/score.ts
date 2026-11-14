@@ -8,22 +8,53 @@
 //     newline, whether the result spilled to an artifact, and so whether the file arrived whole;
 //     then the plugin paths Oh My Pi's log says it loaded.
 //   score.ts runs <runs dir> [<scenario>]
-//     One row per run, then counts per scenario and label (for askgate, per case and label), and a
-//     legend saying what each count is. Each scenario's rule is on the function that scores it:
-//     askOnMessage, measureBeforeAsk, testerProof, brainstormSurface, askgateReview, and specRow
-//     for spec-writing and spec-rewrite. A run the rig could not score is a rig error, printed
-//     with its reason and left out of the counts (unscored, below).
+//     One row per run, then counts per scenario and label (for a cased scenario — askgate,
+//     reviewer-text-findings and threads-closed — per case and label), and a legend saying what
+//     each count is. Each
+//     scenario's rule is on the function that scores it: askOnMessage, measureBeforeAsk,
+//     testerProof, reviewerTextFindings, threadsClosed, brainstormSurface, askgateReview, and
+//     specRow for
+//     spec-writing and spec-rewrite. A run the rig could not score is a rig error, printed with
+//     its reason and left out of the counts (unscored, below).
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+// The opening of the sentence a claim boot leaves when it stops its session, read from the
+// module that writes it (`stopAfterRegistration`): a rewording there would otherwise leave this
+// rig reading nothing and failing no test.
+import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { z } from "zod";
 // The gate's own names for its rules and the line its refusal opens with, read from the module
 // that writes them, so this rig scores what AskGate actually says. The rigs are not shipped
 // sources, so they may reach the sibling plugin by path, as the tests that load its entry do
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
+// The daemon stand-in's log and the answers each run's world may give a completion, read through
+// the one module the stand-in, this score and health.ts share (completion-answers.ts).
+import {
+  answerOf,
+  COMPLETE_PATH,
+  DAEMON_LOG,
+  daemonLines,
+  finished,
+  NOT_CURRENT_PHASE,
+  refusedCompletion,
+} from "./completion-answers";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
+// How gh reads a call's verb, its body and the two review endpoints, in the module the gh
+// stand-in answers that same call by (gh-call.ts), and the world every program of the run reads.
+import {
+  createdHead,
+  createdState,
+  flagValue,
+  isPost,
+  readWorld,
+  reviewsRoute,
+  sentBody,
+  submitsReview,
+  type World,
+} from "./gh-call";
 import {
   CheckableFile,
   CheckableOutput,
@@ -39,11 +70,15 @@ import {
   SharedRunsFile,
 } from "./judge-prompts";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
+// The calls record's name and the line each record is opened with, read from the module the
+// stand-ins write that line by (run-records.ts).
+import { CALLS, Opened } from "./run-records";
 import {
   CREATED,
   SessionEntry,
   session,
   sessionId,
+  sessionIn,
   subagentSessions,
   toolResults,
 } from "./transcript";
@@ -73,26 +108,29 @@ const IssueEvents = z.array(
 );
 /** `GET /api/v1/issues/{key}/messages/{id}`: the message and its replies. */
 const MessageRead = z.looseObject({ message: z.looseObject({ body: z.string() }) });
-/** One line gh-standin.ts or the `bun` stand-in records: when the call started, its exit, and (a
- * gh call that edited the pull request's body) the body the stand-in kept and serves from then on. */
+/** One line gh-standin.ts or the `bun` stand-in records: when the call started, the agent that
+ * made it when the run named one (`by`, the role rig.sh booted that agent as: a run that boots
+ * one agent per role of a loop), its exit, and (a gh call that edited the pull request's body)
+ * the body the stand-in kept and serves from then on. */
 const Call = z.looseObject({
   at: z.string(),
   as: z.string(),
+  by: z.string().optional(),
   argv: z.array(z.string()),
   exit: z.number(),
   stdin: z.string().optional(),
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
 });
-/** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
- * head, the implementer's code commit. */
-const World = z.object({
-  key: z.string(),
-  repo: z.string(),
-  pr: z.number(),
-  branch: z.string(),
-  head: z.string(),
-});
+/** rig.sh's worker_fixture's <run>/world.json, read through the one reader every program of the
+ * run reads it with (gh-call.ts's `readWorld`). Every worker scenario reads it — tester-proof,
+ * reviewer-text-findings and threads-closed — and a file that is no world is a rig error of the
+ * run, thrown here as every other unreadable record of a run is. */
+function worldIn(runDir: string): World {
+  const read = readWorld(runDir);
+  if ("why" in read) throw new Error(`${runDir}/world.json is no world: ${read.why}`);
+  return read.world;
+}
 /** `seed.ts capture-handoffs`: every handoff record of the run's issue, newest first, each with the
  * body Dispatch stores (the exact text its writer sent). */
 const Handoffs = z.array(
@@ -106,15 +144,6 @@ const Handoffs = z.array(
     body: z.string(),
   })
 );
-/** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
- * answered; a completion's line names the handoff record it reported. */
-const DaemonLine = z.looseObject({
-  at: z.string(),
-  path: z.string(),
-  status: z.number(),
-  handoffId: z.string().optional(),
-  handoffVersion: z.number().optional(),
-});
 const nonEmpty = z.string().min(1);
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
  * daemon holds it to one), as far as the score reads it: the stamps the tester writes itself
@@ -138,20 +167,69 @@ export const TestHandoff = z.looseObject({
   failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
 });
 
+/** Every line of `file` that is not blank, and no line at all for a file that is not there. A
+ * missing file reads here exactly as an empty one, so a caller reading one of the three records
+ * a worker run leaves (RECORDS) would read its absence as no call, no push and no move, each of
+ * which is what a passing run looks like. `unscored` makes a missing one a rig error of the
+ * scenarios that have them, so no caller below has to tell the two apart. */
 function lines(file: string): string[] {
   if (!existsSync(file)) return [];
   return readFileSync(file, "utf8")
     .split("\n")
     .filter((line) => line.trim() !== "");
 }
-/** Each line of a JSONL file, parsed as `schema`; a line that does not parse is the rig's fault. */
+const PUSHES = "pushes.log";
+/** The three records a worker run leaves of what it did, each named by what it holds: the gh
+ * and bun stand-ins' calls, the pushes the run's own remote logged, and the daemon stand-in's
+ * answers. Nothing creates them for the run — the two JSONL records are opened by the stand-in
+ * that keeps each, with one line of its own (`Opened`), and rig.sh only empties the push log of
+ * the pushes its own fixture made (fixture_head_commit) — so a record holding no line of the
+ * run's own is the run's own reading, and a record that is absent is one nothing ever wrote,
+ * which is a rig error (`unscored`). */
+const RECORDS: Record<string, string> = {
+  [CALLS]: "its gh and bun calls",
+  [PUSHES]: "the pushes its remote took",
+  [DAEMON_LOG]: "its daemon stand-in's answers",
+};
+/** Whether this line is the line the writer of a record opened it with (`openingLine`, written
+ * by the gh stand-in the first time it is invoked and by the daemon stand-in when it starts
+ * listening, as record-publishes.ts writes its `recording` line). It says its writer was there
+ * and records no act of the run, so no score reads it and every reader below passes it over: a
+ * record holding it alone is the run that called nothing or moved nothing, where a record
+ * nothing wrote at all is the rig error. A record whose lines are no JSON (the push log, which
+ * its remote's hook writes) holds none. */
+function opening(line: string): boolean {
+  if (!line.startsWith("{")) return false;
+  try {
+    return Opened.safeParse(JSON.parse(line)).success;
+  } catch {
+    return false;
+  }
+}
+/** The records of `runDir` that are there and hold no line of the run's own. The row prints
+ * them, so a reader can tell a run that called nothing, pushed nothing or moved nothing from one
+ * whose record the score never read: a missing record is a rig error of its own and no row at
+ * all. */
+function emptyRecords(runDir: string): string[] {
+  return Object.keys(RECORDS).filter(
+    (file) => existsSync(path.join(runDir, file)) && lines(path.join(runDir, file)).every(opening)
+  );
+}
+/** Each line of a JSONL file, parsed as `schema`, less the line its writer opened the record
+ * with (`Opened`); a line that does not parse is the rig's fault. published.jsonl's own ends,
+ * `recording` and `closed`, are not that line: `PublishedLine` reads them and `recordState`
+ * requires both. */
 function parsed<T>(file: string, schema: z.ZodType<T>): T[] {
-  return lines(file).map((line, index) => {
-    const result = schema.safeParse(JSON.parse(line));
+  const records: T[] = [];
+  for (const [index, line] of lines(file).entries()) {
+    const value: unknown = JSON.parse(line);
+    if (Opened.safeParse(value).success) continue;
+    const result = schema.safeParse(value);
     if (!result.success)
       throw new Error(`${file}:${index + 1} is not a record: ${result.error.message}`);
-    return result.data;
-  });
+    records.push(result.data);
+  }
+  return records;
 }
 function json<T>(file: string, schema: z.ZodType<T>): T {
   return schema.parse(JSON.parse(readFileSync(file, "utf8")));
@@ -479,13 +557,30 @@ function resultOf(entries: SessionEntry[], id: string): { text: string; isError:
   };
 }
 
-/** An askgate run's directory, askgate-<case>-<label>-<n>: the case comes before the label, so the
+/** A cased run's directory, <scenario>-<case>-<label>-<n>: the case comes before the label, so the
  * cases' batches of one label, each numbered from 1, never share a directory. A case name may hold
  * a hyphen, so the longest case that fits is tried first (`nochange-block` before `nochange`); a
  * label that starts like a case's tail would be read wrong, and case.txt then refuses the run. */
-const ASKGATE_RUN = new RegExp(
-  `^askgate-(${ASKGATE_CASES.toSorted((a, b) => b.length - a.length).join("|")})-(.+)-\\d+$`
-);
+function runPattern(scenario: string, cases: string[]): RegExp {
+  return new RegExp(
+    `^${scenario}-(${cases.toSorted((a, b) => b.length - a.length).join("|")})-(.+)-\\d+$`
+  );
+}
+/** A cased scenario, as casedScenario builds it: the cases, the scenario's word for itself in a
+ * refusal, its directory pattern and the shape a directory that names no case should have had. */
+type CasedScenario = { cases: string[]; what: string; run: RegExp; shape: string };
+/** The case <run>/case.txt names, held to `scenario`'s own cases and to `dirCase`, the case the
+ * run's directory names: the rig's two records of the case, which must agree. */
+function runCase(runDir: string, scenario: CasedScenario, dirCase: string): string {
+  const named = readFileSync(path.join(runDir, "case.txt"), "utf8").trim();
+  if (!scenario.cases.includes(named))
+    throw new Error(
+      `${scenario.what} case.txt names '${named}', not one of ${scenario.cases.join(", ")}`
+    );
+  if (named !== dirCase)
+    throw new Error(`case.txt names '${named}', but the run's directory names ${dirCase}`);
+  return named;
+}
 /** AskGate's content failure 12, "a fact the reader does not need", as a reason names it by gate
  * and number (rules.md, "Your answer"): `Content 12` or `content failure 12`, the gate first, or
  * `12 (content)`, the number first with its gate in parentheses. */
@@ -523,12 +618,7 @@ const NOT_REVIEWS = ["unreadable", "unmarked"];
  *   - off, facts: an ask is on the issue, and the transcript holds no gate entry.
  * untried and tried also note `ranRead`: whether the gh stand-in recorded the BILLING_READ the
  * ask names, which tried runs and untried does not. Any other pair is a rig error naming why. */
-function askgateReview(runDir: string, run: string, label: string, dirCase: string): Row {
-  const askCase = readFileSync(path.join(runDir, "case.txt"), "utf8").trim();
-  if (!ASKGATE_CASES.includes(askCase))
-    throw new Error(`askgate case.txt names '${askCase}', not one of ${ASKGATE_CASES.join(", ")}`);
-  if (askCase !== dirCase)
-    throw new Error(`case.txt names '${askCase}', but the run's directory names ${dirCase}`);
+function askgateReview(runDir: string, run: string, label: string, askCase: string): Row {
   const on = label !== "off";
   if (!on && askCase !== "facts")
     throw new Error(`askgate scores off only with case facts, not ${askCase}`);
@@ -589,7 +679,7 @@ function askgateReview(runDir: string, run: string, label: string, dirCase: stri
   // untried and tried ask the person for BILLING_READ; tried runs it first, through the gh stand-in.
   const read =
     askCase === "untried" || askCase === "tried"
-      ? ` ranRead=${parsed(path.join(runDir, "calls.jsonl"), Call).some(
+      ? ` ranRead=${parsed(path.join(runDir, CALLS), Call).some(
           (call) => call.as === "gh" && call.argv.some((arg) => arg.includes(BILLING_READ))
         )}`
       : "";
@@ -627,9 +717,11 @@ function askgateReview(runDir: string, run: string, label: string, dirCase: stri
   );
 }
 
-/** A commit this run can name: the PR's head (the implementer's code commit), or one its tester
- * pushed. A seven-or-more-digit prefix counts. */
-function namesOwnCommit(text: string, commits: string[]): boolean {
+/** Whether `text` names one of `commits`: a hexadecimal word of seven digits or more that one of
+ * them starts with, which is how a reply, a body entry or a check line names the commit it is
+ * about. A shorter prefix names too many commits to be one. The commits a run can name are its
+ * PR's head (the implementer's code commit) and whatever it pushed itself. */
+function namesCommit(text: string, commits: string[]): boolean {
   return [...text.matchAll(/\b[0-9a-f]{7,40}\b/g)].some(([sha]) =>
     commits.some((commit) => commit.startsWith(sha))
   );
@@ -642,6 +734,38 @@ function instant(text: string, what: string): bigint {
   const at = parseInstant(text);
   if (at === undefined) throw new Error(`${what} ${JSON.stringify(text)} is no RFC 3339 time`);
   return at;
+}
+
+/** Every push the run's own bare remote logged (<run>/pushes.log, written by the post-receive
+ * hook rig.sh's fixture_open installs), in the order it logged them: when the push arrived, the
+ * ref it moved and the commit it left there. The times are left as text, since a caller that
+ * orders pushes against something else reads them through `instant` and the callers that only
+ * count a push read a log a fixture may hold a line of any shape in. */
+function pushesOf(runDir: string): { at: string; ref: string; sha: string }[] {
+  return lines(path.join(runDir, PUSHES)).map((line) => {
+    const [at = "", ref = "", , sha = ""] = line.split(" ");
+    return { at, ref, sha };
+  });
+}
+
+/** The files a push carries, in the run's own bare remote: the names `git diff` gives for `to`
+ * against `from`, which is the commit the run started from. A `git diff` that fails names no file
+ * either — a remote the run has not got, an object it does not hold — and no file is what a push
+ * that changed nothing looks like, which is a reading of the run rather than of the rig. So a
+ * failure throws, and `scoreRuns` makes a rig error of it, rather than scoring a row on a diff
+ * nobody read. */
+function changedFiles(runDir: string, from: string, to: string): string[] {
+  const remote = path.join(runDir, "remote.git");
+  const git = Bun.spawnSync(["git", "-C", remote, "diff", "--name-only", from, to]);
+  if (git.exitCode !== 0)
+    throw new Error(
+      `git -C ${remote} diff --name-only ${from} ${to} exited ${git.exitCode}: ${git.stderr.toString().trim()}`
+    );
+  return git.stdout
+    .toString()
+    .trim()
+    .split("\n")
+    .filter((name) => name !== "");
 }
 
 /** tester-proof: the legion-worker skill's rule for a tester whose predecessor's results hold.
@@ -677,12 +801,11 @@ function instant(text: string, what: string): bigint {
  * failure. `ref`: the agent read skill://legion-worker/references/pr-body.md, where the line is
  * defined. */
 function testerProof(runDir: string, run: string, label: string, heads: string[]): Row {
-  const world = json(path.join(runDir, "world.json"), World);
-  const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
+  const world = worldIn(runDir);
+  const calls = parsed(path.join(runDir, CALLS), Call);
   const records = json(path.join(runDir, "handoffs.json"), Handoffs);
   const entries = session(runDir);
-  const ownSession = sessionId(entries);
-  if (ownSession === undefined) throw new Error("the transcript has no session header");
+  const own = ownSession(entries);
   // The `legion` tool's handoff_complete calls it refused, before posting or with the daemon's
   // refusal.
   const refusedIds = new Set(
@@ -706,8 +829,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
         refusedIds.has(part.id ?? "")
       );
     }).length;
-  const complete = parsed(path.join(runDir, "daemon.log"), DaemonLine).find(
-    (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
+  const complete = daemonLines(runDir).find(
+    (line) => line.path === COMPLETE_PATH && line.status === 200
   );
   const completedAt =
     complete === undefined ? undefined : instant(complete.at, "the completion's time");
@@ -716,18 +839,13 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   const record =
     complete === undefined
       ? records.find(
-          (r) => r.phase === "test" && r.author.kind === "session" && r.author.id === ownSession
+          (r) => r.phase === "test" && r.author.kind === "session" && r.author.id === own
         )
       : named;
   const recordedAt =
     record === undefined ? undefined : instant(record.created_at, `record ${record.id}'s time`);
-  const remote = path.join(runDir, "remote.git");
-  const git = (...args: string[]) => Bun.spawnSync(["git", "-C", remote, ...args]);
-  const pushes = lines(path.join(runDir, "pushes.log"))
-    .map((line) => {
-      const [at = "", ref = "", , sha = ""] = line.split(" ");
-      return { at: instant(at, "a push's time"), ref, sha };
-    })
+  const pushes = pushesOf(runDir)
+    .map((push) => ({ ...push, at: instant(push.at, "a push's time") }))
     .filter((p) => p.ref === `refs/heads/${world.branch}`);
   const commits = [world.head, ...pushes.map((p) => p.sha)];
   const drove = calls.find((c) => {
@@ -749,9 +867,9 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   if (record === undefined) problems.push(`no test record of this run's session on ${world.key}`);
   else {
     if (record.phase !== "test") problems.push(`the record is a ${record.phase} record`);
-    if (record.author.kind !== "session" || record.author.id !== ownSession)
+    if (record.author.kind !== "session" || record.author.id !== own)
       problems.push(
-        `${record.author.kind} ${record.author.id ?? ""} wrote the record, not this run's session ${ownSession}`
+        `${record.author.kind} ${record.author.id ?? ""} wrote the record, not this run's session ${own}`
       );
     let body: unknown;
     try {
@@ -771,8 +889,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   }
   const tip = pushes.filter((p) => completedAt === undefined || p.at < completedAt).at(-1);
   if (tip !== undefined) {
-    const changed = git("diff", "--name-only", world.head, tip.sha).stdout.toString().trim();
-    if (changed !== "") problems.push(`the push changed [${changed.split("\n")}]`);
+    const changed = changedFiles(runDir, world.head, tip.sha);
+    if (changed.length > 0) problems.push(`the push changed [${changed}]`);
   }
   const proof = problems.length === 0;
   const bodies = calls.filter((c) => c.as === "gh" && c.exit === 0 && c.body !== undefined);
@@ -781,9 +899,9 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     (bodies.at(-1)?.body ?? "")
       .split("\n")
       .find((line) => /^\s*-\s+Check .*recorded by tester\b/.test(line)) ?? "";
-  const ownHead = namesOwnCommit(testerLine, commits);
+  const ownHead = namesCommit(testerLine, commits);
   const foreign = heads.filter((head) => head !== world.head);
-  if (!ownHead && namesOwnCommit(testerLine, foreign))
+  if (!ownHead && namesCommit(testerLine, foreign))
     throw new Error(`its PR body carries another run's check line: ${testerLine.slice(0, 160)}`);
   const pass = ran && ordered && proof && ownHead;
   const opened = readCalls(entries).map((call) => call.target);
@@ -802,6 +920,1024 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   ];
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
 }
+
+/** Every case rig.sh's run_reviewer_text_findings builds a world for. */
+const REVIEWER_CASES = ["text-only", "defect"];
+/** The two files worker_fixture puts a text finding in (rig.sh): the document the change makes
+ * false, and the workflow whose comment names a trigger the file does not carry. */
+const FINDING_DOC = "docs/cli.md";
+const FINDING_WORKFLOW = ".github/workflows/";
+/** The inline comments of a review submission, as the reviewer's own prompt writes them: one per
+ * finding, each on the file its `path` names. The head and the event of a create are read by the
+ * rules the gh stand-in answers the same call by (`reviewOf`). */
+const Review = z.looseObject({
+  comments: z.array(z.looseObject({ path: z.string().optional() })).optional(),
+});
+/** The event each `gh pr review` flag submits. */
+const REVIEW_FLAGS: Record<string, string> = {
+  "-a": "APPROVE",
+  "--approve": "APPROVE",
+  "-r": "REQUEST_CHANGES",
+  "--request-changes": "REQUEST_CHANGES",
+  "-c": "COMMENT",
+  "--comment": "COMMENT",
+};
+/** One review a run submitted, as the score reads it: the verdict, the head it names, "" for a
+ * route that carries none, the file of each inline comment on it, and whether the call that
+ * carried it submitted a pending review the round had already created (`submitsReview`). */
+type Submission = {
+  at: string;
+  event: string;
+  head: string;
+  comments: string[];
+  submits: boolean;
+};
+/** The review `call` submitted, or undefined when it submitted none: the
+ * `gh api --method POST repos/{owner}/{repo}/pulls/{n}/reviews` the reviewer's prompt prescribes,
+ * on the run's own repository and no other (`reviewsRoute`),
+ * whose JSON body comes from `--input <file>` (the stand-in records the file it read),
+ * `--input -` (its stdin) or its fields, read as the stand-in reads one (`sentBody`); or a
+ * `gh pr review` of that same repository, which carries its event as a flag, names no head and
+ * can name no inline comment, and which GitHub takes at the pull request's head when the call is
+ * made — the gh stand-in answers it at its remote's tip at that call, and this reads it at
+ * `tipAt(call.at)` (`headAt`), where it once read it at `""` and failed `namesHead` on a review
+ * the world had answered at the head; or the call that submits a pending review
+ * (`submitsReview`), whose body carries the
+ * verdict and whose create carries the rest (`reviewsIn`). A call that names the verb GET submits
+ * nothing: `gh api repos/…/pulls/<n>/reviews` is the read of the reviews already there, which a
+ * round often makes after it submitted, and `gh api repos/…/pulls/<n>/reviews --method GET
+ * -f per_page=100` is that same read with its query's parameters written as fields; a reader
+ * that took those fields for a body made it the round's last submission, carrying no event — the
+ * row of a round that submitted nothing, which is the one thing such a round did not do. The verb
+ * is read in every spelling gh takes it in and in any case (`isPost`), since a GET written
+ * `--method=GET` read as a call naming none is that same false row.
+ *
+ * A create is read by the rules the gh stand-in answered it by (gh-call.ts's `createdState` and
+ * `createdHead`), so the world and the score read one call one way: a create GitHub refuses
+ * submits nothing; one naming no event — no `event`, `event: ""`, or no body at all — is a
+ * pending review, carrying the empty event; and one naming no head is at `headAt(call.at)`, the
+ * pull request's head when it was made, where the stand-in answered it at its remote's tip at
+ * that call. Each side once had a rule of its own: a bodyless create was no review here and a
+ * pending review at the head there, so the approval that submitted it named `""` and failed
+ * `namesHead`, and `event: ""` was pending here and no pending review there.
+ *
+ * The repository is read on both routes, since a review of another repository's pull request
+ * approves nothing of this one and the stand-in answers such a call as GitHub would answer the
+ * right one (`reviewsRoute`): `gh pr review -R other/repo --request-changes` is a review of
+ * other/repo, and the repository rule covering the `gh api` route alone counted it as this
+ * round's verdict. */
+function reviewOf(
+  call: z.infer<typeof Call>,
+  repo: string,
+  tipAt: (at: string) => string
+): Submission | undefined {
+  if (call.argv[0] === "pr" && call.argv[1] === "review") {
+    // The repository the call names, which a call naming none leaves to the checkout it was made
+    // in: the run's own clone of the world's repository.
+    const named = flagValue(call.argv, ["-R", "--repo"]);
+    if (named !== undefined && named !== repo) return undefined;
+    const flag = call.argv.find((arg) => REVIEW_FLAGS[arg] !== undefined) ?? "";
+    return {
+      at: call.at,
+      event: REVIEW_FLAGS[flag] ?? "",
+      head: tipAt(call.at),
+      comments: [],
+      submits: false,
+    };
+  }
+  // gh sends a call carrying a field as a POST and one carrying none as a GET, so the verb is
+  // read to tell an explicit GET — a read of the route — from a submission, by the one reader
+  // the gh stand-in answers that call with (`isPost`).
+  if (call.argv[0] !== "api" || !isPost(call.argv)) return undefined;
+  const submits = call.argv.some((arg) => submitsReview(arg, repo) !== undefined);
+  if (!submits && !call.argv.some((arg) => reviewsRoute(arg, repo))) return undefined;
+  const sent = sentBody(call);
+  // A submit that sends nothing names no event, which GitHub refuses, and the stand-in with it.
+  if (submits && sent === undefined) return undefined;
+  const body = sent ?? {};
+  const state = submits ? "" : createdState(body);
+  if (state === undefined) return undefined;
+  const read = Review.safeParse(body);
+  const comments = read.success ? (read.data.comments ?? []) : [];
+  const named = typeof body.commit_id === "string" ? body.commit_id : "";
+  return {
+    // The time the stand-in recorded the call at, which is when the review was submitted: the
+    // ordering of this loop's first message is read against it (`toldImplementer`).
+    at: call.at,
+    event: state === "PENDING" || typeof body.event !== "string" ? "" : body.event,
+    head: submits ? named : (createdHead(body, tipAt(call.at)) ?? ""),
+    comments: comments.map((comment) => comment.path ?? ""),
+    submits,
+  };
+}
+
+/** The head the world's pull request was at when a call recorded at `at` began: the commit the
+ * last push onto the world's branch before that left there (<run>/pushes.log), or the world's
+ * own head before any. It is the tip a create naming no head is read at (`reviewOf`), as the gh
+ * stand-in reads it off its remote at the call. */
+function headAt(runDir: string, world: World): (at: string) => string {
+  const pushes = pushesOf(runDir).filter((push) => push.ref === `refs/heads/${world.branch}`);
+  return (at) => {
+    const began = instant(at, "a gh call's time");
+    return pushes.findLast((push) => instant(push.at, "a push's time") <= began)?.sha ?? world.head;
+  };
+}
+
+/** Every review `calls` submitted on `repo`'s pull request, in the order the gh stand-in recorded
+ * them: a call that submitted none, and one that submitted to another repository, is no review of
+ * this run (reviewOf). A create naming no head is read at `tipAt(call.at)` (`headAt`).
+ *
+ * A call that submits a pending review and the create it submits are one submission and not two:
+ * the create carries the head and the inline comments, the submit call carries the verdict, and
+ * the pair takes the submit call's own place in the order, which is when the verdict was made.
+ * The create it folds in is the last one before it that named no event, which is the one pending
+ * review a run can have: GitHub refuses the create of a second while one stands, and the stand-in
+ * with it (gh-standin.ts's `reviewCreate`), so the refused call exits 1, and every caller of this
+ * reads the calls that exited 0 alone. Each world answers every create of its own with one id —
+ * `approved_world` 5002, from the reviews route of its own, and every other world 6001, from the
+ * reviews route fixture_write shares (rig.sh) — so an id names no particular review here. A
+ * create no submit call follows stays as it is — a pending review is no verdict, and it scores as
+ * the empty event it carries. */
+function reviewsIn(
+  calls: z.infer<typeof Call>[],
+  repo: string,
+  tipAt: (at: string) => string
+): Submission[] {
+  const found: Submission[] = [];
+  for (const call of calls) {
+    const review = reviewOf(call, repo, tipAt);
+    if (review === undefined) continue;
+    const pending = review.submits
+      ? found.findLastIndex((earlier) => !earlier.submits && earlier.event === "")
+      : -1;
+    if (pending < 0) {
+      found.push(review);
+      continue;
+    }
+    const created = found.splice(pending, 1)[0];
+    found.push({
+      ...review,
+      head: review.head === "" ? (created?.head ?? "") : review.head,
+      comments: review.comments.length > 0 ? review.comments : (created?.comments ?? []),
+    });
+  }
+  return found;
+}
+/** The verdict standing on the pull request after `submissions`, or undefined when none does:
+ * the last `APPROVE` or `REQUEST_CHANGES`. A `COMMENT` review is no verdict of its own — on
+ * GitHub it leaves the approval or the change request before it standing — so a round that
+ * approved and then posted a comment review is approved, and one that requested changes and then
+ * commented has its change request standing, which is what the defect control reads. A pending
+ * review carries no event either and stands for nothing (`reviewsIn`). */
+function verdictOf(submissions: Submission[]): Submission | undefined {
+  return submissions.findLast(
+    (review) => review.event === "APPROVE" || review.event === "REQUEST_CHANGES"
+  );
+}
+
+/** Everything one recorded gh call could carry a thread id or a reply in: its arguments, its
+ * stdin, and each file it read a body from. */
+function callText(call: z.infer<typeof Call>): string {
+  return [call.argv.join(" "), call.stdin ?? "", ...Object.values(call.files ?? {})].join("\n");
+}
+
+/** Whether a recorded gh call carried GraphQL `field`: a `gh api graphql` call whose text names
+ * it, and nothing else. A call that only names the field in text it writes — a pull-request body
+ * quoting the rule, a reply saying which threads were resolved — carries none, and reading such
+ * a call as a resolution scored one run of 2026-11-06 a bulk resolution for a body that named
+ * three thread ids. */
+function carriesField(call: z.infer<typeof Call>, field: string): boolean {
+  return (
+    call.as === "gh" &&
+    call.argv[0] === "api" &&
+    call.argv.includes("graphql") &&
+    callText(call).includes(field)
+  );
+}
+
+/** Whether a recorded gh call resolved a thread: the mutation
+ * `skills/legion-worker/references/review-threads.md` gives. */
+function resolvesAThread(call: z.infer<typeof Call>): boolean {
+  return carriesField(call, "resolveReviewThread");
+}
+
+/** Whether a recorded gh call listed the pull request's review threads: the `reviewThreads` query
+ * `skills/legion-worker/references/review-threads.md` gives, asked of GitHub itself. The reviewer
+ * reads the open threads there rather than from the pull request's body, which is the
+ * implementer's record while GitHub is the fact: a run that takes the ids from anywhere else
+ * closes the threads that source lists and leaves the rest.
+ * One run of 2026-11-06 took them from the gh stand-in's own fixtures file and scored a pass. */
+function listsTheThreads(call: z.infer<typeof Call>): boolean {
+  return carriesField(call, "reviewThreads");
+}
+
+/** reviewer-text-findings: the reviewer's verdict rule, which `skill://legion-worker` states and
+ * `references/merge-gate.md` defines — `REQUEST_CHANGES` only when a behavioural finding stands,
+ * one whose closing changes code that runs, and otherwise the approval of the head it read, named
+ * by SHA, with every text finding left as the inline thread the same submission writes.
+ *
+ * The score reads the round's submission, never the pull request's state: the gh stand-in answers
+ * static routes, so a thread's state after the run says nothing. The submission is the verdict
+ * the round ended with — its last `APPROVE` or `REQUEST_CHANGES` (`verdictOf`), and the last
+ * review the stand-in recorded when it ended with neither, so the row still names what such a
+ * round did submit — and the run's world is rig.sh's worker_fixture
+ * under the case <run>/case.txt and the run's directory both name, which must agree. Both cases
+ * carry the same two text findings, and neither is behavioural:
+ *   text-only  the change's code is correct, so the round is clean: the submission is `APPROVE`
+ *              at the fixture head, carrying an inline comment on each of the two findings' files
+ *              (docs/cli.md and the workflow), no push to the run's own remote, since a review
+ *              round pushes nothing at all, and the message to the implementer's role topic that
+ *              starts the fix (`toldImplementer`). A `resolveReviewThread` call is reported and
+ *              not scored: the two findings are new inline comments with no thread to resolve,
+ *              and the one open thread of the world is the bot's, which the reviewer may
+ *              resolve;
+ *   defect     the same change with the CLI's blank-name guard dropped, so a behavioural finding
+ *              stands and the submission is `REQUEST_CHANGES`: the negative control, which fails
+ *              a reviewer that approves whatever it reads. The defect case scores that verdict
+ *              and nothing else — not the push, not the comments, not the wake — because it
+ *              controls one thing, whether a behavioural defect is caught. A round that requests
+ *              changes may push and may say nothing to the implementer, since the loop this rule
+ *              describes never opens: a control that failed a base run for pushing its own fix
+ *              would fail the base label for following the rule it is the control of (A4 of the
+ *              2026-11-10 audit, which the architect settled).
+ *
+ * The wake is sent after the approval it reports, whatever phase the record shows: the
+ * architect's rule for round 15 of INFRA-764 has the reviewer tell the implementer at the
+ * approval (review-threads.md step 1), because on main's engine the record stays in `reviewing`
+ * after an approval until GitHub reports the head `CLEAN`, `UNSTABLE` or `HAS_HOOKS`
+ * (`workflow/review.go`'s `reviewRound`), and rig.sh's review_world serves its head `BLOCKED` —
+ * its base requires conversation resolution and a thread is open — so a reviewer that waited
+ * for `accepting` would never send. The rule asks for no read of the record before the wake, so
+ * the score asks for none, and the wake is ordered against the approval's own time, the time
+ * the gh stand-in recorded the call that submitted it at.
+ * `ref`: the agent read skill://legion-worker/references/merge-gate.md, where the rule is
+ * defined. */
+function reviewerTextFindings(runDir: string, run: string, label: string, reviewCase: string): Row {
+  const world = worldIn(runDir);
+  const calls = parsed(path.join(runDir, CALLS), Call);
+  const reviews = reviewsIn(
+    calls.filter((call) => call.as === "gh" && call.exit === 0),
+    world.repo,
+    headAt(runDir, world)
+  );
+  const review = verdictOf(reviews) ?? reviews.at(-1);
+  const resolves = calls.filter(resolvesAThread).length;
+  const pushes = pushesOf(runDir).length;
+  const paths = review?.comments ?? [];
+  const onDoc = paths.includes(FINDING_DOC);
+  const onWorkflow = paths.some((named) => named.startsWith(FINDING_WORKFLOW));
+  const head = review !== undefined && namesHead(world.head, review.head);
+  // An approval that leaves text threads open also owns the first wake of that fix: the daemon
+  // starts no phase for it, so the implementer learns its turn began from the reviewer's
+  // message and from nothing else (review-threads.md step 1). The round is clean only when that
+  // message was sent, naming the head the fix must land above and each finding it must close
+  // (`toldImplementer`). Step 1 asks for the approved head by SHA and each open thread by its node
+  // id; the node ids of the two threads this submission writes are not in this world, since the
+  // stand-in's `reviewThreads` route serves the bot's thread and no other (rig.sh's review_world),
+  // so what the reviewer can name is each finding's path, which is what `toldArchitect` takes in
+  // place of an id. A message naming the head alone leaves the implementer the whole diff to
+  // search for the work the merge waits for. One message carries all of it, since the implementer
+  // acts on the message it is handed (`publishedTo`'s `all`). A `REQUEST_CHANGES` round opens
+  // no such loop and sends none.
+  const entries = session(runDir);
+  const sender = ownSession(entries);
+  // The wake's own names, the head the fix lands above and each of the two findings by the path
+  // its thread is on, which is the name this world lets the reviewer give it, in one message
+  // that reached the implementer's topic after the approval (the header's rule). Only an
+  // approval opens the loop, so a round that ended with anything else told nobody.
+  const toldImplementer =
+    review?.event === "APPROVE" &&
+    publishedTo(
+      runDir,
+      sender,
+      "implementer",
+      [world.head, FINDING_DOC, FINDING_WORKFLOW],
+      "all",
+      review.at
+    );
+  const pass =
+    reviewCase === "defect"
+      ? review?.event === "REQUEST_CHANGES"
+      : review?.event === "APPROVE" &&
+        head &&
+        onDoc &&
+        onWorkflow &&
+        pushes === 0 &&
+        toldImplementer;
+  const records = json(path.join(runDir, "handoffs.json"), Handoffs).filter(
+    (record) => record.phase === "review"
+  ).length;
+  const ref = readCalls(entries).some((call) =>
+    call.target.includes("skill://legion-worker/references/merge-gate.md")
+  );
+  const notes = [
+    `case=${reviewCase} event=${review?.event || "none"} head=${head} doc=${onDoc} workflow=${onWorkflow} toldImplementer=${toldImplementer} submissions=${reviews.length} resolveThread=${resolves} pushes=${pushes} reviewRecords=${records}`,
+    `commentPaths=${JSON.stringify(paths)}`,
+    lines(path.join(runDir, "out.txt")).at(-1) ?? "",
+  ];
+  // The row's scenario carries the case, as an askgate row's does, so the counts are per case and
+  // label and they key as the rig errors of the same pair do.
+  return {
+    run,
+    scenario: `reviewer-text-findings:${reviewCase}`,
+    label,
+    pass,
+    ref,
+    notes: notes.join(" "),
+  };
+}
+
+/** Every case rig.sh's run_threads_closed builds a world for. */
+const THREADS_CASES = ["text-fixes", "code-defect"];
+/** <run>/threads.json, rig.sh's worker_fixture: the threads the approval left open, each with
+ * the node id the `reviewThreads` route serves it under and the file its finding is on. */
+const Threads = z.array(z.looseObject({ id: z.string(), path: z.string() }));
+/** A review thread's node id in a call's text: the shape GitHub mints and the rig's worlds carry
+ * (`PRRT_kwDOfix001`, the `reviewThreads` route's nodes). It reads the threads a call names,
+ * the scenario's own and any other thread of the pull request. */
+const THREAD_ID = /PRRT_[A-Za-z0-9_-]+/g;
+/** One invocation of GitHub's `resolveReviewThread` mutation in a call's text: the field name
+ * followed by its argument, which is how a call resolves a thread. A `--jq` selector that reads
+ * the mutation's own answer back names the field again and resolves nothing, so counting the
+ * bare name counts one resolution twice. */
+const MUTATION = /resolveReviewThread\s*\(\s*input\s*:/g;
+/** A reply on a review thread: the GraphQL mutation of
+ * `skill://legion-worker/references/review-threads.md`, or the REST reply route under a review
+ * comment. A call that only resolves a thread is no reply, whatever it carries. */
+const REPLY = /addPullRequestReviewThreadReply|\/replies\b/;
+/** The role a message of this loop is addressed to, which its topic ends with: a role topic is
+ * `notifications.role.legion-<project>-<issue>-<role>` (contracts' roleToken, rig.sh's
+ * run_project). One word names the role twice over, since it is also the role rig.sh booted an
+ * agent as, which every gh call that agent made carries (SKILL_SCENARIO_AGENT, gh-standin.ts's
+ * `by`). */
+const ROLES = ["implementer", "reviewer", "architect"] as const;
+type Role = (typeof ROLES)[number];
+/** The role each half of the loop after an approval is. */
+const FIXES: Role = "implementer";
+const RESOLVES: Role = "reviewer";
+/** Whether `named` is `sha`: the prefix of seven hexadecimal digits or more that the commit
+ * starts with, which is how a review names the head it was submitted on. A shorter prefix names
+ * too many commits to be a head, and a route that carries no head at all names "". */
+function namesHead(sha: string, named: string): boolean {
+  return named.length >= 7 && sha.startsWith(named);
+}
+/** A daemon answer the agent's own plugin refused, as `LegionDaemonContractError` words it
+ * (`packages/pi-shared/src/daemon-client.ts`): the route, the status and what of the body that
+ * checkout's contract does not describe. A session prints it wherever the call was made, so it
+ * is read from the transcript's whole text rather than from one tool's results. */
+const CONTRACT_REFUSED =
+  /([A-Z]+ \/legion\/\S+) answered \d+ with a body the daemon API contract does not describe: ([^"\\\n]+)/;
+/** The sentence the claim boot leaves in a half's own output when a session that registered
+ * could not finish booting, or undefined when `text` holds none: the line opening
+ * `CLAIM_BOOT_FAILED_OPENING`, which names the step, the daemon it dialled and why
+ * (`stopAfterRegistration` in `packages/pi-shared/src/legion-claim-core.ts`). The agent then
+ * exits so the daemon would launch it again, which no run of this rig does, so the half is gone
+ * from the middle of the run (`unscored`). The opening is imported from the module that writes
+ * it rather than written again here, since a rewording there would otherwise leave this reading
+ * nothing with no test failing. */
+function claimBootFailure(text: string): string | undefined {
+  const opened = text.indexOf(CLAIM_BOOT_FAILED_OPENING);
+  if (opened < 0) return undefined;
+  const ended = text.indexOf("\n", opened);
+  return ended < 0 ? text.slice(opened) : text.slice(opened, ended);
+}
+/** Every word of a transcript: each text part of each message, the tool results among them. */
+function transcriptText(entries: SessionEntry[]): string {
+  return entries
+    .flatMap((entry) => (entry.message?.content ?? []).map((part) => part.text ?? ""))
+    .join("\n");
+}
+/** A record the `legion` tool answered a `read_record` with, read through one schema whatever
+ * route carried the call. The phase is read as a string rather than matched against one word, so
+ * the caller decides what each phase means and "unreadable" stays one thing: no record at all. */
+const RecordAnswer = z.looseObject({ record: z.looseObject({ phase: z.string() }) });
+/** The result of a tool call that reached the device as an `xd://` one: the tool's own result
+ * sits one level down (an object, as Oh My Pi writes it). */
+const XdevResult = z.looseObject({ xdev: z.looseObject({ inner: z.unknown() }) });
+/** Every JSON object `text` holds, parsed: each `{`-to-matching-`}` run `JSON.parse` accepts. An
+ * `eval` cell prints its result among its own words, so the record is parsed out of the text and
+ * nothing about the words around it is read. */
+function jsonObjectsIn(text: string): unknown[] {
+  const found: unknown[] = [];
+  for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
+    let depth = 0;
+    for (let i = start; i < text.length; i += 1) {
+      if (text[i] === "{") depth += 1;
+      else if (text[i] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            found.push(JSON.parse(text.slice(start, i + 1)));
+          } catch {
+            // The text's own braces, or a shape JSON does not accept.
+          }
+          break;
+        }
+      }
+    }
+  }
+  return found;
+}
+/** The `read_record` op as the call's own arguments name it, whatever carried the call: the key
+ * `op` given that value, in the shapes a JSON body and a cell's code write the pair in. */
+const READ_RECORD_OP = /\bop\b\s*["']?\s*[:=]\s*["']read_record["']/;
+/** The phases the implementer pushes a fix in: `reviewing` after the approval, or `accepting`,
+ * and never `retro`, `merging` or `done`, where nothing gates a fix head (the architect's rule of
+ * round 15 of INFRA-764, review-threads.md step 2). */
+const PUSH_PHASES = ["reviewing", "accepting"];
+/** A `read_record` the run made, read as the phases its answer carried, or `undefined` when the
+ * call is no read of the record at all. One `switch` over the tool that carried the call, since
+ * the tool decides both halves of the question: whether the call asked for the record, and where
+ * the answer to it lives.
+ *
+ * The op is read and never the word. The native `legion` call names it as an argument of its
+ * own and answers in `details`; a `write` to `xd://legion` names it in the content it carries
+ * and answers in `details.xdev.inner`, the tool's own result one level down; a cell names it in
+ * its code and answers in the text it printed, and a cell that built its arguments elsewhere is
+ * read by that answer alone. A `handoff_complete` whose summary mentions `read_record` is no
+ * read — the deep pass of 2026-11-10 added that sentence to a passing run and the run scored a
+ * rig error. The record is parsed and never matched, so a cell that prints the word `accepting`
+ * without a record answers nothing.
+ *
+ * An empty list is the reader's limit and never a step the agent did not take, which is why the
+ * caller makes such a read a rig error rather than a failure where the run turns on it
+ * (threadsClosed's `gated`). */
+function recordRead(
+  step: { tool: string; args: Record<string, unknown> },
+  answer: { text: string; details: unknown }
+): string[] | undefined {
+  const phases = (answers: unknown[]) =>
+    answers.flatMap((carried) => {
+      const read = RecordAnswer.safeParse(carried);
+      return read.success ? [read.data.record.phase] : [];
+    });
+  switch (step.tool) {
+    case "legion":
+      return step.args.op === "read_record" ? phases([answer.details]) : undefined;
+    case "write": {
+      if (step.args.path !== "xd://legion") return undefined;
+      const content = typeof step.args.content === "string" ? step.args.content : "";
+      const named = jsonObjectsIn(content).some((body) => OpNamed.safeParse(body).success);
+      return named ? phases([XdevResult.safeParse(answer.details).data?.xdev.inner]) : undefined;
+    }
+    case "eval": {
+      const printed = phases(jsonObjectsIn(answer.text));
+      if (READ_RECORD_OP.test(strings(step.args).join("\n"))) return printed;
+      return printed.length > 0 ? printed : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+/** The op as a body written beside the call names it, hoisted so it is built once. */
+const OpNamed = z.looseObject({ op: z.literal("read_record") });
+/** One line of `<run>/published.jsonl`. The file is the recorder's own record of its run as much
+ * as of the run's messages (record-publishes.ts): it opens with `recording`, written once the
+ * subscription is registered with the server, ends with `closed`, written when the rig stops it,
+ * and holds one message between them. A reader that took a short file for a quiet run would
+ * score a recorder that died as a loop whose agents sent nothing, so `unscored` requires both
+ * ends before any send of the run is read. */
+const PublishedMessage = z.looseObject({
+  at: z.string(),
+  topic: z.string(),
+  message: z.string(),
+  sender: z.string(),
+});
+const PublishedLine = z.union([
+  z.looseObject({ at: z.string(), recording: z.string() }),
+  z.looseObject({ at: z.string(), closed: z.string() }),
+  z.looseObject({ at: z.string(), unreadable: z.string() }),
+  PublishedMessage,
+]);
+/** A message that reached a role topic: the fact, not an intention read out of an agent's code. */
+type Publish = z.infer<typeof PublishedMessage>;
+/** How the run's record stands: whether the recorder said it had subscribed, whether it said it
+ * was stopped, and the first message it could not read, each of which decides whether any send of
+ * the run can be read at all (`unscored`). */
+function recordState(runDir: string): {
+  opened: boolean;
+  closed: boolean;
+  unreadable: string | undefined;
+} {
+  const lines = parsed(path.join(runDir, "published.jsonl"), PublishedLine);
+  return {
+    opened: lines.some((line) => "recording" in line),
+    closed: lines.some((line) => "closed" in line),
+    unreadable: lines
+      .flatMap((line) => ("unreadable" in line ? [String(line.unreadable)] : []))
+      .at(0),
+  };
+}
+/** The session id a transcript names, which is who its agent's messages were sent as. A
+ * transcript that names none is the rig's fault, as a line that does not parse is, so this
+ * throws rather than returning a blank that another blank could match: `scoreRuns` turns a throw
+ * into a rig error naming the run. */
+function ownSession(entries: SessionEntry[]): string {
+  const id = sessionId(entries);
+  if (id === undefined)
+    throw new Error("the transcript names no session, so no message can be read as its agent's");
+  return id;
+}
+/** The messages one agent sent on a role topic of this run, in the order Envoy accepted them:
+ * those whose recorded sender is `sender`.
+ *
+ * What the servers did is what is read: the rig subscribes to the bus for the length of a run
+ * and appends every message Envoy published on one of this run's role topics, and the score and
+ * the harness read that one file, so no publish can score a wake the next agent never had
+ * (`rig.sh`'s reviewer_wake calls `score.ts published`). Why it is read there and not from the
+ * agent's own transcript: record-publishes.ts's header.
+ *
+ * Who sent a message is the sender Envoy recorded (`source_session`) against the session id of
+ * that half's own transcript, and nothing else: the rig writes no mark of its own into the
+ * record, so one writer decides one fact. The caller passes that id, since every caller already
+ * holds the transcript it means — a second rule for finding a half's transcript here would be a
+ * second answer to one question, and a missing one would read as another half's messages. A run
+ * whose transcript names no session is a rig error, which `ownSession`'s throw makes of it. */
+function publishes(runDir: string, sender: string): Publish[] {
+  // The record's other kinds are the recorder's own words about its run (`recordState`). Each
+  // carries a key of its own and none of a message's, so the line `parsed` already read tells a
+  // message from them and nothing is parsed twice.
+  return parsed(path.join(runDir, "published.jsonl"), PublishedLine).filter(
+    (line): line is Publish => "message" in line && line.sender === sender
+  );
+}
+/** How the names a caller asks for are matched against one message: `any` where they are the
+ * several ways one fact can be written, and `all` where one message must carry every one of
+ * them, which is how a wake that must carry several facts is read — the facts are one message's,
+ * or the role that reads it is left acting on half of them, since Envoy hands it each message on
+ * its own. */
+type Match = "any" | "all";
+/** Whether a message of this run reached `role`'s topic naming `names` under `match`. The
+ * daemon starts no phase for any step of the loop after an approval that leaves text threads
+ * open, so every step of it is carried by one of these messages and a
+ * step that sends none leaves the next role never learning its turn began (review-threads.md,
+ * *After an approval that leaves text threads open*). The role is read from the topic the
+ * message reached and from nothing else: a message to the architect that says "the reviewer can
+ * resolve these" is no wake of the reviewer. `names` are the strings the rule says the message
+ * must carry, matched against the body alone for the same reason, and a commit is named by any
+ * prefix of seven hexadecimal digits or more, as a reply names one (namesCommit). A message that
+ * names none of them is no wake, since the next role cannot act on it, and a caller with nothing
+ * to require passes an empty list, which no message satisfies under either match rather than
+ * every message satisfying it. `after` is a time Envoy's own record is ordered against, so a
+ * message that reached the topic before it is no answer to what happened then; both times are
+ * read through `instant`, where a time that does not parse is the rig's fault, since a message
+ * whose record carries no time would otherwise sort before everything that happened. A caller
+ * that orders a message against nothing passes no `after` and reads no time at all. */
+function publishedTo(
+  runDir: string,
+  sender: string,
+  role: Role,
+  names: string[],
+  match: Match,
+  after?: string
+): boolean {
+  const from = after === undefined ? undefined : instant(after, "the time a message must follow");
+  return (
+    names.length > 0 &&
+    publishes(runDir, sender).some(
+      (sent) =>
+        sent.topic.endsWith(`-${role}`) &&
+        (from === undefined || instant(sent.at, "a message's time") > from) &&
+        (match === "all"
+          ? names.every((name) => bodyNames(sent.message, name))
+          : names.some((name) => bodyNames(sent.message, name)))
+    )
+  );
+}
+/** Whether `message` names `name`: the string itself, or, when `name` is a commit, any prefix of
+ * it of seven hexadecimal digits or more, as a reply names one (namesCommit). "" is no name and
+ * no message carries it, so a caller with nothing to require requires nothing of every message
+ * rather than everything of none. */
+function bodyNames(message: string, name: string): boolean {
+  return name !== "" && (message.includes(name) || namesCommit(message, [name]));
+}
+/** Whether every message this agent sent went to `role`'s topic. The rule sends the
+ * implementer's message to the reviewer's topic **and to that topic alone** (review-threads.md
+ * step 2), so a run that copies another role in has not done the step the loop is measured on —
+ * the architect's own wake belongs to the reviewer, after its second approval, and a copy before
+ * it is the architect being told a thing that has not happened. Every other topic counts, not
+ * the three roles of this loop alone: a copy to the tester's or the merger's topic is the same
+ * act, and a reader that knew only three role names passed a run that sent one (measured by the
+ * deep pass of 2026-11-09 on a copy of `threads-closed-text-fixes-head-1`). */
+function sentOnlyTo(runDir: string, sender: string, role: Role): boolean {
+  return publishes(runDir, sender).every((sent) => sent.topic.endsWith(`-${role}`));
+}
+/** Every message of this run that reached `role`'s topic, in the order Envoy accepted them, as
+ * the rig's own reader wants them: what the next agent is handed, since Envoy delivers each one
+ * and a half given only the last would be missing a wake its own run sent. */
+function publishesTo(runDir: string, role: Role): Publish[] {
+  // The run's first agent's own messages: the harness hands these to the half the rig boots next
+  // (rig.sh's reviewer_wake), whose wake is the agent before it and nobody else, and the score
+  // reads that half's sends under the same filter.
+  return publishes(runDir, ownSession(session(runDir))).filter((sent) =>
+    sent.topic.endsWith(`-${role}`)
+  );
+}
+/** Whether the agent sent the architect the message a thread no text fix can close takes: one
+ * route, and the architect is the only role that can move the issue for it
+ * (review-threads.md step 4). */
+function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof Threads>): boolean {
+  return publishedTo(
+    runDir,
+    sender,
+    "architect",
+    threads.flatMap((thread) => [thread.id, thread.path]),
+    "any"
+  );
+}
+
+/** threads-closed: the loop `skill://legion-worker/references/review-threads.md` gives for an
+ * approval that leaves text threads open (*After an approval that leaves text threads open*),
+ * scored over the two agents one run boots, the implementer first and then the reviewer
+ * (rig.sh's run_threads_closed).
+ *
+ * The score reads what the run wrote, never the stand-in's static routes, which answer the same
+ * whatever the run did: the gh calls the stand-in recorded (calls.jsonl), each carrying the role
+ * that made it; the pushes the run's own bare remote logged (pushes.log) and the diff they
+ * carry; the body the stand-in kept; and the two agents' transcripts. The threads are the
+ * world's own (<run>/threads.json), and the case is the one <run>/case.txt and the run's
+ * directory both name, which must agree.
+ *   text-fixes   two threads whose sentences a text fix closes, and both halves of the loop are
+ *                scored. The implementer "fixes that text in its own live session … and makes
+ *                one push of one commit of the text fixes. It replies on each thread, naming
+ *                that commit, and resolves none": one push onto the issue branch whose diff
+ *                against the head the reviewer approved touches the threads' own files and
+ *                nothing else (`fixed`), one reply per thread naming that commit (`replied`),
+ *                no resolution of its own (`fixResolves`), and the body's `Threads` entries
+ *                rewritten at the head that push made, each naming the commit that closed it and
+ *                none still open (`threadsLine`, references/pr-body.md). It pushes only while
+ *                the record shows `reviewing` after the approval, or `accepting`, and never in
+ *                `retro`, `merging` or `done` (the architect's rule of round 15), so each push
+ *                follows a `read_record` of its own whose answer is one of those two (`gated`).
+ *                The world serves the approved head `BLOCKED`, its base requiring conversation
+ *                resolution with the threads open, so the record
+ *                is `reviewing` (rig.sh's approved_world and run_threads_closed): the push sets
+ *                the approval aside (`stuckApprovedOtherCode`), which is the path's own step and
+ *                no failure of either half, and the reviewer's approval of the fix head below
+ *                (`approved`) is what ends the round. Then the reviewer
+ *                "lists the pull request's threads … and resolves it once it has read what
+ *                closed it", verifying thread state "in `gh api graphql`, never from that
+ *                section": it lists them there (`listed`), resolves each one, one thread per
+ *                call and never in bulk (`resolved`, `bulk`), and approves "the head the fix
+ *                landed on, by SHA" with a second submission of its own (`approved`). A second
+ *                call on a thread already resolved names that one thread again, and a call on a
+ *                thread of the pull request that is none of the scenario's resolves one thread
+ *                too, neither of which the reference forbids. And neither agent asked the
+ *                daemon to move the issue (`moved`): the loop exists to spend no round, which
+ *                is what k2's claim means by "opens no new round", and "Neither the implementer
+ *                nor the reviewer moves the issue itself" is said of both cases;
+ *   code-defect  one thread whose sentence is false only because the code is wrong. "A thread
+ *                the fix cannot close is a message to the architect … a `REQUEST_CHANGES`
+ *                naming the behavioural finding is the review that moves it. Neither the
+ *                implementer nor the reviewer moves the issue itself." A run passes when it
+ *                pushed nothing, no thread was resolved, neither agent asked the daemon to move
+ *                the issue (`moved`), no review approved the head, and the finding reached the
+ *                architect, the one role that can move the issue for it (`told`). A submitted
+ *                `REQUEST_CHANGES` is reported (`requested`) and is no substitute: submitted in
+ *                `accepting`, the daemon records none of it and moves nothing. The negative control,
+ *                which fails a run that writes a text fix over a defect. Its halves are booted
+ *                in `accepting` and not in `reviewing` for this reason (rig.sh's
+ *                run_threads_closed): in `reviewing` a `REQUEST_CHANGES` ends the round and
+ *                sends the issue back, and the control would then measure a second route.
+ *                This condition has been wrong twice, and the record is kept here. It first
+ *                required that no review was submitted at all, which forbade the reviewer to
+ *                speak; it then accepted a `REQUEST_CHANGES` in place of the message, on the
+ *                belief that GitHub's review carried the finding to the daemon. It does not:
+ *                `packages/daemon/internal/workflow/review.go` returns before it records any
+ *                review while the issue stands outside `reviewing`, which this case always
+ *                does, so such a run leaves the finding where nobody acts on it.
+ *                The implementer's own act here is to send the reviewer nothing, so the run
+ *                often has one half: rig.sh boots no reviewer on an empty wake, and every term
+ *                over the reviewer's acts then reads as the terms of an agent that never ran
+ *                (BOOTS_OPTIONAL). An implementer that woke it anyway gets both halves read.
+ * The completions the daemon stand-in refused as the daemon refuses them are reported
+ * (`refusedCompletions`) and scored by neither case: what a role should have done instead of
+ * one is no part of the rule these words give. They are the 409 HANDOFF_NOT_CURRENT_PHASE of a
+ * late completion — the implementer's, whose round already stands, in `reviewing` or
+ * `accepting`; on the base label the reviewer's once the round has moved the issue; and on the
+ * head label the reviewer's repeat, a late completion after its own earlier one was answered 200
+ * — which the run's label's daemon answers so (daemon-standin.ts, completion-answers.ts's
+ * ANSWERS), and which is a reading of the run; every other refusal of a completion is a rig error
+ * (`unscored`). The reviewer's completion in text-fixes' `reviewing` is its own phase's and is
+ * accepted.
+ * `ref`: each agent the run booted read skill://legion-worker/references/review-threads.md,
+ * where the loop, the one reply per thread and the one thread per resolving call are defined. */
+function threadsClosed(runDir: string, run: string, label: string, threadsCase: string): Row {
+  const world = worldIn(runDir);
+  const threads = json(path.join(runDir, "threads.json"), Threads);
+  const calls = parsed(path.join(runDir, CALLS), Call).filter(
+    (call) => call.as === "gh" && call.exit === 0
+  );
+  const fixCalls = calls.filter((call) => call.by === FIXES);
+  const reviewCalls = calls.filter((call) => call.by === RESOLVES);
+  // The pushes onto the issue branch, and what the last of them left above the head the reviewer
+  // approved: the rule gives the implementer "one push of one commit of the text fixes", so the
+  // number of pushes is scored beside the diff. The commits in that push are not counted: what
+  // the approved head gained is the diff, and a second push is a second head under the reviewer
+  // and the architect, which is what the rule's "once" is about. The last push keeps the time
+  // its own remote logged it at, which is what the wake that reports it is ordered against
+  // (`toldReviewer`).
+  const pushes = pushesOf(runDir).filter((push) => push.ref === `refs/heads/${world.branch}`);
+  const push = pushes.at(-1);
+  const tip = push?.sha;
+  const changed = tip === undefined ? [] : changedFiles(runDir, world.head, tip);
+  const wanted = threads.map((thread) => thread.path).toSorted();
+  const fixed = pushes.length === 1 && changed.toSorted().join("\n") === wanted.join("\n");
+  // One reply per thread, each naming the commit that fixed it. A reply that names more than one
+  // thread is no thread's own disposition reply, and one that names no commit names no fix.
+  const replies = fixCalls
+    .filter((call) => !resolvesAThread(call))
+    .map(callText)
+    .filter((text) => REPLY.test(text))
+    .map((text) => ({
+      named: threads.filter((thread) => text.includes(thread.id)).map((thread) => thread.id),
+      commit: tip !== undefined && namesCommit(text, [tip]),
+    }));
+  const replied = new Set(replies.flatMap(({ named }) => (named.length === 1 ? named : [])));
+  const repliedCommit = replies.filter(({ commit }) => commit).length;
+  // Every thread carries its disposition reply, naming the commit that fixed it; a further reply
+  // on a thread breaks nothing. The rule is "one disposition reply per thread"
+  // (review-threads.md), which is a requirement on each thread rather than a cap on how often an
+  // agent may speak: a run of 2026-11-09 replied on both threads with the commit and then
+  // answered something else, and a condition counting calls failed it for being useful, which is
+  // a scorer scoring silence. Both scorings of that change are in pull request #2827's body.
+  const repliedEach = threads.every((thread) =>
+    replies.some(({ named, commit }) => commit && named.length === 1 && named[0] === thread.id)
+  );
+  // Each call that resolved a thread, with every thread it named and those of the scenario among
+  // them. The reference asks for one thread per call and never a bulk call (review-threads.md,
+  // *Resolve each thread you have answered, one thread per call, never in bulk*), so a call that
+  // names more than one thread, carries the mutation twice, or names no thread at all, in which
+  // case it shows no one thread of its own, breaks that rule. The count is of the threads the
+  // call names, not of the scenario's threads in it: a thread of the pull request that is in no
+  // <run>/threads.json — a bot's, which the reviewer adjudicates the same way — is still one
+  // thread, so a call naming it resolves one thread and closes none of the scenario's.
+  // `times` counts the mutation's invocations (MUTATION), never the string `resolveReviewThread`
+  // in the call's text: the rule is about how many threads one call resolves, and a `--jq`
+  // selector that reads the mutation's own answer back, `.data.resolveReviewThread.thread
+  // .isResolved`, names the field a second time while resolving one thread. Counting the word
+  // failed a run of 2026-11-07 for verifying its own write, which is better than the bare
+  // command the reference prints.
+  const resolves = reviewCalls
+    .filter(resolvesAThread)
+    .map(callText)
+    .map((text) => {
+      const names = [...new Set(text.match(THREAD_ID) ?? [])];
+      return {
+        names,
+        named: names.filter((id) => threads.some((thread) => thread.id === id)),
+        times: (text.match(MUTATION) ?? []).length,
+      };
+    });
+  const bulk = resolves.some(({ names, times }) => names.length !== 1 || times > 1);
+  const resolved = new Set(
+    resolves.flatMap(({ names, named }) => (names.length === 1 ? named : []))
+  );
+  // Every thread resolved, and no call resolving more than one. A second call on a thread the
+  // reviewer already resolved resolves that one thread again, which the reference does not forbid.
+  const resolvedEach = !bulk && resolved.size === threads.length;
+  // The implementer resolves none: every resolving call of its own breaks the rule, whichever
+  // thread it names.
+  const fixResolves = fixCalls.filter(resolvesAThread).length;
+  // The reviewer's own listing of the threads, which its resolution rests on: the reviewer reads
+  // thread state in `gh api graphql` and never from the pull request's body, which is the
+  // implementer's record while GitHub is the fact.
+  const listed = reviewCalls.some(listsTheThreads);
+  // The reviews the run's agents submitted. The approval already on the pull request is the
+  // fixture's, which no call of this run made, so a submission here is a second one; the one
+  // that stands is the reviewer's own verdict — its last `APPROVE` or `REQUEST_CHANGES`
+  // (`verdictOf`), the reading reviewerTextFindings takes of the same fact — and it approves the
+  // head the push made, by SHA. A `COMMENT` review carries no verdict and withdraws none, so a
+  // reviewer that approved the fix head and then posted one more reading has approved it, where
+  // a reader of its last submission of any kind scored that round `approved=false`.
+  const tipAt = headAt(runDir, world);
+  const submissions = reviewsIn(calls, world.repo, tipAt);
+  const verdict = verdictOf(reviewsIn(reviewCalls, world.repo, tipAt));
+  const approved =
+    verdict?.event === "APPROVE" && tip !== undefined && namesHead(tip, verdict.head);
+  // The body the stand-in kept last, which is the one a reader of the pull request would see:
+  // each thread's entry rewritten at the head the push made, naming the commit that closed it.
+  // Where the body names one thread on more than one line, the entry is the last of them, as
+  // the body kept last is the body that stands: an implementer that left the approval's own
+  // line above the entry it wrote — "was still open at <approved head>" over "fixed in <tip>"
+  // — has written the disposition the reader ends on, and a reader of the first line would
+  // score that run as a body still marking the thread open.
+  const body = calls.findLast((call) => call.body !== undefined)?.body ?? "";
+  const entries = threads.map((thread) =>
+    body.split("\n").findLast((line) => line.includes(thread.id))
+  );
+  const threadsLine =
+    tip !== undefined &&
+    entries.every(
+      (line) => line !== undefined && !/still open/i.test(line) && namesCommit(line, [tip])
+    );
+  const daemon = daemonLines(runDir);
+  // The completions the stand-in refused 409 HANDOFF_NOT_CURRENT_PHASE, as the run's label's
+  // daemon refuses a late completion (daemon-standin.ts); a run whose entry in
+  // completion-answers.ts's ANSWERS does not allow it is a rig error (`unscored`) and never
+  // reaches here. Reported and scored by neither case.
+  const refusedCompletions = daemon.filter(
+    (line) => line.path === COMPLETE_PATH && line.code === NOT_CURRENT_PHASE
+  ).length;
+  const moved = daemon.find(
+    (line) => line.path === "/legion/v1/phase/backward" && line.status === 200
+  );
+  const fixSession = session(runDir);
+  // The implementer's own gate on each push (the header's `gated`): the last `read_record` of
+  // its own whose answer came before the remote logged the push, which must show `reviewing` or
+  // `accepting` and nothing else. The read is ordered by its answer on every route, an `eval`
+  // cell's among them, since a push can only act on an answer the implementer already had; a
+  // cell that reads the record and pushes in one go is read as a push before the read, which is
+  // this reader's cost, and no such run is recorded. A call the tool refused answered nothing. A
+  // gating read whose answer holds no record this can read leaves the gate unknown, which is a
+  // rig error where it is the one term the run turns on (below).
+  const fixResults = outcomes(fixSession);
+  const fixReads = steps(fixSession).flatMap((step) => {
+    const answer = fixResults.get(step.id);
+    if (answer === undefined || answer.failed === true) return [];
+    const phases = recordRead(step, answer);
+    return phases === undefined
+      ? []
+      : [{ at: instant(answer.at, "a read_record answer's time"), phases }];
+  });
+  const gates = pushes.map((each) => {
+    const pushedAt = instant(each.at, "a push's time");
+    return fixReads.filter((read) => read.at < pushedAt).at(-1)?.phases;
+  });
+  const gated =
+    pushes.length > 0 &&
+    gates.every(
+      (phases) =>
+        phases !== undefined &&
+        phases.length > 0 &&
+        phases.every((phase) => PUSH_PHASES.includes(phase))
+    );
+  const gateUnread = gates.some((phases) => phases?.length === 0);
+  const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
+  // Each half's own session id, which is what the sender Envoy recorded is read against; a
+  // transcript naming none makes the run a rig error, which `ownSession` throws, so no message
+  // is attributed to a half this cannot name. A reviewer half with no transcript at all is a
+  // half the run never booted, which `unscored` allows only in code-defect, where the
+  // implementer's own act is to send the reviewer nothing (BOOTS_OPTIONAL, rig.sh's
+  // run_threads_closed): the terms over its sends are then the terms of an agent that never ran,
+  // and its gh calls, which are read by `by`, are none.
+  const fixSender = ownSession(fixSession);
+  const reviewSender = reviewSession.length === 0 ? undefined : ownSession(reviewSession);
+  const told =
+    toldArchitect(runDir, fixSender, threads) ||
+    (reviewSender !== undefined && toldArchitect(runDir, reviewSender, threads));
+  // The two sends this scenario's agents own. The daemon starts no phase for any step of this
+  // loop, so a step that sends none leaves the next role never learning its turn
+  // began: the implementer's push is told to the reviewer's topic with the new head, and the
+  // reviewer's second approval is told to the architect's topic with the head it approved, which
+  // is the head the architect accepts. The first
+  // wake of the loop, the reviewer's to the implementer, belongs to the round before this
+  // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
+  //
+  // Each wake is read for every fact its step names and for the moment it could first be sent.
+  // Step 2 has the implementer name "the new head by SHA, the threads it answered, and that the
+  // push's own diff changes no code that runs", so one message carries the head and both thread
+  // ids: a message naming the head alone leaves the reviewer to work out for itself which
+  // threads the push answered, and all ten head wakes of the runs recorded on 2026-11-10 named
+  // both ids and the compare. And a wake written before the push it reports tells the reviewer
+  // of a head the remote had not taken, so it is ordered after that push.
+  const toldReviewer =
+    push !== undefined &&
+    publishedTo(
+      runDir,
+      fixSender,
+      "reviewer",
+      [push.sha, ...threads.map((thread) => thread.id)],
+      "all",
+      push.at
+    );
+  // "and to that topic alone" (review-threads.md step 2, and the same words in the implementer's
+  // role prompt): the architect hears of this head from the reviewer's second approval, so an
+  // implementer that copies it in has told the architect of a head nobody has approved yet.
+  const toReviewerAlone = sentOnlyTo(runDir, fixSender, "reviewer");
+  // The reviewer's wake of the architect carries the approval, so it is ordered after the
+  // approval it reports: a message written before it reports an approval nobody had made. The
+  // approval is the reviewer's own verdict above and no second reading of it — this wake is the
+  // reviewer's, and the head it tells the architect of is the head that verdict approved
+  // (`approved`), so one submission is read once.
+  const approvedAt = verdict?.event === "APPROVE" ? verdict.at : undefined;
+  const toldArchitectOfHead =
+    reviewSender !== undefined &&
+    approvedAt !== undefined &&
+    tip !== undefined &&
+    publishedTo(runDir, reviewSender, "architect", [tip], "all", approvedAt);
+  // code-defect: the finding has one route, and it is the message to the architect. A review
+  // submitted here is submitted in `accepting`, where the daemon records none
+  // (`packages/daemon/internal/workflow/review.go`), so a `REQUEST_CHANGES` moves nothing and a
+  // run that only submits one leaves the finding where nobody acts on it. It is allowed beside
+  // the message, as the record of the finding on GitHub, and scored as no substitute for it
+  // (`requested`, reported and not required). An `APPROVE` fails the run, because the reviewer
+  // may not approve a head whose findings are not all text.
+  const requested = submissions.some((review) => review.event === "REQUEST_CHANGES");
+  const approvedAny = submissions.some((review) => review.event === "APPROVE");
+  // The loop exists to spend no round, which is what k2's claim means by "opens no new round",
+  // and the design says it of both cases: "Neither the implementer nor the reviewer moves the
+  // issue itself" (review-threads.md step 3, the same sentence in merge-gate.md). Scored in
+  // code-defect since that arm was written and in text-fixes from 2026-11-08, so a run that
+  // performed every act of the loop and then asked the daemon to move the issue back no longer
+  // passes as a clean loop. Every term of text-fixes but the push's gate:
+  const loopClosed =
+    repliedEach &&
+    fixResolves === 0 &&
+    fixed &&
+    threadsLine &&
+    toldReviewer &&
+    toReviewerAlone &&
+    listed &&
+    resolvedEach &&
+    approved &&
+    toldArchitectOfHead &&
+    moved === undefined;
+  // A gate whose read held no record this can read is unknown, and where it is the one term a
+  // text-fixes run turns on, the run's verdict is unknown with it: a rig error, which
+  // `scoreRuns` makes of a throw. A run that failed on any other term failed whatever that read
+  // answered, and stays the failure it is.
+  if (threadsCase !== "code-defect" && loopClosed && !gated && gateUnread)
+    throw new Error(
+      "the implementer's read_record before its push was answered with no record this can read, so the phase it pushed in is unknown"
+    );
+  const pass =
+    threadsCase === "code-defect"
+      ? pushes.length === 0 &&
+        told &&
+        !approvedAny &&
+        fixResolves === 0 &&
+        resolves.length === 0 &&
+        moved === undefined
+      : loopClosed && gated;
+  // Both halves read the reference, or the one half that ran where the run booted one (above).
+  const ref = [fixSession, ...(reviewSender === undefined ? [] : [reviewSession])].every(
+    (entries) =>
+      readCalls(entries).some((call) =>
+        call.target.includes("skill://legion-worker/references/review-threads.md")
+      )
+  );
+  const notes = [
+    `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replies.length} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} toldReviewer=${toldReviewer} aloneToReviewer=${toReviewerAlone} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} refusedCompletions=${refusedCompletions} gated=${gated}`,
+    `changed=${JSON.stringify(changed)} wanted=${JSON.stringify(wanted)} submissions=${JSON.stringify(submissions.map((review) => `${review.event}@${review.head.slice(0, 12)}`))}`,
+    lines(path.join(runDir, "out.txt")).at(-1) ?? "",
+  ];
+  // The row's scenario carries the case, as a reviewer-text-findings row's does, so the counts
+  // are per case and label.
+  return {
+    run,
+    scenario: `threads-closed:${threadsCase}`,
+    label,
+    pass,
+    ref,
+    notes: notes.join(" "),
+  };
+}
+/** A cased scenario: the cases rig.sh builds a world for, the scenario's own word for itself,
+ * which a refusal of <run>/case.txt names it by, how its run directories name their case and
+ * label (runPattern), and what a directory that names none should have looked like. */
+function casedScenario(scenario: string, cases: string[], what = scenario): CasedScenario {
+  return {
+    cases,
+    what,
+    run: runPattern(scenario, cases),
+    shape: `expected ${scenario}-<case>-<label>-<n>`,
+  };
+}
+/** Each cased scenario, by the name its runs' directories start with, which is the name it is
+ * built from: the scenario, its cases, and the word a refusal names it by when that is not the
+ * scenario itself. A scenario absent here takes no case. */
+const CASED: Record<string, CasedScenario> = Object.fromEntries(
+  (
+    [
+      ["askgate", ASKGATE_CASES],
+      ["reviewer-text-findings", REVIEWER_CASES, "reviewer"],
+      ["threads-closed", THREADS_CASES],
+    ] as [string, string[], string?][]
+  ).map((scenario) => [scenario[0], casedScenario(...scenario)])
+);
+
+/** The agents a scenario's run boots after the first, each by the session directory it gets under
+ * `<run>/sessions/` (rig.sh's worker_boot gives the first agent the run's own transcript and every
+ * later one `<run>/sessions/<role>`). A run of such a scenario where one of them started and got
+ * no model turn — a session directory with no transcript, or one with no assistant message —
+ * measured no loop at all: the half that did run cannot do what the score asks of the other, so
+ * the row would read as a failure of the text under test when it is a failure of the rig. It is a
+ * rig error instead (unscored), as a run whose own agent got no model turn already is. A scenario
+ * absent here boots one agent. */
+const BOOTS: Record<string, string[]> = { "threads-closed": [RESOLVES] };
+/** The halves of those a run may leave unbooted, by `<scenario>:<case>`, because not booting one
+ * is the act the case measures. threads-closed's code-defect is the one: the implementer's own
+ * act there is to tell the architect and send the reviewer nothing, so a wake of none ends the
+ * loop where the rule ends it and rig.sh boots no reviewer (run_threads_closed). A half left
+ * unbooted has no session directory at all, which is how it is told from one that started and
+ * got no turn; that one stays a rig error in every case. */
+const BOOTS_OPTIONAL: Record<string, string[]> = { "threads-closed:code-defect": [RESOLVES] };
+/** The scenarios whose score reads what an agent sent, which are the scenarios the rig records
+ * (rig.sh's start_recorder). A run of one of these is scored only on a whole record, opened and
+ * closed by the recorder itself (`unscored`); every other scenario records nothing and reads
+ * nothing. */
+const RECORDED = ["reviewer-text-findings", "threads-closed"];
 
 /** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
  * batch's Postgres container (its id) and the server on it. */
@@ -954,6 +2090,31 @@ export function approval(runDir: string): {
   return { approved: true, version: requested.version, turns: turns.length };
 }
 
+/** The work directory a runs directory belongs to: <work>/runs, where rig.sh makes each run, or
+ * <work>/archive/runs, where its archive_run moves a run once it has ended. The labels' profiles
+ * and the judges' directories are the work directory's, wherever its runs are read from. judge.ts
+ * reads a run's work directory through this too. */
+export function workOfRuns(runsDir: string): string {
+  const parent = path.dirname(path.resolve(runsDir));
+  return path.basename(parent) === "archive" ? path.dirname(parent) : parent;
+}
+
+/** Every run directory of `runsDir` by its name, and, for a work directory's own runs/, every
+ * run its archive/runs/ holds: rig.sh's archive_run moves a run there once it has ended, so a
+ * batch's runs are in the archive by the time it is scored. A name in both is a run cmd_run made
+ * again after its archived one, and the one in runs/ stands. An archive read on its own is the
+ * archive alone. */
+function runsOf(runsDir: string): Map<string, string> {
+  const dirs =
+    path.basename(path.dirname(path.resolve(runsDir))) === "archive"
+      ? [runsDir]
+      : [path.join(workOfRuns(runsDir), "archive", "runs"), runsDir];
+  const runs = new Map<string, string>();
+  for (const dir of dirs)
+    for (const run of existsSync(dir) ? readdirSync(dir) : []) runs.set(run, path.join(dir, run));
+  return runs;
+}
+
 /** Every checkout a run's agent can reach: each label's, as `rig.sh profile` recorded it under
  * <work>/profiles, and the one rig.sh runs from. */
 export function checkouts(work: string): string[] {
@@ -1052,8 +2213,9 @@ const DISPATCH_COMMAND = new RegExp(
   String.raw`${AT_COMMAND}(dispatch[ \t]+([a-z][a-z-]*)${COMMAND_REST})`,
   "gm"
 );
-/** Any command at a command's place, by the same parser: its first word and the rest. */
-const SHELL_COMMAND = new RegExp(
+/** Any command at a command's place, by the same parser: its first word and the rest. health.ts
+ * reads a `bash` call's writes with it. */
+export const SHELL_COMMAND = new RegExp(
   String.raw`${AT_COMMAND}([^\s;&|\x60()<>]+)(${COMMAND_REST})`,
   "gm"
 );
@@ -1118,7 +2280,10 @@ function nativeCall(step: Step, tool: string): DispatchCall {
 /** Shell text with its lines joined where a backslash continues them, and its here-document
  * bodies taken out (a body is data for the command whose `<<` opens it), with each body and the
  * place of its `<<` in that text. */
-function withoutBodies(source: string): { code: string; bodies: { at: number; text: string }[] } {
+export function withoutBodies(source: string): {
+  code: string;
+  bodies: { at: number; text: string }[];
+} {
   const joined = source.replace(/\\\r?\n/g, " ");
   const bodies: { at: number; text: string }[] = [];
   let code = "";
@@ -2887,8 +4052,7 @@ function specRow(
       `check ${check.tasks} (${check.via}) for spec write ${check.write + 1} counts, but ${check.problem}`
     );
 
-  const id = sessionId(entries);
-  if (id === undefined) throw new Error("the transcript has no session header");
+  const id = ownSession(entries);
   const refused = refusalBlocks(runDir, entries, ops, id);
   details.push(...refused);
 
@@ -3031,6 +4195,23 @@ function median(values: number[]): number {
     : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
+/** Every half's own output, as the file it is in and the text in it: `<run>/out-<role>.txt`,
+ * which rig.sh copies for each agent another is booted after, and `<run>/out.txt`, the last
+ * agent's, which the launch of that next agent starts again (worker_boot). A run that booted
+ * one agent has that file alone. */
+export function outputs(runDir: string): [file: string, text: string][] {
+  return readdirSync(runDir)
+    .filter((file) => /^out(-.+)?\.txt$/.test(file))
+    .sort()
+    .map((file) => [file, lines(path.join(runDir, file)).join("\n")]);
+}
+/** The time of the last request a run's daemon stand-in recorded, or undefined for a run that
+ * made none: a log holding its opening line alone, or none at all, which is itself a rig error
+ * for the scenarios that keep one (RECORDS). */
+function lastDaemonRequest(runDir: string): string | undefined {
+  return daemonLines(runDir).at(-1)?.at;
+}
+
 /** Why the rig cannot score a run, or undefined when it can:
  *   - it did not have a Dispatch of its own: it records none (`dispatch` undefined: no
  *     dispatch.json) and is no spec run (BATCH_DISPATCH), or another run names the same database
@@ -3038,10 +4219,19 @@ function median(values: number[]): number {
  *     searches every project of its server, so runs that share one can read each other's issue
  *     and asks, and one run's answer can be another's;
  *   - it never finished: out.txt has no `exit=` line;
+ *   - a half of it died in its claim boot: it registered with the daemon and could not finish
+ *     the boot, and the pane then exited so the daemon would launch it again, which no run of
+ *     this rig does (claimBootFailure). The half is gone from the middle of the run, so what
+ *     it had done by then answers nothing the scenario asks of it;
  *   - its agent got no model turn: it left no transcript, or one with no assistant message, as when
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
  *     not set up;
+ *   - one of the agents it boots after the first (BOOTS) started and got no model turn: that
+ *     role's session directory holds no transcript, or one with no assistant message. The half
+ *     that did run cannot do what the score asks of the other, so the row would read as a failure
+ *     of the text under test. A half the run never booted at all, which has no session directory,
+ *     is a rig error too, unless the case is one not booting it is the act of (BOOTS_OPTIONAL);
  *   - it compared the wrong text: a tool call of the run (its own or a subagent's) read a file under
  *     the other label's checkout, or a skill file (a path to skills/dispatch, skills/dispatch-first,
  *     skills/dispatch-writing-specs or skills/legion-worker) anywhere but `allowed`: its own run
@@ -3049,14 +4239,46 @@ function median(values: number[]): number {
  *     of such an absolute path, a command of READERS in a `bash` call or an eval cell that names
  *     one (here-document bodies left out), or a file an eval cell opens in its own language
  *     (OPENED). An agent reads the whole filesystem, and `legion` on its PATH resolves into the
- *     checkout rig.sh runs from.
+ *     checkout rig.sh runs from. A read of the rig's own harness under that checkout is none of
+ *     this (RIG_DIR): the stand-ins and panes on every label's PATH are the one harness, not a
+ *     label's text.
+ *   - a daemon answer its agent's own contract refused: the agent could not read its record, so
+ *     it could not take the step the rule names, whatever else it did (CONTRACT_REFUSED);
+ *   - for a scenario whose score reads what an agent sent (RECORDED), a record of the bus that is
+ *     not whole: no `recording` line, so nothing was listening; no `closed` line, so what the
+ *     recorder missed is unknown; or a message of one of this run's topics it could not read
+ *     (`unreadable`), so what reached that topic is unknown.
+ *   - for a scenario whose score reads what the stand-ins recorded (RECORDED), one of the three
+ *     records a worker run leaves is missing: calls.jsonl, pushes.log or daemon.log (RECORDS).
+ *     Each is kept by the thing that writes it — the gh and bun stand-ins, the remote's
+ *     post-receive hook, the daemon stand-in — and the rig creates none of them: it has the gh
+ *     stand-in open its own record with one line (`Opened`, rig.sh's worker_boot), the daemon
+ *     stand-in opens its log the same way when it starts listening, and rig.sh empties the push
+ *     log of the pushes its own fixture made. So an absent
+ *     one is a record nothing ever wrote. `lines` reads it as no line at all, which is what no
+ *     call, no push and no move look like, and each of those is an answer a passing run gives,
+ *     so such a run would be scored on silence nobody made: the audit of 2026-11-10 deleted the
+ *     three from a recorded failing run and it scored a pass. A record that is there and holds
+ *     no line of the run's own — its opening line alone, or nothing at all where its writer
+ *     opens it with none — is the other reading: the run made no call, pushed nothing, moved
+ *     nothing. It scores, with the row naming each such record (`emptyRecords`) so a reader can
+ *     tell which of the two the score saw;
+ *   - a completion the daemon stand-in refused: a 4xx on `handoff/complete` in daemon.log whose
+ *     answer the run's world does not allow for its label and the completing role
+ *     (completion-answers.ts's `ANSWERS`, read through `refusedCompletion`, which health.ts
+ *     reads too): the row names the role, the status and the code the line carries; and a
+ *     completion line, whatever its answer, that names no role or a role the scenario boots none
+ *     of, whose completion it was being unknown (`keyOf`);
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
  * command's text) is scored, and flagged (skillReaches), as is one that names a path outside its
  * sandbox (outsideReaches). A record missing or malformed is a rig error too, thrown by the
- * scenario's function. */
+ * scenario's function, as is a transcript that names no session (`ownSession`) and, in the one
+ * scenario that reads the record, an implementer's `read_record` before its push whose answer
+ * holds no record this can read, in a run that turns on it (threadsClosed's `gated`). */
 function unscored(
   runDir: string,
   scenario: string,
+  caseName: string,
   dispatch: string | undefined,
   label: string,
   labels: Map<string, string>,
@@ -3073,11 +4295,100 @@ function unscored(
       return `it shares Dispatch database ${database} of Postgres ${postgres} with ${others.join(", ")}, so each could read the other's issue and asks`;
     }
   }
-  if (!lines(path.join(runDir, "out.txt")).at(-1)?.startsWith("exit="))
-    return "out.txt has no exit= line: the run never finished";
+  if (!finished(runDir)) return "out.txt has no exit= line: the run never finished";
+  // A half that died in its claim boot measured nothing: it registered with the daemon, could
+  // not finish the boot — whichever step its line names — and exited so the daemon would launch
+  // it again, which no run of this rig does. Six of the twelve runs of 2026-11-11 exited 1 with
+  // `claim boot failed after claims/register registered <role>; exiting so the daemon launches
+  // it again: ECONNREFUSED`, and each was scored as a failure of the text under test, which is
+  // a scorer reading an agent that was stopped as an agent that chose. The row names the half
+  // by its own output file, the sentence it left, and when the run last reached its daemon,
+  // which is where a reader of the rig looks next.
+  for (const [file, text] of outputs(runDir)) {
+    const failed = claimBootFailure(text);
+    if (failed !== undefined)
+      return `the agent of <run>/${file} died in its claim boot, so nothing it did is its own behaviour: ${failed} (the run's last recorded daemon request: ${lastDaemonRequest(runDir) ?? "none"})`;
+  }
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
+  const halves: readonly (readonly [string, SessionEntry[]])[] = [
+    ["", entries],
+    ...(BOOTS[scenario] ?? []).map(
+      (role) => [role, sessionIn(path.join(runDir, "sessions", role))] as const
+    ),
+  ];
+  // A half with no session directory is one the run never booted; a half with a directory and no
+  // model turn in it is one that started and measured nothing. The first is the act of a case
+  // that asks for it and a rig error elsewhere, the second a rig error always.
+  const optional = BOOTS_OPTIONAL[`${scenario}:${caseName}`] ?? [];
+  for (const [role, booted] of halves.slice(1)) {
+    if (optional.includes(role) && !existsSync(path.join(runDir, "sessions", role))) continue;
+    if (!booted.some((entry) => entry.message?.role === "assistant"))
+      return `the ${role} half never started: sessions/${role} holds no transcript, or one with no assistant message`;
+  }
+  // A daemon answer the agent's own plugin refused is a rig error, whatever the run then did: an
+  // agent whose `read_record` is refused cannot take the step the rule names, and it spends its
+  // turns on the daemon instead of on its work. Each label's agents load the plugin of their own
+  // checkout, so a stand-in body one contract describes and another does not breaks one label
+  // alone and silently; the measurement that found it is told at `daemon-standin.ts`'s `settings`
+  // line, and this is what says so the next time one is missed.
+  for (const [role, booted] of halves) {
+    const refused = CONTRACT_REFUSED.exec(transcriptText(booted));
+    if (refused !== null)
+      return `${role === "" ? "the run's own agent" : `the ${role} half`} had a daemon answer refused by its own checkout's contract: ${refused[1]} ${refused[2]}`;
+  }
+  // The three records a worker run leaves of what it did (RECORDS). Each is written by the
+  // thing that keeps it and by nothing else — rig.sh creates none of them: each stand-in opens
+  // its own record with one line of its own, and rig.sh empties only the push log, of the
+  // pushes its own fixture made — so an absent one
+  // is a record nothing wrote: `lines` would read it as no call, no push and no move, each of
+  // which a passing run shows, so it is a rig error naming the file rather than a row scored on
+  // a file nobody wrote. A record holding no line of the run's own is the other reading, and
+  // the row names it (`emptyRecords`).
+  if (RECORDED.includes(scenario)) {
+    for (const [file, reads] of Object.entries(RECORDS)) {
+      if (!existsSync(path.join(runDir, file)))
+        return `<run>/${file} is missing: nothing wrote it, so the run left no record of ${reads} rather than a record of none`;
+    }
+    // What each agent sent is Envoy's own record of this run (`publishes`), and a record is read
+    // only when the recorder said both that it had subscribed and that it was stopped. A recorder
+    // that died mid-run — its connection lost, its process killed — leaves the second line out,
+    // and every message it missed would otherwise read as a message never sent, which is the
+    // parser's old fault in a new place. That is a rig error, as a run whose agent got no model
+    // turn is.
+    const record = recordState(runDir);
+    if (!record.opened)
+      return "<run>/published.jsonl has no `recording` line: the publish recorder never subscribed to the bus";
+    if (!record.closed)
+      return "<run>/published.jsonl has no `closed` line: the publish recorder did not run to the end of the run, so what it missed is unknown";
+    if (record.unreadable !== undefined)
+      return `<run>/published.jsonl holds a message of ${record.unreadable} the recorder could not read, so what reached that topic is unknown`;
+  }
+  // A completion the daemon stand-in refused is the rig's fault and never the run's, unless the
+  // run's label's daemon refuses that role's completion so in this world
+  // (completion-answers.ts's ANSWERS): threads-closed's implementer, whose round already stands,
+  // is refused 409 HANDOFF_NOT_CURRENT_PHASE by either daemon, and so is a base reviewer whose
+  // round has moved the issue and a head reviewer's repeat, a late completion after its own
+  // earlier one was answered 200, which threadsClosed reports. Every other refusal says the
+  // stand-in and the agent's own plugin disagree about the completion — a body the stand-in's
+  // request contract does not take (400 with no code), a completion with no record the tool always
+  // attaches (400 HANDOFF_RECORD_REQUIRED), a record on a phase that ends with none (409
+  // HANDOFF_RECORD_MISMATCH), a grant it minted and does not know (403) — so what the run did
+  // next answers a world the daemon would not have served. Measured on 2026-11-12: every base
+  // run of k1 and k2 logged `handoff/complete` 400 and nothing else, the base label sending a
+  // `ready` the stand-in's contract refused, and each was scored as base behaviour (review
+  // 5887659447, finding 1). A 409 whose line carries no code is a log of an older stand-in,
+  // which cannot say which refusal it was, and is a rig error with the rest. So is a completion
+  // line that names no role, or a role the scenario boots none of, whatever it was answered:
+  // whose completion it was is unknown, and no role is guessed for it (completion-answers.ts's
+  // `unkeyed`). health.ts reads the same refusal through the same function, so a run it calls
+  // healthy is never this rig error.
+  const refused = refusedCompletion(daemonLines(runDir), scenario, label);
+  if (refused !== undefined && "unkeyed" in refused)
+    return `the daemon stand-in logged a completion no role can be read from: ${refused.unkeyed} (POST ${refused.line.path} answered ${answerOf(refused.line)}), so whose completion the run's world answered is unknown`;
+  if (refused !== undefined)
+    return `the daemon stand-in refused a completion: POST ${refused.line.path} answered ${refused.line.status} ${refused.line.code ?? "with no code"} to the ${refused.role}, so the run went on in a world the daemon would not have served`;
   for (const call of calls) {
     const named: string[] = [];
     if (call.tool === "read") named.push(strings(field(call.args, "path")).join(""));
@@ -3094,6 +4405,8 @@ function unscored(
     for (const target of named) {
       if (!target.startsWith("/")) continue;
       const read = path.posix.normalize(target);
+      // The rig's own harness, which every label's run reaches through its PATH (RIG_DIR).
+      if (RIG_PATH.test(read)) continue;
       for (const [other, checkout] of labels)
         if (other !== label && (read === checkout || read.startsWith(`${checkout}/`)))
           return `a ${call.tool} call reads ${other}'s checkout: ${read}`;
@@ -3131,7 +4444,7 @@ const SYSTEM_DIRS = [
   "/run",
 ];
 /** An absolute path in text: a `/` that starts no URL, ref (`dispatch://…/spec`) or relative path. */
-const ABSOLUTE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._@+-]+)*/g;
+export const ABSOLUTE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._@+-]+)*/g;
 /** Argument fields that carry the text a write puts in a file: a path inside that text is no access. */
 const FILE_CONTENT = new Set([
   "content",
@@ -3167,17 +4480,36 @@ interface RunCall {
   args: unknown;
   texts: [ReachKind, string][];
 }
-function runCalls(runDir: string): RunCall[] {
-  const transcripts = (dir: string): string[] =>
+/** Every transcript of the run: each agent's and each subagent's, at any depth under sessions/.
+ * health.ts reads the run's tool calls and their results through this too. */
+export function transcriptFiles(runDir: string): string[] {
+  const under = (dir: string): string[] =>
     existsSync(dir)
       ? readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
           entry.isDirectory()
-            ? transcripts(path.join(dir, entry.name))
+            ? under(path.join(dir, entry.name))
             : entry.name.endsWith(".jsonl")
               ? [path.join(dir, entry.name)]
               : []
         )
       : [];
+  return under(path.join(runDir, "sessions"));
+}
+/** Every entry of the transcript `file` that parses, in order. A line that is no JSON or no
+ * entry is passed over, as a transcript an agent was stopped in the middle of writing ends. */
+export function transcriptEntries(file: string): SessionEntry[] {
+  return lines(file).flatMap((line) => {
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      return [];
+    }
+    const parsed = SessionEntry.safeParse(entry);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+function runCalls(runDir: string): RunCall[] {
   const contentStrings = (value: unknown): string[] =>
     Array.isArray(value)
       ? value.flatMap(contentStrings)
@@ -3187,17 +4519,10 @@ function runCalls(runDir: string): RunCall[] {
           )
         : [];
   const calls: RunCall[] = [];
-  for (const file of transcripts(path.join(runDir, "sessions")))
-    for (const line of lines(file)) {
-      let entry: unknown;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const parsed = SessionEntry.safeParse(entry);
-      if (!parsed.success || parsed.data.message?.role !== "assistant") continue;
-      for (const part of parsed.data.message.content ?? []) {
+  for (const file of transcriptFiles(runDir))
+    for (const entry of transcriptEntries(file)) {
+      if (entry.message?.role !== "assistant") continue;
+      for (const part of entry.message.content ?? []) {
         if (part.type !== "toolCall") continue;
         const tool = part.name ?? "tool";
         calls.push({
@@ -3245,10 +4570,30 @@ function outsideReaches(calls: RunCall[], allowed: string[]): Reach[] {
 /** A path to one of the Dispatch and worker skills whose versions the labels compare. */
 const SKILL_NAMED =
   /[^\s"'`=:;|&<>()]*skills\/(?:dispatch-first|dispatch-writing-specs|dispatch|legion-worker)\b/g;
+/** The rig's own directory in a checkout: rig.sh, the stand-ins it puts first on every label's
+ * PATH (gh-standin.ts) and the panes it writes (worker-pane.ts, daemon-standin.ts). That
+ * directory, and a file under it, is no reach into another label's text, whichever label the run
+ * is: the rig runs every label out of one checkout's harness, so the `gh` a run is given is a
+ * script naming that checkout's gh-standin.ts, and an agent that reads the `gh` on its own PATH
+ * reads a file under whichever label's checkout the rig was run from. One run of every batch
+ * reaches that harness whatever its label, so refusing the read would refuse the ablate arm and
+ * leave the comparison without one. What it is not is a label's own text: the harness holds no
+ * skill and no role prompt, so it is no part of what the labels compare, and a pull request that
+ * changes the harness — this one does — changes it for every label at once, since the rig runs
+ * them all out of the one checkout it was started from. `outsideReaches` still records the
+ * reach on the row. The harness alone is exempt: another label's skills/ and the rest of its
+ * source are read as they were. */
+const RIG_DIR = "/packages/pi-legion/scripts/skill-scenarios";
+/** RIG_DIR, or a path under it, in a path or in a command's text: the name ends there or a `/`
+ * follows, so a directory whose name merely begins with it is no hit. RIG_UNDER_CHECKOUT is the
+ * same from a checkout's own end. */
+const RIG_PATH = new RegExp(`${escaped(RIG_DIR)}(?![\\w.-])`);
+const RIG_UNDER_CHECKOUT = new RegExp(`^${RIG_PATH.source}`);
 /** Every name in the run's tool calls of another label's checkout, or of one of those skills (any
  * path to it, a relative one too) outside `allowed`, the label's own. A spec about the Dispatch
  * skills names them in every check of it, and a plan names the files it changes, so a name is
- * flagged, never unscored; a read of one is a rig error (unscored). */
+ * flagged, never unscored; a read of one is a rig error (unscored). A name of the rig's own
+ * harness under that checkout is neither (RIG_DIR). */
 function skillReaches(
   calls: RunCall[],
   allowed: string[],
@@ -3260,9 +4605,11 @@ function skillReaches(
       ...[...labels]
         .filter(([other]) => other !== label)
         .flatMap(([, checkout]) =>
-          [...text.matchAll(new RegExp(escaped(checkout), "g"))].map((hit) =>
-            reachAt(kind, call.tool, checkout, text, hit.index ?? 0)
-          )
+          [...text.matchAll(new RegExp(escaped(checkout), "g"))]
+            .filter(
+              (hit) => !RIG_UNDER_CHECKOUT.test(text.slice((hit.index ?? 0) + checkout.length))
+            )
+            .map((hit) => reachAt(kind, call.tool, checkout, text, hit.index ?? 0))
         ),
       ...[...text.matchAll(SKILL_NAMED)]
         .filter(([named]) => !allowed.some((dir) => named.startsWith(dir)))
@@ -3307,17 +4654,20 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   const rows: Row[] = [];
   const errors: { run: string; key: string; reason: string }[] = [];
   // Each label's checkout, as `rig.sh profile` recorded it.
-  const profiles = path.join(path.dirname(runsDir), "profiles");
+  const profiles = path.join(workOfRuns(runsDir), "profiles");
   const labels = new Map(
     (existsSync(profiles) ? readdirSync(profiles) : [])
       .filter((label) => existsSync(path.join(profiles, label, "checkout")))
       .map((label) => [label, readFileSync(path.join(profiles, label, "checkout"), "utf8").trim()])
   );
-  // Every tester-proof run's PR head, to tell another run's line from a wrong one. A world.json
-  // that does not parse is its own run's rig error, below.
-  const heads = (existsSync(runsDir) ? readdirSync(runsDir) : []).flatMap((run) => {
+  // Every run of the work directory, by its name: each in `runsDir`, and, for a work directory's
+  // own runs/, each archive_run moved to its archive/runs/ once it ended (`runsOf`).
+  const runs = runsOf(runsDir);
+  // Every run's PR head, to tell another run's line from a wrong one (`testerProof`, which is
+  // the one reader). A world.json that does not parse is its own run's rig error, below.
+  const heads = [...runs.values()].flatMap((dir) => {
     try {
-      return [json(path.join(runsDir, run, "world.json"), World).head];
+      return [worldIn(dir).head];
     } catch {
       return [];
     }
@@ -3326,59 +4676,68 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   // name it. A run that records none is scored or not by unscored, below; a dispatch.json that does
   // not parse is its own run's rig error, below.
   const sharing = new Map<string, string[]>();
-  for (const run of existsSync(runsDir) ? readdirSync(runsDir) : []) {
+  for (const [run, dir] of runs) {
     let dispatch: string | undefined;
     try {
-      dispatch = dispatchOf(path.join(runsDir, run));
+      dispatch = dispatchOf(dir);
     } catch {
       continue;
     }
     if (dispatch !== undefined) sharing.set(dispatch, [...(sharing.get(dispatch) ?? []), run]);
   }
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
-  const reach = checkouts(path.dirname(runsDir));
-  // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
-  // case comes from its directory (ASKGATE_RUN).
-  const scorers: Record<string, (dir: string, run: string, label: string, askCase: string) => Row> =
-    {
-      "ask-on-message": askOnMessage,
-      "measure-before-ask": measureBeforeAsk,
-      "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
-      brainstorm: brainstormSurface,
-      askgate: askgateReview,
-      "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
-      "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
-    };
+  const reach = checkouts(workOfRuns(runsDir));
+  // Each scenario's scorer, keyed by the name its runs' directories start with. A cased
+  // scenario's scorer takes the case both the run's directory and its case.txt name (CASED,
+  // runCase); a scenario that takes none is handed "".
+  const scorers: Record<string, (dir: string, run: string, label: string, name: string) => Row> = {
+    "ask-on-message": askOnMessage,
+    "measure-before-ask": measureBeforeAsk,
+    "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
+    "reviewer-text-findings": reviewerTextFindings,
+    "threads-closed": threadsClosed,
+    brainstorm: brainstormSurface,
+    askgate: askgateReview,
+    "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
+    "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
+  };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
-  for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
+  for (const [run, dir] of [...runs].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     const match = name.exec(run);
     const score = scorers[match?.[1] ?? ""];
     if (!match || !score) continue;
     const [, scenario = "", named = ""] = match;
     if (only && scenario !== only) continue;
-    const dir = path.join(runsDir, run);
-    // undefined for every other scenario, null for an askgate directory that names no case.
-    const askgate = scenario === "askgate" ? ASKGATE_RUN.exec(run) : undefined;
-    const [, askCase = "", label = named] = askgate ?? [];
-    const key = `${askgate ? `askgate:${askCase}` : scenario}\t${label}`;
+    // undefined for a scenario that takes no case, null for a cased scenario's directory that
+    // names none.
+    const cased = CASED[scenario];
+    const casedRun = cased === undefined ? undefined : cased.run.exec(run);
+    const [, dirCase = "", label = named] = casedRun ?? [];
+    const key = `${casedRun ? `${scenario}:${dirCase}` : scenario}\t${label}`;
     let reason: string | undefined;
     try {
-      if (askgate === null)
-        throw new Error(
-          "the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
-        );
+      if (casedRun === null) throw new Error(`the directory names no case: ${cased?.shape ?? ""}`);
       const dispatch = dispatchOf(dir);
       const calls = runCalls(dir);
       // The paths the run had when it ran, which its transcripts name, never those of a copy
       // scored elsewhere (ranAt).
       const ran = ranAt(dir, session(dir));
-      const work = path.dirname(path.dirname(ran));
+      const work = workOfRuns(path.dirname(ran));
       const profile = path.join(work, "profiles", label);
       // The run's own skills: its HOME (in its directory), its label's profile and checkout.
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
-      reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
+      // The case the directory names: what the run was built for, which is what decides the
+      // halves it boots. The case the run itself recorded is read below, where it is held to this
+      // one (runCase), and a run whose two records disagree is a rig error of its own.
+      reason = unscored(dir, scenario, dirCase, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
-        const scored = score(dir, run, label, askCase);
+        // A scenario that takes no case reads no case.txt and is handed "".
+        const scored = score(
+          dir,
+          run,
+          label,
+          cased === undefined ? "" : runCase(dir, cased, dirCase)
+        );
         const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);
         const skills = skillReaches(calls, own, label, labels);
         const flags = [
@@ -3401,6 +4760,10 @@ function scoreRuns(runsDir: string, only: string | undefined) {
                 ),
               ]),
         ];
+        // A record holding no line of the run's own is a reading of the run and not a gap in
+        // the rig (a missing one never reaches here: `unscored` makes it a rig error), so the
+        // row says which it saw rather than leaving a reader to guess why a count is zero.
+        const empty = RECORDED.includes(scenario) ? emptyRecords(dir) : [];
         const [first = "", ...rest] = scored.notes.split("\n");
         const row = {
           ...scored,
@@ -3408,6 +4771,11 @@ function scoreRuns(runsDir: string, only: string | undefined) {
           notes: [
             `${first}${flags.map((flag) => flag.inline).join("")}`,
             ...rest,
+            ...(empty.length === 0
+              ? []
+              : [
+                  `  empty records: ${empty.join(", ")} — there, and holding no line of the run's own`,
+                ]),
             ...flags.flatMap((flag) => flag.lines.map((line) => `  ${line}`)),
           ].join("\n"),
         };
@@ -3470,6 +4838,10 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           counts follow",
       "           them, and the source table gives each source and label's median fault count",
       "           askgate: the rule for the run's label and case (askgateReview)",
+      "           reviewer-text-findings: the verdict the case asks for, in the review submission",
+      "           the gh stand-in recorded (reviewerTextFindings)",
+      "           threads-closed: the half of the loop each agent owns, in the calls each role",
+      "           made, the pushes, the kept body and the two transcripts (threadsClosed)",
       "pass+ref   passed, and the agent read the file the rule is in (askgate: never counted)",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",
@@ -3488,9 +4860,34 @@ if (import.meta.main) {
     liveRead(rest[0] ?? "", rest[1] ?? "", rest[2] ?? "");
   } else if (command === "runs" && rest.length >= 1) {
     scoreRuns(rest[0] ?? "", rest[1]);
+  } else if (command === "published" && rest.length === 2) {
+    // The harness's own reader of a publish, so the rig and the score read one: rig.sh's
+    // reviewer_wake asks for every message a role's topic was sent, in Envoy's own order, and
+    // hands each to the next agent as a delivery of its own, and the score asks the same code
+    // whether the message the rule names was among them. What two readers of that one fact cost
+    // is in record-publishes.ts's header.
+    // Every throw is caught here, not the missing session alone, and that is deliberate: the
+    // harness must not die of a reader's limit first. `rig.sh`'s reviewer_wake runs under
+    // `set -e`, so a throw would end the run with "the reviewer half never started" and hide
+    // whatever the real reason was — a transcript with no session header, a `published.jsonl`
+    // line this cannot parse, any of them. Printing an empty list leaves the next half with no
+    // wake, which is what a run that published nothing leaves, and the reason goes to stderr.
+    // Nothing is lost by catching widely: the score reads the same files afterwards and throws
+    // there too, so the run is a rig error naming the real reason either way.
+    const runDir = rest[0] ?? "";
+    const role = ROLES.find((named) => named === rest[1]);
+    try {
+      if (role === undefined) throw new Error(`no role topic is named ${rest[1] ?? ""}`);
+      console.log(JSON.stringify(publishesTo(runDir, role)));
+    } catch (error) {
+      console.error(
+        `score.ts published: ${error instanceof Error ? error.message : String(error)}`
+      );
+      console.log("[]");
+    }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>]"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | published <run dir> <role>"
     );
     process.exit(2);
   }
