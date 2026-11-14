@@ -16,11 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// podUpdateRescue is the issue's one rescue branch, as the ask names it: the issue's branch and
-// "-rescue" (rescue.Target). It is written out here, so an ask that names any other branch fails
-// the comparison of its text.
-const podUpdateRescue = "legion/LEGION-484-rescue"
-
 // asks is every update-ask row the sweep enqueued, decoded, oldest first, each on the rig's issue.
 func (r *podUpdateRig) asks() []record.UpdateAsk {
 	r.t.Helper()
@@ -84,7 +79,7 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 		}
 	}
 
-	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace), podUpdateRescue)
+	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))
 	rows := map[claim.Role]int{}
 	for _, ask := range rig.asks() {
 		rows[ask.Role]++
@@ -158,7 +153,7 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 				role, c.UpdateRound, c.UpdateReasons, podUpdateDrift)
 		}
 	}
-	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace), podUpdateRescue)
+	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))
 	asks := rig.asks()
 	if len(asks) != len(roles) {
 		t.Fatalf("the sweeps enqueued %d asks, want one for each of the %d roles: %+v", len(asks), len(roles), asks)

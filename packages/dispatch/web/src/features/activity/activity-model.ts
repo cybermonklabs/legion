@@ -12,7 +12,10 @@ function localDate(key: string): Date {
   return new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
 }
 
-function dayLabel(date: string, today: string): string {
+/** The heading a day falls under, in the reader's own words: Today, Yesterday, or the day
+ *  written out. Both arguments are `dateKey` days, and `today` is read once for a whole list,
+ *  so a reading that crosses midnight heads two entries of the same day alike. */
+export function dayLabel(date: string, today: string): string {
   if (date === today) return "Today";
 
   const yesterday = localDate(today);
@@ -74,6 +77,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return "read a thread";
     case "decision.kept":
       return "kept a decision";
+    case "priority.updated":
+      return `${event.payload.change} priority ${event.payload.id}`;
     case "issue.created":
       return "created the issue";
     case "issue.updated":

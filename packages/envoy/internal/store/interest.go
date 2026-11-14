@@ -63,9 +63,10 @@ func Remove(item Interest, topics []string) Interest {
 // messages meant for another session or for another project's controller. The listener refuses
 // one at /v1/interests/subscribe; this drops one a row stored before that guard held, and one
 // whose role the session has since lost, so every write of a row (Upsert, Remove) cleans it.
-// roles is what the session holds now (Registry.RolesHeldBy, read by controllerLaneRoles).
-// sessionID is the row's key, not the session_id its stored value names. It filters topics in
-// place, so callers pass a slice they own (Merge's and Remove's results are).
+// roles is what the session holds now, as each controller role's claim record says
+// (Registry.controllerLaneRoles). sessionID is the row's key, not the session_id its stored value
+// names. It filters topics in place, so callers pass a slice they own (Merge's and Remove's
+// results are).
 func dropPrivateStreamTopics(sessionID string, roles []string, topics []string) []string {
 	return slices.DeleteFunc(topics, func(topic string) bool {
 		return bus.ReachesPrivateStreamSubject(sessionID, topic, roles)
@@ -79,7 +80,10 @@ func dropPrivateStreamTopics(sessionID string, roles []string, topics []string) 
 // subscribeHandler, through Registry.PlanInterest), so the filter and the row it stores name one
 // set: a filter naming a topic the row does not would carry that topic into a session no interest
 // of its own follows, and a row holding one the filter does not would say a session follows a
-// topic its consumer never delivers.
+// topic its consumer never delivers. roles is the controller roles the session holds, each read
+// from its claim record and not from the role claim copy (Registry.controllerLaneRoles), so the
+// set keeps a controller notice lane exactly while the store gives the session that project's
+// controller role.
 func MergedTopics(sessionID string, roles []string, cur []string, topics []string) []string {
 	merged := dropPrivateStreamTopics(sessionID, roles, Merge(Interest{Topics: cur}, topics).Topics)
 	slices.Sort(merged)

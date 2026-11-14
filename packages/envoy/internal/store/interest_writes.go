@@ -139,13 +139,14 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 // its bucket's MaxAge is the liveness clock, and NATS connect notices ($SYS) are not available to
 // replace it.
 //
-// It reads the session's roles itself (controllerLaneRoles). A caller that already read them to
-// decide the same topics elsewhere, the listener's registration route filtering a session
-// consumer, plans once and writes that plan instead (PlanInterest, UpsertPlanned).
+// It reads the claim of each controller notice lane's role itself (controllerLaneRoles), and a
+// read that did not answer refuses the write. A caller that already read those claims to decide
+// the same topics elsewhere, the listener's registration route filtering a session consumer,
+// plans once and writes that plan instead (PlanInterest, UpsertPlanned).
 func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []string) (Interest, error) {
 	for range interestWriteAttempts {
 		cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, true)
-		roles, err := r.controllerLaneRoles(item.SessionID, cur.Topics, item.Topics, topics)
+		roles, err := r.controllerLaneRoles(ctx, item.SessionID, cur.Topics, item.Topics, topics)
 		if err != nil {
 			return Interest{}, err
 		}
@@ -166,19 +167,19 @@ func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []str
 }
 
 // PlanInterest plans the interest row a registration of sessionID naming requested will store:
-// the topics it will hold (MergedTopics of the stored row and requested), the roles read to
-// decide them, read once for the row's topics and requested together (controllerLaneRoles),
-// requested itself and the bucket revision of the row it read. The listener's registration route
-// filters the session's consumer on the plan and hands the same plan back to UpsertPlanned, so a
-// registration whose body leaves out a controller notice lane its row holds keeps that lane in
-// the filter and in the row alike: the roles behind both are this one read, which the row's own
-// topics are part of.
+// the topics it will hold (MergedTopics of the stored row and requested), the controller roles
+// read to decide them, each read once from its claim record for the row's topics and requested
+// together (controllerLaneRoles), requested itself and the bucket revision of the row it read.
+// The listener's registration route filters the session's consumer on the plan and hands the same
+// plan back to UpsertPlanned, so a registration whose body leaves out a controller notice lane
+// its row holds keeps that lane in the filter and in the row alike: the roles behind both are
+// this one read, which the row's own topics are part of.
 //
 // A session with no row, and a row this build cannot decode, plan from no stored topics: the
 // registration's own topics are the authority on such a record, as the write that follows treats
-// it (mergeForUpsert). Any other read that did not answer is returned, and so is a role view
-// that cannot answer yet (ErrRoleViewNotReady): the route refuses the registration rather than
-// filter a consumer on a row the write would decide differently.
+// it (mergeForUpsert). Any other read that did not answer is returned, and so is a read of a
+// controller's claim that did not answer or failed (controllerLaneRoles): the route refuses the
+// registration rather than filter a consumer on a row the write would decide differently.
 func (r *Registry) PlanInterest(ctx context.Context, sessionID string, requested []string) (InterestPlan, error) {
 	return r.planInterest(ctx, sessionID, slices.Clone(requested), false)
 }
@@ -200,7 +201,7 @@ func (r *Registry) planInterest(ctx context.Context, sessionID string, requested
 	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
 		return InterestPlan{}, err
 	}
-	roles, err := r.controllerLaneRoles(sessionID, cur.Topics, requested)
+	roles, err := r.controllerLaneRoles(ctx, sessionID, cur.Topics, requested)
 	if err != nil {
 		return InterestPlan{}, err
 	}
@@ -420,20 +421,51 @@ func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan I
 	return item, nil
 }
 
-// controllerLaneRoles reports the roles sessionID holds (RolesHeldBy) when one of the topic sets
-// names a Legion controller notice lane (bus.NamesControllerNoticeLane), and nil when none does:
-// that lane is the one private stream subject whose owner the rule reads a session's roles for
-// (bus.ReachesPrivateStreamSubject), so a write naming none makes no view read and is refused for
-// none. A write that names one is refused while the view cannot answer (ErrRoleViewNotReady)
-// rather than storing the row without the lane: the row drives the session's consumer filter, and
-// a notice published while the lane was out of that filter reaches the controller on no later
-// path.
-func (r *Registry) controllerLaneRoles(sessionID string, topics ...[]string) ([]string, error) {
-	named := slices.ContainsFunc(topics, bus.NamesControllerNoticeLane)
-	if !named {
+// controllerLaneRoles reports the controller roles sessionID holds among those of the Legion
+// controller notice lanes the topic sets name (bus.ControllerNoticeRole), and nil when they name
+// none (bus.NamesControllerNoticeLane): that lane is the one private stream subject whose owner
+// the rule reads a session's roles for (bus.ReachesPrivateStreamSubject), so a write naming none
+// reads no claim and is refused for none.
+//
+// Each such role is decided by its own claim record, read from the bucket once however many of
+// the sets name its lane, waiting no longer than ctx (RoleClaim, bus.Bounded), and never by the
+// role claim copy (RolesHeldBy). The row decided here drives the session's consumer filter, so a
+// copy that lost the controller's claim would drop the lane from its holder's filter, and a copy
+// that still names a session the claim has left would hand that session another controller's
+// notices, each until the copy's next read repaired it. The session holds the role when the
+// record names it. A record this build cannot decode (ErrMalformedRoleClaim) names no holder, as
+// the copy reads it, and a key NATS refuses (bus.ErrRefused) is one no read can tell the holder
+// of, which the role claim reaper removes; each gives the lane to nobody and is no error, so a
+// registration naming it stores the rest of its row rather than being refused at every
+// heartbeat. Any other read that did not answer or failed is returned, naming the role, and the
+// write is refused rather than storing the row without the lane: a notice published while the
+// lane was out of the consumer's filter reaches the controller on no later path. The listener's
+// registration route answers that refusal with the bus-unavailable 503 (cmd/listener's
+// writeStoreError).
+func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, topics ...[]string) ([]string, error) {
+	if !slices.ContainsFunc(topics, bus.NamesControllerNoticeLane) {
 		return nil, nil
 	}
-	return r.RolesHeldBy(sessionID)
+	var weighed, held []string
+	for _, set := range topics {
+		for _, topic := range set {
+			role, lane := bus.ControllerNoticeRole(topic)
+			if !lane || slices.Contains(weighed, role) {
+				continue
+			}
+			weighed = append(weighed, role)
+			claim, err := r.RoleClaim(ctx, role)
+			switch {
+			case errors.Is(err, ErrMalformedRoleClaim), errors.Is(err, bus.ErrRefused):
+				// A claim no read can name a holder of: the lane is nobody's.
+			case err != nil:
+				return nil, fmt.Errorf("decide whether %s holds %s's notice lane: %w", sessionID, role, err)
+			case claim.Revision != 0 && claim.HolderSessionID == sessionID:
+				held = append(held, role)
+			}
+		}
+	}
+	return held, nil
 }
 
 // Remove releases the role claims of sessionID that release authorises (RoleReleaseAuthority)
@@ -462,7 +494,7 @@ func (r *Registry) controllerLaneRoles(sessionID string, topics ...[]string) ([]
 // (cmd/listener's sessionConsumerFilter), and a role message reaches its holder's agent subject
 // with the holder read off the claim (cmd/listener's resolveCoreRoleHolder) - but the record is
 // where a deregistration of this session finds the role claims it frees (the empty-topics
-// branch below, releaseRoleClaims), so a release from a process that does not hold the claim
+// branch below, releaseAllRoleClaims), so a release from a process that does not hold the claim
 // would otherwise take the lane topic out from under the process that does and leave the claim
 // standing with nothing in the record naming it. Every other topic the caller named is
 // removed exactly as before - one that is not a role lane's, a wildcard, a role no record
@@ -477,34 +509,37 @@ func (r *Registry) controllerLaneRoles(sessionID string, topics ...[]string) ([]
 // happen. A deregistration answers no list at all - it deletes the whole record, so there is no
 // list of named topics to report, and its route writes the empty list for it.
 //
-// An empty topics is the whole of the session's interests, so the claims a deregistration
-// releases come from two sources: the role topics of the session's own interest record
-// (releaseRoleClaims), which runs first, and then the roles the role claim view names it the
-// holder of (releaseAllRoleClaims). A role the session holds whose topic the record has lost is
-// therefore released too, by the same authority as the rest.
+// An empty topics is the whole of the session's interests, so a deregistration releases every
+// role either of two sources names, each once and each as its own claim record says
+// (releaseAllRoleClaims): the role topics of the session's interest record, and the roles the
+// role claim view names it the holder of. The record is read here from the bucket
+// (getWithRevision) and not from the interest cache Get answers from, which is a copy of the
+// bucket as well and may not yet hold the lane topic a grant on another listener wrote into the
+// record. A role the view has lost is therefore released from the record, and a role whose topic
+// the record has lost is released from the view, by the same authority as the rest; while the
+// view cannot be served, a scan of the role bucket stands in for it. A session the bucket holds
+// no record for, and a record this build cannot decode, name no roles, and the view's are
+// released alone. A read of the record that did not answer or failed fails the deregistration
+// before it releases anything.
 //
 // Whether this release may mark a claim it cannot free handed back (RoleClaim.HandedBack) is
 // decided here and nowhere else, and carried on the release itself
 // (RoleReleaseAuthority.handsBack, which no caller outside this package can set): a release
 // marks exactly when the caller named topics of its own, and stated no process, and did not
 // force. The named topics are what make the release a hand-back of those very roles - the
-// caller named that role's lane topic - while the empty-topics branch expands the stored
-// record's own topics and then sweeps the view, which is a deregistration of everything the
-// session has and a hand-back of no one role, so it marks nothing whatever those topics turn
-// out to be. A release that names a process frees the claims of that process and leaves
-// another process's alone, and the administrator's force frees them all; neither leaves a
-// mark, since a mark is for the hand-back that could free nothing.
+// caller named that role's lane topic - while the empty-topics branch weighs the stored record's
+// roles and the view's, which is a deregistration of everything the session has and a hand-back
+// of no one role, so it marks nothing whatever those topics turn out to be. A release that names
+// a process frees the claims of that process and leaves another process's alone, and the
+// administrator's force frees them all; neither leaves a mark, since a mark is for the hand-back
+// that could free nothing.
 func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) ([]string, error) {
 	if len(topics) == 0 {
-		item, err := r.Get(ctx, sessionID)
-		if err == nil {
-			if _, err := r.releaseRoleClaims(ctx, sessionID, item.Topics, release); err != nil {
-				return nil, err
-			}
-		} else if !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
+		record, _, err := r.getWithRevision(ctx, sessionID, true)
+		if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
 			return nil, err
 		}
-		if err := r.releaseAllRoleClaims(ctx, sessionID, release); err != nil {
+		if err := r.releaseAllRoleClaims(ctx, sessionID, record.Topics, release); err != nil {
 			return nil, err
 		}
 		return nil, r.removeInterestTopics(ctx, sessionID, topics)
@@ -607,7 +642,7 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 			return err
 		}
 		item = Remove(item, topics)
-		roles, err := r.controllerLaneRoles(sessionID, item.Topics)
+		roles, err := r.controllerLaneRoles(ctx, sessionID, item.Topics)
 		if err != nil {
 			return err
 		}

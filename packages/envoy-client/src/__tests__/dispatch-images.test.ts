@@ -923,6 +923,8 @@ describe("reading pictures", () => {
             last_seq: events.length,
             external_links: [],
             labels: [],
+            advances: [],
+            advances_revision: 0,
           });
         }
         if (pathname === "/api/v1/issues/DSP-41/events") return json(events);

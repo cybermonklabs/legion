@@ -93,8 +93,8 @@
 -- claims columns that it does not exist with the same four ALTER TABLEs, DELETE 0, DELETE 0,
 -- DELETE 0, a NOTICE that the table does not exist, DROP TABLE, DELETE 0 and COMMIT, and changes
 -- nothing. The phase entry's block after it drops the phase entry's columns, and the store then
--- reports the highest row the two blocks leave standing:
--- 20261113110610_drop_claim_update_answer_marks, a migration of main's that neither block touches.
+-- reports the highest row the two blocks leave standing, a migration of main's that neither
+-- block touches (20261114031356_merge_queue_removal at the forward merge of 2026-11-14).
 -- A rollback below contract 111 takes the steps of each release it crosses as well
 -- (docs/kubernetes.md).
 --

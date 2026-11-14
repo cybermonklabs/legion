@@ -43,6 +43,8 @@ function issueDetails(
   holderState: IssueClaimHolderState | null
 ): IssueDetails {
   return {
+    advances: [],
+    advances_revision: 0,
     artifacts: [],
     assignee: null,
     blocked_by: [],
