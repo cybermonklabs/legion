@@ -137,6 +137,7 @@ Every topic starts with `notifications.`.
   No error releases the role's claim: a holder whose `holder_state` is `unresponsive` keeps its role.
   `envoy_role_get(role=...)` finds the holder first.
   The forward is kept on the holder's inbox, so the holder's session gets it once from its own durable consumer, also after a restart, a reconnect, or while it was not running.
+  From a shell with no tool device, read the holder with `envoy role <role>` where sjawhar/dotfiles' `scripts/envoy` is on the PATH, and in a Legion pod, which has no `envoy` command, with `curl -sS -H "Authorization: Bearer $(cat "$ENVOY_TOKEN_FILE")" "$ENVOY_URL/v1/roles/<role>" | jq -r '.holder // .reason // .error'`, which prints the holder's session id, `unclaimed` for a role nobody holds, or the error of a refused read, such as `unauthorized` for a bad token.
 
 - A Legion agent that has stopped is the exception where its daemon answers for it: a publish to its role, or a send to its session, is accepted and answered in its name (`skill://envoy/references/legion.md`).
 
