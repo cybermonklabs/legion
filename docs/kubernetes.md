@@ -1929,6 +1929,7 @@ delete from outbox where kind = 'notice' and payload->>'kind' = 'volume-near-ful
 
 Nothing of the notice need come back: it told an architect that one pod's volume was filling and what was on it, which the trimmer reports again at its next sweep above the low mark once the newer release is pinned again.
 The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim` is a key an earlier loader refuses by name, so take the block out of `legion.yaml` before pinning that image, and a pod of the earlier release's own worker image runs no trimmer at all.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:

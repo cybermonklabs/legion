@@ -25,9 +25,9 @@ import (
 // the workflow's start at the fact it applies, so this is the one case that drives the part in
 // between, through the guarded pool and the workflow engine. The boot binds three handlers
 // (workflow.go: blockers' mirror, the engine and admission; daemon.go, plan.volumeReports.bind).
-// The engine is the one that turns this fact into the notice; admission runs on it the promote
-// pass it runs on every fact, and the mirror does not act on it. So the case binds the engine
-// alone, and it holds the notice, not admission's pass.
+// The engine is the one that turns this fact into the notice; admission runs its promote pass on
+// it, as on any fact it has no case of its own for, and the mirror does not act on it. So the
+// case binds the engine alone, and it holds the notice, not admission's pass.
 //
 // It holds the two things the glue alone decides. That a report is applied at all, with what the
 // launcher measured carried into the notice the architect reads. And that the event id is the
