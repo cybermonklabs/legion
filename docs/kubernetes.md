@@ -5747,7 +5747,7 @@ each issue's pod (every role of it alike) and the image probe's.
   It is every issue pod, and not the drawn units' pods alone, because any unit may be drawn into any arm;
   the controller's pod is never replaced for it, since the controller runs in no experiment.
   The drift is reported `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files <file>`, naming the key the operator wrote, and it is handled as an overlay of `role_config_files` is ("Rolling it out" above):
-  the daemon opens an update round on each drifted pod, which asks every worker of that issue to push and wait, and replaces the pod once they answer;
+  the daemon opens an update round on each drifted pod, which asks each role of that issue, on the role's own Envoy topic, to push its work and answer `ready_for_update`, and replaces the pod once every role has answered and no turn runs, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered, so a turn still running at the bound ends with the pod;
   a pod no round covers is replaced by the first launch into it.
   Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), and a role mid-turn at the boot's re-adoption is reported `StaleAddress` and relaunched at once, uncharged, so that turn is lost.
   So turn an experiment on knowing the cost:
