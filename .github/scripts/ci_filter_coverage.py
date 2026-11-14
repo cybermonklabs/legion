@@ -512,8 +512,10 @@ def reduce_line(line: str) -> tuple:
 # to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
 # LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
 # time by the test it governs, so go compiles the same files with them set as without.
+# ARTIFACT_LANE is dispatch-browser.yaml's artifact-name prefix: its upload and download steps
+# and its merge job's blob selection read it, and go reads no such name.
 ENV_ALLOWED = frozenset({
-    "AIRLOCK_MODEL",
+    "AIRLOCK_MODEL", "ARTIFACT_LANE",
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
     "DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT",
@@ -1180,6 +1182,73 @@ def check_tag_runs(document: dict, data, filters: dict, quantifiers: dict, files
     return report
 
 
+# ---------------------------------------------------------------- the references lane's spec files
+# dispatch-browser.yaml's `references` lane runs the spec files that one shell variable of its
+# shard job's browser step lists, and ci.yaml's dispatch_references filter is what starts the job
+# calling that lane. The arm is read from the step's script with comments and blank lines aside
+# (script_lines), so a comment that spells an assignment is no entry.
+BROWSER_WORKFLOW = ".github/workflows/dispatch-browser.yaml"
+REFERENCES_FILTER = "dispatch_references"
+REFERENCES_ARM = re.compile(r"^references\)$(.*?)^;;$", re.M | re.S)
+LANE_FILES = re.compile(r'^lane_files="([^"]*)"', re.M)
+
+
+def check_references_lane(filters: dict, quantifiers: dict, problems: list) -> list:
+    """Every spec file the references lane runs is one the dispatch_references filter matches.
+    That filter names less than its job reads on purpose (EXCLUDED holds it to no gate's reads),
+    but the lane's own spec files are the least it must name: a spec file it misses is a change to
+    the lane's own rows that starts no run of the lane, and nothing fails. Each entry is a path
+    from the step's directory, which is where Playwright reads it, and is held to the filter as
+    the repository path it names there. A tree without that workflow holds no such lane; one whose
+    workflow has no step setting lane_files in a `references)` arm, more than one, or an arm that
+    lists no file fails, rather than holding the filter to nothing. Returns the report lines."""
+    if not (REPO / BROWSER_WORKFLOW).is_file():
+        return []
+    browser = yaml.safe_load((REPO / BROWSER_WORKFLOW).read_text()) or {}
+    lanes = []
+    for job_id, job in (browser.get("jobs") or {}).items():
+        for step in (job or {}).get("steps") or []:
+            arm = REFERENCES_ARM.search("\n".join(script_lines(str((step or {}).get("run", "")))))
+            listed = LANE_FILES.search(arm.group(1)) if arm else None
+            if listed:
+                lanes.append((f'job {job_id} step "{step_label(step)}"', step_workdir(browser, job or {}, step),
+                              listed.group(1).split()))
+    held = (f"so {WORKFLOW}'s filter {REFERENCES_FILTER} cannot be held to the spec files the references lane "
+            f"runs")
+    if not lanes:
+        problems.append(f"::error file={BROWSER_WORKFLOW}::no step of {BROWSER_WORKFLOW} sets lane_files=\"...\" in "
+                        f"a `references)` arm of its script, {held}")
+        return []
+    if len(lanes) > 1:
+        problems.append(f"::error file={BROWSER_WORKFLOW}::{len(lanes)} steps of {BROWSER_WORKFLOW} set lane_files in "
+                        f"a `references)` arm ({'; '.join(where for where, _, _ in lanes)}), where this check reads "
+                        f"one, {held}")
+        return []
+    where, workdir, entries = lanes[0]
+    if not entries:
+        problems.append(f"::error file={BROWSER_WORKFLOW}::{where} sets lane_files to no spec file in its "
+                        f"`references)` arm, {held}")
+        return []
+    if REFERENCES_FILTER not in filters:
+        problems.append(f"::error file={WORKFLOW}::the changes job has no filter {REFERENCES_FILTER}, which must match "
+                        f"every spec file {BROWSER_WORKFLOW}'s references lane runs ({where})")
+        return []
+    matcher = PathsFilter(filters[REFERENCES_FILTER], quantifiers[REFERENCES_FILTER])
+    unmatched = 0
+    for entry in entries:
+        path = os.path.normpath(os.path.join(workdir, entry))
+        if matcher.covers(path):
+            continue
+        unmatched += 1
+        problems.append(f"::error file={BROWSER_WORKFLOW}::{where} runs {entry} in the references lane (lane_files), "
+                        f"which {WORKFLOW}'s filter {REFERENCES_FILTER} does not match as {path}, so a change to that "
+                        f"spec file starts no run of the lane that runs it; add '{path}' to the filter, or take the "
+                        f"entry out of lane_files")
+    return [f"{BROWSER_WORKFLOW} references lane: {len(entries)} spec files, {unmatched} unmatched by filter "
+            f"{REFERENCES_FILTER}"]
+
+
+
 def declared_reads(data) -> list:
     """Every read pattern ci_job_reads.py declares, each with where it is: a gate's reads, or a
     RULES row's (a row's Runs declare go commands, not patterns)."""
@@ -1282,6 +1351,7 @@ def main() -> int:
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
     report += check_tag_runs(document, data, filters, quantifiers, files, problems)
+    report += check_references_lane(filters, quantifiers, problems)
     for line in report:
         print(line)
     problems = list(dict.fromkeys(problems))

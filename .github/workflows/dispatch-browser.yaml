@@ -24,11 +24,13 @@ name: Dispatch browser suite
 # says why.
 #
 # Two lanes can run in one workflow run - the references lane beside the pull-request lane, on
-# a pull request that selects both callers - and an artifact name is unique within a run, so the
-# references lane names every artifact it uploads `dispatch-references-…` where the other two
-# name theirs `dispatch-browser-…` (and `dispatch-e2e-binaries`), and its merge job reads only
-# its own legs. The names of the other two lanes are what they were before the references lane
-# existed.
+# a pull request that selects both callers - and an artifact name is unique within a run, so
+# every artifact this file uploads or downloads is named under the lane's prefix,
+# ARTIFACT_LANE in the `env:` below and nowhere else: `dispatch-references` for the references
+# lane and `dispatch-browser` for the other two, and the merge job reads only its own lane's
+# legs. The other two lanes' names are what they were before the references lane existed, but
+# for the binaries artifact, `dispatch-browser-e2e-binaries` now where it was
+# `dispatch-e2e-binaries`, so that every name takes the prefix in the one form.
 #
 # A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 # gives: `services:` is a job-level key and a composite action's step keys do not include
@@ -92,6 +94,13 @@ env:
   # straight from the source and checks them against go.sum, so this is a second path, not a weaker
   # check.
   GOPROXY: https://proxy.golang.org|direct
+  # The prefix of every artifact name of this run's lane, for the reason this file's head gives.
+  # Every upload and download below reads it as `${{ env.ARTIFACT_LANE }}`, and the one run: step
+  # that needs it reads "$ARTIFACT_LANE" from its environment, so the condition is written here
+  # once and an artifact that reads it cannot take the other lane's name. A workflow's own `env:`
+  # may read `inputs` (GitHub's context availability table: `env` takes github, secrets, inputs
+  # and vars).
+  ARTIFACT_LANE: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}
 
 jobs:
   # The Go binaries the browser suite's stacks run: the Dispatch server and the real broker's
@@ -171,13 +180,13 @@ jobs:
         working-directory: packages/envoy
       # One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
       # failed jobs re-runs a shard or an alone leg without this one, and that attempt must find
-      # the artifact this job uploaded on the attempt before. One name per caller, though: the
+      # the artifact this job uploaded on the attempt before. One name per lane, though: the
       # references lane can run in the same run as the pull-request lane, and the second of two
-      # uploads under one name is refused. The shard and alone jobs download it under the same
-      # expression.
+      # uploads under one name is refused, so the name takes ARTIFACT_LANE's prefix (this file's
+      # `env:`). The shard and alone jobs download it under the same name.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.lane == 'references' && 'dispatch-references-e2e-binaries' || 'dispatch-e2e-binaries' }}
+          name: ${{ env.ARTIFACT_LANE }}-e2e-binaries
           path: ${{ runner.temp }}/dispatch-e2e-bin
           if-no-files-found: error
 
@@ -352,7 +361,7 @@ jobs:
       # binary rides along in it and is named by path below.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ inputs.lane == 'references' && 'dispatch-references-e2e-binaries' || 'dispatch-e2e-binaries' }}
+          name: ${{ env.ARTIFACT_LANE }}-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
       # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
@@ -577,9 +586,10 @@ jobs:
               # at the head rather than a run of an hour and a half by hand. Every Chromium row
               # of them, `@pr` or not, so no grep. Each is a Playwright file filter, a regular
               # expression matched against a spec's absolute path, and each matches the one
-              # file of that name under e2e/ and no other. A file added to or taken from this
-              # list moves ci.yaml's `dispatch_references` filter with it, which names these
-              # files and what they test.
+              # file of that name under e2e/ and no other. A file added to this list joins
+              # ci.yaml's `dispatch_references` filter, which names these files and what they
+              # test: .github/scripts/check-ci-filters.sh (rule 17) fails naming an entry here
+              # that filter does not match, read from this step's directory.
               projects="--project=chromium"
               lane_grep=""
               lane_files="e2e/bare-references.e2e.ts e2e/btw.e2e.ts e2e/mention-composer.e2e.ts
@@ -661,14 +671,14 @@ jobs:
       # artifact holds the same two entries under the same names, which is what
       # .github/scripts/dispatch-browser-latest-blobs.sh and the merge job read.
       #
-      # The name's prefix is the lane's, for the reason this file's head gives: the references
-      # lane can run in the same run as the pull-request lane, so its three uploads here are
-      # `dispatch-references-…` and the other two lanes' are `dispatch-browser-…` as before. The
-      # merge job downloads and selects under the same prefix.
+      # The name's prefix is the lane's, ARTIFACT_LANE of this file's `env:`, for the reason
+      # this file's head gives: the references lane can run in the same run as the pull-request
+      # lane, so its three uploads here are `dispatch-references-…` and the other two lanes' are
+      # `dispatch-browser-…` as before. The merge job downloads and selects under the same prefix.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-blob-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_LANE }}-blob-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/leg-report
       # What the run left behind: in the job's own log, where a reader of a failed row looks
       # first, and collected into the one directory the artifact below takes. A failed row's
@@ -714,7 +724,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_LANE }}-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/dispatch-e2e-record
       # The traces of the rows that failed, which the step above does not collect: they are
       # under the checkout, so this path needs no translation and stays as it was. Always, for
@@ -726,7 +736,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-test-results-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_LANE }}-test-results-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
 
@@ -831,7 +841,7 @@ jobs:
       # and this job runs the same two scripts from the same directory.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ inputs.lane == 'references' && 'dispatch-references-e2e-binaries' || 'dispatch-e2e-binaries' }}
+          name: ${{ env.ARTIFACT_LANE }}-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
       # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
@@ -988,7 +998,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: dispatch-browser-blob-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_LANE }}-blob-alone-${{ matrix.project }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/leg-report
       # What the run left behind: the stack's own server logs, in the job's own log and collected
       # into the one directory the artifact below takes, beside the sampler's two files, which
@@ -1023,7 +1033,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: dispatch-browser-record-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_LANE }}-record-alone-${{ matrix.project }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/dispatch-e2e-record
       # The traces of the rows that failed, which the step above does not collect: they are
       # under the checkout, so this path needs no translation and stays as it was. A row that
@@ -1032,7 +1042,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: dispatch-browser-test-results-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_LANE }}-test-results-alone-${{ matrix.project }}-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
 
@@ -1173,7 +1183,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_LANE }}-multiprocess-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
 
   # The rows that read what the bar costs a model, which no other lane runs. The two tiers of
@@ -1268,7 +1278,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: dispatch-browser-embedder-test-results-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_LANE }}-embedder-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
 
   # The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
@@ -1411,7 +1421,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: dispatch-browser-visual-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_LANE }}-visual-${{ github.run_attempt }}
           # The third pattern matches no file in THIS job and is not dead: it is what fixes the
           # archive's layout. This job runs one stack, and for one stack e2e/harness-pool.ts
           # leaves `logDir` unset, so the harness writes to stderr and no `worker-*/log/*.log`
@@ -1500,13 +1510,14 @@ jobs:
       # tell the attempts apart. A run's artifact list holds every attempt's artifacts and this
       # pattern matches them all; two attempts of one leg hold the same inner paths, so merging
       # them into one directory let one attempt overwrite the other in an order nothing fixes.
-      # The pattern is this lane's prefix, which is the shard job's upload's: a references run
-      # beside a pull-request run in one workflow run must not join the other's legs.
+      # The pattern is this lane's prefix, ARTIFACT_LANE of this file's `env:`, which the shard
+      # job's upload names too: a references run beside a pull-request run in one workflow run
+      # must not join the other's legs.
       - name: Download every leg's blob report
         id: download-blobs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-blob-*
+          pattern: ${{ env.ARTIFACT_LANE }}-blob-*
           path: ${{ runner.temp }}/blobs
       # A download `actions/download-artifact` could not complete is a failed read of the run's
       # artifacts and not a failed browser row, and the download step's own message says only
@@ -1533,9 +1544,10 @@ jobs:
       # script's head says what two attempts of one leg did to a merged report when they were
       # downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory,
       # and its log names the attempt it took for each leg. The third argument is the lane's
-      # artifact prefix, which the download step above matched.
+      # artifact prefix, ARTIFACT_LANE from this step's environment, which the download step
+      # above matched.
       - name: Take the newest attempt of each leg's blob report
-        run: .github/scripts/dispatch-browser-latest-blobs.sh "$RUNNER_TEMP/blobs" "$RUNNER_TEMP/selected-blobs" "${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-blob-"
+        run: .github/scripts/dispatch-browser-latest-blobs.sh "$RUNNER_TEMP/blobs" "$RUNNER_TEMP/selected-blobs" "${ARTIFACT_LANE}-blob-"
       - name: Merge the legs' blob reports into one report
         # The JSON report is the one packages/dispatch/e2e/tools/check-slow-rows.ts reads, and
         # this merged report is now its source: one run's rows, from every leg, in one file. The
@@ -1570,7 +1582,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-report-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_LANE }}-report-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/report-html
             ${{ runner.temp }}/report.json

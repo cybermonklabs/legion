@@ -1362,7 +1362,8 @@ jobs:
               # The workflow that holds the lane's steps.
               - '.github/workflows/dispatch-browser.yaml'
               # The eleven spec files, and the helpers only they share: the reference surfaces'
-              # own helpers and the search helpers.
+              # own helpers and the search helpers. check-ci-filters.sh (rule 17) fails on a spec
+              # file the lane's `lane_files` in dispatch-browser.yaml runs that this list misses.
               - 'packages/dispatch/e2e/bare-references.e2e.ts'
               - 'packages/dispatch/e2e/btw.e2e.ts'
               - 'packages/dispatch/e2e/mention-composer.e2e.ts'
