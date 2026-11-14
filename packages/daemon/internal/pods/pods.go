@@ -36,6 +36,9 @@ const (
 // activity route alone and are deliberately absent from the claim insert's conflict update, so a
 // machine's in-memory claim shows their zero values until the claim is read again.
 type IdleClaim struct {
+	// Token names the claim, which a decision about one claim of the pod is logged under
+	// (workflow.IdleDecision.OldPlugin).
+	Token          claim.Token
 	Role           claim.Role
 	State          supervise.ClaimState
 	PluginContract int

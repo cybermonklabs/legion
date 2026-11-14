@@ -1944,6 +1944,19 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByReleased}); err != nil {
 			return fmt.Errorf("release claim %s: %w", token, err)
 		}
+		// A claim stopped inside its pod's update round leaves that round with the stop. The
+		// release's save ran before any stop and took the workspace's unpushed work, which the
+		// pod that replaces this one restores, and this pod goes with the release, so the round
+		// has nothing left to ask of the claim. The idle rule makes its release over an open round
+		// for a Claude Code role whose plugin takes no task (workflow.IdleRelease's old plugin),
+		// which could never answer it. Left in the round, the claim would come back in
+		// the new pod as a member that never answered, and the sweep would tell the issue that
+		// its work went with the pod (podWentWithoutItsRound).
+		if round := machine.Claim().UpdateRound; supervise.IsPodRound(round) {
+			if err := machine.Handle(ctx, supervise.PodUpdateEnded{Claim: token, Round: round}); err != nil {
+				return fmt.Errorf("end the update round of released claim %s: %w", token, err)
+			}
+		}
 		// The claim is suspended as `released`, so the release's mark records it: it is that set
 		// the cancel resumes, the teardown records as the release's roles, and a later row reads
 		// to tell a claim this release suspended that something resumed since from one still in

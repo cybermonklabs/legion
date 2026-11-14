@@ -61,6 +61,21 @@ type TaskValue struct {
 // moves both together.
 const TaskTakeContract = 120
 
+// TakesNoTask is whether a plugin that declared contract takes no task: it is below
+// TaskTakeContract, so its worker waits for a prompt this daemon never sends and never asks to
+// take the task its claim is owed. A claim that recorded no contract at all (0) is one of them.
+//
+// Two rules read it, and each would strand such a worker at the rollout that moves the daemon
+// and the worker image together, which opens an update round over every issue pod
+// (dispatch://INFRA-2811, decision 18 and departure 3). The stale-plugin refusal and its lane
+// hold no such claim out for a pod round: the round's question is a task the claim cannot take,
+// so it is relaunched onto the current plugin inside the round (StaleRefusesCalls,
+// internal/daemon's staleForTheLane). And the idle release takes the pod of such a claim whose
+// plugin no relaunch moves, a Claude Code role in a pod, past the holds that would keep it
+// (workflow's IdleRelease), since its pod's image is the one thing that can bring it a plugin
+// that takes.
+func TakesNoTask(contract int) bool { return contract < TaskTakeContract }
+
 // The origins of a task: the source that queued it (Delivery.Origin). A request names its own
 // (RequestDeliver.Origin); one that names none is read as originOf says. OriginSilence is the
 // silence repair's (workflow's repairSilence), whichever task it writes — the work of an owed

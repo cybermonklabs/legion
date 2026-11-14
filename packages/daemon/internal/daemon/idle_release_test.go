@@ -113,7 +113,9 @@ func (r *releaseRuntime) refusals() int {
 
 // idleRig is an issue in the workflow whose pod has been quiet long enough to release: one live
 // implementer in its own session, idle with the phase's task still pending, on the daemon's
-// plugin contract and the configured image, with nothing queued for any role.
+// plugin contract and the configured image, with nothing queued for any role. tune changes the
+// implementer's claim before the store and the supervisor take it, as a test that needs it on
+// another contract or in a round has it.
 type idleRig struct {
 	pool    *store.Pool
 	st      *store.Store
@@ -127,7 +129,7 @@ type idleRig struct {
 	machine *supervise.Machine
 }
 
-func newIdleRig(t *testing.T) *idleRig {
+func newIdleRig(t *testing.T, tune ...func(*supervise.Claim)) *idleRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -164,6 +166,9 @@ func newIdleRig(t *testing.T) *idleRig {
 		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
 		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
+	for _, change := range tune {
+		change(&stored)
+	}
 	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
 		t.Fatalf("seed the idle implementer: %v", err)
 	}

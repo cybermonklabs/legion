@@ -441,7 +441,11 @@ func (m *Machine) refreshOverturned() bool {
 // What replaces such a claim's plugin is a new image, which the update round over its pod is
 // opened for: it is asked like every other worker and answers either with the op or by ending
 // the turn its task starts (answerByTurnEnd), and the round's replacement brings the image
-// (internal/daemon's refreshStalePlugins, which posts no relaunch for it either).
+// (internal/daemon's refreshStalePlugins, which posts no relaunch for it either). A claim of
+// such a role whose plugin takes no task (TakesNoTask) cannot take the round's task at all, so
+// its round would never end: the idle release replaces its pod instead, at once when it is idle
+// and at its turn's end when it is working, past the image, contract and round holds that would
+// keep that pod (workflow's IdleRelease, internal/daemon's releaseIdlePod).
 //
 // A registration that arrives while a launch the pacing holds waits over the process it comes
 // from relaunches nothing and is charged nothing. PluginRelaunchFor is written where the
@@ -520,6 +524,16 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 // Kubernetes mode) every stale claim is served, since no relaunch is coming for any of them.
 // Refused there, such a worker would wait on a replacement process that is never started.
 //
+// The round term holds for a claim whose plugin can take a task and for no other. A round's
+// question is a task, and a claim whose plugin declares a contract below TaskTakeContract
+// (TakesNoTask) cannot take one, so the rule that a round serves a claim on its old contract is
+// reversed for these claims alone: such a claim is refused inside a round as outside one, and
+// internal/daemon's stale-plugin lane relaunches it onto the current plugin there
+// (staleForTheLane), whose process then takes the round's task. Served on its old contract
+// instead, it would hold its pod's round open for an answer it can never give, which is the
+// whole fleet at the rollout that moves the daemon and its image together, since that image
+// change opens a round over every issue pod (internal/runtime/sandbox's PodDrift).
+//
 // Each caller adds the term that is its own, and neither may copy the other's. internal/api's
 // staleClaim adds that the claim is in no turn, because a worker in a turn is served so that it
 // can push what that turn holds before the relaunch its end releases (holdStaleRelaunch);
@@ -533,7 +547,7 @@ func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noP
 	if noPluginInstall != nil && noPluginInstall(c) {
 		return false
 	}
-	return pluginRelaunchable && c.PluginContract != daemonContract && c.UpdateRound == ""
+	return pluginRelaunchable && c.PluginContract != daemonContract && (c.UpdateRound == "" || TakesNoTask(c.PluginContract))
 }
 
 // staleRefusesClaim is whether this daemon would refuse the claim's own `legion` calls because

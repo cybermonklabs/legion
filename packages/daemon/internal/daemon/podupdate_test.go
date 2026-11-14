@@ -216,7 +216,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		// (staleRegistration), and a rig that left it false would accept every stale registration
 		// whatever the rest of the rule says.
 		PluginRelaunchable: true,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c.Role) },
 		PodUpdateRetask:    podUpdateRetask,
 		RefreshGate:        supervise.NewRefreshGate(0),
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
@@ -884,14 +884,22 @@ func TestPodUpdateTellsTheControllerOnceAfterTheNoticeBound(t *testing.T) {
 // which records no round, beside three workers at contract 45 that each answered by ending the
 // turn its ask started. Held for the planner, the round would never end, and every answered
 // worker's next task would wait behind it.
+//
+// The three workers run on Claude Code in the pod, whose plugin is the image's own, so the round
+// serves them on contract 45. On a plugin a launch installs, a claim below
+// supervise.TaskTakeContract is refused inside the round and relaunched onto the current plugin
+// there instead (staleForTheLane, supervise.StaleRefusesCalls).
 func TestPodUpdateReplacesThePodWithoutWaitingForAFailedClaim(t *testing.T) {
 	behind := supervise.PodUpdateContract - 1
 	answering := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester}
 	roles := []podUpdateRole{{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: 41}}
+	backends := map[claim.Role]runtime.Backend{}
 	for _, role := range answering {
 		roles = append(roles, podUpdateRole{role: role, state: supervise.StateReady, session: true, inPod: true, contract: behind})
+		backends[role] = runtime.BackendClaude
 	}
 	rig := newPodUpdateRig(t, roles...)
+	rig.s.cfg.WorkerBackends = backends
 	rig.drifts(podUpdateDrift)
 
 	rig.tick()
@@ -971,11 +979,17 @@ func TestPodUpdateAsksAgainAfterTheRetaskBound(t *testing.T) {
 // answer with. It is asked all the same, and the end of the turn its task starts is its answer,
 // so the round completes, the pod is replaced and the controller is told nothing: a contract
 // change rolls with no drain and no operator.
+//
+// The worker runs on Claude Code in the pod, whose plugin is the image's own, so the round
+// serves it on its old contract. On a plugin a launch installs, a claim below
+// supervise.TaskTakeContract is refused inside the round and relaunched onto the current plugin
+// there instead, whose plugin has the op (TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound).
 func TestPodUpdateTakesATurnsEndAsTheAnswerOfAClaimBelowTheUpdateContract(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true, contract: supervise.PodUpdateContract - 1},
 		readyWorker(claim.RoleTester),
 	)
+	rig.s.cfg.WorkerBackends = map[claim.Role]runtime.Backend{claim.RoleImplementer: runtime.BackendClaude}
 	rig.drifts(podUpdateDrift)
 
 	rig.tick()
@@ -1722,17 +1736,15 @@ func TestPodUpdateReadsAReleasedPodAsNoPodRatherThanAPodThatWent(t *testing.T) {
 }
 
 // The stale-plugin lane and the round divide the claims of a pod between them, and the round
-// takes every claim it covers. A claim in a round is left to it whatever contract it records:
-// one whose worker can call ready_for_update answers with the op, and one whose plugin has no op
-// answers by ending the turn the round's task starts, so neither needs a relaunch and a relaunch
-// would cut a turn the round is waiting on.
-func TestStalePluginLeavesEveryClaimInARoundToThatRound(t *testing.T) {
+// takes every claim it covers whose plugin can take its task: a worker that can call
+// ready_for_update answers with the op, and one whose `legion` tool has no such op answers by
+// ending the turn the round's task starts, so neither needs a relaunch and a relaunch would cut a
+// turn the round is waiting on. This daemon's contract is the one that takes tasks, so such a
+// claim on another contract is one ahead of it — its pod runs an image the operator pinned ahead
+// of the daemon — and the pass posts it nothing. A claim whose plugin takes no task is the lane's
+// inside the round too (TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound).
+func TestStalePluginLeavesAClaimWhosePluginTakesTasksToItsRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
-		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
-			contract: supervise.PodUpdateContract - 1, round: podUpdateRound, reasons: podUpdateDrift},
-		// A claim whose recorded contract is ahead of this daemon's — its pod runs an image the
-		// operator pinned ahead of the daemon — can answer, so its round carries it and the stale
-		// lane leaves it alone.
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
 			contract: api.DaemonAPIVersion + 1, round: podUpdateRound, reasons: podUpdateDrift},
 	)
@@ -1740,23 +1752,19 @@ func TestStalePluginLeavesEveryClaimInARoundToThatRound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the claims for the sweep: %v", err)
 	}
+	noInstall := func(c supervise.Claim) bool { return noPluginInstall(rig.s.cfg, c.Role) }
+	if left := claimsToRefresh(claims, noInstall); left != 0 {
+		t.Fatalf("claimsToRefresh = %d, want none: the round carries the one claim", left)
+	}
 
 	rig.s.refreshStalePlugins(claims, "sweep")
-	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
-		m, ok := rig.sup.Machine(rig.tokens[role])
-		if !ok {
-			t.Fatalf("%s is not supervised", role)
-		}
-		m.Wait()
-	}
+	rig.settle(claim.RoleTester)
 
-	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
-		if c := rig.claimOf(role); c.State != supervise.StateReady {
-			t.Errorf("%s is %s, want every claim of the round left to it", role, c.State)
-		}
+	if c := rig.claimOf(claim.RoleTester); c.State != supervise.StateReady || c.UpdateRound != podUpdateRound {
+		t.Errorf("the tester is %s in round %q, want it left to round %q", c.State, c.UpdateRound, podUpdateRound)
 	}
 	if resumes := rig.rt.CallsOf("Resume"); len(resumes) != 0 {
-		t.Fatalf("the sweep started %d processes for claims a round already carries, want none", len(resumes))
+		t.Fatalf("the sweep started %d processes for a claim a round already carries, want none", len(resumes))
 	}
 }
 
@@ -2250,8 +2258,11 @@ func TestPodUpdateDoesNotCutATurnThatStartsWhileTheReplacementWaits(t *testing.T
 // stale-plugin relaunch, at boot or at a sweep, whether or not a round is open over it: its
 // launch installs no plugin, so the relaunch would keep the pod, bring the same plugin back and
 // charge the claim toward failed. Its registration is accepted for the same reason, charged
-// nothing and refused nothing. What carries such a claim is the round over its pod, which asks
-// it, takes the end of its turn as the answer, and replaces the pod onto the new image.
+// nothing and refused nothing. What carries such a claim here is the round over its pod, which
+// asks it, takes the end of its turn as the answer, and replaces the pod onto the new image. A
+// plugin below supervise.TaskTakeContract takes no ask in a deployment, so there the idle
+// release is what brings such a worker the new image (TestStalePluginClaudeRoleInAPodIsReleasedWhenIdle);
+// this rig runs no idle pass, and drives the take the plugin would make.
 func TestStalePluginLeavesAClaudeWorkerBelowTheContractToItsRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,

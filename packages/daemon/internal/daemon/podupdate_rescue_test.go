@@ -538,6 +538,14 @@ func TestAnswerByTurnEndEveryContract(t *testing.T) {
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
 			contract: supervise.PodUpdateContract - 1},
 	)
+	// Both run on Claude Code in the pod, whose plugin is the image's own, so the round serves
+	// them on the contracts they registered with. On a plugin a launch installs, a claim below
+	// supervise.TaskTakeContract is refused inside the round and relaunched onto the current
+	// plugin there instead (staleForTheLane, supervise.StaleRefusesCalls), so no turn of its ask
+	// would end for the round to read.
+	rig.s.cfg.WorkerBackends = map[claim.Role]runtime.Backend{
+		claim.RoleImplementer: runtime.BackendClaude, claim.RoleTester: runtime.BackendClaude,
+	}
 	unsupported(rig)
 	rig.drifts(podUpdateDrift)
 	rig.tick()

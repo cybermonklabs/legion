@@ -742,22 +742,26 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 //
 // Three of its four terms are the rule internal/supervise holds for both readers of it
 // (supervise.StaleRefusesCalls): the recorded contract is not this daemon's, the claim is in no
-// update round, and a relaunch onto this daemon's plugin can reach the claim at all — which is
-// false on a daemon that can relaunch nothing and false for a claim whose launch installs no
-// plugin (Options.PluginRelaunchable, Options.NoPluginInstall — a Claude Code role's plugin in
-// a pod is its image's own claude-envoy, which no install reaches). Nothing relaunches either
-// of those claims for its contract: the stale-plugin lane posts them nothing and their stale
-// registrations are accepted and charged nothing (internal/daemon's refreshStalePlugins,
-// supervise's staleRegistration), so this refusal's own sentence would be false of them and no
-// sweep would ever make it true. Only a new image moves such a worker's plugin, and the update
-// round over its pod is what brings one — a round that opens on pod-shape drift alone, so a
-// release that changes no image opens none, and a refusal here would hold the worker's grants,
-// its handoff_complete and its ready for the rest of the deployment's life. The round term is
-// there for the same reason read the other way: the round's whole point is that the worker
-// pushes its work before its process is replaced, and it cannot push without the daemon it
-// already speaks to, so while the round is open the daemon serves the claim on its previous
-// contract — grants, handoff_complete and every other grant-bearing route, as well as the claim
-// routes — and the end of the round is what relaunches the process onto the current plugin.
+// update round or its plugin takes no task, and a relaunch onto this daemon's plugin can reach
+// the claim at all — which is false on a daemon that can relaunch nothing and false for a claim
+// whose launch installs no plugin (Options.PluginRelaunchable, Options.NoPluginInstall — a
+// Claude Code role's plugin in a pod is its image's own claude-envoy, which no install
+// reaches). Nothing relaunches either of those claims for its contract: the stale-plugin lane
+// posts them nothing and their stale registrations are accepted and charged nothing
+// (internal/daemon's refreshStalePlugins, supervise's staleRegistration), so this refusal's own
+// sentence would be false of them and no sweep would ever make it true. Only a new image moves
+// such a worker's plugin, and the update round over its pod is what brings one — a round that
+// opens on pod-shape drift alone, so a release that changes no image opens none, and a refusal
+// here would hold the worker's grants, its handoff_complete and its ready for the rest of the
+// deployment's life. The round term is there for the same reason read the other way: the
+// round's whole point is that the worker pushes its work before its process is replaced, and it
+// cannot push without the daemon it already speaks to, so while the round is open the daemon
+// serves the claim on its previous contract — grants, handoff_complete and every other
+// grant-bearing route, as well as the claim routes — and the end of the round is what relaunches
+// the process onto the current plugin. A claim whose plugin declares a contract below
+// supervise.TaskTakeContract is the one exception (supervise.TakesNoTask): the round's question
+// is a task it cannot take, so it is refused inside a round as outside one, and the stale-plugin
+// lane relaunches it onto the current plugin there (internal/daemon's staleForTheLane).
 //
 // Its fourth term is this route family's own, which the shared rule leaves to it: a claim whose
 // worker is in a turn is not stale here. The stale-plugin lane holds the relaunch of a working

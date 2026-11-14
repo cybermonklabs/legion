@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -97,13 +98,18 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 // what tells a deployment whether release is working. The release itself is recorded where it
 // completes, since that is where the bundle it saved is known (outbox.releaseIssue, through
 // recordPodRelease).
+//
+// The rule's old plugin is a Claude Code role whose plugin takes no task (workflow.IdleRelease,
+// IdleDecision.OldPlugin): its pod is released so that the role comes back on the configured
+// image, and a pod already on that image is kept and logged as the error it is
+// (tellOldPluginOnImage).
 func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	now := time.Now().UTC()
 	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
 	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion)
+		decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion, w.idleFixedPlugin)
 		since, found := view.QuietSince()
 		quiet = found && now.Sub(since) >= w.idlePeriod
 		holding = view.Holding
@@ -117,14 +123,43 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		return
 	}
 	if !marked {
+		if old := decision.OldPlugin; old != nil && !decision.Release {
+			w.tellOldPluginOnImage(issue, *old)
+		}
 		detail := strings.Join(decision.HoldKinds, ",")
 		w.log.Debug("idle release: the pod is kept", "issue", issue, "hold", decision.Hold.String(), "detail", detail)
 		w.recordKeptPod(ctx, issue, decision.Hold, detail, quiet, holding, now)
 		return
 	}
-	w.log.Info("idle release: releasing an issue's pod, which has had no turn in progress and no turn due for the idle period",
-		"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Roles))
+	if old := decision.OldPlugin; old != nil {
+		w.log.Info("idle release: releasing an issue's pod whose Claude Code role runs a plugin that takes no task, so the role comes back on the configured image",
+			"issue", issue, "claim", old.Token, "pluginContract", old.PluginContract,
+			"taskTakeContract", supervise.TaskTakeContract, "roles", len(decision.Roles))
+	} else {
+		w.log.Info("idle release: releasing an issue's pod, which has had no turn in progress and no turn due for the idle period",
+			"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Roles))
+	}
 	w.wakeOutbox(issue, record.OutboxKindSupervise)
+}
+
+// tellOldPluginOnImage logs the claim the rule found running a plugin that takes no task in a
+// pod that already runs the configured image (workflow.IdleRelease's old plugin, held as
+// IdleHoldPluginContract): a release would bring the same plugin back, so the deployment has
+// not moved the worker image onto one whose claude-envoy takes tasks, and nothing the daemon
+// does can bring the worker its task. It is logged once for each claim and contract rather than
+// at every tick (oldPluginTold), so a deployment that has not moved its image reads one line per
+// stranded worker rather than a line a minute.
+func (w *workflowRuntime) tellOldPluginOnImage(issue string, old pods.IdleClaim) {
+	if told, ok := w.oldPluginTold[old.Token]; ok && told == old.PluginContract {
+		return
+	}
+	if w.oldPluginTold == nil {
+		w.oldPluginTold = map[claim.Token]int{}
+	}
+	w.oldPluginTold[old.Token] = old.PluginContract
+	w.log.Error("idle release: a Claude Code role runs a plugin that takes no task, and its pod already runs the configured image, so no release can bring it one that does; move the worker image",
+		"issue", issue, "claim", old.Token, "pluginContract", old.PluginContract,
+		"taskTakeContract", supervise.TaskTakeContract, "image", w.idleImage)
 }
 
 // releaseUnownedPods decides each pod of the project that no claim of its issue can use: an
@@ -437,6 +472,10 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 //     delivery queued while the save ran is still below it and cancels the whole release;
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
 //     records the release with the size the save stored.
+//
+// The release the rule makes for its old plugin is these same three acts (workflow.IdleRelease,
+// IdleDecision.OldPlugin), and its role stops say why it was made instead of naming an idle
+// period it did not wait for.
 func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	mark := store.IdleReleaseMark{Generation: view.Generation, Role: decision.Roles[0]}
 	rows := make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)
@@ -452,9 +491,14 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 		TreeGeneration: view.Root.Generation, Role: mark.Role}, false); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
+	reason := "the issue's pod has been idle for the release period"
+	if old := decision.OldPlugin; old != nil {
+		reason = fmt.Sprintf("the issue's pod does not run the configured image, and its %s's plugin (contract %d) takes no task; the pod comes back on the configured image",
+			old.Role, old.PluginContract)
+	}
 	for i, role := range decision.Roles {
 		if err := add(record.SuperviseRequest{Op: "release", Tree: view.Tree, Role: role,
-			Generation: view.Generation, Reason: "the issue's pod has been idle for the release period"}, i == 0); err != nil {
+			Generation: view.Generation, Reason: reason}, i == 0); err != nil {
 			return store.IdleReleaseMark{}, err
 		}
 	}

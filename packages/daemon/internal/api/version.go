@@ -1564,7 +1564,11 @@ package api
 // shape (`{code, error}`), so a worker that sends a take or a seen report again on a 502, 503 or
 // 504 naming no code never reads a refusal of the daemon's own as an outage; and none of them
 // refuses a stale plugin with the stale-contract 409: a stale claim's take is refused with the
-// hold `stale-plugin`, and its read and its seen report are answered as any claim's.
+// hold `stale-plugin`, and its read and its seen report are answered as any claim's. A claim
+// whose plugin declared a contract below this one is refused the stale-contract 409 inside an
+// update round as outside one (supervise.StaleRefusesCalls): the round's question is a task it
+// cannot take, so the stale-plugin lane relaunches it onto the current plugin inside the round
+// rather than the round serving it on its old contract.
 // The prompt frames are gone: the daemon sends no task over the worker stream, so `claims/ready`
 // sends nothing, a shim's prompt answer is no frame of the stream, and a plugin before this
 // contract, which waits on a prompt, can take no task (supervise.TaskTakeContract). The operator

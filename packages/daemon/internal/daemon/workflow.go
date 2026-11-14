@@ -129,6 +129,15 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// idleFixedPlugin is which roles' launches install no plugin (noPluginInstall), the rule's
+	// reading of a claim whose plugin no relaunch moves (workflow.IdleRelease's old plugin), and
+	// idleImage the worker image the configuration names (runtime.kubernetes.image), which the
+	// error a pod already on it logs for such a claim names. oldPluginTold is the contract that
+	// error was last logged at for each claim, so it is logged once rather than at every tick
+	// (tellOldPluginOnImage); the idle pass is its one reader and writer.
+	idleFixedPlugin func(claim.Role) bool
+	idleImage       string
+	oldPluginTold   map[claim.Token]int
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
@@ -1060,10 +1069,13 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 // attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods:
 // `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
 // issue's pod runs the image the configuration names and whether it still holds the issue's
-// Sandbox (issuePods).
+// Sandbox (issuePods). The release of a pod whose Claude Code role runs a plugin that takes no
+// task rides the same tick and the same wakes (workflow.IdleRelease's old plugin), so a
+// deployment with release off releases no such pod either.
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
-	k := supervision.cfg.Runtime.Kubernetes
-	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
+	cfg := supervision.cfg
+	k := cfg.Runtime.Kubernetes
+	if cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
 		return
 	}
 	podRuntime, ok := supervision.supervisor.deps.Runtime.(issuePods)
@@ -1072,6 +1084,8 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		return
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
+	w.idleFixedPlugin = func(role claim.Role) bool { return noPluginInstall(cfg, role) }
+	w.idleImage = k.Image
 	w.outbox.backstop = k.IdleRelease.Backstop()
 }
 

@@ -725,52 +725,81 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 }
 
 // The round serves a worker on the plugin contract it registered with, whatever this daemon's own
-// is: the whole point of the round is that the process pushes its work before it is replaced, and
-// it cannot push without the daemon it already speaks to (api's staleClaim). With no round open
-// the same claim is refused the stale-caller 409 — the negative control — and the round is what
-// turns that refusal into the 200 a completion needs.
-func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
-	rig := newFleetRig(t,
-		fleetIssue{key: fleetIssueB, phase: phase.Planning, pod: fleetPodB,
-			roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner}},
-	)
-	before := rig.claimOf(fleetIssueB, claim.RolePlanner)
-	m, ok := rig.sup.Machine(before.Token)
-	if !ok {
-		t.Fatalf("%s's planner is not supervised", fleetIssueB)
-	}
-	// The planner's process registered on the contract before this daemon's, which is what a
-	// deployment's own release leaves running until each pod is replaced.
-	if err := m.Handle(rig.ctx, supervise.RequestRegister{
-		Claim: before.Token, Generation: before.Generation, Session: before.Session, SessionFile: before.SessionFile,
-		CapabilityHash: []byte("previous-contract"), PluginContract: api.DaemonAPIVersion - 1,
-	}); err != nil {
-		t.Fatalf("register the planner on the previous contract: %v", err)
-	}
+// is, where that worker's plugin takes tasks: the whole point of the round is that the process
+// pushes its work before it is replaced, and it cannot push without the daemon it already speaks
+// to (api's staleClaim). With no round open the same claim is refused the stale-caller 409 — the
+// negative control — and the round is what turns that refusal into the 200 a completion needs.
+// This daemon's contract is the one that takes tasks, so the worker on another contract whose
+// plugin takes them is one ahead of it.
+//
+// A worker whose plugin takes no task, on a contract below supervise.TaskTakeContract, is refused
+// inside the round as outside it: the round's question is a task it cannot take, so the
+// stale-plugin lane relaunches it onto the current plugin there rather than leave the round
+// waiting on it (supervise.StaleRefusesCalls, staleForTheLane), and its completion meets the 409
+// that says so.
+func TestPodUpdateRoundServesAWorkerOnAnotherContractWhosePluginTakesTasks(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		contract int
+		// served is whether the completion inside the round is served.
+		served bool
+	}{
+		{name: "a plugin that takes tasks", contract: api.DaemonAPIVersion + 1, served: true},
+		{name: "a plugin that takes no task", contract: supervise.TaskTakeContract - 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newFleetRig(t,
+				fleetIssue{key: fleetIssueB, phase: phase.Planning, pod: fleetPodB,
+					roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner}},
+			)
+			before := rig.claimOf(fleetIssueB, claim.RolePlanner)
+			m, ok := rig.sup.Machine(before.Token)
+			if !ok {
+				t.Fatalf("%s's planner is not supervised", fleetIssueB)
+			}
+			// The planner's process registered on a contract other than this daemon's, which is
+			// what a deployment's own release leaves running until each pod is replaced.
+			if err := m.Handle(rig.ctx, supervise.RequestRegister{
+				Claim: before.Token, Generation: before.Generation, Session: before.Session, SessionFile: before.SessionFile,
+				CapabilityHash: []byte("another-contract"), PluginContract: tc.contract,
+			}); err != nil {
+				t.Fatalf("register the planner on contract %d: %v", tc.contract, err)
+			}
 
-	status, body := rig.complete(fleetIssueB, claim.RolePlanner, "planned")
-	if status != http.StatusConflict || !strings.Contains(body, "STALE_PLUGIN_CONTRACT") {
-		t.Fatalf("the completion of a claim on the previous contract with no round open = %d %s, want 409 STALE_PLUGIN_CONTRACT", status, body)
-	}
-	if got := readIssue(t, rig.pool, fleetIssueB); got.Phase != phase.Planning {
-		t.Fatalf("%s moved to %s on a refused completion, want nothing recorded by it", fleetIssueB, got.Phase)
-	}
+			status, body := rig.complete(fleetIssueB, claim.RolePlanner, "planned")
+			if status != http.StatusConflict || !strings.Contains(body, "STALE_PLUGIN_CONTRACT") {
+				t.Fatalf("the completion of a claim on contract %d with no round open = %d %s, want 409 STALE_PLUGIN_CONTRACT", tc.contract, status, body)
+			}
+			if got := readIssue(t, rig.pool, fleetIssueB); got.Phase != phase.Planning {
+				t.Fatalf("%s moved to %s on a refused completion, want nothing recorded by it", fleetIssueB, got.Phase)
+			}
 
-	rig.drifts(fleetIssueB, fleetDrift)
-	rig.tick()
-	rig.awaitRound(fleetIssueB, claim.RoleArchitect)
-	testwait.Eventually(t, "the planner to be in the round of "+fleetIssueB, func() bool {
-		return rig.claimOf(fleetIssueB, claim.RolePlanner).UpdateRound == rig.round(fleetIssueB)
-	})
+			rig.drifts(fleetIssueB, fleetDrift)
+			rig.tick()
+			rig.awaitRound(fleetIssueB, claim.RoleArchitect)
+			testwait.Eventually(t, "the planner to be in the round of "+fleetIssueB, func() bool {
+				return rig.claimOf(fleetIssueB, claim.RolePlanner).UpdateRound == rig.round(fleetIssueB)
+			})
 
-	status, body = rig.complete(fleetIssueB, claim.RolePlanner, "planned; pushed for the round")
-	if status != http.StatusOK {
-		t.Fatalf("the same completion while the round is open = %d %s, want 200: the round serves the claim on its previous contract", status, body)
+			status, body = rig.complete(fleetIssueB, claim.RolePlanner, "planned; pushed for the round")
+			if !tc.served {
+				if status != http.StatusConflict || !strings.Contains(body, "STALE_PLUGIN_CONTRACT") {
+					t.Fatalf("the same completion while the round is open = %d %s, want 409 STALE_PLUGIN_CONTRACT: the round asks a task this plugin cannot take", status, body)
+				}
+				if got := readIssue(t, rig.pool, fleetIssueB); got.Phase != phase.Planning {
+					t.Fatalf("%s moved to %s on a refused completion, want nothing recorded by it", fleetIssueB, got.Phase)
+				}
+				return
+			}
+			if status != http.StatusOK {
+				t.Fatalf("the same completion while the round is open = %d %s, want 200: the round serves the claim on its contract", status, body)
+			}
+			if got := readIssue(t, rig.pool, fleetIssueB); got.Phase != phase.Implementing {
+				t.Fatalf("%s after the completion the round let through = %s, want its phase moved on to implementing", fleetIssueB, got.Phase)
+			}
+			rig.assertNoRootLeftTheWorkflow(fleetIssueB)
+		})
 	}
-	if got := readIssue(t, rig.pool, fleetIssueB); got.Phase != phase.Implementing {
-		t.Fatalf("%s after the completion the round let through = %s, want its phase moved on to implementing", fleetIssueB, got.Phase)
-	}
-	rig.assertNoRootLeftTheWorkflow(fleetIssueB)
 }
 
 // An update round's asks adopt nothing, so none of them waits on another role's turn or moves the

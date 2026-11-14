@@ -1611,7 +1611,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RefreshGate:        refreshGate,
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c.Role) },
 		PodUpdateRetask:    cfg.PodUpdateRetask,
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
@@ -1889,12 +1889,14 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // what the pod round replaces the pod for. So it is left running and answers its round like any
 // other worker, with the op or by ending the turn the round's task starts (supervise's
 // turnEnded). staleRegistration accepts such a registration and charges it nothing, for the same
-// reason (supervise.Deps.NoPluginInstall).
+// reason (supervise.Deps.NoPluginInstall). One whose plugin takes no task cannot take the
+// round's task at all, so the idle release brings it the new image instead (workflow's
+// IdleRelease, releaseIdlePod).
 //
-// A claim in a pod round is passed over and a claim in a plugin round is not. That term is the
-// lane's own rather than this pass's: staleForTheLane holds it and says what each kind of round
-// reads as and why, because the count of what the lane has left must name the claims this pass
-// posts and no others (claimsToRefresh).
+// A claim in a pod round is passed over, unless its plugin takes no task, and a claim in a
+// plugin round is not. That term is the lane's own rather than this pass's: staleForTheLane
+// holds it and says what each kind of round reads as and why, because the count of what the
+// lane has left must name the claims this pass posts and no others (claimsToRefresh).
 //
 // A daemon that cannot relaunch onto a plugin (PluginRelaunchable false, LEGION-164's degraded
 // Kubernetes mode) posts nothing; it logs one Error line per stale claim at boot only — a sweep's
@@ -1966,7 +1968,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // running wave relies on. It is posted mid-turn as well, since its turn is never waited out
 // (refreshPlugin).
 func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger string) {
-	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) }
+	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c.Role) }
 	parked, refreshes := s.parkedWakes()
 	s.refreshGate.Correct(refreshes)
 	refused := 0
@@ -2005,17 +2007,30 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 
 // staleForTheLane is the stale-plugin lane's own stale claim, in the five terms its two readers
 // read alike: a recorded session, a process that holds a capability, a recorded plugin contract
-// that is not this daemon's, no pod update round, and a launch that installs a plugin at all.
-// The readers are the pass that posts the lane's relaunches (refreshStalePlugins) and the count
-// of what the lane still has to do (claimsToRefresh), and they are one predicate because a term
-// added to one of them alone makes the count name work the lane never does or hide work it will
-// — which is the one thing the count exists not to do (dispatch://INFRA-2712 R4).
+// that is not this daemon's, no pod update round unless its plugin takes no task, and a launch
+// that installs a plugin at all. The readers are the pass that posts the lane's relaunches
+// (refreshStalePlugins) and the count of what the lane still has to do (claimsToRefresh), and
+// they are one predicate because a term added to one of them alone makes the count name work
+// the lane never does or hide work it will — which is the one thing the count exists not to do
+// (dispatch://INFRA-2712 R4).
 //
-// A claim in a pod round is out of the set, whatever contract it records (InPodRound). That
+// A claim in a pod round is out of the set (InPodRound), unless its plugin takes no task. That
 // round is carrying it, and the process is replaced when the round ends (reconcilePodUpdates),
 // so a StalePlugin post would relaunch mid-turn a claim the round is waiting on and take the
 // pod's replacement its answer; the count says the same, because a claim the pass will not
 // post is not work the lane has left.
+//
+// A round's question is a task, and a claim whose plugin declares a contract below
+// supervise.TaskTakeContract cannot take one (supervise.TakesNoTask), so the rule that a round
+// serves a claim on its old contract is reversed for these claims alone: such a claim is in the
+// set inside a pod round as outside one, and is relaunched onto the current plugin there, whose
+// process takes the round's task and answers it. Left to the round, it would hold that round
+// open for an answer it can never give — and the rollout that moves each project's daemon and
+// worker image together opens a round over every issue pod (internal/runtime/sandbox's
+// PodDrift), so it would hold every one of them (dispatch://INFRA-2811, decision 18). The
+// relaunch keeps the pod and the disk and waits out a turn in flight (supervise's
+// holdStaleRelaunch), so it costs the round no work. The API's stale-caller refusal reads the
+// same reversal (supervise.StaleRefusesCalls).
 //
 // A claim in a plugin round is in the set, and the term is by round kind for that reason. The
 // boot's own de-round pass has posted such a claim its end a moment before the refresh pass
@@ -2036,7 +2051,8 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // the lane's own pass builds a closure of it at every sweep, so no daemon reads this term as
 // nil, a tmux daemon included (noPluginInstall, serve, refreshStalePlugins).
 func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bool) bool {
-	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) || c.InPodRound() {
+	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) ||
+		(c.InPodRound() && !supervise.TakesNoTask(c.PluginContract)) {
 		return false
 	}
 	return noPluginInstall == nil || !noPluginInstall(c)
@@ -2101,12 +2117,13 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 	return parked, refreshes
 }
 
-// noPluginInstall is c's launch installing no plugin at all, whatever contract the claim records:
-// the runtime is Kubernetes and the claim's role runs on Claude Code, whose plugin there is the
-// worker image's own claude-envoy. No install reaches it (specs.stalePluginInstall installs none
-// for that backend, and no workflow releases claude-envoy) and no relaunch moves it, because the
-// launch keeps the pod the claim already runs in: only a new image carries another claude-envoy,
-// which is what the pod round replaces the pod for.
+// noPluginInstall is the launch of a claim of role installing no plugin at all, whatever
+// contract the claim records: the runtime is Kubernetes and the role runs on Claude Code, whose
+// plugin there is the worker image's own claude-envoy. No install reaches it
+// (specs.stalePluginInstall installs none for that backend, and no workflow releases
+// claude-envoy) and no relaunch moves it, because the launch keeps the pod the claim already
+// runs in: only a new image carries another claude-envoy, which is what the pod round replaces
+// the pod for.
 //
 // Under tmux a Claude Code role is exempt from nothing. Its pane loads the claude-envoy held at
 // LEGION_CLAUDE_PLUGIN_DIR (resolveClaude; tmux's ClaudeLaunch, whose MCP configuration and
@@ -2116,15 +2133,17 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 // (specs.stalePluginInstall), so a relaunch is the whole of the lane there — and for this role
 // it is enough.
 //
-// It is one rule read in three places, each of which would otherwise act on a claim no install
+// It is one rule read in four places, each of which would otherwise act on a claim no install
 // of this deployment can move: this package's own stale-plugin pass (refreshStalePlugins); the
 // machine's stale registration, which supervise cannot decide for itself because a role's
 // backend is the daemon's configuration (supervise.Deps.NoPluginInstall, handed this same
-// function); and the API's stale-caller refusal, which would otherwise hold such a worker's
-// grants, its handoff_complete and its ready on a relaunch that never comes
-// (api.Options.NoPluginInstall, api's staleClaim).
-func noPluginInstall(cfg config.Config, c supervise.Claim) bool {
-	return cfg.Runtime.Name == "kubernetes" && runtime.Of(cfg.BackendFor(c.Role)) == runtime.BackendClaude
+// function); the API's stale-caller refusal, which would otherwise hold such a worker's grants,
+// its handoff_complete and its ready on a relaunch that never comes (api.Options.NoPluginInstall,
+// api's staleClaim); and the idle release, which takes the pod of such a claim whose plugin
+// takes no task, since no relaunch can bring it one that does (attachIdleRelease, workflow's
+// IdleRelease).
+func noPluginInstall(cfg config.Config, role claim.Role) bool {
+	return cfg.Runtime.Name == "kubernetes" && runtime.Of(cfg.BackendFor(role)) == runtime.BackendClaude
 }
 
 // reconcileBootOrphans retries only the boot reconciliation, boundedly. A listing error does not
@@ -2443,7 +2462,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// The same rule the lane itself reads, over the same configuration, so the count
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
 			// and the NoPluginInstall option three lines below).
-			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c.Role) },
 		},
 		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
@@ -2459,7 +2478,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Steps:              cfg.Gates.Steps(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c.Role) },
 		Backend:            cfg.BackendFor,
 		Stopping:           s.stopping,
 		Drained:            s.draining,
