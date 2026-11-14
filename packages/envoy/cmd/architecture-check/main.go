@@ -33,10 +33,11 @@
 // character as an escape, so no line break reaches the log and no text the directory or an
 // argument holds starts a line of its own. It writes the "[" of every "##[" as \x5b, and only a
 // literal "##[" names a command, as printable's doc says, so no line holds a "##[" command. It also
-// writes each format character and each byte that is not UTF-8 as an escape, for a reader of the
-// log: a format character is invisible or reorders text, and can make one name read as another. A
-// problem whose text spans several lines, as yaml.v3's answer for an unknown key does, prints on
-// one line with each line break as \n.
+// writes each format character, the line separator U+2028, the paragraph separator U+2029 and each
+// byte that is not UTF-8 as an escape, for a reader of the log: a format character is invisible or
+// reorders text, and can make one name read as another, and a log viewer can show a line break at
+// either separator. A problem whose text spans several lines, as yaml.v3's answer for an unknown
+// key does, prints on one line with each line break as \n.
 package main
 
 import (
@@ -261,9 +262,12 @@ func say(w io.Writer, format string, args ...any) {
 //
 // printable also writes each format character (Cf: the bidi controls, the zero-width joiner and
 // non-joiner, the soft hyphen, the byte order mark) as `\u202e`, `\u200d`, `\u00ad` or `\ufeff`,
-// and each byte that is not UTF-8 as `\xNN`. That is for a reader of the log, not for the runner:
-// a format character is invisible or reorders the text around it, so it can make one name read
-// as another. Text that is valid UTF-8 and holds none of these is s itself.
+// the line separator U+2028 (Zl) and the paragraph separator U+2029 (Zp) as `\u2028` and
+// `\u2029`, and each byte that is not UTF-8 as `\xNN`. That is for a reader of the log, not for
+// the runner: a format character is invisible or reorders the text around it, so it can make one
+// name read as another, and the runner does not end a line at U+2028 or U+2029 (it reads lines
+// with StreamReader.ReadLine), but a log viewer can show a line break there. Text that is valid
+// UTF-8 and holds none of these is s itself.
 func printable(s string) string {
 	if !utf8.ValidString(s) || strings.ContainsFunc(s, escaped) {
 		var b strings.Builder
@@ -285,10 +289,11 @@ func printable(s string) string {
 }
 
 // escaped reports whether printable writes r as an escape: a control character (Unicode category
-// Cc), such as a line break or a terminal escape, or a format character (Cf), which is invisible
-// or reorders text.
+// Cc), such as a line break or a terminal escape, a format character (Cf), which is invisible or
+// reorders text, or the line separator U+2028 (Zl) or the paragraph separator U+2029 (Zp), at
+// which a log viewer can show a line break.
 func escaped(r rune) bool {
-	return unicode.In(r, unicode.Cc, unicode.Cf)
+	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp)
 }
 
 // count is the count line's "<n> notes", with "note" for one.

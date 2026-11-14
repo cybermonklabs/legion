@@ -65,30 +65,6 @@ The check step exits with the status of the command.
 A status other than 0 fails the step and the job.
 Each line names the directory by its absolute path.
 
-The runner of the job reads each line of the log for workflow commands.
-It ends a line at `\n` and at `\r`.
-It reads a workflow command in two forms.
-The first form is a line that starts with `::` after the runner removes the white space at the start of the line.
-The second form is `##[` anywhere in a line.
-Each line starts with the fixed text of the command.
-The command writes every control character in each line that it prints as an escape, such as `\n`, `\r` or `\x1b`.
-So no line break from the directory gets into the log, and text from the directory cannot start a new line.
-The command also writes the `[` of every `##[` as `\x5b`.
-The escapes hold no `#` and no `[`, so no `##[` stays in a line.
-The runner finds `##[` with a search that can ignore some characters, such as U+034F.
-But it reads the command name at a fixed three characters after the start of the match.
-It accepts only a name of its registered commands, and it compares the name without regard to case.
-So if the match includes an ignored character, the name starts with `#`, `[` or that character, and no command that the runner defines has that name.
-In `actions/runner` at commit `8cfa1049f86781d141056082d73802d56cd2b433`, `ActionCommand.TryParse` reads the name at `cmdIndex = prefixIndex + Prefix.Length` ([`src/Runner.Common/ActionCommand.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Common/ActionCommand.cs)).
-The registered commands are the `_registeredCommands` of `ActionCommandManager`, a set that compares with `StringComparer.OrdinalIgnoreCase` ([`src/Runner.Worker/ActionCommandManager.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Worker/ActionCommandManager.cs)).
-Only a literal `##[` can start a command.
-A problem whose text has several lines prints on one line, with each line break as `\n`.
-
-The command also writes every format character as an escape, such as a soft hyphen as `\u00ad` or a zero-width joiner as `\u200d`.
-A format character is invisible or changes the order of the text, so it can make one name look like a different name in the log.
-This escape is for the person who reads the log, and it does not stop a command.
-The command also writes every byte that is not UTF-8 as an escape, such as `\xff`.
-
 - **Exit 0: the set is valid.**
   The log holds the line `architecture-check: <directory>: <n> notes, the set is valid`, with `note` for one note.
 
@@ -108,13 +84,52 @@ Examples are `notes.txt`, a subdirectory and a symbolic link.
 A warning fails nothing, because the importer of the server also ignores such an entry and gives no message.
 The warning tells the author that the server does not read the entry.
 
+## What the runner reads from the check's lines
+
+The runner of the job reads each line of the log for workflow commands.
+It ends a line at `\n` and at `\r`.
+It reads a workflow command in two forms.
+The first form is a line that starts with `::` after the runner removes the white space at the start of the line.
+The second form is `##[` anywhere in a line.
+Each line of the check starts with the fixed text of the command.
+The command writes every control character in each line that it prints as an escape, such as `\n`, `\r` or `\x1b`.
+It also writes the line separator U+2028 as `\u2028` and the paragraph separator U+2029 as `\u2029`.
+The runner does not end a line at these two characters, because `ProcessInvoker` reads each line with `StreamReader.ReadLine` ([`src/Runner.Sdk/ProcessInvoker.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Sdk/ProcessInvoker.cs)).
+But a log viewer can show a line break at them, so the command escapes them for the person who reads the log, as it escapes format characters.
+So no line break from the directory gets into the log, and text from the directory cannot start a new line.
+The command also writes the `[` of every `##[` as `\x5b`.
+The escapes hold no `#` and no `[`, so no `##[` stays in a line.
+The runner finds `##[` with a search that can ignore some characters, such as U+034F.
+But it reads the command name at a fixed three characters after the start of the match.
+It accepts only a name of its registered commands, and it compares the name without regard to case.
+So if the match includes an ignored character, the name starts with `#`, `[` or that character, and no command that the runner defines has that name.
+In `actions/runner` at commit `8cfa1049f86781d141056082d73802d56cd2b433`, `ActionCommand.TryParse` reads the name at `cmdIndex = prefixIndex + Prefix.Length` ([`src/Runner.Common/ActionCommand.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Common/ActionCommand.cs)).
+The registered commands are the `_registeredCommands` of `ActionCommandManager`, a set that compares with `StringComparer.OrdinalIgnoreCase` ([`src/Runner.Worker/ActionCommandManager.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Worker/ActionCommandManager.cs)).
+Only a literal `##[` can start a command.
+A problem whose text has several lines prints on one line, with each line break as `\n`.
+
+The command also writes every format character as an escape, such as a soft hyphen as `\u00ad` or a zero-width joiner as `\u200d`.
+A format character is invisible or changes the order of the text, so it can make one name look like a different name in the log.
+This escape is for the person who reads the log, and it does not stop a command.
+The command also writes every byte that is not UTF-8 as an escape, such as `\xff`.
+
+The Go setup of the action, `actions/setup-go`, adds a problem matcher with the owner `go`, and the runner reads every later line of the job through it.
+The matcher makes an error annotation of each line that holds `.go: ` or `.go:<line>:<column>: `, with the rest of the line as its message.
+So a file name such as `cmd.go: forged annotation` in the notes directory would become an error annotation with the text of its author.
+The action removes that matcher, as [The Go toolchain](#the-go-toolchain) says.
+
+A problem matcher that an earlier step of the job added also reads every line that the check prints.
+So a file name can become an annotation through that matcher too.
+That is one more reason to run the action in a job of its own, beside the reason that [The Go toolchain](#the-go-toolchain) gives.
+
 ## The Go toolchain
 
 The action installs the Go version that `packages/envoy/go.mod` of this repository names, with `actions/setup-go`.
-That action puts this Go first on `PATH` and sets `GOTOOLCHAIN=local` for the rest of the caller's job.
-It also adds a problem matcher with the owner `go`, and the runner reads every later line of the job through it.
-The matcher makes an error annotation of each line that holds `.go: ` or `.go:<line>:<column>: `, with the rest of the line as its message.
-So a file name such as `cmd.go: forged annotation` in the notes directory would become an error annotation with the text of its author.
+That action adds this Go to `PATH` and sets `GOTOOLCHAIN=local` for the rest of the caller's job.
+It also adds `$(go env GOPATH)/bin` to `PATH`, after the Go `bin`.
+The runner puts each new entry at the start of `PATH`, so this Go comes before a Go that an earlier step added, and `$(go env GOPATH)/bin` (by default `~/go/bin`) comes before the Go `bin` for the rest of the job.
+In `actions/setup-go` at commit `b7ad1dad31e06c5925ef5d2fc7ad053ef454303e`, `addBinToPath` calls `core.addPath` on `<GOPATH>/bin` after the install added `<installDir>/bin` ([`src/main.ts`](https://github.com/actions/setup-go/blob/b7ad1dad31e06c5925ef5d2fc7ad053ef454303e/src/main.ts)).
+It also adds the problem matcher with the owner `go` that [What the runner reads from the check's lines](#what-the-runner-reads-from-the-checks-lines) describes.
 The action builds only its own command and needs no Go matcher.
 So it removes the `go` matcher right after it sets up Go.
 
@@ -123,10 +138,6 @@ In a job that set up Go before the action, the Go setup of the action replaces t
 So the steps of that job after the action have no Go matcher, and a Go compiler error in their output gets no annotation.
 Put the action in a job of its own, or before the Go setup of the job, which adds the matcher again.
 The job must have no `container:`, as [Runners](#runners) says.
-
-A problem matcher that an earlier step of the job added also reads every line that the check prints.
-So a file name can become an annotation through that matcher too.
-That is one more reason to run the action in a job of its own.
 
 The build ignores the user environment file of the go command (`GOENV=off`).
 A caller that needs `GOPROXY`, `GOPRIVATE` or `GONOSUMDB` sets them as environment variables of the job.

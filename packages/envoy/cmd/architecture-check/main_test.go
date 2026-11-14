@@ -230,8 +230,8 @@ func TestBuildSetNamesANoteItCannotReadByItsAbsolutePath(t *testing.T) {
 }
 
 // printable leaves an ordinary name as it is, a name that is not ASCII included, escapes each
-// control character, each format character and each byte that is not UTF-8 as a Go string
-// literal writes it, and writes the "[" of every "##[" as \x5b.
+// control character, each format character, the line and paragraph separators and each byte that
+// is not UTF-8 as a Go string literal writes it, and writes the "[" of every "##[" as \x5b.
 func TestPrintable(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct{ name, in, want string }{
@@ -252,6 +252,8 @@ func TestPrintable(t *testing.T) {
 		{name: "a zero-width joiner", in: "#\u200d#[error]y", want: `#\u200d#[error]y`},
 		{name: "a byte order mark", in: "\ufeff::error::forged", want: `\ufeff::error::forged`},
 		{name: "a right-to-left override", in: "a\u202eb.md", want: `a\u202eb.md`},
+		{name: "a line separator", in: "x\u2028::error::y.md", want: `x\u2028::error::y.md`},
+		{name: "a paragraph separator", in: "x\u2029::error::y.md", want: `x\u2029::error::y.md`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
