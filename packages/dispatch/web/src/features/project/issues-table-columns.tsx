@@ -590,9 +590,11 @@ export type ShownColumnId = ListingColumnId | "updated";
 /**
  * The registry columns an issue table another page draws has (the priority pages'), at the
  * widths main's registry gives them: those tables keep main's columns and look, which the pages'
- * approved pictures show, and the design's own columns (Stage, Closed and the Legion ones) and
- * its widths, fitted to the Issues tab's views, are the Issues tab's. `phone` is a column's
- * narrowest on a phone where it differs.
+ * approved pictures show. They also offer Closed, with its date-range filter, hidden until the
+ * reader shows it, since the reader keeps every column the project's table has that needs no
+ * project (INFRA-2947, R14); Stage, Place and the Legion columns read a project's daemon board,
+ * so they are the Issues tab's alone. `phone` is a column's narrowest on a phone where it
+ * differs.
  */
 const EMBEDDED_WIDTHS: Readonly<
   Partial<
@@ -613,6 +615,7 @@ const EMBEDDED_WIDTHS: Readonly<
   asks: { size: 96, min: 148 },
   created: { size: 120, min: 148 },
   updated: { size: 120, min: 148 },
+  closed: { size: 120, min: 148 },
 };
 /** Those columns, in the registry's order, which is main's. */
 const EMBEDDED_IDS: readonly ColumnId[] = COLUMNS.map(({ id }) => id).filter(
@@ -656,11 +659,11 @@ const layouts = new Map<string, LayoutColumns>();
 
 /**
  * The layout of an issue table another page draws, as main lays it out: main's registry columns
- * at main's widths with Updated hidden, the listing columns `columns` (`listingColumns`) at
- * their widths, each hidden unless `shown` names it, and main's pins - Select, Priority, Key and
- * Title within 60% of a wide box, Select, Key and Title within 85% of a phone's. Built once for
- * each pair and kept, since the stored layout is read again whenever this object changes
- * (`useTableLayout`).
+ * at main's widths with Updated hidden, Closed offered and hidden, the listing columns `columns`
+ * (`listingColumns`) at their widths, each hidden unless `shown` names it, and main's pins -
+ * Select, Priority, Key and Title within 60% of a wide box, Select, Key and Title within 85% of
+ * a phone's. Built once for each pair and kept, since the stored layout is read again whenever
+ * this object changes (`useTableLayout`).
  */
 export function issueTableLayout(
   columns: readonly ListingColumnId[],
@@ -672,6 +675,7 @@ export function issueTableLayout(
   const listing = LISTING_COLUMNS.filter(({ id }) => columns.includes(id));
   const hidden: [string, boolean][] = [
     ["updated", false],
+    ["closed", false],
     ...listing.map(({ id }): [string, boolean] => [id, false]),
   ];
   const layout: LayoutColumns = {

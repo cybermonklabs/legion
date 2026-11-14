@@ -44,6 +44,8 @@ import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { formatPhaseTime, formatWorkTime } from "../legion/lib/format";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
+import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { closestMatching } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { laneLabel, type PriorityLane, priorityLanes } from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
@@ -58,6 +60,10 @@ const boardCollisionDetection: CollisionDetection = (args) => {
 };
 
 const boardFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
+
+/** The card `node` sits in, or is. */
+const cardAround = (node: Element | null): HTMLElement | null =>
+  closestMatching(node, "[data-board-card]");
 
 /** One fact of a card with Legion work: its name, then its value. */
 function Fact({ hook, label, value }: { hook: string; label: string; value: string }): ReactNode {
@@ -181,15 +187,14 @@ function BoardCard({
         </span>
         <span className={`mt-1 self-start ${textPrimaryOnSurface}`}>{issue.title}</span>
       </Link>
-      <div className="mt-3 flex flex-wrap items-center gap-2 empty:hidden">
-        {/* A card with no priority shows none: the badge would read as a word with no value. */}
-        {issue.priority === null ? null : (
-          <PriorityControl
-            disabled={issue.status === "done"}
-            issueKey={issue.key}
-            priority={issuePriority(issue.priority)}
-          />
-        )}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {/* Every card edits its priority in place, the unset one from the "Priority" tag, and
+            the Board's `p` key focuses this control. */}
+        <PriorityControl
+          disabled={issue.status === "done"}
+          issueKey={issue.key}
+          priority={issuePriority(issue.priority)}
+        />
         <ClaimChip claim={issue.claim} />
         <ProgressChips progress={issue.progress} />
         <UnreachableRouteMarker issue={issue} />
@@ -533,6 +538,32 @@ export function IssueBoard({
     if (Object.keys(input).length === 0) return;
     void move(key, input);
   };
+
+  // Main's card keys for the priority: `p` on a focused card reaches its priority select, and
+  // Escape goes back to the card, then out of the board.
+  useKeymapScope("board");
+  useKeymap("board", [
+    {
+      id: "priority",
+      keys: "p",
+      label: "Focus the card's priority",
+      run: () => cardAround(document.activeElement)?.querySelector("select")?.focus(),
+      when: () => cardAround(document.activeElement) !== null,
+    },
+    {
+      id: "back",
+      inEditable: true,
+      keys: "Escape",
+      label: "Back to the card, then out",
+      run: () => {
+        const active = document.activeElement;
+        const around = cardAround(active);
+        if (around === active) (active as HTMLElement).blur();
+        else around?.focus();
+      },
+      when: () => cardAround(document.activeElement) !== null,
+    },
+  ]);
 
   const done = rows.filter((item) => item.stage === "done");
   // Icebox, while the reader has not turned it on, is a rail in its own place in the stage order
