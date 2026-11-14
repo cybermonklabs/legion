@@ -24,9 +24,14 @@ import (
 // subdirectory only once the removal has begun emptying it). A following removal then deletes in
 // the workspace; the shipped one finishes the directory it holds open and meets the link as a
 // name.
+//
+// The image's own paths point at a tree of the case's (useRoleSystemRoot), as the containment
+// cases' do: the deleter covers the container's /tmp, and a runner whose TMPDIR is /tmp keeps the
+// fixture's volume there, which the deleter would otherwise refuse to cover and end on.
 func TestTheShippedDeletersRemovalFollowsNoLinkIntoTheVolume(t *testing.T) {
 	requireRoleNamespaces(t)
 	f := newTrimFixture(t, 1)
+	useRoleSystemRoot(t, f.cover, filepath.Join(f.coverRoot, "system"))
 	useContainedDeleter(t)
 	at := f.clock.at.Add(-2 * time.Hour)
 	workspace := filepath.Join(t.TempDir(), "workspaces", "repo")
