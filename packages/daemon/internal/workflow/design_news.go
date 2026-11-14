@@ -102,15 +102,23 @@ type NewsMember struct {
 }
 
 // NewsState is what one member of a tree is told of an approved version, as its root architect's
-// summary says it: owed news and sent now, owed news and waiting for the next start of its phase,
-// owed news its root architect answers itself, or told nothing, for one reason. The daemon picks it
-// from the same facts record.OwedNews reads, the delivery it queued, and the change set.
+// summary says it: owed news and sent now, owed news that waits until its holder takes the task it
+// holds, owed news and waiting for the next start of its phase, owed news its root architect
+// answers itself, or told nothing, for one reason. The daemon picks it from the same facts
+// record.OwedNews reads, the delivery it queued, and the change set.
 type NewsState string
 
 const (
 	// NewsSentNow is a member owed news whose holder gets a task carrying it now: a news-only
-	// start to the claim given its phase's current entry.
+	// start to the claim given its phase's current entry, or, for a member in accepting, to the
+	// sub-architect that owns it.
 	NewsSentNow NewsState = "sent-now"
+	// NewsWaitsForTask is a member owed news whose holder, or the sub-architect that owns it in
+	// accepting, holds a task its worker has not taken yet. That claim takes no second task while
+	// one is pending, so no news-only start goes to it now: the news waits until a turn takes that
+	// task. The task can carry the news itself; otherwise the sweep's next reconcile queues the
+	// start that tells it once the task is taken.
+	NewsWaitsForTask NewsState = "waits-for-task"
 	// NewsAtNextStart is a member owed news that the next start of its phase's holder carries: a
 	// claim owed its phase start, or a phase whose holder has not started yet.
 	NewsAtNextStart NewsState = "next-start"
@@ -174,9 +182,10 @@ const (
 //
 // To the root architect it names each pair of versions this news tells of with its change list,
 // then every member of the tree with its phase and what it is told: owed news sent now, owed news
-// its next start carries, owed news the architect answers itself in accepting, or told nothing
-// with the reason. A merged member carries the architect's duty: its pull request can take no new
-// work, so the work goes to an issue of the tree whose pull request is still open, or to a person.
+// that waits until its holder takes the task it holds, owed news its next start carries, owed news
+// the architect answers itself in accepting, or told nothing with the reason. A merged member
+// carries the architect's duty: its pull request can take no new work, so the work goes to an
+// issue of the tree whose pull request is still open, or to a person.
 //
 // It names no notice kind: a phase worker's session holds no notice, and the end-to-end proof
 // fails a run where one reads as if it did (scripts/e2e/lib/workflow.sh, worker_notices).
@@ -359,6 +368,8 @@ func memberWords(member NewsMember) string {
 	switch member.State {
 	case NewsSentNow:
 		return fmt.Sprintf("%s; a task tells %s now.", owes, holder)
+	case NewsWaitsForTask:
+		return fmt.Sprintf("%s; %s holds a task it has not taken yet, and the news waits until it takes that task.", owes, holder)
 	case NewsAtNextStart:
 		return fmt.Sprintf("%s; the next start of %s carries it.", owes, holder)
 	case NewsYouAnswer:

@@ -188,6 +188,18 @@ func closedSummaryNews() News {
 		}}
 }
 
+// waitingSummaryNews is the root architect's summary of a spec change while two members' news
+// waits for a task not taken yet: a tester whose claim holds one, and a member in accepting owned
+// by a sub-architect whose claim holds one.
+func waitingSummaryNews() News {
+	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
+		Items: []NewsChange{specChanges(3)},
+		Members: []NewsMember{
+			{Issue: "LEGION-210", Phase: phase.Testing, State: NewsWaitsForTask, Items: []NewsChange{specChanges(4)}},
+			{Issue: "LEGION-211", Phase: phase.Accepting, State: NewsWaitsForTask, Items: []NewsChange{specChanges(4)}},
+		}}
+}
+
 // everyNewsForm is each news text the fixtures render, by name.
 func everyNewsForm() map[string]string {
 	return map[string]string{
@@ -202,6 +214,7 @@ func everyNewsForm() map[string]string {
 		"the root architect's tree summary":                  RenderNews(treeSummaryNews()),
 		"the root architect of a merged root":                RenderNews(mergedRootSummaryNews()),
 		"the root architect's summary after the gate closed": RenderNews(closedSummaryNews()),
+		"the root architect's summary of waiting news":       RenderNews(waitingSummaryNews()),
 	}
 }
 
@@ -541,6 +554,29 @@ func TestTheSummarySentAfterTheGateClosedAgainTellsAnOwedMemberNothingYet(t *tes
 	for _, never := range []string{"the next start of", "a task tells"} {
 		if strings.Contains(text, never) {
 			t.Errorf("the summary sent after the gate closed says %q:\n%s", never, text)
+		}
+	}
+}
+
+// A member whose holder holds a task it has not taken yet, or whose accepting issue a sub-architect
+// owns while it holds one, gets no news-only start until a turn takes that task. The summary says
+// the news waits for that task, naming the role that holds it. It never says that a task tells the
+// member now, that its next start carries the news, or that the root architect answers it.
+func TestTheSummarySaysAMembersNewsWaitsWhileItsHolderHoldsATaskItHasNotTaken(t *testing.T) {
+	text := RenderNews(waitingSummaryNews())
+	t.Logf("the summary of waiting news:\n%s", text)
+	const owed = "owed version 5 of the spec document, since version 4, which its phase last took; "
+	for opening, want := range map[string]string{
+		"- LEGION-210, in testing: ":   owed + "its tester holds a task it has not taken yet, and the news waits until it takes that task.",
+		"- LEGION-211, in accepting: ": owed + "its architect holds a task it has not taken yet, and the news waits until it takes that task.",
+	} {
+		if line := newsLine(t, text, opening); line != opening+want {
+			t.Errorf("the summary's line = %q, want %q", line, opening+want)
+		}
+	}
+	for _, never := range []string{"a task tells", "the next start of", "You hold it in accepting"} {
+		if strings.Contains(text, never) {
+			t.Errorf("the summary of waiting news says %q:\n%s", never, text)
 		}
 	}
 }

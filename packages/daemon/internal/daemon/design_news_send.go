@@ -332,11 +332,14 @@ func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 //
 // A member owed news is told by a task now (workflow.NewsSentNow) when its holder's claim was
 // given its phase's current entry, runs and holds no task its worker has not taken yet — the claim
-// the reconcile queues a news-only start for (holderTold) — and by the next start of its phase
-// otherwise (workflow.NewsAtNextStart): a claim owed its phase start (workflow.OwedEntry), none at
-// all, one retired, failed or suspended by an operator, or one whose task is not taken yet.
-// A member in accepting is answered by the architect that owns it (owningArchitect): the root
-// architect itself (workflow.NewsYouAnswer), or a sub-architect, whose task tells it now.
+// the reconcile queues a news-only start for (holderTold). A claim that a news-only start reaches
+// but that holds such a task gets no start until a turn takes that task, so the member's news
+// waits for it (workflow.NewsWaitsForTask). Otherwise the next start of its phase tells it
+// (workflow.NewsAtNextStart): a claim owed its phase start (workflow.OwedEntry), none at all, or
+// one retired, failed or suspended by an operator. A member in accepting is answered by the
+// architect that owns it (owningArchitect): the root architect itself (workflow.NewsYouAnswer), or
+// a sub-architect, whose task tells it now, or whose news waits the same way while the
+// sub-architect's claim holds a task it has not taken (holdsUntakenTask).
 //
 // A member owed nothing is told nothing, and the reason is the first that holds of: its phase
 // already took every approved version that concerns it (NewsAlreadyTaken), or every one it has not
@@ -384,9 +387,11 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 }
 
 // readMemberClaims reads what says how each member owed news is told: for a member whose phase a
-// worker holds, whether its claim is the one a news-only start reaches now; for one in accepting,
-// which architect owns it, by the walk notices take (owningArchitect) over the sub-architect claims
-// the record holds. A member whose claim token cannot be named is told at its next start.
+// worker holds, how its claim is told (holderTold); for one in accepting, which architect owns it,
+// by the walk notices take (owningArchitect) over the sub-architect claims the record holds, and
+// whether that sub-architect's claim holds a task its worker has not taken yet (holdsUntakenTask),
+// behind which the reconcile queues no news-only start. A member whose claim token cannot be named
+// is told at its next start.
 func readMemberClaims(ctx context.Context, tx pgx.Tx, records record.Store, root record.Issue, members []record.Issue,
 	owed map[string]record.MemberNews) (holders, owners map[string]workflow.NewsState, err error) {
 	holders, owners = map[string]workflow.NewsState{}, map[string]workflow.NewsState{}
@@ -440,9 +445,14 @@ func readMemberClaims(ctx context.Context, tx pgx.Tx, records record.Store, root
 		if !news.HeldByArchitect() {
 			continue
 		}
-		owners[key] = workflow.NewsSentNow
-		if owner, err := owningArchitect(project, tree, tree[key], "", architectRuns); err != nil || owner == rootArchitect {
+		owner, err := owningArchitect(project, tree, tree[key], "", architectRuns)
+		switch {
+		case err != nil || owner == rootArchitect:
 			owners[key] = workflow.NewsYouAnswer
+		case holdsUntakenTask(held[owner]):
+			owners[key] = workflow.NewsWaitsForTask
+		default:
+			owners[key] = workflow.NewsSentNow
 		}
 	}
 	return holders, owners, nil
@@ -452,15 +462,18 @@ func readMemberClaims(ctx context.Context, tx pgx.Tx, records record.Store, root
 // when the reconcile queues a news-only start for the claim, which is when one reaches it
 // (recordedClaimTakesNews, the one rule the reconcile queues that start under and the start runs
 // under) and it holds no task its worker has not taken yet (holdsUntakenTask, the reconcile's other
-// guard). Otherwise by the next start of its phase: a claim behind its phase's current entry, owed
-// that entry's start, no claim at all, or one that retired, failed, or an operator suspended, since
-// the start that revives it carries the news; or a claim whose task is not taken yet, whose news
-// the next start of the phase, or the sweep's next reconcile once that task is taken, carries.
+// guard). A claim the start reaches that holds such a task gets no start until a turn takes it, so
+// its news waits for that turn (workflow.NewsWaitsForTask). Otherwise by the next start of its
+// phase: a claim behind its phase's current entry, owed that entry's start, no claim at all, or one
+// that retired, failed, or an operator suspended, since the start that revives it carries the news.
 func holderTold(run record.RoleRun, entry int64) workflow.NewsState {
-	if recordedClaimTakesNews(run.Claim, entry) && !holdsUntakenTask(run) {
-		return workflow.NewsSentNow
+	switch {
+	case !recordedClaimTakesNews(run.Claim, entry):
+		return workflow.NewsAtNextStart
+	case holdsUntakenTask(run.Claim):
+		return workflow.NewsWaitsForTask
 	}
-	return workflow.NewsAtNextStart
+	return workflow.NewsSentNow
 }
 
 // recordedClaimRuns is claimRuns over a claim as the record holds it: it has not ended, and it is

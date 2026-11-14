@@ -605,10 +605,10 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 // A claim whose worker has not yet taken the task it holds — a delivery pending with no
 // confirmation — takes no second task before it does: a news-only start queued then would only
 // wait behind it, retrying on its backoff. So the reconcile queues none, and the news stays owed
-// for the sweep's next reconcile or the phase's next start, which is what the root architect's
-// summary says of the member (workflow.NewsAtNextStart), never that a task tells it now. A claim
-// whose pending task a turn has taken is the control: its confirmation is recorded, the reconcile
-// queues its start, and the summary says a task tells it now.
+// until a turn takes that task. The root architect's summary says so of the member
+// (workflow.NewsWaitsForTask), never that a task tells it now nor that its next start carries it.
+// A claim whose pending task a turn has taken is the control: its confirmation is recorded, the
+// reconcile queues its start, and the summary says a task tells it now.
 func TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -647,7 +647,7 @@ func TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken(t *testing.T) {
 				drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), *root)
 				return err
 			})
-			want := workflow.NewsAtNextStart
+			want := workflow.NewsWaitsForTask
 			if tc.confirmed {
 				want = workflow.NewsSentNow
 			}

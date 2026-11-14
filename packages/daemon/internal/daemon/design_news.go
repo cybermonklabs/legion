@@ -562,7 +562,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		}
 		for _, start := range starts {
 			run := roleRuns[start.token]
-			if newsStartQueued(run) || holdsUntakenTask(run) {
+			if newsStartQueued(run) || holdsUntakenTask(run.Claim) {
 				continue
 			}
 			var entry int64
@@ -607,15 +607,18 @@ func newsStartQueued(run record.RoleRun) bool {
 	})
 }
 
-// holdsUntakenTask says whether run's claim, as the record holds it, holds a task its worker has
-// not taken yet: a pending delivery with no confirmation. A news-only start queued behind it
-// would only wait, since the claim's machine takes no second task while one is pending
-// (supervise.ErrDeliveryPending), and its start would retry on its backoff until a turn takes the
-// first. So none is queued, and the news stays owed: the sweep queues the reconcile again
-// (queueOwedDesignNews), which queues the start once that task is taken, and the next start of
-// the phase carries the news itself.
-func holdsUntakenTask(run record.RoleRun) bool {
-	return run.Claim != nil && run.Claim.Pending != nil && run.Claim.Pending.ConfirmedAt.IsZero()
+// holdsUntakenTask says whether held, a claim as the record holds it, holds a task its worker has
+// not taken yet: a pending delivery with no confirmation. A role the record holds no claim of (nil)
+// holds none. A news-only start queued behind such a task would only wait, since the claim's
+// machine takes no second task while one is pending (supervise.ErrDeliveryPending), and its start
+// would retry on its backoff until a turn takes the first. So none is queued, and the news stays
+// owed: the sweep queues the reconcile again (queueOwedDesignNews), which queues the start once
+// that task is taken, and the next start of the phase carries the news itself. The root
+// architect's summary reads the same rule over the same claim, for a phase holder (holderTold) and
+// for the sub-architect that owns a member in accepting (readMemberClaims), and says that member's
+// news waits until the task is taken (workflow.NewsWaitsForTask).
+func holdsUntakenTask(held *record.RoleClaim) bool {
+	return held != nil && held.Pending != nil && held.Pending.ConfirmedAt.IsZero()
 }
 
 // newsClaimTakes is the one rule for whether a news-only start may hand its news to a claim the
