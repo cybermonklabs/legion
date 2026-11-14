@@ -2670,9 +2670,22 @@ routes for the last window it applied and writes whether the pull request ids, r
 measure are equal, exiting 1 when one does not. `docs/site/src/content/docs/dispatch/delivery.md`
 ("For agents") is its user's guide. `e2e/__tests__/delivery-live-probe.test.ts` (`bun run test`)
 runs it as a process against a Bun websocket server that replays `packages/contracts/fixtures/live`
-and holds the body it applies to `after.json`. It also checks that the probe reopens at once
-after a 4001, its second subscribe arriving within 500 ms of the close, and within the first
-attempt's spread after a 1012 (`RECONNECT_SPREAD_MS`, two seconds).
+and holds the body it applies to `after.json`.
+It also checks that the probe reopens after a 4001 and after a 1012 and resumes each time with the
+change and revisions it holds.
+Neither row reads a clock, and the two catch different things.
+The 4001 row pins `--reconnect-spread-ms` a day, far above its own per-test limit, so a probe that
+answered a rotation on the timer rather than at once reaches its second subscribe inside the row
+on about one draw in 2,880 and is caught by the runner's limit on the rest: there the runner's
+limit is the discriminator, and the row's own comment carries that rate.
+The 1012 row pins 50 ms, which makes the probe's own wait a draw from [0, 50 ms) - small and
+bounded rather than deterministic - so it catches no wait at all: a reopen that waited the
+page's two-second default would still pass it. What it does catch is the resume, whose content and
+order it asserts, and the backoff's own shape is held by the unit
+row in `web/src/api/live-socket.test.ts`.
+A third row reads the wait each close line reports (`wait_ms`): at `--reconnect-spread-ms 0`, two
+1012 closes report 0 ms each only while the parsed option reaches the probe's `reconnectWaitMs`
+and a restart close sets the attempt counter back to 0.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
 `e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,

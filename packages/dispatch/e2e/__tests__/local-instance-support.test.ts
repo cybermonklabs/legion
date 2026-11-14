@@ -75,6 +75,25 @@ function pidOf(running: { readonly child: { readonly pid?: number } }): number {
  *  drains, so a test that waits for that report yields one turn rather than a guessed duration. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+/** A per-test limit for two rows below, `"returns as soon as the leaders exit, not after the
+ *  force-kill delay"` and `"ends a foreground step that a stop interrupts"`, and for no other row
+ *  of this file: a hang guard rather than a bound
+ *  sized to what they take. Measured in this pod — 2 CPUs under gVisor, bun 1.4.4, under 6 busy
+ *  loops (3 × `nproc`), 12 runs with `--reporter=junit` — their worst readings were 0.147 s and
+ *  0.036 s; the slow pod shape is about 2.15 times slower (inferred from dispatch://INFRA-1505's
+ *  Verification preamble, measured by nobody), so about 0.32 s there. It matches
+ *  `PROCESS_TEST_MS` in `delivery-live-probe.test.ts`, the sibling file whose rows also start
+ *  processes. What takes these two rows off whatever budget the run carries is that the limit is
+ *  written here at all, not its size: an explicit per-test limit wins over the lane's
+ *  `--timeout`, above it as well as below (`costly-row-ms.ts` reads 90 s against the lane's
+ *  60 s). What the run's budget still decides is the cost of a hang, not the verdict: a hung row
+ *  ends after its own 30 s plus the `afterEach` hook's share of the same budget, which is 5 s on
+ *  a direct run and the lane's 60 s in the lane, where the tester read 90 001.05 ms. */
+const STOP_ROW_MS = 30_000;
+
+/** A force-kill delay far above a stop row's limit, so the limit catches a `stop` that waits. */
+const BEYOND_THE_ROW_MS = 20 * STOP_ROW_MS;
+
 const supervisors: Supervisor[] = [];
 function supervisor(): Supervisor {
   const made = new Supervisor();
@@ -106,23 +125,45 @@ describe("Supervisor.stop", () => {
     expect(await eventually(() => !processAlive(grandchild))).toBe(true);
   });
 
-  test("returns as soon as the leaders exit, not after the force-kill delay", async () => {
-    const made = supervisor();
-    made.start("quiet", ["sleep", "60"], "/");
-    const started = Date.now();
-    await made.stop(30_000);
-    expect(Date.now() - started).toBeLessThan(5_000);
-  });
+  test(
+    "returns as soon as the leaders exit, not after the force-kill delay",
+    async () => {
+      const made = supervisor();
+      const quiet = made.start("quiet", ["sleep", "60"], "/");
+      // The force-kill delay is far above this row's own limit (`STOP_ROW_MS`), so that limit
+      // is what catches a `stop` that waits for the timer, and nothing here reads a clock. What
+      // the return means is asserted below: the leader is gone by the time `stop` resolves, so a
+      // `stop` that returned early having killed nothing fails here rather than passing on its
+      // own silence.
+      await made.stop(BEYOND_THE_ROW_MS);
+      expect(groupAlive(pidOf(quiet))).toBe(false);
+    },
+    STOP_ROW_MS
+  );
 
-  test("ends a foreground step that a stop interrupts", async () => {
-    const made = supervisor();
-    const step = made.run(["sleep", "60"], "/");
-    made.interrupt();
-    await expect(step).rejects.toBeInstanceOf(Interrupted);
-    const started = Date.now();
-    await made.stop();
-    expect(Date.now() - started).toBeLessThan(5_000);
-  });
+  test(
+    "ends a foreground step that a stop interrupts",
+    async () => {
+      const pidFile = join(makeDirectory(), "step.pid");
+      const made = supervisor();
+      // `exec` makes the shell become the sleep, so the pid in the file is the one process of
+      // this group and the test says so itself rather than resting on a bash that happens to
+      // drop its own frame for the last command of a `-c` list (5.1 and later do; 3.2 does not).
+      const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; exec sleep 60`], "/");
+      const leader = await pidFrom(pidFile);
+      made.interrupt();
+      await expect(step).rejects.toBeInstanceOf(Interrupted);
+      // The force-kill delay is far above this row's own limit, `STOP_ROW_MS`, as in the row
+      // above.
+      await made.stop(BEYOND_THE_ROW_MS);
+      // `run` splices the step out of the supervisor's children on any exit the child makes by
+      // itself, before it throws on a non-zero code; the step stays in the list only when the
+      // interrupt rejects first, as it did here. So it is `stop` that ends this process: what
+      // this catches is a `stop` that returned having killed nothing.
+      expect(groupAlive(leader)).toBe(false);
+    },
+    STOP_ROW_MS
+  );
 });
 
 describe("Supervisor.untilInterrupted", () => {

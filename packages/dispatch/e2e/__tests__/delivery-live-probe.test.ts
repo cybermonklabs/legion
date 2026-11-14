@@ -14,7 +14,7 @@ import delta from "../../../contracts/fixtures/live/delta.json";
 import error from "../../../contracts/fixtures/live/error.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
-import { RECONNECT_SPREAD_MS } from "../../web/src/api/live-socket";
+import { RECONNECT_SPREAD_MS, reconnectDelayMs } from "../../web/src/api/live-socket";
 import type {
   DeliveryLiveDelta,
   DeliveryLiveSnapshot,
@@ -22,7 +22,13 @@ import type {
   DeliveryTimelineWithMeasures,
   LiveClientFrame,
 } from "../../web/src/api/types";
-import type { ProbeCompareLine, ProbeHeld, ProbeLine } from "../delivery-live-probe";
+import {
+  type ProbeCloseLine,
+  type ProbeCompareLine,
+  type ProbeHeld,
+  type ProbeLine,
+  reconnectWaitMs,
+} from "../delivery-live-probe";
 
 // The probe runs as an agent runs it, a process of its own, against a stand-in for Dispatch that
 // replays the frames Dispatch's own diff writes (packages/contracts/fixtures/live): a
@@ -43,7 +49,14 @@ const view: DeliveryLiveView = {
   query: "repo=acme%2Fwidgets",
   window: { preset: 28 },
 };
-/** Each test starts a Bun process and loads the probe's imports; the box these run on is shared. */
+/** Each test starts a Bun process and loads the probe's imports; the box these run on is shared.
+ *
+ *  This limit is also the discriminator of the rotation row ("after a rotation close the probe
+ *  reconnects at once and resumes with the change and revisions it holds"), whose margin is this
+ *  limit divided by `NO_TIMER_SPREAD_MS`: 30 s of a day-long spread is one draw in 2,880. Raising
+ *  it to 90 s for consistency with another file's limit would make that one draw in 960, three
+ *  times the false passes, with nothing here red. Raise `NO_TIMER_SPREAD_MS` with it, or leave
+ *  both. */
 const PROCESS_TEST_MS = 30_000;
 
 interface Script {
@@ -199,6 +212,8 @@ const names = (record: Readonly<Record<string, object>>) =>
 const ids = (items: readonly { readonly id: string | number }[]) => items.map((item) => item.id);
 const comparisons = (lines: readonly ProbeLine[]) =>
   lines.filter((line): line is ProbeCompareLine => line.type === "compare");
+const closes = (lines: readonly ProbeLine[]) =>
+  lines.filter((line): line is ProbeCloseLine => line.type === "close");
 const nothing = {
   changed_at: null,
   counts: null,
@@ -401,33 +416,37 @@ test(
   PROCESS_TEST_MS
 );
 
-// Dispatch's rotation (4001) is the one close the probe answers by opening again at once; its
-// restart (1012) and any other close wait at least a draw of the first attempt's spread, so a
-// second subscribe within 500 ms of the close is the at-once reopen only for the rotation.
+// A spread far above this row's own limit (`PROCESS_TEST_MS`), so a probe that reconnected on a
+// timer could reach its second subscribe inside the row on about one draw in 2,880 and nothing
+// here reads a clock. The row's own limit is the discriminator.
+const NO_TIMER_SPREAD_MS = 24 * 3_600_000;
+
+// Once the first connection has opened, Dispatch's rotation (4001) is the one close the probe
+// answers by opening again at once: its restart (1012) waits within the first attempt's spread,
+// and any other close waits on the backoff. Two closes fall outside that: the close of a first
+// connection that never opened, which ends the watch with no wait, and the probe's own
+// replacement of a silent socket, which opens again at once.
 for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
   test(
     `after a ${what} close the probe reconnects at once and resumes with the change and revisions it holds`,
     async () => {
-      let closedAt = 0;
-      let reopenedAt = 0;
       const dispatch = probeDispatch({
         onSubscribe(socket, sub, count) {
-          if (count > 1) {
-            reopenedAt = performance.now();
-            return;
-          }
+          if (count > 1) return;
           socket.send(forSub(snapshot, sub));
           socket.send(forSub(delta, sub));
-          closedAt = performance.now();
           socket.close(code, reason);
         },
       });
-      const run = runProbe(args(dispatch));
+      const run = runProbe([
+        ...args(dispatch),
+        "--reconnect-spread-ms",
+        String(NO_TIMER_SPREAD_MS),
+      ]);
       await run.until(() => dispatch.received.length === 2);
       run.kill("SIGINT");
       expect(await run.exited()).toBe(0);
 
-      expect(reopenedAt - closedAt).toBeLessThan(500);
       expect(dispatch.received).toEqual([
         { sub: "probe", type: "subscribe", view },
         { resume: { revs: next.revs, seq: change.seq }, sub: "probe", type: "subscribe", view },
@@ -435,17 +454,23 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
       expect(
         run.lines.map((line) => {
           if (line.type === "open") return `open ${line.resume}`;
-          if (line.type === "close") return `close ${line.code}`;
+          if (line.type === "close") return `close ${line.code} wait ${line.wait_ms}`;
           return line.type;
         })
-      ).toEqual(["open null", "snapshot", "delta", `close ${code}`, `open ${change.seq}`]);
+      ).toEqual([
+        "open null",
+        "snapshot",
+        "delta",
+        `close ${code} wait null`,
+        `open ${change.seq}`,
+      ]);
     },
     PROCESS_TEST_MS
   );
 }
 
 test(
-  "after a restart close the probe reconnects within the spread and resumes with the change and revisions it holds",
+  "after a restart close the probe reconnects and resumes with the change and revisions it holds",
   async () => {
     const dispatch = probeDispatch({
       onSubscribe(socket, sub, count) {
@@ -455,7 +480,13 @@ test(
         socket.close(1012, "service restart");
       },
     });
-    const run = runProbe(args(dispatch));
+    // A 50 ms spread, pinned by the option, so the wait is the probe's own draw from [0, 50) ms
+    // and this row stays quick: bounded, not deterministic. The product's backoff shape is
+    // proven by its own unit row
+    // ("the first reconnect is spread over [0, 2 s); later ones back off within [d/2, d), capped
+    // at 30 s", web/src/api/live-socket.test.ts:612); what this row proves is the resume's
+    // content and order.
+    const run = runProbe([...args(dispatch), "--reconnect-spread-ms", "50"]);
     await run.until(() => dispatch.received.length === 2);
     run.kill("SIGINT");
     expect(await run.exited()).toBe(0);
@@ -471,12 +502,36 @@ test(
         return line.type;
       })
     ).toEqual(["open null", "snapshot", "delta", "close 1012", `open ${change.seq}`]);
-    // The page's first attempt after a restart close waits up to `RECONNECT_SPREAD_MS`; the
-    // probe, a process of its own, draws its own wait, so this holds the bound rather than the
-    // draw. A second of slack covers the loopback handshake on a shared box.
-    const closedAt = Date.parse(run.lines[3]?.at ?? "");
-    const reopenedAt = Date.parse(run.lines[4]?.at ?? "");
-    expect(reopenedAt - closedAt).toBeLessThan(RECONNECT_SPREAD_MS + 1_000);
+  },
+  PROCESS_TEST_MS
+);
+
+// The two steps that decide a reconnect's wait, neither of which a row above observes: the
+// `--reconnect-spread-ms` the probe parsed reaching `reconnectWaitMs`, and a restart close setting
+// the attempt counter back to 0. A spread of 0 makes the first attempt's wait exactly 0 ms, so a
+// close line here reports 0 only while both hold. A probe that handed `reconnectWaitMs` the page's
+// own `RECONNECT_SPREAD_MS` instead draws from [0, 2 s) - the draw the rotation row's day-long
+// spread counts on - and a probe that left the counter alone waits the attempt-1 backoff, at least
+// a second; neither draws 0, which is why 0 is the value that tells the three apart. It takes two
+// closes: the first lands on attempt 0 whatever the restart does with the counter, so the second
+// is the counter's own, and the server sends no frame, since a frame resets that counter too.
+test(
+  "each close line reports the wait, which --reconnect-spread-ms 0 makes zero after a restart",
+  async () => {
+    const dispatch = probeDispatch({
+      onSubscribe(socket, _sub, count) {
+        if (count <= 2) socket.close(1012, "service restart");
+      },
+    });
+    const run = runProbe([...args(dispatch), "--reconnect-spread-ms", "0"]);
+    await run.until(() => closes(run.lines).length === 2);
+    run.kill("SIGINT");
+    expect(await run.exited()).toBe(0);
+
+    expect(closes(run.lines).map((line) => ({ code: line.code, wait_ms: line.wait_ms }))).toEqual([
+      { code: 1012, wait_ms: 0 },
+      { code: 1012, wait_ms: 0 },
+    ]);
   },
   PROCESS_TEST_MS
 );
@@ -489,6 +544,11 @@ test(
     expect(await run.exited()).toBe(1);
     expect(dispatch.upgrades).toEqual(["Bearer not-the-token"]);
     expect(run.stderr.join("\n")).toContain("Dispatch refused the connection to ws://127.0.0.1:");
+    // A first connection Dispatch refuses writes one line, its close line, and no open line; that
+    // line's wait_ms is null because the close ends the watch rather than starting a wait.
+    expect(run.lines.map(({ at: _at, ...line }) => line)).toEqual([
+      { code: 1006, reason: "", type: "close", wait_ms: null },
+    ]);
   },
   PROCESS_TEST_MS
 );
@@ -543,3 +603,69 @@ test(
   },
   PROCESS_TEST_MS
 );
+
+test(
+  "a --reconnect-spread-ms no timer can hold is a usage error, exit 2",
+  async () => {
+    const dispatch = probeDispatch({ onSubscribe() {} });
+    // A wait of more than 2^31-1 ms does not fit a timer: the runtime clamps it to 1 ms, so a
+    // spread whose draws pass that bound makes the probe reopen at once — the opposite of what
+    // the option says, and the opposite of what a row that pins a spread far above its own limit
+    // reads a reopen on a timer as. Measured with the rotation row above: at a spread of 1e12 ms
+    // a probe whose at-once reopen was removed passes that row 3 of 3 in about 1.5 s each, where
+    // at the row's own day it fails at 30 s. The probe refuses such a value rather than honouring
+    // it silently as its opposite.
+    const run = runProbe([
+      ...args(dispatch, TOKEN, "0.01"),
+      "--reconnect-spread-ms",
+      String(2 ** 31),
+    ]);
+    expect(await run.exited()).toBe(2);
+    expect(run.stderr.join("\n")).toContain("--reconnect-spread-ms");
+    expect(dispatch.upgrades).toEqual([]);
+  },
+  PROCESS_TEST_MS
+);
+
+test(
+  "a blank --reconnect-spread-ms is a usage error, exit 2",
+  async () => {
+    const dispatch = probeDispatch({ onSubscribe() {} });
+    // `Number("  ")` is 0, and finite: without the guard's trim a blank value reads as a zero
+    // spread, which means reopen at once — the option silently honoured as something the caller
+    // never asked for.
+    const run = runProbe([...args(dispatch, TOKEN, "0.01"), "--reconnect-spread-ms", "  "]);
+    expect(await run.exited()).toBe(2);
+    expect(run.stderr.join("\n")).toContain("--reconnect-spread-ms");
+    expect(dispatch.upgrades).toEqual([]);
+  },
+  PROCESS_TEST_MS
+);
+
+// What the probe's own `reconnectWaitMs` promises for whatever spread it is handed and for a later
+// attempt; the close-line row above observes the parsed option reaching it, at a spread of 0.
+// This row calls the helper itself. It catches both ways the scaling goes wrong: a draw missing
+// the division by the page's own window, which makes the option mean something other than the
+// milliseconds it names, and a scaled draw reaching an attempt it must not, which would bend a
+// later attempt's backoff and jitter away from the page's. It drives the helper against the page's
+// own function and spawns nothing, so it takes no limit.
+test("--reconnect-spread-ms is the window the first attempt's wait is drawn from", () => {
+  const DAY_MS = 24 * 3_600_000;
+  // The first attempt waits the draw's share of the spread, whatever the spread is.
+  for (const spreadMs of [RECONNECT_SPREAD_MS, DAY_MS, 5]) {
+    for (const draw of [0, 0.25, 0.75]) {
+      expect(reconnectWaitMs(0, spreadMs, () => draw)).toBe(draw * spreadMs);
+    }
+  }
+  // At the page's own spread the probe waits what the page waits for the same draw.
+  expect(reconnectWaitMs(0, RECONNECT_SPREAD_MS, () => 0.25)).toBe(reconnectDelayMs(0, () => 0.25));
+  // A later attempt is the page's backoff and jitter, which the option never touches: two
+  // spreads orders of magnitude apart leave the same draw's wait the page's own.
+  for (const attempt of [1, 5]) {
+    for (const draw of [0, 0.75]) {
+      const page = reconnectDelayMs(attempt, () => draw);
+      expect(reconnectWaitMs(attempt, DAY_MS, () => draw)).toBe(page);
+      expect(reconnectWaitMs(attempt, 5, () => draw)).toBe(page);
+    }
+  }
+});
