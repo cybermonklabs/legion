@@ -44,6 +44,13 @@ written the id. While that file is there, and for up to 160 seconds, a call wait
 `AGENT_SECRETS_ENROLL_WAIT` (20 seconds by default) for the enrollment. Without it, a call made
 before enrollment fails at once.
 
+`enroll` waits up to 30 seconds for the helper's answer, and the helper ends its call to the
+broker after 20 seconds. If `enroll` fails with `ENROLL_OUTCOME_UNKNOWN`, or says
+`the helper gave no answer`, it did not get the broker's answer: the broker may have made the
+enrollment, and `enroll` wrote no id. Run the same command again. If the broker made the
+enrollment, it answers with that enrollment, and `enroll` prints and writes its id as above
+([troubleshooting](/legion/broker/guides/troubleshooting/#an-enroll-or-unenroll-with-an-unknown-outcome)).
+
 ## 3. Keep its lease alive, inside the box
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` (the
@@ -94,6 +101,11 @@ INFO broker sweeper: ended an enrollment whose lease lapsed enrollment_id=edd9a1
 ```
 
 A lapsed lease cannot be renewed: to use the box again, start over from step 1 with a new key.
+
+An enrollment whose id the launcher never learnt ends the same way. If `enroll` ended with an
+unknown outcome and the launcher did not run it again, the launcher has no id to unenroll, and
+nothing renews that enrollment. If the broker made it, its lease lapses `BROKER_LEASE_SECONDS`
+after the broker made it, and the sweep ends it.
 
 An outage of the broker itself is different. If the box's lease runs out while no broker is
 serving (every broker process down, or the database out of reach), the lease stays live and the

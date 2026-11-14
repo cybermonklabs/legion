@@ -5727,10 +5727,16 @@ ADC of type `authorized_user` write as they are;
 under any other ADC - a service account key file, a workload identity federation credential (a dev box's own), a workforce identity federation sign-in, or a GCE/GKE metadata-server identity (GKE Workload Identity's too), whose ADC carries no JSON at all - it signs the backend in with the person's gcloud login, or with the lent raw token only when gcloud cannot supply that login, redialing Secret Manager under it (`signIn`) and leaving the machine's ADC as they are, unless `GOOGLE_APPLICATION_CREDENTIALS` named them, a choice it refuses rather than overrides.
 Reads under a machine's ADC run under it.
 On a write under that lent token, `gcpUserinfo` must name a `personAccount`; an empty email or service account is refused, and its lowercased email is `--owner me`.
-`create` requires its owner tag to equal that person. A lent token may only create a new secret it owns: `set`, both retag annotation paths, `delete`, and `restore` refuse before any Secret Manager call.
-After the `create` version add, a lent token re-reads the owner and destroys the exact returned version if the owner changed or that read failed, refusing the write and naming the left version if that undo fails. Because `AddSecretVersion` takes no Etag, that version can exist momentarily between its add and the undo.
-One race is accepted, not prevented: between `CreateSecret` and the version add, a second writer whose IAM grants already reach the new secret (a project-level role does) can add its own version and change the owner. The undo then destroys this create's version, the newest, so `versions/latest` names a destroyed version while the other writer's version stays enabled, and a read of `latest` fails. The window is the time between those two calls, and entering it takes permission to add versions and update the metadata of a secret that did not exist a moment earlier. A predefined role that grants both, such as Secret Manager Admin, also grants destroying versions; a custom role can separate them, and then the race lets that writer make `latest` unreadable: an availability loss, never a read of any value.
-A person who finds `latest` naming a destroyed version runs `agent-secrets secret show NAME` to list its versions, then re-adds the value with `agent-secrets secret set NAME` under their own gcloud sign-in (a lent token refuses `set`). The owner tag is Legion's rule, not Google's access control: its person can still have IAM rights independently.
+`create` requires its owner tag to equal that person.
+A lent token may only create a new secret it owns: `set`, both retag annotation paths, `delete`, and `restore` refuse before any Secret Manager call.
+After the `create` version add, a lent token re-reads the owner and destroys the exact returned version if the owner changed or that read failed, refusing the write and naming the left version if that undo fails.
+Because `AddSecretVersion` takes no Etag, that version can exist momentarily between its add and the undo.
+One race is accepted, not prevented: between `CreateSecret` and the version add, a second writer whose IAM grants already reach the new secret (a project-level role does) can add its own version and change the owner.
+The undo then destroys this create's version, the newest, so `versions/latest` names a destroyed version while the other writer's version stays enabled, and a read of `latest` fails.
+The window is the time between those two calls, and entering it takes permission to add versions and update the metadata of a secret that did not exist a moment earlier.
+A predefined role that grants both, such as Secret Manager Admin, also grants destroying versions; a custom role can separate them, and then the race lets that writer make `latest` unreadable: an availability loss, never a read of any value.
+A person who finds `latest` naming a destroyed version runs `agent-secrets secret show NAME` to list its versions, then re-adds the value with `agent-secrets secret set NAME` under their own gcloud sign-in (a lent token refuses `set`).
+The owner tag is Legion's rule, not Google's access control: its person can still have IAM rights independently.
 `gcloudLogin` borrows the login through gcloud's own interface, never its credential files:
 the first `gcloud` on PATH (`exec.LookPath`) lists its logins (`gcloud auth list --format=json`);
 a person's is an account named by a plain email the broker accepts as a person owner (`personAccount`:
@@ -5911,6 +5917,65 @@ it cannot refuse a register before the restart, so `install` never restarts it w
 it prints its `sessions`, then `not restarted: the running
 agent-secrets-helper predates drain, …`, and exits 0.
 `agent-secrets` reads that unit file as "the helper is installed" (`helperInstalled`).
+
+`login`, `enroll-session-key` and `unenroll-session-key` are the helper's broker-call ops (`brokerCallOps`, `server.go`): each answers with the outcome of a broker call that the helper makes while the client waits.
+`unregister` also calls the broker, but its answer is local, and no other op calls the broker before it answers.
+The helper gives a connection 5 s to read its request and to write its answer (`Server.handle`), and a `register` with `wait_seconds` its wait plus 5 s.
+A broker-call op runs under a bound instead (`Server.brokerCall`).
+Its context ends at the bound, `Server.BrokerCallBound`, which is `helper.DefaultBrokerCallBound` (20 s) when it is zero, as `cmd/agent-secrets-helper` leaves it.
+The helper answers by the bound plus 1 s (21 s), whatever the op is doing.
+It sets the connection's deadline to the bound plus 5 s (25 s), so the connection stays open after the latest answer.
+A client waits `helper.BrokerCallWait` (30 s, the dial included) for the answer of a broker-call op:
+`agent-secrets enroll --helper` on each of its `DRAINING` tries, `agent-secrets unenroll --helper`, and the `login` call of `agent-secrets machine login`.
+`login-status` reads the helper's own state and calls no broker, so each `login-status` call still waits 10 s.
+`DefaultBrokerCallBound` is `BrokerCallWait` less 10 s, so the answer reaches every client inside its 30 s: a dial of up to 2 s (`helper.Call`), the 20 s bound and the 5 s to write the answer come to 27 s.
+The released `agent-secrets` at `legion-envoy-v29.54.0` also waits 30 s, so it gets the answer too.
+
+Each broker-call answer says whether the broker's outcome is known, by one rule (`requestReach.settle`, `broker.go`), which reads a trace on the op's request (`traceReach`).
+A 4xx is known, because the broker decides each refusal before it writes anything.
+A request that the transport never sent in full is known: a refused dial, a context that ended before the transport held a connection, a failed write.
+A failure before any request is known too: signing a proof, reading the operator file, a sign-in's trade.
+After the transport wrote the whole request, or the broker began to answer, these are unknown:
+a transport error, a 5xx (a front door's 502 or 504 can come after the broker wrote), and a 2xx that the helper cannot read (a body that does not decode, an enrollment with no `enrollment_id`, a device authorization with no `device_code` or `user_code`).
+A request whose context ended while the transport held a connection for it is unknown, even when the trace did not see the write end:
+HTTP/2 returns at once on an ended context, and its write of the request can still be running.
+The retries inside an op (`400 INVALID_KIND`, `401 LAUNCHER_INVALID`) follow only a 4xx, so an unknown outcome always ends the op.
+A known failure answers `ENROLL_FAILED`, `UNENROLL_FAILED` or `LOGIN_FAILED`, with the failure as it came: the broker refused, or the helper never asked it, so this request made or revoked nothing.
+An unknown outcome answers `ENROLL_OUTCOME_UNKNOWN` (`helper.CodeEnrollUnknown`) or `UNENROLL_OUTCOME_UNKNOWN` (`helper.CodeUnenrollUnknown`).
+A login whose outcome is unknown answers `LOGIN_FAILED`, with an error that starts `the outcome is unknown:` (`loginUnknown`).
+It has no code of its own, because no caller can act on one: nobody saw a confirmation code, so nobody can approve a device authorization that the broker may hold, and that authorization expires by itself.
+Each unknown answer's error says that the outcome is unknown and what to do next, so an `agent-secrets` from before these codes, which prints `<CODE>: <error>` as it comes, says it too.
+The same enroll again answers the enrollment that the broker made, if it made one, because the broker gives the same key under the same launcher credential and runtime id its live enrollment back (`enroll.Service.Create`).
+An unenroll is safe to run again, because the helper counts the broker's 204 and 404 as done, and a login is safe to run again too.
+An op can wait past the bound plus 1 s only on a lock that the helper holds across an HTTP request and that does not watch the op's context (a sign-in's trade, a login in progress, a refresh that `clearOnInvalid` waits for).
+The timer answers such an op unknown, and the helper logs the WARN `a broker call did not end within its bound; its outcome is answered as unknown` with the op and the bound.
+When the op ends after that, the helper logs its result (`a broker call answered as unknown has ended`, with its code and any `enrollment_id`), so an operator can see what the broker did.
+
+`helper.Call` marks each error that comes after it wrote the whole request with `helper.ErrNoReply`: no reply line within its timeout, or a reply that is not one JSON object.
+The error keeps its own text, and a failed dial, marshal or write does not match `ErrNoReply`, because the helper did not get the whole request.
+On `ErrNoReply`, `agent-secrets enroll --helper` exits 1 with `the helper gave no answer (<error>). So it is not known if the broker made the enrollment.`, and tells the caller to run the same command again.
+`agent-secrets unenroll --helper` says the same of the revoke, and that the same command is safe to run again.
+`enroll --helper` makes `AGENT_SECRETS_KEY_DIR` before it asks the helper, so only the write of `enrollment` can fail after the broker made the enrollment.
+That failure exits 1, and its error names the enrollment and the failed write: `the broker made enrollment <id>, but this command could not write its id to <path>: <error>`.
+
+`Server.Serve` returns only after every broker-call op that it accepted has written its answer.
+So a helper that stops on a signal never closes a client's connection with no answer while a broker call runs.
+That includes `install`'s restart, which `drain` does not hold back when an `enroll-session-key` is already in flight.
+The stop ends each op's context, so the wait is at most the bound plus 1 s.
+When `Serve` waits for any op, it logs the WARN `the helper is stopping; it waits for the broker calls in flight to answer` with their count (`calls`) and the bound.
+Every other op gives back its place in that wait once its request is read, so a connection whose request is still being read holds the stop for at most its 5 s.
+`unregister` answers at once with the session retired: `retire` fires the bounded revoke of an unnamed session's enrollments on goroutines of their own, as every sibling path fires it, and the revoke logs its own failure.
+
+This leaves three limits.
+A helper from before these answers still closes a broker-call op's connection after 5 s, until it restarts on a release that has them (the operator's dotfiles pin `legion-envoy-v29.54.0`).
+Against such a helper, a new `enroll --helper` or `unenroll --helper` prints its `ErrNoReply` message, so it says that the outcome is unknown.
+But that helper can still answer `ENROLL_FAILED` for a failure after the broker wrote, for example a 502 from a front door.
+A `machine login` from before `BrokerCallWait` waits 10 s for the `login` answer, the dial included, so against a broker slower than about 8 s it can close before the helper answers.
+If the broker answers within the bound, the helper records the login as pending, and the next `machine login` shows its code.
+An `enroll --helper` attempt can now take up to about 23 s (a dial of up to 2 s and the answer at 21 s), not 5 s.
+A broker slower than the 20 s bound still leaves a launcher with no enrollment id, and a launcher's close revokes only an id that it recorded.
+So such an enrollment ends with its lease, unless the launcher runs the same enroll again.
+The same enroll answers the first enrollment only under the same launcher credential: under another (a person's sign-in revoked between two attempts) it makes a second enrollment, and the first one ends with its lease.
 
 `agent-secrets renew --pod-token-file FILE` is the pod renewer:
 it re-reads and trims the projected token before every broker request, and sends it as `pod_token`.
