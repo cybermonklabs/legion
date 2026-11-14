@@ -10,6 +10,8 @@ import {
   DeploymentResilience,
   importWhenOnline,
   installChunkFailureRecovery,
+  prefetchChunk,
+  renderChunk,
   spendChunkReload,
 } from "./DeploymentResilience";
 
@@ -99,6 +101,74 @@ test("Vite preload errors reload the page three times in five minutes, then not,
   } finally {
     reload.mockRestore();
     dateNow.mockRestore();
+    window.sessionStorage.clear();
+  }
+});
+
+// The entry starts the landed route's chunks before React has rendered anything (`app.tsx`,
+// `preloadRouteChunk`). Nobody is waiting on those downloads, and the router asks for the same
+// chunk when it renders the route, so the prefetch's failure reloads nothing and the render's
+// does.
+test("a chunk the entry only prefetched reloads nothing, and the render's own ask for it does", async () => {
+  window.sessionStorage.clear();
+  installChunkFailureRecoveryForTest();
+  const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
+  // The one download both asks share, held open until the end of the row.
+  const chunk = Promise.withResolvers<unknown>();
+
+  try {
+    prefetchChunk(() => chunk.promise);
+    window.dispatchEvent(new Event("vite:preloadError", { cancelable: true }));
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(storedChunkReloads()).toBeNull();
+
+    const rendered = renderChunk(() => chunk.promise);
+    window.dispatchEvent(new Event("vite:preloadError", { cancelable: true }));
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(storedChunkReloads()).toHaveLength(1);
+
+    // The importer still sees the failure itself, prefetched or not.
+    chunk.reject(new Error("Failed to fetch dynamically imported module"));
+    await expect(rendered).rejects.toThrow("Failed to fetch dynamically imported module");
+  } finally {
+    reload.mockRestore();
+    window.sessionStorage.clear();
+  }
+});
+
+// The other half of that rule, and the one the suppression gets wrong when a chunk a reader
+// waits on is started outside `renderChunk`: the failing chunk need not be the prefetched one.
+// A reader on an issue page waits for the editor library while the entry's prefetch of some
+// other chunk is still in flight (`app.tsx`, `loadDocumentChunks`), and the editor's failure is
+// a page that cannot draw. It must reload, although a prefetch is out and it is not the chunk
+// the prefetch asked for (dispatch://INFRA-1109).
+test("a render-time chunk that fails while a prefetch is out still reloads", async () => {
+  window.sessionStorage.clear();
+  installChunkFailureRecoveryForTest();
+  const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
+  // Two downloads, not one: the prefetch's, which never answers inside this row, and the one a
+  // mounted component is awaiting.
+  const prefetched = Promise.withResolvers<unknown>();
+  const awaited = Promise.withResolvers<unknown>();
+
+  try {
+    prefetchChunk(() => prefetched.promise);
+    const rendering = renderChunk(() => awaited.promise);
+    window.dispatchEvent(new Event("vite:preloadError", { cancelable: true }));
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(storedChunkReloads()).toHaveLength(1);
+
+    awaited.reject(new Error("Failed to fetch dynamically imported module"));
+    await expect(rendering).rejects.toThrow("Failed to fetch dynamically imported module");
+    prefetched.resolve(undefined);
+  } finally {
+    reload.mockRestore();
     window.sessionStorage.clear();
   }
 });

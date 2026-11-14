@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
   createAsk,
   createIssue,
@@ -16,7 +17,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { expect, type Locator, test, type WebSocket } from "./test";
+import { expect, type Locator, type Page, test, type WebSocket } from "./test";
 import { asUser } from "./users";
 
 // These scenarios exercise the live event feed fanning updates into other open tabs, so
@@ -53,6 +54,32 @@ async function renameUntilShown(
     if (shown && reads() > loads) return;
   }
   throw new Error(`no rename of ${key} reached the page in 10 writes 2 s apart`);
+}
+
+/**
+ * The head of the event log the page signed in at, which its event feed resumes from
+ * (`web/src/api/event-feed.ts`), read from the answer that carried it.
+ *
+ * The read a page makes for its viewer is the landing, whose answer carries the viewer beside
+ * the page's own data (`web/src/api/queries.ts`, `readLanding`); `GET /auth/whoami` is what it
+ * falls back to where that route is not there to answer, such as a Dispatch older than it. It is
+ * one head either way - the landing resolves its caller as whoami does - under the name its own
+ * answer gives it.
+ *
+ * Call it before the navigation: it waits for the first such answer of the page.
+ */
+async function signInHead(page: Page): Promise<string> {
+  const response = await page.waitForResponse(
+    (answer) =>
+      ["/api/v1/landing", "/auth/whoami"].includes(new URL(answer.url()).pathname) && answer.ok()
+  );
+  const body = (await response.json()) as {
+    readonly event_head?: string;
+    readonly viewer?: { readonly event_head?: string };
+  };
+  const head = body.viewer?.event_head ?? body.event_head;
+  if (head === undefined) throw new Error(`${response.url()} answered no event head`);
+  return head;
 }
 
 // @pr: A two-context race over the live stream: bob's ask has to move alice's Inbox and project badges with no reload.
@@ -458,14 +485,12 @@ test("live: a forced server disconnect resumes from the last event id @pr", asyn
       }
     });
   });
-  const whoami = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/auth/whoami" && response.ok()
-  );
+  const signedIn = signInHead(page);
 
   // The reconnect draw the disconnect below arms is spent on the page's clock.
   await page.clock.install();
   await page.goto(`/issues/${issue.key}/conversation`);
-  const head: string = (await (await whoami).json()).event_head;
+  const head = await signedIn;
   await expect(page.getByText("Before disconnect")).toBeVisible();
   // The first subscription resumes from the sign-in check's head.
   await expect.poll(() => sockets[0]?.resumes).toEqual([head]);
@@ -543,15 +568,13 @@ test("live: a change committed while the first live socket fails to open is show
         server.send(message);
       });
     });
-    const whoami = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/auth/whoami" && response.ok()
-    );
+    const signedIn = signInHead(page);
 
     // The second socket waits a draw from [0, RECONNECT_SPREAD_MS) armed when the first
     // handshake failed (`web/src/api/live-socket.ts`), which the page's own clock spends.
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
-    const head: string = (await (await whoami).json()).event_head;
+    const head = await signedIn;
     await expect(page.getByText("Before the failed handshake", { exact: true })).toBeVisible();
     await refused.promise;
     await patchIssue(issue.key, { title: "Committed while the socket was down" }, bob);
@@ -591,6 +614,49 @@ test("live: a fresh page load opens the socket at the current head and stays wit
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
+  // The page's clock, installed before the first byte of the load and paused on the spot, so the
+  // only time this page ever sees is the time this row spends below. One fresh load is the whole
+  // of what this row measures, and the shell arms pollers that refetch on cadences of their own
+  // - the agent registry every `AGENT_REGISTRY_POLL_MS`, the Inbox's credential list on the same
+  // 15 s. On the wall clock those ticks land while a slow machine is still settling the load,
+  // and a request the load never made joins the set: that is how this row failed on a loaded CI
+  // runner after passing on three quieter ones (dispatch://INFRA-1109). A poll fifteen seconds
+  // after a load is the poller doing its job and no part of what the load asked for. On a paused
+  // clock no cadence is ever reached, because the page's own time stops at `pageTimeWindow`
+  // below, a third of the shortest of them - so the set holds the requests of the load however
+  // slowly the machine runs.
+  //
+  // Paused, the page runs nothing that waits on a timer, so every wait of this row spends its
+  // clock rather than the machine's: a step at a time, since a timer armed between two steps
+  // needs a step after it, and a single jump the length of the window would leave none. The
+  // step is a quarter of the shortest wait the load makes (the dwell below), and the window is
+  // 2.5 times the 2,000 ms of page time the whole load was measured to need, of which 1,000 ms
+  // is the paint.
+  //
+  // `pauseAt` is the only call that stops the clock, and it is the only one that can refuse:
+  // it fast-forwards to the moment it is given and throws "Cannot fast-forward to the past" for
+  // a moment already gone (`ClockController._innerFastForwardTo`, playwright-core's
+  // coreBundle.js). The clock runs from the install - the injected clock resumes itself
+  // (`inject()`, same file) - so pausing AT the installed moment is a race the machine wins
+  // whenever it spends a millisecond between the two calls, and it loses a loaded run on the
+  // setup rather than on the set. The pause is therefore a minute ahead of the install, which
+  // the gap between these two lines cannot reach: the row is killed at 60 s (`testTimeout`,
+  // e2e/playwright.config.ts), so a gap that long never gets here to be measured. Moving the
+  // clock forward fires any armed timer once; none is armed here, because this runs on the
+  // blank page before the navigation, and the pollers are armed after it and count their
+  // cadence from the paused clock.
+  const pageClockStart = Date.now();
+  const pauseAhead = 60_000;
+  await page.clock.install({ time: pageClockStart });
+  await page.clock.pauseAt(pageClockStart + pauseAhead);
+  const clockStep = DWELL_MS / 4;
+  const pageTimeWindow = AGENT_REGISTRY_POLL_MS / 3;
+  let pageTimeSpent = 0;
+  const spendPageTime = async (): Promise<void> => {
+    if (pageTimeSpent >= pageTimeWindow) return;
+    pageTimeSpent += clockStep;
+    await page.clock.runFor(clockStep);
+  };
   const apiRequestPaths: string[] = [];
   page.on("request", (request) => {
     // Called for every request of a cold load this row measures, so the cheap string test comes
@@ -608,76 +674,102 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     (socket) => new URL(socket.url()).pathname === "/ws/live"
   );
   await page.goto(`/issues/${issue.key}/conversation`);
-  await expect(page.getByText("Backlog message 4")).toBeVisible();
+  // The page paints the backlog once React's own work has run, which waits a page timer like
+  // everything else here, so the wait for it spends the clock too.
+  await expect
+    .poll(
+      async () => {
+        await spendPageTime();
+        return page.getByText("Backlog message 4").isVisible();
+      },
+      {
+        intervals: [50, 50, 100, 100, 250],
+        message: "the backlog paints once the load's own page timers are spent",
+      }
+    )
+    .toBe(true);
   await socketOpened;
 
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
   expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
 
-  // Exactly these on a fresh load, and nothing else. A set rather than a count, and waited for
-  // rather than read at an instant: the page issues the last requests of its first load within
-  // a few milliseconds of painting the message this row waits for, so a count taken the moment
-  // that message appears can be one request short, which is how this row failed in CI - 20
-  // against 21. The wait ends on the set itself, so a panel that starts eagerly fetching
-  // before its tab is ever opened still trips this immediately instead of only breaking some
-  // looser upper bound, and a failure names the request that is missing or extra instead of
-  // leaving a reader to work out which of 21 a count of 20 dropped. The Conversation pages no
-  // event log at all now that the history is the Activity tab's, and the Activity panel is
-  // unmounted until its tab is opened.
+  // Exactly these on a fresh load, and nothing else. A set rather than a count, so a panel that
+  // starts eagerly fetching before its tab is ever opened trips this immediately instead of only
+  // breaking some looser upper bound, and a failure names the request that is missing or extra
+  // instead of leaving a reader to work out which of 21 a count of 20 dropped. It is judged at
+  // the end of the load rather than at the instant the backlog paints, because the load's last
+  // requests - the read mark and what that write refreshes - wait on the reader's dwell, a page
+  // timer the row spends below; a reading taken as the message appears is one request short,
+  // which is how this row failed in CI, 20 against 21. The Conversation pages no event log at
+  // all now that the history is the Activity tab's, and the Activity panel is unmounted until
+  // its tab is opened.
   const firstLoad = [
-    "/auth/whoami",
-    // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
-    // fetching again.
-    "/api/v1/inbox",
-    // The project sidebar's Pinned and Projects queries. This row runs on chromium alone, so
-    // there is no drawer-closed phone case to leave them out for.
-    "/api/v1/issues?pinned=true",
-    "/api/v1/projects",
-    "/api/v1/me/state",
-    // The issue's detail.
-    `/api/v1/issues/${issue.key}`,
-    // The active-sessions read.
-    "/api/v1/agents",
-    // The primary artifact's comments, which the Conversation's own list shares rather than
-    // fetching again.
-    `/api/v1/issues/${issue.key}/comments`,
-    // The margin's own list of the issue's asks, and the Conversation's, which asks the same
-    // route for each ask's thread (`?thread=1`) and so is a request of its own, not the
-    // margin's shared.
-    `/api/v1/issues/${issue.key}/asks?state=all`,
+    // The one read the page makes for its viewer, which carries the shell every page draws and
+    // the issue this address names (`web/src/api/queries.ts`, `readLanding`). Everything that
+    // was a request of its own before and is absent below - the sidebar's Inbox, Pinned and
+    // Projects, the viewer's state, the issue's detail, its comments, the margin's own ask list,
+    // its subscribers, the agent registry, the project's architecture sources, the repository
+    // mappings, the Agents badge's state and the Inbox badge's reply count - rides this one
+    // answer and is seeded under the key that read's own reader holds (`seedShell`,
+    // `seedIssuePage`), so the page asks none of those routes at all.
+    `/api/v1/landing?page=issue&key=${issue.key}`,
+    // The Conversation's own ask list, which asks the same route for each ask's thread
+    // (`?thread=1`) and so is a request of its own, not the margin's shared.
     `/api/v1/issues/${issue.key}/asks?state=all&thread=1`,
     // The issue's message threads.
     `/api/v1/issues/${issue.key}/messages`,
-    // The two one-row event reads the unread mark needs: the first event past the watermark,
-    // and the issue's head.
-    `/api/v1/issues/${issue.key}/events?after=0&limit=1`,
-    `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
-    // The Conversation's live-agent query.
-    `/api/v1/issues/${issue.key}/subscribers`,
-    // The one block-schema fetch every document surface shares for the session.
-    "/api/v1/schema/blocks",
-    // The header's read of the project's architecture sources: the `Components:` line offers
-    // its picker only when the project has one. The component tree itself,
-    // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
-    // load, which is why it is absent from this set.
-    "/api/v1/projects/CORE/architecture-sources",
-    // The header's read of the repository mappings: an issue that resolves to no repository,
-    // as this one does, shows the `Repository:` item only when its project maps one.
-    "/api/v1/settings/repo-projects",
-    // me/agents/state, whose unread replies the Agents badge counts on every page (the
-    // sidebar's on desktop, the compact header's on phone).
-    "/api/v1/me/agents/state",
-    // The credential requests waiting on the viewer, which the Inbox count adds up on every
-    // page.
-    "/api/v1/credential-requests?approver=me",
-    // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
-    // number (the sidebar's on desktop, the compact header's on phone).
-    "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
     // The Conversation's list of the issue's phase handoffs, which it shows beside the
     // messages.
     `/api/v1/issues/${issue.key}/handoffs`,
+    // The one-row event reads the unread mark needs. The issue's head is read once. The first
+    // event past the reader's watermark is read at each watermark this load has: `after=0`,
+    // since alice has never read this issue, and then `after=6` - the issue's six events, which
+    // are what the read mark this load writes covers - because that mark moves the watermark,
+    // and the watermark is in the read's own key.
+    `/api/v1/issues/${issue.key}/events?after=0&limit=1`,
+    `/api/v1/issues/${issue.key}/events?after=6&limit=1`,
+    `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
+    // The read mark the page writes for the issue the reader opened - the one request of this
+    // load that is not a read, and here because the set is every request the load makes - and
+    // the viewer's state read again once that write lands.
+    `/api/v1/me/issues/${issue.key}/state`,
+    "/api/v1/me/state",
+    // The one block-schema fetch every document surface shares for the session.
+    "/api/v1/schema/blocks",
+    // The credential requests the Inbox counts are NOT in this set, and a measurement is why.
+    // The landing carries that list - this harness runs a broker, which answers it - and seeds
+    // it under this route's own key (`seedShell`), where the client's 30,000 ms `staleTime`
+    // (`web/src/main.tsx`) leaves it fresh, so no reader of it fetches on mount. The read that
+    // used to stand in this set arrived 15.8 s and 16.0 s after the load in two measured runs of
+    // this row: the first tick of that list's own 15-second poll, which is the cadence the agent
+    // registry polls on as well. The fifteen-second wait this row used to end on took whichever
+    // of those two ticks reached it first, which is how `/api/v1/agents` joined a set the load
+    // never asked for (dispatch://INFRA-1109). A Dispatch whose landing answers null for the
+    // list leaves that key unseeded, and its own fresh load does read this route, since nothing
+    // but the route tells "could not read it" from "nothing to read"; that is a deployment with
+    // no secrets broker, which this harness is not.
   ].sort();
-  await expect.poll(() => [...apiRequestPaths].sort()).toEqual(firstLoad);
+  // The tail of the load waits on a timer of the page as well: the read mark rides the reader's
+  // dwell on the newest card (`DWELL_MS`), and the event read and the viewer-state read that
+  // write triggers follow it.
+  await expect
+    .poll(
+      async () => {
+        await spendPageTime();
+        return [...apiRequestPaths].sort();
+      },
+      { intervals: [50, 50, 100, 100, 250] }
+    )
+    .toEqual(firstLoad);
+
+  // The rest of the window, spent with the set already whole: three more seconds of the page's
+  // own time in which the load may ask for nothing. This is the half of the claim the wait above
+  // cannot make on its own - that wait ends the moment the set matches, so a request landing a
+  // moment later would go unseen - and the window is the page's own time rather than the
+  // machine's, so no poll of the shell's can fall inside it however long the machine takes to
+  // spend it.
+  while (pageTimeSpent < pageTimeWindow) await spendPageTime();
+  expect([...apiRequestPaths].sort()).toEqual(firstLoad);
 
   await alice.close();
 });
@@ -728,8 +820,8 @@ test("live: an event during a project list's first load fetches it again once th
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "OLDTITLE" });
-  // Pinned, so the sidebar's pinned row shows each rename: the one sign on this page that the
-  // event was handled while the list's first load is still held.
+  // Pinned, so the sidebar's pinned row shows the rename beside the board's own row: two draws
+  // of the event the page handled once the held load landed.
   await putIssueState(issue.key, { pinned: true });
 
   const alice = await asUser(browser, "alice");
@@ -743,6 +835,7 @@ test("live: an event during a project list's first load fetches it again once th
     let mostInFlight = 0;
     page.on("request", (request) => {
       if (!listUrl.test(request.url())) return;
+      listRequests += 1;
       listsInFlight += 1;
       mostInFlight = Math.max(mostInFlight, listsInFlight);
     });
@@ -751,11 +844,15 @@ test("live: an event during a project list's first load fetches it again once th
     };
     page.on("requestfinished", settle);
     page.on("requestfailed", settle);
-    // The list's first request is answered by the server now and held on the wire, so the body
-    // that eventually lands is genuinely older than the event below.
-    await page.route(listUrl, async (route) => {
-      listRequests += 1;
-      if (listRequests > 1) {
+    // The project list's first load is the landing: its one answer carries the list and seeds it
+    // under the key the board reads it by (`web/src/api/queries.ts`, `seedBoardPage`), and the
+    // board's own route is asked only for a read after that. So the landing is what is answered
+    // by the server now and held on the wire, and the body that eventually lands is genuinely
+    // older than the event below.
+    let landings = 0;
+    await page.route(/\/api\/v1\/landing(\?|$)/u, async (route) => {
+      landings += 1;
+      if (landings > 1) {
         await route.continue();
         return;
       }
@@ -767,31 +864,23 @@ test("live: an event during a project list's first load fetches it again once th
 
     await page.clock.install();
     await page.goto("/projects/CORE");
-    const pinnedRow = page
-      .getByRole("navigation", { name: "Navigation" })
-      .getByRole("link", { name: issue.key });
-    await expect(pinnedRow).toContainText("OLDTITLE");
     await inFlight;
-    // Renamed, again every 2 s, until the pinned row shows it: the feed is open and the event
-    // was handled while the held first load was still in flight.
-    let newTitle = "";
-    for (let attempt = 1; attempt <= 10 && newTitle === ""; attempt += 1) {
-      await patchIssue(issue.key, { title: `NEWTITLE ${attempt}` }, bob);
-      if (
-        await expect(pinnedRow)
-          .toContainText(`NEWTITLE ${attempt}`, { timeout: 2_000 })
-          .then(() => true)
-          .catch(() => false)
-      ) {
-        newTitle = `NEWTITLE ${attempt}`;
-      }
-    }
-    expect(newTitle).not.toBe("");
-    // The event did not start a second request beside the held one.
-    expect(listRequests).toBe(1);
+    // Renamed while that load is held, so the body it carries is older than this write. The
+    // page's event feed resumes from the head that same body carries, so Dispatch replays the
+    // rename on the socket the page opens once the body lands: one write is enough, where a feed
+    // that could have missed it needed ten.
+    const newTitle = "NEWTITLE";
+    await patchIssue(issue.key, { title: newTitle }, bob);
+    // Nothing went out for the list beside the held load, which is the half of the claim about
+    // what the page does while its first load is in flight.
+    expect(listRequests).toBe(0);
     release();
 
     // The held body predates the rename; the list is fetched again once it lands.
+    const pinnedRow = page
+      .getByRole("navigation", { name: "Navigation" })
+      .getByRole("link", { name: issue.key });
+    await expect(pinnedRow).toContainText(newTitle);
     await expect(
       page.getByRole("row", { name: `${issue.key} ${newTitle}`, exact: true })
     ).toBeVisible();
@@ -799,14 +888,14 @@ test("live: an event during a project list's first load fetches it again once th
       0
     );
     // The 100 ms event batch and the refresh the scheduler holds back for
-    // `MIN_REFETCH_INTERVAL_MS` fire inside this jump, so a third request would already be
+    // `MIN_REFETCH_INTERVAL_MS` fire inside this jump, so a second request would already be
     // counted; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS + 100);
-    // The margin that paragraph names: a third request would leave the page inside the jump
+    // The margin that paragraph names: a second request would leave the page inside the jump
     // above, and this window in Node is for it to reach Playwright's counter; a request that is
     // never made marks nothing else the row could wait on.
     await sleep(100);
-    expect([listRequests, mostInFlight]).toEqual([2, 1]);
+    expect([listRequests, mostInFlight]).toEqual([1, 1]);
   } finally {
     release();
     await alice.close();

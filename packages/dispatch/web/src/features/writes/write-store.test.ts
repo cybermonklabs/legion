@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";

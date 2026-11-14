@@ -51,15 +51,31 @@ async function pauseClock(page: Page): Promise<void> {
   await page.clock.pauseAt(Date.now() + 1000);
 }
 
-/** Spends a paused clock a millisecond at a time until `locator` matches `count` elements. A
- *  page whose clock is paused draws no answer of its own accord: TanStack batches every query's
- *  delivery on a zero-delay page timer, and a paused clock fires no timer at all. A millisecond
- *  of page time fires those and leaves the dwell's second, which is what the rows below hold
- *  still, as good as unspent: a page that needs thirty of these steps to draw has spent 30 ms. */
+/** One animation frame of the page's own clock, which is the step below. */
+const FRAME_MS = 16;
+
+/**
+ * Spends a paused clock a frame at a time until `locator` matches `count` elements.
+ *
+ * A page whose clock is paused draws no answer of its own accord: TanStack batches every
+ * query's delivery on a zero-delay page timer, and a paused clock fires no timer at all. The
+ * step used to be a millisecond, which fired those and left the dwell's second as good as
+ * unspent. A cold page no longer draws in a millisecond or two of its own clock: its data is in
+ * the cache before the first render now - the landing carries it (`web/src/api/queries.ts`) -
+ * so the shell and the page's content draw together, and that draw is spread over the page's
+ * own frames. Measured on this row's cold board at this head, the issue's row is on screen
+ * after 305 ms of the page's clock and not after 300 ms, however many steps those milliseconds
+ * were spent in; stepping a millisecond a poll never reaches it inside the poll budget.
+ *
+ * A frame a poll does, and still leaves the dwell: the loop stops at the first poll that
+ * matches, so the board above costs about twenty frames, a third of the dwell's second. Nor can
+ * a step that overspent it pass quietly - each row below reads the mark right after this and
+ * expects it unwritten, so a dwell spent here fails the row rather than hiding in it.
+ */
 async function drawn(locator: Locator, count: number): Promise<void> {
   await expect
     .poll(async () => {
-      await locator.page().clock.runFor(1);
+      await locator.page().clock.runFor(FRAME_MS);
       return locator.count();
     }, PROBE)
     .toBe(count);

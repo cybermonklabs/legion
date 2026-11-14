@@ -25,14 +25,26 @@ func (s *server) listRepoProjects(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+	mappings, err := s.loadRepoProjects(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, mappings)
+}
+
+// loadRepoProjects is the read behind GET /api/v1/settings/repo-projects: every repository
+// mapped to a project, by repository. listRepoProjects answers it, and GET /api/v1/landing
+// carries the same list on its issue page, where the repository control picks the repositories
+// of the issue's own project out of it.
+func (s *server) loadRepoProjects(ctx context.Context) ([]model.RepoProject, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+repoProjectColumns+`
 		from repo_projects
 		order by repo
 	`)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -40,16 +52,14 @@ func (s *server) listRepoProjects(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		mapping, err := scanRepoProject(rows)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return nil, err
 		}
 		mappings = append(mappings, mapping)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
-	WriteJSON(w, http.StatusOK, mappings)
+	return mappings, nil
 }
 
 // putRepoProjectInput is the body of PUT /api/v1/settings/repo-projects/{owner}/{repo}.

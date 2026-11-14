@@ -1,4 +1,4 @@
-import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
+import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 

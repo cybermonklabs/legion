@@ -805,23 +805,35 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
-		return
-	}
-	markdown, token, blocks, err := s.artifactTextBody(r, artifact.ID)
+	text, err := s.loadArtifactText(r.Context(), artifact, r.URL.Query().Get("blocks") == "true", wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, text)
+}
+
+// loadArtifactText is the read behind the three text routes: a document's canonical markdown with
+// the token a write holds it to, the number of its latest version, the document's blocks for a
+// caller that asked for them, and the markdown's display tree for a caller that asked for the
+// trees (wantsDisplayTrees). A file is 400 NOT_DOCUMENT, as it was when the check stood in the
+// handler. getArtifactText answers it, and GET /api/v1/landing carries it beside the document a
+// page opens.
+func (s *server) loadArtifactText(ctx context.Context, artifact model.Artifact, withBlocks, trees bool) (artifactText, error) {
+	if artifact.Kind != "doc" {
+		return artifactText{}, errorf(http.StatusBadRequest, "NOT_DOCUMENT", "artifact is not a document")
+	}
+	markdown, token, blocks, err := s.artifactTextBody(ctx, artifact.ID, withBlocks)
+	if err != nil {
+		return artifactText{}, err
 	}
 	// The markdown and the version are two unsynchronised reads, in both directions: the live
 	// markdown can be ahead of the version while browser text is unsettled, and a version minted
 	// between the two reads can be ahead of the markdown. `token` is the route's concurrency
 	// primitive; `version` says which version the document has, not which one this markdown is.
-	version, err := latestVersionNumber(r.Context(), s.deps.Store.Pool, artifact.ID)
+	version, err := latestVersionNumber(ctx, s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return artifactText{}, err
 	}
 	answer := artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks}
 	// The tree is built only for a caller that asked for one: the command line and the agent
@@ -831,33 +843,33 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	// This markdown is a document version's own text, which the ledger stored the tree of behind
 	// the commit that wrote it (docs.Ledger.storeVersionTrees), so a browser opening a document
 	// this process has not served since it started copies those bytes.
-	if wantsDisplayTrees(r) {
-		reader := s.readDisplayTrees(r.Context(), true)
+	if trees {
+		reader := s.readDisplayTrees(ctx, true)
 		reader.text(&answer.MarkdownTree, markdown)
 		reader.resolve()
 	}
-	WriteJSON(w, http.StatusOK, answer)
+	return answer, nil
 }
 
 // artifactTextBody is the markdown and the token the three text routes answer, with the blocks
-// beside them for a request that asked for them with ?blocks=true. The three come from one
-// rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot leave
-// a listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
-// that asked for none, which pays for none of that rendering.
-func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
-	if r.URL.Query().Get("blocks") != "true" {
-		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
+// beside them for a caller that asked for them (?blocks=true on those routes). The three come
+// from one rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session
+// cannot leave a listing's byte ranges indexing markdown they were not computed over; nil blocks
+// for a caller that asked for none, which pays for none of that rendering.
+func (s *server) artifactTextBody(ctx context.Context, artifactID string, withBlocks bool) (string, string, *[]model.ArtifactBlock, error) {
+	if !withBlocks {
+		markdown, token, err := s.deps.Docs.TextWithToken(ctx, artifactID)
 		return markdown, token, nil, err
 	}
-	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(r.Context(), artifactID)
+	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(ctx, artifactID)
 	if err != nil {
 		return "", "", nil, err
 	}
-	if err := s.describeBlocks(r.Context(), artifactID, blocks); err != nil {
+	if err := s.describeBlocks(ctx, artifactID, blocks); err != nil {
 		return "", "", nil, err
 	}
 	// A document with no blocks answers the empty list, never a missing key: the key is absent
-	// only where the request asked for no blocks.
+	// only where the caller asked for no blocks.
 	if blocks == nil {
 		blocks = []model.ArtifactBlock{}
 	}
@@ -873,20 +885,30 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
-		return
-	}
-	blocks, err := s.deps.Docs.Blocks(r.Context(), artifact.ID)
+	blocks, err := s.loadArtifactBlocks(r.Context(), artifact)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.describeBlocks(r.Context(), artifact.ID, blocks); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	WriteJSON(w, http.StatusOK, blocks)
+}
+
+// loadArtifactBlocks is the read behind the three blocks routes: a document's blocks, each with
+// the references it carries and where meaning search stands on it. A file is 400 NOT_DOCUMENT, as
+// it was when the check stood in the handler. getArtifactBlocks answers it, and GET
+// /api/v1/landing carries it beside the document a page opens.
+func (s *server) loadArtifactBlocks(ctx context.Context, artifact model.Artifact) ([]model.ArtifactBlock, error) {
+	if artifact.Kind != "doc" {
+		return nil, errorf(http.StatusBadRequest, "NOT_DOCUMENT", "artifact is not a document")
+	}
+	blocks, err := s.deps.Docs.Blocks(ctx, artifact.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.describeBlocks(ctx, artifact.ID, blocks); err != nil {
+		return nil, err
+	}
+	return blocks, nil
 }
 
 // describeBlocks writes onto each block what the document's rows say about it, which its

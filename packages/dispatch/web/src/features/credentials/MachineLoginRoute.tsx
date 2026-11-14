@@ -1,11 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
 import { lazy, type ReactNode } from "react";
 
+import { renderChunk } from "../shell/DeploymentResilience";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { credentialCapabilitiesQuery } from "./capabilities";
 
+// Under `renderChunk` like every route chunk of `app.tsx`: the gate renders this page as soon as
+// the capabilities answer, so a reader is waiting on the download and its failure is one the
+// chunk-failure recovery must reload for, never one it may read as the entry's prefetch
+// (`features/shell/DeploymentResilience.tsx`).
 const MachineLoginPage = lazy(() =>
-  import("./MachineLoginPage").then((module) => ({ default: module.MachineLoginPage }))
+  renderChunk(() =>
+    import("./MachineLoginPage").then((module) => ({ default: module.MachineLoginPage }))
+  )
 );
 
 /**

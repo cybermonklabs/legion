@@ -11,7 +11,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { AskBlockCard } from "./AskBlockCard";
+import { AskBlockCardHost } from "./AskBlockCardHost";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import { colorForLogin } from "./connection";
 import { DocumentReferences, useReferenceClick } from "./document-references";
@@ -260,7 +260,7 @@ export function VersionView({
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (
-            <AskBlockCard
+            <AskBlockCardHost
               ask={asks.find((candidate) => candidate.block_id === blockId)}
               host={host}
               inBody={false}

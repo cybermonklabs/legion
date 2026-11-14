@@ -1,9 +1,5 @@
-import {
-  ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
-  type IssueClaim,
-  type IssueClaimHolderState,
-  type IssueDetails,
-} from "./dispatch-api";
+import type { IssueClaim, IssueClaimHolderState, IssueDetails } from "./dispatch-api";
+import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "./dispatch-api-constants";
 
 /**
  * Whether an issue's claim still holds it, judged against the live agent registry. The dashboard's

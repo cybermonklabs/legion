@@ -9,6 +9,61 @@
       "bun": "./src/index.ts",
       "default": "./dist/index.js"
     },
+    "./actor-label": {
+      "types": "./src/actor-label.ts",
+      "bun": "./src/actor-label.ts",
+      "default": "./dist/actor-label.js"
+    },
+    "./agent-stream": {
+      "types": "./src/agent-stream.ts",
+      "bun": "./src/agent-stream.ts",
+      "default": "./dist/agent-stream.js"
+    },
+    "./claim-holds": {
+      "types": "./src/claim-holds.ts",
+      "bun": "./src/claim-holds.ts",
+      "default": "./dist/claim-holds.js"
+    },
+    "./dispatch-api": {
+      "types": "./src/dispatch-api.ts",
+      "bun": "./src/dispatch-api.ts",
+      "default": "./dist/dispatch-api.js"
+    },
+    "./dispatch-api-constants": {
+      "types": "./src/dispatch-api-constants.ts",
+      "bun": "./src/dispatch-api-constants.ts",
+      "default": "./dist/dispatch-api-constants.js"
+    },
+    "./dispatch-block-ref": {
+      "types": "./src/dispatch-block-ref.ts",
+      "bun": "./src/dispatch-block-ref.ts",
+      "default": "./dist/dispatch-block-ref.js"
+    },
+    "./dispatch-href": {
+      "types": "./src/dispatch-href.ts",
+      "bun": "./src/dispatch-href.ts",
+      "default": "./dist/dispatch-href.js"
+    },
+    "./dispatch-text-references": {
+      "types": "./src/dispatch-text-references.ts",
+      "bun": "./src/dispatch-text-references.ts",
+      "default": "./dist/dispatch-text-references.js"
+    },
+    "./dispatch-text-rules": {
+      "types": "./src/dispatch-text-rules.ts",
+      "bun": "./src/dispatch-text-rules.ts",
+      "default": "./dist/dispatch-text-rules.js"
+    },
+    "./legion-roles": {
+      "types": "./src/legion-roles.ts",
+      "bun": "./src/legion-roles.ts",
+      "default": "./dist/legion-roles.js"
+    },
+    "./related-forms": {
+      "types": "./src/related-forms.ts",
+      "bun": "./src/related-forms.ts",
+      "default": "./dist/related-forms.js"
+    },
     "./repo": {
       "types": "./src/repo.ts",
       "bun": "./src/repo.ts",
@@ -23,6 +78,11 @@
       "types": "./src/dispatch-tools.ts",
       "bun": "./src/dispatch-tools.ts",
       "default": "./dist/dispatch-tools.js"
+    },
+    "./dispatch-tools-constants": {
+      "types": "./src/dispatch-tools-constants.ts",
+      "bun": "./src/dispatch-tools-constants.ts",
+      "default": "./dist/dispatch-tools-constants.js"
     },
     "./legion-api": {
       "types": "./src/legion-api.ts",
@@ -42,7 +102,7 @@
     "check:go": "bun run scripts/gen-go.ts --check",
     "gen:api": "bun run scripts/gen-api.ts",
     "check:api": "bun run scripts/gen-api.ts --check",
-    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/legion-api.ts src/trailing-slash.ts --outdir dist --target bun --format esm",
+    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/dispatch-tools-constants.ts src/legion-api.ts src/trailing-slash.ts src/actor-label.ts src/agent-stream.ts src/claim-holds.ts src/dispatch-api.ts src/dispatch-api-constants.ts src/dispatch-block-ref.ts src/dispatch-href.ts src/dispatch-text-references.ts src/dispatch-text-rules.ts src/legion-roles.ts src/related-forms.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
     "lint": "bunx biome check src/ schemas/"

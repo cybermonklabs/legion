@@ -19,7 +19,7 @@ import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { AgentName } from "../refs/AgentName";
-import { referenceTriggerProps } from "../refs/RefPreview";
+import { referenceTriggerProps } from "../refs/reference-trigger";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";

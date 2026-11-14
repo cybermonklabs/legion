@@ -937,7 +937,7 @@ jobs:
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/ratelimit/*'
               # The screenshots build packages/dispatch's web app, which aliases contracts' and the
-              # proof editor's sources (web/vite.config.ts:63-81), and boot its e2e harness
+              # proof editor's sources (web/vite.config.ts:117-190), and boot its e2e harness
               # (docs/site/media/harness.ts:21,97), whose e2e/run-server.sh serves the Dispatch
               # server on the socket scripts/e2e/lib/held-port.py holds (run-server.sh:37).
               - 'packages/dispatch/**'
@@ -1205,14 +1205,16 @@ jobs:
               - 'scripts/e2e/lib/**'
               - *omp_install
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-            # holds: the shards, the three `-alone` projects, the two-process job, the
-            # fake-embedder job, the visual review and the merge
+            # holds: the binaries job, the two shard legs, the three `-alone` projects on one
+            # machine of their own, the two-process job, the fake-embedder job, the visual
+            # review and the merge
             # job. Every entry is something a browser row reads: the dashboard and its contracts,
-            # the Dispatch server its harness builds, and the two workflow files that hold the
+            # the Dispatch server the binaries job builds and the rows execute, and the two
+            # workflow files that hold the
             # steps. The retired `dispatch` job's filter also held three fixture sets whose only
             # readers are the dashboard's and the proof editor's unit tests, and they are not here:
             # dispatch-ui's filter names all three, and with this output ungated on a pull request
-            # they would start four shard machines and the merge job for a fixture-only change.
+            # they would start two shard machines and the merge job for a fixture-only change.
             # The dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite
             # reads, and check-ci-filters.sh holds this filter to that gate - it refuses a filter
             # that misses a read, never one that is too wide, so a path is in this list because a
@@ -1224,9 +1226,10 @@ jobs:
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
               # The Dispatch server this suite runs: dispatch-browser.yaml's binaries job
-              # builds it, with the real broker's three commands, for the shard and alone jobs,
-              # and the two-process job builds it in a step of its own and again in
-              # e2e/run-server.sh (run-server.sh:340), on the socket
+              # builds it once for the whole run, with the real broker's three commands, and
+              # every job that runs rows downloads it and names it on
+              # DISPATCH_E2E_SERVER_BIN, which e2e/run-server.sh executes in place of a build
+              # of its own (run-server.sh:340), on the socket
               # scripts/e2e/lib/held-port.py holds
               # (run-server.sh:80).
               - *go_workspace
@@ -1345,7 +1348,7 @@ jobs:
               # This job's tsc program of packages/dispatch compiles the shared test fixtures its
               # web, e2e and server-side tests import.
               - 'packages/test-fixtures/src/**'
-              # packages/dispatch/web/vite.config.ts:117-126 aliases @legion/contracts, and tsc and
+              # packages/dispatch/web/vite.config.ts:117-175 aliases @legion/contracts, and tsc and
               # bun read it through the workspace's "bun" export condition.
               - 'packages/contracts/src/**'
               # web/src/features/delivery/lib/applyDelta.test.ts:2-4,
@@ -4581,8 +4584,13 @@ jobs:
       - name: Check dispatch dashboard CSS classes
         run: bun run check:classes
         working-directory: packages/dispatch
-      # The server refuses to boot on a build holding an asset over 8 MiB (it publishes every
-      # asset to its database at boot), which would stall a roll; refuse the build here instead.
+      # Two budgets, both read from the dist/ the Build step above wrote. The server refuses to
+      # boot on a build holding an asset over 8 MiB (it publishes every asset to its database at
+      # boot), which would stall a roll, so the build is refused here instead. And the entry
+      # chunk - the one dist/index.html names, which every page parses before it draws anything
+      # and no cache spares a new browser context - is held to 500,000 bytes, Vite's own default
+      # warning limit, because nothing else in this tree refused that number as it grew
+      # (packages/dispatch/web/src/asset-sizes-in-build.ts carries both and the measurements).
       - name: Check dispatch dashboard asset sizes
         run: bun run check:asset-sizes
         working-directory: packages/dispatch
@@ -4594,14 +4602,16 @@ jobs:
           job-status: ${{ job.status }}
 
   # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
-  # holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
-  # `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
+  # holds: the binaries job that builds the Go commands the lanes run and the dashboard bundles
+  # they serve, two shard legs, the three `-alone` projects on one machine, the two-process job,
+  # the fake-embedder job that runs on both
   # lanes, the containerised visual review, and the merge job that joins the shard and alone
   # reports into one and posts this job's ci-ok report.
   #
   # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
-  # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
-  # proves those two rows and no more - it is not the run that proves the suite before main.
+  # `pull-request`, the four projects a change is held to (chromium, iphone and the two stubbed
+  # ones) over the rows tagged `@pr`, so such a run
+  # proves those rows and no more - it is not the run that proves the suite before main.
   # Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
   # - runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
   # group is where a change meets the whole suite before it lands, and the nightly

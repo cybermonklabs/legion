@@ -96,6 +96,24 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	asks, err := s.loadInbox(r.Context(), caller, project, assigneeMode, assigneeLogin, wantsDisplayTrees(r))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, asks)
+}
+
+// loadInbox is the read behind GET /api/v1/inbox: the open asks waiting on somebody, narrowed to
+// one project and one assignee when the caller asked for that, each with the details and the
+// thread a card draws. project is "" for every project; assigneeMode and assigneeLogin are what
+// inboxAssigneeFilter made of ?assignee=, "" and "" for no narrowing.
+//
+// listInbox calls it, and so does GET /api/v1/landing, which carries this list in its shell and
+// the same list narrowed to one project on a board. The statement lives here and in no other
+// reader, so the two answers cannot differ. trees is what the request asked for
+// (wantsDisplayTrees), so the landing's rows carry the trees the route's do.
+func (s *server) loadInbox(ctx context.Context, caller model.Actor, project, assigneeMode, assigneeLogin string, trees bool) ([]inboxAsk, error) {
 	// waiting_on is askReadColumns' alias for the turn rule, 'human' or 'agent' on an open ask, so
 	// sorting it descending puts the human's turn first. ORDER BY can name an output column only
 	// bare, never inside an expression such as `waiting_on = 'agent'`, so the rule runs once a row.
@@ -107,7 +125,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// i, its own document as ar and their project as p - so this read joins none of them itself
 	// and reads the document's columns off the shared join. `unassigned` is left standing for
 	// the caller that sends it: every question reaches a person now, so it answers nothing.
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+`,
 		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
 		       sn.snoozed_until
@@ -123,8 +141,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		         coalesce(lr.created_at, a.created_at) desc, a.id desc
 	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID))
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 	asks := []inboxAsk{}
@@ -134,8 +151,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		var snoozedUntil *time.Time
 		row, reply, err := scanAskRead(rows, &issueKey, &issueTitle, &issueAssignee, &ask.Priority, &documentProject, &documentSlug, &documentName, &snoozedUntil)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return nil, err
 		}
 		ask.Ask = row
 		ask.LastReply = reply
@@ -152,8 +168,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		asks = append(asks, ask)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	askPointers := make([]*model.Ask, len(asks))
 	askIDs := make([]string, len(asks))
@@ -161,17 +176,15 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		askPointers[index] = &asks[index].Ask
 		askIDs[index] = asks[index].ID
 	}
-	if err := loadAskDetails(r.Context(), s.deps.Store.Pool, askPointers); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := loadAskDetails(ctx, s.deps.Store.Pool, askPointers); err != nil {
+		return nil, err
 	}
 	// The Inbox's asks and the threads under them are one read of the stored trees: each row
 	// registers its texts with this reader, and one query answers the page.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	threads, err := s.loadAskThreads(r.Context(), askIDs, reader)
+	reader := s.readDisplayTrees(ctx, trees)
+	threads, err := s.loadAskThreads(ctx, askIDs, reader)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	for index := range asks {
 		asks[index].Thread = threads[asks[index].ID]
@@ -181,5 +194,5 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		asks[index].shape(reader)
 	}
 	reader.resolve()
-	WriteJSON(w, http.StatusOK, asks)
+	return asks, nil
 }

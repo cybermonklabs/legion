@@ -23,7 +23,7 @@
 #   .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir>
 # Each entry of <download-dir> must be a directory named `dispatch-browser-blob-<leg>-<attempt>`,
 # where <attempt> is the run of digits at the end and <leg> is everything between the prefix and
-# it (`shard-1`, `alone-webkit-alone`). A name that does not read is a failure, not a file passed
+# it (`shard-1`, `alone`). A name that does not read is a failure, not a file passed
 # over: a blob silently dropped is a merged report short of a leg's rows, which reads as a
 # shorter suite rather than as an error.
 #
@@ -97,7 +97,7 @@ if [ "${#unreadable[@]}" -gt 0 ]; then
   for name in "${unreadable[@]}"; do
     echo "::error::$download_dir/$name is not a leg's blob report: this step reads a directory" \
       "named ${prefix}<leg>-<attempt>, where <attempt> is the run of digits at the end" \
-      "(${prefix}shard-1-2, ${prefix}alone-webkit-alone-1). Name the upload in" \
+      "(${prefix}shard-1-2, ${prefix}alone-1). Name the upload in" \
       ".github/workflows/dispatch-browser.yaml that way, or narrow the download step's pattern" \
       "so it does not match this artifact."
   done
@@ -107,8 +107,13 @@ fi
 # Each leg's selected directory, copied whole: its blob report and the row count that travels
 # with it come from the one attempt, so a leg contributes both or neither.
 #
-# One leg per line, not `for leg in $(…)`: a leg name is an artifact name's tail and a project
-# may be named with a space, which word splitting would read as two legs. A here-string rather
+# One leg per line, not `for leg in $(…)`: a leg name is an artifact name's tail, and reading it
+# with word splitting would read a name holding a space as two legs, neither with a blob or a row
+# count of its own. No leg this workflow uploads holds a space today - the names are
+# `shard-<N>` and `alone`, built from the matrix number and a literal
+# (.github/workflows/dispatch-browser.yaml) - so this is a defence and not a live case, kept
+# because what it defends against is silent: a split name selects nothing and the merged report
+# comes out a leg short rather than red. A here-string rather
 # than a pipe only to match the merge job's own loop, where it is load-bearing because that loop
 # accumulates its totals; this loop accumulates nothing, so a pipe would have served as well.
 while IFS= read -r leg; do

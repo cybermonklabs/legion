@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
-import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
+import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts/dispatch-text-references";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";

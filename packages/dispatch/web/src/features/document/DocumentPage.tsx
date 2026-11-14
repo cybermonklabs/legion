@@ -19,6 +19,7 @@ import {
   parseProjectPath,
 } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
+import { useEndHoldWhen } from "../shell/content-drawn";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
@@ -71,6 +72,14 @@ export function DocumentPage(): ReactNode {
     artifact.data === undefined || project === undefined
       ? "Document · Dispatch"
       : `${artifact.data.name} · ${project} · Dispatch`
+  );
+  // The shell's code that draws no part of a document waits on this landing until the document
+  // draws (`features/shell/content-drawn.ts`). A page whose read failed, or whose artifact is a
+  // file, draws none, and would otherwise hold that code until the reader's first key or click.
+  useEndHoldWhen(
+    documentRoute === undefined ||
+      artifact.isError ||
+      (artifact.isSuccess && artifact.data?.kind !== "doc")
   );
 
   if (documentRoute === undefined) {

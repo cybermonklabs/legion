@@ -47,9 +47,19 @@ test("database reset clears fake Envoy subscribers before the next issue", async
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const subscribers = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === `/api/v1/issues/${issue.key}/subscribers`
-    );
+    // The subscribers of this issue, by whichever read carries them: the landing of this page
+    // on a cold load, whose one answer holds them and seeds them under the key the control
+    // reads them by (`web/src/api/queries.ts`, `seedIssuePage`), and the subscribers' own route
+    // for a read after that. What the row needs of it is that it answered - the fake Envoy was
+    // asked for this recycled key and said nobody follows it - so either carrier is that
+    // answer.
+    const subscribers = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === `/api/v1/issues/${issue.key}/subscribers` ||
+        (url.pathname === "/api/v1/landing" && url.searchParams.get("key") === issue.key)
+      );
+    });
     await page.goto(`/issues/${issue.key}`);
     expect((await subscribers).status()).toBe(200);
     await expect(page.getByRole("button", { name: "Subscribers: 0" })).toBeVisible();
@@ -1152,14 +1162,20 @@ test("issue header picks the issue's repository from its project's mappings, and
     await expect(page.getByLabel(`Repository of ${parent.key}`)).toHaveValue("");
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
 
-    // A project that maps no repository has nothing to pick: once the page has read the mappings,
-    // its issues' rail has no item for the repository.
+    // A project that maps no repository has nothing to pick: once the page has read the
+    // mappings - in the landing of this page, which carries them and seeds them under the key
+    // the control reads them by (`web/src/api/queries.ts`, `seedIssuePage`), or on their own
+    // route for a read after that - its issues' rail has no item for the repository. The wait
+    // takes either, so what follows is read after the mappings have landed however they came.
     await createProject({ key: "BARE", name: "Bare" });
     const bare = await createIssue({ project: "BARE", title: "No repository mapped" });
     expect(bare.resolved_repo).toBeNull();
-    const mappingsRead = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/v1/settings/repo-projects"
-    );
+    const mappingsRead = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/v1/settings/repo-projects" || url.pathname === "/api/v1/landing"
+      );
+    });
     await page.goto(`/issues/${bare.key}`);
     await mappingsRead;
     const rail = page.getByTestId("issue-metadata-rail");
@@ -1239,6 +1255,28 @@ test("an issue page whose mappings read fails says so and retries it, rather tha
       }
       refused += 1;
       return route.abort();
+    });
+    // The mappings ride the landing as well: its one answer carries them and seeds them under
+    // the key the rail's control reads them by (`web/src/api/queries.ts`, `seedIssuePage`), so
+    // a page given that part would never ask the route this row refuses and there would be no
+    // failed read to say anything about. This row is about a page whose mappings read failed,
+    // so the landing answers that part as a Dispatch that could not read it answers - null,
+    // which the seed leaves alone on purpose, since null says "unread" as much as "none" - and
+    // the page falls back to the route, which fails here. Past the Retry below the route
+    // answers, and the landing is not asked again: the page never reloads.
+    await page.route("**/api/v1/landing*", async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as {
+        page: { issue: Record<string, unknown> | null };
+      };
+      const landed = body.page.issue;
+      await route.fulfill({
+        json:
+          landed === null
+            ? body
+            : { ...body, page: { ...body.page, issue: { ...landed, repo_projects: null } } },
+        response,
+      });
     });
     // The read is retried twice, `QUERY_RETRY_DELAY_MS` apart (`web/src/api/query-client.ts`),
     // before the rail may say so; those waits are page timers its own clock fires.

@@ -253,7 +253,11 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
 ```
 
 It builds the dashboard twice (`web/dist`, and `web/dist-b` under another build id), then runs
-Playwright with `DISPATCH_E2E_PROCESSES=2`: Dispatch A on
+Playwright with `DISPATCH_E2E_PROCESSES=2`.
+Each half is a script you can call on its own: `bun run build:web-b` writes the second bundle,
+and `bun run e2e:multiprocess:run` runs Playwright over bundles that are already built, which
+is what CI does with the bundles its `binaries` job made.
+The run is: Dispatch A on
 `DISPATCH_E2E_PORT_A` serving `web/dist`, Dispatch B on `DISPATCH_E2E_PORT_B` serving
 `DISPATCH_E2E_WEB_DIST_B` (here `web/dist-b`; default A's), and `e2e/round-robin-proxy.ts` on
 `DISPATCH_E2E_PORT`, which alternates requests and websockets between them. As every harness
@@ -285,8 +289,10 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
   DISPATCH_E2E_SIGNIN=oidc bun run e2e:multiprocess
 ```
 
-It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets; any value other than `oidc`
-or unset is refused.
+It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess:run` sets and `e2e:multiprocess`
+reaches through it; any value other than `oidc` or unset is refused.
+The script builds the issuer from this checkout, or runs a prebuilt `dev-oidc-issuer` that
+`DISPATCH_E2E_SIGNIN_ISSUER_BIN` names, as `DISPATCH_E2E_SERVER_BIN` does for the server.
 
 ## Local instance
 
@@ -630,9 +636,10 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 13 viewport, touch, and user-agent emulation. A deployed run (`bun run e2e:deployed`) uses the
 same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
-the three wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,238 rows in 160 files, and the other 54 are a wall-clock run of its own, under the
-same base URL:
+the three wall-clock projects are out of the default selection. Listed at this head
+(`PLAYWRIGHT_BASE_URL=https://<host> bunx playwright test --config e2e/playwright.config.ts --list`),
+a deployed run holds 1,269 rows in 167 files, and the other 51 are a wall-clock run of its own,
+under the same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
 no use for. `bunx` and not a bare `playwright`, which is on no PATH here (`command -v
@@ -671,7 +678,8 @@ stream's worst case comes back inside 1.2 seconds on the fastest of up to eight 
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
 thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 54 rows, and each
+Each sets `default: false`, so a run that names no project holds none of their 51 rows
+(`bun run e2e:clock:run -- --list` prints `Total: 51 tests in 3 files`), and each
 caps its own workers at one.
 What holds a reading to a quiet machine is the run being one worker wide, and the three files
 reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
@@ -679,8 +687,8 @@ reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
 since four workers on one machine make a second of wall clock unmeasurable, and the rows of
 `e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from
 the command that runs them.
-`bun run e2e:clock` is the command that runs all three projects, and it names `--workers=1`
-beside them; one file in one engine is
+`bun run e2e:clock` is the command that runs all three projects, which its `e2e:clock:run` half
+names with `--workers=1` beside them; one file in one engine is
 `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which names that
 worker count itself rather than taking the configuration's default, and which writes the project
 as `--project=<name>`, since the option is variadic and would read the file after a space as a

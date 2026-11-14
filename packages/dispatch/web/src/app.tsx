@@ -5,31 +5,34 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-r
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
-import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
+import { landingReadOf, userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import type { AuthenticatedUser } from "./api/types";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
-import { TextAskBlockCard } from "./features/doc/AskBlockCard";
-import { Inbox } from "./features/inbox/Inbox";
-import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { TextAskCardHost } from "./features/doc/TextAskCardHost";
+import { InboxDrawerHost, InboxHost, loadInboxChunk } from "./features/inbox/InboxHost";
 import { useInboxCount } from "./features/inbox/useInboxCount";
-import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
+import { CreateIssueDialogHost } from "./features/issue/CreateIssueDialogHost";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
+import { issueTabChunk } from "./features/issue/tab-chunks";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
-import { RefPreviewHost } from "./features/refs/RefPreview";
+import { RefPreviewLayer } from "./features/refs/RefPreviewLayer";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
   buildInboxPath,
   buildProjectPath,
+  type IssueRoute,
+  type IssueTab,
+  issueTabForRoute,
   liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
@@ -39,7 +42,9 @@ import {
   routeProjectOf,
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
-import { SearchPalette } from "./features/search/SearchPalette";
+import { SearchPaletteHost } from "./features/search/SearchPaletteHost";
+import { holdUntilContentDraws } from "./features/shell/content-drawn";
+import { prefetchChunk, renderChunk } from "./features/shell/DeploymentResilience";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
@@ -50,7 +55,7 @@ import {
 } from "./features/shell/keymap";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
-import { ShortcutHelp } from "./features/shell/ShortcutHelp";
+import { ShortcutHelpHost } from "./features/shell/ShortcutHelpHost";
 import {
   SIGN_OUT_SETTLE_MS,
   SignInChannel,
@@ -66,9 +71,9 @@ import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
-import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
+import "./features/writes/kinds";
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
@@ -107,55 +112,210 @@ import {
   textTransparent,
 } from "./theme/classes";
 
-const IssuePage = lazy(() =>
-  import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }))
-);
+/** The three route chunks a cold landing can need, each named once: the router's `lazy` below
+ *  and the entry's preload (`preloadRouteChunk`) call the same import, so the chunk the entry
+ *  starts cannot be another than the one the router renders. The Inbox's chunk is the fourth,
+ *  started wherever the Inbox is the page rather than the peek, and its import is named once in
+ *  the same way, in the module that owns it (`features/inbox/InboxHost.tsx`, `loadInboxChunk`). */
+const loadIssuePage = () =>
+  import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }));
+const loadProjectPage = () =>
+  import("./features/project/ProjectPage").then((module) => ({ default: module.ProjectPage }));
+const loadDocumentPage = () =>
+  import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }));
 
-const ProjectPage = lazy(() =>
-  import("./features/project/ProjectPage").then((module) => ({ default: module.ProjectPage }))
-);
-const DocumentPage = lazy(() =>
-  import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }))
-);
+// The three the entry can prefetch, under `renderChunk`, which is what tells the chunk-failure
+// recovery that a reader is waiting on this download rather than the entry having prefetched it
+// (`features/shell/DeploymentResilience.tsx`). Every other route of this file is under it too,
+// further down: these three are only the ones named twice, here and in the preload.
+const IssuePage = lazy(() => renderChunk(loadIssuePage));
+const ProjectPage = lazy(() => renderChunk(loadProjectPage));
+const DocumentPage = lazy(() => renderChunk(loadDocumentPage));
 
+/** The chunks the live document pulls as it renders, which the route chunk does not carry: the
+ *  editor's own library (`features/doc/editor.ts`, `loadEditorLibrary`) and the Yjs transport it
+ *  connects over (`features/doc/connection.ts`, `loadDocumentTransport`). Each is the import its
+ *  own module names for `ProofDocument`, started here rather than named again, so the preload
+ *  and the render cannot pull different chunks. A landing that draws a document always reaches
+ *  both, so this fetches no byte such a landing does not fetch anyway. */
+const loadDocumentChunks = () =>
+  Promise.all([
+    import("./features/doc/editor").then(({ loadEditorLibrary }) => loadEditorLibrary()),
+    import("./features/doc/connection").then(({ loadDocumentTransport }) =>
+      loadDocumentTransport()
+    ),
+  ]);
+
+/** The issue tabs whose panel draws a live document, and so the tabs that reach the chunks
+ *  above: the Spec, which is the tab a bare `/issues/<key>` opens on, and the two role
+ *  documents, Verification and Plan - each panel renders `ArtifactDocument`
+ *  (`features/issue/IssuePage.tsx`). The Conversation, Children, Activity, Decisions and
+ *  Collaborators panels render none, and a reader who opens one of them must download no
+ *  editor and no transport at all (`e2e/doc.e2e.ts`, "the Conversation tab downloads no editor
+ *  transport; the Spec tab loads it on demand"). */
+const DOCUMENT_TABS: readonly IssueTab[] = ["spec", "verification", "plan"];
+
+/** Whether the issue page at this address draws a live document, read from the address by the
+ *  router's own parse of it (`features/refs/routes.ts`, `issueTabForRoute`) rather than by a
+ *  second rule kept here, which could say one thing while the page drew another.
+ *
+ *  An address naming an artifact - `/issues/<key>/artifact/<slug>` - draws that artifact as a
+ *  document when it is one, and whether it is one is not known until the issue has been read.
+ *  `issueTabForRoute` reads such an address as the Artifacts tab while the artifact is unknown,
+ *  so it is taken here by its own kind instead: the chunks come down for every named artifact,
+ *  which is what the page needs for the documents among them and a prefetch the others do not
+ *  use. */
+function issueDrawsDocument(route: IssueRoute): boolean {
+  return route.kind === "artifact" || DOCUMENT_TABS.includes(issueTabForRoute(route, undefined));
+}
+
+/**
+ * Starts the chunks the address needs, beside the landing read rather than after it.
+ *
+ * `AuthGate` holds the whole tree behind the landing read, so a chunk is asked for only once
+ * that read has answered and the shell has rendered. The page's own reads then wait for those
+ * chunks to arrive and parse - the live editor's admission read of the document's text most of
+ * all (`features/doc/ProofDocument.tsx`) - which puts them in a wave of their own, after the
+ * reads that needed no chunk. Started here, they come down while the landing read is out, and
+ * the page's reads go out in the wave that follows the landing's answer.
+ *
+ * The address is read exactly as the landing read reads it (`landingReadOf`), so one parse
+ * decides which page is coming. The document chunks go to the addresses whose page draws a
+ * document and to no others: a project's document page always draws one, and an issue page
+ * draws one on the tabs `issueDrawsDocument` names and on no other, so the Conversation of an
+ * issue downloads no editor. The board draws no document and takes neither chunk, and an
+ * address that is no page of a cold landing starts nothing. The Inbox's own chunk holds to the
+ * same rule - a chunk is started where the landed page draws it - and needs a second question
+ * to hold it: the landing read takes every address that is neither an issue nor a project as
+ * the Inbox, while the Inbox is the page at the addresses `InboxPage` is mounted at and a peek
+ * drawer over every other, so the arm below asks `routeIsInbox` as well. A chunk that fails
+ * here is left to the router: `lazy` asks for the same import again, and that failure - a
+ * reader in front of a page that cannot draw - is the one `DeploymentResilience` reloads for
+ * (`prefetchChunk`).
+ *
+ * `pathname` is the caller's and has no default: the one call site is `main.tsx`, which passes
+ * `window.location.pathname` - the address the browser is loading, read before React renders
+ * anything - and the landing read beside it defaults to that same address of its own accord
+ * (`readLanding`).
+ */
+export function preloadRouteChunk(pathname: string): void {
+  switch (landingReadOf(pathname).page) {
+    case "issue": {
+      prefetchChunk(loadIssuePage);
+      // The tab decides the document chunks, not the issue: see `issueDrawsDocument`. The parse
+      // answers for every address this arm is reached by, since that is the arm's own test.
+      const route = parseIssuePath(pathname);
+      if (route !== undefined && issueDrawsDocument(route)) {
+        prefetchChunk(loadDocumentChunks);
+        // The page's content is its document, so the shell's code that draws none of it waits
+        // for the document to draw (`features/shell/content-drawn.ts`).
+        holdUntilContentDraws();
+      }
+      // Every tab but the Spec draws from a chunk of its own (`features/issue/tab-chunks.ts`).
+      // A landing on such a tab starts that chunk here, beside the landing read, for the same
+      // reason the page's chunk is started here: else it would come down only once the page
+      // has rendered, a wave after the reads that needed no chunk. A Spec landing starts none.
+      // An address that names an artifact starts none either: the page draws the issue's
+      // primary document there as the Spec, and the address alone does not say whether the
+      // artifact is that one (`issueDrawsDocument`). Any other artifact's Artifacts tab gets its
+      // chunk when the page renders it.
+      const tabChunk =
+        route === undefined || route.kind === "artifact"
+          ? undefined
+          : issueTabChunk(issueTabForRoute(route, undefined));
+      if (tabChunk !== undefined) prefetchChunk(tabChunk);
+      break;
+    }
+    case "document":
+      prefetchChunk(loadDocumentPage);
+      prefetchChunk(loadDocumentChunks);
+      holdUntilContentDraws();
+      break;
+    case "board":
+      prefetchChunk(loadProjectPage);
+      break;
+    case "inbox":
+      // The Inbox is a chunk of its own now (`features/inbox/InboxHost.tsx`), and this arm is
+      // every address that is neither an issue nor a project, so the chunk is started only
+      // where the page draws the list (`routeIsInbox`, which is the router's own ranking of
+      // `InboxPage`'s routes): beside the landing read rather than after it, which is what
+      // keeps the list's own reads in the wave that follows the landing's answer. Where the
+      // Inbox is the peek drawer instead, this is not the chunk the reader is waiting for, so
+      // the shell starts it after that page's first paint rather than beside its landing read
+      // (`features/inbox/InboxHost.tsx`, `usePeekChunkAfterFirstPaint`).
+      if (routeIsInbox(pathname)) prefetchChunk(loadInboxChunk);
+      break;
+  }
+}
+
+// Every other route of the shell, each under `renderChunk` as the three above are, and for the
+// same reason: a reader is waiting on this download the moment the router renders the route, so
+// its failure is one the chunk-failure recovery must reload for. Only a chunk nothing is waiting
+// on may be passed over, and the entry's prefetch is the only such chunk there is
+// (`features/shell/DeploymentResilience.tsx`). Left bare, as these were, a route chunk that
+// failed while the entry's prefetch of another chunk was still out was read as that prefetch's
+// and reloaded nothing, leaving the reader in front of a page that could not draw
+// (dispatch://INFRA-1109).
 const AgentsPage = lazy(() =>
-  import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
+  renderChunk(() =>
+    import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
+  )
 );
 
 const MachinesPage = lazy(() =>
-  import("./features/machines/MachinesPage").then((module) => ({ default: module.MachinesPage }))
+  renderChunk(() =>
+    import("./features/machines/MachinesPage").then((module) => ({ default: module.MachinesPage }))
+  )
 );
 
 const MachinePage = lazy(() =>
-  import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
+  renderChunk(() =>
+    import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
+  )
 );
 
 const AgentArtifactPage = lazy(() =>
-  import("./features/artifacts/AgentArtifactPage").then((module) => ({
-    default: module.AgentArtifactPage,
-  }))
+  renderChunk(() =>
+    import("./features/artifacts/AgentArtifactPage").then((module) => ({
+      default: module.AgentArtifactPage,
+    }))
+  )
 );
 
 const BroadcastsPage = lazy(() =>
-  import("./features/agents/BroadcastsPage").then((module) => ({ default: module.BroadcastsPage }))
+  renderChunk(() =>
+    import("./features/agents/BroadcastsPage").then((module) => ({
+      default: module.BroadcastsPage,
+    }))
+  )
 );
 
 const BroadcastPage = lazy(() =>
-  import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
+  renderChunk(() =>
+    import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
+  )
 );
 
 const DeliveryPage = lazy(() =>
-  import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
+  renderChunk(() =>
+    import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
+  )
 );
 const PipelinePage = lazy(() =>
-  import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
+  renderChunk(() =>
+    import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
+  )
 );
 
 const AnswersPage = lazy(() =>
-  import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
+  renderChunk(() =>
+    import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
+  )
 );
 const SettingsPage = lazy(() =>
-  import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
+  renderChunk(() =>
+    import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
+  )
 );
 
 function IssuePageFallback(): ReactNode {
@@ -234,7 +394,7 @@ function InboxPage(): ReactNode {
           Answered by you
         </Link>
       </div>
-      <Inbox />
+      <InboxHost />
     </section>
   );
 }
@@ -918,11 +1078,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             width={marginWidth}
           />
         </ErrorBoundary>
-        <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
-        <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
-        <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
-        {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
+        <SearchPaletteHost onClose={() => setBarOpen(false)} open={barOpen} />
+        <InboxDrawerHost onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
+        <ShortcutHelpHost onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
+        {createOpen ? <CreateIssueDialogHost onClose={() => setCreateOpen(false)} /> : null}
+        <RefPreviewLayer />
       </div>
     </MarginProvider>
   );
@@ -934,6 +1094,14 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
   // broadcast, a pin, a read mark and every other write. In an effect, not in the render: a
   // resume sends requests and writes to the store, which a render must not do, and React runs the
   // render twice under StrictMode. The store takes them up once, so a later effect does nothing.
+  //
+  // The kinds a kept write is restored by stay in the entry chunk (`features/writes/kinds.ts`,
+  // imported above), although they are about 22,000 of its bytes that no first paint draws.
+  // dispatch://INFRA-1109 tried that boundary - the registry behind an `import()` this effect
+  // awaited - and backed it out: the resume then ran after the shell's other mount effects
+  // instead of before them, and "the shell writes the browser's old pins one at a time"
+  // (`web/src/__tests__/responsive-shell.test.tsx`) caught the write it made a second time. A
+  // later tree that wants these bytes must move the resume's order, not only its download.
   const queryClient = useQueryClient();
   const login = user.login;
   useEffect(() => {
@@ -945,7 +1113,7 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
   return (
     <KeymapProvider>
       <AgentRegistryPoller />
-      <TextAskCard.Provider value={TextAskBlockCard}>
+      <TextAskCard.Provider value={TextAskCardHost}>
         <AppShell user={user} />
       </TextAskCard.Provider>
     </KeymapProvider>

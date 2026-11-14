@@ -1,3 +1,4 @@
+import type { IdempotencyLandedCode, InboxThreadKind } from "@legion/contracts";
 import {
   AUTH_NO_IDENTITY,
   answerNotKept,
@@ -8,9 +9,7 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_REPLAYED_HEADER,
-  type IdempotencyLandedCode,
-  type InboxThreadKind,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-api-constants";
 
 import {
   type Answer,
@@ -265,6 +264,19 @@ export function isUnauthorized(error: unknown): boolean {
 export function isEventHeadUnavailable(error: unknown): boolean {
   return (
     error instanceof ApiError && error.status === 503 && error.code === "EVENT_HEAD_UNAVAILABLE"
+  );
+}
+
+/** Whether `error` is the sign-in check's other 503, `EVENT_HEAD_READ_FAILED`: Dispatch could
+ *  not read the event log's head at all, where `EVENT_HEAD_UNAVAILABLE` above says only that no
+ *  id is proven final yet. The page asks again a few times by this code and then shows its error
+ *  with a Retry (`api/query-client.ts`), because unlike the other one this does not end on its
+ *  own. It is a predicate of its own, beside the one per coded error this file already keeps, so
+ *  a caller reads the code in one place rather than spelling the status and the code out again
+ *  (`api/queries.ts`, `refusalIsTheAnswer`). */
+export function isEventHeadReadFailed(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 503 && error.code === "EVENT_HEAD_READ_FAILED"
   );
 }
 
@@ -1660,6 +1672,16 @@ export class DispatchApiClient {
    *  rendered from, so this one read names its path and its answer itself. */
   whoAmI(): Promise<AuthenticatedUser> {
     return this.json<AuthenticatedUser>("/auth/whoami");
+  }
+
+  /** `GET /api/v1/landing`: one page's whole cold read - the viewer, the shell every page draws,
+   *  and the part of the answer this page needs - in place of the wave of reads each of those
+   *  parts costs on its own. `page` names which part the answer carries, and `key`, `project`
+   *  and `slug` name what that page is about; the route refuses a page it does not know and a
+   *  page whose names are absent with `400 LANDING_INPUT`. A Dispatch older than the route
+   *  answers 404, which is what the caller falls back on (`api/queries.ts`, `readLanding`). */
+  getLanding(read: Query<"/api/v1/landing", "get">) {
+    return this.read("/api/v1/landing", {}, read);
   }
 
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the

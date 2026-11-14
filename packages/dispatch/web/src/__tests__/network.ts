@@ -55,6 +55,16 @@ const shellHandlers: RequestHandler[] = [
     Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 })
   ),
   http.get("/api/v1/agents", () => Response.json([])),
+  // The one read a cold page makes before it draws anything (`api/queries.ts`, `readLanding`),
+  // answered as a Dispatch older than that route answers it. That is a real answer of this
+  // deployment - a rolling deploy puts such a server in front of a browser - and it is the one
+  // that leaves the suite measuring what it already measured: the read falls back to
+  // `/auth/whoami` and seeds nothing, so every page under test reads each resource from the
+  // route its own test answers or spies. A test of the landing itself spies `api.getLanding`,
+  // above this handler.
+  http.get("/api/v1/landing", () =>
+    Response.json({ code: "NOT_FOUND", error: "no such route" }, { status: 404 })
+  ),
   // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
   // (`features/sidebar/Sidebar.tsx:91`, drawn by `app.tsx:375`). The issue header reads the same

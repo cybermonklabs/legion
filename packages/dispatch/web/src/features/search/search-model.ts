@@ -1,4 +1,4 @@
-import { SEARCH_OPERATORS, SEARCH_RESULT_KINDS } from "@legion/contracts";
+import { SEARCH_OPERATORS, SEARCH_RESULT_KINDS } from "@legion/contracts/dispatch-api-constants";
 import type { SearchOperator, SearchOwner, SearchResult, SearchResultKind } from "../../api/types";
 
 /** `value` as a result kind, or `undefined` where this dashboard knows no such kind. Every

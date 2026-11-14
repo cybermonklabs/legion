@@ -1,4 +1,4 @@
-import { ISSUE_TITLE_MAX } from "@legion/contracts";
+import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-api-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";

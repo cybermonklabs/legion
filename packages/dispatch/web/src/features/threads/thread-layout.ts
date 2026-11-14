@@ -21,7 +21,7 @@
  * already watches (`useMarkThreadRead.ts`).
  */
 
-import { inboxThreadRow } from "@legion/contracts";
+import { inboxThreadRow } from "@legion/contracts/dispatch-api-constants";
 
 import type { MyReplyRow } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";

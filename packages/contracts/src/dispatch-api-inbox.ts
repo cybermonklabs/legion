@@ -1,4 +1,5 @@
 import type { AskThread, IssueAskRow, MyReplyRow, MyReplySession } from "./dispatch-api.generated";
+import type { INBOX_THREAD_KINDS } from "./dispatch-api-constants";
 
 /**
  * What a person and a session each have waiting: the narrowings the Inbox reads its rows
@@ -39,15 +40,6 @@ export interface MyReplyAgentRow extends MyReplyRow {
   readonly unread_reply_ids: string[];
 }
 
-/** `row` as the shape its own `kind` names. The route answers both kinds under one schema - the
- *  fields of each are optional on `MyReplyRow`, and `kind` is the open string the Go field
- *  carries - so this is the one place the two are told apart, and a surface that reads a field
- *  only one kind has narrows here rather than widening itself. A `kind` this build does not know
- *  reads as a Reply row, which is what every surface already draws for one. */
-export function inboxThreadRow(row: MyReplyRow): MyReplyThreadRow | MyReplyAgentRow {
-  return row.kind === "agent" ? (row as MyReplyAgentRow) : (row as MyReplyThreadRow);
-}
-
 /** The states `GET /api/v1/me/replies`'s `?state=` reads the caller's threads in: `unread`, the
  *  default and the Inbox count's own read, which answers the rows somebody else has written in
  *  since they read them; `inbox`, every row in their Inbox, read or not, less what they have
@@ -56,27 +48,12 @@ export function inboxThreadRow(row: MyReplyRow): MyReplyThreadRow | MyReplyAgent
 export const INBOX_LIST_STATES = ["unread", "inbox", "dismissed"] as const;
 export type InboxListState = (typeof INBOX_LIST_STATES)[number];
 
-/** How many rows one `state=dismissed` page answers, and how many `?cursor=` reads again. */
-export const INBOX_DISMISSED_PAGE = 200;
-
-/** The two kinds of thread row the Inbox holds, as `GET /api/v1/me/replies`'s `?kind=` and the
- *  Mark all read body both name them: a Reply row, a thread the reader wrote in where
- *  somebody else has written since, and an Agent row, a one-off message they sent a session
- *  that it answered. */
-export const INBOX_THREAD_KINDS = ["reply", "agent"] as const;
 export type InboxThreadKind = (typeof INBOX_THREAD_KINDS)[number];
 
 /** A priority the Inbox's Mark all read narrows to: `P0` to `P3` as the Inbox's filter writes
  *  them, or `none` for a thread whose issue carries no priority, a thread on a project document,
  *  which has no issue, and an Agent thread, which has neither. */
 export type MarkInboxReadPriority = "P0" | "P1" | "P2" | "P3" | "none";
-
-/** A row id `POST /api/v1/me/inbox/dismiss` names a thread by, as the Inbox draws its rows: a Reply
- *  row is `reply:<thread id>` and an Agent row `agent:<root message id>`, each id a uuid. An Ask
- *  row, the third kind the Inbox draws, has no Dismiss at all, and naming `ask:<id>` is
- *  400 INVALID_QUERY; the Reply row of an open ask's thread is an ordinary `reply:` id. A
- *  dismissal's `seen_replies` keys its entries by these same ids. */
-export const INBOX_DISMISS_ROW_PREFIXES = { reply: "reply:", agent: "agent:" } as const;
 
 /** What a dismissal carries for one Reply row: the row's own version as
  *  `GET /api/v1/me/replies` answered it (`MyReplyThreadRow.version`), and nothing else - a

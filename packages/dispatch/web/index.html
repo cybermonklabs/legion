@@ -27,8 +27,13 @@
       pagehide until pageshow. iOS Safari fires no beforeunload, and once the app runs a lazy
       chunk's preload can be cancelled by a link the reader follows before pagehide, so a
       navigation to another document that is not a download marks the page as left too. This
-      script never clears that before pageshow, unlike the bundle's finer rule: a failure of a
-      preload or stylesheet Vite inserted also reaches the bundle's own handler, which judges it.
+      script never clears that before pageshow, unlike the bundle's finer rule.
+      A modulepreload link that fails once the bundle is running (__dispatchChunkRecovery, set by
+      installChunkFailureRecovery) is a chunk the bundle asked for, and is left to the bundle's own
+      handler: Vite reports the same failure there, where a chunk the entry only prefetched is told
+      from one a render is waiting on. Everything the document itself names - the entry chunk, the
+      preload links beside it and the main stylesheet - stays this script's, since each of those
+      fails before the bundle can run or while it never does.
       A reload fires beforeunload itself, so that handler does not spend the budget again for the
       same failure. Storage that cannot be read or written reloads nothing, since nothing would
       bound the reloads.
@@ -61,7 +66,8 @@
                     url = element.src;
                   } else if (
                     element instanceof HTMLLinkElement &&
-                    (element.rel === "stylesheet" || element.rel === "modulepreload")
+                    (element.rel === "stylesheet" ||
+                      (element.rel === "modulepreload" && !window.__dispatchChunkRecovery))
                   ) {
                     url = element.href;
                   } else {

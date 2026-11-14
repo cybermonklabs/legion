@@ -1,19 +1,23 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
+import type {
+  AgentStreamCommand,
+  AgentStreamFrame,
+  AgentStreamMessage,
+  AgentStreamSettings,
+  AgentStreamSettingsReported,
+  AgentStreamToolResult,
+} from "@legion/contracts";
 import {
   AGENT_STREAM_LIMITS,
   AGENT_STREAM_TRUNCATION_SUFFIX,
-  type AgentStreamCommand,
-  type AgentStreamFrame,
-  type AgentStreamMessage,
-  type AgentStreamSettings,
-  type AgentStreamSettingsReported,
-  type AgentStreamToolResult,
-  comparableLines,
   isTypableCommandName,
+} from "@legion/contracts/agent-stream";
+import {
+  comparableLines,
   PICTURE_PLACEHOLDER,
   pictureSyntax,
   trimmedLines,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-text-rules";
 import { dispatchMetadata, type KeyedMessage } from "./dispatch-marks";
 
 /** The `context` frame as the contract carries it: the two figures, with the share they make

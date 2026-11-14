@@ -6,6 +6,7 @@ import type {
   AskResolution,
   AskWithTrees,
 } from "./dispatch-api.generated";
+import { ASK_TURNS } from "./dispatch-api-constants";
 import {
   ActorActSchema,
   ActorSchema,
@@ -17,7 +18,6 @@ import {
 } from "./dispatch-api-core";
 import { AskApprovalDocumentSchema } from "./dispatch-api-documents";
 import { type IssueRouteReach, issueFields } from "./dispatch-api-issues";
-import { ASK_TURNS } from "./dispatch-api-limits";
 import { referenceChangesFields, threadLoginsFields } from "./dispatch-api-refs";
 import { ASK_URGENCIES } from "./dispatch-tools";
 

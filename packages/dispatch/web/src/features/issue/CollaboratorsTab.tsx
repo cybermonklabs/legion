@@ -1,4 +1,5 @@
-import { isLegionRole, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import type { LegionRole } from "@legion/contracts";
+import { isLegionRole, LEGION_ROLES } from "@legion/contracts/legion-roles";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 

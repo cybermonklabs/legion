@@ -1,5 +1,6 @@
 import { beforeEach, expect, spyOn, test } from "bun:test";
-import { ID_AMBIGUOUS, itemFromSearch } from "@legion/contracts";
+import { ID_AMBIGUOUS } from "@legion/contracts/dispatch-api-constants";
+import { itemFromSearch } from "@legion/contracts/dispatch-href";
 import type { QueryClient } from "@tanstack/react-query";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";

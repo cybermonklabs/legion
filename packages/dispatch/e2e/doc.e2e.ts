@@ -2,18 +2,24 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+import { REF_PREVIEW_OPEN_DELAY_MS } from "../web/src/features/refs/ref-preview-timing";
+import { HOLD_LIMIT_MS } from "../web/src/features/shell/content-drawn";
 import {
+  baseUrl,
   createComment,
   createIssue,
+  createIssueArtifact,
   createMessage,
   createNamedVersion,
   createProject,
+  createProjectDocument,
   editArtifact,
   getArtifact,
   getArtifactText,
   getArtifactVersion,
   patchIssue,
+  userHeaders,
 } from "./api";
 import { runDispatch } from "./dispatch-cli";
 import {
@@ -29,8 +35,10 @@ import {
   typeAtEnd,
 } from "./editor";
 import { engineParagraphs } from "./read-back";
-import { type BrowserContext, expect, test } from "./test";
-import { asUser } from "./users";
+import { navigateInApp } from "./sends";
+import { failAssetWhen, MARGIN_CHUNK, missEntryChunk, recordTabReloads, tabReloads } from "./shell";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
+import { asUser, withAlice } from "./users";
 
 const session = {
   actor: { kind: "session" as const, id: "e2e-doc-editor", origin: { tmux: "dispatch:1.3" } },
@@ -735,6 +743,496 @@ test("the Conversation tab downloads no editor transport; the Spec tab loads it 
   }
 });
 
+/** Stops the page's clock: from here on only the row moves it (`page.clock.runFor`). The clock
+ *  goes on between the read of the page's time and the call, and `pauseAt` refuses a time the
+ *  clock has passed, so the pause is set half a second ahead of that read. */
+async function pausePageClock(page: Page): Promise<void> {
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 500);
+}
+
+/** Counts the frames of the page's live socket (`/ws/live`, `web/src/api/live-socket.ts`) that
+ *  carry an event of `issue`: the moment the page has an event, before the page acts on it. */
+function issueEventFrames(page: Page, issue: string): () => number {
+  let frames = 0;
+  page.on("websocket", (socket) => {
+    if (new URL(socket.url()).pathname !== "/ws/live") return;
+    socket.on("framereceived", ({ payload }) => {
+      const frame = JSON.parse(String(payload)) as {
+        readonly type?: string;
+        readonly event?: { readonly issue_key?: string };
+      };
+      if (frame.type === "event" && frame.event?.issue_key === issue) frames += 1;
+    });
+  });
+  return () => frames;
+}
+
+// SLOW(>=2s): the row passes the shell's hold on purpose. A document whose transport never
+// connects neither draws nor fails, so nothing but `HOLD_LIMIT_MS` ends the hold on the margin,
+// the preview layer and the event map (`web/src/features/shell/content-drawn.ts`); the row
+// proves the page gets its margin and its live refresh all the same, with no key or click from
+// the reader, since either would end the hold by itself. The page's clock carries it past the
+// limit, so no wait of the row is longer than the suite's own expect timeout.
+test("a document that never connects still gets the page its margin and its live refresh", async ({
+  browser,
+}) => {
+  await createProject({ key: "HOLD", name: "Held" });
+  const issue = await createIssue({
+    project: "HOLD",
+    spec: "# Held\n\nThis document never connects.\n",
+    title: "Before the event",
+  });
+
+  await withAlice(browser, async (page) => {
+    await page.clock.install();
+    // Holding every document socket: the editor never syncs, so it is never built.
+    await documentTransport(page, { holding: true });
+    const requested = marginChunkRequests(page);
+    const events = issueEventFrames(page, issue.key);
+    await page.goto(`/issues/${issue.key}`);
+    const before = page.getByRole("heading", { level: 1, name: "Before the event" });
+    await expect(before).toBeVisible();
+    // The hold cannot reach its limit now, however long the page takes to get the event.
+    await pausePageClock(page);
+
+    // An event the page takes while the hold stands: the margin is not asked for yet, and the
+    // title the event changed is not read again yet.
+    await patchIssue(issue.key, { title: "After the event" });
+    await expect.poll(events).toBeGreaterThan(0);
+    expect(requested(), "the hold stands while the event arrives").toBe(0);
+    await expect(before).toBeVisible();
+
+    // The hold ends at its limit, and the event that arrived during it refreshes the title. The
+    // clock goes on again, since the refresh waits on timers of its own (`api/event-feed.ts`).
+    await page.clock.runFor(HOLD_LIMIT_MS);
+    await page.clock.resume();
+    await expect(page.getByRole("heading", { level: 1, name: "After the event" })).toBeVisible();
+    await expect(page.getByRole("complementary", { name: "Review margin" })).toBeVisible();
+    await expect(documentEditor(page).locator("[data-block-id]")).toHaveCount(0);
+  });
+});
+
+// SLOW(>=2s): eleven cold landings, each read for its own content and then for the margin.
+test("every issue tab and a project's document get the margin once their own content has drawn", async ({
+  browser,
+}) => {
+  await createProject({ key: "TABS", name: "Tabs" });
+  const issue = await createIssue({
+    project: "TABS",
+    spec: ":::requirement{#r1}\nEach tab draws its margin.\n:::\n",
+    title: "Every tab",
+  });
+  await createIssueArtifact(issue.key, {
+    content: `:::check{#c1 serves="dispatch://${issue.key}/spec#b-r1" surface="browser" run="bun run e2e"}\nEach tab draws its margin.\n:::\n`,
+    name: "verification.md",
+  });
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is built.\n\n:::plan_task{#t1 serves="dispatch://${issue.key}/spec#b-r1"}\nDraw the margin.\n:::\n`,
+    name: "plan.md",
+  });
+  await createIssueArtifact(issue.key, {
+    content: "# Notes\n\nA second document.\n",
+    name: "notes.md",
+  });
+  await createProjectDocument("TABS", {
+    content: "# Runbook\n\nA project document.\n",
+    name: "runbook.md",
+  });
+
+  // The first block of a document is that page's content. The other tabs draw no document, so
+  // their content is their panel once it draws what its own reads hold, and not the skeleton of
+  // its chunk or of those reads: the panel is in the page, nothing in it is busy, and it shows
+  // one thing that only its answered reads draw.
+  const block = (scope: string) => (page: Page) => page.locator(`${scope} [data-block-id]`).first();
+  const panel = (tab: string, shows: (panel: Locator) => Locator) => async (page: Page) => {
+    const element = page.locator(`#issue-${tab}-panel`);
+    await expect(element).toBeVisible();
+    await expect(element.locator('[aria-busy="true"]')).toHaveCount(0);
+    return shows(element);
+  };
+  const landings: readonly {
+    path: string;
+    content: (page: Page) => Locator | Promise<Locator>;
+    /** What the visual baseline of the page holds beside the margin, read when the margin is in. */
+    withMargin?: (page: Page) => Locator;
+  }[] = [
+    { content: block("#issue-spec-panel"), path: `/issues/${issue.key}` },
+    { content: block("#issue-verification-panel"), path: `/issues/${issue.key}/verification` },
+    { content: block("#issue-plan-panel"), path: `/issues/${issue.key}/plan` },
+    {
+      content: panel("conversation", (element) =>
+        element.getByRole("group", { name: "Conversations" })
+      ),
+      path: `/issues/${issue.key}/conversation`,
+    },
+    {
+      content: panel("children", (element) => element.getByText("No child issues")),
+      path: `/issues/${issue.key}/children`,
+    },
+    {
+      content: panel("artifacts", (element) => element.getByText("notes.md")),
+      path: `/issues/${issue.key}/artifacts`,
+    },
+    {
+      content: block("#issue-artifacts-panel"),
+      path: `/issues/${issue.key}/artifacts/notes-md`,
+      // The header the shot holds once its ring is gone (`e2e/review-routes.ts`,
+      // `issue-artifact`): the ring lasts two seconds from the content, and the margin can come
+      // in after them.
+      withMargin: (page) => page.locator('[data-testid="artifact-header"]:not(.ring-2)'),
+    },
+    {
+      content: panel("activity", (element) =>
+        element.getByRole("list", { name: "Issue activity" })
+      ),
+      path: `/issues/${issue.key}/activity`,
+    },
+    {
+      content: panel("decisions", (element) => element.getByText("No open questions.")),
+      path: `/issues/${issue.key}/decisions`,
+    },
+    {
+      // Alice is the issue's assignee, so she is its one collaborator.
+      content: panel("collaborators", (element) => element.getByRole("region", { name: "People" })),
+      path: `/issues/${issue.key}/collaborators`,
+    },
+    {
+      content: block('article[aria-label="Document"]'),
+      path: "/projects/TABS/documents/runbook-md",
+    },
+  ];
+
+  const alice = await asUser(browser, "alice");
+  try {
+    for (const { content, path, withMargin } of landings) {
+      // A page of its own, with no key and no click: either would end the shell's hold by
+      // itself (`web/src/features/shell/content-drawn.ts`), and the row is about what ends it
+      // without the reader.
+      const page = await alice.newPage();
+      await page.goto(path);
+      await expect(await content(page), path).toBeVisible();
+      // Well under `HOLD_LIMIT_MS`: a landing whose own content never ends the hold gets its
+      // margin only at that limit, and fails here.
+      await expect(page.getByRole("tab", { name: "Comments" }), path).toBeVisible({
+        timeout: 2_000,
+      });
+      if (withMargin !== undefined) await expect(withMargin(page), path).toBeVisible();
+      await page.close();
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+/** Counts the page's requests for the margin's own chunk (`web/src/features/margin/
+ *  MarginColumn.tsx`), which the shell asks for only once its hold on a landing has ended
+ *  (`web/src/features/shell/content-drawn.ts`): the one sign of that end on a page whose margin
+ *  draws nothing to look at. */
+function marginChunkRequests(page: Page): () => number {
+  let requests = 0;
+  page.on("request", (request) => {
+    if (MARGIN_CHUNK.test(new URL(request.url()).pathname)) requests += 1;
+  });
+  return () => requests;
+}
+
+/** Uploads `name` to `issue` as a file artifact, the multipart upload the Artifacts tab makes:
+ *  a JSON upload is always a document. */
+async function uploadIssueFile(issue: string, name: string, content: string): Promise<void> {
+  const form = new FormData();
+  form.set("name", name);
+  form.set("file", new Blob([content], { type: "text/plain" }), name);
+  const response = await fetch(new URL(`/api/v1/issues/${issue}/artifacts`, baseUrl), {
+    body: form,
+    headers: await userHeaders("alice"),
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`upload ${name} to ${issue}: ${response.status} ${await response.text()}`);
+  }
+}
+
+// SLOW(>=2s): four cold landings, each read for its own content and then for the margin.
+// Each address below starts the shell's hold, because it names a tab or an artifact that draws a
+// live document, and each turns out to draw none: the issue page's own reads say so, and the page
+// ends the hold itself (`web/src/features/issue/IssuePage.tsx`). Nothing else would end it before
+// `HOLD_LIMIT_MS`, since the row sends no key and no click.
+test("an issue page whose reads show it draws no document gets its margin within two seconds", async ({
+  browser,
+}) => {
+  await createProject({ key: "NODOC", name: "No document" });
+  const issue = await createIssue({ project: "NODOC", spec: "# Spec\n", title: "No plan yet" });
+  await uploadIssueFile(issue.key, "notes.txt", "Plain notes, not a document.\n");
+  // The slug the server gives a name, as `notes.md` is `notes-md` in the row above.
+  const file = "notes-txt";
+  const landings: readonly {
+    path: string;
+    content: (page: Page) => Locator;
+    margin: (page: Page, requested: () => number) => Promise<void>;
+    /** The page's read fails and is asked again (`web/src/api/query-client.ts`, `queryRetry`). */
+    retried?: true;
+  }[] = [
+    ...(["plan", "verification"] as const).map((tab) => ({
+      // A role document the issue does not have yet: the tab draws its empty state.
+      content: (page: Page) => page.locator(`#issue-${tab}-panel [data-testid="${tab}-empty"]`),
+      margin: (page: Page) =>
+        expect(page.getByRole("tab", { name: "Comments" })).toBeVisible({ timeout: 2_000 }),
+      path: `/issues/${issue.key}/${tab}`,
+    })),
+    {
+      // A file, not a document: the header draws it and no editor ever mounts.
+      content: (page) => page.getByTestId("artifact-header"),
+      margin: (page) =>
+        expect(page.getByRole("tab", { name: "Comments" })).toBeVisible({ timeout: 2_000 }),
+      path: `/issues/${issue.key}/artifacts/${file}`,
+    },
+    {
+      // No such issue: the page draws its refusal, and the margin's chunk is what the end of
+      // the hold asks for, since the margin itself draws nothing beside a missing issue.
+      content: (page) => page.getByRole("heading", { level: 1, name: "Issue not found" }),
+      margin: (_page, requested) => expect.poll(requested, { timeout: 2_000 }).toBeGreaterThan(0),
+      path: "/issues/NODOC-999",
+      retried: true,
+    },
+  ];
+
+  const alice = await asUser(browser, "alice");
+  try {
+    for (const { content, margin, path, retried } of landings) {
+      const page = await alice.newPage();
+      const requested = marginChunkRequests(page);
+      // A read that fails is asked again twice, each `QUERY_RETRY_DELAY_MS` after the last, before
+      // the page says so. The row moves the page's clock through those waits rather than wait.
+      if (retried) await page.clock.install();
+      await page.goto(path);
+      if (retried) {
+        await expect
+          .poll(async () => {
+            await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+            return content(page).isVisible();
+          }, path)
+          .toBe(true);
+      }
+      await expect(content(page), path).toBeVisible();
+      // Well under `HOLD_LIMIT_MS`: a page whose reads never end the hold gets its margin only at
+      // that limit, and fails here.
+      await margin(page, requested);
+      await page.close();
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): three cold landings on a live document that never draws. Each is a way the
+// document gives up being the page's content without drawing a block, and each ends the shell's
+// hold by itself (`web/src/features/document/DocumentPage.tsx`, and `ProofDocument.tsx`'s failed
+// admission and unmount), so the margin comes in within two seconds and not at `HOLD_LIMIT_MS`.
+test("a document page whose read fails, a refused admission and a document left mid-hold each end the hold", async ({
+  browser,
+}) => {
+  await createProject({ key: "GONE", name: "Given up" });
+  const issue = await createIssue({ project: "GONE", spec: "# Refused\n", title: "Refused" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    // A project document that is not there: the page's read of it fails, and the page says so.
+    const missing = await alice.newPage();
+    const missingMargin = marginChunkRequests(missing);
+    await missing.goto("/projects/GONE/documents/no-such-md");
+    await expect(missing.getByText("Document not found")).toBeVisible();
+    await expect.poll(missingMargin, { timeout: 2_000 }).toBeGreaterThan(0);
+    await missing.close();
+
+    // The live document's admission read refused, as a server answers an editor whose schema it
+    // cannot take: the document shows its refusal and never connects.
+    const refused = await alice.newPage();
+    await refused.route(/\/api\/v1\/artifacts\/[^/]+\/text(\?|$)/u, (route) =>
+      route.fulfill({
+        body: JSON.stringify({ code: "DOC_SCHEMA", error: "outside the schema this server takes" }),
+        contentType: "application/json",
+        status: 409,
+      })
+    );
+    const refusal = refused.waitForResponse((response) =>
+      /\/api\/v1\/artifacts\/[^/]+\/text(\?|$)/u.test(response.url())
+    );
+    await refused.goto(`/issues/${issue.key}`);
+    await refusal;
+    await expect(refused.getByRole("tab", { name: "Comments" })).toBeVisible({ timeout: 2_000 });
+    await refused.close();
+
+    // A document whose socket never connects, left for a page that draws none before it drew:
+    // the document unmounts, and what the shell held for it is no longer waiting on anything.
+    const left = await alice.newPage();
+    const leftMargin = marginChunkRequests(left);
+    await documentTransport(left, { holding: true });
+    await left.goto(`/issues/${issue.key}`);
+    await expect(left.getByRole("heading", { level: 1, name: "Refused" })).toBeVisible();
+    expect(leftMargin(), "the margin is held while the document has not drawn").toBe(0);
+    await navigateInApp(left, "/agents");
+    await expect(left.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
+    await expect.poll(leftMargin, { timeout: 2_000 }).toBeGreaterThan(0);
+    await left.close();
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): two cold landings, the first only to spend the tab's reloads in its own storage.
+// The hold's last end: a live document whose editor cannot come down ends the hold by itself
+// (`reportLoadFailure`, `web/src/features/doc/ProofDocument.tsx`), so the margin comes in within
+// two seconds of the document saying so and not at `HOLD_LIMIT_MS`. A failed chunk a reader waits
+// on reloads the page from the tab's three (`web/src/features/shell/DeploymentResilience.tsx`,
+// `web/index.html`), and the reload would fetch the editor again and draw the document, so the row
+// spends the tab's three first, as a tab whose assets kept failing has: the one landing fails its
+// editor and stays on the page that says so.
+test("a live document whose editor fails to download ends the hold", async ({ browser }) => {
+  await createProject({ key: "NOEDIT", name: "No editor" });
+  const issue = await createIssue({ project: "NOEDIT", spec: "# Spec\n", title: "No editor" });
+
+  await withAlice(browser, async (page) => {
+    const counts = await missEntryChunk(page, () => false, baseUrl);
+    await page.goto("/");
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    // The editor library's own chunk (`@legion/proof-editor`, `web/src/features/doc/editor.ts`,
+    // `loadEditorLibrary`), and not `lib-headless`, whose name it begins.
+    const failed = await failAssetWhen(page, /\/assets\/lib-[\w-]{8}\.js$/u, async () => undefined);
+
+    await page.goto(`/issues/${issue.key}`);
+    await expect(
+      page.getByRole("alert").filter({ hasText: "This document could not load" })
+    ).toBeVisible();
+    // Well under `HOLD_LIMIT_MS`: a failed load that never ends the hold gets its margin only at
+    // that limit, and fails here.
+    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible({ timeout: 2_000 });
+    expect(failed(), "the editor's chunk was asked for and failed").toBeGreaterThan(0);
+    expect(counts.documents, "the failure reloaded nothing").toBe(2);
+    expect(await tabReloads(page)).toEqual(spent);
+    await expect(documentEditor(page).locator("[data-block-id]")).toHaveCount(0);
+  });
+});
+
+// The editor is built from the server's block schema (`web/src/features/doc/ProofDocument.tsx`),
+// so a page that cannot read it draws no document, and says "Reload to edit." in its place. That
+// ends the shell's hold as a failed editor does, so the margin comes in within two seconds of the
+// page saying so and not at `HOLD_LIMIT_MS`.
+test("a live document whose block schema cannot be read ends the hold", async ({ browser }) => {
+  await createProject({ key: "NOSCHEMA", name: "No schema" });
+  const issue = await createIssue({ project: "NOSCHEMA", spec: "# Spec\n", title: "No schema" });
+
+  await withAlice(browser, async (page) => {
+    // Every read of the schema fails, the page's retries of it too.
+    await page.route(/\/api\/v1\/schema\/blocks(\?|$)/u, (route) =>
+      route.fulfill({
+        body: JSON.stringify({ code: "INTERNAL", error: "the schema could not be read" }),
+        contentType: "application/json",
+        status: 500,
+      })
+    );
+    // The page asks for the schema twice more, each `QUERY_RETRY_DELAY_MS` after the last,
+    // before it says it cannot (`web/src/api/query-client.ts`). The row moves the page's clock
+    // through those waits rather than wait.
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}`);
+    const reload = page.getByText("Reload to edit.");
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+        return reload.isVisible();
+      })
+      .toBe(true);
+    // Well under `HOLD_LIMIT_MS`: a failed schema read that never ends the hold gets its margin
+    // only at that limit, and fails here.
+    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible({ timeout: 2_000 });
+    await expect(documentEditor(page).locator("[data-block-id]")).toHaveCount(0);
+  });
+});
+
+// While the shell holds the margin, the page keeps the margin's column empty and as wide as the
+// margin will be (`MarginFrame`, `web/src/features/margin/MarginColumn.tsx`), so a document drawn
+// before the margin keeps its width when the margin arrives. The row holds the margin's chunk on
+// the wire, which is the moment between the document's first block and the margin.
+test("a document drawn before the margin keeps its width when the margin arrives", async ({
+  browser,
+}) => {
+  await createProject({ key: "WIDE", name: "Width" });
+  const issue = await createIssue({
+    project: "WIDE",
+    spec: "# Width\n\nA paragraph long enough to fill the document's column from edge to edge.\n",
+    title: "Width",
+  });
+
+  await withAlice(browser, async (page) => {
+    await page.setViewportSize({ height: 900, width: 1440 });
+    const marginChunk = Promise.withResolvers<void>();
+    await page.route(MARGIN_CHUNK, async (route) => {
+      await marginChunk.promise;
+      await route.continue();
+    });
+    await page.goto(`/issues/${issue.key}`);
+    const document = page.locator('article[aria-label="Document"]');
+    await expect(documentEditor(page).locator("[data-block-id]").first()).toBeVisible();
+    const held = (await document.boundingBox())?.width;
+
+    marginChunk.resolve();
+    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
+    const arrived = (await document.boundingBox())?.width;
+    expect(held, "the document has a width while the margin is held").toBeGreaterThan(0);
+    expect(arrived).toBe(held);
+  });
+});
+
+// SLOW(>=2s): the row passes the shell's hold, as the row about a document that never connects
+// does, so that it reads the ring over the whole hold and not for two seconds of it. The row moves
+// the page's clock across the hold a tenth of a second at a time, so no wait of the row is longer
+// than the suite's own.
+test("the ring on a landed artifact's header lasts two seconds from the moment its content draws", async ({
+  browser,
+}) => {
+  await createProject({ key: "RING", name: "Ring" });
+  const issue = await createIssue({ project: "RING", spec: "# Ring\n", title: "Ringed" });
+  await createIssueArtifact(issue.key, {
+    content: "# Notes\n\nNever connects.\n",
+    name: "notes.md",
+  });
+
+  await withAlice(browser, async (page) => {
+    await page.clock.install();
+    // Holding every document socket: the document never draws, so only `HOLD_LIMIT_MS` ends
+    // the shell's hold (`web/src/features/shell/content-drawn.ts`).
+    await documentTransport(page, { holding: true });
+    const requested = marginChunkRequests(page);
+    await page.goto(`/issues/${issue.key}/artifacts/notes-md`);
+    const header = page.getByTestId("artifact-header");
+    const ringed = page.locator('[data-testid="artifact-header"].ring-2');
+    await expect(ringed).toBeVisible();
+    await pausePageClock(page);
+    // Longer than two seconds from the header's mount: a ring counted from there is gone now.
+    await page.clock.runFor(3_000);
+    await expect(ringed).toBeVisible();
+    expect(requested(), "the hold stands").toBe(0);
+
+    // On to the hold's limit, a tenth of a second at a time. The end of the hold asks for the
+    // margin's chunk, so the row stops within a step or two of that end, which is where the
+    // ring's two seconds begin.
+    for (let step = 0; requested() === 0 && step < HOLD_LIMIT_MS / 100; step += 1) {
+      await page.clock.runFor(100);
+    }
+    await expect.poll(requested, { message: "the hold ended at its limit" }).toBeGreaterThan(0);
+    await page.clock.runFor(1_500);
+    await expect(ringed, "the ring is on 1.5 s after the hold ended").toBeVisible();
+    await page.clock.runFor(1_000);
+    await expect(ringed, "the ring is gone 2.5 s after the hold ended").toHaveCount(0);
+    await expect(header).toBeVisible();
+    // The margin draws on timers of its own (React holds a boundary's content back after its
+    // fallback), so the clock goes on again for it.
+    await page.clock.resume();
+    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
+  });
+});
+
 test("a version deep link renders the comment's original quote highlighted in a read-only editor", async ({
   browser,
 }, testInfo) => {
@@ -817,6 +1315,70 @@ test("clicking a Markdown dispatch:// link in the live editor navigates in-app w
   } finally {
     await alice.close();
   }
+});
+
+// The preview layer reads the reference under a resting pointer once, when it arrives
+// (`attachTriggers`, `web/src/features/refs/RefPreview.tsx`), and it can arrive while the reader
+// holds a button down on a link: the reader's first press is one of the things that end the
+// shell's hold, so the layer can come in during a drag that began on a link. `onPointerOver` opens
+// no card while a button is held, and the read on arrival keeps the same rule. The row holds the
+// layer's chunk on the wire until the button is down, and the page's clock carries the card's
+// open delay, so no wait of the row is longer than the suite's own.
+test("a preview layer that arrives while a button is held on a link opens no card for it", async ({
+  browser,
+}) => {
+  await createProject({ key: "HELD", name: "Held button" });
+  const target = await createIssue({ project: "HELD", title: "Held target" });
+  const source = await createIssue({
+    project: "HELD",
+    spec: `See [the held link](dispatch://${target.key}) for context.`,
+    title: "Held source",
+  });
+
+  await withAlice(browser, async (page) => {
+    await page.clock.install();
+    // The moment the layer listens for hovers: its `pointerover` listener on the document, the
+    // one `attachTriggers` adds, which is also when it reads the reference under the pointer.
+    await page.addInitScript(() => {
+      const add = Document.prototype.addEventListener;
+      Document.prototype.addEventListener = function (
+        this: Document,
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | AddEventListenerOptions
+      ) {
+        if (type === "pointerover") Reflect.set(window, "__hoverListened", true);
+        add.call(this, type, listener, options);
+      };
+    });
+    const listened = () => page.evaluate(() => Reflect.get(window, "__hoverListened") === true);
+    const layer = Promise.withResolvers<void>();
+    await page.route(/\/assets\/RefPreview-[^/]+\.js$/u, async (route) => {
+      await layer.promise;
+      await route.continue();
+    });
+    await page.goto(`/issues/${source.key}/spec`);
+    const link = documentEditor(page).getByRole("link", { name: "the held link" });
+    await expect(link).toBeVisible();
+
+    await link.hover();
+    await page.mouse.down();
+    expect(await listened(), "the layer is not in yet").toBe(false);
+    layer.resolve();
+    await expect.poll(listened).toBe(true);
+    // Past the card's open delay: a card the layer's arrival opened would be on the page now.
+    await page.clock.runFor(REF_PREVIEW_OPEN_DELAY_MS);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+
+    // The layer is in: once the button is up, a hover the reader makes opens the card. The button
+    // comes up away from the link, as at the end of a drag, since a press and a release on the
+    // link are a click on it, which follows it to the other issue.
+    await page.mouse.move(0, 0);
+    await page.mouse.up();
+    await link.hover();
+    await page.clock.runFor(REF_PREVIEW_OPEN_DELAY_MS);
+    await expect(page.getByRole("tooltip")).toContainText("Held target");
+  });
 });
 
 // INFRA-536: `\&` is an escaped ampersand, so `\&amp;` is the text `&amp;`, not `&` - in the

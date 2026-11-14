@@ -61,15 +61,6 @@ export interface ArtifactVersionBlob {
 export type ArtifactVersionContent = ArtifactVersionText | ArtifactVersionBlob;
 
 /**
- * The code of the `409` Dispatch answers an id written as a prefix two items or more carry: a
- * page address, a `dispatch://` reference or a dashboard address in text, or a route that takes
- * an id in its path (INFRA-869). `candidates` then lists the items it names, at most ten, in id
- * order, for the caller to write more of the id or to choose one. Generated into Go as
- * `contracts.IDAmbiguous`.
- */
-export const ID_AMBIGUOUS = "ID_AMBIGUOUS";
-
-/**
  * One item an ambiguous id prefix names (`ID_AMBIGUOUS`). `id` is the whole id the prefix
  * shortens - the item's uuid, or the block id a document block is unique under - and `ref` its
  * whole `dispatch://` reference, empty for an item that has no address (a direct message, a

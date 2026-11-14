@@ -28,6 +28,7 @@ import {
 import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
 import { askControls, hasReadingPane, inboxRow } from "./inbox-pane";
+import { pressOnceTheShellListens } from "./keyboard";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertWhole } from "./unclipped";
@@ -51,8 +52,7 @@ async function approvalCard(page: Page, askId: string): Promise<Locator> {
     return page.getByTestId(`ask-${askId}`);
   }
   await page.goto("/agents");
-  await page.locator("body").focus();
-  await page.keyboard.press("i");
+  await pressOnceTheShellListens(page, "i");
   await expect(drawer(page)).toBeVisible();
   return drawer(page).getByTestId(`ask-${askId}`);
 }
@@ -636,8 +636,7 @@ test("an answer started before a hand-back that rewords nothing is saved, and th
       route.close({ code: 1011, reason: "test network drop" })
     );
     await answering.goto("/agents");
-    await answering.locator("body").focus();
-    await answering.keyboard.press("i");
+    await pressOnceTheShellListens(answering, "i");
     const shown = drawer(answering)
       .locator('[data-inbox-section="agent"]')
       .getByTestId(`ask-${requested.ask.id}`);
@@ -655,8 +654,7 @@ test("an answer started before a hand-back that rewords nothing is saved, and th
       "human"
     );
     await watching.goto("/agents");
-    await watching.locator("body").focus();
-    await watching.keyboard.press("i");
+    await pressOnceTheShellListens(watching, "i");
     const handedBack = drawer(watching).getByTestId(`ask-${requested.ask.id}`);
     await expect(handedBack).toBeVisible();
     await expect(handedBack).not.toContainText("Edited");

@@ -144,10 +144,21 @@ async function waitForReads(pending: Map<Request, number>): Promise<void> {
  *  reading an issue of its own, compare as lists. */
 const ISSUE_PATH = "/api/v1/issues/<issue>";
 
+/** The one read a cold page makes for its viewer, whose answer carries the issue the address
+ *  names (`web/src/api/queries.ts`, `readLanding`). A read of this issue it carries is a read
+ *  of this issue, so it is recorded below under this path. */
+const LANDING_PATH = "/api/v1/landing";
+
 /** The reads an issue's activity tab makes for itself at its first load. A window that counts
  *  what an event costs a page opens only after these have gone out, since they are the page's
- *  own lazy first reads and not the event's doing. */
-const FIRST_ISSUE_READS = [`${ISSUE_PATH}/comments`, `${ISSUE_PATH}/asks`, `${ISSUE_PATH}/events`];
+ *  own lazy first reads and not the event's doing.
+ *
+ *  The issue's comments and its asks were each a read of their own here. The landing carries
+ *  both and seeds them under the keys their readers hold (`web/src/api/queries.ts`,
+ *  `seedIssuePage`), so the page asks their routes not at all, and the one read that stands in
+ *  for them is the landing itself - which is why it is first in this list, as those reads were
+ *  the page's first. The unread mark's event read is still the page's own. */
+const FIRST_ISSUE_READS = [LANDING_PATH, `${ISSUE_PATH}/events`];
 
 /** Every read the page makes of the one issue `key` names, in order, as the request's pathname
  *  with that key replaced by `<issue>`. Reads of anything else are left out: the agent list, the
@@ -160,7 +171,15 @@ function trackIssueReads(page: Page, key: string): string[] {
   const reads: string[] = [];
   const prefix = `/api/v1/issues/${key}`;
   page.on("request", (request) => {
-    const { pathname } = new URL(request.url());
+    const url = new URL(request.url());
+    // The landing read of this issue, which is a read of it by another route: counted here so
+    // that a page reading the issue twice - once in its landing and once on the issue's own
+    // route - is two reads in this list, as two reads of the route always were.
+    if (url.pathname === LANDING_PATH && url.searchParams.get("key") === key) {
+      reads.push(LANDING_PATH);
+      return;
+    }
+    const { pathname } = url;
     if (pathname === prefix || pathname.startsWith(`${prefix}/`)) {
       reads.push(`${ISSUE_PATH}${pathname.slice(prefix.length)}`);
     }

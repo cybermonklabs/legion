@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
-import { App } from "./app";
+import { App, preloadRouteChunk } from "./app";
 import {
   DeploymentResilience,
   installChunkFailureRecovery,
@@ -37,6 +37,12 @@ if (root === null) {
 }
 
 installChunkFailureRecovery();
+
+// The chunk this address needs, started here rather than after the landing read answers: the
+// download then overlaps that read's round trip, and the page's own reads follow the landing's
+// answer instead of waiting on a chunk as well (`app.tsx`, `preloadRouteChunk`). It is started
+// after the recovery above, so a chunk that fails to come down is reported as any other is.
+preloadRouteChunk(window.location.pathname);
 
 createRoot(root).render(
   <StrictMode>

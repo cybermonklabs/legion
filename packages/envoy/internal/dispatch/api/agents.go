@@ -3,6 +3,7 @@ package api
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -116,20 +117,8 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
 		return
 	}
-
-	roster, err := s.readRouteRoster(r.Context())
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if !roster.answered && s.lifetime.Err() != nil {
-		// The process is shutting down: the shared fetch runs on its lifetime, so it has ended or
-		// failed at once, and its silence says nothing about the listener. A request the drain
-		// still serves asks the listener on its own context instead, as every agents list did
-		// before the copy existed.
-		roster = s.listRouteRoster(r.Context())
-	}
-	if !roster.answered {
+	rows, roster, err := s.loadAgents(r.Context())
+	if errors.Is(err, errAgentRosterUnanswered) {
 		// The roster's reason is the one every process reads, stored on the row beside the
 		// answer, so a refill one process met answers ENVOY_REFILLING here too, with the
 		// Retry-After the listener sent, never the unreachable listener dispatch://INFRA-261
@@ -141,10 +130,42 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		s.writeEnvoyError(w, roster.err)
 		return
 	}
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, rows)
+}
+
+// errAgentRosterUnanswered is loadAgents' answer when the listener's session list could not be
+// read: there is no list to build rows from. It is an error rather than an empty list because an
+// empty list reads as "no session is running", which is a different fact. GET /api/v1/agents
+// refuses with it, naming the roster's own reason; GET /api/v1/landing leaves its agents part
+// null and the page reads the list for itself.
+var errAgentRosterUnanswered = errors.New("the Envoy listener's session list could not be read")
+
+// loadAgents is the read behind GET /api/v1/agents: the stored copy of the listener's session
+// list, newest seen first, each session with its open-ask count and its last activity. It
+// answers the roster it read beside the rows, so a caller that must refuse can name the reason
+// the roster carries.
+func (s *server) loadAgents(ctx context.Context) ([]agentResponse, routeRoster, error) {
+	roster, err := s.readRouteRoster(ctx)
+	if err != nil {
+		return nil, roster, err
+	}
+	if !roster.answered && s.lifetime.Err() != nil {
+		// The process is shutting down: the shared fetch runs on its lifetime, so it has ended or
+		// failed at once, and its silence says nothing about the listener. A request the drain
+		// still serves asks the listener on its own context instead, as every agents list did
+		// before the copy existed.
+		roster = s.listRouteRoster(ctx)
+	}
+	if !roster.answered {
+		return nil, roster, errAgentRosterUnanswered
+	}
 	if len(roster.sessions) == 0 {
 		// Nothing to look up: both aggregates would bind an empty id list and return no rows.
-		WriteJSON(w, http.StatusOK, []agentResponse{})
-		return
+		return []agentResponse{}, roster, nil
 	}
 	// The roster's list is every read's, so the sort orders a copy of it.
 	sessions := slices.Clone(roster.sessions)
@@ -158,15 +179,13 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	for index, session := range sessions {
 		sessionIDs[index] = session.SessionID
 	}
-	openAsks, err := s.agentOpenAskCounts(r.Context(), sessionIDs)
+	openAsks, err := s.agentOpenAskCounts(ctx, sessionIDs)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, roster, err
 	}
-	activity, err := s.agentLastActivity(r.Context(), sessionIDs)
+	activity, err := s.agentLastActivity(ctx, sessionIDs)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, roster, err
 	}
 
 	rows := make([]agentResponse, 0, len(sessions))
@@ -185,5 +204,5 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 			LastActivity: lastActivity,
 		})
 	}
-	WriteJSON(w, http.StatusOK, rows)
+	return rows, roster, nil
 }

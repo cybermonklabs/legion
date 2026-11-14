@@ -15,6 +15,19 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
 ## Layout
 
 - `web/src/app.tsx` owns authentication, the React Router shell, and the responsive sidebar, main-content, and margin shell. The sidebar provides Inbox, Pinned issues, Projects, Agents, Delivery, Pipeline, and Settings without loading the full issue list, and its Inbox entry carries one count (`useInboxCount()`, below). `/replies` is gone: the router answers it with a `Navigate` to `/?type=reply`, the Inbox under its Type filter, so a link anyone wrote still lands on those rows. The `/agents` route groups live sessions by Dispatch activity and freshness, with targeted exchanges and the shared Send/Aside/BTW composer. Issue pages have Spec, Conversation, Children, Artifacts, Activity, Decisions, and Collaborators tabs. The Decisions tab (`/issues/<key>/decisions`, chord `t d`, `features/issue/DecisionsPanel.tsx`) reads `GET /issues/{key}/decisions` under `["decisions", <key>]` and lists, in order, Open questions (each linking its ask block in the spec), Waiting for your review (each agent decision nobody has kept at its current version, with Keep, which calls the keep route, and Change, which opens a comment on `decisions.md` quoting the decision's first paragraph), Your decisions (each linking its ask) and Replaced; each decision shows its `Unsure:` paragraph in `decisionUnsureAccent` and links every spec block it shaped at `#b-<id>`. Its page is a view of the issue's `decisions.md`, so every reader of a dashboard URL (this SPA, `packages/envoy-client`, the server's `text`) reads `/issues/<key>/decisions` as `dispatch://<key>/artifact/decisions-md`. The Collaborators tab (`/issues/<key>/collaborators`, chord `t o`, `features/issue/CollaboratorsTab.tsx`) reads `GET /issues/{key}/collaborators` under `["issue", <key>, "collaborators"]` and lists, in order, Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest session first and a superseded session naming the session that replaced it (`legion.replaced_by`); then Other agents, every session holding no Legion role, by its last activity; then People, each with why they are a collaborator and when they last worked the issue. Every agent row is an `AgentName` link to its conversation and carries its running state, so a stopped or replaced session is one click from what it said; a `legion_registry` of `unavailable` says Legion's record of this issue's agents could not be read in place of a list it cannot fill, and an issue nobody has worked shows the `No one has worked this issue yet.` empty state. Issue margins show Comments (anchored threads beside the document, Proof's model) and Pinned; standalone project-document margins show Comments only. At `xl` the sidebar and margin are independently collapsible rails; compact widths use their respective sheets. A margin is a property of a document surface, so on a desktop route that has none - the Inbox, a project, Settings, Agents - `features/margin/Margin.tsx` renders nothing at all rather than a 384 px column holding a placeholder sentence; it keys on the route (an issue path, or a project-document path) rather than on `useMarginOwner`, whose document owner only resolves once the artifact query lands, and the reader's own collapse preference is untouched, so the margin returns as they left it on the next issue or document. The desktop sidebar is a `sticky top-0` viewport-tall flex column inside its full-height `<aside>`: the navigation stays reachable on a long issue, and the signed-in name and `Sign out` sit in an `mt-auto` footer beneath the links rather than above them, because identity is read once and the navigation on every visit. Per-user sidebar visibility, margin visibility, and margin width persist in browser storage.
+- The entry chunk is the one `web/dist/index.html` names in its module script, and every page of the dashboard parses it before it draws anything, which no cache spares a new browser context: each of the browser suite's rows pays that parse as well as each reader.
+  `bun run build:web` at this head writes 494,692 bytes of it (measured 2026-11-13), where the same build wrote 1,028,690 before the shell was split.
+  `MAX_ENTRY_BYTES` in `web/src/asset-sizes-in-build.ts` refuses a build whose entry is over 500,000 bytes - Vite's own default warning limit - through `bun run check:asset-sizes`, which `ci.yaml`'s `dispatch-ui` job runs over the build it has just made.
+  The fall is six boundaries inside the shell, one for each part of it a landing does not draw: the Inbox list, its bar, its cards and the peek drawer (`features/inbox/inbox-chunk.ts`, behind `features/inbox/InboxHost.tsx`), the ask card every text body gets for a decision block (`features/doc/TextAskCardHost.tsx`), the search and actions bar (`features/search/SearchPaletteHost.tsx`), the Create issue dialog (`features/issue/CreateIssueDialogHost.tsx`), the keyboard-shortcut sheet (`features/shell/ShortcutHelpHost.tsx`) and the reference-preview layer (`features/refs/RefPreviewLayer.tsx`), with the event-to-queries map beside them (`api/event-refresh-load.ts`, fetched when the feed starts rather than before the first paint).
+  The issue page holds the same rule for what its Spec does not draw: every other tab's panel is a chunk fetched when that tab first opens, and a landing on such a tab starts it beside the landing read (`features/issue/tab-chunks.ts`), except a landing on an address that names an artifact, which the page draws as the Spec when the artifact is the issue's primary document; a document's decision card (`features/doc/AskBlockCardHost.tsx`) comes down when the editor reports a decision block, and a past version and its changes (`ChangeView`, `VersionView`, in `features/doc/ProofDocument.tsx`) when the address names one.
+  The tab panels, the decision card of a document and of a text body, and a past version and its changes are drawn through `chunkComponent` (`features/shell/chunk-component.tsx`), not through `lazy()` and `Suspense`: a `lazy` component suspends on its first render even when its chunk is already in, and React then holds the content back for 300 ms of the page's own clock after the fallback showed (`react-dom-client.production.js`, the commit delayed to `globalMostRecentFallbackTime + 300`), which made a phone's comment link draw its thread late and let a decision card above the answer draw after Skip to the answer had already scrolled; `chunkComponent` draws a chunk that is in within its parent's own commit and a fallback otherwise.
+  **A landing that draws a live document holds the shell's extras until the document's first block is in the page** (`features/shell/content-drawn.ts`): the margin, the reference-preview layer and the event-to-queries map, which "after the first paint" would otherwise fetch while the reader still waits for the document - the shell paints long before the document's text is read and synced. The hold ends one frame and one timeout after the first of these: the document draws; the document cannot draw (a failed load or admission, a block schema that could not be read, the document leaving the page, or an issue or document page whose reads say it draws none); the reader presses a key or a pointer. In every case it ends at `HOLD_LIMIT_MS` (10 s), so a document that never connects still gets its page the margin and the live refresh (`e2e/doc.e2e.ts`, "a document that never connects still gets the page its margin and its live refresh"). Events that arrive during the hold are kept, not dropped: their refreshes run in order once it ends (`api/event-feed.ts`). A layer that arrives late reads what is already under the pointer: the preview card opens for a reference the pointer rests on, unless a button is held (`RefPreview.tsx`, `attachTriggers`), and the margin's read of the issue does not ask again for one the page has given up on (`useMarginSheet.ts`). The search bar is not held, since a bar that arrives after the key that opened it opens with its row half out of view (`features/search/SearchPaletteHost.tsx`).
+  **A shell boundary is not a `lazy()` in `web/src/app.tsx`.**
+  `e2e/__tests__/two-builds-routes.test.ts` reads every `const X = lazy(` of that file and refuses one that `walkRoutes` of `e2e/two-builds-routes.ts` does not carry as a route, because the rolling-deploy walk asks the other build's process for exactly the chunks the routes it visits load, and a chunk no route loads is one that walk would never ask for.
+  So each boundary is written in the feature module it splits, and the chunk it creates is reached by the walk of `e2e/two-builds.multiprocess.e2e.ts`, which refuses a script or stylesheet of the build that no visit was answered 200 for: either a walked route loads it of its own accord, as the event-to-queries map is loaded wherever the feed starts, or it takes an entry in `lazyPieces` of `e2e/two-builds-routes.ts` and a visit that says it loads it.
+  The same arithmetic decides how this bundle reads `@legion/contracts`: a value comes from the subpath of the module that defines it (`@legion/contracts/dispatch-api-constants`, `@legion/contracts/actor-label`, and the others `web/vite.config.ts` aliases), never from the package index, because one import of the index reaches every module of the package, a bundler may drop none whose top level builds anything, and the index was carrying that package's whole reference table and zod's schema builders into a page that validates nothing (`packages/contracts/AGENTS.md`).
+  An `import type` from the index is left alone, since the compiler erases it before the bundler sees it.
+  The editor package holds to the same rule (`packages/proof-editor/src/block-pointers.ts`, `typed-block-commands.ts`): its one value import of the index put 186,610 bytes of that package and zod into the editor's chunk (`ask-content-*.js`), which every page that draws a document loads before its first block.
 - `web/src/api/types.ts` re-exports the Dispatch JSON entities from `@legion/contracts`, which generates them from the Go route table (`packages/contracts/schemas/dispatch-openapi.json` → `src/dispatch-api.generated.ts`). It declares a shape of its own only for something no route of that table answers, and `web/src/api/hand-written-shapes.md` names each one with the reason it is not generated.
 - `web/src/lib/timestamps.ts`'s `compareTimestamps` is how the SPA orders two server timestamps.
   The server writes RFC 3339 with trailing fractional zeros dropped (`…00.12Z`, `…00.123456Z`), so
@@ -787,10 +800,10 @@ A fenced `mermaid` code block in a `MarkdownBody` of the block form (a comment, 
 
 A typed block in a body is drawn as a document draws it (INFRA-526). `markdown-engine.ts` hands the headless engine a `renderBlock` (`features/doc/typed-block-drawing.ts`, below), which becomes each typed block's `toDOM`: a callout gets `renderTypedBlock`'s header (the block's name, its `kind` badge and its `title`), and an `ask` block gets the decision shell (`renderAskBlockShell`). `useRenderedMarkdown` mounts the read-only decision card into the shell's slots. That is `TextAskBlockCard`, `AskBlockCard` with `readOnly` and `detached`, which the app provides through the `TextAskCard` context (`features/refs/markdown-cards.ts`). It is a context because `AskBlockCard` → `AskOptionRow` → `MarkdownBody` → `useRenderedMarkdown` would be an import cycle. The hook finds each shell's slots with `askShellSlots` and writes the shell through `applyAskBlockShell`, which folds the source option list (`data-dispatch-ask-options="rows"`), only on a shell where it mounted a card, so a body with no provider keeps the options as a list (INFRA-612). `detached` drops the malformed card's "re-activates once it parses" line, since no server reads a body. The read-only parse (`remarkReadOnlyDirectives` in `@legion/proof-editor`) drops every attribute the block schema marks `server` from a typed block it keeps, so each reads at its default: no server wrote one in a body, so a body never shows an answer, a choice or a copy source that its author typed. The header and card rules in `styles.css` apply under `.dispatch-markdown` as under `.dispatch-doc`. The `inline` variant, `MarkdownPreview` and `useMarkdownHeadline` draw no header or card and stay one line of text.
 
-An open ask card lists every session the server routes the ask's answer and replies to, under `Reaches N` (`features/inbox/AskRecipients.tsx`), which sits below the answer form and is folded at rest behind the shared `DisclosureToggle`: routing is chrome a reader opens less than once per visit, and the count alone answers the common question, so it never sits between the question and its options (LEGION-67). Four groups make up that set, and each session is listed and counted once: as a follower, else as a subscriber, else under the claim, else under the route, so it keeps the control it has, and `Reaches N` is the number of distinct sessions reached now (`reachRows`, a pure function the card renders from). First the ask's followers — the session that opened it, every session that replied, and any session a human added — read from the same `GET /asks/{id}` thread fetch the card already makes; each has an `Unfollow` control that confirms in the shared `UnsubscribeDialog` before `DELETE /asks/{id}/followers/{session}`. Then, from the same thread's `claimant`, `route`, `route_status` and `route_holder`, the session holding the issue's claim under `via claim` (Dispatch's claimant route) and the session the route reaches under `via route` — `route_holder` when the server names one (for `role:<name>`, the session holding the role, whose row reads `via route (role:<name>)`), else a `session:<id>` route's own session, which the listener does not list — through the same once-only rule, so a role holder that is also the claimant, a follower or a subscriber is listed and counted once; only while no session holds a role route (`route_holder` null) does the card show the bare `role:<name>` row, left out of the count since it reaches nobody now: a role is not an agent, so the row has no running state and carries the issue's `Nobody holds it right now` marker (`UnreachableRouteMarker` in `features/issue/RouteReach.tsx`) instead. While `route_status` is `unknown` (the Envoy listener did not answer, so a null `route_holder` says nothing) the route's row claims neither that the route reaches someone nor that nobody holds it: it carries the issue page's `Route reach unknown` marker and title (`RouteReachUnknownMarker` beside it, shared with the header); a `session:<id>` route still lists and counts its session, which is published to either way and keeps the running state the registry gives it, and a role route is the bare `role:<name>` row, left out of the count, with the toggle reading `Reaches N + route (unknown)` (`reachLabel`) so the count never says the route reaches nobody. Neither row has a control, since the claim and the route change on the issue, not on the card; a follower that is also the claimant or the route's session (a role's holder included) stays a follower, and its Unfollow confirmation says a person's answer and replies `still reach them through the claim` (or `the route`) instead of promising delivery stops. While a role route's reach is unknown and no holder is named, any session may hold the role, so a follower the card does not otherwise know to be reached is told a person's answer and replies `may still reach them through the route: Dispatch could not tell who holds it` rather than that delivery stops. Then, under `via issue subscription` (or `via document subscription` for an ask on a project document), every session whose persisted Envoy interests cover the owner's topic family and that is not a follower — the same rows as the issue header's Subscribed agents panel, read through the same `["subscribers", <key or artifact id>]` query (`GET /issues/{key}/subscribers` or `GET /artifacts/{id}/subscribers`, both needing the `person` scope, so the card only asks once `/auth/whoami` says the principal is a user; each fetch is two Envoy listener round trips, so the card holds it fresh for 30 s rather than refetching on every mount and focus, and `nav.e2e.ts` exempts it from the Inbox no-per-issue-request guard) — when that fetch fails the card shows `Subscribers unavailable — Envoy listener unreachable.` with Retry under the heading rather than passing the follower count off as the whole set; each removable row has an `Unsubscribe` control that confirms and then `DELETE /issues/{key}/subscribers/{session}` (or the artifact route), the route that actually stops delivery, and whose confirmation says a person's answer and replies `still reach them through the claim` (or `the route`) when the subscriber is the claimant or the route's session (a role's holder included), or `may still reach them through the route` while that unknown role route names no holder, while a row subscribed only through a wider topic (`notifications.dispatch.>`) names that topic and has no control. Unfollowing a session that is also an issue subscriber moves it into the subscription group rather than off the card: the ask still reaches it, and its Unfollow confirmation says so (`still reach them through the issue subscription`) instead of promising delivery stops. Every session row — follower, claimant, route session or subscriber — draws its session through `AgentName` (`features/refs/AgentName.tsx`): its name, its running state from the agent registry (not the subscribers endpoint's `live`, a second snapshot of the same listener list), and its live link; the confirmations name it through `useAgentText`, and the removed session is told. Every group refreshes over the live socket's event feed, so a session that unfollows, re-follows, or is unsubscribed from the header appears or leaves without a reload, and every cached ask thread on an issue refetches when its claimant or route moves, so a claim or route change moves its row too: on `issue.claimed` and `issue.released`, and on an `issue.updated` or `issue.closed` whose `changed` names `route` (one PATCH that sets the route and closes the issue emits `issue.closed` alone; a close that releases a claim appends its own `issue.released`; an event without `changed` refreshes them, and `issue.deployed` moves neither). No query key names an issue's threads, so the rule tests each cached `["ask-thread", id]` for its ask's issue, and a thread still on its first load is judged on the response that lands (`askThreadsIssue` and `askThreadsOn` in `api/event-refresh.ts`). An Inbox body in flight when such an event lands still names the old claimant and route, and a card that mounts from it later would seed its thread (held with an infinite `staleTime`) from that, so the feed also marks the issue with the in-flight Inbox generation (`markPendingAskThreadsOnIssue` in `features/inbox/ask-thread-freshness.ts`, beside the per-ask marks): a card whose ask is on a marked issue reads `GET /asks/{id}` instead of trusting its row (`hasPendingAskThreadInvalidation`), its own read leaves the mark for the issue's other cards, and only a newer Inbox response that arrives clears it (`e2e/recipients-claim.e2e.ts`, `__tests__/sse.test.ts`).
+An open ask card lists every session the server routes the ask's answer and replies to, under `Reaches N` (`features/inbox/AskRecipients.tsx`), which sits below the answer form and is folded at rest behind the shared `DisclosureToggle`: routing is chrome a reader opens less than once per visit, and the count alone answers the common question, so it never sits between the question and its options (LEGION-67). Four groups make up that set, and each session is listed and counted once: as a follower, else as a subscriber, else under the claim, else under the route, so it keeps the control it has, and `Reaches N` is the number of distinct sessions reached now (`reachRows`, a pure function the card renders from). First the ask's followers — the session that opened it, every session that replied, and any session a human added — read from the same `GET /asks/{id}` thread fetch the card already makes; each has an `Unfollow` control that confirms in the shared `UnsubscribeDialog` before `DELETE /asks/{id}/followers/{session}`. Then, from the same thread's `claimant`, `route`, `route_status` and `route_holder`, the session holding the issue's claim under `via claim` (Dispatch's claimant route) and the session the route reaches under `via route` — `route_holder` when the server names one (for `role:<name>`, the session holding the role, whose row reads `via route (role:<name>)`), else a `session:<id>` route's own session, which the listener does not list — through the same once-only rule, so a role holder that is also the claimant, a follower or a subscriber is listed and counted once; only while no session holds a role route (`route_holder` null) does the card show the bare `role:<name>` row, left out of the count since it reaches nobody now: a role is not an agent, so the row has no running state and carries the issue's `Nobody holds it right now` marker (`UnreachableRouteMarker` in `features/issue/RouteReach.tsx`) instead. While `route_status` is `unknown` (the Envoy listener did not answer, so a null `route_holder` says nothing) the route's row claims neither that the route reaches someone nor that nobody holds it: it carries the issue page's `Route reach unknown` marker and title (`RouteReachUnknownMarker` beside it, shared with the header); a `session:<id>` route still lists and counts its session, which is published to either way and keeps the running state the registry gives it, and a role route is the bare `role:<name>` row, left out of the count, with the toggle reading `Reaches N + route (unknown)` (`reachLabel`) so the count never says the route reaches nobody. Neither row has a control, since the claim and the route change on the issue, not on the card; a follower that is also the claimant or the route's session (a role's holder included) stays a follower, and its Unfollow confirmation says a person's answer and replies `still reach them through the claim` (or `the route`) instead of promising delivery stops. While a role route's reach is unknown and no holder is named, any session may hold the role, so a follower the card does not otherwise know to be reached is told a person's answer and replies `may still reach them through the route: Dispatch could not tell who holds it` rather than that delivery stops. Then, under `via issue subscription` (or `via document subscription` for an ask on a project document), every session whose persisted Envoy interests cover the owner's topic family and that is not a follower — the same rows as the issue header's Subscribed agents panel, read through the same `["subscribers", <key or artifact id>]` query (`GET /issues/{key}/subscribers` or `GET /artifacts/{id}/subscribers`, both needing the `person` scope, so the card only asks once `/auth/whoami` says the principal is a user; each fetch is two Envoy listener round trips, so the card holds it fresh for 30 s rather than refetching on every mount and focus, and `nav.e2e.ts` exempts it from the Inbox no-per-issue-request guard) — when that fetch fails the card shows `Subscribers unavailable — Envoy listener unreachable.` with Retry under the heading rather than passing the follower count off as the whole set; each removable row has an `Unsubscribe` control that confirms and then `DELETE /issues/{key}/subscribers/{session}` (or the artifact route), the route that actually stops delivery, and whose confirmation says a person's answer and replies `still reach them through the claim` (or `the route`) when the subscriber is the claimant or the route's session (a role's holder included), or `may still reach them through the route` while that unknown role route names no holder, while a row subscribed only through a wider topic (`notifications.dispatch.>`) names that topic and has no control. Unfollowing a session that is also an issue subscriber moves it into the subscription group rather than off the card: the ask still reaches it, and its Unfollow confirmation says so (`still reach them through the issue subscription`) instead of promising delivery stops. Every session row — follower, claimant, route session or subscriber — draws its session through `AgentName` (`features/refs/AgentName.tsx`): its name, its running state from the agent registry (not the subscribers endpoint's `live`, a second snapshot of the same listener list), and its live link; the confirmations name it through `useAgentText`, and the removed session is told. Every group refreshes over the live socket's event feed, so a session that unfollows, re-follows, or is unsubscribed from the header appears or leaves without a reload, and every cached ask thread on an issue refetches when its claimant or route moves, so a claim or route change moves its row too: on `issue.claimed` and `issue.released`, and on an `issue.updated` or `issue.closed` whose `changed` names `route` (one PATCH that sets the route and closes the issue emits `issue.closed` alone; a close that releases a claim appends its own `issue.released`; an event without `changed` refreshes them, and `issue.deployed` moves neither). No query key names an issue's threads, so the rule tests each cached `["ask-thread", id]` for its ask's issue, and a thread still on its first load is judged on the response that lands (`askThreadsIssue` and `askThreadsOn` in `api/event-refresh.ts`). An Inbox body older than such an event — the one in flight when it lands, and the one the cache already holds, the landing's rows included — still names the old claimant and route, and a card that mounts from it later would seed its thread (held with an infinite `staleTime`) from that, so the feed marks the issue with the newest Inbox generation whenever the cache holds such a body (`markAskThreadsSeededByAnOlderInbox` in `api/event-feed.ts` and `markPendingAskThreadsOnIssue` in `features/inbox/ask-thread-freshness.ts`, beside the per-ask marks): a card whose ask is on a marked issue reads `GET /asks/{id}` instead of trusting its row (`hasPendingAskThreadInvalidation`), its own read leaves the mark for the issue's other cards, and only a newer Inbox response that arrives clears it (`e2e/recipients-claim.e2e.ts`, `__tests__/sse.test.ts`).
 While Envoy's agent list is refilling the card shows the shared refilling line there instead (`QueryError` takes the failed read and says it as status, not alert), and in either case its toggle reads `Recipients` rather than `Reaches N`, since a subscriber read that failed counts nobody; every recipient's running state (`AgentName`) reads unknown, never not running, while the agent list's latest read failed.
 
-`features/refs/RefPreview.tsx` is the one hover card for every reference: resting the pointer on a `dispatch://` anchor in a Markdown body, a Proof document link mark, a board card, a list row or parent pill, an Inbox owner link, a child row, or a search result for 300 ms (or moving keyboard focus onto one) opens a `role="tooltip"` card, linked to its trigger by `aria-describedby`, that shows the target — issue: key, title, status, priority, labels, open-ask count, and the first three rendered lines of its spec; document: owner, name, latest version, and the first three rendered lines of its text; ask: the question in two rendered lines, state, option count; comment or message: author and the first three rendered lines of its body. Each of those texts is Markdown and renders through `MarkdownPreview`, formatted and then clamped. The card is a single click-through to the trigger's href, never interactive, so an agent it names (an author, an agent reference's session) is `AgentName`'s `static` variant, its name and running state with no link of its own ("How an agent is shown", below). The hover itself calls `prefetchReference` (`reference-target.ts`), which warms what the card will read: for an issue its full read (`["issue", K]`) and its primary spec's text, which no link reads; for an issue's document the issue summary (`["issue-summary", K]`), for a project document its summary (`["doc-summary", P, slug]`), then that document's text once its id is known; for an ask, a comment or a message its own read (`["issue-message", K, id]` for a message). So the card opens populated and otherwise shows `RefLink`'s short form, never a spinner. Every trigger is an element carrying `data-dispatch-ref` (React links spread `referenceTriggerProps(route)`; `collectReferenceAnchors` tags Markdown anchors) or Proof's `data-dispatch-href`; one `RefPreviewHost` in the shell owns document-level `pointerover`/`pointerout`/`focusin`/`focusout` listeners for all of them, so anchors React never rendered are triggers too, keeps exactly one card open in a module-level store, and renders it into `document.body` (fixed, clamped to the viewport, flipping above the anchor when it will not fit below). Focus opens the card only when the trigger matches `:focus-visible` (the browser's own keyboard-versus-pointer verdict); a touch pointer or a held button (drag-selection) never opens one, so a tap follows the link as before. The anchor and its card are one hover zone (`inHoverZone`): a `pointerout` that leaves the zone gives the pointer 150 ms to come back, a `pointerover` that re-enters it keeps the card whether or not a button is held (so a drag-selection that leaves the reference and returns keeps it), and a move that lands directly on the other never leaves the zone, while one that crosses the 6 px gap between them is carried by the same 150 ms. Focus has the same exception of its own (`onFocusOut` skips a `focusout` whose destination is inside the card); leaving the zone for 150 ms, blur, Escape, any click, or the anchor leaving the DOM closes the card, and so does scrolling — unless the anchor holds keyboard focus (focusing it may itself scroll), in which case the card follows the anchor.
+`features/refs/RefPreview.tsx` is the one hover card for every reference: resting the pointer on a `dispatch://` anchor in a Markdown body, a Proof document link mark, a board card, a list row or parent pill, an Inbox owner link, a child row, or a search result for 300 ms (or moving keyboard focus onto one) opens a `role="tooltip"` card, linked to its trigger by `aria-describedby`, that shows the target — issue: key, title, status, priority, labels, open-ask count, and the first three rendered lines of its spec; document: owner, name, latest version, and the first three rendered lines of its text; ask: the question in two rendered lines, state, option count; comment or message: author and the first three rendered lines of its body. Each of those texts is Markdown and renders through `MarkdownPreview`, formatted and then clamped. The card is a single click-through to the trigger's href, never interactive, so an agent it names (an author, an agent reference's session) is `AgentName`'s `static` variant, its name and running state with no link of its own ("How an agent is shown", below). The hover itself calls `prefetchReference` (`reference-target.ts`), which warms what the card will read: for an issue its full read (`["issue", K]`) and its primary spec's text, which no link reads; for an issue's document the issue summary (`["issue-summary", K]`), for a project document its summary (`["doc-summary", P, slug]`), then that document's text once its id is known; for an ask, a comment or a message its own read (`["issue-message", K, id]` for a message). So the card opens populated and otherwise shows `RefLink`'s short form, never a spinner. Every trigger is an element carrying `data-dispatch-ref` (React links spread `referenceTriggerProps(route)` of `features/refs/reference-trigger.ts`, a module of its own so that a page drawing a link pulls no byte of the card, which only the shell's reference-preview layer loads; `collectReferenceAnchors` tags Markdown anchors) or Proof's `data-dispatch-href`; one `RefPreviewHost` in the shell owns document-level `pointerover`/`pointerout`/`focusin`/`focusout` listeners for all of them, so anchors React never rendered are triggers too, keeps exactly one card open in a module-level store, and renders it into `document.body` (fixed, clamped to the viewport, flipping above the anchor when it will not fit below). Focus opens the card only when the trigger matches `:focus-visible` (the browser's own keyboard-versus-pointer verdict); a touch pointer or a held button (drag-selection) never opens one, so a tap follows the link as before. The anchor and its card are one hover zone (`inHoverZone`): a `pointerout` that leaves the zone gives the pointer 150 ms to come back, a `pointerover` that re-enters it keeps the card whether or not a button is held (so a drag-selection that leaves the reference and returns keeps it), and a move that lands directly on the other never leaves the zone, while one that crosses the 6 px gap between them is carried by the same 150 ms. Focus has the same exception of its own (`onFocusOut` skips a `focusout` whose destination is inside the card); leaving the zone for 150 ms, blur, Escape, any click, or the anchor leaving the DOM closes the card, and so does scrolling — unless the anchor holds keyboard focus (focusing it may itself scroll), in which case the card follows the anchor.
 
 A reference to one block of a document (`dispatch://KEY/spec#b-<id>`, `…/artifact/<slug>#b-<id>`, `dispatch://PROJECT/artifact/<slug>#b-<id>`, optionally pinned `@v<N>`) is a spec, artifact or project-document route carrying `block`, its `{ id, pin? }` (`BlockTarget`); one to a block of a comment or issue message (`dispatch://KEY/comment/<id>#b-<id>`, `dispatch://PROJECT/artifact/<slug>/comment/<id>#b-<id>`, a comment's optionally pinned `@v<N>` to a revision of the comment, and `dispatch://KEY/message/<id>#b-<id>`, which takes no pin) is a comment, message or project-document comment route carrying `block` (`itemOfBlock` names its item). The block grammar lives in `features/refs/block-reference.ts`: `parseBlockReference` reads a reference's fragment as the server's `text.parseBlock` does and `withBlock` admits only a holder that can have blocks - a document at no version, a comment (a project document's at any version, since a comment's blocks are its own), an issue message unpinned - which `parseNodeReference` (`routes.ts`) composes; `referenceRouteFromHref` and `nodeRouteFromHref` read a live document page's `#b-` fragment as that block, never a version page's (a version of the spec, `/spec?v=N`, is the spec's artifact at N, as the server and `dispatch read` read the page), and a comment's or message's page's as a block of that item; a document page's `?comment=` names the comment whatever its fragment, since the document writes its own block's fragment there. The graph node a route names is `features/refs/target-id.ts`'s: `routeTarget` is its target id (Go's `text.TargetID`, `comment/<id>#<block>` for a comment's block) and `referenceTargetKind` its kind, `"block"` for a block. The readers of plain text - `parseDispatchReference` and `referenceRouteFromHref`, behind bare-text linkification (`linkifyDispatchRefs`, `shortenReferences`), a URL an author left as text in a rendered body (`collectReferenceAnchors` of an anchor whose words are its target, `isTextUrl`: what GFM autolinks, bare or in angle brackets, `<dispatch://…>`, and a link whose words are its own target such as `[dispatch://X](dispatch://X)`, the target read from Proof's `data-dispatch-href` where it moved it) and the composer's pills and unfurls (`composerReferences`) - hold a route to the bounds the server indexes by (`routeInBound`: a target id of at most `MAX_REFERENCE_TARGET_BYTES` and a block id of at most `MAX_BLOCK_ID_BYTES`, both counted by `utf8Bytes`), so past them an `http(s)://` URL stays the plain link it is, as the server keeps it a URL, and a `dispatch://` one becomes its words as plain text, as a bare one renders, with no link and no hover trigger. Every other reader draws or opens a node and reads it whatever its length: a node's reference the server returned (`parseNodeReference`), a search hit's href (`nodeRouteFromHref`), a copied block's source document, a picture's source (`pictureReference`, `collectPictureAnchors`), a link target an author wrote (`collectReferenceAnchors` of any other anchor, a Proof `dispatch://` link with words of its own among them, and `RefPreview`'s `data-dispatch-href`) and the document view's link click. Every link to a block writes its fragment through `blockFragment` (`block-reference.ts`), the id as `encodeBlockId` (`@legion/contracts`) writes it. The reference's data is the block's graph read, `referencesQuery` (`GET /api/v1/references?to=<reference>`, `reference-target.ts`), whose node carries the block's whole `text` and, pinned, its `pin` (a block of a comment or message is read from that node alone): `useReferenceTarget` titles the link with the headline of `pin.text` for a pinned reference and of the node's `text` otherwise, and `RefPreview`'s `BlockPreview` shows `<owner> · <document name>` (for a block of a comment or message, `<owner> · Comment` or `Message` and its author), then, pinned, `Version N` and one state line (`Changed in version M`, `Unchanged since version N`, `Removed in version R`; `Revision` and `revision` for a comment's block), then that text; a read that fails shows the short form, as every other card does. An unpinned block link opens its live document, comment or message at the block; a pinned one opens version N of its document (`buildReferencePath`), an issue's spec under its own slug once `useReferencePath` has read the issue, the live spec at the block until then, since a version's stored markdown holds no block ids to land on, and a pinned comment block opens the live comment at the block, a comment's revisions having no page of their own; a block of a project document's comment opens that comment (`?comment=<id>`, no fragment), so the document never reads the block's id as one of its own.
 
@@ -961,7 +974,12 @@ chronological event list: collapsed comment turns provide a reply summary, a com
 marks its card and opens its thread there, and on phones opening one uses a full-height dialog
 with a bottom-pinned reply composer and Back or Escape close.
 
-`AuthGate` resolves `GET /auth/whoami`; unauthenticated visitors see the Google
+`AuthGate` resolves the `["whoami"]` query, whose read is `GET /api/v1/landing`: one request
+that answers the viewer, the shell and the page the address names, and seeds each part under
+the key that part's own route uses (`whoAmIQuery` and `readLanding` in `web/src/api/queries.ts`).
+A server that does not answer that route answers 404, and the read falls back to
+`GET /auth/whoami` and seeds nothing, so every page reads as it read before.
+Unauthenticated visitors see the Google
 sign-in link at `/auth/start`. Authenticated humans can create native projects,
 manage repository-to-project mappings (each row's **Default** radio makes it its project's one
 default repository, the one an issue with no repository of its own or on its parent chain
@@ -1056,14 +1074,17 @@ so there is no one agent to link and they stay text.
 A lint rule holds the boundary. The root `biome.json`'s last three `overrides` turn on
 `style.noRestrictedImports` at `error` for `packages/dispatch/web/src/**`, tests included: no
 import of `actorAttribution`, `actorLabel`, `actorName`, `sessionLabel` or `shortSessionId` from
-`@legion/contracts`, and no `AGENT_LIVE_PATH` from a `**/refs/routes` or `./routes` specifier.
+either specifier that answers them (the package index `@legion/contracts` and
+`@legion/contracts/actor-label`, the module's own subpath, which the dashboard reads it
+through), and no `AGENT_LIVE_PATH` from a `**/refs/routes` or `./routes` specifier.
 `app.tsx` keeps the naming ban but may import the route path, which it mounts; `AgentName.tsx`
 and `routes.ts` are exempt, the latter for its reference short form (`agent/session:<8>…/slug`),
 a `dispatch://` reference rather than a shown agent. `bun run lint` here and `bunx biome check`
-at the root both fail on it. Where it stops: a namespace import
-(`import * as contracts from "@legion/contracts"`, then `contracts.actorLabel(…)`) is not
-caught, so review runs the audit, from the repository
-root, which catches the member use:
+at the root both fail on it. Where it stops: the rule is keyed on specifiers and reads the names
+an import list, so what escapes it is a namespace import (`import * as contracts from
+"@legion/contracts"`, then `contracts.actorLabel(…)`), whose member use no key can see.
+So review runs the audit, from the repository
+root, which catches the member use whatever it was imported from:
 
 ```bash
 rg -n --glob '!*.test.*' "LiveDot|FreshnessDot|liveDotBg|offlineDotBg|/live\`|AGENT_LIVE_PATH|actorAttribution|actorLabel|actorName|sessionLabel|shortSessionId|session_title" packages/dispatch/web/src
@@ -1466,7 +1487,34 @@ holds the lazy chunk through an SPA replacement. A stale Vite chunk reloads the 
 three times in any five minutes (never while the browser is offline — that is an outage, not a
 deployment); if rendering still fails, `MarkdownBody` exposes its literal-text fallback with
 `data-markdown-fallback`. The budget renews, so a tab open across many deployments recovers from
-each, and a page whose assets fail on every load stops after three reloads. A stale entry chunk or
+each, and a page whose assets fail on every load stops after three reloads. A chunk the entry
+only prefetched is the one failure that reloads nothing: `preloadRouteChunk` (`web/src/app.tsx`)
+starts the landed route's chunks beside the landing read, before React has rendered anything, and
+nobody is waiting on those downloads. One rule decides what it starts: a chunk is started where
+the landed page itself draws it, and nowhere else.
+So the route's own chunk; the Inbox's chunk
+only where the Inbox is the page rather than the peek drawer (`routeIsInbox`, the router's own
+ranking of the two routes `InboxPage` is mounted at), since the landing read reads every address
+that is neither an issue nor a project as the Inbox while the page draws the list at few of them,
+and on the rest of them the shell starts that chunk itself, one frame after the page has painted,
+so that the reader's press opens the drawer instead of beginning its download — 222,154 bytes
+over 18 chunks on the agents page. That figure is one reading: the local Chromium run of
+2026-11-12 that "End-to-end tests" below names for the per-row floor, on a cold landing on
+`/agents`, counting every `/assets/` response and its decoded bytes. That run's report is gone
+with the pod it ran in.
+An issue, a board and a document start it at neither moment:
+their own page chunks are what their reader waits for, and the press is what fetches the peek
+(`features/inbox/InboxHost.tsx`, `loadInboxChunk` and `usePeekChunkAfterFirstPaint`); and the editor
+library and Yjs transport only where the landed page draws a document: a project's document page
+always, an issue page on the tabs that render one — the Spec, Verification and Plan, and an
+address naming an artifact (`issueDrawsDocument`, read from the address by `issueTabForRoute`) —
+and no other issue address, so a reader who opens the Conversation downloads no editor and no
+transport (`e2e/doc.e2e.ts`).
+The router asks for the same chunk when it renders the
+route (`renderChunk`, which each `lazy` route goes through), and that failure — a reader in front
+of a page that cannot draw — is the one the recovery reloads for, so a prefetch costs the reader
+no reload the render's own failure does not, and the page is never thrown away before it has
+loaded. A stale entry chunk or
 stylesheet reloads the page too, from that same budget. During a rolling deploy the load balancer
 can send a page's HTML to one server and its hashed assets to another, which never built them.
 Every server answers another build's assets from the database (`packages/envoy/cmd/dispatch/AGENTS.md`,
@@ -1483,8 +1531,13 @@ the three reloads in five minutes whichever failed first; storage it cannot read
 nothing. The once-only key of earlier builds, `dispatch.reloaded-for-chunk`, is neither read nor
 written. It keeps the offline rule, and skips a page being left from `beforeunload`, `pagehide`, or
 a Navigation API `navigate` to another document that is not a download, until `pageshow`; it never
-clears that before `pageshow`, since a failure of a preload or stylesheet Vite inserted also
-reaches the bundle's own handler, which judges it. `pagehide` fires as a navigation commits,
+clears that before `pageshow`, unlike the bundle's finer rule. A `modulepreload` link that fails
+while the bundle is running (`window.__dispatchChunkRecovery`, set by
+`installChunkFailureRecovery`) is a chunk the bundle asked for, and is left to the bundle's own
+handler, which sees the same failure as `vite:preloadError` and knows a prefetch from a render;
+the document's own assets — the entry chunk, the preload links beside it and the main stylesheet
+— stay the inline script's, since each of those fails before the bundle can run or while it never
+does. `pagehide` fires as a navigation commits,
 after Firefox has already cancelled the entry's download, so in a browser that fires no
 `beforeunload` it does not stop that reload; Chromium and WebKit fire no error for a download a
 navigation cancels. `shell.e2e.ts` misses the entry once (the page reloads and renders), on every
@@ -1616,9 +1669,11 @@ through — has a `Fetch` of its own rather than `globalThis.fetch`.
 A request no handler answers is errored and recorded with its method and path, and the preload's
 `afterEach` and `afterAll` fail the test with what was recorded, so a read the page swallowed in
 a `catch`, and a write still retrying after a file's last test, are reported all the same.
-The module answers six routes with the API's empty shape: the five the application shell reads on
-every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
-`/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
+The module answers seven routes with the API's empty shape: the five the application shell reads
+on every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
+`/api/v1/credential-requests`, `/api/v1/me/agents/state`), `/api/v1/projects`, and
+`/api/v1/landing` as the 404 a Dispatch older than that route answers, which is what leaves
+every page under test reading each resource from the route its own test answers or spies.
 The project list is read by the sidebar wherever it is drawn (`features/sidebar/Sidebar.tsx:91`,
 with no `enabled` guard) and by the issue header for every root issue, to learn which design steps
 are gated (`features/issue/IssueHeader.tsx:292`); removing its answer fails 36 rows, every one a
@@ -1753,11 +1808,20 @@ before it runs any hook, that config imports the package, and Playwright's own
 runner loads the specs under Node, which takes the package's `default` export
 condition, its gitignored `dist/`, where a `bun` run takes the source. A
 workspace that never built it dies as the config loads, before the hook. So
-whoever starts Playwright builds it: `bun run e2e` and the package's other e2e
-scripts run `build:contracts` first, every CI job that runs the suite carries a
-`Build contracts for dispatch e2e` step
-(`.github/workflows/dispatch-browser.yaml`), and a Playwright command typed by
-hand needs `bun run build:contracts` once.
+whoever starts Playwright builds it.
+`bun run e2e` and the package's other e2e scripts that build anything run
+`build:contracts` first: `e2e:clock`, `e2e:embedder`, `e2e:multiprocess`,
+`e2e:deployed`, `e2e:stub` and `e2e:stub:record` (`package.json`).
+The three `:run` scripts, `e2e:clock:run`, `e2e:embedder:run` and
+`e2e:multiprocess:run`, build nothing: each is the Playwright command alone, for
+a caller that built the package and the dashboards already. In
+`.github/workflows/dispatch-browser.yaml` the multiprocess job calls
+`e2e:multiprocess:run` and the embedder job calls `e2e:embedder:run`.
+Every CI job that runs the suite carries a
+`Build contracts for dispatch e2e` step (`.github/workflows/dispatch-browser.yaml`
+and the `re-record` job of `.github/workflows/dispatch-browser-nightly.yaml`), and
+a Playwright command typed by hand, or a `:run` script, needs
+`bun run build:contracts` once.
 Every harness server serves on a port the OS chooses
 unless its variable sets one (below), so the temporary server never meets the
 production listener on port 8766. A run of one stack takes `DATABASE_URL`, unless
@@ -1799,14 +1863,16 @@ A wider run is refused for the rows that measure through `e2e/main-thread-hold.t
 `refuseASharedRun` there fails such a row in a run of more than one worker, and
 `e2e/agent-workspace-timing.e2e.ts`, which reads a clock of its own, takes its one worker from
 this command.
-The third runs every wall-clock row in all three engines: `e2e:clock` is
-the one script that names the three projects, and it names `--workers=1` beside them, so the
-command the whole wall-clock run is made of says what its readings rest on. Each of `e2e` and
-`e2e:clock` builds `@legion/contracts` and the dashboard first, so a reader running both from an
-unchanged tree can skip the second build by calling what `e2e:clock` calls:
+The third runs every wall-clock row in all three engines: `e2e:clock` builds
+`@legion/contracts` and the dashboard and then calls `e2e:clock:run`, which is the one command
+that names the three projects, and it names `--workers=1` beside them, so the command the whole
+wall-clock run is made of says what its readings rest on. Its two halves are scripts of their
+own as `e2e:multiprocess`'s are (below), so a reader running `e2e` and `e2e:clock` from an
+unchanged tree skips the second build by calling the second half alone,
+`bun run e2e:clock:run`:
 `bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`.
-CI's alone legs run that same command with one `--project` each, a machine per engine
-(`.github/workflows/dispatch-browser.yaml`).
+CI's alone job runs that same command, all three projects one after another on one machine of
+its own (`.github/workflows/dispatch-browser.yaml`).
 
 Write a project as `--project=<name>` and never `--project <name>`. The option is variadic, so
 `--project chromium-alone e2e/heavy-bodies.e2e.ts` reads the file as a second project name and
@@ -1815,8 +1881,8 @@ that carries a file name after its project, so it is the one that meets this.
 
 An issue pod measures the wall-clock rows in `chromium-alone`: WebKit does not launch in such a
 pod, whose image lacks that engine's host libraries (dispatch://INFRA-1396). Firefox and WebKit
-are measured by CI, where the `alone` job of `.github/workflows/dispatch-browser.yaml` gives
-each engine a machine of its own.
+are measured by CI, where the `alone` job of `.github/workflows/dispatch-browser.yaml` runs the
+three engines one after another on a machine nothing else of the run is on.
 
 Playwright's UI mode starts this suite's stacks itself. The UI server runs no
 `globalSetup` when it begins listening; it runs one when a client connects
@@ -1891,10 +1957,13 @@ values under them, a harness a person left listening, and a deployed run.
 
 A stack's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
 and a run of more than one stack that names neither is refused naming both.
-`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names:
-a developer's path on a machine with Docker and no Postgres binaries, and the
-visual job's of `.github/workflows/dispatch-browser.yaml`, which runs on the
-runner with only its Playwright command in a container.
+`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names.
+It is a developer's path on a machine with Docker and no Postgres binaries.
+It is also the path of every CI job that runs on the runner itself, whose own
+PostgreSQL carries no `vector`: the multiprocess job (both of its browser steps),
+the embedder job and the visual job of `.github/workflows/dispatch-browser.yaml`,
+the visual job with only its Playwright command in a container, and the
+`re-record` job of `.github/workflows/dispatch-browser-nightly.yaml`.
 `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is
 the shard and alone jobs' path and an issue pod's: those two jobs of
 `.github/workflows/dispatch-browser.yaml` run in a container that carries
@@ -1954,30 +2023,67 @@ against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
 
 Every browser row of the suite runs in `.github/workflows/dispatch-browser.yaml`, which
 `.github/workflows/ci.yaml`'s `dispatch-browser` job calls with one of two lanes.
-A pull request without the label `full-ci` runs the `pull-request` lane: the projects `chromium`
-and `iphone`, split over four
-shard machines, each leg running `--shard=N/4` with four workers.
+A pull request without the label `full-ci` runs the `pull-request` lane: the projects `chromium`,
+`iphone`, `stub` and `stub-phone`, held to the rows tagged `@pr`, split over two
+shard machines, each leg running `--shard=N/2` with four workers.
 A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
 (`.github/workflows/dispatch-browser-nightly.yaml`)
-run the `full` lane: all eight parallel projects over those same four shards, the three `-alone`
-projects each on a machine of its own at one worker, and the two-process job.
-Each shard leg exports the worker count and the pgvector digest on the browser step's own command
-line rather than in an `env:`, for the reason that step's comment gives: a name outside
+run the `full` lane: all eight parallel projects and the two stubbed ones over those same two
+shards, the three `-alone` projects one after another on a single machine of their own at one
+worker, the two-process job, the fake-embedder job and the visual review.
+Seven jobs in all, and the first of them builds what five of the rest run: the `binaries` job
+compiles the Go commands the stacks execute, builds the dashboard bundle every browser row
+serves and, on the full lane, the second rollout bundle beside it, and uploads the two as
+artefacts (dispatch://INFRA-1109).
+The five that download them are the shard, alone, two-process, fake-embedder and visual jobs,
+which is six machines, the shard job running two legs; the seventh, `merge`, downloads the
+legs' blob reports and none of this.
+Each of those five downloads what it needs of the two artefacts and builds no dashboard bundle
+and no Go command of its own: the two-process job's sign-in step names the `binaries` job's
+`dev-oidc-issuer` on `DISPATCH_E2E_SIGNIN_ISSUER_BIN`, as every job names the server on
+`DISPATCH_E2E_SERVER_BIN`.
+Each of the five still builds `@legion/contracts`, which its Playwright runner reads under Node.
+Each shard leg sets its stacks' PostgreSQL directory and its worker count on the browser step's
+own command line: `export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin`, and `--workers 4` on
+the Playwright command.
+It names no pgvector digest, since its stacks take PostgreSQL 18 with `vector` from the image the
+job runs in.
+Neither value is in an `env:`, for the reason that job's head gives: a name outside
 `.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its
-steps', drops `e2e/run-server.sh`'s `go build` out of `.github/scripts/check-ci-filters.sh`'s
-reduction.
+steps', is counted as reaching a go command unseen, and the `binaries` job's build step is read
+under this workflow's own `env:` and defaults for the same reason.
 The `merge` job of that workflow joins every leg's blob report into one report, publishes the
 run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
 that reports ci-ok, so a run gets one verdict and not seven.
+It also holds the lane to a machine-time budget, in its step `Reading five, the lane's machine
+time`: it sums `completed_at - started_at` over every other job of that workflow that ended with
+a duration, every skipped job apart, out
+of the jobs file its first reading already wrote, and fails above 2,363 s on the full lane and
+863 s on the pull-request lane
+(`.github/scripts/dispatch-browser-run-reads.sh`, mode `machine-time`).
+Those two numbers are lower than the 2,400 s and 900 s the issue committed to on purpose: a job
+reading inside its own run cannot see its own cost, because its `completed_at` is still null, so
+each budget is the bound less this job's own worst case of 37 s - 36 s measured over five runs,
+and the second the reading step itself was given a budget for - and a lane that passes
+here and then spends that worst case lands on the bound exactly.
+The full lane's bound was 2,040 s until 2026-11-12, when the machines got slower and this suite
+did not: between run 43150379433 (2,003 s) and run 43192333526 (2,285 s), every job of
+`ci.yaml` that reads no file of this suite rose with it, the `binaries` job that runs no row
+rose 31 per cent with the same `package.json` and `bun.lock`, and the head's lane stayed 0.72 to
+0.75 of a default-branch lane read the same day.
+A jobs file it cannot read, or one holding no job with a duration, fails too rather than passing.
 The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit
-tests and build, beside the proof editor's, and runs no browser row.
+tests and build, beside the proof editor's, and runs no browser row; `bun run check:asset-sizes`
+is its last dashboard step, and that is where the entry chunk's 500,000-byte budget is read
+(the Layout section above, `web/src/asset-sizes-in-build.ts`).
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
 it is working on.
 
 One shard leg by hand is that leg's own command without CI's blob reporter and its memory and CPU
 samplers, run from `packages/dispatch` with a Postgres provider the stacks above name:
-`DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4 --workers 4`.
-The `full` lane's leg names all eight parallel projects in place of those two.
+`DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --project=stub --project=stub-phone --grep='(^|\s)@pr(\s|$)' --shard=1/2 --workers 4`.
+The `full` lane's leg names all eight parallel projects and the two stubbed ones in place of
+those four, and passes no `--grep`.
 A local run retries nothing; CI retries a failed row once
 (`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the three `-alone`
 projects and the two-process project, which set `retries: 0` of their own: a row whose claim is a
@@ -2005,10 +2111,31 @@ that crossed it: rows of `coverage.e2e.ts`, `plan-tab.e2e.ts` and
 `verification.e2e.ts` sit between 1.5 and 2.7 seconds, where the machine
 decides which side of the bar they land, and without that band such a row fails
 the check bare on a slow run and marked on a fast one. A row's own cost is what
-it proves: most of a short row is the floor every row pays, measured in an issue
-pod at a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle
-that context cannot cache (0.40 s) and the dashboard's boot reads before its
-first draw (0.80 s).
+it proves: most of a short row is the floor every row pays. That floor was
+measured in an issue pod as three parts: a fresh Chromium context (0.25 s), the
+cold parse of the dashboard bundle that context cannot cache (0.40 s) and the
+dashboard's boot reads before its first draw (0.80 s).
+The last two readings are older than this head.
+The boot reads were measured when a cold issue page sent 21 reads in four waves, and the same
+page now sends 3 in two (`e2e/landing-reads.e2e.ts`, which prints every landing's waterfall
+and holds each page to its bound).
+The parse was measured before this release split the shell, and it is a parse of the entry
+chunk, which the split halved: 494,692 bytes at this head against 1,028,690 before it (the
+Layout section above).
+No reading at this head splits those two parts. The reading that stands in for them is the
+timing fixture's `first-page-load` (`e2e/measure-reporter.ts`): the duration of a row's first
+navigation step, a `page.goto` in nearly every row. Unless the call passes a `waitUntil`,
+Playwright ends that step at the page's `load` event. So the figure holds the entry chunk's
+download and parse, and it does not tell how much of the boot reads, which the entry starts,
+ends before that event.
+A local run of 107 Chromium rows on 2026-11-12, at a head of this branch's shape, read its
+median at 676 ms, against the 1.20 s the two old figures sum to
+(`E2E_MEASURE_FILE=<file>` on a chromium run, then `bun e2e/tools/measure-summary.ts <file>`).
+The same run read `reset-sql` at 95 ms, `reset-fakes` at 20 ms and `sign-in` at 7 ms, and a
+row's four parts summed to a median of 828 ms.
+That run's report is gone with the pod it ran in, so these figures are what was recorded of it,
+and that command run again at this head reads them again.
+The fresh context's 0.25 s is untouched by either change, and the fixture does not measure it.
 
 A row that drives no browser does not belong in this suite: it takes no page
 fixture, it runs in one project because every other would repeat it, and it
@@ -2525,8 +2652,14 @@ reads while another writes it, and a fixed absolute path is somebody else's
 file on a shared box. `e2e/artifacts.e2e.ts` writes the note and the diagram it
 uploads that way; the tree holds no `e2e/fixtures/` directory.
 
-`e2e/tools/` holds two tools, and no third.
+`e2e/tools/` holds four tools: `check-slow-rows.ts`, `compare-recordings.ts`,
+`measure-summary.ts` and `row-map.ts`.
 `check-slow-rows.ts` is the row-length check the `SLOW(>=2s)` paragraph above describes.
+`compare-recordings.ts` checks a fresh recording of every stubbed row against the committed one,
+by each route's status, and the `re-record` job of
+`.github/workflows/dispatch-browser-nightly.yaml` runs it.
+`row-map.ts` generates `e2e/row-map.md`, the map of the rows that moved to the stubbed layer and
+the rows that stayed, which "The stubbed layer" below describes.
 A per-row inventory is no longer a tool's: it comes from the merged JSON report of the
 `dispatch-browser` lane, which the `merge` job of `.github/workflows/dispatch-browser.yaml` writes
 with `playwright merge-reports --reporter=html,json,list` over every leg's blob report and uploads
@@ -2596,8 +2729,11 @@ twice (`web/dist`, then `web/dist-b` with `DISPATCH_BUILD=e2e-b`, so its entry c
 A's even where CI sets `GITHUB_SHA`; `web/vite.config.ts` takes `DISPATCH_BUILD` first) and runs
 Playwright in two-process mode with B on `dist-b`, passing on extra arguments
 (`bun run e2e:multiprocess -- <name>.multiprocess.e2e.ts`).
-The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs it, on the full lane
-alone.
+Its two halves are scripts of their own: `build:web-b` writes the second bundle, and
+`e2e:multiprocess:run` runs Playwright over bundles that are already there.
+The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs `e2e:multiprocess:run`
+and no build, on the full lane alone: both bundles come out of the `binaries` job's artefact
+(dispatch://INFRA-1109).
 Two-process mode starts its own servers, so the Playwright config refuses it with
 `PLAYWRIGHT_BASE_URL`, and `bun run dispatch:local` refuses it.
 
@@ -2607,7 +2743,12 @@ unset or empty is dev sign-in, above, and `oidc` is the production sign-in, thro
 `run-server.sh`, naming the allowed ones, and every importer refuses `oidc` without
 `DISPATCH_E2E_PROCESSES=2`. Under `oidc` the listener table starts `e2e/run-signin-issuer.sh`
 after the fakes and before the proxy: it builds the issuer as `run-server.sh` builds the server
-(`packages/envoy/dev-oidc-issuer-e2e`, gitignored, under its own lock), serves the code flow for
+(`packages/envoy/dev-oidc-issuer-e2e`, gitignored, under its own lock), or, when
+`DISPATCH_E2E_SIGNIN_ISSUER_BIN` names a prebuilt `dev-oidc-issuer`, executes that and builds
+nothing, as `run-server.sh` does with `DISPATCH_E2E_SERVER_BIN`, refusing a path that is not an
+executable file before the issuer starts. The two-process job of
+`.github/workflows/dispatch-browser.yaml` names the `binaries` job's issuer there. The issuer
+serves the code flow for
 the client `dispatch-e2e` with the secret the harness generates per run, which the script hands
 the issuer through a pipe, never a file or an argv, and signs in `alice@example.com`, a member of
 the group `dispatch-e2e-people`, at every authorization. It
@@ -2628,8 +2769,9 @@ the memory of the process that started it, B answers the callback 400 `invalid o
 `e2e/__tests__/harness-signin.test.ts` (`bun run test`) holds the refusals and the listener
 table's wiring.
 Run it as `DISPATCH_E2E_SIGNIN=oidc bun run e2e:multiprocess`; the `multiprocess` job of
-`.github/workflows/dispatch-browser.yaml` runs it after the dev sign-in specs, on the dashboard
-the step before built.
+`.github/workflows/dispatch-browser.yaml` runs the same row after the dev sign-in specs, as a
+`bunx playwright test` of its own under `DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc`,
+on the dashboard the `binaries` job built and that job downloaded.
 
 `bun run dispatch:local` (`e2e/local-instance.ts`) is that harness, left running and seeded: it
 starts the harness through `e2e/harness-start.ts`, then imports the e2e modules that read a port
@@ -2741,7 +2883,10 @@ afternoon the row arrived. The row counts only the opens whose `success` handler
 and called a second late, and asserts that count at its end, after every step whose timing it
 depends on, since a hook that silently stopped delaying - another database name, or a page that
 listens for `success` another way - would leave the row passing with the product reverted.
-CI installs WebKit beside Chromium for them (`bun run e2e:install` does the same locally).
+CI installs no browser for them: the shard and alone jobs of
+`.github/workflows/dispatch-browser.yaml` run in the image built from
+`.github/docker/browser.Dockerfile`, which carries Chromium, WebKit and Firefox.
+Locally, `bun run e2e:install` installs the three engines.
 
 The `webkit` and `firefox` projects run seven rows of `e2e/deep-links.e2e.ts`, tagged for two
 reasons. Both engines cancel the chunk downloads in flight when a navigation starts: a deep link followed while the page
@@ -2773,8 +2918,9 @@ along with the text after it, which Chromium and WebKit never do, so that spec i
 a second engine; the picker, deep-link, keyed, live-socket, offline-edits, mermaid and streamed-turn
 rows run for the reasons given under `webkit` above and in the comment above the project; and a
 click on a link inside the editor meets the engine's focus rule — Firefox focuses the editing host,
-not the link — so the picture view's fallback link is clicked there too. CI installs Firefox beside
-Chromium for them (`bun run e2e:install` does the same locally).
+not the link — so the picture view's fallback link is clicked there too.
+CI installs no browser for them either: the image the shard and alone jobs run in carries
+Firefox, as the `webkit` paragraph above says, and locally `bun run e2e:install` installs it.
 
 The `chromium-plain-http` project runs `e2e/plain-http-origin.e2e.ts` and
 `e2e/plain-http-proxy.e2e.ts`, selected by file name: Chromium maps `dispatch-e2e.test` to
@@ -2830,8 +2976,8 @@ before, for the reasons given under `webkit` and `firefox` above.
 No project above them runs those three files, so each row runs once.
 Each of the three sets `default: false`, which leaves it out of a run that names no project and
 takes nothing from a run that names one, so the commands at the top of this section name them
-and a bare `bun run e2e` holds none of their 54 rows (a listing of the three at this head: 54
-tests in 3 files).
+and a bare `bun run e2e` holds none of their 51 rows (`bun run e2e:clock:run -- --list` at this
+head prints `Total: 51 tests in 3 files`).
 Until dispatch://INFRA-1280 each named every project before it in `dependencies` instead, which
 ordered the run and also pulled the whole suite in behind any command naming one of the three
 files they take, because a filter narrows a project it selects and never a project selected to

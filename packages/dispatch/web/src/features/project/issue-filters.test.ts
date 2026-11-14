@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
+import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";

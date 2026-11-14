@@ -28,6 +28,18 @@ export async function openInbox(page: Page, rows = 2): Promise<void> {
   await page.locator("body").focus();
 }
 
+/** Presses `key` on the page's body once the shell is on the page, which is when its keymap
+ *  listens. The shell mounts only after the viewer's read answers (`AuthGate`, which waits on the
+ *  landing read), and Playwright's `goto` returns at the document's `load`, before that: a key
+ *  pressed in between reaches no listener and is lost, which the full lane met once in a row that
+ *  pressed `i` straight after its `goto` and found no Inbox drawer (run 43454853064). The rail
+ *  helper waits on the same marker for the same reason (`e2e/rail.ts`). */
+export async function pressOnceTheShellListens(page: Page, key: string): Promise<void> {
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press(key);
+}
+
 /** Todo: Alpha, Bravo, Charlie; In progress: Delta; Retro: Echo, Foxtrot - the board seed. */
 export async function seedBoard() {
   await createProject({ key: "CORE", name: "Core" });

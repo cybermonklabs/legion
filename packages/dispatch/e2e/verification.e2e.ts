@@ -171,9 +171,11 @@ A check nobody has run yet reads no result.
 // head, with the fake re-seeded between them so the first result is left behind; then one
 // load of the Verification tab. Most of it is the floor every row of these files pays,
 // measured on this row: a fresh Chromium context (0.25 s), the cold parse of the dashboard
-// bundle a fresh context cannot cache (0.40 s) and the dashboard's own fifteen boot reads
-// before the first check draws (0.80 s). The row's own seven assertions are 0.26 s of it.
-// INFRA-1109 holds that floor; nothing in the row is removable.
+// bundle a fresh context cannot cache (0.40 s) and the dashboard's own boot reads before the
+// first check draws, which were fifteen reads costing 0.80 s when that reading was taken. One
+// read answers a landing now, so the last part is smaller than 0.80 s at this head and nothing
+// has measured how much smaller. The row's own assertions are 0.26 s of it, measured when the
+// row made seven of the eight it makes now; nothing in the row is removable.
 test("a result the pull request has moved past stands at no commit the check compared with", async ({
   browser,
 }) => {

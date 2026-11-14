@@ -1,5 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";

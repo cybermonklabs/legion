@@ -3,7 +3,7 @@ import type { Doc } from "yjs";
 
 import type { BlockSchema } from "../../api/types";
 import { requestMermaidDrawing } from "../refs/mermaid-diagrams";
-import { importWhenOnline } from "../shell/DeploymentResilience";
+import { importWhenOnline, renderChunk } from "../shell/DeploymentResilience";
 import type { AnchoredBlock } from "./ask-block";
 import type { WatchPicture } from "./picture-view";
 import { MARKS_MAP_NAME } from "./roots";
@@ -52,14 +52,26 @@ export const editorAttributes = {
 // ProseMirror's `DOMSerializer`, `Plugin` and `PluginKey`, so a page that imported them to call
 // them after the editor existed would parse a quarter of a megabyte of the editor's library
 // before its first paint - which is the very thing this `import()` is here to prevent.
-export const createEditor: CreateEditor = async (root, options) => {
-  const [{ createProofEditor }, { installTypedBlocks }] = await importWhenOnline(() =>
+/** The editor's own chunks, named once: `createEditor` below awaits them when a document mounts,
+ *  and the entry starts the same import beside the landing read of a page that draws a document
+ *  (`app.tsx`, `preloadRouteChunk`), so the chunk comes down while that read is out rather than
+ *  after its answer. Calling it twice costs one download: a module is fetched and parsed once. */
+export const loadEditorLibrary = () =>
+  importWhenOnline(() =>
     Promise.all([
       import("@legion/proof-editor"),
       import("./ask-block"),
       import("@legion/proof-editor/style.css"),
     ])
   );
+
+export const createEditor: CreateEditor = async (root, options) => {
+  // `renderChunk` and not a bare call: this runs when a document mounts, so a reader is waiting
+  // on the download and its failure must spend one of the tab's recovery reloads. The entry
+  // starts the same import as a prefetch (`app.tsx`, `preloadRouteChunk`), and that one is
+  // nobody waiting; the two are told apart here, at the call, because the import itself is
+  // shared (`features/shell/DeploymentResilience.tsx`).
+  const [{ createProofEditor }, { installTypedBlocks }] = await renderChunk(loadEditorLibrary);
   const handle = await createProofEditor(root, { ...options, drawMermaid: requestMermaidDrawing });
   for (const [name, value] of Object.entries(editorAttributes)) {
     handle.view.dom.setAttribute(name, value);

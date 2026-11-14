@@ -785,14 +785,27 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, issueOwner(r.PathValue("key")), state)
+	rows, err := s.loadIssueAskRows(r.Context(), issueOwner(r.PathValue("key")), state, withThread, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	WriteJSON(w, http.StatusOK, rows)
+}
+
+// loadIssueAskRows is the read behind GET /api/v1/issues/{key}/asks: every ask of one issue in
+// the state ?state= names, each with its newest reply, and with the thread a card draws when the
+// caller asked for one. listIssueAsks answers it, and GET /api/v1/landing carries the same rows
+// on its issue page, which draws those cards. trees is what the request asked for
+// (wantsDisplayTrees), so the landing's rows carry the trees the route's do.
+func (s *server) loadIssueAskRows(ctx context.Context, owner owner, state string, withThread, trees bool) ([]issueAskRow, error) {
+	asks, lastReplies, err := s.queryOwnerAsks(ctx, s.deps.Store.Pool, owner, state)
+	if err != nil {
+		return nil, err
+	}
 	// One reader for the whole page: the asks' texts, and the replies, rewordings and answers of
 	// every thread the list carries, are one query and one store.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reader := s.readDisplayTrees(ctx, trees)
 	rows := make([]issueAskRow, len(asks))
 	for index := range asks {
 		rows[index].shapedAsk.Ask = asks[index]
@@ -802,13 +815,12 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if withThread {
-		if err := s.attachIssueAskThreads(r.Context(), rows, reader); err != nil {
-			s.writeHandlerError(w, err)
-			return
+		if err := s.attachIssueAskThreads(ctx, rows, reader); err != nil {
+			return nil, err
 		}
 	}
 	reader.resolve()
-	WriteJSON(w, http.StatusOK, rows)
+	return rows, nil
 }
 
 // attachIssueAskThreads hangs each row's thread off it. loadAskThreads leaves `answers` empty -

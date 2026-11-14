@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import type {
+  AgentStreamCommand,
+  AgentStreamFrame,
+  AgentStreamSettingsReported,
+} from "@legion/contracts";
 import {
-  type AgentStreamCommand,
-  type AgentStreamFrame,
-  type AgentStreamSettingsReported,
   IDEMPOTENCY_KEY_TTL_MS,
   LIVE_SOCKET_MAX_AGE_CLOSE,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,

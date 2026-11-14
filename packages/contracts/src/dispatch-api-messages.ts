@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { MessageWithTrees } from "./dispatch-api.generated";
+import { DELIVERY_CAPABILITIES } from "./dispatch-api-constants";
 import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
-import { DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
 import {
   carriedBodyFields,
   type ReplyBlock,

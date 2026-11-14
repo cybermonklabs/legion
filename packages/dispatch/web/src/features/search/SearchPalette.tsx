@@ -1,5 +1,5 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { useQuery } from "@tanstack/react-query";
 import {
   Fragment,
@@ -36,7 +36,7 @@ import {
 } from "../../theme/classes";
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { referenceTriggerProps } from "../refs/RefPreview";
+import { referenceTriggerProps } from "../refs/reference-trigger";
 import {
   buildIssuePath,
   buildProjectPath,

@@ -106,19 +106,30 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base string) {
+	result, err := s.loadSubscribers(r.Context(), base)
+	if err != nil {
+		s.writeEnvoyError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, result)
+}
+
+// loadSubscribers is the read behind the two subscriber routes: every session the listener holds
+// an interest of that would be delivered an event published under base, newest seen first. A
+// deployment with no listener configured is ENVOY_UNAVAILABLE, as it was when the check stood in
+// the handler. writeSubscribers answers it, and GET /api/v1/landing carries the same list beside
+// the issue or the document its page opens.
+func (s *server) loadSubscribers(ctx context.Context, base string) ([]subscriber, error) {
 	if s.deps.Envoy == nil {
-		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
-		return
+		return nil, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE", "ENVOY_URL is not configured")
 	}
-	interests, err := s.deps.Envoy.ListInterests(r.Context())
+	interests, err := s.deps.Envoy.ListInterests(ctx)
 	if err != nil {
-		s.writeEnvoyError(w, err)
-		return
+		return nil, err
 	}
-	sessions, err := s.deps.Envoy.Sessions(r.Context())
+	sessions, err := s.deps.Envoy.Sessions(ctx)
 	if err != nil {
-		s.writeEnvoyError(w, err)
-		return
+		return nil, err
 	}
 	// Every session the registry holds a record of, whatever its state; the row decides what
 	// the subscriber reads as, so this is no longer the list of the live ones.
@@ -158,7 +169,7 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 		}
 		return result[left].SessionID < result[right].SessionID
 	})
-	WriteJSON(w, http.StatusOK, result)
+	return result, nil
 }
 
 func (s *server) unsubscribeIssueSession(w http.ResponseWriter, r *http.Request) {

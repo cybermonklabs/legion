@@ -30,8 +30,22 @@ interface NavigationEventTrace {
   url?: unknown;
 }
 
+/** Either request a page makes for its viewer: the landing, which answers the viewer beside the
+ *  page's own data (`web/src/api/queries.ts`, `readLanding`), and the `/auth/whoami` the page
+ *  falls back to where the landing failed in a way that is not the answer itself. A row about a
+ *  failing viewer read answers both, since the page reads whichever of them it is given. */
+const viewerRead = (url: URL) =>
+  url.pathname === "/api/v1/landing" || url.pathname === "/auth/whoami";
+
 // It is no stubbed row: the row's own 503s are recorded beside the answer that follows them, and
 // a replay is given the first of them for every ask, so the page never opens.
+//
+// The read the page makes for its viewer is the landing, which answers the viewer beside the
+// page's own data (`web/src/api/queries.ts`, `readLanding`); `/auth/whoami` is what it falls back
+// to for a failure like this one, which says only that this read did not happen. Both are that
+// one read, so both are refused here and both are given back for the Retry: refusing the landing
+// alone would leave the fallback to answer and the banner would never show, and refusing whoami
+// alone would leave the landing to answer it.
 // @pr: Sign-in and tokens: a whoami that fails must leave the person in the app behind a Retry, never on the sign-in page.
 test("a transient whoami failure shows a retry banner and keeps the app, not the sign-in page @pr", async ({
   browser,
@@ -39,7 +53,8 @@ test("a transient whoami failure shows a retry banner and keeps the app, not the
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  await page.route("**/auth/whoami", (route) =>
+  // Both of them, for the reason above the row.
+  await page.route(viewerRead, (route) =>
     route.fulfill({
       body: JSON.stringify({ error: "Dispatch is unavailable" }),
       contentType: "application/json",
@@ -53,7 +68,7 @@ test("a transient whoami failure shows a retry banner and keeps the app, not the
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Sign in with Google" })).toHaveCount(0);
 
-  await page.unroute("**/auth/whoami");
+  await page.unroute(viewerRead);
   await page.getByRole("button", { name: "Retry" }).click();
 
   await expect(page.getByText("Signed in as alice")).toBeVisible();
@@ -67,7 +82,10 @@ test("a transient whoami failure shows a retry banner and keeps the app, not the
 // a read gets, and a page that stops on "Couldn't reach Dispatch." then stays there until the
 // person clicks Retry, though Dispatch answers again a moment later (driven against a real server:
 // a write held 15 s across a restart left the page on that message 10 s after it committed). The
-// page asks again while whoami answers that code, and opens once it answers.
+// page asks again while the viewer read answers that code, and opens once it answers. The landing
+// answers it under the same code as whoami, and the page lets it stand rather than falling back
+// (`refusalIsTheAnswer`, `web/src/api/queries.ts`): a page drawn with no head has nothing for its
+// event feed to resume from. So the refusals here are the landing's, and each is one ask.
 //
 // It is no stubbed row: the refusals end in `route.continue()`, which is a request to a server.
 test("a page asks whoami again while it answers EVENT_HEAD_UNAVAILABLE, and opens once it answers", async ({
@@ -81,7 +99,7 @@ test("a page asks whoami again while it answers EVENT_HEAD_UNAVAILABLE, and open
   // retries any other failed read gets.
   const refusals = 5;
   let refused = 0;
-  await page.route("**/auth/whoami", (route) => {
+  await page.route(viewerRead, (route) => {
     if (refused >= refusals) {
       return route.continue();
     }
@@ -189,13 +207,27 @@ test("a chunk that fails after a Download link was followed reloads the page @pr
       seen.push({ type: `visibilitychange:${document.visibilityState}` })
     );
   });
+  // Each document this page fetched for an address of this issue: the first and the reload the
+  // failed chunk asks for, which is of the Artifacts tab's address, since that is the tab the
+  // reader is on by then. The `load` event is not that count any more - the entry starts the
+  // landed page's document chunks as the document parses (`web/src/app.tsx`,
+  // `preloadRouteChunk`), and a chunk held on the wire, as this row holds one, holds the load
+  // event with it, so the first load would be reported only once the row had let the chunk go.
+  // A reload is a navigation request of the main frame, which the hold does not touch
+  // (`e2e/live-socket.e2e.ts` counts reloads the same way). The Download link is a navigation
+  // request of the main frame too - that is the case this row is about - but to the file's own
+  // address under `/api/`, so naming this issue's addresses counts the reloads and not it.
+  const address = `/issues/${issue.key}`;
   let loads = 0;
-  page.on("load", () => {
-    loads += 1;
+  page.on("request", (request) => {
+    if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) return;
+    if (new URL(request.url()).pathname.startsWith(address)) loads += 1;
   });
 
   try {
-    await page.goto(`/issues/${issue.key}/spec`);
+    // Committed rather than loaded, for the reason above: the load event waits for the held
+    // chunk, and the row holds it until the Download link has been followed.
+    await page.goto(`${address}/spec`, { waitUntil: "commit" });
     const held = await transportCode.held;
     await page.getByRole("tab", { name: /^Artifacts/ }).click();
     const download = page.waitForEvent("download");

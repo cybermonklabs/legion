@@ -405,8 +405,11 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 				}
 			}
 		}
+		// The Inbox's query is written in loadInbox, the loader the Inbox route and the landing
+		// read both call (landing.go), so that is the function this check reads for it; listInbox
+		// only parses the request and hands the loader its arguments.
 		for _, read := range []string{
-			"askReadColumns", "listInbox's query", "listOpenAsks's query", "myRepliesOwner",
+			"askReadColumns", "loadInbox's query", "listOpenAsks's query", "myRepliesOwner",
 			"putAskAskedOf's query", "askWaitingOnPerson's query",
 		} {
 			node, declared := declarations[read]

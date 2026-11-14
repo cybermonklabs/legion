@@ -12,11 +12,18 @@
  * `block pointer refused:` prefix.
  */
 
+// The subpath, not the package root. The root (`src/index.ts` of `@legion/contracts`) exports
+// every module of that package, and Rollup keeps each module whose top level builds a value:
+// the text-reference table, the tool schemas and zod. Through this one import, the editor's
+// chunk (`ask-content-*.js`) carried 186,610 bytes of those modules, and a page that draws a
+// document loads that chunk before its first block draws. Measured with `bun run build:web` at
+// dispatch://INFRA-1109's head 90ee14dd, the bytes read from the chunk's source map. The
+// subpath holds the three parsers and the three small modules they import.
 import {
   blockPointerValueProblem,
   parseBlockPointerValue,
   parseCanonicalBlockReference,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-block-ref";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import type { BlockTypeSchema } from "./block-schema";
 import { blockIdOf } from "./editor/schema/block-ids";

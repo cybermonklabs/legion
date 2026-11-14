@@ -24,7 +24,7 @@
  * pinned or not, and a discarded one costs nothing to make again, since opening the link
  * rebuilds the view from the session's replay. An unsent draft is never thrown away (R2).
  */
-import { AGENT_STREAM_WATCH_TTL_MS } from "@legion/contracts";
+import { AGENT_STREAM_WATCH_TTL_MS } from "@legion/contracts/agent-stream";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 

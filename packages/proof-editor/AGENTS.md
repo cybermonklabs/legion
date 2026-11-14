@@ -470,6 +470,9 @@ list.
 The package depends on `@legion/contracts` (`workspace:*`), served from source like this package,
 for what the editor shares with the document service: `src/block-pointers.ts` and
 `src/typed-block-commands.ts` decide a `block[]` value and give the reason one is refused with its
-`parseBlockPointerValue`, `blockPointerValueProblem`, `blockPointersProblem` and `parseCanonicalBlockReference`, and
+`parseBlockPointerValue`, `blockPointerValueProblem`, `blockPointersProblem` and `parseCanonicalBlockReference`,
+imported from the `@legion/contracts/dispatch-block-ref` subpath and never from the package root:
+the root's value modules (the text-reference table, the tool schemas, zod) would join the
+editor's chunk, 186,610 bytes of it at dispatch://INFRA-1109 (`src/block-pointers.ts`), and
 `src/tests/block-schema.test.ts` runs its `DISPATCH_BLOCK_POINTER_VALUES` table. The package's
 consumers, `packages/dispatch` and the pmdoc fixture generator, are workspaces that resolve it.

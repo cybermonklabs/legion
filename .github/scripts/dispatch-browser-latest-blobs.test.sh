@@ -172,11 +172,16 @@ check "and the output holds one file per leg per directory" \
   "$(is "$(find "$root/out" -type f | wc -l)" 4)"
 
 echo "case: a leg name holding a space is one leg"
-# This script never sees the merge job's capture: a leg reaches it as the tail of an artifact
-# directory name, which dispatch-browser.yaml builds from the project alone
-# (`dispatch-browser-blob-alone-<project>-<attempt>`). So a project named with a space arrives
-# here as one leg holding a space. Read with word splitting, as this loop was, that name becomes
-# two legs, neither with a blob or a row count of its own.
+# A defensive row, and no longer a live case. The alone job had a matrix leg per project and its
+# artifact carried the project in its name (`dispatch-browser-blob-alone-<project>-<attempt>`),
+# so a project named with a space would have arrived here as a leg holding one. The alone job
+# runs the three projects on one machine now and uploads `dispatch-browser-blob-alone-<attempt>`,
+# and the only other leg names are `shard-<N>`, so no name this workflow uploads holds a space
+# (dispatch://INFRA-1109). The row stays because what a split name costs is silent: this script
+# never sees the merge job's capture - a leg reaches it as the tail of an artifact directory
+# name - and read with word splitting, as this loop once was, such a name becomes two legs,
+# neither with a blob or a row count of its own, and the merged report comes out a leg short
+# rather than red.
 root=$(fixture leg-with-space)
 leg "$root" "alone-chromium hidpi" 1 spaced
 leg "$root" shard-1 1 plain

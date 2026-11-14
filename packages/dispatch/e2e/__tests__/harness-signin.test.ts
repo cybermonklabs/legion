@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { HarnessListener } from "../harness-listeners";
@@ -108,6 +110,47 @@ describe("DISPATCH_E2E_SIGNIN", () => {
     expect(missing.stderr).toContain(
       "DISPATCH_E2E_SIGNIN_CLIENT_SECRET must give the secret of that client"
     );
+  });
+
+  test("run-signin-issuer.sh execs a handed binary without a build, and refuses one it cannot run", async () => {
+    const inputs = {
+      DISPATCH_E2E_SIGNIN_AS: "alice@example.com",
+      DISPATCH_E2E_SIGNIN_CLIENT_ID: "dispatch-e2e",
+      DISPATCH_E2E_SIGNIN_CLIENT_SECRET: "secret",
+      DISPATCH_E2E_SIGNIN_GROUP: "people",
+    };
+    const dir = await mkdtemp(join(tmpdir(), "signin-issuer-bin-"));
+    try {
+      // A stand-in for the binaries job's dev-oidc-issuer: it prints the arguments it was
+      // exec'd with, which is all this row needs to see that the script ran it and built nothing.
+      const handed = join(dir, "dev-oidc-issuer");
+      await writeFile(handed, '#!/usr/bin/env bash\nprintf "handed %s\\n" "$*"\n');
+      await chmod(handed, 0o755);
+      const ran = await run(["bash", runSignInIssuer], {
+        ...inputs,
+        DISPATCH_E2E_SIGNIN_ISSUER_BIN: handed,
+      });
+      expect(ran.stderr).toBe("");
+      expect(ran.code).toBe(0);
+      expect(ran.stdout).toMatch(
+        /^handed --code-flow dispatch-e2e=\/dev\/fd\/\d+ --sign-in-as alice@example\.com --sign-in-group people\n$/
+      );
+
+      const plain = join(dir, "not-executable");
+      await writeFile(plain, "");
+      for (const refused of [plain, dir, join(dir, "missing")]) {
+        const result = await run(["bash", runSignInIssuer], {
+          ...inputs,
+          DISPATCH_E2E_SIGNIN_ISSUER_BIN: refused,
+        });
+        expect(result.code).toBe(2);
+        expect(result.stderr).toContain(
+          `DISPATCH_E2E_SIGNIN_ISSUER_BIN=${refused} is not an executable file`
+        );
+      }
+    } finally {
+      await rm(dir, { force: true, recursive: true });
+    }
   });
 
   test("oidc starts the issuer before both servers and hands all three one client secret", async () => {

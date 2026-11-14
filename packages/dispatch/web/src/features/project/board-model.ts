@@ -1,4 +1,5 @@
-import { ISSUE_STATUSES, type IssueStatus } from "@legion/contracts/dispatch-tools";
+import type { IssueStatus } from "@legion/contracts";
+import { ISSUE_STATUSES } from "@legion/contracts/dispatch-tools-constants";
 import type { IssuePriority, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { issuePriority } from "../issue/issue-priority";
 

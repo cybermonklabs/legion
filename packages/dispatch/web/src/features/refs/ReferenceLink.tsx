@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { linkHoverText, linkText } from "../../theme/classes";
-import { referenceTriggerProps } from "./RefPreview";
+import { referenceTriggerProps } from "./reference-trigger";
 import { buildReferencePath, parseNodeReference, shortForm } from "./routes";
 
 /**

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DISPATCH_SCOPES } from "./dispatch-api-constants";
 import type { ASK_URGENCIES } from "./dispatch-tools";
 import { GATED_STEPS } from "./legion-roles";
 
@@ -38,13 +39,6 @@ export const ActorOriginSchema = z
 
 export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 
-/** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson` and
- *  `model.ScopeApprove` and the `agent_tokens.scopes` check that stores them: `person` acts as
- *  the credential's own person on every route a person reaches through the dashboard, and
- *  `approve` settles what a person settles — a document review, the answer of an approval ask, a
- *  machine-login decision or revoke, and minting, changing or revoking a personal token. A
- *  credential holding `approve` holds `person` too. */
-export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
 /** The agent that made an act for the person it acts for: the session a broker-issued token
@@ -110,30 +104,6 @@ export const InboundWriterSchema = InboundActorSchema.passthrough();
 export const InboundBySchema = z
   .object({ kind: z.string(), id: z.string().optional() })
   .passthrough();
-
-/** How a verified service token's subject reads wherever an actor is shown.
- *
- *  A Kubernetes subject — exactly `system:serviceaccount:<namespace>:<name>` —
- *  renders `<namespace>/<name>`, because the namespace is the half that
- *  disambiguates: every namespace has a `default` service account, so the name
- *  alone names no one once a second namespace authenticates. Every other
- *  subject renders whole. Truncating a subject whose shape is unknown is the
- *  mistake this rule exists to undo, so the fallback shows all of it.
- *
- *  The persisted actor always carries the full subject; this is presentation. */
-export function serviceSubjectLabel(subject: string): string {
-  const parts = subject.split(":");
-  if (
-    parts.length === 4 &&
-    parts[0] === "system" &&
-    parts[1] === "serviceaccount" &&
-    parts[2] !== "" &&
-    parts[3] !== ""
-  ) {
-    return `${parts[2]}/${parts[3]}`;
-  }
-  return subject;
-}
 
 /** What a credential request's kind is, as the secrets broker names it: a secret an agent asked
  *  its person for, or a machine login a launcher asked to enrol. */
