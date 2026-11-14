@@ -39,14 +39,19 @@ var blockExcerpt = strconv.Itoa(refs.BlockExcerptRunes)
 // projectedTables are the tables that carry a node's address, and so are the rows a node is
 // projected onto (migration 20261109022248 gave all three `node_kind` and `node_address`). Text
 // is the column of each holding what a reader of that row sees, empty for a table that holds no
-// text of its own: a block reference is one link out of a block and carries none.
+// text of its own: a block reference is one link out of a block and carries none. Issue is the
+// column naming the issue that owns a row itself, empty for a table whose rows are owned through
+// their document alone, by the artifact_id all three carry: a comment is an issue's or a
+// document's (comments_one_owner, migration 0009), and a block and a block reference are their
+// document's. Key is the table's primary key, the order the erase takes a node's rows of it in
+// (lockProjectionRows).
 //
 // The erase walks all three by (node_kind, node_address) rather than by the node's kind, so a
 // kind that gains a projection carries no second list here to keep in step.
-var projectedTables = []struct{ Table, Text string }{
-	{Table: "comments", Text: "body"},
-	{Table: "document_blocks", Text: "excerpt"},
-	{Table: "block_refs", Text: ""},
+var projectedTables = []struct{ Table, Text, Issue, Key string }{
+	{Table: "comments", Text: "body", Issue: "issue_key", Key: "id"},
+	{Table: "document_blocks", Text: "excerpt", Key: "artifact_id, block_id"},
+	{Table: "block_refs", Text: "", Key: "artifact_id, block_id, to_kind, to_id, kind"},
 }
 
 // ErasedRows is one table the erase emptied of a node's rows.
@@ -255,6 +260,10 @@ func ParseNode(value string) (kind, id string, err error) {
 // erasure is owed for it, and deleting one would take a type out of the schema every server
 // installs.
 //
+// It takes its locks in the store's lock order, written down on api/inbox_read.go's
+// markInboxReadThreads: every owner row it writes under first, then the node's row, then
+// everything else (lockInStoreOrder).
+//
 // What it did goes into `graph_erasures`: what was removed, who ran it and when, and no erased
 // text. Nobody addresses that row and no read of the graph answers it.
 //
@@ -273,21 +282,12 @@ func Erase(ctx context.Context, databaseURL, kind, id string, confirmed bool, st
 		return nil, err
 	}
 	defer conn.Close(context.Background())
-	tx, err := conn.Begin(ctx)
+	tx, erasure, read, err := lockInStoreOrder(ctx, conn, kind, id)
 	if err != nil {
-		return nil, fmt.Errorf("begin: %w", err)
+		return nil, err
 	}
 	defer tx.Rollback(context.Background())
 
-	erasure := &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC()}
-	if err := tx.QueryRow(ctx,
-		`select supertag from graph_nodes where kind = $1 and id = $2 for update`,
-		kind, id).Scan(&erasure.Supertag); err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("the store holds no node %s:%s", kind, id)
-		}
-		return nil, fmt.Errorf("read node %s:%s: %w", kind, id, err)
-	}
 	if err := tx.QueryRow(ctx, `select current_user`).Scan(&erasure.RanBy.DatabaseUser); err != nil {
 		return nil, fmt.Errorf("read the database user: %w", err)
 	}
@@ -298,14 +298,7 @@ func Erase(ctx context.Context, databaseURL, kind, id string, confirmed bool, st
 		erasure.RanBy.Host = host
 	}
 
-	texts, err := erasedTexts(ctx, tx, kind, id)
-	if err != nil {
-		return nil, err
-	}
-	artifacts, numbers, err := erasedVersions(ctx, tx, texts, erasure)
-	if err != nil {
-		return nil, err
-	}
+	texts, artifacts, numbers := read.texts, read.artifacts, read.numbers
 	if err := erasedReviews(ctx, tx, artifacts, numbers, erasure); err != nil {
 		return nil, err
 	}
@@ -315,13 +308,13 @@ func Erase(ctx context.Context, databaseURL, kind, id string, confirmed bool, st
 	if err := erasure.readBlockers(ctx, tx, kind, id); err != nil {
 		return nil, err
 	}
-	if err := erasure.readDocuments(ctx, tx, stores, texts, artifacts); err != nil {
+	if err := erasure.readDocuments(ctx, tx, stores, texts, read.documents); err != nil {
 		return nil, err
 	}
 	if !confirmed || len(erasure.Blockers) > 0 || len(erasure.Unredacted()) > 0 {
 		return erasure, nil
 	}
-	if err := erasure.apply(ctx, tx, stores, texts, artifacts, numbers); err != nil {
+	if err := erasure.apply(ctx, tx, stores, read); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -332,6 +325,376 @@ func Erase(ctx context.Context, databaseURL, kind, id string, confirmed bool, st
 		return erasure, err
 	}
 	return erasure, nil
+}
+
+// eraseOwnerAttempts is how many tries lockInStoreOrder makes at reading which owner rows the
+// erase writes under and taking them and the node's row before it refuses. A try fails only when
+// a write lands between its read of those rows and its locks and moves the erased text, or the
+// node, under another owner; three in a row is a stream of such writes, which the operator stops
+// before running the erase again, rather than one the erase can outrun.
+const eraseOwnerAttempts = 3
+
+// lockInStoreOrder opens the erase's transaction and takes its locks in the store's lock order
+// (api/inbox_read.go's markInboxReadThreads), whose first invariant is that a store write takes
+// the owner row first. Every owner row the erase writes under comes first - read says which they
+// are, statement by statement - then the node's row `for update`, then the node's own projection
+// rows (lockProjectionRows), and nothing the erase does after them takes an owner row it does not
+// already hold: Stores.LiveText takes a document's owner row again and finds this transaction
+// holding it. A node no row projects and whose text nothing holds - a person, a session, a role,
+// a page - stands under no owner row, and the erase then starts at its node's row, which the
+// order allows: a writer may leave a step out.
+//
+// The owner rows are taken each once, in the order of their owner keys, as events.lockOwners
+// takes the owners of several events: "artifact:<id>" for a document no issue owns, before
+// "issue:<key>". That is the one order over every owner row, an issue whose own comment is erased
+// included; an order by document, which the backfill's lockBlockDocuments takes, puts one issue
+// at a different place for each set of its documents, so two writers taking two sets of them
+// could each hold the owner the other waits for.
+//
+// Which owners those are is read before they are locked, so it is read again under them, and
+// the run goes on with that second read (read): every document it lists, deletes a version of or
+// replaces is one whose owner it holds. A write that, between the two reads, made a document
+// whose owner the run did not take hold the erased text, or moved the node under another owner,
+// could go on writing under that owner while the run does. The run then rolls back and starts
+// again rather than take that owner after the node's row, and after eraseOwnerAttempts it
+// refuses, naming each owner it found untaken, having removed nothing.
+func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx.Tx, *Erasure, erasedRead, error) {
+	var untaken []string
+	for range eraseOwnerAttempts {
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return nil, nil, erasedRead{}, fmt.Errorf("begin: %w", err)
+		}
+		erasure := &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC()}
+		var read erasedRead
+		read, untaken, err = erasure.lockOwnersThenNode(ctx, tx)
+		if err == nil && len(untaken) == 0 {
+			return tx, erasure, read, nil
+		}
+		_ = tx.Rollback(context.Background())
+		if err != nil {
+			return nil, nil, erasedRead{}, err
+		}
+	}
+	return nil, nil, erasedRead{}, fmt.Errorf("the erase refuses %s:%s: on each of %d tries a write put the erased text or the node under an owner row the erase had not taken before it took the node's row (%s); nothing was removed, and the erase can be run again",
+		kind, id, eraseOwnerAttempts, strings.Join(untaken, "; "))
+}
+
+// lockOwnersThenNode is one try of lockInStoreOrder: it reads which owner rows the erase writes
+// under, takes them (lockOwnerRows), the node's row and the node's projection rows
+// (lockProjectionRows), reads again under those locks, and answers that second read with every
+// owner it names that the try did not take.
+func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead, []string, error) {
+	before, err := e.read(ctx, tx)
+	if err != nil {
+		return erasedRead{}, nil, err
+	}
+	if err := lockOwnerRows(ctx, tx, before.owners); err != nil {
+		return erasedRead{}, nil, err
+	}
+	if err := tx.QueryRow(ctx,
+		`select supertag from graph_nodes where kind = $1 and id = $2 for update`,
+		e.Kind, e.ID).Scan(&e.Supertag); err != nil {
+		if err == pgx.ErrNoRows {
+			return erasedRead{}, nil, fmt.Errorf("the store holds no node %s:%s", e.Kind, e.ID)
+		}
+		return erasedRead{}, nil, fmt.Errorf("read node %s:%s: %w", e.Kind, e.ID, err)
+	}
+	if err := lockProjectionRows(ctx, tx, e.Kind, e.ID); err != nil {
+		return erasedRead{}, nil, err
+	}
+	locked, err := e.read(ctx, tx)
+	if err != nil {
+		return erasedRead{}, nil, err
+	}
+	var untaken []string
+	for _, key := range slices.Sorted(maps.Keys(locked.owners)) {
+		if _, taken := before.owners[key]; !taken {
+			untaken = append(untaken, key+", the owner of "+locked.owners[key])
+		}
+	}
+	return locked, untaken, nil
+}
+
+// lockProjectionRows takes every projection row of the node `for update`, the level the delete of
+// each in apply takes, right after the node's row and before the erase reads under its locks or
+// writes anything: table by table in projectedTables' order, and by key within each. R17 has a
+// node's row taken before any projection row whose foreign key names it, and every writer of
+// these rows that takes an owner row takes it before them, which the erase already holds.
+//
+// Taking them here, and not when apply deletes them, is what orders the erase against a writer
+// that holds one of them and no owner row: the block index tick's window arm takes a comment's
+// row `for no key update` and then writes that comment's windows and their window state
+// (refs.WriteItemWindows). An erase that took the row only at its delete would have deleted those
+// windows and that state first (forgetEmbeddings), and the arm, writing the same keys, would wait
+// for the erase while the erase waited for it, until Postgres ended one of them. Here the erase
+// waits at the row holding no row the arm writes, and the arm commits first.
+func lockProjectionRows(ctx context.Context, tx pgx.Tx, kind, id string) error {
+	for _, held := range projectedTables {
+		if _, err := tx.Exec(ctx, `select 1 from `+held.Table+` where node_kind = $1 and node_address = $2 order by `+
+			held.Key+` for update`, kind, id); err != nil {
+			return fmt.Errorf("lock the %s rows of %s:%s: %w", held.Table, kind, id, err)
+		}
+	}
+	return nil
+}
+
+// erasedRead is one read of what the erase removes and rewrites: the text the node's rows hold
+// (erasedTexts), the versions holding it, as the (artifact, number) pairs the deletes take
+// (erasedVersions), the documents whose live state the erase replaces (heldDocuments), the
+// documents whose block texts or excerpts it rewrites (quoted, quotedDocuments), the issues and
+// documents whose embedding rows it deletes, by the issue key or artifact id each row's id starts
+// with (embedded, embeddedOwners), and the owner rows all of those and the node itself stand
+// under.
+type erasedRead struct {
+	texts     []string
+	artifacts []string
+	numbers   []int32
+	documents []heldDocument
+	quoted    []string
+	embedded  []string
+	owners    erasedOwners
+}
+
+// read reads the node as the erase would remove it, and the owner row of every row it would write
+// that another writer writes under an owner, which is the owner row that writer takes before it.
+// It locks nothing and writes no row, so lockOwnersThenNode runs it once to learn which owner rows
+// to take and once more under them. What the erase writes, statement by statement, and the owner
+// row each is owed:
+//
+//   - the node's own rows: its projection rows and every row that cannot exist without one (the
+//     deletes in apply), the whole text of its blocks (eraseBlockTexts), its whole-text embedding
+//     row, its item's windows and their window state (forgetEmbeddings), and the tuples out of
+//     it. The comment path writes those under the comment's issue or document, and the version
+//     write and the backfill under the block's document: nodeOwners reads that owner.
+//   - the versions holding the text and the approvals over them (apply), the search rows that
+//     stood on those versions and the search vector of an issue whose spec lost one
+//     (restateSearch). A version, a review and the search row a version's trigger writes are each
+//     written under the document's owner: erasedVersions reads those documents.
+//   - each document's live state (replaceLiveTexts), whose writers take the document's owner row
+//     and then its room's lock: heldDocuments reads those documents.
+//   - the block texts and excerpts holding the text (redactBlocks), which the version write, the
+//     block index tick and the backfill write under the document's owner and then its revision
+//     fence: quotedDocuments reads those documents.
+//   - the issue rows, whole-text document rows and document windows of the embedding store that
+//     hold the text, and the windows covering a block the run erases or rewrites
+//     (forgetEmbeddings), the issue rows written again and the documents marked owed their windows
+//     (restateEmbeddings). The window arm writes a document's windows and clears its mark under the
+//     document's owner (refs.WriteDocumentWindows), and an issue's row is written by the trigger
+//     of a write of its spec or of its own title, under the issue: embeddedOwners reads those
+//     owners.
+//
+// The rest of what the erase writes is owed no owner row, since none of its other writers takes
+// one, or nothing else writes it:
+//
+//   - the event payloads (redactEvents). An event is appended under its owner row, but an append
+//     writes a new row and never one already there. What writes a row already there is the
+//     outbox's record of what it published (outbox's recordBatch), which takes no owner row, and
+//     the ask.opened payload events.Broker.AppendAll writes into the row its own transaction
+//     appended, which no other transaction sees before that one commits.
+//   - the tuples into the node (apply). A tuple is appended once, by the writer of its cause, and
+//     nothing writes it again, so a delete of one meets no other writer's write of that row.
+//   - the term statistics (Stores.TermStatistics), whose writers take a project's totals row and
+//     no owner row; the queue rows it deletes are this transaction's own.
+//   - the display trees (forgetTrees, sweepTrees), which a read stores and the display tree fill
+//     rewrites, neither under an owner row.
+//   - the node's own graph_nodes row, which the run has held since it took it after its owner
+//     rows, and graph_erasures, which only the erase writes.
+//
+// The block texts, excerpts and embedding rows of other issues and documents are written by
+// statements that test each row afresh, so redactBlocks and forgetEmbeddings write only the rows
+// of the documents and issues this read found, by the same tests (blockTextHolds, excerptHolds,
+// quotingEmbeddings). A row that a writer under an owner the run did not take brings to hold the
+// text after this read is that writer's, as a row it brings after the erase commits would be,
+// and the run writes under no owner it has not taken.
+func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
+	texts, err := erasedTexts(ctx, tx, e.Kind, e.ID)
+	if err != nil {
+		return erasedRead{}, err
+	}
+	artifacts, numbers, err := erasedVersions(ctx, tx, texts, e)
+	if err != nil {
+		return erasedRead{}, err
+	}
+	documents, err := heldDocuments(ctx, tx, texts, artifacts)
+	if err != nil {
+		return erasedRead{}, err
+	}
+	quoted, err := quotedDocuments(ctx, tx, e.marker(), texts)
+	if err != nil {
+		return erasedRead{}, err
+	}
+	owners, err := nodeOwners(ctx, tx, e.Kind, e.ID)
+	if err != nil {
+		return erasedRead{}, err
+	}
+	embedded, err := e.embeddedOwners(ctx, tx, texts, owners)
+	if err != nil {
+		return erasedRead{}, err
+	}
+	for index, version := range e.Versions {
+		owners.add(version.Issue, artifacts[index], "document "+version.Document)
+	}
+	for _, document := range documents {
+		owners.add(document.issue, document.artifact, "document "+document.document)
+	}
+	read := erasedRead{texts: texts, artifacts: artifacts, numbers: numbers, documents: documents, embedded: embedded, owners: owners}
+	for _, document := range quoted {
+		owners.add(document.issue, document.artifact, "the blocks of document "+document.document)
+		read.quoted = append(read.quoted, document.artifact)
+	}
+	return read, nil
+}
+
+// quotedDocuments reads every document a block text or an excerpt of which redactBlocks
+// rewrites, by the tests its statements write with (blockTextHolds, excerptHolds), in artifact id
+// order.
+func quotedDocuments(ctx context.Context, tx pgx.Tx, marker string, texts []string) ([]heldDocument, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	bound := placeholders(texts)
+	rows, err := tx.Query(ctx, `
+		select a.id::text, a.ref_key, coalesce(a.issue_key, ''), coalesce(a.project_key, '')
+		from artifacts a
+		where a.id in (
+			select held.artifact_id from document_block_texts held where `+blockTextHolds(bound)+`
+			union
+			select held.artifact_id from document_blocks held where `+excerptHolds(bound)+`
+		)
+		order by a.id`, redactionArgs(marker, texts)...)
+	if err != nil {
+		return nil, fmt.Errorf("read the documents whose blocks hold the erased text: %w", err)
+	}
+	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (heldDocument, error) {
+		var document heldDocument
+		err := row.Scan(&document.artifact, &document.document, &document.issue, &document.project)
+		return document, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the documents whose blocks hold the erased text: %w", err)
+	}
+	return documents, nil
+}
+
+// embeddedOwners reads every row of the embedding store forgetEmbeddings deletes, by the tests its
+// statement deletes with (nodeEmbeddings, quotingEmbeddings), adds to owners the owner each of an
+// issue or a document stands under - the issue an issue row is of, and the owner of the document a
+// whole-text document row or a document window is of - and answers the issue key or artifact id
+// each row's id starts with, which forgetEmbeddings holds its delete of other issues' and
+// documents' rows to. The node's own rows stand under the node's owner, which nodeOwners reads.
+func (e *Erasure) embeddedOwners(ctx context.Context, tx pgx.Tx, texts []string, owners erasedOwners) ([]string, error) {
+	rows, err := tx.Query(ctx, erasedBlocks+`
+		select distinct held.kind, split_part(held.id, '#', 1), coalesce(a.id::text, ''), coalesce(a.ref_key, ''),
+		       coalesce(a.issue_key, '')
+		from embeddings held
+		left join artifacts a on held.kind in ('document', $6) and a.id::text = split_part(held.id, '#', 1)
+		where `+nodeEmbeddings+`
+		   or `+quotingEmbeddings, e.embeddingArgs(texts)...)
+	if err != nil {
+		return nil, fmt.Errorf("read the embedding rows holding the text of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([5]string, error) {
+		var embedded [5]string
+		err := row.Scan(&embedded[0], &embedded[1], &embedded[2], &embedded[3], &embedded[4])
+		return embedded, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the embedding rows holding the text of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	keys := map[string]struct{}{}
+	for _, embedded := range held {
+		kind, key, artifact, document, issue := embedded[0], embedded[1], embedded[2], embedded[3], embedded[4]
+		keys[key] = struct{}{}
+		switch {
+		case kind == "issue":
+			owners.add(key, "", "the embedding row of issue "+key)
+		case artifact != "":
+			owners.add(issue, artifact, "the embedding rows of document "+document)
+		}
+	}
+	return slices.Sorted(maps.Keys(keys)), nil
+}
+
+// erasedOwners are the owner rows the erase writes under, each by its owner key as
+// events.lockOwners keys an event's owner - "issue:<key>", or "artifact:<id>" for a document no
+// issue owns - with the first thing read standing under it, which a refusal names.
+type erasedOwners map[string]string
+
+// add records the owner of what: issue when an issue owns it, and otherwise the document
+// artifact is.
+func (o erasedOwners) add(issue, artifact, what string) {
+	key := "issue:" + issue
+	if issue == "" {
+		if artifact == "" {
+			return
+		}
+		key = "artifact:" + artifact
+	}
+	if _, read := o[key]; !read {
+		o[key] = what
+	}
+}
+
+// nodeOwners reads the owner row each projection row of the node stands under: an issue's own
+// comment stands under the issue, and every other row under the owner of the document it belongs
+// to, which is that document's issue or, for a document no issue owns, the document's own
+// artifacts row - the owner docs' lockArtifactOwner and this package's lockDocumentOwner find.
+// A node no row projects stands under none.
+func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (erasedOwners, error) {
+	arms := make([]string, len(projectedTables))
+	for index, held := range projectedTables {
+		issue := "null::text"
+		if held.Issue != "" {
+			issue = held.Issue
+		}
+		arms[index] = `select ` + issue + `, artifact_id from ` + held.Table + ` where node_kind = $1 and node_address = $2`
+	}
+	rows, err := tx.Query(ctx, `
+		select coalesce(held.issue_key, a.issue_key, ''), coalesce(a.id::text, '')
+		from (`+strings.Join(arms, " union all ")+`) as held (issue_key, artifact_id)
+		left join artifacts a on a.id = held.artifact_id`, kind, id)
+	if err != nil {
+		return nil, fmt.Errorf("read the owners of %s:%s: %w", kind, id, err)
+	}
+	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
+		var owner [2]string
+		err := row.Scan(&owner[0], &owner[1])
+		return owner, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the owners of %s:%s: %w", kind, id, err)
+	}
+	owners := erasedOwners{}
+	for _, owner := range held {
+		owners.add(owner[0], owner[1], kind+":"+id)
+	}
+	return owners, nil
+}
+
+// lockOwnerRows takes each owner row `for no key update`, in the order of its owner key, with
+// the statements docs' lockArtifactOwner and this package's lockDocumentOwner take it with: an
+// issue's row, or a document's own artifacts row while no issue owns it. A row gone since it was
+// read, or a document an issue has taken since, locks nothing here, and the read under the locks
+// finds what it stands under now.
+func lockOwnerRows(ctx context.Context, tx pgx.Tx, owners erasedOwners) error {
+	for _, key := range slices.Sorted(maps.Keys(owners)) {
+		if issue, ok := strings.CutPrefix(key, "issue:"); ok {
+			if _, err := tx.Exec(ctx, `
+				select closed_at is null from issues where key = $1 for no key update
+			`, issue); err != nil {
+				return fmt.Errorf("lock issue %s, the owner of %s: %w", issue, owners[key], err)
+			}
+			continue
+		}
+		artifact := strings.TrimPrefix(key, "artifact:")
+		if _, err := tx.Exec(ctx, `
+			select true from artifacts where id = $1 and issue_key is null for no key update
+		`, artifact); err != nil {
+			return fmt.Errorf("lock document %s, the owner of %s: %w", artifact, owners[key], err)
+		}
+	}
+	return nil
 }
 
 // erasedTexts is the text the node's own rows hold, which is what the erase looks for in the
@@ -529,22 +892,19 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, kind, id string) 
 	return nil
 }
 
-// readDocuments reads the live state of every document the erased text stands in, as the erase
-// would leave it (Stores.LiveText), in artifact id order, which is the order two erases take the
-// documents' locks in. Those documents are the ones a version the run deletes belongs to, the ones
-// whose block text holds the erased text, and the ones whose stored history, a pending prune's
-// checkpoint or a snapshot holds its bytes whole: an edit nothing has versioned yet stands there
-// alone. A text a person typed piece by piece can be stored split across updates, so no search of
-// those bytes can be the whole list, which is why the versions and the blocks are on it as well.
-//
-// Every one of them has its history replaced, a document whose live text no longer holds the
-// erased text included, since an edit that took the text out leaves its bytes in the items it
-// deleted until a fold collects them. It reads, and writes nothing: each LiveText is replaced in
-// apply (replaceLiveTexts).
-func (e *Erasure) readDocuments(ctx context.Context, tx pgx.Tx, stores Stores, texts, artifacts []string) error {
-	e.Documents = []ErasedDocument{}
+// heldDocument is one document the erased text stands in, named as a reader addresses it, with
+// the issue that owns it, empty for a document no issue owns.
+type heldDocument struct{ artifact, document, issue, project string }
+
+// heldDocuments reads every document the erased text stands in, in artifact id order. Those
+// documents are the ones a version the run deletes belongs to, the ones whose block text holds
+// the erased text, and the ones whose stored history, a pending prune's checkpoint or a snapshot
+// holds its bytes whole: an edit nothing has versioned yet stands there alone. A text a person
+// typed piece by piece can be stored split across updates, so no search of those bytes can be the
+// whole list, which is why the versions and the blocks are on it as well.
+func heldDocuments(ctx context.Context, tx pgx.Tx, texts, artifacts []string) ([]heldDocument, error) {
 	if len(texts) == 0 {
-		return nil
+		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `
 		with held (artifact_id) as (
@@ -570,17 +930,31 @@ func (e *Erasure) readDocuments(ctx context.Context, tx pgx.Tx, stores Stores, t
 		where a.kind = 'doc'
 		order by a.id`, artifacts, texts)
 	if err != nil {
-		return fmt.Errorf("read the documents holding the erased text: %w", err)
+		return nil, fmt.Errorf("read the documents holding the erased text: %w", err)
 	}
-	type held struct{ artifact, document, issue, project string }
-	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (held, error) {
-		var document held
+	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (heldDocument, error) {
+		var document heldDocument
 		err := row.Scan(&document.artifact, &document.document, &document.issue, &document.project)
 		return document, err
 	})
 	if err != nil {
-		return fmt.Errorf("read the documents holding the erased text: %w", err)
+		return nil, fmt.Errorf("read the documents holding the erased text: %w", err)
 	}
+	return documents, nil
+}
+
+// readDocuments reads the live state of every document heldDocuments read, as the erase would
+// leave it (Stores.LiveText), in artifact id order, which is the order two erases take the
+// documents' room locks in. Each document's owner row the erase took before its node's row
+// (lockInStoreOrder), so the owner row Stores.LiveText takes first is one this transaction holds
+// already, and no owner row is taken after the node's.
+//
+// Every one of them has its history replaced, a document whose live text no longer holds the
+// erased text included, since an edit that took the text out leaves its bytes in the items it
+// deleted until a fold collects them. It reads, and writes nothing: each LiveText is replaced in
+// apply (replaceLiveTexts).
+func (e *Erasure) readDocuments(ctx context.Context, tx pgx.Tx, stores Stores, texts []string, documents []heldDocument) error {
+	e.Documents = []ErasedDocument{}
 	for _, document := range documents {
 		live, err := stores.LiveText(ctx, tx, document.artifact, texts, e.marker())
 		if err != nil {
@@ -669,15 +1043,30 @@ func redaction(column string, values []string) string {
 	return rewritten
 }
 
+// blockTextHolds is the test redactBlocks rewrites a document_block_texts row named held by, and
+// excerptHolds the one it rewrites a document_blocks row's excerpt by: the column differs from
+// itself with every erased text replaced by the marker. bound is placeholders of those texts.
+// quotedDocuments reads by the same two, so the documents whose owners the erase takes for its
+// blocks are the ones these statements write.
+func blockTextHolds(bound []string) string {
+	return "held.text <> " + redaction("held.text", bound)
+}
+
+// excerptHolds is blockTextHolds' test over a document_blocks row's excerpt.
+func excerptHolds(bound []string) string {
+	return "held.excerpt <> " + redaction("held.excerpt", bound)
+}
+
 // redact rewrites the stores that hold the erased text and that the erase may take no row out
 // of: the blocks of the documents that quoted it, whose rows project block nodes of their own,
 // and the append-only event log. It runs after the deletes, so a row this run has already
-// removed is not rewritten first and counted as both.
-func (e *Erasure) redact(ctx context.Context, tx pgx.Tx, texts []string) error {
+// removed is not rewritten first and counted as both. quoted are the documents whose blocks the
+// run read holding the text (erasedRead.quoted).
+func (e *Erasure) redact(ctx context.Context, tx pgx.Tx, texts, quoted []string) error {
 	if len(texts) == 0 {
 		return nil
 	}
-	if err := e.redactBlocks(ctx, tx, texts); err != nil {
+	if err := e.redactBlocks(ctx, tx, texts, quoted); err != nil {
 		return err
 	}
 	return e.redactEvents(ctx, tx, texts)
@@ -695,18 +1084,23 @@ func (e *Erasure) redact(ctx context.Context, tx pgx.Tx, texts []string) error {
 // not reach - one whose text document_block_texts does not hold - has its excerpt rewritten by
 // the statement after it.
 //
+// Both statements write the blocks of quoted alone, the documents whose owners the run took
+// because the read under its locks found their blocks holding the text by these same tests
+// (quotedDocuments), so neither writes a block under an owner the run does not hold.
+//
 // text_sha256 stands as it is. It is the digest of the bytes the version stated, which is what
 // the indexer compares a later version's block against: moved to the digest of the redacted
 // text, a version restating the erased bytes would read as a change and write them back in.
-func (e *Erasure) redactBlocks(ctx context.Context, tx pgx.Tx, texts []string) error {
+func (e *Erasure) redactBlocks(ctx context.Context, tx pgx.Tx, texts, quoted []string) error {
 	bound := placeholders(texts)
-	args := redactionArgs(e.marker(), texts)
+	args := append(redactionArgs(e.marker(), texts), quoted)
+	documents := "$" + strconv.Itoa(len(args)) + "::uuid[]"
 	rewritten := redaction("held.text", bound)
 	var blockTexts, recut int64
 	if err := tx.QueryRow(ctx, `
 		with redacted as (
 			update document_block_texts held set text = `+rewritten+`
-			where held.text <> `+rewritten+`
+			where `+blockTextHolds(bound)+` and held.artifact_id = any(`+documents+`)
 			returning held.artifact_id, held.block_id, held.version, held.text
 		), recut as (
 			update document_blocks block set excerpt = left(redacted.text, `+blockExcerpt+`)
@@ -720,9 +1114,8 @@ func (e *Erasure) redactBlocks(ctx context.Context, tx pgx.Tx, texts []string) e
 		args...).Scan(&blockTexts, &recut); err != nil {
 		return fmt.Errorf("redact the block texts holding the text of %s:%s: %w", e.Kind, e.ID, err)
 	}
-	excerpts := redaction("excerpt", bound)
-	tag, err := tx.Exec(ctx, `update document_blocks set excerpt = `+excerpts+
-		` where excerpt <> `+excerpts, args...)
+	tag, err := tx.Exec(ctx, `update document_blocks held set excerpt = `+redaction("held.excerpt", bound)+
+		` where `+excerptHolds(bound)+` and held.artifact_id = any(`+documents+`)`, args...)
 	if err != nil {
 		return fmt.Errorf("redact the block excerpts holding the text of %s:%s: %w", e.Kind, e.ID, err)
 	}
@@ -870,6 +1263,45 @@ type forgottenEmbeddings struct {
 	issues, documents []string
 }
 
+// The rows forgetEmbeddings deletes, as its statement and embeddedOwners' read of them both spell
+// them, over a row of embeddings named held and bound as embeddingArgs binds them: erasedBlocks is
+// the blocks whose windows go, nodeEmbeddings the node's own rows, and quotingEmbeddings the rows
+// of other issues and documents, which hold the erased text or stand on one of those blocks.
+const (
+	erasedBlocks = `
+		with erased_blocks (artifact_id, block_id) as (
+			select held.artifact_id, held.block_id from document_blocks held
+			where held.node_kind = $1 and held.node_address = $2
+			union
+			select quoted.artifact_id, quoted.block_id from document_block_texts quoted
+			where exists (select 1 from unnest($5::text[]) erased(text) where position(erased.text in quoted.text) > 0)
+		)`
+	nodeEmbeddings = `(held.kind = $1 and held.id = $2)
+		   or (held.kind = $3 and split_part(held.id, '#', 1) = $4)`
+	quotingEmbeddings = `(held.kind in ('issue', 'document', $6)
+		       and exists (select 1 from unnest($5::text[]) erased(text) where position(erased.text in held.text_snapshot) > 0))
+		   or (held.kind = $6 and exists (
+		       select 1 from erased_blocks block
+		       where split_part(held.id, '#', 1) = block.artifact_id::text and block.block_id = any(held.covers)))`
+)
+
+// itemWindows is the window kind and the owner key the windows of the node's blocks are written
+// under, for a comment, a message or an ask (refs.ItemKind.WindowKind, WindowOwnerKey), and empty
+// for any other node.
+func (e *Erasure) itemWindows() (windowKind, ownerKey string) {
+	if kind := refs.ItemKind(e.Kind); kind == refs.ItemComment || kind == refs.ItemMessage || kind == refs.ItemAsk {
+		return kind.WindowKind(), kind.WindowOwnerKey(e.ID)
+	}
+	return "", ""
+}
+
+// embeddingArgs are the values erasedBlocks, nodeEmbeddings and quotingEmbeddings bind: the node,
+// its item's windows (itemWindows), the erased texts and the kind of a document's windows.
+func (e *Erasure) embeddingArgs(texts []string) []any {
+	windowKind, ownerKey := e.itemWindows()
+	return []any{e.Kind, e.ID, windowKind, ownerKey, texts, refs.DocumentWindowKind}
+}
+
 // forgetEmbeddings deletes every row of the embedding store that holds the erased bytes or
 // stands on a block whose text the run erases or rewrites, and answers what of it a later step
 // writes again. Nothing else of the erase reaches that store: embeddings carries no foreign key
@@ -891,34 +1323,25 @@ type forgottenEmbeddings struct {
 //     erased texts, the test redactBlocks and erasedVersions read by. An issue's row holds its
 //     title and its spec's latest version (issue_embedding_text, migration 0140).
 //
+// The last two are other issues' and documents' rows, and it deletes those of embedded alone: the
+// issues and documents the read under the run's locks found by the same tests (embeddedOwners),
+// whose owners the run took, so it writes no row of an owner it does not hold. The node's own
+// rows go whatever the read found, since the windows of its item are written under its item's row
+// and no owner row (refs.WriteItemWindows) and one written since the read holds the erased body.
+//
 // An item the run does not rewrite keeps its windows: another comment quoting the erased text is
 // somebody else's words, which the erase leaves as they are, and its windows written again would
 // hold the same bytes.
 //
 // It runs before anything goes, while the node's block rows and the block texts the run rewrites
 // still hold what finds them, as treeSums does.
-func (e *Erasure) forgetEmbeddings(ctx context.Context, tx pgx.Tx, texts []string) (forgottenEmbeddings, error) {
-	var windowKind, ownerKey string
-	if kind := refs.ItemKind(e.Kind); kind == refs.ItemComment || kind == refs.ItemMessage || kind == refs.ItemAsk {
-		windowKind, ownerKey = kind.WindowKind(), kind.WindowOwnerKey(e.ID)
-	}
-	rows, err := tx.Query(ctx, `
-		with erased_blocks (artifact_id, block_id) as (
-			select held.artifact_id, held.block_id from document_blocks held
-			where held.node_kind = $1 and held.node_address = $2
-			union
-			select quoted.artifact_id, quoted.block_id from document_block_texts quoted
-			where exists (select 1 from unnest($5::text[]) erased(text) where position(erased.text in quoted.text) > 0)
-		)
+func (e *Erasure) forgetEmbeddings(ctx context.Context, tx pgx.Tx, texts, embedded []string) (forgottenEmbeddings, error) {
+	windowKind, ownerKey := e.itemWindows()
+	rows, err := tx.Query(ctx, erasedBlocks+`
 		delete from embeddings held
-		where (held.kind = $1 and held.id = $2)
-		   or (held.kind = $3 and split_part(held.id, '#', 1) = $4)
-		   or (held.kind in ('issue', 'document', $6)
-		       and exists (select 1 from unnest($5::text[]) erased(text) where position(erased.text in held.text_snapshot) > 0))
-		   or (held.kind = $6 and exists (
-		       select 1 from erased_blocks block
-		       where split_part(held.id, '#', 1) = block.artifact_id::text and block.block_id = any(held.covers)))
-		returning held.kind, held.id`, e.Kind, e.ID, windowKind, ownerKey, texts, refs.DocumentWindowKind)
+		where `+nodeEmbeddings+`
+		   or ((`+quotingEmbeddings+`) and split_part(held.id, '#', 1) = any($7::text[]))
+		returning held.kind, held.id`, append(e.embeddingArgs(texts), embedded)...)
 	if err != nil {
 		return forgottenEmbeddings{}, fmt.Errorf("delete the embedding rows holding the text of %s:%s: %w", e.Kind, e.ID, err)
 	}
@@ -1067,14 +1490,16 @@ func (e *Erasure) sweepTrees(ctx context.Context, conn *pgx.Conn, bound time.Dur
 // went, the embedding rows of what it leaves (restateEmbeddings), and the live state of each
 // document that held the text - counts the term statistics of every project whose items moved
 // again, and deletes the display trees of the texts that went. Last go the tuples of both sides,
-// the node, and the record of what the run did.
-func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, stores Stores, texts, artifacts []string, numbers []int32) error {
+// the node, and the record of what the run did. Every row it writes is one read found, under the
+// owner rows the run took before the node's (erasedRead).
+func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, stores Stores, read erasedRead) error {
+	texts, artifacts, numbers := read.texts, read.artifacts, read.numbers
 	sums, err := e.treeSums(ctx, tx, texts, artifacts, numbers)
 	if err != nil {
 		return err
 	}
 	e.sums = sums
-	forgotten, err := e.forgetEmbeddings(ctx, tx, texts)
+	forgotten, err := e.forgetEmbeddings(ctx, tx, texts, read.embedded)
 	if err != nil {
 		return err
 	}
@@ -1121,7 +1546,7 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, stores Stores, texts, ar
 		}
 		e.removed("artifact_versions", tag.RowsAffected())
 	}
-	if err := e.redact(ctx, tx, texts); err != nil {
+	if err := e.redact(ctx, tx, texts, read.quoted); err != nil {
 		return err
 	}
 	projects, err := e.restateSearch(ctx, tx, artifacts)

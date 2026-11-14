@@ -493,7 +493,10 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //
 // Appending a tuple locks no row of another table: graph_tuples has no foreign key and nothing
 // updates or deletes a tuple, so where the append falls in a writer's sequence moves no lock,
-// and invariant 3 is about which rows exist, not about which are held. A writer owning no issue
+// and invariant 3 is about which rows exist, not about which are held. The one exception is the
+// erase (`envoy-dispatch erase`, R1 and R5 of dispatch://INFRA-1149), which deletes a node's
+// tuples and its node row, and takes this same order to do it: every owner row it writes under,
+// then the node row, then the rest (graphcensus's lockInStoreOrder). A writer owning no issue
 // and no document - an operator's own write, a session-addressed event - takes no owner row at
 // all, and invariant 1 says nothing about it. graphstore's TestEveryStoreWriteTakesOneLockOrder
 // reads this list and fails if these five are not in it.
