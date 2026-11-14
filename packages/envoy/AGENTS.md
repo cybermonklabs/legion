@@ -1983,7 +1983,7 @@ So every document this accepts draws in a browser as it reads here, and a list o
 The browser counts no footnote definition, which only lets it draw deeper than this accepts, never shallower.
 
 Typed document blocks are declared only in `internal/dispatch/pmdoc/schema/blocks.json`.
-The embedded file is the server-owned schema, `GET /api/v1/schema/blocks` returns its exact JSON, and the fixture generator reads that checked-in file.
+The embedded file seeds the store's type nodes, and the fixture generator reads that checked-in file; `GET /api/v1/schema/blocks` serves the schema the server built from those nodes (`pmdoc.SchemaJSON`), not the file's own bytes.
 The store holds each of those types as nodes: one `supertag` node per type and one `attribute` node per attribute, tied to its type by an `attribute_of` tuple (migration `20261109051232`, which seeded them from this file).
 An attribute node's id is `<supertag>/<store name>` and it carries that store name as `store_name`: the kind of the tuple that states one of the attribute's values, which `schemanodes.StoreName` gives and which is never a base attribute (`visibility`, `state`) every node carries.
 So `ask`'s `state` is the node `ask/answer_state` while documents, the editor and the served schema still call it `state`, and `TestNoAttributeNodeStoresItsValuesUnderABaseAttribute` fails on an attribute node whose store name is a base attribute.
