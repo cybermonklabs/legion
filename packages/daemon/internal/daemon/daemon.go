@@ -1376,9 +1376,10 @@ type supervision struct {
 }
 
 // live is the configuration the daemon is running on now (plan.live): where every decision of
-// this supervision reads a value the class table answers `at once` for — the update round's
-// bound and the deployment's recorded capability decisions — so an operator's change reaches the
-// next sweep and the next read of the state with nothing rebuilt.
+// this supervision reads a value the class table answers `at once` for — the deployment's
+// recorded capability decisions — so an operator's change reaches the next read of the state
+// with nothing rebuilt. The update round's bound is not one: its class is fixed, because the
+// round states its end in the ask it sends each role, so the sweep reads it off cfg.
 //
 // Every supervision is built with that holder, a test's own as much as the daemon's: cfg is
 // what boot settled and nothing moves it, so reading a live value from it would answer the
@@ -1604,9 +1605,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		Clock:                   p.clock,
 		Log:                     log,
-		// Every budget and every bound a decision is held to is read as that decision is made
-		// (liveBudgets): `launch_failure_limit`, `worker_rpc_timeout_seconds` and their
-		// neighbours take effect at once, with no machine rebuilt.
+		// Every budget and every bound a machine's decision is held to is read as that decision
+		// is made (liveBudgets): `launch_failure_limit`, `worker_rpc_timeout_seconds` and their
+		// neighbours take effect at once, with no machine rebuilt. The update round's bound is
+		// the sweep's rather than a machine's, and the sweep reads it off cfg.
 		Settings: liveBudgets{live: p.live},
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.

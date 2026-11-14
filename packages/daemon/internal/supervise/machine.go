@@ -894,8 +894,7 @@ type Deps struct {
 
 // limits is the limits this decision is held to, and timeouts the waits it times, both read from
 // the settings holder as the decision is made. Every read of either goes through them, so a
-// decision is never held to a budget settled before the machine was built. The re-task bound a
-// pod-update round asks a claim again after is one of the timeouts, so it is read live too.
+// decision is never held to a budget settled before the machine was built.
 //
 // check refuses a Deps with no holder, so neither can be reached with nothing to read.
 func (d Deps) limits() Limits { return d.Settings.Limits() }

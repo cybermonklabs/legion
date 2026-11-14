@@ -132,6 +132,7 @@ const (
 	whyIdleRel  = "the idle release is settled at boot into the workflow's idle pass and the outbox's backstop, and the daemon builds neither again: a change of it reaches the next boot and nothing before it"
 	whyMemory   = "a tree's memory group is drawn once, as the tree is opened, under the mode admission and the API server were given at boot, and the instructions are read at boot into the launch specs: a change of either reaches the next boot and no tree already drawn"
 	whyPodSweep = "the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it"
+	whyPodGrace = "an update round states its end, its opening plus this bound, in the ask it sends every role (internal/daemon's askRound), so the sweep reads the bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, roundBound) and every role of one round is told the same end, the one the round is then held to: a change of it reaches the next boot and no sweep before it"
 	whyWakePace = "the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it"
 	whyStallBst = "the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it"
 	whySilence  = "the silence sweep reads both bounds off the configuration the daemon booted on (internal/daemon's supervision.cfg, tellSilentPhaseWorkers), and admission is handed the same two at boot for the tick's silent list (admit's UseWorkerSilence, internal/daemon's openWorkflow), and nothing builds either reader again: a change of either reaches the next boot and no sweep or tick before it"
@@ -198,9 +199,8 @@ func (c Caller) Admits(path string) (bool, string) {
 // one, the path of a file holding one, or an address that may carry one. Today the rows it
 // admits are `admission_cap`, the supervision limits (`launch_failure_limit`,
 // `prompt_failure_limit`, `prompt_retire_limit`, `tree_stop_timeout_seconds`), the workflow's
-// own bounds (`linger_hours`, `production_check_hours`, `pod_update_grace_minutes`,
-// `review_round_cap`) and `capabilities` with
-// `capabilities.decided`.
+// own bounds (`linger_hours`, `production_check_hours`, `review_round_cap`) and `capabilities`
+// with `capabilities.decided`.
 func (r Row) Plain() bool { return r.Class == ClassDecision && !r.Secret && r.Holder == "" }
 
 // Classes is every settable unit of `legion.yaml`, one row per field the loader reads it into.
@@ -250,10 +250,11 @@ var Classes = []Row{
 	// The workflow's own decisions, each read as the decision is made.
 	{Field: "Config.Linger", Path: "linger_hours", Class: ClassDecision},
 	{Field: "Config.ProductionCheckBound", Path: "production_check_hours", Class: ClassDecision},
-	// The update round's bound, read by the sweep at each decision it holds — whether the round
-	// has reached its replacement, whether it is told late, and the end its ask states
-	// (internal/daemon's supervision.live).
-	{Field: "Config.PodUpdateGrace", Path: "pod_update_grace_minutes", Class: ClassDecision},
+	// The update round's bound, which the sweep reads off the configuration the daemon booted on
+	// (internal/daemon's supervision.cfg) at each decision it holds — whether the round has
+	// reached its replacement, whether it is told late, and the end its ask states — so the end
+	// each role is told is the bound the round is held to.
+	{Field: "Config.PodUpdateGrace", Path: "pod_update_grace_minutes", Class: ClassFixed, Why: whyPodGrace},
 	// The pod-update sweep's two limits, which it reads off the configuration the daemon booted
 	// on (internal/daemon's supervision.cfg) rather than at each sweep.
 	{Field: "Config.PodUpdateMaxOpenRounds", Path: "pod_update_max_open_rounds", Class: ClassFixed, Why: whyPodSweep},

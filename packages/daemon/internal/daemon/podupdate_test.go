@@ -146,10 +146,11 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 }
 
 // newPodUpdateRigOn is the rig over the settings holder live, which a test changes under the
-// running sweep: the sweep reads the round's bound from it at every tick (supervision.live) and
-// each machine its budgets at every decision, through the daemon's own liveBudgets, so what this
-// rig proves of a change is what the daemon does with one. nil is the rig's own bounds, which no
-// test moves.
+// running sweep: each machine reads its budgets from it at every decision, through the daemon's
+// own liveBudgets, and the plugin-install rule reads a role's backend from it (noPluginInstall),
+// so what this rig proves of a change is what the daemon does with one. The round's bound is
+// not among them: the sweep reads it off the configuration the daemon booted on (supervision.cfg),
+// which here is the rig's own (podUpdateGrace). nil is the rig's own bounds, which no test moves.
 func newPodUpdateRigOn(t *testing.T, live *config.Live, roles ...podUpdateRole) *podUpdateRig {
 	t.Helper()
 	ctx := context.Background()
@@ -228,8 +229,8 @@ func newPodUpdateRigOn(t *testing.T, live *config.Live, roles ...podUpdateRole) 
 		PodUpdateGrace: podUpdateGrace, WorkerSilence: podUpdateSilence}
 	// The machines read their budgets from the holder the caller named, as production builds
 	// them; a rig no test moves a setting under keeps the fixed budgets below and settles its
-	// own configuration into a holder, because every supervision reads the bounds a change must
-	// reach at once from one (supervision.live).
+	// own configuration into a holder, because every supervision reads the values a change must
+	// reach at once from one (plan.live).
 	settings := supervise.FixedSettings(
 		supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond})

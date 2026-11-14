@@ -290,7 +290,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // round's pod, and two pods at once. A round that waits for an answer or a turn before its bound
 // tells nobody: the bound ends that wait by itself.
 func (s *supervision) completePodUpdate(ctx context.Context, issue string, snapshot, live []supervise.Claim, round, pod, reasons string, now time.Time) (*podReplacement, bool) {
-	reading := readReplacement(live, round, roundBound(live, round, s.live().PodUpdateGrace), now)
+	reading := readReplacement(live, round, roundBound(live, round, s.cfg.PodUpdateGrace), now)
 	switch reading.wait {
 	case waitsForOperator:
 		s.waitForOperator(ctx, issue, live, round, pod, reasons, now, reading.held)
@@ -572,7 +572,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	}
 	live := s.viewedGroup(claims, issue)
 	now := s.plan.clock.Now()
-	reading := readReplacement(live, round, roundBound(live, round, s.live().PodUpdateGrace), now)
+	reading := readReplacement(live, round, roundBound(live, round, s.cfg.PodUpdateGrace), now)
 	switch reading.wait {
 	case waitsForOperator:
 		s.log.Info("supervise: an operator's suspension holds this update round now the sweep has reached its replacement; nothing was replaced and the round stays open",
@@ -799,7 +799,7 @@ func (s *supervision) replacementDue(issue, round, pod string, checked *pushChec
 		if held := heldByOperator(group, round); len(held) > 0 {
 			return fmt.Errorf("%w: an operator's suspension holds %s", errReplacementNotDue, strings.Join(namesOf(held), ", "))
 		}
-		*ended = readRoundEnd(group, round, roundBound(group, round, s.live().PodUpdateGrace), s.plan.clock.Now())
+		*ended = readRoundEnd(group, round, roundBound(group, round, s.cfg.PodUpdateGrace), s.plan.clock.Now())
 		unanswered, working := ended.holding()
 		if len(unanswered) > 0 {
 			return fmt.Errorf("%w: %s has not answered it", errReplacementNotDue, strings.Join(namesOf(unanswered), ", "))
@@ -1038,7 +1038,7 @@ func (s *supervision) roundGroup(group []supervise.Claim, mask bool) []supervise
 // (record.UpdateStalled). A round that asks no claim at all is told nothing: there is no role to
 // name. A round that group already records as told is told nothing again and read no further.
 func (s *supervision) tellLateRound(ctx context.Context, issue string, group []supervise.Claim, round, pod, reasons string, now time.Time, why string) {
-	if !pastBound(roundBound(group, round, s.live().PodUpdateGrace), now) || roundTold(group, round) {
+	if !pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) || roundTold(group, round) {
 		return
 	}
 	told := s.noticeGroup(group)
@@ -1073,7 +1073,7 @@ func (s *supervision) tellLateRound(ctx context.Context, issue string, group []s
 // so a round before its bound costs no read of the machines. The rest is tellLateRound's, with no
 // pod to name.
 func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group []supervise.Claim, round string, now time.Time) {
-	if !pastBound(roundBound(group, round, s.live().PodUpdateGrace), now) || roundTold(group, round) {
+	if !pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) || roundTold(group, round) {
 		return
 	}
 	told := s.noticeGroup(group)
@@ -1338,7 +1338,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 			"issue", issue, "round", round, "roles", namesOf(asking))
 		return
 	}
-	bound := roundBound(group, round, s.live().PodUpdateGrace)
+	bound := roundBound(group, round, s.cfg.PodUpdateGrace)
 	if bound == nil {
 		s.log.Error("supervise: no claim of this update round records when the round opened, so its ask has no end to state; the ask is published to no role",
 			"issue", issue, "round", round, "roles", namesOf(asking))

@@ -627,7 +627,7 @@ A running daemon applies a settings change without being restarted, from either 
 One arm is `PUT /legion/v1/operator/settings`, which takes the operator bearer or a projected Kubernetes ServiceAccount token the deployment named (`settings_route`; `docs/kubernetes.md`, "The settings route").
 The two credentials may change different keys.
 The operator bearer, and the file itself, may change every key but those fixed for the process.
-A change under a projected ServiceAccount token may set only keys whose value is plain data — the keys the daemon reads at each decision and holds nowhere, such as `admission_cap`, `review_round_cap`, `linger_hours`, the supervision limits and the update round's two bounds — and is refused by name for any key naming a command to run, a credential or the file holding one, an address the daemon connects to or listens on, the rules of who may call the route, or a value a holder keeps a copy of.
+A change under a projected ServiceAccount token may set only keys whose value is plain data — the keys the daemon reads at each decision and holds nowhere, such as `admission_cap`, `review_round_cap`, `linger_hours`, `production_check_hours` and the supervision limits — and is refused by name for any key naming a command to run, a credential or the file holding one, an address the daemon connects to or listens on, the rules of who may call the route, or a value a holder keeps a copy of.
 `gates` and every key under it, `gates.design` included, is refused by that last rule: the API server and the launch specs each hold the design gate, and a gate is the rule that says a person decides a tree's specification, so the token a whole service holds is not the party that may switch that rule off, and that key stays the operator bearer's and the file's.
 That is why a person changing the admission cap from Dispatch's Legion view can, while the same path cannot reach `github_apps.<app>.private_key_command`, whose value the daemon would run, or `gates.design`, which decides whether a person approves a specification at all.
 The other is the file itself changing under the daemon, which a watcher on the directory holding `legion.yaml`, and on each directory holding a file a setting names, notices within a few seconds.
@@ -711,7 +711,7 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `omp_invocation` | launch | `runtime` |
 | `omp_launch_prefix` | launch | `runtime` |
 | `operator_token_file` | rebuild | `api-server` |
-| `pod_update_grace_minutes` | decision | — |
+| `pod_update_grace_minutes` | fixed | — |
 | `pod_update_max_open_rounds` | fixed | — |
 | `pod_update_rounds_per_minute` | fixed | — |
 | `port` | fixed | — |
@@ -831,6 +831,8 @@ Each line below is the reason the route answers with, for the keys it names.
 - `projects.<KEY>.memory`, `projects.<KEY>.memory.mode`, `projects.<KEY>.memory.instructions` — a tree's memory group is drawn once, as the tree is opened, under the mode admission and the API server were given at boot, and the instructions are read at boot into the launch specs: a change of either reaches the next boot and no tree already drawn.
 
 - `runtime.kubernetes.idle_release`, `runtime.kubernetes.idle_release.idle_minutes`, `runtime.kubernetes.idle_release.backstop_minutes` — the idle release is settled at boot into the workflow's idle pass and the outbox's backstop, and the daemon builds neither again: a change of it reaches the next boot and nothing before it.
+
+- `pod_update_grace_minutes` — an update round states its end, its opening plus this bound, in the ask it sends every role (internal/daemon's askRound), so the sweep reads the bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, roundBound) and every role of one round is told the same end, the one the round is then held to: a change of it reaches the next boot and no sweep before it.
 
 - `pod_update_max_open_rounds`, `pod_update_rounds_per_minute` — the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it.
 
