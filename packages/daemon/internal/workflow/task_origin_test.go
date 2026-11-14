@@ -25,13 +25,14 @@ import (
 
 // Each constructor of a start that carries a task names the origin decision 7 gives it: a
 // transition's start, the held phase's retry (the fresh-session one too), an owed entry's work,
-// the promotion's start of a mid-phase worker and the silence repair's and the boot's and a
-// ready's send of an owed entry are phase starts; the phase's resume task a ready, the boot and
-// the silence repair give a claim level with its entry is a resume; a CI settlement's wake and
-// the backstop's are wakes; a production check's look is a check look; and an answered root's
-// resume of its architect is a notice. Admission's architect start (internal/admit), the
-// operator's task (internal/api), the daemon's controller start (internal/daemon) and the
-// update round's ask (internal/supervise) are set where they are built, and tested there.
+// the promotion's start of a mid-phase worker and the boot's and a ready's send of an owed entry
+// are phase starts; the phase's resume task a ready and the boot give a claim level with its entry
+// is a resume; both starts of the silence repair, whichever task they hand, are the repair's own
+// silence; a CI settlement's wake and the backstop's are wakes; a production check's look is a
+// check look; and an answered root's resume of its architect is a notice. Admission's architect
+// start (internal/admit), the operator's task (internal/api) and the daemon's controller start
+// (internal/daemon) are set where they are built, and tested there. An update round queues no
+// task: its ask is the sweep's Envoy message.
 func TestEveryWorkflowTaskNamesTheOriginItsValueLogCarries(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -59,8 +60,8 @@ func TestEveryWorkflowTaskNamesTheOriginItsValueLogCarries(t *testing.T) {
 		{"a ready worker level with its entry", supervise.OriginResume, readyOfTester(seededEntry)},
 		{"the boot's resume of a claim behind its entry", supervise.OriginPhaseStart, bootOfTester(seededEntry - 1)},
 		{"the boot's resume of a claim level with its entry", supervise.OriginResume, bootOfTester(seededEntry)},
-		{"the silence repair of a claim behind its entry", supervise.OriginPhaseStart, silenceOfTester(silenceEntry - 1)},
-		{"the silence repair of a claim level with its entry", supervise.OriginResume, silenceOfTester(silenceEntry)},
+		{"the silence repair of a claim behind its entry", supervise.OriginSilence, silenceOfTester(silenceEntry - 1)},
+		{"the silence repair of a claim level with its entry", supervise.OriginSilence, silenceOfTester(silenceEntry)},
 		{"a CI settlement's wake", supervise.OriginWake, func(t *testing.T) (*pgxpool.Pool, string) {
 			rig := newWakeRig(t)
 			rig.apply("settled", settlement("head1", "build"))

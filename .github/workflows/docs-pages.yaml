@@ -105,7 +105,6 @@ on:
       - 'packages/daemon/internal/record/*'
       - 'packages/daemon/internal/registry/*'
       - 'packages/daemon/internal/repocache/*'
-      - 'packages/daemon/internal/rescue/*'
       - 'packages/daemon/internal/runtime/*'
       - 'packages/daemon/internal/runtime/sandbox/*'
       - 'packages/daemon/internal/runtime/shellprefix/*'

@@ -24,13 +24,6 @@ import (
 // asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
 // its own event, so a request that carries no such field is paced.
 //
-// A claim in an open pod round it has not answered takes that round's ask into its free
-// delivery slot here, before the launch (takeSlotForUpdate): the process this starts is asked
-// to push its work and answer before the pod is replaced, and a resume that let the claim's own
-// next task into the slot first would leave the round waiting on a worker nothing ever asked.
-// A claim already holding a task — the ask the sweep queued for this suspension among them — is
-// given nothing more, so the operator's resume still sends what the suspension kept.
-//
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
 // that is being run again, since an admission the lifecycle refuses leaves the claim exactly as
@@ -43,9 +36,6 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 	m.claim.TreeEpoch = bound.TreeEpoch
 	if admitted != nil {
 		admitted()
-	}
-	if err := m.takeSlotForUpdate(ctx, true); err != nil {
-		return err
 	}
 	return m.launchAfter(ctx, false, exempt)
 }

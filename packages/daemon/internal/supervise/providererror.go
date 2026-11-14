@@ -185,9 +185,9 @@ func (m *Machine) waitsForProviderError(delivery string) bool {
 // the operator stopped among them: the ladder's wait went with the claim's timers (letGo), and
 // the claim still owes that task, so the phase's restart task waits behind it until the take the
 // retry's fresh session makes of it finishes it (R3, scripts/e2e/provider-error-retry.sh step 5).
-// An update round's question is never the newer task here: askForUpdate holds it back while the
-// claim holds a task at all (table.go). A task a take holds is work in flight and is never
-// replaced either.
+// An update round's ask is never the newer task here: the daemon publishes it to the role's Envoy
+// topic (internal/daemon's openPodUpdate) and queues no task for it. A task a take holds is work
+// in flight and is never replaced either.
 func (m *Machine) replaceable(p *Delivery) bool {
 	if p.taken() {
 		return false

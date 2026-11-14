@@ -110,9 +110,9 @@
 -- block brought back are dropped again by this file's last statements. The missing row does not
 -- move the number the state read reports while the older image runs (Store.SchemaVersionTx, the
 -- highest row recorded): every database this release migrated records
--- 20261112180548_claim_leak_check_cause, that older daemon's own newest migration, below this
--- version, so the number reads 20261112180548 after the delete, which is the truth about the image
--- that is running.
+-- 20261114031356_merge_queue_removal, that older daemon's own newest migration, above this
+-- version, so the number reads 20261114031356 before the delete and after it, which is the truth
+-- about the image that is running.
 --
 -- What that costs is the numbering, as the phase entry's second fill costs its own: the second
 -- fill reads what the older daemon left exactly as this fill reads what the release before this
@@ -122,8 +122,9 @@
 -- writes every owed value once under the number the second fill gave it.
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
--- after this one builds on the twelve columns it drops, and at this release none is recorded after
--- it. A rollback past the release before this one — to contract 87, across
+-- after this one builds on the twelve columns it drops, and at this release the one recorded
+-- after it, 20261114031356_merge_queue_removal, rewrites outbox_kind_check and touches none of
+-- them. A rollback past the release before this one — to contract 87, across
 -- 20261111225552_phase_entry — runs this block first and the phase entry's own block after it: the
 -- release before the phase entry reads the three marks as the release before this one does, and
 -- the phase entry's block leaves this migration's columns alone. The roll-forward after both then

@@ -84,7 +84,7 @@ So each figure that names a task names its claim too.
 
 - `numbers written by origin` is the number of tasks that the daemon wrote as values, by the origin of each task.
 
-  - Each task has one origin: `phase-start`, `resume`, `silence`, `wake`, `notice`, `update-round`, `operator`, `check-look` or `controller-start`.
+  - Each task has one origin: `phase-start`, `resume`, `silence`, `wake`, `notice`, `operator`, `check-look` or `controller-start`.
 
   - The daemon can write the value of one task more than one time.
     The command counts each task one time.

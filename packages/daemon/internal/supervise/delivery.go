@@ -74,8 +74,9 @@ type Delivery struct {
 	// no take of this task.
 	Number uint64
 	// Origin is the source that queued this task — phase-start, resume, silence, wake, notice,
-	// update-round, operator, check-look or controller-start — and "" for a task queued before
-	// the record kept one (migration 20261113175649_task_numbers).
+	// operator, check-look or controller-start — and "" for a task queued before the record kept
+	// one (migration 20261113175649_task_numbers). An update round queues no task, so it names no
+	// origin: its ask is the sweep's Envoy message (record.UpdateAsk).
 	Origin string
 	// TakenText is the text the daemon's accepted take of this task was answered with, and ""
 	// while no take of it has been accepted. A take of the same number sent again after its answer
@@ -317,13 +318,6 @@ func pendingID(p *Delivery) string {
 // replaces the owed one). The newer task takes its place: it is work for this claim, queued
 // since, and R2 has the newer of the two go.
 //
-// An update round's own ask (updateRoundOf) takes no task's place, taken or owed: that ask exists
-// to catch the worker between turns, with its work pushed, so it waits for the turn in flight to
-// end rather than taking its place, and its post is re-made at the next tick. askForUpdate holds
-// that question back while the claim holds a task at all, whichever task that is, and the reason
-// it does is written there (table.go); the refusal here is what answers an ask that reaches this
-// far. Only the work of the issue displaces work the worker has finished with.
-//
 // The replaced task's row ends as any other retirement ends it, and the question a restart armed
 // for that task is answered in the same step, which is the one path both places a task replaces
 // an owed one take (replaceOwedTask): the delete releases what that task held of a person's
@@ -368,13 +362,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		if (id != "" && pending.ID == id && pending.Task == task) || queued {
 			return nil
 		}
-		_, asksUpdate := updateRoundOf(id)
 		switch {
-		case asksUpdate:
-			if err := m.offerPending(ctx); err != nil {
-				return err
-			}
-			return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
 		case !pending.taken():
 			owed, attempt := pending.Number, pending.ProviderErrorRetries
 			replaced, err := m.replaceOwedTask(ctx)
@@ -437,9 +425,10 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 }
 
 // answeredOpenRound is the hold an open update round puts on its claim: the round is open and
-// the worker has answered it (ready_for_update, or the turn's end of a worker that cannot call
-// it), so that worker has said its work is pushed and its process may be replaced at any moment.
-// A take of such a claim's task is refused by it (claimHold).
+// the worker has answered it (ready_for_update), so that worker has said its work is pushed and
+// its process may be replaced at any moment. The answer stands for the round, whatever turn
+// starts after it, so the hold does too until the round ends (dispatch://INFRA-2981 R5, R9). A
+// take of such a claim's task is refused by it (claimHold).
 func (c Claim) answeredOpenRound() bool {
 	return c.UpdateRound != "" && c.UpdateSignalledAt != nil
 }
@@ -536,12 +525,12 @@ func (m *Machine) retirePending(ctx context.Context) error {
 
 // retireTask ends the pending delivery, and is the one place a delivery ends: finishTask for a
 // task whose take's turn ran, dropPending for a task the record no longer owes — the task its
-// issue's phase has left, the ask of a round the claim is not in now, a root architect's task
-// that names nothing, the ask the claim retires with, and a phase task a suspension ended
-// (settle) — and retirePending for a task a newer one replaces. The claim keeps its state — the
-// task is over, not the agent. finished says the task's turn ran, so the claim records it as the
-// last task it finished (Claim.TaskFinished) and the session that finished it
-// (TaskFinishedSession), in the same write.
+// issue's phase has left, an older daemon's ask of an update round, a root architect's task that
+// names nothing, the ask the claim retires with, and a phase task a suspension ended (settle) —
+// and retirePending for a task a newer one replaces. The claim keeps its state — the task is
+// over, not the agent. finished says the task's turn ran, so the claim records it as the last
+// task it finished (Claim.TaskFinished) and the session that finished it (TaskFinishedSession),
+// in the same write.
 //
 // A task of a run whose take's turn started leaves the run behind it, and its phase entry and its
 // check look with it: the worker goes on working it in whatever turn comes next — one an Envoy
@@ -872,7 +861,9 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // a note that no longer describes it. A take whose turn had not started goes back with no note,
 // since the worker ran nothing of it. The task is neither retired nor its run marked served,
 // since the turn never finished; the claim's TaskTaken stays, since the worker read it. A task no
-// take holds is left as it is.
+// take holds is left as it is. An older daemon's ask of an update round is the one task no take
+// is accepted for again: it keeps its delivery id, which names its round, and the next take of it
+// drops it (takeable).
 //
 // A take whose turn has already ended is not taken back but finished: its turn ran whole, and
 // only the report of it is lost with the process (finishTask, by the end frame).

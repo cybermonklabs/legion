@@ -141,12 +141,25 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	}
 	t.Logf("before the migration the task number write is refused: %v", err)
 
+	// The fixture stands just below this migration, so the run applies it and every embedded
+	// migration above it — 20261114031356_merge_queue_removal at this release, which touches no
+	// column the fill reads — and nothing else.
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	want := 0
+	for _, migration := range all {
+		if migration.Version >= taskNumbersVersion {
+			want++
+		}
+	}
 	applied, err := store.Migrate(ctx)
 	if err != nil {
 		t.Fatalf("migrate through the task numbers: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("the migration applied %d migrations, want this one alone: every other is the fixture's own", applied)
+	if applied != want {
+		t.Fatalf("the migration applied %d migrations, want %d: this one and those above it; every other is the fixture's own", applied, want)
 	}
 
 	for _, want := range []struct {

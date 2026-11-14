@@ -177,9 +177,7 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 // report came first (reportedTask). The turn is the take's: its text goes and the claim and the
 // delivery are written with it (startTakesTurn), so the finish that follows earns the claim the
 // serving credit a finished take's turn earns (retireTask) rather than reading the task as never
-// run; the prompt budgets go to zero, as at any turn's start (R5); the round's answer is judged as
-// at that take's turn start (takeBackSignal), and this daemon can vouch for the turn's end
-// (takesTurnSeen), which the report is.
+// run; and the prompt budgets go to zero, as at any turn's start (R5).
 //
 // The claim stays where it is, ready or idle: the report says the turn is over, and no turn's
 // times are written. The start frame still to come is this turn's, which the machine remembers
@@ -190,8 +188,7 @@ func (m *Machine) startedUnseen(ctx context.Context) error {
 	m.log.Info("supervise: a turn's report names the accepted take's task before its turn start was seen; the turn is the take's",
 		"task", p.Number)
 	m.resetPromptBudgets()
-	m.takeBackSignal(true)
-	m.takesTurnSeen, m.reportedAhead = p.Number, p.Number
+	m.reportedAhead = p.Number
 	return m.startTakesTurn(ctx)
 }
 

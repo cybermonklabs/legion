@@ -65,15 +65,15 @@ const TaskTakeContract = 120
 // TaskTakeContract, so its worker waits for a prompt this daemon never sends and never asks to
 // take the task its claim is owed. A claim that recorded no contract at all (0) is one of them.
 //
-// Two rules read it, and each would strand such a worker at the rollout that moves the daemon
-// and the worker image together, which opens an update round over every issue pod
+// Two rules read it, and each would leave such a worker taking nothing at the rollout that moves
+// the daemon and the worker image together, which opens an update round over every issue pod
 // (dispatch://INFRA-2811, decision 18 and departure 3). The stale-plugin refusal and its lane
-// hold no such claim out for a pod round: the round's question is a task the claim cannot take,
-// so it is relaunched onto the current plugin inside the round (StaleRefusesCalls,
-// internal/daemon's staleForTheLane). And the idle release takes the pod of such a claim whose
-// plugin no relaunch moves, a Claude Code role in a pod, past the holds that would keep it
-// (workflow's IdleRelease), since its pod's image is the one thing that can bring it a plugin
-// that takes.
+// hold no such claim out for a pod round: a round serves a claim on its old contract until the
+// round ends, and on that contract the claim takes no task, so it is relaunched onto the current
+// plugin inside the round (StaleRefusesCalls, internal/daemon's staleForTheLane). And the idle
+// release takes the pod of such a claim whose plugin no relaunch moves, a Claude Code role in a
+// pod, past the holds that would keep it (workflow's IdleRelease), since its pod's image is the
+// one thing that can bring it a plugin that takes.
 func TakesNoTask(contract int) bool { return contract < TaskTakeContract }
 
 // The origins of a task: the source that queued it (Delivery.Origin). A request names its own
@@ -88,7 +88,6 @@ const (
 	OriginSilence         = "silence"
 	OriginWake            = "wake"
 	OriginNotice          = "notice"
-	OriginUpdateRound     = "update-round"
 	OriginOperator        = "operator"
 	OriginCheckLook       = "check-look"
 	OriginControllerStart = "controller-start"
@@ -530,7 +529,7 @@ func takeInTurn(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: a take reached a claim a restart restored working; the worker's take says its host is idle, so the turn the store recorded is over",
 		"task", request.Number)
 	m.claim.State = StateIdle
-	m.askFirst, m.unseenTurn = false, false
+	m.askFirst = false
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
@@ -672,29 +671,38 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // accepted.
 //
 // The claim's own holds come first (claimHold). Then the two drops, which retire the task and
-// delete its value: an ask of a round the claim is not in now — another round replaced it, or
-// the claim's process left that round's pod — and a task whose issue has left the phase it was
-// queued for. Then a root architect's task of a run, held while its root has no architect to hear
-// it and narrowed to what it still names once the root hears (currentRootTask), and retired when
-// that leaves it naming nothing. Last, for a task that adopts the working copy the issue's roles
-// share, another role of the issue in a turn, or holding an accepted take whose turn has not
-// ended (issueInTurn).
+// delete its value: an ask of an update round that an older daemon queued as a task, whichever
+// round it names, and a task whose issue has left the phase it was queued for. Then a root
+// architect's task of a run, held while its root has no architect to hear it and narrowed to what
+// it still names once the root hears (currentRootTask), and retired when that leaves it naming
+// nothing. Last, for a task that adopts the working copy the issue's roles share, another role of
+// the issue in a turn, or holding an accepted take whose turn has not ended (issueInTurn).
+//
+// This daemon queues no ask of an update round as a task: it publishes the ask to the role's
+// Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
+// an older daemon queued, and a claim restored from the store can hold one. Such a task is
+// dropped here and never taken, the round the claim is in now included: its text is the older
+// daemon's, and that text can tell the worker that the daemon reads the end of the turn as its
+// answer. This daemon reads no end of a turn as an answer: only the worker's ready_for_update
+// call answers a round, and a role that read that text before the deploy gets the round's Envoy
+// ask as well. A claim that has answered its open round reaches no drop here (answeredOpenRound,
+// claimHold): the task waits for the round's end, which drops an ask of that round
+// (dropUpdateTask), and the next take after the end drops an ask of any other round here.
 func (m *Machine) takeable(ctx context.Context) (hold string, dropped bool, err error) {
 	if hold := m.claimHold(); hold != "" {
 		return hold, false, nil
 	}
 	p := m.claim.Pending
 	round, asks := updateRoundOf(p.ID)
-	stale := asks && (round != m.claim.UpdateRound || m.claim.LeftPodRound(round))
-	holds := !stale
+	holds := !asks
 	if holds {
 		if holds, err = m.phaseHolds(ctx, *p); err != nil {
 			return "", false, err
 		}
 	}
 	if !holds {
-		if stale {
-			m.log.Info("supervise: this task asks for a round the claim is not in now; it is dropped rather than taken",
+		if asks {
+			m.log.Info("supervise: this task is an ask an older daemon queued for an update round; it is dropped and never taken",
 				"task", p.Number, "delivery", p.ID, "asked", round, "round", m.claim.UpdateRound, "left", m.claim.UpdateLeftRound)
 		} else {
 			m.log.Info("supervise: the issue has left the phase this task was queued for; it is dropped rather than taken",
@@ -993,9 +1001,6 @@ func (m *Machine) startTakesTurn(ctx context.Context) error {
 // for the line: the turn-outcome report that named its number ("report"), or the end of its turn
 // with no report after it ("end-frame").
 //
-// A task that was an ask of the claim's open round is the worker's answer to that round when this
-// daemon saw its turn start (answerByTurnEnd), and is read so here, before it retires.
-//
 // A finish whose retirement the store refused leaves the task pending with its turn over, so a
 // ready or idle claim's end-frame bound is armed again for it: the bound that fired, or the
 // report that named it, has been spent, and nothing else would finish it there (settle finishes
@@ -1003,7 +1008,6 @@ func (m *Machine) startTakesTurn(ctx context.Context) error {
 func (m *Machine) finishTask(ctx context.Context, by string) error {
 	p := m.claim.Pending
 	number, id := p.Number, p.ID
-	m.answerByTurnEnd()
 	if err := m.retireTask(ctx, true); err != nil {
 		if _, armed := m.timers[TimerFinish]; !armed && (m.claim.State == StateReady || m.claim.State == StateIdle) {
 			m.arm(TimerFinish, m.deps.Timeouts.RPC, id)

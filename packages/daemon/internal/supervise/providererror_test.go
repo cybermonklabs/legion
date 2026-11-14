@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // providerErrorTaskText is the work the cases below give the claim, so a prompt's own sentence is
@@ -292,55 +293,22 @@ func TestANewerTaskQueuedWhileTheLadderWaitsReplacesTheTaskItKept(t *testing.T) 
 	}
 }
 
-// An update round's question waits behind the task a provider error took back, as every other
-// task of the claim waits behind a task on it. The round costs the wait: the slot frees when a
-// turn of the owed task ends with no provider error, and the question goes then. Going first
-// would buy the round nothing in the outage that holds it up — the question needs a model turn
-// of its own, and the provider failing this claim's turns would fail that one the same way
-// (dispatch://INFRA-956 R2, askForUpdate).
-func TestAnUpdateRoundsQuestionWaitsBehindTheTaskTheLadderKept(t *testing.T) {
-	h := workingClaim(t)
-	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
-	owed := h.pending()
-
-	h.openUpdate(testRound, testReasons)
-
-	p := h.pending()
-	if p.ID != owed.ID || p.Task != owed.Task {
-		t.Fatalf("pending %+v, want the task the ladder kept, %s: the question waits behind it", p, owed.ID)
-	}
-	if p.ProviderErrorRetries != owed.ProviderErrorRetries {
-		t.Errorf("the owed task counts %d sends, want the %d its ladder had", p.ProviderErrorRetries, owed.ProviderErrorRetries)
-	}
-	// Holding the question back leaves the ask's own clock unset, so the round asks again at
-	// the next tick.
-	if tasked := h.claim().UpdateTaskedAt; tasked != nil {
-		t.Errorf("the round recorded an ask at %v, want none: the question was not asked", *tasked)
-	}
-	h.wantPrompts(1)
-
-	// The ladder's wait is over: the owed task goes, and the turn it starts ends with no
-	// provider error, which retires it and frees the slot.
-	if message := h.climbs(1, 30*time.Second); !strings.HasSuffix(message, providerErrorTaskText) {
-		t.Fatalf("the prompt the ladder sent is %q, want the task it kept", message)
-	}
-	h.mustQuiet(StreamTurnEnd{Claim: testToken})
-	h.mustReport(nil)
-
-	question := h.wantPrompts(3)[2]
-	if !asksRound(question.DeliveryID, testRound) {
-		t.Errorf("the prompt after the owed task's turn = %+v, want the round's question", question)
-	}
+// olderDaemonsLadderStep is the first step of the ladder an older daemon took over its own ask of
+// an update round, before the deploy replaced it: a turn of the ask ended in a provider error,
+// that daemon took the ask back untaken, and its wait before the value was written again was
+// that daemon's timer, which went with it.
+func olderDaemonsLadderStep(d *Delivery) {
+	d.ProviderErrorRetries, d.ProviderErrorNote = 1, providerErrorTask(providerErrorCause(529))
 }
 
-// A question of a round another round has replaced is dropped rather than taken again. The ask
-// carries the round it asked in its delivery id, which never changes, so the question whose turn
-// ended in a provider error comes back naming a round whose pod this daemon has already replaced:
-// no session of this claim can answer it, and the end of the ladder's wait is where the claim
-// reads that (offerPending, takeable). Taking it would cost a model turn and leave the question
-// of the round the claim is in now behind it; the drop frees the slot, and the next tick asks
-// that round.
-func TestAQuestionOfARoundAnotherReplacedIsDroppedRatherThanSentAgain(t *testing.T) {
+// A question an older daemon queued as a task and kept on the provider-error ladder is dropped
+// rather than taken again, for the round the claim is still in as for any other. This daemon
+// restores the claim holding the ask, owed and untaken, with no wait armed for it, and the
+// worker's next take is where the claim reads the ask (takeable). Taking it would put the older
+// daemon's words in front of the worker again, words that can tell it that the end of its turn
+// answers the round; the drop frees the slot, and the round's ask is the sweep's, on the role's
+// topic.
+func TestAQuestionTheLadderKeptForAnOlderDaemonIsDroppedRatherThanSentAgain(t *testing.T) {
 	h := newBareHarness(t)
 	c := queuedClaim()
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
@@ -349,33 +317,86 @@ func TestAQuestionOfARoundAnotherReplacedIsDroppedRatherThanSentAgain(t *testing
 	h.start(c)
 	h.reach(StateReady)
 	h.openUpdate(testRound, testReasons)
+	owed := h.olderDaemonsAsk(testRound, olderDaemonsLadderStep)
+	sent := len(h.prompts())
+	if _, armed := h.m.timers[TimerPromptRetry]; armed {
+		t.Fatal("the restored claim has a ladder wait armed; the wait was the older daemon's timer")
+	}
+
+	// The daemon's next observation of the live process is the worker's next chance to take.
+	h.observe(runtime.Alive)
+
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("the claim holds %+v, want the older daemon's question %s dropped", *p, owed.ID)
+	}
+	if !h.dropped() {
+		t.Fatalf("the worker's takes were answered %+v, want the last one dropped", h.worker.answers)
+	}
+	h.wantPrompts(sent)
+	if d, ok := h.store.delivery(testToken); ok {
+		t.Errorf("the store holds %+v, want the dropped question's row gone", d)
+	}
+	h.wantRound(testRound)
+
+	h.openUpdate(testRound, testReasons)
+
+	h.wantPrompts(sent)
+	if p := h.claim().Pending; p != nil {
+		t.Errorf("pending after the sweep's next post = %+v, want nothing: the machine queues no ask of %s", *p, testRound)
+	}
+}
+
+// The same drop at the end of this daemon's own ladder wait. The claim is restored holding the
+// ask an older daemon queued, with the take of it that daemon accepted (leftAsk), and the turn
+// that take starts runs under this daemon. That turn ends in a provider error, which takes the
+// ask back untaken and arms the ladder's wait for it (waitsForProviderError), and claimHold holds
+// the ask while the wait runs. When the wait is over, the ladder's offer is where the claim reads
+// the ask (offerPending, takeable), and the ask is dropped there and its value deleted, with no
+// take accepted: this daemon gives no `update:` task, for the round the claim is in as for any
+// other.
+//
+// The negative control is takeable's drop narrowed to the rule before this release's, an ask of
+// a round the claim is not in now or has left (`holds := !asks || (round == m.claim.UpdateRound
+// && !m.claim.LeftPodRound(round))`): the ladder then writes the ask's value again, and the
+// worker's take of it is accepted.
+func TestAQuestionWhoseTurnEndedInAProviderErrorIsDroppedWhenTheLaddersWaitPasses(t *testing.T) {
+	h := newBareHarness(t)
+	c := queuedClaim()
+	if err := h.store.PutClaim(h.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	h.start(c)
+	h.reach(StateReady)
+	h.openUpdate(testRound, testReasons)
+	ask := h.leftAsk(testRound)
+	sent := len(h.prompts())
 	h.must(StreamTurnStart{Claim: testToken})
-	later := PodRound(testOtherPod)
-	h.openUpdate(later, testReasons)
+	if p := h.pending(); p.ID != ask.ID || !p.turnStarted() {
+		t.Fatalf("pending = %+v, want the older daemon's ask in the turn of the take it accepted", p)
+	}
 
 	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 
 	owed := h.pending()
-	if !asksRound(owed.ID, testRound) || !owed.ConfirmedAt.IsZero() {
-		t.Fatalf("pending %+v, want the question of the replaced round %s unconfirmed on the ladder", owed, testRound)
+	if !asksRound(owed.ID, testRound) || owed.taken() || !h.m.waitsForProviderError(owed.ID) {
+		t.Fatalf("pending %+v, want the ask of %s taken back untaken with the ladder's wait armed for it", owed, testRound)
 	}
+	h.advance(30*time.Second - time.Second)
+	h.wantPrompts(sent)
 
-	h.advance(30 * time.Second)
+	h.advance(time.Second)
 
+	h.wantPrompts(sent)
 	if p := h.claim().Pending; p != nil {
-		t.Fatalf("the ladder left %+v pending, want the replaced round's question dropped", *p)
+		t.Fatalf("the claim holds %+v after the ladder's wait, want the older daemon's ask dropped", *p)
 	}
-	h.wantPrompts(1)
 	if d, ok := h.store.delivery(testToken); ok {
-		t.Errorf("the store holds %+v, want the dropped question's row gone", d)
+		t.Errorf("the store holds %+v, want the dropped ask's row gone", d)
 	}
-
-	h.openUpdate(later, testReasons)
-
-	question := h.wantPrompts(2)[1]
-	if !asksRound(question.DeliveryID, later) {
-		t.Errorf("the prompt after the drop = %+v, want the question of the round the claim is in, %s", question, later)
+	if _, held := h.values.value(testToken); held {
+		t.Error("the bucket still holds the dropped ask's value")
 	}
+	h.wantRound(testRound)
 }
 
 // R3: the operator stops a claim whose provider keeps refusing its session and retries it with
@@ -600,12 +621,12 @@ func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndTheRetrySendsIt(t *testing.
 	}
 }
 
-// What the claim keeps is its own work, not the round's question. A round's ask whose turn
-// ended in a provider error is a question the claim owes, waiting on the ladder; the stop
-// retires the claim and the round goes with it (clearUpdate), so nothing of this claim will
-// ever answer that question, and the retry's session would be handed it first — a worker asked
-// to push its work for a pod replacement that has already happened. It is retired with the
-// round (dropsUpdateTask).
+// What the claim keeps is its own work, not the round's question. A round's ask an older daemon
+// queued as a task, whose turn ended in a provider error, is a question the claim owes, waiting
+// on the ladder, and this daemon restores the claim holding it; the stop retires the claim and
+// the round goes with it (clearUpdate), so nothing of this claim will ever answer that question,
+// and no take of it would be accepted (takeable drops it). It is retired with the round
+// (dropsUpdateTask).
 //
 // The stop is one write of the retired claim, carrying the delete of that question: the round
 // goes before the write rather than after it, so no store ever holds a retired claim that
@@ -619,13 +640,9 @@ func TestAStopRetiresTheRoundsQuestionTheLadderKept(t *testing.T) {
 	h.start(c)
 	h.reach(StateReady)
 	h.openUpdate(testRound, testReasons)
-	h.must(StreamTurnStart{Claim: testToken})
-
-	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
-
-	owed := h.pending()
-	if !asksRound(owed.ID, testRound) || !owed.ConfirmedAt.IsZero() {
-		t.Fatalf("pending %+v, want the round's question unconfirmed and waiting on the ladder", owed)
+	owed := h.olderDaemonsAsk(testRound, olderDaemonsLadderStep)
+	if p := h.pending(); !asksRound(p.ID, testRound) || p.taken() || p.ProviderErrorRetries != 1 {
+		t.Fatalf("pending %+v, want the round's question untaken and waiting on the ladder", p)
 	}
 
 	h.must(RequestStop{Claim: testToken})

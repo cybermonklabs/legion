@@ -2,15 +2,16 @@ package daemon
 
 // The workers an old plugin runs at the rollout that moves each project's daemon and worker image
 // together (dispatch://INFRA-2811, decision 18 and departure 3). That rollout changes the image,
-// so an update round opens over every issue pod, and the round's question is a task, which a
-// worker whose plugin declared a contract below supervise.TaskTakeContract cannot take. Two
-// rules keep such a worker from waiting on it for ever. A claim whose launch installs a plugin
-// is relaunched onto the current one inside the round as outside it (staleForTheLane,
-// supervise.StaleRefusesCalls). A Claude Code role in a pod, whose plugin is the image's own and
-// which no relaunch moves, has its pod released onto the configured image at once when it is
-// idle and at its turn's end when it is working, its unpushed work saved first, past the image,
-// contract and round holds that keep every other such pod (workflow.IdleRelease's old plugin) —
-// unless the pod already runs the configured image, which logs one error naming the claim.
+// so an update round opens over every issue pod, and a round serves a claim on its old contract
+// until the round ends, on which a worker whose plugin declared a contract below
+// supervise.TaskTakeContract takes no task. Two rules keep such a worker from taking nothing until
+// its round ends. A claim whose launch installs a plugin is relaunched onto the current one inside
+// the round as outside it (staleForTheLane, supervise.StaleRefusesCalls). A Claude Code role in a
+// pod, whose plugin is the image's own and which no relaunch moves, has its pod released onto the
+// configured image at once when it is idle and at its turn's end when it is working, its unpushed
+// work saved first, past the image, contract and round holds that keep every other such pod
+// (workflow.IdleRelease's old plugin) — unless the pod already runs the configured image, which
+// logs one error naming the claim.
 
 import (
 	"context"
@@ -36,12 +37,13 @@ const oldContract = supervise.TaskTakeContract - 1
 const configuredImage = "ghcr.io/sjawhar/legion-worker@sha256:2f6c0e1a"
 
 // A claim whose plugin takes no task is relaunched onto the current plugin inside the pod round
-// the rollout's image change opens over it, as it is outside one. The round asks it a task it
-// cannot take, so it would wait on that claim for an answer it never gives. The count of what the
+// the rollout's image change opens over it, as it is outside one. Served on its old contract
+// through the round, it would take none of its tasks until the round ended. The count of what the
 // lane has left names the claim, and the API's stale-caller rule refuses it, both reading the
-// same reversal. The relaunch keeps the claim's pod and its round, and the process it starts
-// registers on this daemon's contract and takes the round's ask. A claim the round still serves
-// on its old contract — one ahead of this daemon, whose plugin takes tasks — is left to it.
+// same reversal. The round queues no task on either claim: its ask is the sweep's message on each
+// role's own topic. The relaunch keeps the claim's pod and its round, and the process it starts
+// registers on this daemon's contract and takes the claim's next task. A claim the round still
+// serves on its old contract — one ahead of this daemon, whose plugin takes tasks — is left to it.
 func TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true, contract: oldContract},
@@ -51,8 +53,8 @@ func TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound(t *testing.T
 	rig.tick()
 	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
 	rig.awaitRound(claim.RoleTester, podUpdateRound)
-	if rig.tookAsk(claim.RoleImplementer) {
-		t.Fatal("the claim whose plugin takes no task took its round's ask on its old contract")
+	if p := rig.settledClaim(claim.RoleImplementer).Pending; p != nil {
+		t.Fatalf("the claim whose plugin takes no task holds %+v, want no task: the round's ask is a message on its topic", p)
 	}
 	claims, err := rig.sup.Claims(rig.ctx)
 	if err != nil {
@@ -88,17 +90,19 @@ func TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound(t *testing.T
 		t.Fatalf("the sweep started %+v, want the one process of the claim whose plugin takes no task", resumes)
 	}
 
-	// The relaunched process comes up in the same pod on the current plugin, and takes the ask
-	// its old one could not.
+	// The relaunched process comes up in the same pod on the current plugin, still in the round,
+	// and takes the task its old one could not.
 	conn := fake.NewConn()
 	rig.conns.Register(token, conn)
 	rig.workers[claim.RoleImplementer] = conn
 	rig.registerInto(claim.RoleImplementer, podUpdatePod)
-	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound || c.Pending == nil {
-		t.Fatalf("the relaunched claim records round %q and task %+v, want the round's ask still owed", c.UpdateRound, c.Pending)
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound || c.PluginContract != api.DaemonAPIVersion {
+		t.Fatalf("the relaunched claim records round %q at contract %d, want round %q kept on this daemon's contract %d",
+			c.UpdateRound, c.PluginContract, podUpdateRound, api.DaemonAPIVersion)
 	}
-	if !rig.tookAsk(claim.RoleImplementer) {
-		t.Fatalf("the relaunched process holds %+v, want the round's ask taken on this daemon's contract", rig.claimOf(claim.RoleImplementer).Pending)
+	rig.handle(claim.RoleImplementer, supervise.RequestDeliver{Claim: token, Task: "implement the plan"})
+	if answer := rig.take(claim.RoleImplementer); answer.Outcome != supervise.TakeOutcomeAccepted {
+		t.Fatalf("the relaunched process's take = %+v, want its task taken on this daemon's contract", answer)
 	}
 }
 
@@ -203,8 +207,8 @@ func wantReleasedOntoTheImage(t *testing.T, rig *idleRig) {
 	}
 }
 
-// An idle Claude Code role whose plugin takes no task has no turn end to wait for, and the round
-// over its pod asks it a task it cannot take, so its pod is released at once: inside the idle
+// An idle Claude Code role whose plugin takes no task has no turn end to wait for, and takes none
+// of its tasks until a new image reaches its pod, so its pod is released at once: inside the idle
 // period, out of the round, off the image before the rollout, past the contract it records. The
 // release saves the workspace's unpushed work before it stops the role, and the role comes back
 // on the configured image, whose claude-envoy takes tasks. A pod whose roles' launches install a
