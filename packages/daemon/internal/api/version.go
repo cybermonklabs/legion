@@ -1607,6 +1607,18 @@ package api
 // role's App is installed on, in place of the project's repositories, which are no bound on the
 // work any more and would be a whole installation's worth of names
 // (`daemon.RepositoriesClause`).
+// The bundle a pane and a pod hold gains one file of its own with the same change, in the root
+// beside the owner directories: `renames.txt`, the configured renames the project's pairs
+// resolve to (`ghconfig.PairsFile`), projected from the role Secret's `github-renames` key. For
+// a pair the routing key is the repository rather than the owner — the image's `legion gh` and
+// `legion git-credential` answer a request for the pair's `from` repository from the `to`
+// owner's directory, every other repository of that owner from its own, and a pair whose `to`
+// owner the bundle holds no directory for from nothing at all, naming the pair — so an image
+// built before it reads none of the file and answers the moved repository with the old owner's
+// token, a push GitHub refuses; `legion probe-image` is what keeps that pair apart.
+// `POST /legion/v1/controller/github-credential` carries the same pairs as `renames`, each with
+// its `from` and `to`, absent where the project has none that resolve, so the controller's own
+// bundle routes as a pod's does.
 // (This branch's own base carried 59; it declared 80 until the forward merge of 2026-11-12 that
 // brought main in at 85, and then 86, which five other open heads declared as well, and then 88,
 // which the forward merge that brought main in at 86 left standing, and then 102 at the forward

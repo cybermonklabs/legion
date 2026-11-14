@@ -38,9 +38,12 @@ import (
 // projection of its role Secret's gh files, one directory per entry of the role's gh bundle
 // (GitHubHostsKey(dir) as <dir>/ghconfig.HostsFile, GitHubConfigKey(dir) as
 // <dir>/ghconfig.ConfigFile, where a dir is a GitHub owner of the project or one of its
-// repositories, `<owner>/<repo>`), whose default owner's directory (GitHubDefaultKey) is its
-// GH_CONFIG_DIR, and which its gh (the image's `legion gh`) and the clone's `legion git-credential`
-// helper read the token of the owner a command names from. The kubelet rewrites a whole-volume
+// repositories, `<owner>/<repo>`), with the bundle's configured renames beside them in the root
+// (GitHubPairsKey as ghconfig.PairsFile) and the default owner's directory (GitHubDefaultKey)
+// its GH_CONFIG_DIR, and which its gh (the image's `legion gh`) and the clone's `legion
+// git-credential` helper read the token that answers for the repository a command names from —
+// the owner's own directory, or, for a repository one of those renames moved, the directory of
+// the owner it moved to. The kubelet rewrites a whole-volume
 // Secret projection in place when the Secret changes, and a bind of it sees the rewrite, so the
 // refresher's Secret update is what the next gh runs with. CacheRoot is where a repository cache's
 // pod mounts its own volume. The
@@ -267,11 +270,19 @@ const (
 )
 
 // The keys of a role's Secret that carry its GitHub credential beside the launcher token: each
-// bundle directory's rendered hosts.yml and config.yml (ghconfig.Bundle), and the bundle's
-// default owner, written for every launcher role: every workflow role of an issue pod and the
-// controller's. credentialFromSecret hashes the launcher token alone, so the refresher rewrites
-// the gh keys without changing the launcher's binding.
+// bundle directory's rendered hosts.yml and config.yml (ghconfig.Bundle), the bundle's
+// configured renames and its default owner, written for every launcher role: every workflow role
+// of an issue pod and the controller's. credentialFromSecret hashes the launcher token alone, so
+// the refresher rewrites the gh keys without changing the launcher's binding.
 const GitHubDefaultKey = "github-default"
+
+// GitHubPairsKey is the role Secret's key holding the bundle's configured renames, the file the
+// pod projects into its gh bundle's root (ghconfig.PairsFile): the pairs `legion gh` and `legion
+// git-credential` route a request for a moved repository by. It is written for every launcher
+// role, empty where the project configures no rename that resolves, so a pod of this daemon
+// always projects it and the drift check can read its absence as a pod of an older one
+// (movedGhDirs).
+const GitHubPairsKey = "github-renames"
 
 // githubHostsPrefix and githubConfigPrefix are the one spelling of the gh keys' prefixes, which
 // GitHubHostsKey and GitHubConfigKey write and GitHubHostsDir reads back.

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 func twoOwnerBundle(acmeToken string) Bundle {
@@ -23,9 +25,11 @@ func twoOwnerBundle(acmeToken string) Bundle {
 
 // WriteBundle writes each owner's two gh files under <root>/<owner>, reports the owners whose
 // hosts.yml changed (all of them on the first write, sorted), then only the owner whose token
-// turned, and removes every other entry of root: an owner dropped from the mapping, a file of a
+// turned, and removes every entry of root that is neither an owner of the bundle nor its pairs
+// file: an owner dropped from the mapping, a file of a
 // directory written before bundles, and anything else, such as a file naming a default owner, that
-// is no owner's directory, since nothing under the root but the gh files is the daemon's.
+// is no owner's directory, since nothing under the root but the gh files and the pairs the
+// wrappers route by is the daemon's.
 func TestWriteBundleWritesOneDirectoryPerOwnerAndRemovesTheRest(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "gh")
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -93,8 +97,8 @@ func TestWriteBundleWritesOneDirectoryPerOwnerAndRemovesTheRest(t *testing.T) {
 	for _, entry := range entries {
 		names = append(names, entry.Name())
 	}
-	if want := []string{"acme"}; !slices.Equal(names, want) {
-		t.Fatalf("root holds %q after sjawhar left the bundle, want %q", names, want)
+	if want := []string{"acme", PairsFile}; !slices.Equal(names, want) {
+		t.Fatalf("root holds %q after sjawhar left the bundle, want %q: the owner and the bundle's pairs file", names, want)
 	}
 }
 
@@ -291,5 +295,72 @@ func TestGhAnswersGitFromAnOwnersDirectory(t *testing.T) {
 		if !strings.Contains(string(out), "password="+token+"\n") {
 			t.Fatalf("gh auth git-credential get for %s answered\n%s\nwant password=%s", owner, out, token)
 		}
+	}
+}
+
+// The bundle's pairs are the root's own file (PairsFile), one pair a line: WriteBundle writes it
+// beside the owners' directories, rewrites it when the configured renames change, writes it empty
+// for a bundle with none, and keeps it where it prunes every other entry of the root. ReadPairs
+// reads back what RenderPairs wrote, a root with no such file holds no pair — a pod launched
+// before the file existed — and a line that is no `<from> <to>` pair of repositories is an error
+// rather than half a routing table.
+func TestWriteBundleWritesThePairsTheWrappersRouteBy(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "gh")
+	moved := ghrepo.MustRename("sjawhar/legion", "CyberMonkLabs/legion")
+	bundle := twoOwnerBundle("ghs_acme_write")
+	bundle.Pairs = []ghrepo.Rename{moved}
+	if _, err := WriteBundle(root, bundle); err != nil {
+		t.Fatalf("WriteBundle: %v", err)
+	}
+	written, err := os.ReadFile(filepath.Join(root, PairsFile))
+	if err != nil || string(written) != "sjawhar/legion CyberMonkLabs/legion\n" {
+		t.Fatalf("%s holds %q (%v), want the configured pair as `<from> <to>`", PairsFile, written, err)
+	}
+	pairs, err := ReadPairs(root)
+	if err != nil || !slices.Equal(pairs, []ghrepo.Rename{moved}) {
+		t.Fatalf("ReadPairs = %v, %v, want the pair the bundle holds", pairs, err)
+	}
+
+	// A stray file at the root goes; the pairs file stays, and a bundle that no longer routes by
+	// a pair is written with an empty one rather than none, since a missing file says only that
+	// nothing wrote it.
+	if err := os.WriteFile(filepath.Join(root, "stray"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write")); err != nil {
+		t.Fatalf("second WriteBundle: %v", err)
+	}
+	if written, err := os.ReadFile(filepath.Join(root, PairsFile)); err != nil || len(written) != 0 {
+		t.Fatalf("%s holds %q (%v) for a bundle with no pair, want it empty", PairsFile, written, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "stray")); !os.IsNotExist(err) {
+		t.Fatalf("the stray file at the root survived the write: %v", err)
+	}
+	if pairs, err := ReadPairs(root); err != nil || len(pairs) != 0 {
+		t.Fatalf("ReadPairs over an empty %s = %v, %v, want no pair", PairsFile, pairs, err)
+	}
+	if pairs, err := ReadPairs(filepath.Join(t.TempDir(), "older-pod")); err != nil || len(pairs) != 0 {
+		t.Fatalf("ReadPairs of a root with no %s = %v, %v, want no pair and no error", PairsFile, pairs, err)
+	}
+}
+
+// ParsePairs reads the file WriteBundle wrote and refuses a line that is no pair, naming the line
+// and its number: a caller routing a request by these pairs must fail rather than route by half of
+// them. Validate refuses a pair naming no repository on a side, which no line could hold.
+func TestParsePairsRefusesALineThatIsNoPair(t *testing.T) {
+	for _, tc := range []struct{ text, want string }{
+		{"sjawhar/legion\n", "is no `<from> <to>` rename pair"},
+		{"sjawhar cybermonklabs/legion\n", "the repository a rename moved"},
+		{"sjawhar/legion cybermonklabs\n", "the repository a rename moved it to"},
+		{"sjawhar/legion cybermonklabs/legion\nacme\n", "line 2"},
+	} {
+		if _, err := ParsePairs([]byte(tc.text)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("ParsePairs(%q) = %v, want an error containing %q", tc.text, err, tc.want)
+		}
+	}
+	bundle := twoOwnerBundle("ghs_acme_write")
+	bundle.Pairs = []ghrepo.Rename{{To: ghrepo.MustParse("cybermonklabs/legion")}}
+	if err := bundle.Validate(); err == nil || !strings.Contains(err.Error(), "names no repository on one side") {
+		t.Errorf("Validate of a bundle holding half a pair = %v, want a refusal naming it", err)
 	}
 }

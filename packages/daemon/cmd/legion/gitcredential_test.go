@@ -52,7 +52,10 @@ func runGitCredentialHere(t *testing.T, stdin string, args ...string) (code int,
 // owner the path git asks about names (credential.useHttpPath), lowercased: from that owner's
 // directory of LEGION_GH_OWNERS_DIR, whatever the path's second segment is — a repository of
 // that owner, and a segment no repository could be named for alike, since the owner's lease
-// reaches every repository its installation holds — and from nothing else: it answers nothing,
+// reaches every repository its installation holds, and since no configured rename of this
+// bundle moved one of them (a pair routes by that second segment, which
+// TestThePairsRepositoryTakesTheDirectoryOfTheOwnerHoldingItAndItsSiblingsTheirOwn reads) —
+// and from nothing else: it answers nothing,
 // exit 1, naming why, for any host but github.com over https, a request with no path, a path
 // whose owner is no GitHub login or one the bundle holds no directory for, an unset
 // LEGION_GH_OWNERS_DIR, and a hosts.yml with no token. GH_CONFIG_DIR, the issue owner's write

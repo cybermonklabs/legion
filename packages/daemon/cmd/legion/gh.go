@@ -27,14 +27,18 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // runGh is `legion gh`, the gh a pane or pod runs. It reads the repository the command acts on,
 // and its owner, as gh resolves them (ghTargetOf) and execs the real gh (LEGION_GH_PATH) as `gh`
 // with its arguments untouched and GH_CONFIG_DIR set to a gh directory under
-// LEGION_GH_OWNERS_DIR: the directory of the owner the command names (ownerGHConfigDir), the
-// one directory the bundle holds for that account, whose token reaches every repository its
-// installation holds. Every command of one owner runs with that one directory — one naming one
+// LEGION_GH_OWNERS_DIR: the directory that answers for the repository the command names
+// (ghConfigDirFor), which is the owner's own — the one directory the bundle holds for that
+// account, whose token reaches every repository its installation holds — except for a
+// repository a configured rename moved to another owner, which is answered from the directory
+// of the owner holding it now. Every other command of one owner runs with that owner's one
+// directory — one naming one
 // of its repositories, one naming two, and one where a selector named the owner alone — since
 // the bundle holds no narrower token to run it with. A command naming no owner at all, in a
 // working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's. A
-// command it cannot read for certain, one naming two owners, and one naming an owner the bundle
-// holds no directory for — an owner the role's App is not installed on — are refused, exit 2,
+// command it cannot read for certain, one naming two owners, one naming an owner the bundle
+// holds no directory for — an owner the role's App is not installed on — and one naming a
+// repository a pair moved to an owner the bundle holds no directory for are refused, exit 2,
 // naming why, and the real gh never runs: no token but the target owner's is ever sent.
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
@@ -144,7 +148,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	}
 	dir := env["GH_CONFIG_DIR"]
 	if target.owner != "" {
-		if dir, err = ownerGHConfigDir(env["LEGION_GH_OWNERS_DIR"], target.owner); err != nil {
+		// target.repo is the one repository every selector of the command named, keyed as the
+		// bundle keys one, and "" where the command named the owner alone or two of its
+		// repositories (selectors.onlyRepository): a configured rename moved one repository, so
+		// only a command naming that one is routed away from its owner's own directory.
+		if dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
 		}

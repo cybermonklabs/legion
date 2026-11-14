@@ -91,8 +91,8 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 			t.Errorf("the refresher changed the tester's %s", key)
 		}
 	}
-	if len(after.Data) != 6 {
-		t.Errorf("the tester's Secret holds %v, want the launcher token, the default and two owners' two gh files", slices.Sorted(maps.Keys(after.Data)))
+	if len(after.Data) != 7 {
+		t.Errorf("the tester's Secret holds %v, want the launcher token, the default, the bundle's renames and two owners' two gh files", slices.Sorted(maps.Keys(after.Data)))
 	}
 	if !maps.Equal(after.Annotations, before.Annotations) || before.Annotations[launcherPodUIDAnnotation] == "" || before.Annotations[annotationIssue] != testTree {
 		t.Errorf("the refresher left annotations %v, want the binding's %v kept", after.Annotations, before.Annotations)
@@ -103,8 +103,8 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 	if kept := g.secret(unrecorded); string(kept.Data[GitHubHostsKey("acme")]) != ghconfig.Hosts("ghs_stale_lease") {
 		t.Errorf("the refresher rewrote %s, which records no default owner", unrecorded)
 	}
-	if secret := g.secret(roleSecretName(controller, claim.RoleController)); len(secret.Data) != 6 || string(secret.Data[GitHubDefaultKey]) != "sjawhar" {
-		t.Errorf("the controller's Secret holds %v, want the launcher token, the default sjawhar and the review App's gh files of both owners",
+	if secret := g.secret(roleSecretName(controller, claim.RoleController)); len(secret.Data) != 7 || string(secret.Data[GitHubDefaultKey]) != "sjawhar" {
+		t.Errorf("the controller's Secret holds %v, want the launcher token, the default sjawhar, the bundle's renames and the review App's gh files of both owners",
 			slices.Sorted(maps.Keys(secret.Data)))
 	}
 	var refreshed, failed []string
@@ -884,8 +884,8 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 			t.Errorf("the refresh changed %s", key)
 		}
 	}
-	if got := string(after.Data[GitHubDefaultKey]); got != "sjawhar" || len(after.Data) != 6 {
-		t.Errorf("the Secret records the default %q and holds %v, want sjawhar still and both owners' two gh files beside the launcher token",
+	if got := string(after.Data[GitHubDefaultKey]); got != "sjawhar" || len(after.Data) != 7 {
+		t.Errorf("the Secret records the default %q and holds %v, want sjawhar still and both owners' two gh files beside the launcher token and the bundle's renames",
 			got, slices.Sorted(maps.Keys(after.Data)))
 	}
 	if !maps.Equal(after.Annotations, before.Annotations) {

@@ -339,13 +339,18 @@ func ghItems(t *testing.T, pod *corev1.Pod, role claim.Role) []corev1.KeyToPath 
 }
 
 // ghItemsFor is what a gh volume projects for owners, in the order a launch of them builds it:
-// each owner's hosts.yml and config.yml under a directory of its own name.
+// each owner's hosts.yml and config.yml under a directory of its own name, and the bundle's one
+// pairs file in the root after them (ghconfig.PairsFile), which every launch holding a directory
+// at all projects.
 func ghItemsFor(owners ...string) []corev1.KeyToPath {
-	items := make([]corev1.KeyToPath, 0, 2*len(owners))
+	items := make([]corev1.KeyToPath, 0, 2*len(owners)+1)
 	for _, owner := range owners {
 		items = append(items,
 			corev1.KeyToPath{Key: GitHubHostsKey(owner), Path: owner + "/" + ghconfig.HostsFile},
 			corev1.KeyToPath{Key: GitHubConfigKey(owner), Path: owner + "/" + ghconfig.ConfigFile})
+	}
+	if len(items) > 0 {
+		items = append(items, corev1.KeyToPath{Key: GitHubPairsKey, Path: ghconfig.PairsFile})
 	}
 	return items
 }
@@ -683,6 +688,11 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 	}
 	launched := ghItems(t, &corev1.Pod{Spec: r3.podTemplate(launchOf(t, r3, spec)).Spec}, claim.RoleTester)
 	for _, item := range ghItemsFor(addedOwner) {
+		// The bundle's pairs file is in both projections — every launch holding a directory
+		// projects it — so the added owner's own two items are what tell them apart.
+		if item.Key == GitHubPairsKey {
+			continue
+		}
 		if !slices.Contains(launched, item) || slices.Contains(ghItems(t, pod, claim.RoleTester), item) {
 			t.Errorf("the control's launch projects %+v, and the pod %+v; want %s at %s in the launch alone", launched, ghItems(t, pod, claim.RoleTester), item.Key, item.Path)
 		}

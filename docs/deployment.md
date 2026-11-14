@@ -114,8 +114,12 @@ credential refreshed`, with the claim, role, App, `expiresAt` and the directorie
 it adopted after a restart is refreshed for the repository its claim's issue works, read from the
 daemon's own state, never one read from the pane's directory. Each of those tokens reaches every
 repository its own installation holds, which the account chose when it installed the App, and the
-daemon asks GitHub to narrow none of them to a repository. `legion gh` runs the real gh with
-`GH_CONFIG_DIR` at the directory of the owner of the repository the command targets,
+daemon asks GitHub to narrow none of them to a repository. The bundle's root also holds one file
+of its own, `renames.txt`, the configured renames the project's pairs resolve to, which both
+wrappers route a repository a rename moved by and read from there and from nowhere else
+(`ghconfig.PairsFile`). `legion gh` runs the real gh with
+`GH_CONFIG_DIR` at the directory of the owner of the repository the command targets, or of the
+owner a configured rename moved that one repository to,
 the target read as gh reads it, with pflag's rules, from the real gh's own help of
 each command down to its leaf (`-R`/`--repo` before or after the command, a repository or owner
 argument, before `--` or as a clone's or fork's first after it, a `github.com` URL argument — for a
@@ -137,7 +141,9 @@ search qualifier gh or GitHub could read otherwise, a gh alias or an extension, 
 `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
 extension exec`), one naming two owners (an option or a second repository naming one owner while
 gh acts on another's, or a workspace whose remotes name two), one naming an owner the bundle
-holds no directory for, every command where `PATH`'s first `gh` is not Legion's wrapper (a script
+holds no directory for, one naming a repository a configured rename moved to an owner the bundle
+holds no directory for, which names the pair, every command where `PATH`'s first `gh` is not
+Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing. The real gh runs with `GH_PATH`
@@ -150,8 +156,9 @@ which the wrapper's tables know (`packages/daemon/cmd/legion/testdata`, with the
 regenerates it when that pin moves; `.github/scripts/check-gh-version.sh` fails the build until
 the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
-on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in the path git asks
-about where the bundle holds its directory, the owner's otherwise, and nothing else.
+on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the repository in the
+path git asks about — of the owner a configured rename moved that repository to where a pair
+names it — and nothing else.
 
 A pane keeps the machine's own `git` and `jj`, unwrapped.
 Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under

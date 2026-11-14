@@ -856,7 +856,8 @@ func (r *Runtime) waitedOut(ctx context.Context, s *sandbox) string {
 // authenticate with tokens no earlier pod held; a role's launch credentials travel in its
 // launcher's start command instead (launcherCommand). The Secret also carries the role's GitHub
 // credential, its gh bundle (gitHubBundles): each directory of that role's own bundle as its
-// hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey) and the default owner
+// hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey), the bundle's configured renames
+// (GitHubPairsKey, empty where the project has none that resolve) and the default owner
 // (GitHubDefaultKey), which its container projects at GHConfigDir.
 //
 // The Secret holds the role's own directories, where the pod projects only the ones every role
@@ -874,7 +875,11 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 			return err
 		}
 		bundle := bundles[role]
-		data := map[string][]byte{LauncherTokenFile: []byte(token), GitHubDefaultKey: []byte(bundle.Default)}
+		data := map[string][]byte{
+			LauncherTokenFile: []byte(token),
+			GitHubDefaultKey:  []byte(bundle.Default),
+			GitHubPairsKey:    []byte(ghconfig.RenderPairs(bundle.Pairs)),
+		}
 		for _, dir := range bundle.DirNames() {
 			rendered := bundle.Dirs[dir]
 			data[GitHubHostsKey(dir)], data[GitHubConfigKey(dir)] = []byte(rendered.Hosts), []byte(rendered.Config)

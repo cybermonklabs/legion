@@ -200,6 +200,13 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // is another owner is refused rather than written, since the pod's GH_CONFIG_DIR was fixed at
 // that directory.
 //
+// Beside the leases it rewrites the bundle's configured renames where they differ
+// (GitHubPairsKey, ghconfig.PairsFile): a pod the launch keeps projects the file of its
+// creation, and the kubelet rewrites that file in place when the Secret changes, so a pair
+// configured after the pod started reaches the wrappers in it without the pod being replaced.
+// What a pod created before the file existed lacks is the projection item itself, which no
+// Update can add and the drift check replaces the pod for (movedGhDirs).
+//
 // bundles is the walk's own memo of the bundles it has built (appauth.Bundles): the roles of a pod
 // that run as one App and for one repository are one bundle, built by the first of them. The
 // controller's is asked for by owner and memoised by nothing, a controller pod holding the one
@@ -253,7 +260,13 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 			changed = append(changed, dir)
 		}
 	}
-	if len(changed) == 0 {
+	// The pairs turn over with the deployment's configuration and the project's mapping rather
+	// than with a lease, so they are compared on their own: a pod the launch keeps projects the
+	// file it was created with, and the kubelet rewrites its content in place when the Secret
+	// changes, which is how a pair configured since the pod started reaches the wrappers in it.
+	pairs := ghconfig.RenderPairs(bundle.Pairs)
+	stalePairs := string(secret.Data[GitHubPairsKey]) != pairs
+	if len(changed) == 0 && !stalePairs {
 		return
 	}
 	for retried := false; ; retried = true {
@@ -264,6 +277,7 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 			rendered := bundle.Dirs[dir]
 			secret.Data[GitHubHostsKey(dir)], secret.Data[GitHubConfigKey(dir)] = []byte(rendered.Hosts), []byte(rendered.Config)
 		}
+		secret.Data[GitHubPairsKey] = []byte(pairs)
 		_, err = secrets.Update(ctx, secret, metav1.UpdateOptions{})
 		if err == nil {
 			break
@@ -285,5 +299,5 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 	}
 	written := bundle.Dirs[owner]
 	r.log.Info("sandbox runtime: github credential refreshed", "sandbox", sandbox, "role", role, "app", written.App,
-		"expiresAt", written.ExpiresAt, "dirs", changed)
+		"expiresAt", written.ExpiresAt, "dirs", changed, "renames", stalePairs)
 }

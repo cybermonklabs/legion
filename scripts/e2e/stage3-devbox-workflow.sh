@@ -1277,7 +1277,10 @@ restart_scenarios() {
   # The directory the agent printed is the one its OMP process was launched with: its repository's
   # owner's directory of the bundle named for its claim, which holds the two gh files the daemon
   # writes for the pane and nothing else, since a bundle holds one directory per owner account the
-  # App is installed on and no directory for a repository (INFRA-2543 R2).
+  # App is installed on and no directory for a repository (INFRA-2543 R2). The root holds that
+  # directory and the bundle's one file, `renames.txt`, the configured renames both wrappers route
+  # a moved repository by, which every bundle this daemon writes carries, empty where the project
+  # has no rename that resolves.
   cred_pane_pid=$(claim_pane_pid "$restart_issue" implementer) || fail "the implementer pane on $restart_issue has no process locator"
   cred_omp=$(omp_descendant "$cred_pane_pid") || fail "the implementer pane on $restart_issue has no OMP process"
   cred_root=$(pane_value "$cred_omp" LEGION_GH_OWNERS_DIR)
@@ -1289,7 +1292,9 @@ restart_scenarios() {
   for dir in "$cred_root" "$cred_dir"; do
     [ "$(stat -c %a "$dir")" = 700 ] || fail "$dir is mode $(stat -c %a "$dir"), want 700"
   done
-  [ "$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = "$owner " ] || fail "$cred_root holds $(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | tr '\n' ' '), want $owner's directory alone"
+  cred_root_entries=$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')
+  [ "$cred_root_entries" = "$(printf '%s\n' "$owner" renames.txt | sort | tr '\n' ' ')" ] ||
+    fail "$cred_root holds $cred_root_entries, want $owner's directory and the bundle's renames.txt alone"
   cred_owned=$(find "$cred_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
   for want in config.yml hosts.yml; do
     grep -qxF -- "$want" <<<"$cred_owned" || fail "$cred_dir lacks $want; it holds: $(tr '\n' ' ' <<<"$cred_owned")"

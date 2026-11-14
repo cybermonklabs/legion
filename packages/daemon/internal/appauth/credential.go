@@ -46,6 +46,14 @@ var ErrOwnerOutsideProject = errors.New("is no owner the controller's App is ins
 // repository away from: it holds the lease of the owner whose installation serves the moved
 // repository, which is what a reader spelling the old name means (bundleDirs).
 //
+// Where the App is installed on both accounts of a configured pair, each of the two directories
+// holds its own account's lease, since the pair moved one repository and not the account, and
+// the repository it moved is reached by the routing the bundle's pairs carry: a request for the
+// pair's `from` repository is answered from the `to` owner's directory, and every other
+// repository of the `from` owner from its own (bundleDirs, ghconfig.Bundle.Pairs). That is this
+// deployment's case, where the implement App's sjawhar installation holds 151 repositories and
+// not cybermonklabs/legion.
+//
 // A controller's bundle is the one bundle of reading leases, and is built from this same
 // description (ControllerCredential, Tokens.ReadToken): the two callers differ in the lease they
 // ask for and not at all in the directories they hold.
@@ -434,11 +442,13 @@ func (d dirLease) mint(ctx context.Context, tokens Tokens, role AppRole) (Lease,
 }
 
 // bundleLayout is a gh bundle as bundleDirs describes it: dirs, every directory it holds with
-// the owner each one's lease is minted on, and owners, the same names as a set, which the
-// bundle's default is chosen from and a controller's asked-for owner is read against.
+// the owner each one's lease is minted on, owners, the same names as a set, which the
+// bundle's default is chosen from and a controller's asked-for owner is read against, and
+// pairs, the configured renames the bundle routes a request by (ghconfig.Bundle.Pairs).
 type bundleLayout struct {
 	dirs   []bundleDir
 	owners map[string]bool
+	pairs  []ghrepo.Rename
 }
 
 // bundleDirs is the one description of a gh bundle's directories: every directory it holds,
@@ -482,6 +492,15 @@ type bundleLayout struct {
 // the repository has left. Asked per repository, a pair resolves or does not on its own two
 // names, so this is a pure function of its inputs and may be built per call.
 //
+// The pairs the layout carries are the configured renames that resolve and move a repository to
+// another owner's installation (ghrepo.Renames.Moving), which is the same walk the alias map is
+// keyed from. They go into the bundle, and from there into its root's pairs file
+// (ghconfig.Bundle.Pairs, ghconfig.PairsFile), because a directory per owner cannot answer for
+// both repositories of a pair whose two owners the App is installed on: `legion gh` and `legion
+// git-credential` route the pair's `from` repository to the `to` owner's directory and every
+// other repository of that owner to its own, which is a question about the repository and not
+// about the owner (cmd/legion's ghConfigDirFor).
+//
 // A directory ghconfig holds to be no directory's name (ghconfig.IsDirName) is an error: every
 // directory here carries an owner's whole lease and may be the bundle's default, so a bundle is
 // refused rather than written from a name that is not one.
@@ -491,11 +510,12 @@ func bundleDirs(installed []string, repos func() []ghrepo.Repository, renames gh
 	// its `to` and not its `from`, which is asked of the two repositories themselves.
 	servesRepository := func(candidate ghrepo.Repository) bool { return ghrepo.Serves(serves, candidate) }
 	aliases := renames.OwnerAliases(servesRepository)
+	moving := renames.Moving(servesRepository)
 	owners := make(map[string]bool, len(installed))
 	for _, owner := range installed {
 		owners[strings.ToLower(owner)] = true
 	}
-	layout := bundleLayout{owners: maps.Clone(owners)}
+	layout := bundleLayout{owners: maps.Clone(owners), pairs: moving}
 	for from := range aliases {
 		layout.owners[from] = true
 	}
@@ -591,7 +611,11 @@ func sayLeftOut(log *slog.Logger, role AppRole, owner string) {
 // (LeftOut), so the drift check's own answer (GitHubDirs) names what a bundle built now holds and
 // nothing more.
 func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.Role, read bool, dflt string, layout bundleLayout, left *LeftOut, log *slog.Logger) (ghconfig.Bundle, error) {
-	bundle := ghconfig.Bundle{Dirs: make(map[string]ghconfig.Rendered, len(layout.dirs))}
+	// The pairs are the layout's, whatever the mints answer: a pair whose `to` owner is left out
+	// of the bundle stays in the file and is refused where a request routes to that missing
+	// directory, which is the one answer that cannot send a request the wrong owner's token
+	// (ghconfig.Bundle.Pairs).
+	bundle := ghconfig.Bundle{Dirs: make(map[string]ghconfig.Rendered, len(layout.dirs)), Pairs: layout.pairs}
 	minted := make(map[scope]ghconfig.Rendered, len(layout.dirs))
 	refused := map[scope]bool{}
 	var leftOut []string

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -416,6 +417,16 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // An owner's own directory is the first reason: a pod without it holds no token of that owner
 // at all.
 //
+// The bundle's pairs file is the third reason, and the one read by its presence alone
+// (GitHubPairsKey, ghconfig.PairsFile): every bundle of this daemon holds it, empty where the
+// project has no configured rename that resolves, and `legion gh` and `legion git-credential`
+// route a moved repository by it. A pod created before it existed projects no item for it, and
+// a projection's items are fixed for the pod's life, so that pod's wrappers would route by
+// owner alone for as long as it runs and no Update could mend it. Its content is never
+// compared: the kubelet rewrites a projected file in place when the Secret changes, so a pair
+// configured since the launch reaches a kept pod (refreshGitHubCredential), and a pod is
+// replaced for what a refresh cannot reach and for nothing else.
+//
 // The pod's own repository is still read from its workspace fetch (fetchRepository), and a pod
 // that fetches none — the controller's — asked for with the zero Repository, since the owner
 // directories a bundle holds depend on it: among them is the owner the pod writes to, which is
@@ -438,8 +449,13 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 		return movedAddress{}, false
 	}
 	var held []string
-	if secret := pod.Spec.Volumes[at].Secret; secret != nil {
-		for _, item := range secret.Items {
+	projection := pod.Spec.Volumes[at].Secret
+	pairs := false
+	if projection != nil {
+		for _, item := range projection.Items {
+			if item.Key == GitHubPairsKey {
+				pairs = true
+			}
 			if dir, ok := GitHubHostsDir(item.Key); ok {
 				held = append(held, dir)
 			}
@@ -454,6 +470,13 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 	if repositories := slices.DeleteFunc(slices.Clone(held), func(dir string) bool { return !strings.Contains(dir, "/") }); len(repositories) > 0 {
 		return movedAddress{where: name + " holds a repository directory", held: ghDirsName(repositories),
 			handed: "the owner directories alone"}, true
+	}
+	// A pod launched with no directory at all projects no Secret and so no pairs file either,
+	// and a launch now would hand it the same empty directory: it is compared for its owner
+	// directories alone, below.
+	if projection != nil && !pairs {
+		return movedAddress{where: name + " holds no " + ghconfig.PairsFile, held: ghDirsName(owned),
+			handed: "the same directories beside the configured renames the wrappers route by"}, true
 	}
 	repo, _ := fetchRepository(pod)
 	served := ghOwnerDirs(r.gitHubDirs(repo, podAppRoles(podKindFor(role))))

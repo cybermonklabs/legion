@@ -250,6 +250,8 @@ func TestEveryRolesPrivateVolumesMountInItsContainerAlone(t *testing.T) {
 			want = append(want, corev1.KeyToPath{Key: GitHubHostsKey(owner), Path: owner + "/" + ghconfig.HostsFile},
 				corev1.KeyToPath{Key: GitHubConfigKey(owner), Path: owner + "/" + ghconfig.ConfigFile})
 		}
+		// The bundle's pairs file in the root, which every launch holding a directory projects.
+		want = append(want, corev1.KeyToPath{Key: GitHubPairsKey, Path: ghconfig.PairsFile})
 		if gh == nil || gh.SecretName != roleSecretName(l.name, role) || !slices.Equal(gh.Items, want) || gh.DefaultMode == nil || *gh.DefaultMode != 0o440 {
 			t.Errorf("%s's gh volume projects %+v, want %s's %+v, read-only", role, gh, roleSecretName(l.name, role), want)
 		}

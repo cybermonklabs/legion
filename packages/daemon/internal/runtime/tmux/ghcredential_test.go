@@ -296,8 +296,8 @@ func TestSpawnWritesTheClaimsGhBundleAndNamesItOnThePane(t *testing.T) {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		t.Fatalf("gh root stat = %v, %v; want a 0700 directory", info, err)
 	}
-	if entries := ghDirEntries(t, root); !slices.Equal(entries, []string{"acme", "sjawhar"}) {
-		t.Errorf("the gh root holds %v, want one directory per owner and nothing else", entries)
+	if entries := ghDirEntries(t, root); !slices.Equal(entries, []string{"acme", ghconfig.PairsFile, "sjawhar"}) {
+		t.Errorf("the gh root holds %v, want one directory per owner, the bundle's pairs file and nothing else", entries)
 	}
 	for owner, token := range map[string]string{"acme": staticCredentialToken(claim.RoleTester), "sjawhar": staticOwnerToken(claim.RoleTester, "sjawhar")} {
 		dir := ghconfig.Dir(root, owner)
@@ -452,8 +452,8 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 		t.Errorf("the refresher made a gh directory for %s (%v)", nameless, err)
 	}
 	for _, token := range []claim.Token{stale, current, gone, controller} {
-		if entries := ghDirEntries(t, root(token)); !slices.Equal(entries, []string{"acme", "sjawhar"}) {
-			t.Errorf("%s's gh root holds %v, want the two owners' directories alone", token, entries)
+		if entries := ghDirEntries(t, root(token)); !slices.Equal(entries, []string{"acme", ghconfig.PairsFile, "sjawhar"}) {
+			t.Errorf("%s's gh root holds %v, want the two owners' directories and the bundle's pairs file alone", token, entries)
 		}
 	}
 	refreshed := logLines(logs.String(), "github credential refreshed")
@@ -588,8 +588,8 @@ func TestAnAdoptedPanesRepositoryIsTheDaemonsRecordNotItsGhDirectory(t *testing.
 			t.Errorf("the adopted tester's %s hosts.yml holds %q, want %q", owner, got, want)
 		}
 	}
-	if entries := ghDirEntries(t, root(tester)); !slices.Equal(entries, []string{"acme", "sjawhar"}) {
-		t.Errorf("the adopted tester's gh root holds %v, want the two owners' directories alone", entries)
+	if entries := ghDirEntries(t, root(tester)); !slices.Equal(entries, []string{"acme", ghconfig.PairsFile, "sjawhar"}) {
+		t.Errorf("the adopted tester's gh root holds %v, want the two owners' directories and the bundle's pairs file alone", entries)
 	}
 	for owner, want := range map[string]string{"acme": staticCredentialToken(claim.RoleController), "sjawhar": staticOwnerToken(claim.RoleController, "sjawhar")} {
 		if got := readHostsToken(t, ghconfig.Dir(root(controller), owner)); got != want {

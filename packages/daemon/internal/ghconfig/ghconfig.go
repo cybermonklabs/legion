@@ -10,10 +10,14 @@
 // from a fresh lease is what the next `gh` runs with. `legion gh`, the `gh` first on a pane's
 // PATH, and `legion git-credential`, the helper every shared clone's `credential.helper` names
 // (workspace.GitHubCredentialHelper), both pick the directory of the owner of the repository the
-// command or git's request names, the one directory the bundle holds for that account; a pod
-// launched before that ruling may still hold an `<owner>/<repo>` directory of its own, which no
-// token is read out of and the Sandbox drift check reports. The helper answers git from the
-// owner's directory's hosts.yml and treats git's `store` and `erase` as no-ops. In a pod the
+// command or git's request names, the one directory the bundle holds for that account — except
+// for a repository a configured rename moved to another owner, which takes the directory of the
+// owner it moved to, since that account's installation is the one holding it now. The pairs that
+// route are the bundle's own file in the root, beside the owners' directories (Bundle, PairsFile),
+// and the two wrappers read them from there and from nowhere else; a pod launched before that
+// ruling may still hold an `<owner>/<repo>` directory of its own, which no token is read out of,
+// and the Sandbox drift check reports both that and a root with no pairs file. The helper answers
+// git from the chosen directory's hosts.yml and treats git's `store` and `erase` as no-ops. In a pod the
 // root is a read-only Secret volume, which gh never needs to write: it writes under
 // GH_CONFIG_DIR only when told to
 // (`gh auth login`, `gh config set`) or when migrating a pre-2.40 hosts.yml into its
@@ -129,10 +133,10 @@ func Render(token, app string, expiresAt time.Time) Rendered {
 }
 
 // Write brings dir, one directory of a gh bundle, to rendered: the directory made 0700 if
-// it is gone, config.yml written once when absent or different, and hosts.yml replaced — a
-// temporary file in the directory (0600, as os.CreateTemp makes it) renamed over it, so the gh
-// reading it never sees a half-written file — only when its content differs. It reports whether
-// hosts.yml changed. WriteBundle calls it for each directory of a bundle.
+// it is gone, config.yml written once when absent or different, and hosts.yml replaced
+// (replaceFile), so the gh reading it never sees a half-written file, only when its content
+// differs. It reports whether hosts.yml changed. WriteBundle calls it for each directory of a
+// bundle.
 func Write(dir string, rendered Rendered) (changed bool, err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false, err
@@ -146,28 +150,38 @@ func Write(dir string, rendered Rendered) (changed bool, err error) {
 			return false, err
 		}
 	}
-	hosts := filepath.Join(dir, HostsFile)
-	current, err := os.ReadFile(hosts)
+	return replaceFile(filepath.Join(dir, HostsFile), rendered.Hosts)
+}
+
+// replaceFile brings path to content and reports whether it changed: a temporary file beside it
+// (0600, as os.CreateTemp makes it) renamed over it, so a reader of the file — the gh of a pane
+// reading a hosts.yml, the `legion gh` or `legion git-credential` of one reading the bundle's
+// pairs file — never sees a half-written one. A file whose content already is content is left
+// alone, which is what keeps a bundle's writer from touching the files a lease's turn did not
+// change (WriteBundle, Write).
+func replaceFile(path, content string) (changed bool, err error) {
+	current, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	if err == nil && bytes.Equal(current, []byte(rendered.Hosts)) {
+	if err == nil && bytes.Equal(current, []byte(content)) {
 		return false, nil
 	}
-	temporary, err := os.CreateTemp(dir, "."+HostsFile+"-")
+	dir := filepath.Dir(path)
+	temporary, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-")
 	if err != nil {
 		return false, err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if _, err := temporary.WriteString(rendered.Hosts); err != nil {
+	if _, err := temporary.WriteString(content); err != nil {
 		_ = temporary.Close()
 		return false, err
 	}
 	if err := temporary.Close(); err != nil {
 		return false, err
 	}
-	if err := os.Rename(temporaryPath, hosts); err != nil {
+	if err := os.Rename(temporaryPath, path); err != nil {
 		return false, err
 	}
 	return true, nil

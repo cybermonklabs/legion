@@ -27,15 +27,18 @@ var gitCredentialStdin io.Reader = os.Stdin
 
 // runGitCredential is every shared clone's credential helper (workspace.GitHubCredentialHelper),
 // which git runs with its operation and the request on stdin. `get` answers a request for
-// https://github.com with the installation-token username and the token of the owner the
-// request's path names (credential.useHttpPath, which every shared clone sets): its first segment
-// is that owner, and the token comes from the hosts.yml in the owner's own directory of
-// LEGION_GH_OWNERS_DIR (ownerGHConfigDir) and from nothing else. A role's bundle holds one
-// directory per owner the role's App is installed on, and the lease in it reaches every
-// repository that installation holds, so the owner's directory answers for every repository of
-// that owner and the second segment of the path names nothing this reads. Any other host or
+// https://github.com with the installation-token username and the token of the gh directory that
+// answers for the repository the request's path names (credential.useHttpPath, which every
+// shared clone sets): its first two segments are that repository, and the directory is the one
+// the bundle under LEGION_GH_OWNERS_DIR holds for it (ghConfigDirFor) and nothing else. A role's
+// bundle holds one directory per owner the role's App is installed on, and the lease in it
+// reaches every repository that installation holds, so the owner's own directory answers for
+// every repository of that owner but one a configured rename moved to another owner: that one is
+// answered from the directory of the owner it moved to, which the bundle's pairs file names, and
+// the path's second segment is what tells the two apart. Any other host or
 // protocol, a request with no path, a path whose owner is no GitHub login or one the bundle
-// holds no directory for — an owner the role's App is not installed on — an unset
+// holds no directory for — an owner the role's App is not installed on — a pair whose `to`
+// owner has no directory, an unset
 // LEGION_GH_OWNERS_DIR, and a hosts.yml with no token answer nothing, exit 1, naming why on
 // stderr, and git, which every shared clone tells credential.interactive=false, then fails
 // rather than prompts. `store` and `erase` change nothing: the daemon is the one writer of the
@@ -83,13 +86,16 @@ func runGitCredential(_ context.Context, args []string, stdout, stderr io.Writer
 		return 1
 	}
 	path := strings.TrimPrefix(request["path"], "/")
-	segment, _, _ := strings.Cut(path, "/")
+	segment, rest, _ := strings.Cut(path, "/")
 	owner := strings.ToLower(segment)
 	if !ghconfig.IsOwner(owner) {
 		fmt.Fprintf(stderr, "legion git-credential: the path %s names the owner %q, which is no GitHub login; answering nothing\n", request["path"], segment)
 		return 1
 	}
-	dir, err := ownerGHConfigDir(ownersDir, owner)
+	// The second segment is the repository, which is what tells a repository a configured rename
+	// moved from every other repository of its owner; a path with none names the owner alone.
+	name, _, _ := strings.Cut(rest, "/")
+	dir, err := ghConfigDirFor(ownersDir, owner, ghconfig.RepositoryName(name))
 	if err != nil {
 		fmt.Fprintf(stderr, "legion git-credential: %v; answering nothing\n", err)
 		return 1
@@ -127,10 +133,9 @@ func readCredentialRequest(r io.Reader) map[string]string {
 
 // ownerGHConfigDir is the gh directory of the bundle under ownersDir that answers for owner:
 // `<owner>`, the one directory the bundle holds for that account, whose lease reaches every
-// repository its installation holds (appauth.GitHubCredential). Every caller hands it an owner
-// and no repository — a git credential request's path (runGitCredential) as much as the gh
-// wrapper's target (gh_selectors.go) — since one owner's token is the whole of what the bundle
-// holds for that account.
+// repository its installation holds (appauth.GitHubCredential). It is the answer for every
+// repository of that owner but one a configured rename moved away from it, which its one caller
+// routes by the repository instead (ghConfigDirFor).
 //
 // An owner the bundle holds no directory for is refused, which is this caller's own answer: the
 // role's App has no installation on owner, so no token of this bundle reaches anything of it,
@@ -141,4 +146,48 @@ func ownerGHConfigDir(ownersDir, owner string) (string, error) {
 		return dir, nil
 	}
 	return "", fmt.Errorf("the role's GitHub App is not installed on %q: %s holds no gh directory for it", owner, ownersDir)
+}
+
+// ghConfigDirFor is the gh directory of the bundle under ownersDir that answers for the
+// repository owner/name, the pick both wrappers make: the owner's own directory
+// (ownerGHConfigDir), except where a configured rename moved that one repository to another
+// owner, which is the `to` owner's directory instead. name is the repository as the bundle keys
+// one (ghconfig.RepositoryName) and is "" where the caller names an owner and no repository of
+// it — a `gh` command naming an owner alone or two of its repositories, a credential request
+// whose path carries one segment — which is the owner's own directory, the widest token the
+// bundle holds for that account and never another's.
+//
+// The pairs are the bundle's own file, written by the daemon that wrote the directories
+// (ghconfig.ReadPairs, ghconfig.PairsFile), and no other source is read: a pane's own
+// configuration is the pane user's to write, and a token is what routing by it would hand out.
+// A pair's `from` is compared against `<owner>/<name>` without case, as GitHub compares a
+// repository's two halves.
+//
+// A pair whose `to` owner the bundle holds no directory for is refused, naming the pair and the
+// directory: no lease of this bundle reaches the repository that pair moved — the role's App is
+// not installed on the owner holding it, or GitHub refused that lease — and the `from` owner's
+// token, which is what an owner-only answer would hand out, cannot write it. Failing closed
+// leaves git and gh saying so, where the other answer is a push that is refused at the remote.
+func ghConfigDirFor(ownersDir, owner, name string) (string, error) {
+	if name == "" {
+		return ownerGHConfigDir(ownersDir, owner)
+	}
+	pairs, err := ghconfig.ReadPairs(ownersDir)
+	if err != nil {
+		return "", fmt.Errorf("read the gh bundle's configured renames: %w", err)
+	}
+	repository := owner + "/" + name
+	for _, pair := range pairs {
+		if !strings.EqualFold(pair.From.String(), repository) {
+			continue
+		}
+		moved := strings.ToLower(pair.To.Owner())
+		dir, err := ownerGHConfigDir(ownersDir, moved)
+		if err != nil {
+			return "", fmt.Errorf("the configured rename %s -> %s serves %s from %s's gh directory, and %w; GitHub holds the repository under the name it moved to, so no other token of this bundle reaches it",
+				pair.From, pair.To, repository, moved, err)
+		}
+		return dir, nil
+	}
+	return ownerGHConfigDir(ownersDir, owner)
 }

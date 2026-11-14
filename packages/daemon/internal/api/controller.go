@@ -62,20 +62,32 @@ type ControllerCredentialRequest struct {
 // review App's read-only token for every GitHub owner of the project, each rendered as the two
 // files gh reads (`ghconfig.Rendered`: Hosts for hosts.yml, Config for config.yml) and keyed by
 // lowercased owner; Default, the owner whose directory the controller's GH_CONFIG_DIR names (the
-// request's, or the first owner, sorted); the App name; and the soonest of the tokens' expiries.
-// `legion controller start` writes them under `<state_dir>/gh/<owner>` and refreshes them every
-// minute; the plugin never reads this route or that directory.
+// request's, or the first owner, sorted); the App name; the soonest of the tokens' expiries; and
+// Renames, the configured pairs the bundle routes a moved repository by, each `<owner>/<name>`
+// as GitHub spells it, which a project configuring none answers without.
+// `legion controller start` writes them under `<state_dir>/gh`, the owners' two files each in a
+// directory of its own and the pairs in the root's one file (ghconfig.WriteBundle), and
+// refreshes them every minute; the plugin never reads this route or that directory.
 type ControllerCredentialResponse struct {
 	Owners    map[string]ControllerOwnerCredential `json:"owners"`
 	Default   string                               `json:"default"`
 	App       string                               `json:"app"`
 	ExpiresAt string                               `json:"expiresAt"`
+	Renames   []ControllerRename                   `json:"renames,omitempty"`
 }
 
 // ControllerOwnerCredential is one owner's two gh files in a ControllerCredentialResponse.
 type ControllerOwnerCredential struct {
 	Hosts  string `json:"hosts"`
 	Config string `json:"config"`
+}
+
+// ControllerRename is one configured pair of a ControllerCredentialResponse: the repository as
+// it was recorded and the one GitHub holds it under now, each `<owner>/<name>`. A request for
+// the first is answered from the gh directory of the second's owner (ghconfig.Bundle.Pairs).
+type ControllerRename struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 // ControllerRegisterResponse is `POST /legion/v1/claims/register`'s answer to a session that
@@ -232,6 +244,9 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		Owners:  make(map[string]ControllerOwnerCredential, len(bundle.Dirs)),
 		Default: bundle.Default,
 		App:     bundle.Dirs[bundle.Default].App,
+	}
+	for _, pair := range bundle.Pairs {
+		answer.Renames = append(answer.Renames, ControllerRename{From: pair.From.String(), To: pair.To.String()})
 	}
 	var soonest time.Time
 	for owner, rendered := range bundle.Dirs {

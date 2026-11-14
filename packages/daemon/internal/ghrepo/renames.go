@@ -165,17 +165,18 @@ func Under[T comparable](r Renames, name string, read func(string) (T, error)) (
 	return read(partner.String())
 }
 
-// OwnerAliases is the owner each configured rename moved a repository away from, keyed by that
-// owner, lowercased, and answering the owner it moved to, lowercased too — one entry for each
-// pair that resolves, which is each pair whose `to` the project serves and whose `from` it does
-// not. A pair whose two owners are one owner is no alias, since a rename inside one owner moves
-// nothing between installations.
+// Moving is each configured pair that resolves and moves a repository from one owner to another,
+// in configured order: each pair whose `to` the project serves, whose `from` it does not
+// (`Serving`), and whose two owners are two owners, since a rename inside one owner moves nothing
+// between installations. It is the one walk of the pairs the rename rule's owner-side callers
+// take, and `OwnerAliases` is it keyed by owner.
 //
 // A GitHub App is installed on an owner, so once a transfer moves a repository to another owner,
 // the installation that covers it is that owner's: a token minted for the owner a record names
-// would be minted on an installation the repository has left. The alias is how a caller that
-// holds an owner and no repository — a role's gh bundle, which is one directory per owner — names
-// the owner whose installation holds the moved repository now.
+// would be minted on an installation the repository has left. A caller that holds the repository
+// a request names — `legion gh` and `legion git-credential`, which route by repository (the gh
+// bundle's pairs file, ghconfig.Bundle) — reads these pairs to find the owner whose installation
+// holds it now, and a caller that holds an owner and no repository reads `OwnerAliases`.
 //
 // A pair resolves here exactly when the rename rule resolves it, so this loop asks that one rule
 // rather than writing it a second time: `Serving` answers the pair's `to` for its `from` when
@@ -183,17 +184,32 @@ func Under[T comparable](r Renames, name string, read func(string) (T, error)) (
 // the reason `served` is asked of a pair's two repositories, and never of their owners, is
 // written. A deployment that configures no rename holds no pair, so it asks `served` nothing
 // and answers nil.
-func (r Renames) OwnerAliases(served func(Repository) bool) map[string]string {
-	var aliases map[string]string
+func (r Renames) Moving(served func(Repository) bool) []Rename {
+	var moving []Rename
 	for _, pair := range r.pairs {
-		from, to := strings.ToLower(pair.From.Owner()), strings.ToLower(pair.To.Owner())
-		if from == to || r.Serving(pair.From, served) != pair.To {
+		if strings.EqualFold(pair.From.Owner(), pair.To.Owner()) || r.Serving(pair.From, served) != pair.To {
 			continue
 		}
+		moving = append(moving, pair)
+	}
+	return moving
+}
+
+// OwnerAliases is the owner each configured rename moved a repository away from, keyed by that
+// owner, lowercased, and answering the owner it moved to, lowercased too — one entry for each
+// pair that moves a repository between two owners (Moving).
+//
+// The alias is how a caller that holds an owner and no repository — a role's gh bundle, which is
+// one directory per owner — names the owner whose installation holds the moved repository now.
+// A deployment that configures no rename holds no pair, so it asks `served` nothing and answers
+// nil.
+func (r Renames) OwnerAliases(served func(Repository) bool) map[string]string {
+	var aliases map[string]string
+	for _, pair := range r.Moving(served) {
 		if aliases == nil {
 			aliases = make(map[string]string, len(r.pairs))
 		}
-		aliases[from] = to
+		aliases[strings.ToLower(pair.From.Owner())] = strings.ToLower(pair.To.Owner())
 	}
 	return aliases
 }

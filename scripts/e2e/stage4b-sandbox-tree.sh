@@ -951,13 +951,22 @@ pod_viewer() {
 }
 # assert_gh_files POD CONTAINER WHO fails the check unless CONTAINER's gh bundle in POD holds the
 # repository owner's directory with both gh files and nothing else, beside nothing but other
-# owners' directories and the kubelet's entries. The bundle is a whole-volume Secret projection (the
+# owners' directories, the bundle's one pairs file and the kubelet's entries. The bundle is a
+# whole-volume Secret projection (the
 # mount the hour-boundary refresh needs: the kubelet rewrites it in place when the Secret changes,
 # where a subPath mount never sees an update), so beside the owners' directories its root always
 # lists the kubelet's atomic-writer entries, `..data` and a `..<timestamp>` directory. The owner's
 # directory is required, and so is `..data`, which a subPath mount (which never refreshes) would not
 # have; any other `..`-prefixed entry is the kubelet's, and any other entry must be a lowercased
 # GitHub login; anything else at the root is a stranger, named.
+#
+# The root's one file is required too, by its name alone: `renames.txt`, the configured renames
+# the bundle carries (ghconfig.PairsFile), which `legion gh` and `legion git-credential` route a
+# request for a moved repository by, and which every bundle this daemon writes holds, empty where
+# the project has no rename that resolves (INFRA-2543). A pod projecting no such file was created
+# by a daemon before it existed, and its wrappers route by owner alone. Only that one name is
+# allowed beside the owners' directories: any other lower-case file at the root is still a
+# stranger, since nothing else of the bundle is a file.
 #
 # One rule judges the owner's own directory, for a role of an issue pod and for the daemon-launched
 # controller alike: it holds `config.yml` and `hosts.yml` and nothing else, because a bundle holds
@@ -970,12 +979,16 @@ pod_viewer() {
 # run.
 assert_gh_files() {
   local root owned want strangers entry
+  # The bundle's pairs file, ghconfig.PairsFile, whose name is this check's own constant.
+  local pairs_file=renames.txt
   root=$(pod_exec "$1" "$2" sh -c "ls -A $gh_owners_dir") || fail "could not list $3's $gh_owners_dir"
   grep -qxF -- "${gh_config_dir##*/}" <<<"$root" || fail "$3's $gh_owners_dir lacks ${gh_config_dir##*/}; it holds: $(tr '\n' ' ' <<<"$root")"
   grep -qxF -- ..data <<<"$root" ||
     fail "$3's $gh_owners_dir holds no ..data: it is not the whole-volume projection the kubelet refreshes in place; it holds: $(tr '\n' ' ' <<<"$root")"
-  strangers=$(grep -v '^\.\.' <<<"$root" | grep -vxE '[a-z0-9][a-z0-9-]*' || true)
-  [ -z "$strangers" ] || fail "$3's $gh_owners_dir holds an entry that is neither an owner's directory nor the kubelet's: $(tr '\n' ' ' <<<"$strangers")"
+  grep -qxF -- "$pairs_file" <<<"$root" ||
+    fail "$3's $gh_owners_dir holds no $pairs_file: the bundle's configured renames, which legion gh and legion git-credential route a moved repository by; it holds: $(tr '\n' ' ' <<<"$root")"
+  strangers=$(grep -v '^\.\.' <<<"$root" | grep -vxF -- "$pairs_file" | grep -vxE '[a-z0-9][a-z0-9-]*' || true)
+  [ -z "$strangers" ] || fail "$3's $gh_owners_dir holds an entry that is neither an owner's directory, the bundle's $pairs_file, nor the kubelet's: $(tr '\n' ' ' <<<"$strangers")"
   owned=$(pod_exec "$1" "$2" sh -c "ls -A $gh_config_dir") || fail "could not list $3's $gh_config_dir"
   for want in config.yml hosts.yml; do
     grep -qxF -- "$want" <<<"$owned" || fail "$3's $gh_config_dir lacks $want; it holds: $(tr '\n' ' ' <<<"$owned")"
@@ -2165,7 +2178,9 @@ shape_problems() {
       ([$s.initContainers[]? | select(.name == "workspace-init") | .volumeMounts[]? | select(.name == "feed" and .readOnly != true)] | if length > 0 then "workspace-init mounts the feed writable" else empty end),
       # Each role holds its GitHub App tokens in a gh volume of its own (LEGION-631): gh-<role>
       # projects the two gh keys of each owner in that role Secret as <owner>/hosts.yml and
-      # <owner>/config.yml, read-only under the role directory of the roles directory, which only
+      # <owner>/config.yml, and the one renames key of the bundle as renames.txt in the root, which
+      # both wrappers route a moved repository by (INFRA-2543), read-only under
+      # the role directory of the roles directory, which only
       # that role namespace binds back at LEGION_GH_OWNERS_DIR; no init container mounts one; the
       # clone helper is legion git-credential; and no process namespace is shared with another pod.
       ($roles[] | . as $role | ([$s.volumes[] | select(.name == "gh-\($role)")] | first) as $v
@@ -2174,9 +2189,9 @@ shape_problems() {
             (if $v.secret.secretName != $own then "gh-\($role) projects Secret \($v.secret.secretName), not the role Secret \($own) its launcher token comes from" else empty end),
             (($v.secret.items // []) as $items
               | ([$items[] | .key | capture("^github-hosts-(?<o>[a-z0-9][a-z0-9-]*)$") | .o] | sort) as $owners
-              | if ($owners | length) == 0 or ($items | length) != 2 * ($owners | length)
-                  or ($items | map({(.key): .path}) | add) != ($owners | map({("github-hosts-" + .): (. + "/hosts.yml"), ("github-config-" + .): (. + "/config.yml")}) | add)
-                then "gh-\($role) projects \($items | tostring), not <owner>/hosts.yml and <owner>/config.yml for each owner" else empty end),
+              | if ($owners | length) == 0 or ($items | length) != 2 * ($owners | length) + 1
+                  or ($items | map({(.key): .path}) | add) != (($owners | map({("github-hosts-" + .): (. + "/hosts.yml"), ("github-config-" + .): (. + "/config.yml")}) | add) + {"github-renames": "renames.txt"})
+                then "gh-\($role) projects \($items | tostring), not <owner>/hosts.yml and <owner>/config.yml for each owner beside renames.txt" else empty end),
             (if $v.secret.defaultMode != 288 then "gh-\($role) has defaultMode \($v.secret.defaultMode), not 0440" else empty end)
           end),
       ([$c.volumeMounts[]? | select(.name | startswith("gh-"))] as $gh
