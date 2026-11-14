@@ -626,8 +626,9 @@ the implementer's round is refused
 when its record names no head (record the handoff again, then complete again), when the commit
 the workspace stands on, `@-`, is not on `legion/<issue>@origin` (push it, then complete again),
 and when the record's head is not that pushed `@-` (record the handoff again with `head` set to
-it, then complete again); a phase the role left reads nothing of the workspace every role of the
-issue shares, whose `@-` is then often a sibling's commit; retro, the merger, a left phase with no
+it, then complete again); a phase the role left runs no workspace check, and where it holds a
+record of that phase never reads as its own the `@-` of the workspace every role of the issue
+shares, which is then often a sibling's commit; retro, the merger, a left phase with no
 record and every other phase report the commit the workspace stands on, `@-`, and so does an
 implementer whose left record names no head, which sends `@-` alone, naming no record. It then posts
 `POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,

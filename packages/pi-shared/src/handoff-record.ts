@@ -333,7 +333,7 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   const head = recordHead(record.body);
   // A left phase's record goes as it stands, and an implementer's left record that names no
   // readable head goes as `@-` alone (the module doc's left-phase rule). Only the implementer's
-  // round, while the issue stands in implementing, reads the workspace.
+  // round, while the issue stands in implementing, runs the workspace checks.
   if (role !== "implementer" || !works) {
     if (head !== undefined) return { commit: head, ...report };
     if (role !== "implementer") return report;
