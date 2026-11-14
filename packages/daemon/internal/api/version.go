@@ -1546,7 +1546,7 @@ package api
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
 //
-// 121: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
+// 123: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
 // about, and the completion route judges that head rather than which phase entry the turn began
 // under. Every file-backed handoff record now carries `head`, the commit the work it reports was
 // done against, and the plugin's `handoff_complete` sends that head as the completion's `commit`
@@ -1567,21 +1567,22 @@ package api
 // refused it `HANDOFF_STALE_ENTRY` saying a task of the phase was owed to the claim. No field is
 // added or removed on either side of the wire: `commit` was already optional on
 // `api.HandoffCompleteRequest` and `handoffCommit` on `api.PhaseView`. What moves is what the two
-// sides mean by them, so they move together: a plugin below 121 sends the three roles'
+// sides mean by them, so they move together: a plugin below 123 sends the three roles'
 // completions with no commit, which this daemon refuses behind their entry as every daemon from
-// 94 did, and a plugin at 121 against a daemon below it has a commit recorded for those roles and
-// named in the next role's task (`Handoff commit:`) that the daemon never judges. A plugin at 121
+// 94 did, and a plugin at 123 against a daemon below it has a commit recorded for those roles and
+// named in the next role's task (`Handoff commit:`) that the daemon never judges. A plugin at 123
 // also names, on a completion sent after the issue moved on, the role's own record of the phase
 // it left (pi-shared's completedPhase, the mirror of phase.Of), which this daemon reads back
 // against that phase; a plugin below names none there and is answered as every daemon from 94
-// answers it. (Taken at the merge that brought main in at 50bfbb0dec73, whose own number is the
-// 111 above. This entry took 104 at the merge of 8d9d1ff2 (main at 94), 106 at that of
-// 0fde2dcff6e4 (main at 98), 109 at that of 2a6ff6c03269 (main at 98), 111 at that of
-// b601d25b3fa1 (main at 104), 115 at that of 809208573a01 (main at 111) and 120 at the push after
-// it, each declared by another open head before this one landed. The reading behind 121, of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of
-// cybermonklabs/legion at 2026-11-14T03:21Z, made with the `declared_by_open_pull_requests` of
-// `.github/scripts/check-daemon-api-contract.sh`, gives above main's 111: 112 (#2731), 113
-// (#3575), 114 (#3730), 115 (#3519, #3937), 116 (#3715), 117 (#3711), 118 (#3659), 119 (#3712)
-// and 120 (#3993); 121 is the lowest number above them all.)
-const DaemonAPIVersion = 121
+// answers it. (Taken at the push that answered the review of 9f1d4789, with main at 922eb1d992a3,
+// whose own number is the 111 above. This entry took 104 at the merge of 8d9d1ff2 (main at 94),
+// 106 at that of 0fde2dcff6e4 (main at 98), 109 at that of 2a6ff6c03269 (main at 98), 111 at that
+// of b601d25b3fa1 (main at 104), 115 at that of 809208573a01 (main at 111), 120 at the push after
+// it and 121 at the merge of 50bfbb0dec73 (main at 111), each declared by another open head before
+// this one landed. The reading behind 123, of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// every open pull request of cybermonklabs/legion at 2026-11-14T06:17Z, made with the
+// `declared_by_open_pull_requests` of `.github/scripts/check-daemon-api-contract.sh`, gives above
+// main's 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118
+// (#3659), 119 (#3712), 120 (#3993), 121 (#3519) and 122 (#2230); 123 is the lowest number above
+// them all.)
+const DaemonAPIVersion = 123

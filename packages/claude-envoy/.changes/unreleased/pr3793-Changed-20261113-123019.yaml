@@ -1,5 +1,5 @@
 kind: Changed
-body: 'The `legion` MCP tool declares daemon API contract 121: a phase completion names the head its handoff record was written against, and the daemon takes a completion behind its phase entry at the head the record holds.'
+body: 'The `legion` MCP tool declares daemon API contract 123: a phase completion names the head its handoff record was written against, and the daemon takes a completion behind its phase entry at the head the record holds.'
 time: 2026-11-13T12:30:19.825303189Z
 custom:
     Issue: pr3793
