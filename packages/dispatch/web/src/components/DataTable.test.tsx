@@ -6,7 +6,7 @@ import type {
   PaginationState,
   SortingState,
 } from "@tanstack/react-table";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
@@ -169,6 +169,7 @@ function Deploys({
   const [globalFilter, setGlobalFilter] = useState("");
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize });
   const [openFilter, setOpenFilter] = useState<string>();
+  const [rolledBack, setRolledBack] = useState<ReadonlySet<string>>(new Set());
   const layout = useTableLayout(layoutKey, layoutColumns);
   const state = { columnFilters, globalFilter, grouping, pagination, sorting };
   const model = useDataTable<Deploy>({
@@ -229,8 +230,17 @@ function Deploys({
               highlight={row.id === highlighted ? selectedCardBg : undefined}
               row={row}
               trailing={
-                trailingWidth === undefined ? undefined : (
-                  <button type="button">Roll back {row.id}</button>
+                trailingWidth === undefined ? undefined : rolledBack.has(
+                    row.id
+                  ) ? // A deploy rolled back has nothing left to roll back: the button goes, and the
+                // row stays.
+                null : (
+                  <button
+                    onClick={() => setRolledBack((done) => new Set(done).add(row.id))}
+                    type="button"
+                  >
+                    Roll back {row.id}
+                  </button>
                 )
               }
             />
@@ -342,6 +352,48 @@ test("pages its rows and moves to the next page", async () => {
 
   expect(listed(table)).toEqual(["d11", "d12"]);
   expect(screen.getByText("Page 2 of 2")).toBeInTheDocument();
+});
+
+// The press that reaches the last page, or the first, leaves the reader on the button they
+// pressed: a step with no page for it is refused with `aria-disabled` rather than `disabled`,
+// which the browser would take the focus off, and a press on it then does nothing.
+test("a pager step that reaches the last page or the first keeps the focus, refused rather than disabled", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 12 }, (_, index) => ({
+    id: `d${index + 1}`,
+    minutes: index,
+    region: "eu",
+    service: `service ${index + 1}`,
+    state: "live",
+  }));
+  draw(<Deploys pageSize={10} rows={rows} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const previous = screen.getByRole<HTMLButtonElement>("button", { name: "‹ Previous" });
+  const next = screen.getByRole<HTMLButtonElement>("button", { name: "Next ›" });
+  expect(previous).toHaveAttribute("aria-disabled", "true");
+  expect(previous.disabled).toBe(false);
+  expect(next).not.toHaveAttribute("aria-disabled");
+
+  act(() => next.focus());
+  await user.keyboard("{Enter}");
+  expect(screen.getByText("Page 2 of 2")).toBeInTheDocument();
+  expect(next).toHaveAttribute("aria-disabled", "true");
+  expect(next.disabled).toBe(false);
+  expect(next).toHaveFocus();
+  await user.keyboard("{Enter}");
+  expect(listed(table)).toEqual(["d11", "d12"]);
+  expect(next).toHaveFocus();
+
+  act(() => previous.focus());
+  await user.keyboard("{Enter}");
+  expect(screen.getByText("Page 1 of 2")).toBeInTheDocument();
+  expect(previous).toHaveAttribute("aria-disabled", "true");
+  expect(previous.disabled).toBe(false);
+  expect(previous).toHaveFocus();
+  await user.keyboard("{Enter}");
+  expect(listed(table)).toHaveLength(10);
+  expect(previous).toHaveFocus();
 });
 
 test("groups its rows with the headings in the caller's order", async () => {
@@ -539,6 +591,22 @@ test("a trailing action cell is drawn after the columns, under a head cell of it
   expect(
     within(row as HTMLElement).getByRole("button", { name: "Roll back d2" })
   ).toBeInTheDocument();
+});
+
+// The List's Start next goes once its issue starts next, and the row stays: the focus the press
+// left on it goes to the control now at its place in the row, else the one before it, else the
+// row itself, never the page's body.
+test("a row's control that takes itself away hands the focus to the row", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys trailingWidth={104} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const row = table.querySelector<HTMLElement>('[data-deploy-row="d2"]');
+  if (row === null) throw new Error("no row d2 is drawn");
+  act(() => within(row).getByRole("button", { name: "Roll back d2" }).focus());
+  await user.keyboard("{Enter}");
+  expect(within(row).queryByRole("button", { name: "Roll back d2" })).toBeNull();
+  expect(row).toHaveFocus();
 });
 
 // The caller that asked for it: the project List paints a row its last action moved, and the

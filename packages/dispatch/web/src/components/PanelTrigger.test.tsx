@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
@@ -140,6 +140,100 @@ test("a trigger given a control of its own carries that name, and the panel stay
       "column-filter"
     );
     expect(document.querySelector('[data-control="panel-trigger"]')).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A panel of controls that each take themselves out of it when pressed, as the search bar's
+ *  Author box goes once an author is taken. */
+function ShrinkingPanel({ names }: { names: readonly string[] }) {
+  const [open, setOpen] = useState(false);
+  const [left, setLeft] = useState(names);
+  return (
+    <PanelTrigger label="Filter" onOpenChange={setOpen} open={open}>
+      {() =>
+        left.map((name) => (
+          <button
+            key={name}
+            onClick={() => setLeft((all) => all.filter((other) => other !== name))}
+            type="button"
+          >
+            {name}
+          </button>
+        ))
+      }
+    </PanelTrigger>
+  );
+}
+
+test("a control that takes itself out of an open panel hands the focus to the next control in it, then the one before it, then the panel itself", async () => {
+  const user = userEvent.setup();
+  const view = render(<ShrinkingPanel names={["Project", "Status", "Author"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    act(() => within(panel).getByRole("button", { name: "Project" }).focus());
+    await user.keyboard("{Enter}");
+    expect(within(panel).queryByRole("button", { name: "Project" })).toBeNull();
+    // Not the page's body, from which a keyboard reader would start again at its first link.
+    expect(within(panel).getByRole("button", { name: "Status" })).toHaveFocus();
+    // The panel's last control has no next one: the one before it.
+    act(() => within(panel).getByRole("button", { name: "Author" }).focus());
+    await user.keyboard("{Enter}");
+    expect(within(panel).getByRole("button", { name: "Status" })).toHaveFocus();
+    // Its only control: the panel itself, which is still open and still answers Escape.
+    await user.keyboard("{Enter}");
+    expect(panel).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A panel holding a menu of its own, as the Delivery page's facets each are, ahead of one
+ *  more control: picking the menu's one value takes the whole menu away, its trigger and the
+ *  list holding the focus with it. */
+function PanelWithMenu() {
+  const [open, setOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [picked, setPicked] = useState(false);
+  return (
+    <PanelTrigger label="Filter" onOpenChange={setOpen} open={open}>
+      {() => (
+        <>
+          {picked ? null : (
+            <PanelTrigger label="Project" onOpenChange={setMenuOpen} open={menuOpen}>
+              {() => (
+                <button onClick={() => setPicked(true)} type="button">
+                  CORE
+                </button>
+              )}
+            </PanelTrigger>
+          )}
+          <button type="button">Author</button>
+        </>
+      )}
+    </PanelTrigger>
+  );
+}
+
+test("a menu inside the panel that goes with the focus in its own list hands the focus to the control now at its trigger's place", async () => {
+  const user = userEvent.setup();
+  const view = render(<PanelWithMenu />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    act(() => within(panel).getByRole("button", { name: "Project" }).focus());
+    await user.keyboard("{Enter}");
+    // The menu's list is a panel of its own, portalled outside this one, and holds the focus.
+    const menu = screen.getByRole("dialog", { name: "Project" });
+    expect(within(menu).getByRole("button", { name: "CORE" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("dialog", { name: "Project" })).not.toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Author" })).toHaveFocus();
   } finally {
     view.unmount();
   }

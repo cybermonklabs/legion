@@ -528,3 +528,86 @@ test("a removal that commits later hands the focus on then, whatever held it mea
     view.unmount();
   }
 });
+
+/** A row whose page slot holds controls that each take themselves away when pressed, as the
+ *  Inbox's Mark all read does once nothing is left unread, beside a filter trigger. */
+function SelfRemovingControls({ names }: { names: readonly string[] }) {
+  const [on, setOn] = useState(names);
+  return (
+    <ControlRow
+      search={<input aria-label="Search" type="search" />}
+      trigger={
+        <button data-control="panel-trigger" type="button">
+          Filter
+        </button>
+      }
+    >
+      {on.length === 0
+        ? undefined
+        : on.map((name) => (
+            <button
+              key={name}
+              onClick={() => setOn((left) => left.filter((other) => other !== name))}
+              type="button"
+            >
+              {name}
+            </button>
+          ))}
+    </ControlRow>
+  );
+}
+
+test("a page's own control that takes itself away hands the focus to the next control in its slot, then the one before it, then the filter trigger", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <SelfRemovingControls names={["Mark all read", "Blocked on you", "Snooze all"]} />
+  );
+  try {
+    act(() => screen.getByRole("button", { name: "Mark all read" }).focus());
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("button", { name: "Mark all read" })).toBeNull();
+    // Not the page's body, from which a keyboard reader would start again at its first link.
+    expect(screen.getByRole("button", { name: "Blocked on you" })).toHaveFocus();
+    // The slot's last control has no next one: the one before it.
+    act(() => screen.getByRole("button", { name: "Snooze all" }).focus());
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Blocked on you" })).toHaveFocus();
+    // Its only control: the slot goes with it, and the focus goes to the trigger.
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("button", { name: "Blocked on you" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a press on a scroll button takes no focus, so a chip that held it keeps it", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <ControlRow
+      chips={
+        <button data-testid="chip" type="button">
+          Chip
+        </button>
+      }
+    />
+  );
+  try {
+    // happy-dom lays nothing out, so the strip is told it holds more than it shows, and a scroll
+    // of it reads that again: the right button is drawn.
+    const chip = screen.getByTestId("chip");
+    const strip = slotOf("chip");
+    Object.defineProperty(strip, "scrollWidth", { configurable: true, value: 1000 });
+    act(() => {
+      strip.dispatchEvent(new Event("scroll"));
+    });
+    const scrolled = spyOn(strip, "scrollBy").mockImplementation(() => {});
+    spyOn(chip, "scrollIntoView").mockImplementation(() => {});
+    act(() => chip.focus());
+    await user.click(screen.getByRole("button", { name: "Scroll filters right" }));
+    expect(scrolled).toHaveBeenCalled();
+    expect(chip).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});

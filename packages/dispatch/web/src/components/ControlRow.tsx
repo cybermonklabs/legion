@@ -9,6 +9,7 @@ import {
 } from "../theme/classes";
 import { restingChip } from "./Chip";
 import { CONTROL, type ControlSize } from "./control-names";
+import { useFocusPlace } from "./focus-place";
 import { useScrollEnds } from "./useScrollEnds";
 
 /** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
@@ -48,7 +49,8 @@ type ScrollSide = keyof typeof SCROLL_SIDE;
  *  (`wraps`), because a phone is 390 px wide and a row of the page's own controls - the
  *  Artifacts tab's staged upload, say - runs past that edge otherwise, where the reader cannot
  *  reach it. A wrap that is there before any narrowing adds no height when a narrowing goes on,
- *  which is R1's rule. */
+ *  which is R1's rule. `data-row-slot` marks it as the container a focused control in it is
+ *  counted in, for the row's focus hand-off. */
 function Slot({
   children,
   className,
@@ -64,7 +66,11 @@ function Slot({
   const width = gives ? "min-w-0 flex-1 basis-64" : wraps ? "min-w-0 sm:shrink-0" : "shrink-0";
   const wrap = wraps ? "flex-wrap sm:flex-nowrap" : "flex-nowrap";
   const own = `flex items-center gap-2 ${wrap} ${width}`;
-  return <div className={className === undefined ? own : `${own} ${className}`}>{children}</div>;
+  return (
+    <div className={className === undefined ? own : `${own} ${className}`} data-row-slot="">
+      {children}
+    </div>
+  );
 }
 
 /**
@@ -96,7 +102,10 @@ function scrollPage(strip: HTMLElement, side: ScrollSide): void {
 }
 
 /** One scroll button of the chips line, at its `side` of the strip. It takes no Tab stop: the
- *  Tab key reaches every chip already and scrolls it into view, and this is the pointer's way. */
+ *  Tab key reaches every chip already and scrolls it into view, and this is the pointer's way.
+ *  A press takes no focus either (`preventDefault` on `mousedown`, where the browser moves it):
+ *  the press that brings the strip to its end takes the button away, and a focus it held would
+ *  drop onto the page with it. The focus stays where the reader had it, a chip included. */
 function ScrollButton({
   className,
   side,
@@ -114,6 +123,7 @@ function ScrollButton({
       onClick={() => {
         if (strip !== null) scrollPage(strip, side);
       }}
+      onMouseDown={(event) => event.preventDefault()}
       tabIndex={-1}
       type="button"
     >
@@ -151,6 +161,15 @@ function chipHolding(strip: Element, target: EventTarget): HandOff | null {
 function focusableOf(chip: Element): HTMLElement | null {
   if (chip instanceof HTMLElement && chip.matches(FOCUSABLE)) return chip;
   return chip.querySelector<HTMLElement>(FOCUSABLE);
+}
+
+/** Where the focus goes once nothing of its own place is left: the row's filter trigger, or the
+ *  search box in a row with no trigger. */
+function triggerOf(root: Element): HTMLElement | null {
+  return (
+    root.querySelector<HTMLElement>(`[data-control="${CONTROL.panelTrigger}"]`) ??
+    root.querySelector<HTMLElement>(`[data-control="${CONTROL.searchBox}"]`)
+  );
 }
 
 export interface ControlRowProps {
@@ -237,6 +256,12 @@ export interface ControlRowProps {
  * so the focus stays on the body), and then moves the focus only if it is on the page's body, so
  * a reader who moved it elsewhere while the chip was going keeps it there.
  *
+ * Any other focused control a commit takes out of a slot of the first line while the row stays -
+ * a page's own control that removes itself, as the Inbox's **Mark all read** does once nothing
+ * is left unread - hands the focus the same way: to the control now at its place in that slot,
+ * else to the one before it, else to the trigger, else to the search box (`useFocusPlace`).
+ * **Clear filters**' own rule, the trigger, comes first wherever it sits.
+ *
  * Beside its slots it draws **Clear filters** and the two scroll buttons, and nothing else. The
  * panel a trigger opens is not in it (`AnchoredPanel` portals to the body and is placed `fixed`,
  * so it covers the page rather than taking room), and neither is the selection bar
@@ -274,13 +299,18 @@ export function ControlRow({
     const remaining = Array.from(root.querySelector("[data-chip-strip]")?.children ?? []);
     const chip =
       pending.index === -1 ? undefined : (remaining[pending.index] ?? remaining[pending.index - 1]);
-    const next =
-      chip === undefined
-        ? (root.querySelector<HTMLElement>(`[data-control="${CONTROL.panelTrigger}"]`) ??
-          root.querySelector<HTMLElement>(`[data-control="${CONTROL.searchBox}"]`))
-        : focusableOf(chip);
+    const next = chip === undefined ? triggerOf(root) : focusableOf(chip);
     next?.focus();
   });
+  // A focused control a commit takes out of a slot of the first line hands the focus on too. Its
+  // check runs after the chips' hand-off above, so that one's rule for Clear filters wins.
+  const noteFocus = useFocusPlace(
+    (element) => {
+      const slot = element.closest("[data-row-slot]");
+      return slot !== null && rowRef.current?.contains(slot) === true ? slot : null;
+    },
+    () => (rowRef.current === null ? null : triggerOf(rowRef.current))
+  );
   const controls = ROW_CONTROL[size];
   const chipsOn = chips !== undefined && chips !== null;
   const clear =
@@ -302,9 +332,11 @@ export function ControlRow({
   else if (trailing) fade = chipStripFade.trailing;
   const own = "flex min-w-0 flex-col gap-2";
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of a slot took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the row needs no role of its own.
     <div
       className={className === undefined ? own : `${own} ${className}`}
       data-control={CONTROL.controlRow}
+      onFocus={noteFocus}
       ref={rowRef}
     >
       {/* One line from `sm` up, which is where R1's two widths are; below it the line wraps,

@@ -3,6 +3,7 @@ import { type ReactNode, useRef } from "react";
 import { borderDefault, card, surfaceMutedBg, textSecondaryOnCanvas } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
 import { CONTROL, type ControlName, type ControlSize, controlPadding } from "./control-names";
+import { useFocusPlace } from "./focus-place";
 
 export interface PanelTriggerProps {
   readonly align?: "left" | "right";
@@ -34,6 +35,13 @@ export interface PanelTriggerProps {
  * and a reader who learns one has learned them all. The panel is a `dialog` the trigger says it
  * opens, and whatever closes it — a choice inside, Escape, a press outside — leaves the reader
  * on the trigger rather than on the document.
+ *
+ * A press that takes away the control holding the focus while the panel stays open - the search
+ * bar's Project menu, whose trigger goes once a project is picked, or its Author box once an
+ * author is taken - hands the focus to the control now at that control's place in the panel,
+ * else to the one before it, else to the panel itself, from which Escape still closes it
+ * (`useFocusPlace`). A control of a panel opened inside this one counts at the place of the
+ * trigger that opened it.
  */
 export function PanelTrigger({
   align = "left",
@@ -49,6 +57,16 @@ export function PanelTrigger({
   triggerClassName,
 }: PanelTriggerProps): ReactNode {
   const trigger = useRef<HTMLButtonElement>(null);
+  // The panel's content, without a box of its own (`contents`), so the panel lays it out as it
+  // always has: the container a focused control in the panel is counted in.
+  const content = useRef<HTMLDivElement>(null);
+  const noteFocus = useFocusPlace(
+    () => content.current,
+    () => {
+      const panel = content.current?.parentElement;
+      return panel instanceof HTMLElement ? panel : null;
+    }
+  );
   const close = () => {
     onOpenChange(false);
     trigger.current?.focus();
@@ -82,7 +100,10 @@ export function PanelTrigger({
           onDismiss={() => onOpenChange(false)}
           role="dialog"
         >
-          {children(close)}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the panel took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the box needs no role of its own. */}
+          <div className="contents" onFocus={noteFocus} ref={content}>
+            {children(close)}
+          </div>
         </AnchoredPanel>
       ) : null}
     </>

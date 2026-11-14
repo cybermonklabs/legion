@@ -40,6 +40,7 @@ import {
 } from "../theme/classes";
 import { ColumnFilter, type FilterCountNoun } from "./ColumnFilter";
 import { CONTROL } from "./control-names";
+import { useFocusPlace } from "./focus-place";
 import { Pager, type PagerOptions } from "./Pager";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
 import { reorder, type TableLayoutModel } from "./table-layout";
@@ -472,6 +473,12 @@ function TableHeaderCell<TData>({
  * The table `useDataTable` describes: its scroll box, with the headers that sort, filter,
  * resize and reorder the columns, the virtual rows the caller draws, and, where the caller
  * asks for one, the pager under it.
+ *
+ * A focused control a commit takes out of a drawn row that stays - the List's Start next once
+ * its issue starts next - hands the focus to the control now at its place in that row, else to
+ * the one before it, else to the row itself, which takes the focus as the row keys' `focusRow`
+ * gives it. A row that leaves altogether is no case of this: the selection bar and the page's
+ * own hand-offs answer for it.
  */
 export function DataTable<Row>({
   empty,
@@ -490,6 +497,10 @@ export function DataTable<Row>({
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
   const { displayRows, layout, names, table, virtualizer } = model;
+  const noteFocus = useFocusPlace(
+    (element) => element.closest(`[${names.rowAttribute}]`),
+    (row) => (row.isConnected && row instanceof HTMLElement ? row : null)
+  );
   const [dragColumn, setDragColumn] = useState<string>();
   // The order a drop rewrites, read once rather than per header cell.
   const columnOrder = table.getAllLeafColumns().map((column) => column.id);
@@ -563,7 +574,7 @@ export function DataTable<Row>({
                 </tr>
               ))}
             </thead>
-            <tbody>
+            <tbody onFocus={noteFocus}>
               {first ? <tr aria-hidden style={{ height: first.start }} /> : null}
               {virtualRows.map((virtual) => {
                 const entry = displayRows[virtual.index];

@@ -46,20 +46,26 @@ export interface PagerProps<TData> extends PagerOptions {
  *  page`, so the caller names its rows once rather than once per capitalisation. */
 const sentence = (word: string) => `${word.charAt(0).toLocaleUpperCase()}${word.slice(1)}`;
 
+/** One step between pages. A step there is no page for is `aria-disabled` rather than
+ *  `disabled`, and its press does nothing: the press that reaches the last page, or the first,
+ *  would otherwise disable the button under the reader, and the browser takes the focus off a
+ *  control that disables itself, dropping a keyboard reader onto the page. */
 function PagerButton({
+  ariaDisabled,
   children,
-  disabled,
   onClick,
 }: {
+  ariaDisabled: boolean;
   children: ReactNode;
-  disabled?: boolean;
   onClick: () => void;
 }): ReactNode {
   return (
     <button
-      className={`rounded-lg border px-3 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
-      disabled={disabled}
-      onClick={onClick}
+      aria-disabled={ariaDisabled || undefined}
+      className={`rounded-lg border px-3 py-1 text-sm aria-disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
+      onClick={() => {
+        if (!ariaDisabled) onClick();
+      }}
       type="button"
     >
       {children}
@@ -105,13 +111,13 @@ export function Pager<TData>({
           ? `All ${rowsOnPages} ${rowsOnPages === 1 ? row.one : row.many}`
           : `${sentence(row.many)} ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
       </span>
-      <PagerButton disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
+      <PagerButton ariaDisabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
         ‹ Previous
       </PagerButton>
       <span>
         Page {pageIndex + 1} of {Math.max(table.getPageCount(), 1)}
       </span>
-      <PagerButton disabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>
+      <PagerButton ariaDisabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>
         Next ›
       </PagerButton>
       <select
