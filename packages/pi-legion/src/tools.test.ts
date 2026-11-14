@@ -139,12 +139,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by " +
   "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. " +
   "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
+  "or a role's first completion of the phase it left, which it records and which moves nothing, " +
   "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
   "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
   "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
   "yet). A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
-  "calling. This call reads the phase's newest record from Dispatch and reports it with `commit`, the head that record's body names " +
+  "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
+  "and reports it with `commit`, the head that record's body names " +
   "(`head`, the 40-character lower-case commit the work it reports was done against); the implementer's must be the commit its " +
   "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
   "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, an implement record naming no head, an " +
@@ -1003,13 +1005,21 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(reads).toEqual(["LEGION-208 implement"]);
   expect(completed).toEqual(["ses_208"]);
 
-  // A role that does not work the issue's phase reports the commit the workspace stands on and no
-  // record, and the daemon refuses it naming whose phase it is: the tester at implementing, the
-  // merger, and a sub-architect, each posting @-. The verdict travels as given.
+  // A role that does not work the issue's phase reports its own newest record of the phase it
+  // left: the tester at implementing its test record and the head it names, with the verdict as
+  // given. A role whose left phase writes no record reports the commit the workspace stands on and
+  // no record: the merger, and a sub-architect, which leaves no phase, each posting @-.
   await run(claimSession("tester"), { op: "handoff_complete", summary: "Red.", verdict: "fail" });
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
-    { grantId: "grant-208", summary: "Red.", verdict: "fail", commit: STANDING },
+    {
+      grantId: "grant-208",
+      summary: "Red.",
+      verdict: "fail",
+      commit: TIP,
+      handoffId: RECORD.id,
+      handoffVersion: RECORD.version,
+    },
   ]);
   await run(claimSession("merger"), { op: "handoff_complete", summary: "Merged." });
   expect(calls.at(-1)).toEqual([
@@ -1030,7 +1040,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     },
   ]);
   expect(completed).toEqual(["ses_208", "ses_208", "ses_208", "ses_208"]);
-  expect(reads).toEqual(["LEGION-208 implement"]);
+  expect(reads).toEqual(["LEGION-208 implement", "LEGION-208 test"]);
 
   // Refused before any daemon call: a root architect, which runs no phase; a missing summary; a
   // verdict of the wrong shape; and a phase, which the daemon knows from the grant.
@@ -1103,7 +1113,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     [
       paneJj(),
       paneDispatch([], async () => ({ ...RECORD, body: '{"schemaVersion":1}' })),
-      "the newest implement handoff of LEGION-208 (version 2) names no head: write the handoff again with `head` set to the 40-character lower-case commit you pushed as legion/LEGION-208@origin's tip (`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>`), then complete again",
+      'the newest implement handoff of LEGION-208 (version 2) names no head: write the handoff again with `head` set to the 40-character lower-case commit you pushed as `@-`, as `jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id` prints it once the push succeeded (`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>`), then complete again',
     ],
   ] as const;
   for (const [jj, latestHandoff, message] of reportRefusals) {
@@ -1169,6 +1179,66 @@ test("the planner, the tester and the reviewer post their phase's handoff record
         commit: TIP,
         handoffId: RECORD.id,
         handoffVersion: RECORD.version,
+      },
+    ]);
+  }
+});
+
+test("a completion once the issue moved on posts the role's own newest record of the phase it left, and @- where that phase writes none", async () => {
+  const recorded = { commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version };
+  for (const [phase, role, issue, read, report] of [
+    // A review ends its round on its own: a request for changes moves the issue to implementing at
+    // once, an approval to accepting once the pull request is mergeable, and the reviewer
+    // completes after it.
+    ["implementing", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
+    ["accepting", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
+    ["reviewing", "tester", "LEGION-208", ["LEGION-208 test"], recorded],
+    // At merging the implementer left retro, which writes no record; a sub-architect leaves no
+    // phase, so it posts @- in another role's file-backed phase as well.
+    ["merging", "implementer", "LEGION-208", [], { commit: STANDING }],
+    ["implementing", "architect", "LEGION-209", [], { commit: STANDING }],
+  ] as const) {
+    const reads: string[] = [];
+    const { calls, daemon } = recordingDaemon({
+      state: { issues: { [issue]: { key: issue, phase } } },
+    });
+    const result = await createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: (issuePhase, claimRole) =>
+        findHandoffReport({
+          phase: issuePhase,
+          role: claimRole,
+          env: paneEnv,
+          jj: paneJj(),
+          latestHandoff: paneDispatch(reads),
+        }),
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => claimSession(role, issue),
+    }).execute(
+      "",
+      {
+        op: "handoff_complete",
+        summary: "Done.",
+        ...(role === "tester" ? { verdict: "pass" } : {}),
+      },
+      undefined,
+      undefined,
+      context()
+    );
+    expect(result.isError).toBeUndefined();
+    expect(reads).toEqual([...read]);
+    expect(calls.at(-1)).toEqual([
+      "handoffComplete",
+      {
+        grantId: "grant-208",
+        summary: "Done.",
+        verdict: role === "tester" ? "pass" : "",
+        ...report,
       },
     ]);
   }

@@ -16,16 +16,19 @@ import { staleGitLockNote } from "./git-lock";
  * The daemon reads the record back from Dispatch and holds it to the issue, the phase, the version
  * and the claim's session; this module compares no session itself.
  *
- * A file-backed phase the session's role works (`FILE_BACKED`: the phase from the issue record,
- * the role from the session) ends with a handoff record on the issue, which the worker writes with
- * `dispatch handoff-write`; its completion reports the newest record of the phase's word,
- * `handoffId` and `handoffVersion`, read from Dispatch here. No record is refused naming the
- * command that writes one; a Dispatch that does not answer, or refuses the read, is refused with
- * its answer. The completion's `commit` is the head that record names: every file-backed role's
- * handoff body carries `head`, the 40-character lower-case commit the work that handoff reports
- * was done against, and the daemon takes a completion of an earlier phase entry only at the head
- * the record holds. It is read from the record and never from the workspace, because a sibling
- * role's push moves `legion/<issue>@origin` under a worker whose evidence is older. A record
+ * The phase a completion is of is the issue's (from its record) when the session's role works
+ * it, and otherwise the phase the role left (`completedPhase`), where the daemon records a
+ * completion that arrives once the issue moved on: the reviewer's, whose review moves the issue
+ * on before it completes, is one. A file-backed phase of the role's own (`FILE_BACKED`) ends with
+ * a handoff record on the issue, which the worker writes with `dispatch handoff-write`; its
+ * completion reports the newest record of the phase's word, `handoffId` and `handoffVersion`,
+ * read from Dispatch here. No record is refused naming the command that writes one; a Dispatch
+ * that does not answer, or refuses the read, is refused with its answer. The completion's
+ * `commit` is the head that record names: every file-backed role's handoff body carries `head`,
+ * the 40-character lower-case commit the work that handoff reports was done against, and the
+ * daemon takes a completion of an earlier phase entry only at the head the record holds. It is
+ * read from the record and never from the workspace, because a sibling role's push moves
+ * `legion/<issue>@origin` under a worker whose evidence is older. A record
  * whose body does not parse, holds no `head`, or holds one of another shape reports no commit for
  * the planner, the tester and the reviewer, whose completion still goes; the daemon refuses it
  * `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, since a completion naming no commit
@@ -39,10 +42,10 @@ import { staleGitLockNote } from "./git-lock";
  * the branch carries while the round's own work is under `@-` alone. A pushed `@-` the record does
  * not name is refused naming the rewrite of the record at `@-`: a head other than the commit the
  * round's work stands on is not the head that work was done against, whether the branch carries
- * it or not. Every other completion — retro, the merger's, a role reporting a phase it does not
- * run (which the daemon refuses naming whose phase it is) — reports the commit the workspace
- * stands on, `@-`, and no record. The implementer's report on its closed issue's production check
- * resolves neither: `legion-phase-ops.ts` never asks this module for one.
+ * it or not. Every other completion — retro, the merger's, the architect's, which leaves no
+ * phase — reports the commit the workspace stands on, `@-`, and no record. The implementer's
+ * report on its closed issue's production check resolves neither: `legion-phase-ops.ts` never
+ * asks this module for one.
  *
  * The module also reads the head of `legion/<issue>@origin` that a `ready_for_update` signal
  * reports (`findPushedBranchHead`), with the same jj and the same revset the completion's push
@@ -146,9 +149,9 @@ export function paneLatestHandoff(
   };
 }
 
-/** What a completion of `phase` by `role` reports in the pane (`findHandoffReport` with the pane's
- * environment `env` and its Dispatch, `paneLatestHandoff(file, env, cwd, session)`), as each
- * harness's `legion` tool asks it. */
+/** What a completion by `role` reports in the pane while the issue stands at `phase`
+ * (`findHandoffReport` with the pane's environment `env` and its Dispatch,
+ * `paneLatestHandoff(file, env, cwd, session)`), as each harness's `legion` tool asks it. */
 export function paneHandoffReport(
   file: SessionConfigFile,
   env: NodeJS.ProcessEnv,
@@ -235,11 +238,42 @@ export async function findPushedBranchHead(input: {
   return jj(["log", "-r", pushedBranch(bookmark), "--no-graph", "-T", "commit_id"], workspace);
 }
 
-/** What a completion of `phase` by `role` reports. */
+/**
+ * The phase a completion by `role` is of while the issue stands at `at`: `at` when `role` works
+ * it, and otherwise the phase `role` left, the one the daemon records a late completion on (one
+ * that arrives after the issue moved on) and reads that completion's handoff record against. It
+ * mirrors the daemon's `phase.LeftBy` behind its `phase.RoleFor` check, as the completion route
+ * reads the two (`packages/daemon/internal/phase/phase.go`,
+ * `packages/daemon/internal/api/handoff.go`): the planner, the tester, the reviewer and the
+ * merger each work one phase, which is the answer wherever the issue stands; the implementer
+ * works implementing and retro, and has left retro once the issue stands past it in the
+ * workflow's order (`phase.MovesBack(at, retro)`, which merging alone answers) and implementing
+ * anywhere else; the architect leaves no phase, so its answer is the issue's.
+ */
+function completedPhase(role: LegionRole, at: LegionPhase): LegionPhase {
+  switch (role) {
+    case "planner":
+      return "planning";
+    case "tester":
+      return "testing";
+    case "reviewer":
+      return "reviewing";
+    case "merger":
+      return "merging";
+    case "implementer":
+      if (at === "implementing" || at === "retro") return at;
+      return at === "merging" ? "retro" : "implementing";
+    case "architect":
+      return at;
+  }
+}
+
+/** What a completion by `role` reports while the issue stands at `phase`: the report of the phase
+ * the completion is of (`completedPhase`). */
 export async function findHandoffReport(input: HandoffReportInput): Promise<HandoffReport> {
-  const { phase, role, env } = input;
+  const { role, env } = input;
   const jj = input.jj ?? pathJj;
-  const handoff = FILE_BACKED[phase];
+  const handoff = FILE_BACKED[completedPhase(role, input.phase)];
   if (handoff === undefined || handoff.role !== role) {
     return { commit: await jj(STANDING, requiredVariable(env, "LEGION_WORKSPACE", FOR_HANDOFF)) };
   }
@@ -275,7 +309,7 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   // is what has to change.
   if (head === undefined) {
     throw new Error(
-      `the newest ${handoff.word} handoff of ${issue} (version ${record.version}) names no head: write the handoff again with \`head\` set to the 40-character lower-case commit you pushed as ${bookmark}@origin's tip (\`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`), then complete again`
+      `the newest ${handoff.word} handoff of ${issue} (version ${record.version}) names no head: write the handoff again with \`head\` set to the 40-character lower-case commit you pushed as \`@-\`, as \`jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id\` prints it once the push succeeded (\`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`), then complete again`
     );
   }
   const workspace = requiredVariable(env, "LEGION_WORKSPACE", FOR_HANDOFF);

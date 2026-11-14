@@ -303,13 +303,14 @@ export function createLegionTool(deps: {
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
    * update task on its pod, and its phase stays open. */
   readonly onUpdateAnswered: (context: SessionContext) => void;
-  /** What a completion of `phase` by `role` reports beside its summary (`findHandoffReport`): for
-   * a file-backed phase the role works, the newest Dispatch handoff record of the phase and the
-   * head its body names under `head`, which for the implementer's round must be the commit its
-   * workspace stands on, pushed to `legion/<issue>@origin`; otherwise the commit the workspace
-   * stands on. Throws naming the remedy when the phase has no record, Dispatch does not answer,
-   * the implementer's record names no head, the commit its workspace stands on is not pushed, or
-   * its record's head is not that pushed commit. */
+  /** What a completion by `role` reports beside its summary while the issue stands at `phase`
+   * (`findHandoffReport`): for a file-backed phase the role works or, once the issue has moved
+   * on, the one it left, the newest Dispatch handoff record of that phase and the head its body
+   * names under `head`, which for the implementer's round must be the commit its workspace
+   * stands on, pushed to `legion/<issue>@origin`; otherwise the commit the workspace stands on.
+   * Throws naming the remedy when the phase has no record, Dispatch does not answer, the
+   * implementer's record names no head, the commit its workspace stands on is not pushed, or its
+   * record's head is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */

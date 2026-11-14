@@ -129,13 +129,15 @@ test("a record naming no head, or one of another shape, leaves those three witho
 });
 
 test("every other completion reports the commit the workspace stands on, and reads no record", async () => {
-  // Retro and the merger's READY write no record; a role reporting a phase it does not run reports
-  // @- too, and the daemon refuses it naming whose phase it is.
+  // Retro and the merger's READY write no record. The architect leaves no phase, so it reports @-
+  // wherever its issue stands, in another role's file-backed phase too.
   for (const [phase, role] of [
     ["retro", "implementer"],
     ["merging", "merger"],
-    ["implementing", "tester"],
     ["admitted", "architect"],
+    ["accepting", "architect"],
+    ["implementing", "architect"],
+    ["reviewing", "architect"],
   ] as const) {
     const { jj, calls } = fakeJj();
     const { latestHandoff, reads } = recordingDispatch();
@@ -145,6 +147,55 @@ test("every other completion reports the commit the workspace stands on, and rea
     expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
     expect(reads).toEqual([]);
   }
+});
+
+test("a reviewer whose review moved its issue on reports its own newest review record and the head it names", async () => {
+  // A request for changes moves the issue to implementing at once, an approval to accepting once
+  // the pull request is mergeable, and the reviewer completes after it: the daemon records that
+  // completion on reviewing, the phase the reviewer left, and reads its review record back.
+  for (const phase of ["implementing", "accepting"] as const) {
+    const { jj, calls } = fakeJj();
+    const { latestHandoff, reads } = recordingDispatch();
+    await expect(
+      findHandoffReport({ phase, role: "reviewer", env, jj, latestHandoff })
+    ).resolves.toEqual({ commit: HEAD, handoffId: RECORD.id, handoffVersion: RECORD.version });
+    expect(reads).toEqual(["LEGION-208 review"]);
+    expect(calls).toEqual([]);
+  }
+});
+
+test("a tester whose issue moved on to reviewing reports its own newest test record", async () => {
+  const { jj, calls } = fakeJj();
+  const { latestHandoff, reads } = recordingDispatch();
+  await expect(
+    findHandoffReport({ phase: "reviewing", role: "tester", env, jj, latestHandoff })
+  ).resolves.toEqual({ commit: HEAD, handoffId: RECORD.id, handoffVersion: RECORD.version });
+  expect(reads).toEqual(["LEGION-208 test"]);
+  expect(calls).toEqual([]);
+});
+
+test("the implementer reports its implement round until the issue stands past retro, and @- with no record once it does", async () => {
+  // Before retro the implementer left implementing, whose record and pushed @- it reports as its
+  // round would; at merging it left retro, which writes no record.
+  for (const phase of ["testing", "reviewing", "accepting"] as const) {
+    const { jj, calls } = fakeJj();
+    const { latestHandoff, reads } = recordingDispatch(PUSHED_RECORD);
+    await expect(
+      findHandoffReport({ phase, role: "implementer", env, jj, latestHandoff })
+    ).resolves.toEqual({ commit: STANDING, handoffId: RECORD.id, handoffVersion: RECORD.version });
+    expect(reads).toEqual(["LEGION-208 implement"]);
+    expect(calls).toEqual([
+      ["log", "-r", "@-", "--no-graph", "-T", "commit_id"],
+      ["log", "-r", `${REMOTE} & ${STANDING}::`, "--no-graph", "-T", "commit_id"],
+    ]);
+  }
+  const { jj, calls } = fakeJj();
+  const { latestHandoff, reads } = recordingDispatch(PUSHED_RECORD);
+  await expect(
+    findHandoffReport({ phase: "merging", role: "implementer", env, jj, latestHandoff })
+  ).resolves.toEqual({ commit: STANDING });
+  expect(reads).toEqual([]);
+  expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
 });
 
 test("no record, or a Dispatch that does not answer, is refused naming what to do", async () => {
@@ -228,7 +279,7 @@ test("an implementer whose record names no readable head is refused naming what 
       findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
     ).rejects.toThrow(
       new Error(
-        "the newest implement handoff of LEGION-208 (version 3) names no head: write the handoff again with `head` set to the 40-character lower-case commit you pushed as legion/LEGION-208@origin's tip (`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>`), then complete again"
+        'the newest implement handoff of LEGION-208 (version 3) names no head: write the handoff again with `head` set to the 40-character lower-case commit you pushed as `@-`, as `jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id` prints it once the push succeeded (`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>`), then complete again'
       )
     );
     // Nothing of the workspace is read: the record is what has to change.

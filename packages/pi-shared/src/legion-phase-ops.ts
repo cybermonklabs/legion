@@ -260,12 +260,14 @@ export function legionToolDescription(host: {
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
     "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
+    "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
     "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet). A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
-    "calling. This call reads the phase's newest record from Dispatch and reports it with `commit`, the head that record's body names " +
+    "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
+    "and reports it with `commit`, the head that record's body names " +
     "(`head`, the 40-character lower-case commit the work it reports was done against); the implementer's must be the commit its " +
     "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
     "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, an implement record naming no head, an " +
@@ -295,10 +297,12 @@ export function legionToolDescription(host: {
 export interface PhaseOpRuntime {
   readonly daemon: LegionDaemonClient;
   readonly claim: ClaimCapability;
-  /** What a completion of `phase` by `role` reports beside its summary (`findHandoffReport` with
-   * the pane's environment and Dispatch): throws naming the remedy when the phase has no handoff
-   * record, Dispatch does not answer, the implementer's record names no head, the commit its
-   * workspace stands on is not pushed, or its record's head is not that pushed commit. */
+  /** What a completion by `role` reports beside its summary while the issue stands at `phase`
+   * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
+   * phase the role works or, once the issue has moved on, of the phase it left. Throws naming the
+   * remedy when that phase has no handoff record, Dispatch does not answer, the implementer's
+   * record names no head, the commit its workspace stands on is not pushed, or its record's head
+   * is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A

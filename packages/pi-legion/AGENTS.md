@@ -615,7 +615,8 @@ testing, reviewing) ends with a handoff record on the Dispatch issue, which the 
 `$TMPDIR` rather than the workspace, whose every file jj snapshots; no handoff is a commit or a
 push. The operation finds
 what it reports in the pane first (`@legion/pi-shared/handoff-record`): the issue's phase from
-the daemon's state, the role from the session; for a file-backed phase the role works, the newest
+the daemon's state, the role from the session; for a file-backed phase the role works or, once
+the issue has moved on, the one it left, the newest
 record of the phase's word, read from the pane's Dispatch (the envoy.json its session reads),
 refused — posting nothing — when the phase has none (write it, then complete again) or Dispatch
 does not answer (complete again once it does), with the head that record's own `head` field names
