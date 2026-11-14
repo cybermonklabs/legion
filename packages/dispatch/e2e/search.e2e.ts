@@ -243,8 +243,9 @@ test("a search for an issue key names the issue in every hit that cites it, mark
       await expect(hit.locator("mark")).toHaveText([`${cited.key} Gyroscope alignment`]);
       await expect(hit.locator("mark [data-dispatch-ref]")).toHaveCount(1);
       await expect(hit).not.toContainText("dispatch://");
-      // ts_headline ends its fragment on the last word, so the sentence's stop is not in it.
-      await expect(hit).toContainText(`Tracked as ${cited.key} Gyroscope alignment since Monday`);
+      // A body the headline window holds whole is the hit whole, its stop included
+      // (`pmdoc.SearchSnippet`), which ts_headline alone drops.
+      await expect(hit).toContainText(`Tracked as ${cited.key} Gyroscope alignment since Monday.`);
     }
   } finally {
     await context.close();
@@ -354,8 +355,8 @@ test("a search hit cut inside a code span, a worded link or an address reads as 
 // links, so each keeps the mark the server sent. The `COVID-19` body also cites an issue that
 // does exist, so the link pass runs over it and its filter is what holds the mark. The query
 // `CORE` marks `<b>CORE</b>-1` of that issue, and that mark grows to the whole key, which reads
-// as the issue's name. (`ts_headline` starts its fragment a word in, so no row reads the
-// sentence's first word.)
+// as the issue's name. Each body fits the headline window, so each hit is its whole body
+// (`pmdoc.SearchSnippet`), and the rows find their hit by words of it.
 // SLOW(>=2s): seven seeded comments and seven searches, each answered by Postgres's headline.
 test("a search mark grows over a reference only where it links, and stays as the server sent it elsewhere", async ({
   browser,

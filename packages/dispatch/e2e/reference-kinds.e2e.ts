@@ -65,8 +65,10 @@ interface Kind {
   readonly query: string;
   /** The row to take, by its own words. */
   readonly row: RegExp;
-  /** The row whose **Blocks** must be opened first, for a kind that is a part of another node. */
-  readonly holder?: RegExp;
+  /** The row whose **Blocks** must be opened first, for a kind that is a part of another node,
+   *  and the heading its blocks are listed under: the row is taken from that group alone, since
+   *  the holder's own row can match the same words while its blocks are still being read. */
+  readonly holder?: { readonly row: RegExp; readonly blocks: string };
   /** What the pick must write, where the whole address is known before the pick; a block's id is
    *  the server's, so those rows check the shape instead. */
   readonly writes?: string;
@@ -124,7 +126,7 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       writes: `dispatch://${target}/artifact/notes-md`,
     },
     {
-      holder: /^notes\.md/,
+      holder: { blocks: "Document blocks", row: /^notes\.md/ },
       kind: "block of a document",
       opens: (address) => `/issues/${target}/artifacts/notes-md#b-${blockOf(address)}`,
       query: "[[notes",
@@ -149,7 +151,7 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       shape: new RegExp(`^dispatch://${target}/ask/[\\w-]+$`),
     },
     {
-      holder: /^Should the cache be warmed first/,
+      holder: { blocks: "Ask parts", row: /^Should the cache be warmed first/ },
       kind: "part of an ask",
       opens: (address) =>
         `/issues/${target}/asks/${address.slice(`dispatch://${target}/ask/`.length).split("#b-")[0]}#b-${blockOf(address)}`,
@@ -163,11 +165,11 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       opens: (address) => `/issues/${target}/comments/${address.split("/comment/")[1]}`,
       query: "[[halves",
       reads: "The warm cache halves start-up time.",
-      row: /^warm cache halves start-up time/,
+      row: /^The warm cache halves start-up time/,
       shape: new RegExp(`^dispatch://${target}/comment/[\\w-]+$`),
     },
     {
-      holder: /^warm cache halves start-up time/,
+      holder: { blocks: "Comment blocks", row: /^The warm cache halves start-up time/ },
       kind: "block of a comment",
       opens: (address) =>
         `/issues/${target}/comments/${address.slice(`dispatch://${target}/comment/`.length).split("#b-")[0]}#b-${blockOf(address)}`,
@@ -182,11 +184,11 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       // One word: a door closes on the first space typed after it (`readTrigger`).
       query: "[[noon",
       reads: "The rollout finished at noon.",
-      row: /^rollout finished at noon/,
+      row: /^The rollout finished at noon/,
       shape: new RegExp(`^dispatch://${target}/message/[\\w-]+$`),
     },
     {
-      holder: /^rollout finished at noon/,
+      holder: { blocks: "Message blocks", row: /^The rollout finished at noon/ },
       kind: "block of a message",
       opens: (address) =>
         `/issues/${target}/messages/${address.slice(`dispatch://${target}/message/`.length).split("#b-")[0]}#b-${blockOf(address)}`,
@@ -252,12 +254,16 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       await expect(list, `${kind.kind}: the picker did not open`).toBeVisible();
       if (kind.holder !== undefined) {
         await list
-          .getByRole("option", { name: kind.holder })
+          .getByRole("option", { name: kind.holder.row })
           .first()
           .getByRole("button", { name: "Blocks" })
           .click();
       }
-      await list.getByRole("option", { name: kind.row }).first().click();
+      // A part's row is read once the holder's blocks answer, beside the holder's own row; only
+      // the part's group holds it, so a pick taken before the read lands cannot take the holder.
+      const rows =
+        kind.holder === undefined ? list : list.getByRole("group", { name: kind.holder.blocks });
+      await rows.getByRole("option", { name: kind.row }).first().click();
       await expect(list).toBeHidden();
       await expect(field, `${kind.kind}: the pick wrote nothing`).not.toHaveValue(
         `${before}${kind.query}`
