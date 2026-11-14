@@ -1793,6 +1793,23 @@ type Store interface {
 	// without its first, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
+	// DeclareWait records wait as its claim's one wait with no end: it ends the claim's row that
+	// has none, if any, with the cause WaitReplaced, ended_by wait's ID and ended_at wait's
+	// DeclaredAt, then inserts wait, and answers the row it ended, nil for none. Both writes are
+	// the caller's transaction, so a declaration and the end of the one it replaces commit
+	// together or not at all. wait's own end fields are not written: a declaration has no end.
+	DeclareWait(ctx context.Context, tx pgx.Tx, wait ClaimWait) (*ClaimWait, error)
+	// EndWait ends the wait waitID of the claim token in project, at at, with cause and endedBy
+	// (the fact that ended it), and answers whether it did: a compare-and-set on the id and on the
+	// row having no end, so an end that names a wait a newer declaration replaced, or one already
+	// ended, changes nothing and answers false.
+	EndWait(ctx context.Context, tx pgx.Tx, project string, token claim.Token, waitID, cause, endedBy string, at time.Time) (bool, error)
+	// StandingWait is the wait row of the claim token that has no end, nil for none. Whether that
+	// wait stands is workflow.WaitStands's to say.
+	StandingWait(ctx context.Context, tx pgx.Tx, token claim.Token) (*ClaimWait, error)
+	// StandingWaits is every wait row of project's claims (the claim project token, as
+	// claims.project holds it) that has no end, by token, in one read.
+	StandingWaits(ctx context.Context, tx pgx.Tx, project string) ([]ClaimWait, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.
@@ -1823,8 +1840,9 @@ type QueuedSupervise struct {
 // in (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
 // it was last given work of (given_entry), the moment its agent last stepped (step_at,
 // turn_started_at), what its own session last reported it was doing (activity_at,
-// activity_background, activity_next_reminder_at), and the task it holds, nil for none, with the
-// task's generation, phase and confirmation.
+// activity_background, activity_next_reminder_at), the session it runs, the wait it declared that
+// has no end, and the task it holds, nil for none, with the task's generation, phase and
+// confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
@@ -1884,7 +1902,50 @@ type RoleClaim struct {
 	// Its reader is the admission pass, which tells a claim behind the entry its role's phases
 	// row names — one owed that entry's work — from one already holding it.
 	GivenEntry int64
-	Pending    *supervise.Delivery
+	// Session is the agent session the claim runs now (claims.session): the session a wait was
+	// declared in is weighed against it, since a fresh session knows nothing of the wait
+	// (workflow.WaitStands).
+	Session string
+	// Wait is the claim's wait row that has no end (claim_waits, at most one per claim), nil for
+	// none. A row with no end is not yet a wait that stands: whether it does is
+	// workflow.WaitStands's to say, which every reader asks, so that no reader's answer waits on an
+	// end being written.
+	Wait    *ClaimWait
+	Pending *supervise.Delivery
+}
+
+// WaitReplaced is the end cause of a wait a newer declaration of the same claim replaced
+// (Store.DeclareWait).
+const WaitReplaced = "replaced"
+
+// ClaimWait is one wait a phase worker declared, a row of claim_waits: the claim that declared
+// it (Project, the claim project token as claims.project holds it, and Token) on its issue and
+// role; the issue's generation and phase and the role's phases row entry (PhaseRow.Entry) it was
+// declared at; TakenEntry, the entry of the task the claim had taken when it declared; the
+// session it was declared in; what the worker waits on; when its time comes; and when the
+// declaration was recorded. ID is minted by the daemon.
+//
+// A wait with no end has the zero EndedAt and an empty EndCause and EndedBy. An ended one carries
+// when it ended, its cause and the fact that ended it (a source and event id, or the id of the
+// wait that replaced it), and no statement writes it again: every end is a compare-and-set on the
+// ID and on the row having no end (Store.EndWait).
+type ClaimWait struct {
+	ID         string
+	Project    string
+	Token      claim.Token
+	Issue      string
+	Role       claim.Role
+	Generation uint64
+	Phase      phase.Phase
+	PhaseEntry int64
+	TakenEntry int64
+	Session    string
+	WaitingOn  string
+	WakeAt     time.Time
+	DeclaredAt time.Time
+	EndedAt    time.Time
+	EndCause   string
+	EndedBy    string
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger

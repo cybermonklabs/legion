@@ -1059,6 +1059,25 @@ func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate)
 	return !held
 }
 
+// HeldByDesignGate is the closed gate that holds role's work on issue, and whether one does: only
+// the merger of an issue in merging is held, and only while a step the deployment gates holds a
+// row no approval has opened (classify.StandingGate over gate's steps and rows). The gate
+// answered is that row, which names the step, the document and its version.
+//
+// It reads the gate with the test the outbox's fence on a merger's start reads (internal/daemon's
+// designGateClosed, for mergerWaitsForTheDesignGate) and standingGateOpen reads for the message,
+// asked of a claim rather than of a start row: a merger in merging is held exactly while the
+// fence would hold its start. A step the deployment gates that nothing has registered holds no
+// merger, although it holds the tree's work (record.TreeGate.Open reads it closed): it names no
+// document, so the fence lets the merger's start through. Nor does an empty gates.design, which
+// asks no person about anything, whatever rows the root holds.
+func HeldByDesignGate(issue record.Issue, role claim.Role, gate record.TreeGate) (record.DesignGate, bool) {
+	if role != claim.RoleMerger || issue.Phase != phase.Merging {
+		return record.DesignGate{}, false
+	}
+	return classify.StandingGate(gate.Steps, gate.Rows)
+}
+
 // tellChangesOnce tells fact's changes request to its issue's architect once, by a notice or by the
 // task that resumes it, never both. A request that answered the root's wait is named by that task.
 // So is one placed after the wait began that the gate records as told (recorded), whatever

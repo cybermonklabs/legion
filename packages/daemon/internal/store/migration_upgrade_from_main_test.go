@@ -36,22 +36,24 @@ import (
 // phase entry's as well, so a database main migrated takes it in the same upgrade, after the
 // phase entry, and it is named here with the rest. So are dispatch://INFRA-2981's kind list with
 // the update ask (20261113082214) and its drop of the claim's two update answer marks
-// (20261113110610), which stand above all of them and are applied last, in that order.
+// (20261113110610), which stand above all of them and are applied in that order, and
+// dispatch://INFRA-2040's table of the waits phase workers declare (20261114044457), which is
+// applied last.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111181500,
-	20261111225552, 20261112180548, 20261113082214, 20261113110610,
+	20261111225552, 20261112180548, 20261113082214, 20261113110610, 20261114044457,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
 // failure. Every embedded version above it is named in thisBranchsMigrations: main's newest came
-// in above dispatch://INFRA-714's own at the forward merge of 2026-11-12, and four versions stand
-// above it, the phase entry's 20261111225552, dispatch://INFRA-3219's 20261112180548 and
-// dispatch://INFRA-2981's 20261113082214 and 20261113110610, which is why the loop below holds
-// the list rather than counting it, so that a version added above any of them is named here
-// rather than read as main's.
+// in above dispatch://INFRA-714's own at the forward merge of 2026-11-12, and five versions stand
+// above it, the phase entry's 20261111225552, dispatch://INFRA-3219's 20261112180548,
+// dispatch://INFRA-2981's 20261113082214 and 20261113110610, and dispatch://INFRA-2040's
+// 20261114044457, which is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
