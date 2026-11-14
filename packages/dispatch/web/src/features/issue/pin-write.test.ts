@@ -1,11 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryObserver } from "@tanstack/react-query";
-
 import { settle } from "../../__tests__/fake-clock";
+
+import { cacheOf, QueryClient, QueryObserver } from "../../api/cache/test-client";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { userStateQuery } from "../../api/queries";
 import type { UserIssueState, UserState } from "../../api/types";
-import { writesOf } from "../writes/write-store";
 import { writePin } from "./pin-write";
 import { pinnedItemMarker } from "./pins";
 
@@ -32,18 +31,18 @@ async function nextPinAfter(end: (client: QueryClient) => void) {
     .mockResolvedValueOnce(alicesAnswer)
     .mockRejectedValueOnce(new NetworkError("/api/v1/me/issues/CORE-1/state", new TypeError()));
   try {
-    writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
-    writePin(client, "CORE-1", { id: "ask:b", op: "pin" });
+    writePin(cacheOf(client), "CORE-1", { id: "ask:a", op: "pin" });
+    writePin(cacheOf(client), "CORE-1", { id: "ask:b", op: "pin" });
     await settle();
     expect(put).toHaveBeenCalledTimes(2);
     end(client);
     client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
     put.mockResolvedValue({ ...fresh, seq: 1 });
-    writePin(client, "CORE-1", { id: "ask:c", op: "pin" });
+    writePin(cacheOf(client), "CORE-1", { id: "ask:c", op: "pin" });
     await settle();
     return put.mock.calls.at(-1)?.[1];
   } finally {
-    writesOf(client).clear();
+    cacheOf(client).writes.clear();
     getMyState.mockRestore();
     put.mockRestore();
   }
@@ -58,11 +57,11 @@ test("another sign-in lets go of the last pin's answer", async () => {
     | { dismissed: string[] | null | undefined; readAgain: boolean | undefined }
     | undefined;
   const sent = await nextPinAfter((client) => {
-    writesOf(client).signedIn("bob");
+    cacheOf(client).writes.signedIn("bob");
     // The dropped pin stops being composed as a refused one does: the page shows the state Dispatch
     // last confirmed - alice's first pin, which it made - and reads it again.
     rolledBack = {
-      dismissed: writesOf(client).shown<UserState>(["user-state"])?.["CORE-1"]?.dismissed,
+      dismissed: cacheOf(client).shown<UserState>(["user-state"])?.["CORE-1"]?.dismissed,
       readAgain: client.getQueryState(["user-state"])?.isInvalidated,
     };
   });
@@ -71,7 +70,7 @@ test("another sign-in lets go of the last pin's answer", async () => {
 });
 
 test("a sign-out lets go of the last pin's answer", async () => {
-  const sent = await nextPinAfter((client) => writesOf(client).clear());
+  const sent = await nextPinAfter((client) => cacheOf(client).writes.clear());
   expect(sent).toEqual({ dismissed: [pinnedItemMarker("ask:c")], seq: 1 });
 });
 
@@ -94,14 +93,14 @@ test("a pin Dispatch refuses as stale is written again over the row it answered 
     )
     .mockImplementation(async (_key, body) => ({ ...fresh, ...body }) as UserIssueState);
   try {
-    writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
+    writePin(cacheOf(client), "CORE-1", { id: "ask:a", op: "pin" });
     await settle();
     expect(put.mock.calls.map(([, body]) => body)).toEqual([
       { dismissed: [pinnedItemMarker("ask:a")], seq: 1 },
       { dismissed: [pinnedItemMarker("ask:x"), pinnedItemMarker("ask:a")], seq: 8 },
     ]);
   } finally {
-    writesOf(client).clear();
+    cacheOf(client).writes.clear();
     getMyState.mockRestore();
     put.mockRestore();
   }
@@ -122,10 +121,10 @@ test("a pin shows its change again over an answer to the viewer's state", async 
     () => Promise.withResolvers<UserIssueState>().promise
   );
   const dismissedOf = (issueKey: string) =>
-    writesOf(client).shown<UserState>(["user-state"])?.[issueKey]?.dismissed;
+    cacheOf(client).shown<UserState>(["user-state"])?.[issueKey]?.dismissed;
   try {
     await client.fetchQuery(userStateQuery());
-    writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
+    writePin(cacheOf(client), "CORE-1", { id: "ask:a", op: "pin" });
     await settle();
     expect(dismissedOf("CORE-1")).toEqual([pinnedItemMarker("ask:a")]);
 
@@ -136,9 +135,9 @@ test("a pin shows its change again over an answer to the viewer's state", async 
     await settle();
 
     expect(dismissedOf("CORE-1")).toEqual([pinnedItemMarker("ask:a")]);
-    expect(writesOf(client).shown<UserState>(["user-state"])?.["CORE-2"]?.last_read_seq).toBe(9);
+    expect(cacheOf(client).shown<UserState>(["user-state"])?.["CORE-2"]?.last_read_seq).toBe(9);
   } finally {
-    writesOf(client).clear();
+    cacheOf(client).writes.clear();
     getMyState.mockRestore();
     put.mockRestore();
   }
@@ -159,16 +158,16 @@ test("a refused pin leaves the state Dispatch last gave when the read again fail
   );
   // A surface drawing the viewer's state, so the read again goes out.
   const unsubscribe = new QueryObserver(client, userStateQuery()).subscribe(() => {});
-  const dismissed = () => writesOf(client).shown<UserState>(["user-state"])?.["CORE-1"]?.dismissed;
+  const dismissed = () => cacheOf(client).shown<UserState>(["user-state"])?.["CORE-1"]?.dismissed;
   try {
     await client.fetchQuery(userStateQuery());
-    writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
+    writePin(cacheOf(client), "CORE-1", { id: "ask:a", op: "pin" });
     expect(dismissed()).toEqual([pinnedItemMarker("ask:a")]);
     await settle();
     expect(put).toHaveBeenCalledTimes(1);
     expect(
-      writesOf(client)
-        .rows()
+      cacheOf(client)
+        .writes.rows()
         .map((write) => write.status)
     ).toEqual(["refused"]);
     expect(getMyState).toHaveBeenCalledTimes(3);
@@ -176,7 +175,7 @@ test("a refused pin leaves the state Dispatch last gave when the read again fail
     expect(dismissed()).toEqual([]);
   } finally {
     unsubscribe();
-    writesOf(client).clear();
+    cacheOf(client).writes.clear();
     getMyState.mockRestore();
     put.mockRestore();
   }
@@ -204,15 +203,15 @@ test("a refused pin does not leave another issue's pin answer carrying it while 
   // A surface drawing the viewer's state, so the read again goes out.
   const unsubscribe = new QueryObserver(client, userStateQuery()).subscribe(() => {});
   const dismissed = (issueKey: string) =>
-    writesOf(client).shown<UserState>(["user-state"])?.[issueKey]?.dismissed;
+    cacheOf(client).shown<UserState>(["user-state"])?.[issueKey]?.dismissed;
   try {
     await client.fetchQuery(userStateQuery());
-    writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
+    writePin(cacheOf(client), "CORE-1", { id: "ask:a", op: "pin" });
     await settle();
     expect(dismissed("CORE-1")).toEqual([pinnedItemMarker("ask:a")]);
 
     // Another issue's pin lands while CORE-1's is out, and is merged into the state.
-    writePin(client, "CORE-2", { id: "ask:b", op: "pin" });
+    writePin(cacheOf(client), "CORE-2", { id: "ask:b", op: "pin" });
     await settle();
     expect(dismissed("CORE-2")).toEqual([pinnedItemMarker("ask:b")]);
     expect(dismissed("CORE-1")).toEqual([pinnedItemMarker("ask:a")]);
@@ -222,8 +221,8 @@ test("a refused pin does not leave another issue's pin answer carrying it while 
     refusal.reject(new ApiError(422, { code: "INVALID_STATE", error: "not a state" }));
     await settle();
     expect(
-      writesOf(client)
-        .rows()
+      cacheOf(client)
+        .writes.rows()
         .map((write) => write.status)
     ).toEqual(["refused"]);
     expect(client.getQueryState(["user-state"])?.status).toBe("error");
@@ -231,7 +230,7 @@ test("a refused pin does not leave another issue's pin answer carrying it while 
     expect(dismissed("CORE-2")).toEqual([pinnedItemMarker("ask:b")]);
   } finally {
     unsubscribe();
-    writesOf(client).clear();
+    cacheOf(client).writes.clear();
     getMyState.mockRestore();
     put.mockRestore();
   }

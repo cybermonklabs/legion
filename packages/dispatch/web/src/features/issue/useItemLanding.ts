@@ -1,4 +1,5 @@
 import { ID_AMBIGUOUS, isIdPrefix } from "@legion/contracts";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { ApiError, type ErrorCandidate } from "../../api/client";
 import type { IDCandidate, IssueDetails } from "../../api/types";
 import { askQuery, commentQuery, messageQuery, useWholeRouteRead } from "../refs/reference-target";
@@ -8,7 +9,6 @@ import {
   documentItemPath,
   type IssueRoute,
 } from "../refs/routes";
-import { useShownQuery } from "../writes/shown-query";
 
 /** The item routes: `/issues/KEY/asks|comments|messages/<id>`. */
 export type ItemRoute = Extract<IssueRoute, { id: string }>;

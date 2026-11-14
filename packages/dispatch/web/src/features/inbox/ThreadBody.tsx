@@ -16,9 +16,11 @@
  */
 
 import { inboxThreadRow } from "@legion/contracts";
-import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import {
   agentMessagesQuery,
@@ -70,7 +72,6 @@ import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
-import { useShownQuery } from "../writes/shown-query";
 import { AskCard } from "./AskCard";
 
 /** One message of a thread, whatever route it was read from. */
@@ -295,7 +296,7 @@ function CommentThreadBody({
   owner: ThreadOwner;
   thread: MyReplyThreadRow;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const markNewest = useThreadRead(
     thread,
     owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId }
@@ -344,8 +345,8 @@ function CommentThreadBody({
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: commentsKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              void cache.invalidate({ queryKey: commentsKey });
+              void cache.invalidate({ queryKey: myRepliesKey });
             }}
             owner={owner}
             replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
@@ -395,7 +396,7 @@ function MessageThreadBody({
   openAtFirstUnread: boolean;
   thread: MyReplyThreadRow;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const markNewest = useThreadRead(thread, { issue: issueKey });
   const issue = useShownQuery(issueQuery(issueKey));
   const messagesKey = ["issue-messages", issueKey];
@@ -427,8 +428,8 @@ function MessageThreadBody({
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: messagesKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              void cache.invalidate({ queryKey: messagesKey });
+              void cache.invalidate({ queryKey: myRepliesKey });
             }}
             owner={{ issueKey, kind: "issue" }}
             replyTo={{

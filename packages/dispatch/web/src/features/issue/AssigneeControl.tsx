@@ -1,8 +1,8 @@
 import { type ReactNode, useState } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary } from "../../theme/classes";
-import { useShownQuery } from "../writes/shown-query";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
 import { reservedOpenTextWidth } from "./reserved-width";
 import { useIssueAssignee } from "./useIssueAssignee";

@@ -1,5 +1,6 @@
 import { askProject, issueProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
+import type { RefreshTarget } from "./cache/query-refresh";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
@@ -17,7 +18,6 @@ import {
   userAgentStateQuery,
   userStateQuery,
 } from "./queries";
-import { answeredNotFound, type RefreshTarget } from "./query-refresh";
 import type {
   ArchitectureTree,
   ArchitectureTreeComponent,
@@ -38,7 +38,7 @@ import type {
 
 /**
  * Which cached reads one event of the feed can change, and nothing else: `eventRefreshTargets` is
- * the whole of it, and `api/query-refresh.ts` decides when each read is fetched. Query keys are the
+ * the whole of it, and `api/cache/query-refresh.ts` decides when each read is fetched. Query keys are the
  * literal arrays their readers use, bar the builders a reader shares (a project's issue list,
  * `projectIssuesQueryKey`, the architecture tree, the repository mappings and the pinned list,
  * all in `api/queries.ts`; the reference reads', in `features/refs/reference-target.ts`), and
@@ -112,7 +112,7 @@ function issueSummaryOf(key: string, event: DispatchEvent): RefreshTarget {
   const target = { exact: true, queryKey: ["issue-summary", key] } as const;
   return event.type === "issue.created"
     ? target
-    : { ...target, when: (_data, query) => !answeredNotFound(query) };
+    : { ...target, when: (_data, read) => !read.answeredNotFound };
 }
 
 /** Every Inbox read (the Inbox and a project's) that holds a row of issue `key`'s open asks. */
@@ -174,8 +174,8 @@ function inboxRowsDecidedByDefault(project: string): RefreshTarget {
 function issueAskListsDecidedByDefault(project: string): RefreshTarget {
   return {
     queryKey: ["asks"],
-    when: (data, query) => {
-      const key = query.queryKey[1];
+    when: (data, read) => {
+      const key = read.queryKey[1];
       return (
         typeof key === "string" &&
         issueProject(key) === project &&
@@ -195,9 +195,9 @@ function issueAskListsDecidedByDefault(project: string): RefreshTarget {
  *  another project's document reads again and answers the same rows. */
 const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
   queryKey: ["artifact"],
-  when: (data, query) =>
-    query.queryKey.length === 3 &&
-    query.queryKey[2] === "asks" &&
+  when: (data, read) =>
+    read.queryKey.length === 3 &&
+    read.queryKey[2] === "asks" &&
     rowsOf<Ask>(data).some(openAndNotHandedOn),
 };
 

@@ -1,6 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -9,10 +8,11 @@ import { jump, realClock } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted } from "../../__tests__/kept-sends-harness";
 import { answerIssuePatches, answerSends } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import { plainWrite, type Writes } from "../../api/cache/write-store";
 import { ApiError, api, issuePatchRequest, type WriteBounds } from "../../api/client";
 import { expiredRetryNote, FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "./keyed-write";
 import { PendingWritesIndicator } from "./PendingWritesIndicator";
-import { plainWrite, type Writes, writesOf } from "./write-store";
 
 /** One write the indicator shows, labelled `label`, its attempt `write`. */
 function indicatorWrite(
@@ -75,7 +75,7 @@ test("the indicator counts the writes out, names a late one, and clears when it 
   const held = Promise.withResolvers<never>();
   const putIssueState = spyOn(api, "putIssueState").mockReturnValue(held.promise);
   const { client, unmount } = mountIndicator();
-  const writes = writesOf(client);
+  const writes = cacheOf(client).writes;
 
   try {
     indicatorWrite(writes, "CORE-1 set to done", (bounds) =>
@@ -147,7 +147,7 @@ test("a refused write names Dispatch's reason, and Retry sends it again", async 
   const tab = keptTab();
   const patchIssue = answerIssuePatches().mockRejectedValueOnce(verdict);
   const { client, unmount } = mountIndicator();
-  const writes = writesOf(client);
+  const writes = cacheOf(client).writes;
 
   try {
     indicatorWrite(writes, "CORE-1 set to done", (bounds) =>
@@ -182,7 +182,7 @@ test("a write waiting its turn reads Waiting to send and can be discarded", asyn
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const { client, unmount } = mountIndicator();
-  const writes = writesOf(client);
+  const writes = cacheOf(client).writes;
   const sends = answerSends();
   let secondSent = 0;
   try {
@@ -223,7 +223,7 @@ test("a write waiting its turn reads Waiting to send and can be discarded", asyn
 test("an upload in progress reads Uploading… N% until an attempt fails", async () => {
   jest.useFakeTimers();
   const { client, unmount } = mountIndicator();
-  const writes = writesOf(client);
+  const writes = cacheOf(client).writes;
   const first = Promise.withResolvers<never>();
   let attempts = 0;
   try {
@@ -268,7 +268,7 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const { client, unmount } = mountIndicator();
-  const writes = writesOf(client);
+  const writes = cacheOf(client).writes;
   let attempts = 0;
 
   try {

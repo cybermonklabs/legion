@@ -1,18 +1,17 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import ts from "typescript";
 
 import { answerRoute } from "../../__tests__/send-answers";
 import { nodesOf, parsed, shippedSources, siteOf } from "../../__tests__/source-scan";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import type { Ask } from "../../api/types";
 import { useOutstandingAnswerWrite } from "../inbox/outstanding-answers";
 import { useAskSnooze } from "../inbox/useAskSnooze";
 import { sourceLine } from "../settings/ArchitectureSourcesSection";
-import { writesOf } from "./write-store";
 
 /**
  * Every write of a row carries a line (dispatch://INFRA-299/spec#b-r6). The types ask each write
@@ -221,8 +220,8 @@ test("the ask snooze and the ask answer stand on one line", async () => {
       hook.result.current.answer.mutate({ text: "Ship it." });
     });
     expect(
-      writesOf(client)
-        .rows()
+      cacheOf(client)
+        .writes.rows()
         .map((write) => write.target)
     ).toEqual(["ask:ask-1", "ask:ask-1"]);
   } finally {

@@ -1,5 +1,6 @@
 import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { deliveryRunQuery } from "../../api/queries";
 import type {
   DeliveryComponent,
@@ -22,7 +23,6 @@ import {
 import { AgentName } from "../refs/AgentName";
 import { buildIssuePath } from "../refs/routes";
 import { useDialog } from "../shell/useDialog";
-import { useShownQuery } from "../writes/shown-query";
 import { NO_COMPONENT, NO_ISSUE, NO_PRIORITY, NO_SESSION, PLACEHOLDER_LABELS } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
 import { leadTimeMinutes } from "./lib/prList";

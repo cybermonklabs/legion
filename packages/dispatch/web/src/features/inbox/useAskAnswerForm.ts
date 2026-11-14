@@ -1,5 +1,7 @@
-import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { useCache } from "../../api/cache/cache";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import {
   ApiError,
   apiErrorMessage,
@@ -11,7 +13,6 @@ import { whoAmIQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead, AskWithTrees } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
 import { useAnswerDraft } from "./answer-drafts";
@@ -100,7 +101,7 @@ export function useAskAnswerForm({
   initiallyChanging = false,
   onAnswered,
 }: UseAskAnswerFormOptions) {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const viewer = useShownQuery(whoAmIQuery()).data?.login;
   // Each AskCard instance owns its answer field label so cards with the same
   // ask id never collide when a responsive transition briefly renders both.
@@ -131,7 +132,7 @@ export function useAskAnswerForm({
   // thread. A thread invalidated while its Inbox snapshot was in flight bypasses that snapshot,
   // and so does every thread on an issue whose claim or route moved while it was in flight.
   const refreshInitialThread =
-    initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
+    initialThread !== undefined && hasPendingAskThreadInvalidation(cache, ask);
   const threadQuery = useShownQuery({
     ...queryOptions<AskRead, Error>({
       queryKey: ["ask-thread", ask.id],
@@ -143,9 +144,9 @@ export function useAskAnswerForm({
   });
   useEffect(() => {
     if (refreshInitialThread && threadQuery.data !== undefined) {
-      clearPendingAskThreadInvalidation(queryClient, ask.id);
+      clearPendingAskThreadInvalidation(cache, ask.id);
     }
-  }, [ask.id, queryClient, refreshInitialThread, threadQuery.data]);
+  }, [ask.id, cache, refreshInitialThread, threadQuery.data]);
   const edits = threadQuery.data?.edits ?? [];
   const answers = threadQuery.data?.answers ?? [];
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
@@ -164,7 +165,7 @@ export function useAskAnswerForm({
         setAskChanged(true);
         setSelected([]);
         setOtherSelected(false);
-        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+        void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
       }
       if (
         error instanceof ApiError &&
@@ -174,7 +175,7 @@ export function useAskAnswerForm({
       ) {
         // Each refusal meets the same change again, so the form it was sent from closes and the
         // card shows the thread's current answer, not one this card recorded earlier.
-        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+        void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
         replacing.current = undefined;
         setJustAnswered(null);
         setChanging(false);
@@ -196,7 +197,7 @@ export function useAskAnswerForm({
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
-          queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+          cache.setDispatched<AskRead>(["ask-thread", ask.id], (current) =>
             current === undefined
               ? undefined
               : {
@@ -206,11 +207,11 @@ export function useAskAnswerForm({
                 }
           );
         }
-        void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
-        void queryClient.invalidateQueries({ queryKey: ["me", "answers"] });
+        void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
+        void cache.invalidate({ queryKey: ["me", "answers"] });
       }
       if (!changed) onAnswered?.(ask.id);
-      invalidateOwnerReads(queryClient, ask);
+      invalidateOwnerReads(cache, ask);
     },
   });
   // A clarification hands the ask's turn back, so it stands in that row's line (`ask:<id>`) with
@@ -230,11 +231,11 @@ export function useAskAnswerForm({
     onSuccess: () => {
       setAnswerText("");
       setQuestionChoice(false);
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+      void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
       // A clarification hands the turn to the asker: every surface that renders this ask from
       // its owner's list (a decision block reads `["asks", key]`) must see the new `waiting_on`,
       // not just the Inbox.
-      invalidateOwnerReads(queryClient, ask);
+      invalidateOwnerReads(cache, ask);
     },
   });
 

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueCoverageQuery } from "../../api/queries";
 import type { RequirementCoverage } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -13,7 +14,6 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { BlockReferences } from "../refs/ReferencedBy";
-import { useShownQuery } from "../writes/shown-query";
 
 function Requirement({ requirement }: { requirement: RequirementCoverage }): ReactNode {
   // What the server says this requirement lacks, in the server's own words. The server decides

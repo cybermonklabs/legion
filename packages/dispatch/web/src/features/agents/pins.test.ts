@@ -1,13 +1,17 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { answerAgentStates } from "../../__tests__/send-answers";
+import {
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "../../api/cache/test-client";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
-import { writesOf } from "../writes/write-store";
 import { legacyPinnedIds, pinnedAgentSessions, useAgentPinWrite } from "./pins";
 import { storeAgentState } from "./unread";
 
@@ -89,7 +93,7 @@ test("a pin stays shown over an answer to the viewer's agent state that lands wh
   const put = answerAgentStates().mockImplementation(
     () => Promise.withResolvers<UserAgentState>().promise
   );
-  const states = () => writesOf(queryClient).shown<UserAgentStates>(userAgentStateQuery().queryKey);
+  const states = () => cacheOf(queryClient).shown<UserAgentStates>(userAgentStateQuery().queryKey);
   const hook = renderHook(() => useAgentPinWrite(), {
     wrapper: ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client: queryClient }, children),
@@ -114,7 +118,7 @@ test("a pin stays shown over an answer to the viewer's agent state that lands wh
     expect(states()?.["tester-session"]?.unread_replies).toBe(3);
   } finally {
     hook.unmount();
-    writesOf(queryClient).clear();
+    cacheOf(queryClient).writes.clear();
     getMyAgentState.mockRestore();
   }
 });
@@ -150,13 +154,13 @@ test("a refused pin leaves the agent state Dispatch last gave when the read agai
     );
     expect(
       pinnedAgentSessions(
-        writesOf(queryClient).shown<UserAgentStates>(userAgentStateQuery().queryKey)
+        cacheOf(queryClient).shown<UserAgentStates>(userAgentStateQuery().queryKey)
       )
     ).toEqual([]);
   } finally {
     hook.unmount();
     unsubscribe();
-    writesOf(queryClient).clear();
+    cacheOf(queryClient).writes.clear();
     getMyAgentState.mockRestore();
   }
 });
@@ -182,7 +186,7 @@ test("an agent state answer merged while a pin is out stays once the pin is refu
     wrapper: ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client: queryClient }, children),
   });
-  const states = () => writesOf(queryClient).shown<UserAgentStates>(userAgentStateQuery().queryKey);
+  const states = () => cacheOf(queryClient).shown<UserAgentStates>(userAgentStateQuery().queryKey);
   try {
     await queryClient.fetchQuery(userAgentStateQuery());
     let made: Promise<boolean> | undefined;
@@ -194,7 +198,7 @@ test("an agent state answer merged while a pin is out stays once the pin is refu
 
     // The tester's conversation is read on another surface while the pin is out.
     act(() => {
-      storeAgentState(queryClient, "tester-session", { unread_replies: 0 });
+      storeAgentState(cacheOf(queryClient), "tester-session", { unread_replies: 0 });
     });
     expect(pinnedAgentSessions(states())).toEqual(["planner-session"]);
 
@@ -210,7 +214,7 @@ test("an agent state answer merged while a pin is out stays once the pin is refu
   } finally {
     hook.unmount();
     unsubscribe();
-    writesOf(queryClient).clear();
+    cacheOf(queryClient).writes.clear();
     getMyAgentState.mockRestore();
   }
 });

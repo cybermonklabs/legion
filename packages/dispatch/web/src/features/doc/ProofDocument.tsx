@@ -1,5 +1,4 @@
 import { decodeBlockId, isIdPrefix } from "@legion/contracts";
-import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -11,6 +10,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Link, useLocation } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import {
   api,
   isArtifactNotFound,
@@ -52,9 +54,7 @@ import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { writesOf } from "../writes/write-store";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
@@ -298,7 +298,7 @@ export function ProofDocument({
   const marginRef = useRef(margin);
   marginRef.current = margin;
   highlightTermRef.current = highlightTerm;
-  const queryClient = useQueryClient();
+  const cache = useCache();
   // Where a `#id` in this document's text resolves: this document, whose question blocks
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
   const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
@@ -400,7 +400,7 @@ export function ProofDocument({
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
+      cache.setDispatched<Artifact>(["artifact", artifact.id], (current) => {
         const source = current ?? artifact;
         return {
           ...source,
@@ -418,7 +418,7 @@ export function ProofDocument({
     label: () => `Rebuild of ${artifact.name}`,
     unlined: "a rebuild is this button's only write of the document it rebuilds",
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      void cache.invalidate({ queryKey: ["artifact", artifact.id] });
     },
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
@@ -458,10 +458,10 @@ export function ProofDocument({
   // host that selected the question hears of its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      void cache.invalidate({ queryKey: ["artifact", artifact.id] });
       onAskAnswered?.(askId);
     },
-    [queryClient, artifact.id, onAskAnswered]
+    [cache, artifact.id, onAskAnswered]
   );
   const openBlockAsks = useMemo(
     () =>
@@ -792,7 +792,7 @@ export function ProofDocument({
     // A blocked admission waits for the next successful read of the text, which a repair upload
     // or a rebuild brings about, and is admitted again (`readmitRef`).
     const admit = () => {
-      const textRead = writesOf(queryClient)
+      const textRead = cache
         .fetchDispatched({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
         .then(
           () => undefined,
@@ -934,7 +934,7 @@ export function ProofDocument({
                   name: userRef.current.login,
                 },
                 blockSchema,
-                watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
+                watchPicture: (route, onPicture) => watchPicturePath(cache, route, onPicture),
                 // The block the pane's thread hangs under: the node view it names publishes the
                 // host slot this page portals the thread into. A document's own page anchors no
                 // thread and passes none.
@@ -987,7 +987,7 @@ export function ProofDocument({
     loadTransport,
     page,
     pendingWaiter,
-    queryClient,
+    cache,
     whenSent,
   ]);
 

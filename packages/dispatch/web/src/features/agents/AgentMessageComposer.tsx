@@ -1,5 +1,7 @@
-import { hashKey, type MutationKey, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCache } from "../../api/cache/cache";
+import { hashKey, type MutationKey } from "../../api/cache/keys";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
@@ -21,7 +23,6 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import { useSessionSends } from "../conversation/useSessionSends";
 import { focusOnDocument } from "../shell/roving";
-import { useShownQuery } from "../writes/shown-query";
 import { AGENT_ROW_SELECTOR, ISSUE_PICKER_SELECTOR } from "./keyboard";
 
 /** A reply the agent composer answers: the quoted message and the conversation it belongs to
@@ -73,7 +74,7 @@ export function AgentMessageComposer({
    *  column's thread box is, mounted again for every row the reader steps onto. */
   standing?: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const store = useHeldSends();
   const { sending, sendingNow } = hold;
   // The session's other messages still on their way - its live view's - show here too, as their
@@ -328,7 +329,7 @@ export function AgentMessageComposer({
         onSent={() => {
           sentJustNow.current = true;
           onCancelReply();
-          void queryClient.invalidateQueries({
+          void cache.invalidate({
             queryKey: agentMessagesQuery(agent.session_id).queryKey,
           });
           // Focus went to the document when the field disabled itself; take it back.

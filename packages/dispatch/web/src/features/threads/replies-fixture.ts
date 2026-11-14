@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { Cache } from "../../api/cache/cache";
 
 import { myRepliesOwnerQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyAgentRow, MyReplyThreadRow } from "../../api/types";
@@ -77,17 +77,13 @@ export function plannerAgentRow(overrides: Partial<MyReplyAgentRow> = {}): MyRep
 
 /** Seeds the signed-in viewer (alice) and `owner`'s unread threads, so every thread mounted on
  *  that owner reads them from the cache rather than a request. */
-export function seedUnread(
-  queryClient: QueryClient,
-  owner: RepliesOwner,
-  threadIds: readonly string[]
-): void {
-  queryClient.setQueryData(whoAmIQuery().queryKey, {
+export function seedUnread(cache: Cache, owner: RepliesOwner, threadIds: readonly string[]): void {
+  cache.setDispatched(whoAmIQuery().queryKey, {
     event_head: "0",
     kind: "user",
     login: "alice",
   });
-  queryClient.setQueryData(myRepliesOwnerQuery(owner).queryKey, {
+  cache.setDispatched(myRepliesOwnerQuery(owner).queryKey, {
     as_of: "2026-10-12T00:00:00Z",
     limit: 200,
     offset: 0,

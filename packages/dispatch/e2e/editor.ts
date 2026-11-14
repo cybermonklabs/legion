@@ -9,7 +9,7 @@ import {
   type WebSocketRoute,
 } from "@playwright/test";
 import { createDecoder, readVarUint } from "lib0/decoding";
-import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/cache/live-socket";
 import type { Ask } from "../web/src/api/types";
 
 import { readField } from "../web/src/features/doc/sync-frame";

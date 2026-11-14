@@ -11,11 +11,11 @@
 
 import { inboxThreadRow } from "@legion/contracts";
 import type { ReactNode } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { askThreadQuery } from "../../api/queries";
 import type { MyReplyRow, MyReplyThreadRow } from "../../api/types";
 import { textPrimaryOnCanvas } from "../../theme/classes";
 import type { ProofDocumentProps } from "../doc/ProofDocument";
-import { useShownQuery } from "../writes/shown-query";
 import { isDecisionAsk } from "./ask-decision";
 import { DocumentPane, PaneFrame } from "./PaneDocument";
 import { questionLine } from "./question-line";

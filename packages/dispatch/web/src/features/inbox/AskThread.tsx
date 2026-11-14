@@ -1,6 +1,7 @@
-import type { UseQueryResult } from "@tanstack/react-query";
-import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
+
+import { useCache } from "../../api/cache/cache";
+import type { UseQueryResult } from "../../api/cache/keys";
 
 import { type ArtifactOwner, artifactCommentRequest, issueCommentRequest } from "../../api/client";
 import type { Ask, AskRead, CommentWithTrees } from "../../api/types";
@@ -83,7 +84,7 @@ export function AskReplyComposer({
    *  project. Without one the field takes a paste as text. */
   uploadOwner?: ArtifactOwner;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   // Each composer owns its field id so transient duplicate mounts during a responsive
   // transition cannot share an ask-id-derived id.
   const fieldId = `${useId()}-reply`;
@@ -109,7 +110,7 @@ export function AskReplyComposer({
     mutationKey,
     onSuccess: (_comment, text) => {
       clearReplyDraft(ask.id, text);
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+      void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
     },
   });
 

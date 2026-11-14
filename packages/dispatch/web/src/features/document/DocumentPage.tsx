@@ -1,6 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { dangerText } from "../../theme/classes";
@@ -19,14 +20,13 @@ import {
 } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
 
 export function DocumentPage(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const route = parseProjectPath(location.pathname, location.search);
   const documentRoute = route?.kind === "document" ? route : undefined;
   const [showDiff, setShowDiff] = useState(false);
@@ -61,7 +61,7 @@ export function DocumentPage(): ReactNode {
     },
     onSuccess: () => {
       if (artifact.data !== undefined) {
-        void queryClient.invalidateQueries({ queryKey: ["subscribers", artifact.data.id] });
+        void cache.invalidate({ queryKey: ["subscribers", artifact.data.id] });
       }
     },
   });

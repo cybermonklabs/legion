@@ -1,5 +1,4 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the hover-intent sites below need a pointer event user-event cannot send (a pointerType, a held button, a relatedTarget), and `scroll` has no user-event form at all.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { type ReactNode, useEffect, useRef } from "react";
@@ -8,6 +7,7 @@ import { Link, MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type {
   AskRead,

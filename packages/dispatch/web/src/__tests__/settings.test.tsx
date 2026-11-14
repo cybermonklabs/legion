@@ -1,10 +1,11 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { PROJECT_NAME_MAX } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the focus sites below reach the picker's people list without a press, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+
+import { cacheOf, QueryClient, QueryClientProvider } from "../api/cache/test-client";
 
 import { ApiError, api, repoProjectRequest } from "../api/client";
 import type { CreatedProject, Project, ProjectDefaultAssignee, RepoProject } from "../api/types";
@@ -12,8 +13,8 @@ import { App } from "../app";
 // The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
 // for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../features/settings/SettingsPage";
+import { plainWrite } from "../api/cache/write-store";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
-import { plainWrite, writesOf } from "../features/writes/write-store";
 import { realClock, settle, tick } from "./fake-clock";
 import { keyedAttempt } from "./keyed-attempt";
 import { answerRepoProjectRemovals, answerRepoProjects } from "./send-answers";
@@ -366,8 +367,8 @@ test("a mapping answer landing while a Default pick waits its turn keeps the pic
   try {
     await screen.findByRole("radio", { name: "Default repository of CORE: owner/repo" });
     await act(async () => {
-      void writesOf(page.queryClient)
-        .run({
+      void cacheOf(page.queryClient)
+        .writes.run({
           detail: null,
           kind: plainWrite,
           label: "owner/repo mapped to CORE",
@@ -381,8 +382,8 @@ test("a mapping answer landing while a Default pick waits its turn keeps the pic
     await user.click(defaultRadio("owner/repo"));
     await waitFor(() =>
       expect(
-        writesOf(page.queryClient)
-          .rows()
+        cacheOf(page.queryClient)
+          .writes.rows()
           .map((write) => write.status)
       ).toEqual(["sending", "queued"])
     );
@@ -416,8 +417,8 @@ test("a mapping answer merged while a Default pick is out stays once the pick is
     await screen.findByRole("radio", { name: "Default repository of CORE: owner/repo" });
     let pick: Promise<unknown> | undefined;
     await act(async () => {
-      pick = writesOf(page.queryClient)
-        .run({
+      pick = cacheOf(page.queryClient)
+        .writes.run({
           detail: null,
           kind: plainWrite,
           label: "owner/repo made CORE's default",
@@ -439,7 +440,7 @@ test("a mapping answer merged while a Default pick is out stays once the pick is
     // From here on the mappings cannot be read: every read again fails, and the page says so
     // over the list, so what the list holds is read from its cache.
     const mapping = (repo: string) =>
-      writesOf(page.queryClient)
+      cacheOf(page.queryClient)
         .shown<RepoProject[]>(["repo-projects"])
         ?.find((row) => row.repo === repo);
     page.listRepoProjects.mockRejectedValue(new Error("offline"));
@@ -478,8 +479,8 @@ test("a mapping answer landing while a Default pick is late and still being trie
     // Past the send deadline the pick is late: still out, still being tried, and still live.
     await tick(SEND_DEADLINE_MS + 1_000);
     expect(
-      writesOf(page.queryClient)
-        .rows()
+      cacheOf(page.queryClient)
+        .writes.rows()
         .map((write) => write.status)
     ).toEqual(["late"]);
 

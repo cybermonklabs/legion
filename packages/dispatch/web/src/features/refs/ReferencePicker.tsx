@@ -1,4 +1,5 @@
 import { type KeyboardEvent, type ReactNode, useState } from "react";
+import { useShownQueries, useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import {
@@ -11,7 +12,6 @@ import {
   textMutedOnSurface,
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
-import { useShownQueries, useShownQuery } from "../writes/shown-query";
 import { buildDispatchReference } from "./routes";
 
 export interface ReferencePickerProps {

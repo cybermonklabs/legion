@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { whoAmIQuery } from "../../api/queries";
-import { useShownQuery } from "../writes/shown-query";
 
 /** A name a browser keeps something under for one signed-in person: a choice they made, and the
  *  bar's recent items (`features/search/recents.ts`), which are theirs the same way. The Inbox's

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 
@@ -11,7 +10,8 @@ import {
   installFakeLiveSockets,
   snapshotFrame,
 } from "../../__tests__/live-socket-harness";
-import { liveSocketFor } from "../../api/live-socket";
+import { liveSocketFor } from "../../api/cache/live-socket";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import type { DeliveryLiveBody, DeliveryLiveView } from "../../api/types";
 import { useAgentStream } from "./useAgentStream";
 
@@ -28,7 +28,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  liveSocketFor(queryClient).close();
+  liveSocketFor(cacheOf(queryClient)).close();
   sockets.restore();
 });
 
@@ -131,7 +131,7 @@ test("a change to the socket's state other than its connection re-renders nothin
   });
   const socket = sockets.latest();
   act(() => socket.open());
-  const live = liveSocketFor(queryClient);
+  const live = liveSocketFor(cacheOf(queryClient));
   const view = {
     kind: "timeline",
     query: "",

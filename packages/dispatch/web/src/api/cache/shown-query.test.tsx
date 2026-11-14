@@ -3,11 +3,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
-import { api } from "../../api/client";
-import { issueQuery } from "../../api/queries";
-import type { IssueDetails } from "../../api/types";
+import { api } from "../client";
+import { issueQuery } from "../queries";
+import type { IssueDetails } from "../types";
+import { cacheOf } from "./cache";
 import { useShownQuery, watchShownQuery } from "./shown-query";
-import { writesOf } from "./write-store";
 
 /**
  * The rows here read through the wrapper over a real `QueryClient`, as the page does. A query's
@@ -83,7 +83,7 @@ test("a reader moved between two issues shows the issue it is on: the issue read
 
 test("a reader moved between two issues shows the issue it is on: the issue read, with a live write on the issue it left", () => {
   const client = clientWithBoth();
-  const pressed = writesOf(client).fromPress((shown) =>
+  const pressed = cacheOf(client).writes.fromPress((shown) =>
     shown.on<IssueDetails>(issueQuery(newer.key).queryKey, (data) => ({ ...data, priority: 0 }))
   );
   const reader = renderReader(client, (key) => useShownQuery(issueQuery(key)).data);
@@ -92,7 +92,7 @@ test("a reader moved between two issues shows the issue it is on: the issue read
     reader.rerender({ issueKey: older.key });
     expect(reader.result.current).toEqual(older);
     // The cache still holds Dispatch's answers alone.
-    expect<unknown>(writesOf(client).dispatched(issueQuery(newer.key).queryKey)).toBe(newer);
+    expect<unknown>(cacheOf(client).dispatched(issueQuery(newer.key).queryKey)).toBe(newer);
   } finally {
     reader.unmount();
     pressed.release();
@@ -134,13 +134,13 @@ test("a caller's select given to watchShownQuery runs over the issue as the pers
   const client = clientWithBoth();
   const seen: (string | undefined)[] = [];
   const stop = watchShownQuery(
-    client,
+    cacheOf(client),
     { ...issueQuery(newer.key), select: (data) => ({ ...data, title: data.title.toUpperCase() }) },
     (data) => seen.push(data?.title)
   );
   try {
     expect(seen).toEqual(["OPEN AND BUSY"]);
-    const pressed = writesOf(client).fromPress((shown) =>
+    const pressed = cacheOf(client).writes.fromPress((shown) =>
       shown.on<IssueDetails>(issueQuery(newer.key).queryKey, (data) => ({
         ...data,
         title: "Renamed",

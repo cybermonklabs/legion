@@ -1,5 +1,6 @@
 import { type ReactNode, useMemo } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { useCappedSearchParam } from "../../lib/query-param";
@@ -22,7 +23,6 @@ import { buildAgentsMachinePath, parseMachinePath } from "../refs/routes";
 import { relativeTimeLabel } from "../refs/Timestamp";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useShownQuery } from "../writes/shown-query";
 import {
   chosenWindowId,
   type MachineTmuxServer,

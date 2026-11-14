@@ -1,8 +1,9 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
-import { primarySpec } from "../../api/issue-cache";
+import { useCache } from "../../api/cache/cache";
+import { primarySpec } from "../../api/cache/issue-cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueQuery } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
@@ -16,7 +17,6 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { type IssueStatus, statusLabel } from "../project/board-model";
-import { useShownQuery } from "../writes/shown-query";
 import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
@@ -647,7 +647,7 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
  * the card follows the anchor instead. */
 export function RefPreviewHost(): ReactNode {
   const current = useSyncExternalStore(subscribe, () => state);
-  const queryClient = useQueryClient();
+  const cache = useCache();
 
   useEffect(() => {
     const detachTriggers = attachTriggers();
@@ -705,7 +705,7 @@ export function RefPreviewHost(): ReactNode {
     if (target === undefined) {
       return;
     }
-    prefetchReference(queryClient, target.route);
+    prefetchReference(cache, target.route);
     // No pointerout or focusout fires for an anchor that leaves the DOM (a Markdown body
     // re-rendering, a route change), so the card would outlive its anchor; watch for removal
     // for as long as this target is live.
@@ -716,7 +716,7 @@ export function RefPreviewHost(): ReactNode {
     });
     observer.observe(document.body, { childList: true, subtree: true });
     return () => observer.disconnect();
-  }, [queryClient, target]);
+  }, [cache, target]);
 
   const openAnchor = current?.phase === "open" ? current.target.anchor : undefined;
   useEffect(() => {

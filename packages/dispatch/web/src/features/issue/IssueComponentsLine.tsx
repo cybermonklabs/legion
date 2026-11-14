@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { architectureTreeQuery, projectArchitectureSourcesQuery } from "../../api/queries";
 import type { Issue } from "../../api/types";
 import {
@@ -13,7 +14,6 @@ import {
 } from "../../theme/classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
 import { buildIssuePath } from "../refs/routes";
-import { useShownQuery } from "../writes/shown-query";
 import { useIssueComponents } from "./useIssueComponents";
 
 /**

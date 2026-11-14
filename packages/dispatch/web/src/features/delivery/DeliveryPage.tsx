@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { isDeliveryNotConfigured } from "../../api/client";
 import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries";
 import type { DeliverySessionGroup } from "../../api/types";
@@ -22,7 +23,6 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useShownQuery } from "../writes/shown-query";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
 import { DrillDown } from "./DrillDown";
 import { FacetPanel } from "./FacetPanel";

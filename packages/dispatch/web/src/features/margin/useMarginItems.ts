@@ -1,6 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, type WriteBounds } from "../../api/client";
 import { commentsQueryKey, inboxQuery, issueQuery, userStateQuery } from "../../api/queries";
 import type {
@@ -27,7 +28,6 @@ import {
   pinnedEventIds,
 } from "../issue/pins";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
-import { useShownQuery } from "../writes/shown-query";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
 
@@ -321,7 +321,7 @@ export function useMarginItems(
     readonly held?: ReadonlySet<string>;
   } = {}
 ) {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const issueKey = owner?.kind === "issue" ? owner.key : undefined;
   const commentsKey = commentsQueryKey(
     owner?.kind === "document" ? { artifact: owner.artifactId } : { issue: owner?.key }
@@ -535,7 +535,7 @@ export function useMarginItems(
   // other live action over them, read again (R10 of dispatch://INFRA-299).
   const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue({
     // A read already out was asked before this action went out.
-    onMutate: () => queryClient.cancelQueries({ queryKey: commentsKey }),
+    onMutate: () => cache.cancel({ queryKey: commentsKey }),
     /** The comment as the action leaves it, written over the list as it stands, so an answer
      *  this is shown over again carries the resolve, reopen, accept or reject while every other
      *  comment that answer brought stays as the server has it (R7). */
@@ -564,11 +564,11 @@ export function useMarginItems(
         );
       },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: commentsKey });
+      void cache.invalidate({ queryKey: commentsKey });
       if (owner?.kind === "issue") {
-        void queryClient.invalidateQueries({ queryKey: issueQuery(owner.key).queryKey });
+        void cache.invalidate({ queryKey: issueQuery(owner.key).queryKey });
       } else if (owner?.kind === "document") {
-        void queryClient.invalidateQueries({ queryKey: ["artifact", owner.artifactId] });
+        void cache.invalidate({ queryKey: ["artifact", owner.artifactId] });
       }
     },
   });
@@ -596,7 +596,7 @@ export function useMarginItems(
       bounds: WriteBounds
     ) => {
       const saved = await api.editComment(id, { body, ...carried }, bounds);
-      void queryClient.invalidateQueries({ queryKey: commentsKey });
+      void cache.invalidate({ queryKey: commentsKey });
       return saved;
     },
     items,

@@ -1,5 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
@@ -26,7 +27,6 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDialog } from "../shell/useDialog";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** The version an approval speaks for: `version` when the review named one, else the document's
@@ -249,7 +249,7 @@ export function ApprovalChip({
   const { approval } = artifact;
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const submitGuard = useSubmitGuard();
 
   const review = useKeyedWrite({
@@ -261,21 +261,21 @@ export function ApprovalChip({
     onSuccess: () => {
       setRequestChangesOpen(false);
       onReviewed?.();
-      void queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] });
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
-      void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
+      void cache.invalidate({ queryKey: ["artifact-reviews", artifact.id] });
+      void cache.invalidate({ queryKey: ["artifact", artifact.id] });
+      void cache.invalidate({ queryKey: inboxQuery().queryKey });
       if (artifact.issue_key === null) {
-        void queryClient.invalidateQueries({
+        void cache.invalidate({
           queryKey: ["project", artifact.project, "artifacts"],
         });
-        void queryClient.invalidateQueries({
+        void cache.invalidate({
           queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
         });
         return;
       }
-      void queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] });
+      void cache.invalidate({ queryKey: ["issue", artifact.issue_key] });
+      void cache.invalidate({ queryKey: ["artifacts", artifact.issue_key] });
+      void cache.invalidate({ queryKey: ["asks", artifact.issue_key] });
     },
   });
 

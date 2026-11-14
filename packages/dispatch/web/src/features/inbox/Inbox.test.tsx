@@ -1,5 +1,4 @@
 import { expect, spyOn, test } from "bun:test";
-import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -19,6 +18,7 @@ import {
   answerIssuePatches,
 } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
+import { notifyManager, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type {
   Artifact,

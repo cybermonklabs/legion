@@ -5,7 +5,6 @@ import {
   SEARCH_OPERATOR_PHRASE,
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
@@ -14,6 +13,7 @@ import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";

@@ -1,5 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useCache, useWrites } from "../../api/cache/cache";
+import { mergeIssue } from "../../api/cache/issue-cache";
+import { plainWrite } from "../../api/cache/write-store";
 import {
   ApiError,
   api,
@@ -7,11 +9,9 @@ import {
   issuePatchRequest,
   type WriteRequest,
 } from "../../api/client";
-import { mergeIssue } from "../../api/issue-cache";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
-import { plainWrite, useWrites } from "../writes/write-store";
 import {
   buildItems,
   type Item,
@@ -74,7 +74,7 @@ export function useIssueTableActions({
   items: readonly Item[];
   clearSelection: () => void;
 }) {
-  const client = useQueryClient();
+  const cache = useCache();
   const writes = useWrites();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>();
@@ -121,7 +121,7 @@ export function useIssueTableActions({
           key,
           write
         );
-        if (answer !== null) mergeIssue(client, answer);
+        if (answer !== null) mergeIssue(cache, answer);
         setMoved((current) => new Set([...current, key]));
         return key;
       }
@@ -159,9 +159,9 @@ export function useIssueTableActions({
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       setBusy(false);
-      void client.invalidateQueries({ queryKey: ["issues"] });
-      void client.invalidateQueries({ queryKey: ["issue"] });
-      void client.invalidateQueries({ queryKey: ["inbox"] });
+      void cache.invalidate({ queryKey: ["issues"] });
+      void cache.invalidate({ queryKey: ["issue"] });
+      void cache.invalidate({ queryKey: ["inbox"] });
     }
   };
   const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;
@@ -321,7 +321,7 @@ export function useIssueTableActions({
           setUnansweredEpic(title);
           return undefined;
         }
-        mergeIssue(client, epic);
+        mergeIssue(cache, epic);
         const changed = await apply(
           open.map((key) => ({ key, input: { parent: epic.key } })),
           record.id

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -8,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { answerRoute } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";

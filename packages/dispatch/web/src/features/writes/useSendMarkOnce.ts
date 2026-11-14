@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 
+import { useWrites } from "../../api/cache/cache";
+import { plainWrite } from "../../api/cache/write-store";
 import type { WriteRequest } from "../../api/client";
-import { plainWrite, useWrites } from "./write-store";
 
 /** One read mark: what it is for (`key`) and what a send carries (`value`). */
 export interface ReadMark<T> {

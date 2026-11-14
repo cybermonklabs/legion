@@ -1,26 +1,6 @@
 import { DISPATCH_LOGIN_CHANGED } from "@legion/contracts";
-import {
-  type DefaultError,
-  type FetchQueryOptions,
-  hashKey,
-  type InferDataFromTag,
-  type Query,
-  type QueryClient,
-  type QueryKey,
-  useQueryClient,
-} from "@tanstack/react-query";
-import { useRef, useSyncExternalStore } from "react";
-
-import {
-  ApiError,
-  api,
-  type WriteBounds,
-  type WriteMethod,
-  type WriteRequest,
-} from "../../api/client";
-import type { AuthenticatedUser } from "../../api/types";
-import { newSendKey } from "../../lib/send-key";
-import { indexedDbFiles, type KeptFiles } from "./kept-files";
+import { hashKey, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import { indexedDbFiles, type KeptFiles } from "../../features/writes/kept-files";
 import {
   KEYED_SEND_ATTEMPT_MS,
   retriesUnderItsKey,
@@ -28,7 +8,7 @@ import {
   SendStoppedError,
   WriteDiscardedError,
   writeUnderKey,
-} from "./keyed-write";
+} from "../../features/writes/keyed-write";
 import {
   KEPT_SEND_RESUME_MS,
   type KeptState,
@@ -42,7 +22,12 @@ import {
   type Shape,
   type WriteStorage,
   writeStorage,
-} from "./write-storage";
+} from "../../features/writes/write-storage";
+import { newSendKey } from "../../lib/send-key";
+import { ApiError, api, type WriteBounds, type WriteMethod, type WriteRequest } from "../client";
+import type { AuthenticatedUser } from "../types";
+import type { Cache } from "./cache";
+import { clientOf } from "./client-handle";
 
 /** Where a write stands: waiting its turn behind an earlier write to its target (`queued`), out
  *  within its deadline (`sending`), out past it (`late`, `stopping` once the reader pressed Stop
@@ -139,14 +124,9 @@ export interface WriteKind<D, K = D> {
    *  `answer` is Dispatch's, `null` for a landing it had no answer to give for, and `awaited`
    *  says whether the surface that made it is still waiting for it. Left out, every query is read
    *  again for a write no surface awaits and for a landing without an answer. */
-  readonly landed?: (
-    client: QueryClient,
-    write: Write<D>,
-    answer: unknown,
-    awaited: boolean
-  ) => void;
+  readonly landed?: (cache: Cache, write: Write<D>, answer: unknown, awaited: boolean) => void;
   /** What a write of this kind undoes once it is refused, discarded or dropped. */
-  readonly undone?: (client: QueryClient, write: Write<D>) => void;
+  readonly undone?: (cache: Cache, write: Write<D>) => void;
   /** What a kind lets go of once whoever is signed in changes, or the person signs out: what it
    *  remembered of their answers, which the next person's writes must not build on. */
   readonly reset?: () => void;
@@ -156,7 +136,7 @@ export interface WriteKind<D, K = D> {
   /** Told each time a write of this kind joins its line - its press, a Retry, a reload - with
    *  what settles once it lands or is refused, and whether it is past its deadline already. */
   readonly started?: (
-    client: QueryClient,
+    cache: Cache,
     write: Write<D>,
     settled: Promise<unknown>,
     late: boolean
@@ -507,18 +487,19 @@ const NO_SHOWINGS: readonly Showing[] = Object.freeze([]);
 const NO_WRITES: readonly Write[] = Object.freeze([]);
 
 /** The login of the person `client`'s app is signed in as (`["whoami"]`), which every write is
- *  stamped with at its press; undefined while no one is signed in. */
-export function signedInLogin(client: QueryClient): string | undefined {
+ *  stamped with at its press; undefined while no one is signed in. */ function signedInLogin(
+  client: QueryClient
+): string | undefined {
   return client.getQueryData<AuthenticatedUser>(["whoami"])?.login;
 }
 
 /** Told of each store as it is made: nothing in the app, which holds no store but its own
- *  (`writesOf`), and the unit tests' preload, which stops every one after each test
+ *  (`Cache.writes`), and the unit tests' preload, which stops every one after each test
  *  (`watchWriteStores`). */
 let watcher: ((store: Writes) => void) | undefined;
 
 /**
- * Every write the page makes, one per press, beside the app's `QueryClient` (`writesOf`), above
+ * Every write the page makes, one per press, beside the app's cache (`Cache.writes`), above
  * the router, so leaving the page that made one never drops it: a composer's send, a broadcast, a
  * pin, a read mark, a status, an answer, a form's save. Each is made under a key minted at the
  * press and tried under it until Dispatch decides it (`writeUnderKey`), whether or not the browser
@@ -547,6 +528,7 @@ export class Writes {
    *  kept for as long as the page lives, since what went out under it never stops having gone
    *  out. */
   readonly #carried = new Map<string, WriteMethod>();
+  readonly #cache: Cache;
   readonly #client: QueryClient;
   readonly #kept: WriteStorage;
   readonly #files: KeptFiles;
@@ -603,11 +585,12 @@ export class Writes {
   readonly #overlays = new Map<string, HeldOverlay>();
 
   constructor(
-    client: QueryClient,
+    cache: Cache,
     kept: WriteStorage = writeStorage(),
     files: KeptFiles = indexedDbFiles()
   ) {
-    this.#client = client;
+    this.#cache = cache;
+    this.#client = clientOf(cache);
     this.#kept = kept;
     this.#files = files;
     watcher?.(this);
@@ -650,7 +633,7 @@ export class Writes {
    * The function is one value for as long as the changes naming the cache are the same ones -
    * one value for every cache no change names (`AS_DISPATCHED`), whatever starts or stops being
    * composed elsewhere - and hands back the same value for the same data. So a hook read, which
-   * reads it through `useSyncExternalStore` (`features/writes/shown-query.ts`), renders again
+   * reads it through `useSyncExternalStore` (`shown-query.ts`), renders again
    * only when its own composition changes, and the compose step runs once for every reader of
    * the cache.
    */
@@ -674,49 +657,6 @@ export class Writes {
     };
     this.#overlays.set(hash, { compose, key, named });
     return compose;
-  }
-
-  /** The cache at `key` as the person sees it: Dispatch's data with every live change over it
-   *  (`overlay`), for a read made outside React that must see what the person sees - the board's
-   *  neighbours and drop indices, the pin's toggle, the rows a mark-all or a dismiss takes, the
-   *  count an unread press drops from. A read that wants Dispatch's answer alone is `dispatched`;
-   *  every read of a cache's data is one of the two (`no-bare-cache-reads.test.ts`). */
-  shown<T>(key: QueryKey): T | undefined {
-    return this.overlay(key)(this.#client.getQueryData(key)) as T | undefined;
-  }
-
-  /** The cache at `key` as Dispatch answered it, with no live change over it, for a reader that
-   *  wants exactly that: who Dispatch says is signed in, the event feed's cursor, the id a
-   *  reference warms a document's text by, and a read a change makes inside its own composition,
-   *  which must carry no other write's change: each change is composed over the changes pressed
-   *  before it, never over a value one of them made. Typed by the key as TanStack's
-   *  `getQueryData` is. */
-  dispatched<
-    TQueryFnData = unknown,
-    TTaggedQueryKey extends QueryKey = QueryKey,
-    TInferredQueryFnData = InferDataFromTag<TQueryFnData, TTaggedQueryKey>,
-  >(key: TTaggedQueryKey): TInferredQueryFnData | undefined {
-    return this.#client.getQueryData<TQueryFnData, TTaggedQueryKey, TInferredQueryFnData>(key);
-  }
-
-  /** `dispatched`, fetched first where the cache holds no answer or one stale by `options`'
-   *  `staleTime`: TanStack's `fetchQuery`, which rejects with the fetch's error. */
-  fetchDispatched<
-    TQueryFnData,
-    TError = DefaultError,
-    TData = TQueryFnData,
-    TQueryKey extends QueryKey = QueryKey,
-  >(options: FetchQueryOptions<TQueryFnData, TError, TData, TQueryKey>): Promise<TData> {
-    return this.#client.fetchQuery(options);
-  }
-
-  /** `dispatched` of a query in hand, which no key need be looked up for: one TanStack hands an
-   *  option's callback (`enabled`, `refetchInterval`) or a cache's subscriber, or one a reader
-   *  finds in the cache. */
-  static dispatchedOf<TData>(query: {
-    readonly state: { readonly data: TData | undefined };
-  }): TData | undefined {
-    return query.state.data;
   }
 
   /** Composes the cache at `key` again, for a change whose rule reads more than the cache - the
@@ -1383,7 +1323,7 @@ export class Writes {
     this.#update(entry, entry.write);
     kinds
       .get(entry.write.kind)
-      ?.started?.(this.#client, entry.write, settled.promise, from !== "sending");
+      ?.started?.(this.#cache, entry.write, settled.promise, from !== "sending");
     this.#advance(entry.write.target);
   }
 
@@ -1579,7 +1519,7 @@ export class Writes {
     } else {
       this.#remove(entry);
     }
-    if (kind?.landed !== undefined) kind.landed(this.#client, entry.write, answer, awaited);
+    if (kind?.landed !== undefined) kind.landed(this.#cache, entry.write, answer, awaited);
     else if (!awaited || answer === null) void this.#client.invalidateQueries();
     this.#emit({ answer, kind: "landed", write: entry.write });
     this.#advance(entry.write.target);
@@ -1660,7 +1600,7 @@ export class Writes {
    *  dispatch://INFRA-299). Nothing is put back: the change was never written into the cache.
    *  The one place the three exits pair the two. */
   #undo(entry: Entry, write: Write, shown: boolean): void {
-    kinds.get(write.kind)?.undone?.(this.#client, write);
+    kinds.get(write.kind)?.undone?.(this.#cache, write);
     if (!shown || entry.showing === undefined) return;
     const { showing } = entry;
     // Dispatch's answer takes in what changed meanwhile - a thread that arrived, another
@@ -1801,18 +1741,6 @@ function keptState(write: Write): KeptState | undefined {
   }
 }
 
-const stores = new WeakMap<QueryClient, Writes>();
-
-/** The writes that live with `client`: one store per app, as there is one client. */
-export function writesOf(client: QueryClient): Writes {
-  let store = stores.get(client);
-  if (store === undefined) {
-    store = new Writes(client);
-    stores.set(client, store);
-  }
-  return store;
-}
-
 /** Has `watch` told of every store made from now on (none when `undefined`), for the unit tests'
  *  preload, which stops each one's trying after every test (`Writes.clear`). A store outlives the
  *  test that made it, and a write it left out goes on retrying on its backoff once the test's spies
@@ -1821,40 +1749,4 @@ export function writesOf(client: QueryClient): Writes {
  *  running when the retry reaches the network. */
 export function watchWriteStores(watch: ((store: Writes) => void) | undefined): void {
   watcher = watch;
-}
-
-export function useWrites(): Writes {
-  return writesOf(useQueryClient());
-}
-
-/**
- * What `select` picks out of every write the store holds, re-rendering only when that changes:
- * the pick is made again only when a write changes or `key` - what the pick is of, by name - does,
- * and handed back as the same value while it holds the same items (an array) or is the same value.
- */
-export function useWriteSelection<R>(key: string, select: (rows: readonly Write[]) => R): R {
-  const store = useWrites();
-  const last = useRef<{
-    readonly key: string;
-    readonly rows: readonly Write[];
-    readonly picked: R;
-  }>(undefined);
-  const pick = useRef(select);
-  pick.current = select;
-  return useSyncExternalStore(store.subscribe, () => {
-    const rows = store.rows();
-    const before = last.current;
-    if (before?.rows === rows && before.key === key) return before.picked;
-    const picked = pick.current(rows);
-    const same =
-      before !== undefined &&
-      (Object.is(before.picked, picked) ||
-        (Array.isArray(before.picked) &&
-          Array.isArray(picked) &&
-          before.picked.length === picked.length &&
-          before.picked.every((item, index) => Object.is(item, picked[index]))));
-    const kept = same ? before.picked : picked;
-    last.current = { key, picked: kept, rows };
-    return kept;
-  });
 }

@@ -1,11 +1,11 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
 
@@ -86,7 +86,7 @@ test("confirming the staged file uploads it with the typed summary", async () =>
     await user.paste("First draft");
     await user.click(screen.getByRole("button", { name: "Upload" }));
 
-    // The upload goes out once its file is kept in IndexedDB (`features/writes/write-store.ts`),
+    // The upload goes out once its file is kept in IndexedDB (`api/cache/write-store.ts`),
     // which is not the press's own tick, so the row waits for the call.
     await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
     await screen.findByText("Upload");

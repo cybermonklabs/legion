@@ -1,8 +1,9 @@
 import type { DocumentJSON } from "@legion/proof-editor";
-import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Doc } from "yjs";
 import { isText } from "../../api/artifact-version";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Ask, BlockSchema } from "../../api/types";
@@ -10,7 +11,6 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { useShownQuery } from "../writes/shown-query";
 import { AskBlockCard } from "./AskBlockCard";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import { colorForLogin } from "./connection";
@@ -71,7 +71,7 @@ export function VersionView({
   // login - equal to itself across re-reads - is both what the editor needs and the signal
   // that it has arrived.
   const login = useShownQuery(whoAmIQuery()).data?.login;
-  const queryClient = useQueryClient();
+  const cache = useCache();
   // The server's reading of this version's text, in its version mode: what the editor draws,
   // with no parse of its own. `DisplayTree` is the same JSON `DocumentJSON` describes - one
   // ProseMirror node - typed openly because a response carries whatever the server's schema
@@ -152,7 +152,7 @@ export function VersionView({
         heatMapMode: "hidden",
         onAskBlockHosts: setAskBlockHosts,
         user: { color: colorForLogin(login), name: login },
-        watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
+        watchPicture: (route, onPicture) => watchPicturePath(cache, route, onPicture),
         ydoc: doc,
       });
       handle = editor;
@@ -218,7 +218,7 @@ export function VersionView({
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [baseline, blockSchema, createEditor, highlighted, login, markdown, queryClient, tree]);
+  }, [baseline, blockSchema, createEditor, highlighted, login, markdown, cache, tree]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;

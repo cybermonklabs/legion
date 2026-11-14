@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import { useLocation } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { agentArtifactQuery } from "../refs/reference-target";
 import { parseAgentArtifactPath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useShownQuery } from "../writes/shown-query";
 import { ArtifactDetails } from "./ArtifactDetails";
 import { ArtifactBlobView, ArtifactHeader } from "./ArtifactHeader";
 import { ArtifactQueryStates } from "./ArtifactQueryStates";

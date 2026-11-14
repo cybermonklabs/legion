@@ -1,8 +1,8 @@
 import { useMemo } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { isAgentListRefilling } from "../../api/client";
 import type { Agent } from "../../api/types";
 import { agentsQuery, EMPTY_AGENTS, useRegistryPolling } from "../refs/agent-registry";
-import { useShownQuery } from "../writes/shown-query";
 
 /**
  * The agent registry list. `agents` keeps the rows of the last successful read through a failed

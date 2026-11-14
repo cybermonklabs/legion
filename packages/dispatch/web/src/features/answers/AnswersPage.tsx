@@ -1,6 +1,7 @@
-import { infiniteQueryOptions } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
+import { infiniteQueryOptions } from "../../api/cache/read-options";
+import { useShownInfiniteQuery, useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { askThreadQuery } from "../../api/queries";
 import type { MyAnswerRow, MyAnswersResponse } from "../../api/types";
@@ -23,7 +24,6 @@ import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useShownInfiniteQuery, useShownQuery } from "../writes/shown-query";
 
 const PAGE_SIZE = 50;
 

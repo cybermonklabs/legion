@@ -1,14 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 
 import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { Query } from "../../api/paths";
 import type { Agent, DispatchEvent, UserIssueState, UserState } from "../../api/types";
-import { writesOf } from "../writes/write-store";
 import { ActivityTab } from "./ActivityTab";
 
 // The writer of a frame is one of the kinds Dispatch writes, not the open `Actor` a route's
@@ -224,16 +224,16 @@ test("a pin the server refuses shows refused in the store, and Retry re-sends it
 
     await waitFor(() =>
       expect(
-        writesOf(queryClient)
-          .rows()
+        cacheOf(queryClient)
+          .writes.rows()
           .map((write) => [write.label, write.status])
       ).toEqual([["Pin on CORE-1", "refused"]])
     );
     expect(screen.getByRole("button", { name: "Pin" })).not.toHaveAttribute("disabled");
 
     refuse = false;
-    act(() => writesOf(queryClient).retry(writesOf(queryClient).rows()[0]?.id ?? 0));
-    await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
+    act(() => cacheOf(queryClient).writes.retry(cacheOf(queryClient).writes.rows()[0]?.id ?? 0));
+    await waitFor(() => expect(cacheOf(queryClient).writes.rows()).toEqual([]));
     expect(writes).toEqual([["pinned_items:event:1"], ["pinned_items:event:1"]]);
   } finally {
     unmount?.();
@@ -313,7 +313,7 @@ test("an event arriving while the reader is in the history leaves their row wher
     const before = reading?.getBoundingClientRect().top;
 
     act(() => {
-      prependEventToLog(queryClient, message(13));
+      prependEventToLog(cacheOf(queryClient), message(13));
     });
     await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(13));
 

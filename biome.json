@@ -90,7 +90,113 @@
       "linter": { "enabled": false }
     },
     {
-      "includes": ["packages/dispatch/web/src/**"],
+      "includes": [
+        "packages/dispatch/web/src/**",
+        "!packages/dispatch/web/src/api/cache/**",
+        "!packages/dispatch/web/src/**/*.test.ts",
+        "!packages/dispatch/web/src/**/*.test.tsx",
+        "!packages/dispatch/web/src/__tests__/**"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@legion/contracts": {
+                    "importNames": [
+                      "actorAttribution",
+                      "actorLabel",
+                      "actorName",
+                      "sessionLabel",
+                      "shortSessionId"
+                    ],
+                    "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string)."
+                  },
+                  "@tanstack/query-core": "Only the cache layer (web/src/api/cache/) imports TanStack Query: a feature reads and moves the caches through the Cache facade (useCache, the hooks of api/cache/shown-query.ts, the builders of api/cache/read-options.ts) and never holds a QueryClient, a QueryCache or a Query.",
+                  "@tanstack/react-query": "Only the cache layer (web/src/api/cache/) imports TanStack Query: a feature reads and moves the caches through the Cache facade (useCache, the hooks of api/cache/shown-query.ts, the builders of api/cache/read-options.ts) and never holds a QueryClient, a QueryCache or a Query."
+                },
+                "patterns": [
+                  {
+                    "group": ["**/refs/routes", "./routes"],
+                    "importNamePattern": "AGENT_LIVE_PATH",
+                    "message": "A link to an agent's live conversation is AgentName's (features/refs/AgentName.tsx)."
+                  },
+                  {
+                    "group": [
+                      "**/cache/client-handle",
+                      "**/cache/query-client",
+                      "**/cache/test-client"
+                    ],
+                    "message": "The cache layer's own modules hold the TanStack client (client-handle, query-client) or hand it to a test's rig (test-client): a shipped module holds the page's Cache and never the client under it."
+                  },
+                  {
+                    "group": ["**/cache/cache"],
+                    "importNamePattern": "cacheOf",
+                    "message": "cacheOf takes a TanStack client, which only the cache layer and the tests' rigs hold: a shipped module is handed the page's Cache (useCache, or an argument)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "packages/dispatch/web/src/**/*.test.ts",
+        "packages/dispatch/web/src/**/*.test.tsx",
+        "packages/dispatch/web/src/__tests__/**",
+        "!packages/dispatch/web/src/api/cache/**"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@legion/contracts": {
+                    "importNames": [
+                      "actorAttribution",
+                      "actorLabel",
+                      "actorName",
+                      "sessionLabel",
+                      "shortSessionId"
+                    ],
+                    "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string)."
+                  },
+                  "@tanstack/query-core": "A test's rig gets TanStack's client, observers and managers from the cache layer (web/src/api/cache/test-client.ts), the one place outside the layer's own modules they are named.",
+                  "@tanstack/react-query": "A test's rig gets TanStack's client, observers and managers from the cache layer (web/src/api/cache/test-client.ts), the one place outside the layer's own modules they are named.",
+                  "@testing-library/dom": {
+                    "importNames": ["fireEvent"],
+                    "message": "An interaction is performed with user-event (userEvent.setup(), or userOnFakeClock() from __tests__/user.ts under a held clock): fireEvent dispatches one DOM event, so it neither focuses what it clicks nor refuses a disabled control. Where user-event has no form for it, keep fireEvent behind a biome-ignore comment on the line above, stating why."
+                  },
+                  "@testing-library/react": {
+                    "importNames": ["fireEvent"],
+                    "message": "An interaction is performed with user-event (userEvent.setup(), or userOnFakeClock() from __tests__/user.ts under a held clock): fireEvent dispatches one DOM event, so it neither focuses what it clicks nor refuses a disabled control. Where user-event has no form for it, keep fireEvent behind a biome-ignore comment on the line above, stating why."
+                  }
+                },
+                "patterns": [
+                  {
+                    "group": ["**/refs/routes", "./routes"],
+                    "importNamePattern": "AGENT_LIVE_PATH",
+                    "message": "A link to an agent's live conversation is AgentName's (features/refs/AgentName.tsx)."
+                  },
+                  {
+                    "group": ["**/cache/client-handle"],
+                    "message": "The client under a Cache is the cache layer's own; a rig holds its client from test-client.ts and hands code the Cache over it (cacheOf)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["packages/dispatch/web/src/api/cache/**"],
       "linter": {
         "rules": {
           "style": {
@@ -116,14 +222,7 @@
                     "importNames": ["fireEvent"],
                     "message": "An interaction is performed with user-event (userEvent.setup(), or userOnFakeClock() from __tests__/user.ts under a held clock): fireEvent dispatches one DOM event, so it neither focuses what it clicks nor refuses a disabled control. Where user-event has no form for it, keep fireEvent behind a biome-ignore comment on the line above, stating why."
                   }
-                },
-                "patterns": [
-                  {
-                    "group": ["**/refs/routes", "./routes"],
-                    "importNamePattern": "AGENT_LIVE_PATH",
-                    "message": "A link to an agent's live conversation is AgentName's (features/refs/AgentName.tsx)."
-                  }
-                ]
+                }
               }
             }
           }
@@ -148,8 +247,25 @@
                       "shortSessionId"
                     ],
                     "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string)."
+                  },
+                  "@tanstack/query-core": "Only the cache layer (web/src/api/cache/) imports TanStack Query: a feature reads and moves the caches through the Cache facade (useCache, the hooks of api/cache/shown-query.ts, the builders of api/cache/read-options.ts) and never holds a QueryClient, a QueryCache or a Query.",
+                  "@tanstack/react-query": "Only the cache layer (web/src/api/cache/) imports TanStack Query: a feature reads and moves the caches through the Cache facade (useCache, the hooks of api/cache/shown-query.ts, the builders of api/cache/read-options.ts) and never holds a QueryClient, a QueryCache or a Query."
+                },
+                "patterns": [
+                  {
+                    "group": [
+                      "**/cache/client-handle",
+                      "**/cache/query-client",
+                      "**/cache/test-client"
+                    ],
+                    "message": "The cache layer's own modules hold the TanStack client (client-handle, query-client) or hand it to a test's rig (test-client): a shipped module holds the page's Cache and never the client under it."
+                  },
+                  {
+                    "group": ["**/cache/cache"],
+                    "importNamePattern": "cacheOf",
+                    "message": "cacheOf takes a TanStack client, which only the cache layer and the tests' rigs hold: a shipped module is handed the page's Cache (useCache, or an argument)."
                   }
-                }
+                ]
               }
             }
           }
@@ -161,7 +277,36 @@
         "packages/dispatch/web/src/features/refs/AgentName.tsx",
         "packages/dispatch/web/src/features/refs/routes.ts"
       ],
-      "linter": { "rules": { "style": { "noRestrictedImports": "off" } } }
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@tanstack/query-core": "Only the cache layer (web/src/api/cache/) imports TanStack Query: a feature reads and moves the caches through the Cache facade (useCache, the hooks of api/cache/shown-query.ts, the builders of api/cache/read-options.ts) and never holds a QueryClient, a QueryCache or a Query.",
+                  "@tanstack/react-query": "Only the cache layer (web/src/api/cache/) imports TanStack Query: a feature reads and moves the caches through the Cache facade (useCache, the hooks of api/cache/shown-query.ts, the builders of api/cache/read-options.ts) and never holds a QueryClient, a QueryCache or a Query."
+                },
+                "patterns": [
+                  {
+                    "group": [
+                      "**/cache/client-handle",
+                      "**/cache/query-client",
+                      "**/cache/test-client"
+                    ],
+                    "message": "The cache layer's own modules hold the TanStack client (client-handle, query-client) or hand it to a test's rig (test-client): a shipped module holds the page's Cache and never the client under it."
+                  },
+                  {
+                    "group": ["**/cache/cache"],
+                    "importNamePattern": "cacheOf",
+                    "message": "cacheOf takes a TanStack client, which only the cache layer and the tests' rigs hold: a shipped module is handed the page's Cache (useCache, or an argument)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

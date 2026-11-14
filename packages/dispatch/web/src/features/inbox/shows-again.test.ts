@@ -1,14 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { settle } from "../../__tests__/fake-clock";
 import { answerAskAnswers, answerAskHandOns, answerAskSnoozes } from "../../__tests__/send-answers";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api, askAnswerRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, InboxRow } from "../../api/types";
-import { useShownQuery } from "../writes/shown-query";
-import { writesOf } from "../writes/write-store";
 import { issueAsk } from "./inbox-fixture";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { useAskHandOn } from "./useAskHandOn";
@@ -53,7 +52,7 @@ const inboxSinceOtherBrowser: InboxRow[] = inboxRows.map((row) =>
 );
 
 /** The Inbox's own read and one write of it, over one query client - so one write store
- *  (`writesOf`) and one copy of the cache - with the signed-in person every write is stamped
+ *  (`Cache.writes`) and one copy of the cache - with the signed-in person every write is stamped
  *  with. */
 function renderInboxWrite<T>(use: () => T) {
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([...inboxRows]);
@@ -186,7 +185,7 @@ test("two snoozes of one ask, both refused while the Inbox cannot be read, leave
       await settle();
     });
     await waitFor(() => expect(snooze).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(writesOf(view.client).rows()).toEqual([]));
+    await waitFor(() => expect(cacheOf(view.client).writes.rows()).toEqual([]));
     await waitFor(() =>
       expect(view.client.getQueryState(inboxQuery().queryKey)?.status).toBe("error")
     );

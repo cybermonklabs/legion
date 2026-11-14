@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -49,7 +50,6 @@ import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { useThreadOrder } from "../threads/thread-order";
-import { useShownQuery } from "../writes/shown-query";
 import { AskCard } from "./AskCard";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";

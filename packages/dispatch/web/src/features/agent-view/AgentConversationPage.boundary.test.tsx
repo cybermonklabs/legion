@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 
 import { type FakeLiveSockets, installFakeLiveSockets } from "../../__tests__/live-socket-harness";
+import { liveSocketFor } from "../../api/cache/live-socket";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
-import { liveSocketFor } from "../../api/live-socket";
 import type { Agent } from "../../api/types";
 import { AgentConversationPage } from "./AgentConversationPage";
 import * as conversation from "./conversation";
@@ -57,7 +57,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   for (const spy of spies) spy.mockRestore();
-  if (queryClient !== undefined) liveSocketFor(queryClient).close();
+  if (queryClient !== undefined) liveSocketFor(cacheOf(queryClient)).close();
   queryClient = undefined;
   sockets.restore();
 });

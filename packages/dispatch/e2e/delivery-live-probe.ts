@@ -20,7 +20,7 @@ import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
 
-import { LIVE_SOCKET_SILENT_MS, reconnectDelayMs } from "../web/src/api/live-socket";
+import { LIVE_SOCKET_SILENT_MS, reconnectDelayMs } from "../web/src/api/cache/live-socket";
 import type {
   DeliveryLiveBody,
   DeliveryLiveCounts,
@@ -129,7 +129,7 @@ const SUB = "probe";
 /** Dispatch closes every socket with this code when it shuts down; the page reconnects within the
  *  first attempt's spread (`reconnectDelayMs(0)`). */
 const SERVICE_RESTART = 1012;
-/** The code the page closes a silent socket with before it opens another (api/live-socket.ts). */
+/** The code the page closes a silent socket with before it opens another (api/cache/live-socket.ts). */
 const REPLACED = 4000;
 /** The error codes that refuse what the probe sent: its view or its frame. Waiting cannot change
  *  either answer, so the watch ends; any other code (DELIVERY_NOT_CONFIGURED) is answered again

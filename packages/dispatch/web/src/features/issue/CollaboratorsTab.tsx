@@ -1,5 +1,6 @@
 import { isLegionRole, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import type { ReactNode } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type {
   IssueCollaboratorAgent,
@@ -19,7 +20,6 @@ import {
 } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
-import { useShownQuery } from "../writes/shown-query";
 
 /** The tab's three sections, in the order the reader meets them. Each holds the server's own
  *  order, which the contract states: the registry's agents first, by role in workflow order and

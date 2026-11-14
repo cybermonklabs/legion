@@ -22,8 +22,8 @@
  */
 
 import { INBOX_DISMISS_ROW_PREFIXES, inboxThreadRow } from "@legion/contracts";
-import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useCache } from "../../api/cache/cache";
 
 import { inboxDismissRequest } from "../../api/client";
 import {
@@ -42,7 +42,6 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { useWrites } from "../writes/write-store";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
 import {
@@ -222,8 +221,7 @@ export function useInboxDismiss({
 }: {
   readonly onSettled?: (ids: readonly string[]) => void;
 } = {}): InboxDismiss {
-  const queryClient = useQueryClient();
-  const writes = useWrites();
+  const cache = useCache();
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const [refusal, setRefusal] = useState<string | undefined>(undefined);
   const inboxKey = inboxThreadsQuery().queryKey;
@@ -250,15 +248,13 @@ export function useInboxDismiss({
       // the Inbox's, so the count is every row the optimistic apply took out, either side.
       const taken = "rows" in input ? input.rows.length : droppedRows(press).length;
       setRefusal(dismissRefusalText(taken, input.restore === true, error.message));
-      refusedUnreadDrop(queryClient, press?.drop);
+      refusedUnreadDrop(cache, press?.drop);
     },
     onMutate: async (input) => {
       setRefusal(undefined);
       // A read already out was asked before this press.
       await Promise.all(
-        [inboxKey, dismissedKey, countKey].map((queryKey) =>
-          queryClient.cancelQueries({ queryKey })
-        )
+        [inboxKey, dismissedKey, countKey].map((queryKey) => cache.cancel({ queryKey }))
       );
       const body = inboxDismissBody(input);
       // The rows the press takes, read before it shows its change: what a refusal names and
@@ -266,8 +262,8 @@ export function useInboxDismiss({
       // restore takes them out of the Dismissed read's pages. The other view is read again when
       // the answer lands, so a press never has to guess what the row looks like on the far side
       // of it.
-      const pages = writes.shown<DismissedPages>(dismissedKey);
-      const answer = writes.shown<MyRepliesResponse>(inboxKey);
+      const pages = cache.shown<DismissedPages>(dismissedKey);
+      const answer = cache.shown<MyRepliesResponse>(inboxKey);
       const restoring = input.restore === true;
       const dismissed =
         restoring && pages !== undefined
@@ -279,7 +275,7 @@ export function useInboxDismiss({
       const unread = inbox.filter((row) => row.unread).length;
       return {
         dismissed,
-        drop: unread > 0 ? pressUnreadDrop(queryClient, unread, input) : undefined,
+        drop: unread > 0 ? pressUnreadDrop(cache, unread, input) : undefined,
         inbox,
       };
     },
@@ -287,11 +283,11 @@ export function useInboxDismiss({
       // What the server changed is read again from the server: both views, the counts, and the
       // per-session agent state the Agents page's **New replies** badge counts, since a dismiss
       // marks its threads read as well.
-      void queryClient.invalidateQueries({ queryKey: myRepliesKey });
-      void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
+      void cache.invalidate({ queryKey: myRepliesKey });
+      void cache.invalidate({ queryKey: userAgentStateQuery().queryKey });
     },
     onSettled: (_data, _error, input, context) => {
-      settledUnreadDrop(queryClient, context?.drop);
+      settledUnreadDrop(cache, context?.drop);
       if ("rows" in input) {
         const ids = input.rows.map(({ id }) => id);
         live(ids, false);
@@ -318,11 +314,7 @@ export function useInboxDismiss({
           }));
         } else {
           shown.on<MyRepliesResponse>(inboxKey, (current) => withoutRows(current, body).answer);
-          shown.on<number>(
-            countKey,
-            shownUnreadCount(queryClient),
-            madeUnreadCount(queryClient, input)
-          );
+          shown.on<number>(countKey, shownUnreadCount(cache), madeUnreadCount(cache, input));
         }
       };
     },

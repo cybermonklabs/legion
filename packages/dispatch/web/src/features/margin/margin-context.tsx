@@ -1,4 +1,3 @@
-import { hashKey, type MutationKey, partialMatchKey, useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   type ReactNode,
@@ -9,6 +8,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { useCache } from "../../api/cache/cache";
+import { hashKey, type MutationKey, partialMatchKey } from "../../api/cache/keys";
 import { isAnchorMissing } from "../../api/client";
 import type { AnchorRefusal, ComposerAnchor, ComposerKind } from "../conversation/composer-model";
 import type { HeldSend } from "../conversation/held-sends";
@@ -301,8 +302,8 @@ const ComposerRegistry = createContext<(composer: ComposerBridge) => () => void>
 );
 
 export function MarginProvider({ children }: { children: ReactNode }): ReactNode {
-  const queryClient = useQueryClient();
-  const store = heldSends(queryClient);
+  const cache = useCache();
+  const store = heldSends(cache);
   const [blockFilterId, setBlockFilterId] = useState<string>();
   const [blockPlacements, setBlockPlacements] = useState<ReadonlyMap<string, MarkPlacement>>(
     () => new Map()

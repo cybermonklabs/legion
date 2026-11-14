@@ -1,6 +1,6 @@
 import { lazy, type ReactNode } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { NotFoundPage } from "../shell/NotFoundPage";
-import { useShownQuery } from "../writes/shown-query";
 import { credentialCapabilitiesQuery } from "./capabilities";
 
 const MachineLoginPage = lazy(() =>

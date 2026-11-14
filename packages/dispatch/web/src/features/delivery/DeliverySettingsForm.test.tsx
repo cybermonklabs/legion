@@ -1,11 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { answerDeliverySettings } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { DeliverySettings } from "../../api/types";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";

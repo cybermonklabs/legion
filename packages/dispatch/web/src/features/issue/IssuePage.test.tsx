@@ -1,6 +1,5 @@
 import { beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
@@ -17,6 +16,7 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches, answerIssueStates, answerRoute } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -36,7 +36,6 @@ import type {
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { writesOf } from "../writes/write-store";
 import { IssuePage } from "./IssuePage";
 import { writePin } from "./pin-write";
 import { pinnedItemMarker } from "./pins";
@@ -2184,7 +2183,7 @@ test("IssuePage's pin stays shown over a read of the viewer's state that lands w
     await user.click(within(view.container).getByRole("button", { name: "Pin issue" }));
     await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
     await act(() => queryClient.refetchQueries({ queryKey: ["user-state"] }));
-    expect(writesOf(queryClient).shown<UserState>(["user-state"])?.["CORE-1"]?.pinned).toBe(true);
+    expect(cacheOf(queryClient).shown<UserState>(["user-state"])?.["CORE-1"]?.pinned).toBe(true);
     expect(within(view.container).getByRole("button", { name: "Unpin issue" })).toBeTruthy();
   } finally {
     await act(async () => {
@@ -2223,7 +2222,7 @@ test("IssuePage's pin answer keeps a Conversation pin waiting behind it on the s
     api.getMyState = () => read.promise;
     await user.click(within(view.container).getByRole("button", { name: "Pin issue" }));
     await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
-    act(() => writePin(queryClient, "CORE-1", { id: "comment-1", op: "pin" }));
+    act(() => writePin(cacheOf(queryClient), "CORE-1", { id: "comment-1", op: "pin" }));
 
     await act(async () => {
       headerPin.resolve(pinned);
@@ -2232,7 +2231,7 @@ test("IssuePage's pin answer keeps a Conversation pin waiting behind it on the s
     await waitFor(() =>
       expect(queryClient.getQueryState(["issues", "pinned"])?.isInvalidated).toBe(true)
     );
-    expect(writesOf(queryClient).shown<UserState>(["user-state"])?.["CORE-1"]).toMatchObject({
+    expect(cacheOf(queryClient).shown<UserState>(["user-state"])?.["CORE-1"]).toMatchObject({
       dismissed: [pinnedItemMarker("comment-1")],
       pinned: true,
     });
@@ -2265,11 +2264,11 @@ test("IssuePage's pin answer merged while another issue's pin is out stays once 
   });
   queryClient.setQueryData(["issues", "pinned"], []);
   const view = renderIssuePage("/issues/CORE-1/conversation", undefined, undefined, queryClient);
-  const state = () => writesOf(queryClient).shown<UserState>(["user-state"]);
+  const state = () => cacheOf(queryClient).shown<UserState>(["user-state"]);
 
   try {
     await within(view.container).findByRole("heading", { level: 1, name: issue.title });
-    act(() => writePin(queryClient, "CORE-2", { id: "comment-9", op: "pin" }));
+    act(() => writePin(cacheOf(queryClient), "CORE-2", { id: "comment-9", op: "pin" }));
     await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
     expect(state()?.["CORE-2"]?.dismissed).toEqual([pinnedItemMarker("comment-9")]);
 
@@ -2287,7 +2286,7 @@ test("IssuePage's pin answer merged while another issue's pin is out stays once 
     expect(state()?.["CORE-1"]?.pinned).toBe(true);
   } finally {
     view.unmount();
-    writesOf(queryClient).clear();
+    cacheOf(queryClient).writes.clear();
     putIssueState.mockRestore();
     restore();
   }

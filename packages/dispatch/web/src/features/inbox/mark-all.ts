@@ -13,8 +13,8 @@
  * dismissed (`useInboxDismiss.ts`), as an email stays until it is archived.
  */
 
-import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useCache } from "../../api/cache/cache";
 
 import { markInboxReadRequest } from "../../api/client";
 import {
@@ -31,7 +31,6 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { useWrites } from "../writes/write-store";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
 import {
@@ -150,8 +149,7 @@ export function useMarkAllRead({
    *  agent filter, `?section=needs-you`, a selection naming somebody else - offers none. */
   readonly rows: readonly InboxListRow[];
 }): MarkAllRead {
-  const queryClient = useQueryClient();
-  const writes = useWrites();
+  const cache = useCache();
   const [refused, setRefused] = useState(false);
   const threadsKey = inboxThreadsQuery().queryKey;
   const countKey = myRepliesCountQuery().queryKey;
@@ -167,25 +165,25 @@ export function useMarkAllRead({
     label: () => "Inbox marked read",
     onError: (_error, _input, press) => {
       setRefused(true);
-      refusedUnreadDrop(queryClient, press?.drop);
+      refusedUnreadDrop(cache, press?.drop);
     },
     onMutate: (input) => {
       setRefused(false);
       // The rows the press takes out of the unread count, counted once, here.
-      const threads = writes.shown<MyRepliesResponse>(threadsKey);
+      const threads = cache.shown<MyRepliesResponse>(threadsKey);
       return {
         drop:
           threads === undefined
             ? undefined
-            : pressUnreadDrop(queryClient, markedRows(threads, input).size, input),
+            : pressUnreadDrop(cache, markedRows(threads, input).size, input),
       };
     },
-    onSettled: (_data, _error, _input, press) => settledUnreadDrop(queryClient, press?.drop),
+    onSettled: (_data, _error, _input, press) => settledUnreadDrop(cache, press?.drop),
     onSuccess: () => {
       // What the server marked is read again from the server: the list, its counts, and the
       // per-session agent state the Agents page's **New replies** badge counts.
-      void queryClient.invalidateQueries({ queryKey: myRepliesKey });
-      void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
+      void cache.invalidate({ queryKey: myRepliesKey });
+      void cache.invalidate({ queryKey: userAgentStateQuery().queryKey });
     },
     request: (input) => markInboxReadRequest(input),
     /** The mark this press shows: every row of the list it marks drawn as read, and the count
@@ -199,11 +197,7 @@ export function useMarkAllRead({
       shown.on<MyRepliesResponse>(threadsKey, (threads) =>
         applyMarkAll(threads, markedRows(threads, input), through)
       );
-      shown.on<number>(
-        countKey,
-        shownUnreadCount(queryClient),
-        madeUnreadCount(queryClient, input)
-      );
+      shown.on<number>(countKey, shownUnreadCount(cache), madeUnreadCount(cache, input));
     },
     target: () => "inbox:read",
   });

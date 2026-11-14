@@ -1,5 +1,4 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the mouse and pointer presses that drive dnd-kit, the key inside one of those drags, the clicks whose boolean return it reads, and the bare focus that has a control read its options
@@ -17,6 +16,9 @@ import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches, answerIssueStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import { plainWrite } from "../../api/cache/write-store";
 import { ApiError, api, issuePatchRequest, issueStateRequest } from "../../api/client";
 import { inboxQuery, issueQuery, projectIssuesQuery } from "../../api/queries";
 import type {
@@ -35,8 +37,6 @@ import { PriorityControl } from "../issue/PriorityControl";
 import { RepoControl } from "../issue/RepoControl";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
-import { useShownQuery } from "../writes/shown-query";
-import { plainWrite, writesOf } from "../writes/write-store";
 import { issueStatuses } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
 import { IssueBoard } from "./IssueBoard";
@@ -274,7 +274,7 @@ test("a failed move rolls the board back, refetches it and tells the truth about
       keyedAttempt
     );
     expect(hook.result.current.error).toBe(staleBoardMessage);
-    expect(writesOf(queryClient).shown<IssueSummary[]>(queryKey)).toEqual(issues);
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(queryKey)).toEqual(issues);
     expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
   } finally {
     hook.unmount();
@@ -321,7 +321,7 @@ test("two rapid moves on one board run one after the other, the second from the 
     });
     // Both optimistic placements are on the board before either request is answered...
     expect(
-      (writesOf(queryClient).shown(queryKey) as IssueSummary[])
+      (cacheOf(queryClient).shown(queryKey) as IssueSummary[])
         .filter((item) => item.status === "todo")
         .map((item) => item.key)
     ).toEqual(["CORE-3", "CORE-2", "CORE-1"]);
@@ -369,7 +369,7 @@ test("a second drop while the first is unanswered leaves both cards where they w
     issue({ key: "CORE-5", rank: "e", status: "in_progress", title: "Echo" }),
   ]);
   const todoKeys = () =>
-    (writesOf(queryClient).shown(queryKey) as IssueSummary[])
+    (cacheOf(queryClient).shown(queryKey) as IssueSummary[])
       .filter((item) => item.status === "todo")
       .map((item) => item.key);
   const answers: ((answer: Issue) => void)[] = [];
@@ -427,7 +427,7 @@ test("a drop refused behind an earlier drop, with the board unreadable, stops dr
     issue({ key: "CORE-5", rank: "e", status: "in_progress", title: "Echo" }),
   ]);
   const keysIn = (status: string) =>
-    (writesOf(queryClient).shown(queryKey) as IssueSummary[])
+    (cacheOf(queryClient).shown(queryKey) as IssueSummary[])
       .filter((item) => item.status === status)
       .map((item) => item.key);
   const listIssues = spyOn(api, "listIssues").mockRejectedValue(new Error("offline"));
@@ -915,7 +915,7 @@ function InboxRows(): ReactNode {
 
 /** The page these rows read: the board, CORE-1's assignee and repository controls over the same
  *  project list, the issue's own read, and the Inbox's own read. One query client, so one write
- *  store (`writesOf`) and one copy of each cache. */
+ *  store (`Cache.writes`) and one copy of each cache. */
 function renderRace(issues: IssueSummary[] = fieldIssues) {
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
@@ -1047,7 +1047,7 @@ test("a project list answer landing while a priority write waits its turn keeps 
   const race = renderRace();
   try {
     const board = await raceReady();
-    const writes = writesOf(race.queryClient);
+    const writes = cacheOf(race.queryClient).writes;
     // A write of CORE-1 that never answers, so the pick behind it waits its turn.
     await act(async () => {
       void writes
@@ -1228,8 +1228,8 @@ test("a list answer landing while a write is late and still being tried keeps th
     // answer is still to come, so it is live and shows its pick again.
     await tick(SEND_DEADLINE_MS + 1_000);
     expect(
-      writesOf(race.queryClient)
-        .rows()
+      cacheOf(race.queryClient)
+        .writes.rows()
         .map((write) => write.status)
     ).toEqual(["late"]);
 
@@ -1258,7 +1258,7 @@ test("a refused write shows nothing again: the list answer's own value stands", 
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     // The engine shows its own refusals, so the store lets the write go the moment Dispatch
     // refuses it, and the pick it showed stopped being drawn with it.
-    await waitFor(() => expect(writesOf(race.queryClient).rows()).toEqual([]));
+    await waitFor(() => expect(cacheOf(race.queryClient).writes.rows()).toEqual([]));
 
     race.listIssues.mockResolvedValue(listSinceOtherBrowser);
     await askAgain(race.queryClient, ["issues"]);
@@ -1278,7 +1278,7 @@ test("a discarded write shows nothing again: the reader took it back", async () 
   const race = renderRace();
   try {
     const board = await raceReady();
-    const writes = writesOf(race.queryClient);
+    const writes = cacheOf(race.queryClient).writes;
     // A write of CORE-1 that holds the line, and behind it one that shows a pick and waits its
     // turn: a write waiting its turn, unsent, is the reader's to discard.
     await act(async () => {
@@ -1349,7 +1349,7 @@ test("a settled write shows nothing again: what the server answers is the page's
       answer.resolve({ ...patched, key: "CORE-1", priority: 0 });
       await settle();
     });
-    await waitFor(() => expect(writesOf(race.queryClient).rows()).toEqual([]));
+    await waitFor(() => expect(cacheOf(race.queryClient).writes.rows()).toEqual([]));
 
     // Another browser moves CORE-1 back to P1 and CORE-2 to P3. The write is made, so nothing
     // is shown over this answer and the server's value stands on both rows.
@@ -1370,7 +1370,7 @@ test("a read mark shows nothing, and so shows nothing again", async () => {
   const race = renderRace();
   try {
     const board = await raceReady();
-    const writes = writesOf(race.queryClient);
+    const writes = cacheOf(race.queryClient).writes;
     // The read mark every conversation sends (`useSendMarkOnce`): one write of the store, on the
     // reader's own line for the issue (`read:issue:<KEY>`), which shows no change of any cache.
     await act(async () => {
@@ -1420,7 +1420,7 @@ test("a write the reader stopped keeps showing its change until the attempt alre
     await user.selectOptions(priorityIn(board, "CORE-1"), "0");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     await tick(SEND_DEADLINE_MS + 1_000);
-    const writes = writesOf(race.queryClient);
+    const writes = cacheOf(race.queryClient).writes;
     const late = writes.rows()[0];
     // Stop trying ends the retries, not the attempt in flight: that one may still land, so the
     // write is live and its pick is shown again.
@@ -1488,7 +1488,7 @@ test("two live writes of one list show their changes again in the order the stor
   const race = renderRace();
   try {
     const board = await raceReady();
-    const writes = writesOf(race.queryClient);
+    const writes = cacheOf(race.queryClient).writes;
     const pick = (priority: number, key: string) =>
       writes
         .run({
@@ -1548,7 +1548,7 @@ test("a cache emptied before the answer lands, as a reload leaves it, carries th
     await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(1));
     await waitFor(() =>
       expect(
-        (writesOf(race.queryClient).shown<IssueSummary[]>(boardListKey) ?? []).map((row) => [
+        (cacheOf(race.queryClient).shown<IssueSummary[]>(boardListKey) ?? []).map((row) => [
           row.key,
           row.priority,
         ])
@@ -1581,7 +1581,7 @@ test("a list answer landing under an unanswered move keeps the card where it was
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(board);
   const hook = renderMoves(queryClient);
   const todoKeys = () =>
-    (writesOf(queryClient).shown<IssueSummary[]>(boardListKey) ?? [])
+    (cacheOf(queryClient).shown<IssueSummary[]>(boardListKey) ?? [])
       .filter((row) => row.status === "todo")
       .map((row) => row.key);
   try {
@@ -1644,7 +1644,7 @@ test("a project list answer landing while an assignee write waits its turn keeps
   const race = renderRace();
   try {
     const board = await raceReady();
-    const writes = writesOf(race.queryClient);
+    const writes = cacheOf(race.queryClient).writes;
     // A write of CORE-1 that never answers, so the pick behind it waits its turn.
     await act(async () => {
       void writes
@@ -1688,8 +1688,8 @@ test("a list answer landing while an assignee write is late and still being trie
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     await tick(SEND_DEADLINE_MS + 1_000);
     expect(
-      writesOf(race.queryClient)
-        .rows()
+      cacheOf(race.queryClient)
+        .writes.rows()
         .map((write) => write.status)
     ).toEqual(["late"]);
 
@@ -1713,7 +1713,7 @@ test("a project list answer landing while a repository write waits its turn keep
   const race = renderRace();
   try {
     const board = await raceReady();
-    const writes = writesOf(race.queryClient);
+    const writes = cacheOf(race.queryClient).writes;
     await act(async () => {
       void writes
         .run({
@@ -1756,8 +1756,8 @@ test("a list answer landing while a repository write is late and still being tri
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     await tick(SEND_DEADLINE_MS + 1_000);
     expect(
-      writesOf(race.queryClient)
-        .rows()
+      cacheOf(race.queryClient)
+        .writes.rows()
         .map((write) => write.status)
     ).toEqual(["late"]);
 
@@ -2177,7 +2177,7 @@ test("a labelled move writes the rendered list, names its neighbours, and refetc
       keyedAttempt
     );
     expect(
-      writesOf(queryClient)
+      cacheOf(queryClient)
         .shown<IssueSummary[]>(labelledKey)
         ?.map((entry) => entry.key)
     ).toEqual(["CORE-1", "CORE-4", "CORE-3"]);

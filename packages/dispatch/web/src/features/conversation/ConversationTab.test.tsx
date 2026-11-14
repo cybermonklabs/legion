@@ -1,5 +1,4 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -21,6 +20,12 @@ import {
   answerThreadReads,
 } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
+import {
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "../../api/cache/test-client";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api } from "../../api/client";
 import { userStateQuery } from "../../api/queries";
@@ -48,7 +53,6 @@ import { stubMatchMedia } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
-import { writesOf } from "../writes/write-store";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
 
@@ -514,7 +518,7 @@ test("each refused pin is retried on its own, over the state Dispatch holds", as
       await user.click(button);
     }
 
-    const writes = writesOf(queryClient);
+    const writes = cacheOf(queryClient).writes;
     await waitFor(() =>
       expect(writes.rows().map((write) => write.status)).toEqual(["refused", "refused"])
     );
@@ -1528,7 +1532,7 @@ test("a comment's Reply names its session author's mention as the picker does", 
 
   try {
     await screen.findByText("Comment B");
-    await waitFor(() => expect(writesOf(queryClient).shown(["agents"])).toBeDefined());
+    await waitFor(() => expect(cacheOf(queryClient).shown(["agents"])).toBeDefined());
     const composer = screen.getByRole("form", { name: "Comment composer" });
     const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
@@ -2079,7 +2083,7 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
   const scrollIntoView = HTMLElement.prototype.scrollIntoView;
   HTMLElement.prototype.scrollIntoView = () => {};
   const queryClient = newQueryClient();
-  seedUnread(queryClient, { issue: "CORE-1" }, unread);
+  seedUnread(cacheOf(queryClient), { issue: "CORE-1" }, unread);
   const view = render(
     tab({ "CORE-1": issueState() }, true, queryClient, false, new Map(), focusItemId)
   );
@@ -2318,9 +2322,9 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     const [first, second] = putIssueState.mock.calls;
     expect(second?.[2]?.key).toBe(first?.[2]?.key);
     await waitFor(() =>
-      expect(
-        writesOf(queryClient).shown<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq
-      ).toBe(7)
+      expect(cacheOf(queryClient).shown<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(
+        7
+      )
     );
   } finally {
     view.unmount();
@@ -2354,11 +2358,11 @@ test("a read mark's answer merged while another issue's pin is out stays once th
   // A surface drawing the viewer's state, so the read again goes out.
   const unsubscribe = new QueryObserver(queryClient, userStateQuery()).subscribe(() => {});
   const view = render(tab({ "CORE-1": issueState([], 1) }, true, queryClient));
-  const state = () => writesOf(queryClient).shown<UserState>(["user-state"]);
+  const state = () => cacheOf(queryClient).shown<UserState>(["user-state"]);
 
   try {
     await screen.findByText("Newest");
-    act(() => writePin(queryClient, "CORE-2", { id: "comment-9", op: "pin" }));
+    act(() => writePin(cacheOf(queryClient), "CORE-2", { id: "comment-9", op: "pin" }));
     await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
     expect(state()?.["CORE-2"]?.dismissed).toEqual([pinnedItemMarker("comment-9")]);
 
@@ -2379,7 +2383,7 @@ test("a read mark's answer merged while another issue's pin is out stays once th
   } finally {
     view.unmount();
     unsubscribe();
-    writesOf(queryClient).clear();
+    cacheOf(queryClient).writes.clear();
     getMyState.mockRestore();
     putIssueState.mockRestore();
     stub.restore();
@@ -2403,7 +2407,7 @@ for (const order of ["oldest", "newest"] as const) {
     });
     const queryClient = newQueryClient();
     // The browser's order is the signed-in person's, so the card waits on who they are.
-    seedUnread(queryClient, { issue: "CORE-1" }, []);
+    seedUnread(cacheOf(queryClient), { issue: "CORE-1" }, []);
     const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
     try {

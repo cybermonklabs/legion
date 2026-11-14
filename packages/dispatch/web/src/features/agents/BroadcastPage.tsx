@@ -1,6 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type {
   Agent,
@@ -38,7 +39,6 @@ import { useAgents } from "../conversation/useAgents";
 import { AgentName, type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 import { deliveryAttempts } from "./attempts";
@@ -78,14 +78,14 @@ function BroadcastRecipientRow({
   recipient: BroadcastRecipient;
 }): ReactNode {
   const text = useAgentText();
-  const queryClient = useQueryClient();
+  const cache = useCache();
   // The recipient is the session the broadcast addressed: `AgentName` draws it wherever the row
   // names it, and the row's accessible name is the same name as text.
   const recipientAgent: AgentPart = { sessionId: recipient.session_id, storedTitle: undefined };
   const label = text.sessionText(recipient.session_id, undefined);
   const retry = useKeyedWrite({
     label: (mode: MessageDeliveryMode) => `Delivery to ${label} again, as ${MODE_LABELS[mode]}`,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["broadcast"] }),
+    onSuccess: () => void cache.invalidate({ queryKey: ["broadcast"] }),
     unlined: "a delivery sends a message to one session again and names no row",
     write: (mode, bounds) => api.createMessageDelivery(recipient.message.id, mode, bounds),
   });

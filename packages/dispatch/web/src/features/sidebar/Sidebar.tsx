@@ -1,6 +1,7 @@
-import { queryOptions } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { inboxQuery, pinnedIssuesKey, projectsQuery, userAgentStateQuery } from "../../api/queries";
 import type { AuthenticatedUser } from "../../api/types";
@@ -33,7 +34,6 @@ import {
   parseProjectPath,
   routeIsInbox,
 } from "../refs/routes";
-import { useShownQuery } from "../writes/shown-query";
 
 /** The rows the Agents heading folds, named so the heading's chevron can say what it controls. */
 const PINNED_AGENTS_ID = "rail-pinned-agents";

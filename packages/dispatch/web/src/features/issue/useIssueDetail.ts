@@ -1,10 +1,10 @@
 import { itemFromSearch } from "@legion/contracts";
 import { useLocation } from "react-router-dom";
-import { primarySpec, roleDocument } from "../../api/issue-cache";
+import { primarySpec, roleDocument } from "../../api/cache/issue-cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueQuery, userStateQuery } from "../../api/queries";
 import { type IssueRoute, isPrimaryDocumentArtifactRoute, issueTabForRoute } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
-import { useShownQuery } from "../writes/shown-query";
 
 export function useIssueDetail(route: IssueRoute) {
   const { search } = useLocation();

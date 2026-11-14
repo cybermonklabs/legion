@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
@@ -22,7 +23,6 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
-import { useShownQuery } from "../writes/shown-query";
 import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";

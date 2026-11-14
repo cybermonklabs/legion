@@ -1,4 +1,4 @@
-import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/cache/live-socket";
 import { createIssue, createProject, getArtifactText, getIssue } from "./api";
 import {
   connectedDot,

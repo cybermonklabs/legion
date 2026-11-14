@@ -1,5 +1,6 @@
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { type Cache, useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import type {
@@ -10,7 +11,6 @@ import type {
   UserAgentStates,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
-import { useShownQuery } from "../writes/shown-query";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
 /** The badge an unread count wears wherever it shows: the navigation, the compact header, and
@@ -82,12 +82,8 @@ export function useUnreadAtOpen(
 /** Puts the session's state a PUT answered with into the viewer's shared agent-state query, so
  *  every badge and row reads it at once. The cache holds only Dispatch's answers, so a pin of
  *  another session still out is composed over this one as it is read. */
-export function storeAgentState(
-  queryClient: QueryClient,
-  sessionId: string,
-  next: UserAgentState
-): void {
-  queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
+export function storeAgentState(cache: Cache, sessionId: string, next: UserAgentState): void {
+  cache.setDispatched<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
     ...current,
     [sessionId]: next,
   }));
@@ -106,11 +102,11 @@ function useSendReadMark<V>(
   dedupeKey: (value: V) => string,
   input: (value: V) => UserAgentStateInput
 ): void {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const unread = useShownQuery(userAgentStateQuery()).data?.[sessionId]?.unread_replies ?? 0;
   useSendMarkOnce({
     mark: value === undefined ? undefined : { key: dedupeKey(value), value: input(value) },
-    onSuccess: (next) => storeAgentState(queryClient, sessionId, next),
+    onSuccess: (next) => storeAgentState(cache, sessionId, next),
     request: (body: UserAgentStateInput) => agentStateRequest(sessionId, body),
     shouldSend: unread !== 0,
     target: `read:agent:${sessionId}`,

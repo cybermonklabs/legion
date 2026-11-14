@@ -1,6 +1,6 @@
+import type { Attempt, Writes } from "../../api/cache/write-store";
 import { api } from "../../api/client";
 import type { Message } from "../../api/types";
-import type { Attempt, Writes } from "../writes/write-store";
 import { press } from "./offer";
 
 /**

@@ -1,10 +1,10 @@
-import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { ApproverGrantResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { useShownQuery } from "../writes/shown-query";
 import { credentialGrantsQuery } from "./grants";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
@@ -90,7 +90,7 @@ const columns: readonly RevocableColumn<ApproverGrantResp>[] = [
  * Settings page.
  */
 export function GrantsSection(): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const grants = useShownQuery({ ...credentialGrantsQuery(), select: (data) => data.grants ?? [] });
 
   return (
@@ -102,9 +102,7 @@ export function GrantsSection(): ReactNode {
       heading="Live grants"
       headingId="credential-grants-heading"
       noun="grants"
-      onRevoked={() =>
-        void queryClient.invalidateQueries({ queryKey: credentialGrantsQuery().queryKey })
-      }
+      onRevoked={() => void cache.invalidate({ queryKey: credentialGrantsQuery().queryKey })}
       query={grants}
       revoke={(grant, bounds) => api.revokeCredentialGrant(grant.grant_id, bounds)}
       revokeError="Could not revoke this grant."

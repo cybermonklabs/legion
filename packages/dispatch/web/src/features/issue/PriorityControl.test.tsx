@@ -1,14 +1,13 @@
 import { expect, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
-import { useShownQuery } from "../writes/shown-query";
-import { writesOf } from "../writes/write-store";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
 import { useIssueAssignee } from "./useIssueAssignee";
@@ -187,11 +186,11 @@ test("PriorityControl saves the picked priority, shows it before the server answ
     // the picker stays enabled while the request is in flight.
     expect(select().disabled).toBe(false);
     expect(select()).toHaveFocus();
-    expect(writesOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
       { ...summary, priority: 2 },
       otherSummary,
     ]);
-    expect(writesOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
       { ...inboxRow, priority: 2 },
     ]);
 
@@ -200,7 +199,7 @@ test("PriorityControl saves the picked priority, shows it before the server answ
       await save.promise;
     });
     await waitFor(() =>
-      expect(writesOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(2)
+      expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(2)
     );
     expect(select()).toHaveFocus();
   } finally {
@@ -240,8 +239,8 @@ test("PriorityControl rolls every surface back and offers Retry when the save fa
     await screen.findByRole("alert");
     expect(select().value).toBe("1");
     expect(select().disabled).toBe(false);
-    expect(writesOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
-    expect(writesOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
 
     patchIssue.mockResolvedValue({ ...issue, priority: 0 });
     await user.click(screen.getByRole("button", { name: "Retry" }));
@@ -288,7 +287,7 @@ test("PriorityControl saves a pick made during the first save once that save set
       await second.promise;
     });
     await waitFor(() =>
-      expect(writesOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(2)
+      expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(2)
     );
     expect(patchIssue).toHaveBeenCalledTimes(2);
   } finally {
@@ -324,11 +323,11 @@ test("a queued pick that fails leaves the priority the server last confirmed, no
     });
     await screen.findByRole("alert");
     expect(select().value).toBe("0");
-    expect(writesOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
       { ...summary, priority: 0 },
       otherSummary,
     ]);
-    expect(writesOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
       { ...inboxRow, priority: 0 },
     ]);
   } finally {
@@ -361,11 +360,11 @@ test("a pick replaces a pick of the same priority control still waiting its turn
     expect(select().value).toBe("2");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(writesOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
       { ...summary, priority: 2 },
       otherSummary,
     ]);
-    expect(writesOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
       { ...inboxRow, priority: 2 },
     ]);
 
@@ -415,7 +414,7 @@ test("a refused pick is reported with no Retry while a newer pick stands in the 
     );
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(select().value).toBe("2");
-    expect(writesOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
       { ...summary, priority: 2 },
       otherSummary,
     ]);
@@ -462,8 +461,8 @@ test("a refused pick after another refused pick leaves the server's value, not t
       second.reject(new Error("offline"));
     });
     await waitFor(() => expect(select().value).toBe(String(issue.priority)));
-    expect(writesOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
-    expect(writesOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -502,14 +501,14 @@ test("a refused pick that replaced a waiting pick leaves the screen past the pic
     await screen.findByRole("alert");
     // The server holds P0, the pick it took; P3 never went out.
     expect(select().value).toBe("0");
-    expect(writesOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
       { ...summary, priority: 0 },
       otherSummary,
     ]);
-    expect(writesOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
       { ...inboxRow, priority: 0 },
     ]);
-    expect(writesOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(0);
+    expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(0);
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -544,7 +543,7 @@ test("a pick waiting behind another field's save stays shown over that save's me
     act(() => result.current.assignee.submit("bob"));
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     act(() => result.current.priority.submit(2));
-    expect(writesOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(2);
+    expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(2);
 
     await act(async () => {
       assigned.resolve({ ...issue, assignee: "bob" });
@@ -554,7 +553,7 @@ test("a pick waiting behind another field's save stays shown over that save's me
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
     );
     // The assignee's answer is merged, and the priority pick, still out, is shown over it.
-    expect(writesOf(queryClient).shown<IssueDetails>(detailKey)).toMatchObject({
+    expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)).toMatchObject({
       assignee: "bob",
       priority: 2,
     });

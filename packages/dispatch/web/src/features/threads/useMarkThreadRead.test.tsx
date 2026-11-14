@@ -1,5 +1,4 @@
 import { afterEach, expect, jest, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render } from "@testing-library/react";
 import { http } from "msw";
 import type { ReactNode } from "react";
@@ -9,6 +8,7 @@ import { dwellOn, installIntersectionObserver } from "../../__tests__/intersecti
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import { answerThreadReads } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { myRepliesOwnerQuery, whoAmIQuery } from "../../api/queries";
 import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { replyRow as row } from "./replies-fixture";

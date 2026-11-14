@@ -1,11 +1,11 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useCache, useWrites } from "../../api/cache/cache";
 
+import { plainWrite } from "../../api/cache/write-store";
 import { askSnoozeRequest, askUnsnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { plainWrite, useWrites } from "../writes/write-store";
 
 export interface AskSnoozeWrite {
   /** The server's reason after a refused save, until the next attempt. */
@@ -37,7 +37,7 @@ export interface AskSnoozeWrite {
  * last gave them, every other live write's change over them (R10).
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const inboxKey = inboxQuery().queryKey;
   // The row says why its snooze was refused, where the reader pressed it. A snooze and an
   // un-snooze are writes of the ask, so they stand in that row's line (`ask:<id>`) with its
@@ -56,9 +56,9 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
       );
     },
     // A read already out was asked before this press.
-    onMutate: () => queryClient.cancelQueries({ queryKey: inboxKey }),
+    onMutate: () => cache.cancel({ queryKey: inboxKey }),
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: inboxKey });
+      void cache.invalidate({ queryKey: inboxKey });
     },
   });
   return {
@@ -104,7 +104,7 @@ export interface AskSnoozeManyWrite {
  * each marked row deferred (R7 of dispatch://INFRA-299).
  */
 export function useAskSnoozeMany(): AskSnoozeManyWrite {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const writes = useWrites();
   const inboxKey = inboxQuery().queryKey;
   const [pending, setPending] = useState(0);
@@ -117,7 +117,7 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
       // than a case to handle.
       const writeOf = ids.map((id) => ({ id, request: askSnoozeRequest(id, until) }));
       setPending((count) => count + 1);
-      await queryClient.cancelQueries({ queryKey: inboxKey });
+      await cache.cancel({ queryKey: inboxKey });
       const results = await Promise.allSettled(
         writeOf.map(({ id, request }) =>
           writes.run({
@@ -144,7 +144,7 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
         const reason: unknown = result.reason;
         return [{ askId, reason: reason instanceof Error ? reason.message : String(reason) }];
       });
-      void queryClient.invalidateQueries({ queryKey: inboxKey });
+      void cache.invalidate({ queryKey: inboxKey });
       setPending((count) => count - 1);
       return { failed };
     },

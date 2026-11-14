@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueQuery } from "../../api/queries";
 import type {
   ArchitectureComponentRead,
@@ -27,7 +28,6 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { useShownQuery } from "../writes/shown-query";
 import { expansionStorageKey, placeChild, splitWork } from "./architecture-model";
 
 function readExpansion(storageKey: string): string[] {

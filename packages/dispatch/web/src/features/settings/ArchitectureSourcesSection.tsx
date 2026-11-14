@@ -1,5 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import {
   apiErrorMessage,
   architectureSourceDeleteRequest,
@@ -23,7 +24,6 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   ownerRepoPattern,
@@ -54,7 +54,7 @@ export function sourceLine({ project, repo }: SourceKey): string {
  * "Access verified" until a sync reports otherwise — and a failed check surfaces the server's
  * reason inline. Saving a repository the project already has changes that source's branch. */
 export function ArchitectureSourcesSection(): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const [project, setProject] = useState("");
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("main");
@@ -74,7 +74,7 @@ export function ArchitectureSourcesSection(): ReactNode {
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
       // The settings list's key prefixes every project's own list, so both refresh.
-      void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey });
+      void cache.invalidate({ queryKey: architectureSourcesQuery().queryKey });
       setProject("");
       setRepository("");
       setBranch("main");
@@ -84,8 +84,7 @@ export function ArchitectureSourcesSection(): ReactNode {
     label: (source: SourceKey) => `${source.project}'s architecture source ${source.repo} removed`,
     request: (source: SourceKey) => architectureSourceDeleteRequest(source.project, source.repo),
     target: sourceLine,
-    onSuccess: () =>
-      void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
+    onSuccess: () => void cache.invalidate({ queryKey: architectureSourcesQuery().queryKey }),
   });
   // A refresh settles into the row either way: a rejected model comes back 200
   // with the reason in last_error, and even a 409 (access revoked, branch gone)
@@ -95,8 +94,7 @@ export function ArchitectureSourcesSection(): ReactNode {
       `Refresh of ${source.project}'s architecture source ${source.repo}`,
     request: (source: SourceKey) => architectureSourceSyncRequest(source.project, source.repo),
     target: sourceLine,
-    onSettled: () =>
-      void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
+    onSettled: () => void cache.invalidate({ queryKey: architectureSourcesQuery().queryKey }),
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

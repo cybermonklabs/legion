@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 
-import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/cache/query-refresh";
 import {
   createAsk,
   createComment,
@@ -86,7 +86,7 @@ async function until(at: number): Promise<void> {
 }
 
 /** Ends a counting window the way the page would: a refresh the scheduler owes starts at most
- *  `MIN_REFETCH_INTERVAL_MS` after the fetch before it (`web/src/api/query-refresh.ts`), a page
+ *  `MIN_REFETCH_INTERVAL_MS` after the fetch before it (`web/src/api/cache/query-refresh.ts`), a page
  *  timer, so the page's clock fires it at once rather than the row waiting that long; `settled`
  *  then waits out whatever it sent. A read the page sends late is still counted, and one it never
  *  owed cannot appear. */

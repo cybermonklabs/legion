@@ -1,5 +1,5 @@
-import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
-import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/cache/live-socket";
+import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/cache/query-refresh";
 import { agentRow, setInterests, setLiveSessions } from "./agents";
 import {
   createArtifactAsk,
@@ -1142,7 +1142,7 @@ test.describe("credential record path", () => {
 // that one is gone, from the credential list's own poll (`CREDENTIAL_POLL_INTERVAL_MS`,
 // `features/credentials/pending.ts`).
 // `page.clock` fast-forwards past that interval without disturbing the event feed: its socket is
-// replaced only after 45 s with no frame (`LIVE_SOCKET_SILENT_MS`, `api/live-socket.ts`), well
+// replaced only after 45 s with no frame (`LIVE_SOCKET_SILENT_MS`, `api/cache/live-socket.ts`), well
 // past the 15.5 s advanced here, so the feed never has a gap and the poll is the only thing that
 // could have surfaced the change. This repeats the test above's setup rather than sharing a
 // helper: this file's own convention is self-contained tests, and the two prove different
@@ -1257,7 +1257,7 @@ test("Nothing needs you stays on screen through a focus and a return to the Inbo
       });
     });
     const empty = page.getByText("Nothing needs you");
-    // The reconnect below waits a draw from [0, RECONNECT_SPREAD_MS) (`web/src/api/live-socket`),
+    // The reconnect below waits a draw from [0, RECONNECT_SPREAD_MS) (`web/src/api/cache/live-socket`),
     // which the page's own clock spends.
     await page.clock.install();
     await page.goto("/");

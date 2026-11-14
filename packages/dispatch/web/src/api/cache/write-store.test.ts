@@ -4,6 +4,7 @@ import {
   type InfiniteData,
   InfiniteQueryObserver,
   QueryClient,
+  type QueryKey,
   QueryObserver,
 } from "@tanstack/react-query";
 import { waitFor } from "@testing-library/react";
@@ -19,16 +20,6 @@ import {
 } from "../../__tests__/kept-sends-harness";
 import { answerSends, type SendAnswers } from "../../__tests__/send-answers";
 import {
-  ApiError,
-  api,
-  NetworkError,
-  RequestTimeoutError,
-  type WriteBounds,
-  type WriteRequest,
-} from "../../api/client";
-import { DispatchQueryClient } from "../../api/query-client";
-import { reachable, routeOf, unreachable } from "../../api/reachability";
-import {
   KEYED_SEND_ATTEMPT_MS,
   OneRequestPerWriteError,
   SEND_DEADLINE_MS,
@@ -36,8 +27,19 @@ import {
   SendInterruptedError,
   SendStoppedError,
   WriteDiscardedError,
-} from "./keyed-write";
-import { KEPT_SEND_RESUME_MS, type KeptState } from "./write-storage";
+} from "../../features/writes/keyed-write";
+import { KEPT_SEND_RESUME_MS, type KeptState } from "../../features/writes/write-storage";
+import {
+  ApiError,
+  api,
+  NetworkError,
+  RequestTimeoutError,
+  type WriteBounds,
+  type WriteRequest,
+} from "../client";
+import { reachable, routeOf, unreachable } from "../reachability";
+import { cacheOf } from "./cache";
+import { DispatchQueryClient } from "./query-client";
 import { defineWriteKind, plainWrite, type Write, type WriteChange, Writes } from "./write-store";
 
 /** A page's query client, signed in: the store stamps every write with this login at its press
@@ -46,6 +48,13 @@ function signedIn(login = "alice"): QueryClient {
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login });
   return client;
+}
+
+/** What `writes`, a store a test makes beside the page's (`Cache.writes`), shows of the cache at
+ *  `key`: Dispatch's data `client` holds with every change `writes` composes over it, as
+ *  `Cache.shown` reads the page's store. */
+function shownBy<T>(writes: Writes, client: QueryClient, key: QueryKey): T | undefined {
+  return writes.overlay(key)(client.getQueryData(key)) as T | undefined;
 }
 
 /** Moves the clock `ms` on, letting each timer's continuation run as it fires. */
@@ -177,7 +186,7 @@ function storeOf(tab = keptTab(), login = "alice", files = memoryFiles()) {
     client: signedIn(login),
     files,
     tab,
-    writes: new Writes(signedIn(login), tab.page(), files),
+    writes: new Writes(cacheOf(signedIn(login)), tab.page(), files),
   };
 }
 
@@ -211,7 +220,7 @@ function resuming(
       version: 1,
     })
   );
-  const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+  const writes = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
 }
@@ -347,7 +356,7 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
       method: "PUT",
       path: "/api/v1/asks/ask-1/snooze",
     };
-    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    const before = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
     try {
       const hang = () => Promise.withResolvers<never>().promise;
       void statusWrite(before, hang).catch(() => {});
@@ -369,7 +378,7 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
         state: { status: "sending" },
       });
 
-      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      const after = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
       after.resume("alice");
       await settle();
       const resent: unknown[] = send.mock.calls.map((call) => [
@@ -383,7 +392,7 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
       expect(after.rows()).toEqual([]);
       expect(tab.kept(patchKey ?? "")).toBeUndefined();
 
-      const old = new Writes(signedIn(), tab.page(), memoryFiles());
+      const old = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
       void statusWrite(old, hang).catch(() => {});
       await settle();
       const oldKey = row(old)?.key ?? "";
@@ -392,7 +401,7 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
         `dispatch.write:${oldKey}`,
         JSON.stringify({ ...entry, pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1 })
       );
-      const later = new Writes(signedIn(), tab.page(), memoryFiles());
+      const later = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
       later.resume("alice");
       await settle();
       expect(send).toHaveBeenCalledTimes(2);
@@ -415,7 +424,7 @@ test("an upload's file survives a reload and the upload resumes with it", async 
     const tab = keptTab();
     const files = memoryFiles();
     const send = spyOn(api, "send").mockResolvedValue({ artifact: {}, version: {} } as never);
-    const before = new Writes(signedIn(), tab.page(), files);
+    const before = new Writes(cacheOf(signedIn()), tab.page(), files);
     try {
       void uploadWrite(before, spec, () => Promise.withResolvers<never>().promise).catch(() => {});
       await settle();
@@ -431,7 +440,7 @@ test("an upload's file survives a reload and the upload resumes with it", async 
         },
       });
 
-      const after = new Writes(signedIn(), tab.page(), files);
+      const after = new Writes(cacheOf(signedIn()), tab.page(), files);
       after.resume("alice");
       await settle();
       expect(send).toHaveBeenCalledTimes(1);
@@ -457,7 +466,7 @@ test("a retried upload's file moves to its new key, and a reload resumes it ther
     const tab = keptTab();
     const files = memoryFiles();
     const send = spyOn(api, "send").mockResolvedValue({ artifact: {}, version: {} } as never);
-    const before = new Writes(signedIn(), tab.page(), files);
+    const before = new Writes(cacheOf(signedIn()), tab.page(), files);
     try {
       let answer: () => Promise<unknown> = () => Promise.reject(verdict);
       void uploadWrite(before, spec, () => answer()).catch(() => {});
@@ -474,7 +483,7 @@ test("a retried upload's file moves to its new key, and a reload resumes it ther
 
       // With no file under the new key the resumed upload has no request to make (`requestFrom`)
       // and no attempt: that this one goes out under that key is the file found there.
-      const after = new Writes(signedIn(), tab.page(), files);
+      const after = new Writes(cacheOf(signedIn()), tab.page(), files);
       after.resume("alice");
       await settle();
       expect(send).toHaveBeenCalledTimes(1);
@@ -496,7 +505,7 @@ test("an upload is neither kept nor sent until its file is kept", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
     const files = heldFiles();
-    const writes = new Writes(signedIn(), tab.page(), files);
+    const writes = new Writes(cacheOf(signedIn()), tab.page(), files);
     try {
       let attempts = 0;
       void uploadWrite(writes, once, () => {
@@ -531,7 +540,7 @@ test("a retried upload keeps its old key and file until the new key's file is ke
   await onFakeClock(async () => {
     const tab = keptTab();
     const files = heldFiles();
-    const writes = new Writes(signedIn(), tab.page(), files);
+    const writes = new Writes(cacheOf(signedIn()), tab.page(), files);
     try {
       let attempts = 0;
       void uploadWrite(writes, once, () => {
@@ -582,7 +591,7 @@ test("a reload inside a Retry's keep brings the refused upload back with its fil
   await onFakeClock(async () => {
     const tab = keptTab();
     const files = heldFiles();
-    const before = new Writes(signedIn(), tab.page(), files);
+    const before = new Writes(cacheOf(signedIn()), tab.page(), files);
     try {
       void uploadWrite(before, once, () => Promise.reject(verdict)).catch(() => {});
       await settle();
@@ -592,7 +601,7 @@ test("a reload inside a Retry's keep brings the refused upload back with its fil
       before.retry(row(before)?.id ?? 0);
       await settle();
 
-      const after = new Writes(signedIn(), tab.page(), files);
+      const after = new Writes(cacheOf(signedIn()), tab.page(), files);
       after.resume("alice");
       await settle();
       const back = row(after);
@@ -615,7 +624,7 @@ test("an upload whose file is not kept is sent, kept nowhere, and still confirme
     const tab = keptTab();
     const files = heldFiles();
     const unload = new UnloadTarget();
-    const writes = new Writes(signedIn(), tab.page(unload), files);
+    const writes = new Writes(cacheOf(signedIn()), tab.page(unload), files);
     try {
       let attempts = 0;
       void uploadWrite(writes, once, () => {
@@ -633,7 +642,7 @@ test("an upload whose file is not kept is sent, kept nowhere, and still confirme
       expect(files.rows.has(key)).toBe(false);
       expect(unload.asks()).toBe(true);
 
-      const after = new Writes(signedIn(), tab.page(), files);
+      const after = new Writes(cacheOf(signedIn()), tab.page(), files);
       after.resume("alice");
       await settle();
       expect(after.rows()).toEqual([]);
@@ -650,7 +659,7 @@ test("a retried upload whose file is not kept moves its key and is kept nowhere"
   await onFakeClock(async () => {
     const tab = keptTab();
     const files = heldFiles();
-    const writes = new Writes(signedIn(), tab.page(), files);
+    const writes = new Writes(cacheOf(signedIn()), tab.page(), files);
     try {
       let attempts = 0;
       void uploadWrite(writes, once, () => {
@@ -686,7 +695,7 @@ test("a write of another login is dropped, kept or in flight", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
     const send = spyOn(api, "send").mockResolvedValue({} as never);
-    const alice = new Writes(signedIn("alice"), tab.page(), memoryFiles());
+    const alice = new Writes(cacheOf(signedIn("alice")), tab.page(), memoryFiles());
     try {
       let attempts = 0;
       const pressed = statusWrite(alice, () => {
@@ -697,7 +706,7 @@ test("a write of another login is dropped, kept or in flight", async () => {
       const key = row(alice)?.key ?? "";
       expect(row(alice)?.login).toBe("alice");
 
-      const bob = new Writes(signedIn("bob"), tab.page(), memoryFiles());
+      const bob = new Writes(cacheOf(signedIn("bob")), tab.page(), memoryFiles());
       bob.resume("bob");
       await settle();
       expect(send).not.toHaveBeenCalled();
@@ -730,7 +739,7 @@ const draftWrite = defineWriteKind<{ readonly draft: string }>({
 async function lapsedWrites() {
   const tab = keptTab();
   const files = memoryFiles();
-  const writes = new Writes(signedIn("alice"), tab.page(), files);
+  const writes = new Writes(cacheOf(signedIn("alice")), tab.page(), files);
   const file = new File(["spec body"], "spec.md", { type: "text/markdown" });
   let up = false;
   let attempts = 0;
@@ -840,7 +849,7 @@ test("a write answered 401 is asked again under its key, and whoami is read agai
   await onFakeClock(async () => {
     const client = signedIn("alice");
     const invalidate = spyOn(client, "invalidateQueries");
-    const writes = new Writes(client, keptTab().page(), memoryFiles());
+    const writes = new Writes(cacheOf(client), keptTab().page(), memoryFiles());
     let answers = 0;
     const keys: string[] = [];
     const landed = writes.run({
@@ -879,7 +888,7 @@ test("a write answered 401 again while its person is still signed in is refused"
       queryKey: ["whoami"],
     });
     const stop = whoami.subscribe(() => {});
-    const writes = new Writes(client, keptTab().page(), memoryFiles());
+    const writes = new Writes(cacheOf(client), keptTab().page(), memoryFiles());
     try {
       let attempts = 0;
       const refused = statusWrite(writes, () => {
@@ -938,7 +947,7 @@ test("LOGIN_CHANGED drops every write of its login and reads whoami again", asyn
   await onFakeClock(async () => {
     const client = signedIn("alice");
     const invalidate = spyOn(client, "invalidateQueries");
-    const writes = new Writes(client, keptTab().page(), memoryFiles());
+    const writes = new Writes(cacheOf(client), keptTab().page(), memoryFiles());
     let sentLogin: string | undefined;
     void statusWrite(writes, () => Promise.withResolvers<never>().promise, {
       target: "issue:CORE-2",
@@ -1268,7 +1277,7 @@ test("409 KEY_COMMITTED is a landing: null, nothing kept, and every read refresh
     const { tab } = storeOf();
     const client = signedIn();
     const invalidate = spyOn(client, "invalidateQueries");
-    const writes = new Writes(client, tab.page(), memoryFiles());
+    const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
     let attempts = 0;
     const landed = statusWrite(writes, () => {
       attempts += 1;
@@ -1294,7 +1303,7 @@ test("a write the reader was stopping resumes with exactly one attempt", async (
   await onFakeClock(async () => {
     const tab = keptTab();
     const send = spyOn(api, "send").mockRejectedValue(unavailable);
-    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    const before = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
     try {
       void statusWrite(before, () => Promise.reject(unavailable)).catch(() => {});
       await tick(SEND_DEADLINE_MS + 1_000);
@@ -1302,7 +1311,7 @@ test("a write the reader was stopping resumes with exactly one attempt", async (
       const key = row(before)?.key ?? "";
       expect(tab.kept(key)).toMatchObject({ state: { status: "late", stopping: true } });
 
-      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      const after = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
       after.resume("alice");
       await tick(30 * 60_000);
       expect(send).toHaveBeenCalledTimes(1);
@@ -1323,7 +1332,7 @@ test("a write the reader was stopping resumes with exactly one attempt", async (
 test("two writes on one line survive a reload and land once each, in press order", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
-    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    const before = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
     const landed: unknown[] = [];
     const failing = new WeakSet<WriteRequest>();
     const send = spyOn(api, "send").mockImplementation(async (request) => {
@@ -1354,7 +1363,7 @@ test("two writes on one line survive a reload and land once each, in press order
         state: { status: "queued" },
       });
 
-      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      const after = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
       after.resume("alice");
       await settle();
       expect(landed).toEqual([{ status: "backlog" }, { status: "done" }]);
@@ -1647,7 +1656,7 @@ function neverSent(tab: KeptTab, key: string, pressedAt: number): Writes {
       version: 1,
     })
   );
-  const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+  const writes = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
 }
@@ -1741,7 +1750,7 @@ test("a resumed write that sent nothing makes its attempt on the first Retry", a
           version: 1,
         })
       );
-      const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+      const writes = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
       writes.resume("alice");
       await settle();
       const resumed = row(writes);
@@ -1971,7 +1980,7 @@ test("a reload sends an unlined DELETE again", async () => {
 test("a reload drops a write whose answer is shown once rather than sending it again", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
-    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    const before = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
     const mint: WriteRequest = {
       body: { name: "ci", scopes: ["read"] },
       method: "POST",
@@ -1998,7 +2007,7 @@ test("a reload drops a write whose answer is shown once rather than sending it a
       });
       const sent = send.mock.calls.length;
 
-      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      const after = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
       after.resume("alice");
       await settle();
       expect(send).toHaveBeenCalledTimes(sent);
@@ -2019,7 +2028,7 @@ test("a Retry shows a refused write's change again as it rejoins its line", asyn
   await onFakeClock(async () => {
     const tab = keptTab();
     const client = signedIn();
-    const writes = new Writes(client, tab.page(), memoryFiles());
+    const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
     client.setQueryData(["user-state"], { pinned: false });
     const answers: (() => Promise<unknown>)[] = [
       () => Promise.reject(verdict),
@@ -2048,7 +2057,9 @@ test("a Retry shows a refused write's change again as it rejoins its line", asyn
 
       writes.retry(row(writes)?.id ?? 0);
       expect(row(writes)?.status).toBe("sending");
-      expect(writes.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+      expect(shownBy<{ pinned: boolean }>(writes, client, ["user-state"])).toEqual({
+        pinned: true,
+      });
     } finally {
       writes.clear();
       tab.close();
@@ -2066,14 +2077,14 @@ function readAgain(client: QueryClient, key: readonly unknown[]): boolean | unde
   return client.getQueryState(key)?.isInvalidated;
 }
 
-// R7 of dispatch://INFRA-299: every read of a cache's data is one of two named reads. While a
-// pin is live, `shown` is the screen - Dispatch's state with the pin over it - and `dispatched`
-// is Dispatch's answer alone, as is every other form of it: fetched (`fetchDispatched`, which a
-// fresh answer leaves unasked) and of the query in hand (`Writes.dispatchedOf`).
+// R7 of dispatch://INFRA-299: every read of a cache's data is one of two named reads, both the
+// page's `Cache`'s. While a pin is live, `shown` is the screen - Dispatch's state with the pin
+// over it - and `dispatched` is Dispatch's answer alone, as is its fetched form
+// (`fetchDispatched`, which a fresh answer leaves unasked).
 test("dispatched reads Dispatch's answer while a live change shows another value, and shown the composed one", async () => {
-  const tab = keptTab();
   const client = signedIn();
-  const writes = new Writes(client, tab.page(), memoryFiles());
+  const cache = cacheOf(client);
+  const { writes } = cache;
   client.setQueryData(["user-state"], { pinned: false });
   try {
     void writes
@@ -2087,24 +2098,19 @@ test("dispatched reads Dispatch's answer while a live change shows another value
         write: attemptOf(put, () => Promise.withResolvers<never>().promise),
       })
       .catch(() => {});
-    expect(writes.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
-    expect(writes.dispatched<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: false });
-    const query = client.getQueryCache().find({ queryKey: ["user-state"] });
-    expect(query === undefined ? undefined : Writes.dispatchedOf(query)).toEqual({
-      pinned: false,
-    });
+    expect(cache.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+    expect(cache.dispatched<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: false });
     await expect(
-      writes.fetchDispatched({
+      cache.fetchDispatched({
         queryFn: (): Promise<{ pinned: boolean }> =>
           Promise.reject(new Error("a fresh answer is not asked again")),
         queryKey: ["user-state"],
         staleTime: Number.POSITIVE_INFINITY,
       })
     ).resolves.toEqual({ pinned: false });
-    expect(writes.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+    expect(cache.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
   } finally {
     writes.clear();
-    tab.close();
   }
 });
 
@@ -2115,7 +2121,7 @@ test("a Retry refused again reads again the caches its change wrote", async () =
   await onFakeClock(async () => {
     const tab = keptTab();
     const client = signedIn();
-    const writes = new Writes(client, tab.page(), memoryFiles());
+    const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
     client.setQueryData(["user-state"], { pinned: false });
     client.setQueryData(["inbox"], []);
     try {
@@ -2136,7 +2142,9 @@ test("a Retry refused again reads again the caches its change wrote", async () =
       client.setQueryData(["user-state"], { pinned: false });
 
       writes.retry(row(writes)?.id ?? 0);
-      expect(writes.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+      expect(shownBy<{ pinned: boolean }>(writes, client, ["user-state"])).toEqual({
+        pinned: true,
+      });
       await settle();
       expect(row(writes)?.status).toBe("refused");
       expect(readAgain(client, ["user-state"])).toBe(true);
@@ -2160,7 +2168,7 @@ test("a discarded Retry that waited its turn reads again the caches its change w
   await onFakeClock(async () => {
     const tab = keptTab();
     const client = signedIn();
-    const writes = new Writes(client, tab.page(), memoryFiles());
+    const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
     client.setQueryData(["user-state"], { pinned: false });
     const target = "issue:CORE-1";
     try {
@@ -2185,7 +2193,9 @@ test("a discarded Retry that waited its turn reads again the caches its change w
 
       writes.retry(row(writes)?.id ?? 0);
       expect(row(writes)).toMatchObject({ sent: false, status: "queued" });
-      expect(writes.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+      expect(shownBy<{ pinned: boolean }>(writes, client, ["user-state"])).toEqual({
+        pinned: true,
+      });
       expect(writes.discard(row(writes)?.id ?? 0)).toBe(true);
       expect(readAgain(client, ["user-state"])).toBe(true);
     } finally {
@@ -2215,7 +2225,7 @@ const markShown: WriteChange = (shown) =>
 async function retriedBesideAMark(retried: () => Promise<unknown>) {
   const tab = keptTab();
   const client = signedIn();
-  const writes = new Writes(client, tab.page(), memoryFiles());
+  const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
   client.setQueryData<PinAndMark>(["user-state"], { pinned: false, read: false, seq: 1 });
   const answers: (() => Promise<unknown>)[] = [() => Promise.reject(verdict), retried];
   void writes
@@ -2247,7 +2257,7 @@ async function retriedBesideAMark(retried: () => Promise<unknown>) {
   writes.retry(pin?.id ?? 0);
   // Dispatch's state, read while both are out: it has taken neither, and its sequence moved on.
   client.setQueryData<PinAndMark>(["user-state"], { pinned: false, read: false, seq: 2 });
-  expect(writes.shown<PinAndMark>(["user-state"])).toEqual({
+  expect(shownBy<PinAndMark>(writes, client, ["user-state"])).toEqual({
     pinned: true,
     read: true,
     seq: 2,
@@ -2265,7 +2275,7 @@ test("a Retry refused again leaves Dispatch's last answer, live writes over it, 
     try {
       await settle();
       expect(writes.rows().map((write) => write.status)).toEqual(["refused", "sending"]);
-      expect(writes.shown<PinAndMark>(["user-state"])).toEqual({
+      expect(shownBy<PinAndMark>(writes, client, ["user-state"])).toEqual({
         pinned: false,
         read: true,
         seq: 2,
@@ -2290,7 +2300,7 @@ test("a Retry taken by a sign-out leaves Dispatch's last answer on the page befo
       await settle();
       writes.clear();
       expect(writes.rows()).toEqual([]);
-      expect(writes.shown<PinAndMark>(["user-state"])).toEqual({
+      expect(shownBy<PinAndMark>(writes, client, ["user-state"])).toEqual({
         pinned: false,
         read: false,
         seq: 2,
@@ -2317,7 +2327,7 @@ interface RowPage {
 test("a page read more while a change is shown on an infinite read leaves Dispatch's pages once the write is refused and reads fail", async () => {
   const tab = keptTab();
   const client = signedIn();
-  const writes = new Writes(client, tab.page(), memoryFiles());
+  const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
   const key = ["me", "replies", "inbox", "dismissed"];
   const served: Record<string, RowPage> = {
     first: { next: "second", rows: ["a", "b"] },
@@ -2338,7 +2348,8 @@ test("a page read more while a change is shown on an infinite read leaves Dispat
   await client.prefetchInfiniteQuery(read);
   const observer = new InfiniteQueryObserver(client, read);
   const unsubscribe = observer.subscribe(() => {});
-  const rows = () => writes.shown<InfiniteData<RowPage>>(key)?.pages.map((page) => page.rows);
+  const rows = () =>
+    shownBy<InfiniteData<RowPage>>(writes, client, key)?.pages.map((page) => page.rows);
   const refused = Promise.withResolvers<never>();
   try {
     const restore = writes.run({
@@ -2412,7 +2423,7 @@ function restoreOfA(writes: Writes, key: readonly unknown[], answer: () => Promi
 test("a restore refused while a Show more is loading leaves Dispatch's row on the list once the read again fails", async () => {
   const tab = keptTab();
   const client = dispatchClient();
-  const writes = new Writes(client, tab.page(), memoryFiles());
+  const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
   const key = ["me", "replies", "inbox", "dismissed"];
   const page = Promise.withResolvers<RowPage>();
   let online = true;
@@ -2432,7 +2443,8 @@ test("a restore refused while a Show more is loading leaves Dispatch's row on th
   await client.prefetchInfiniteQuery(read);
   const observer = new InfiniteQueryObserver(client, read);
   const unsubscribe = observer.subscribe(() => {});
-  const rows = () => writes.shown<InfiniteData<RowPage>>(key)?.pages.map((one) => one.rows);
+  const rows = () =>
+    shownBy<InfiniteData<RowPage>>(writes, client, key)?.pages.map((one) => one.rows);
   const refused = Promise.withResolvers<never>();
   try {
     const restore = restoreOfA(writes, key, () => refused.promise);
@@ -2469,7 +2481,7 @@ interface OffsetPage {
 test("a live change taking a row out of an offset-paged list leaves Show more reading the next page", async () => {
   const tab = keptTab();
   const client = dispatchClient();
-  const writes = new Writes(client, tab.page(), memoryFiles());
+  const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
   const key = ["me", "answers"];
   const all = ["a", "b", "c"];
   const read = {
@@ -2489,7 +2501,8 @@ test("a live change taking a row out of an offset-paged list leaves Show more re
   await client.prefetchInfiniteQuery(read);
   const observer = new InfiniteQueryObserver(client, read);
   const unsubscribe = observer.subscribe(() => {});
-  const rows = () => writes.shown<InfiniteData<OffsetPage>>(key)?.pages.map((one) => one.rows);
+  const rows = () =>
+    shownBy<InfiniteData<OffsetPage>>(writes, client, key)?.pages.map((one) => one.rows);
   const held = Promise.withResolvers<never>();
   try {
     void writes
@@ -2583,10 +2596,10 @@ function heldList(client: QueryClient, key: readonly unknown[]) {
 test("a read sent before the save answers after it lands: the pick stays over it until a read begun after the landing answers", async () => {
   const tab = keptTab();
   const client = dispatchClient();
-  const writes = new Writes(client, tab.page(), memoryFiles());
+  const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
   const key = [...CORE_LISTS, []];
   const list = heldList(client, key);
-  const shown = () => `P${writes.shown<Card[]>(key)?.[0]?.priority}`;
+  const shown = () => `P${shownBy<Card[]>(writes, client, key)?.[0]?.priority}`;
   try {
     await list.answer(0, 2);
     const saved = Promise.withResolvers<unknown>();
@@ -2628,10 +2641,10 @@ test("a read sent before the save answers after it lands: the pick stays over it
 test("a read sent before the save answers after it lands: the pick stays over it until its list is removed", async () => {
   const tab = keptTab();
   const client = dispatchClient();
-  const writes = new Writes(client, tab.page(), memoryFiles());
+  const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
   const key = [...CORE_LISTS, []];
   const list = heldList(client, key);
-  const shown = () => writes.shown<Card[]>(key)?.[0]?.priority;
+  const shown = () => shownBy<Card[]>(writes, client, key)?.[0]?.priority;
   try {
     await list.answer(0, 2);
     const saved = Promise.withResolvers<unknown>();
@@ -2661,12 +2674,12 @@ test("a read sent before the save answers after it lands: the pick stays over it
 test("a read sent before the save answers after it lands: each list holds the pick until it answers a read begun after the landing", async () => {
   const tab = keptTab();
   const client = dispatchClient();
-  const writes = new Writes(client, tab.page(), memoryFiles());
+  const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
   const boardKey = [...CORE_LISTS, []];
   const filteredKey = [...CORE_LISTS, ["bug"]];
   const board = heldList(client, boardKey);
   const filtered = heldList(client, filteredKey);
-  const shown = (key: readonly unknown[]) => writes.shown<Card[]>(key)?.[0]?.priority;
+  const shown = (key: readonly unknown[]) => shownBy<Card[]>(writes, client, key)?.[0]?.priority;
   try {
     await board.answer(0, 2);
     await filtered.answer(0, 2);

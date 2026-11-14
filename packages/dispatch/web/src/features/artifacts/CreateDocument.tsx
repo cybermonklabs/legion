@@ -1,6 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { useNavigate } from "react-router-dom";
+
+import { useCache } from "../../api/cache/cache";
 
 import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact } from "../../api/types";
@@ -68,7 +69,7 @@ export function CreateDocument({
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
   const [takenBy, setTakenBy] = useState<Artifact | undefined>();
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const submitGuard = useSubmitGuard();
   const navigate = useNavigate();
   const create = useKeyedWrite({
@@ -80,7 +81,7 @@ export function CreateDocument({
     onSuccess: (made) => {
       setCreating(false);
       setTitle("");
-      refreshOwnerArtifacts(queryClient, owner);
+      refreshOwnerArtifacts(cache, owner);
       // Made, with no answer to open: the form closes, so a second press makes nothing, and the
       // control says what was made (`create.unanswered`).
       if (made === null) return;

@@ -1,5 +1,5 @@
-import type { UseQueryResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import type { UseQueryResult } from "../../api/cache/keys";
 
 import { apiErrorMessage, type WriteBounds } from "../../api/client";
 import { QueryError } from "../../components/QueryError";

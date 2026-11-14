@@ -1,7 +1,7 @@
 // What a browser check can read about the page's live views (INFRA-812, D15). Two owners report
 // on one `window` handle, `window.__dispatchLiveViews`: the registry writes a snapshot of each
 // opened view (`web/src/features/agent-view/live-views.ts`) and the live socket writes how many
-// agent subscriptions it holds (`web/src/api/live-socket.ts`). The snapshot is a word and two
+// agent subscriptions it holds (`web/src/api/cache/live-socket.ts`). The snapshot is a word and two
 // numbers per session; it holds nothing anyone wrote and changes no behaviour. The switch below
 // is the other half: set before the page loads, it turns the sleep rule off, which is the
 // negative control of the check that counts what an open view costs.
@@ -165,7 +165,7 @@ export async function watchViewRestore(
       };
     }
 
-    // The subscribe frame that watches this session again (`api/live-socket.ts`'s
+    // The subscribe frame that watches this session again (`api/cache/live-socket.ts`'s
     // `subscribeFrame`), which is the whole of the re-subscribe the page does.
     const send = WebSocket.prototype.send;
     WebSocket.prototype.send = function (

@@ -1,10 +1,10 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { answerIssueCreates, answerIssuePatches } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import { projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -12,7 +12,6 @@ import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
-import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
 import { readLayout } from "./issues-table-storage";
@@ -233,9 +232,9 @@ test("a table rank write is held by the durable store on the issue's write line"
   restores.push(() => send.mockRestore());
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
   await user.click(within(screen.getByRole("toolbar")).getByRole("button", { name: "Start next" }));
-  await waitFor(() => expect(writesOf(client).rows().length).toBe(1));
-  expect(writesOf(client).rows()[0]?.target).toBe("issue:CORE-2");
-  expect(writesOf(client).rows()[0]?.login).toBe("alice");
+  await waitFor(() => expect(cacheOf(client).writes.rows().length).toBe(1));
+  expect(cacheOf(client).writes.rows()[0]?.target).toBe("issue:CORE-2");
+  expect(cacheOf(client).writes.rows()[0]?.login).toBe("alice");
   response.resolve(
     new Response(JSON.stringify(savedIssue("CORE-2")), {
       status: 200,
@@ -342,12 +341,12 @@ test("a stopped epic creation retries its committed request under the same key",
   await user.click(screen.getByRole("button", { name: "New epic from these" }));
   await named;
   await screen.findByRole("alert");
-  const refused = writesOf(client)
-    .rows()
+  const refused = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   expect(refused).toBeDefined();
   if (!refused) throw new Error("The stopped creation was dropped");
-  writesOf(client).retry(refused.id);
+  cacheOf(client).writes.retry(refused.id);
   await waitFor(() => expect(keys).toHaveLength(2));
   expect(keys[1]).toBe(keys[0]);
   expect(created.size).toBe(1);
@@ -541,18 +540,18 @@ test("a refused bulk operation retries independently while the other operations 
   await screen.findByRole("alert");
   expect(sent).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
   expect(
-    writesOf(client)
-      .rows()
+    cacheOf(client)
+      .writes.rows()
       .map((write) => write.label)
   ).toEqual(["Update CORE-2 from the issues table"]);
   expect(listing.mock.calls.length - before).toBe(1);
-  const retry = writesOf(client)
-    .rows()
+  const retry = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   if (!retry) throw new Error("The refused operation was lost");
-  writesOf(client).retry(retry.id);
+  cacheOf(client).writes.retry(retry.id);
   await waitFor(() => expect(sent).toEqual(["CORE-1", "CORE-2", "CORE-3", "CORE-2"]));
-  await waitFor(() => expect(writesOf(client).rows()).toHaveLength(0));
+  await waitFor(() => expect(cacheOf(client).writes.rows()).toHaveLength(0));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   expect(
     within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
@@ -716,7 +715,7 @@ test("Start next stops at a refused predecessor and names every issue that did n
     "Did not move up: CORE-3, CORE-2"
   );
   expect(sent).toEqual(["/api/v1/issues/CORE-3"]);
-  expect(writesOf(client).rows()).toHaveLength(1);
+  expect(cacheOf(client).writes.rows()).toHaveLength(1);
 });
 
 test("x selects the focused issue and the bar is told, in the order the table lists them", async () => {
@@ -1191,8 +1190,8 @@ test("Finish retries a refused action's writes eight at a time", async () => {
   await screen.findByRole("alert");
   refuse = false;
   expect(
-    writesOf(client)
-      .rows()
+    cacheOf(client)
+      .writes.rows()
       .filter((write) => write.status === "refused").length
   ).toBeGreaterThan(8);
   const interrupted = await screen.findByRole("region", { name: "Interrupted table action" });
@@ -1388,11 +1387,11 @@ test("a retried Move reports in the ordinary wording while an action waits to be
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
   await user.click(screen.getByRole("button", { name: "Take out of epic" }));
   await screen.findByRole("alert");
-  const retry = writesOf(client)
-    .rows()
+  const retry = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   if (!retry) throw new Error("The refused move was lost");
-  writesOf(client).retry(retry.id);
+  cacheOf(client).writes.retry(retry.id);
   await waitFor(() =>
     expect(
       within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
@@ -1479,11 +1478,11 @@ test("a resumed merge whose discarded reason never landed posts it before closin
     })
   );
   await screen.findByRole("alert");
-  const refused = writesOf(client)
-    .rows()
+  const refused = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   if (!refused) throw new Error("The merge reason was not refused");
-  writesOf(client).discard(refused.id);
+  cacheOf(client).writes.discard(refused.id);
   refuseReason = false;
   await waitFor(() =>
     expect(
@@ -1769,12 +1768,12 @@ test("Finish completes when a refused write was retried from Pending changes", a
   );
   await screen.findByRole("alert");
   refuse = false;
-  const refused = writesOf(client)
-    .rows()
+  const refused = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   if (!refused) throw new Error("The rank write was not refused");
   // The reader retries it themselves, so Finish finds a write already on its way.
-  writesOf(client).retry(refused.id);
+  cacheOf(client).writes.retry(refused.id);
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
   await waitFor(() =>
@@ -1805,17 +1804,17 @@ test("Finish says a write the store let go of while it waited was not made", asy
   );
   await screen.findByRole("alert");
   refuse = false;
-  const refused = writesOf(client)
-    .rows()
+  const refused = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   if (!refused) throw new Error("The rank write was not refused");
   // Retried, and held out, so Finish finds a write on its way and waits on it.
-  writesOf(client).retry(refused.id);
+  cacheOf(client).writes.retry(refused.id);
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
   await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
   // The person signs out: the store lets every write go, and tells no outcome of any of them.
-  act(() => writesOf(client).clear());
+  act(() => cacheOf(client).writes.clear());
   expect(await screen.findByText(/ was not made\.$/)).toBeDefined();
   expect(within(recovery).getByRole("button", { name: "Finish" })).toBeDefined();
 });

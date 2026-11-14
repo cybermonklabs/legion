@@ -1,8 +1,15 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
+import { useCache, useWriteSelection, useWrites } from "../../api/cache/cache";
 
+import { mergeIssue } from "../../api/cache/issue-cache";
+import {
+  defineWriteKind,
+  liveWrite,
+  ofKind,
+  type Shown,
+  type Write,
+} from "../../api/cache/write-store";
 import { issuePatchRequest } from "../../api/client";
-import { mergeIssue } from "../../api/issue-cache";
 import { inboxQuery, issueQuery, projectListsKey } from "../../api/queries";
 import type { UpdateIssueInput } from "../../api/types";
 import {
@@ -12,15 +19,6 @@ import {
   WriteDiscardedError,
 } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/write-storage";
-import {
-  defineWriteKind,
-  liveWrite,
-  ofKind,
-  type Shown,
-  useWriteSelection,
-  useWrites,
-  type Write,
-} from "../writes/write-store";
 
 export interface IssueFieldWrite<Value> {
   /** The server's reason after a refused save, until the next attempt. */
@@ -126,7 +124,7 @@ export function useIssueFieldWrite<Value>(
     label: (value: Value) => string;
   }
 ): IssueFieldWrite<Value> {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const writes = useWrites();
   const detailKey = issueQuery(issueKey).queryKey;
   const [refused, setRefused] = useState<Refused<Value> | undefined>(undefined);
@@ -150,9 +148,9 @@ export function useIssueFieldWrite<Value>(
   // between; reading the issue again makes it server-authoritative rather than trusting the
   // arrival order of the two responses.
   const reread = (): void => {
-    void queryClient.invalidateQueries({ queryKey: detailKey });
-    void queryClient.invalidateQueries({ queryKey: ["issues"] });
-    void queryClient.invalidateQueries({ queryKey: inboxKey });
+    void cache.invalidate({ queryKey: detailKey });
+    void cache.invalidate({ queryKey: ["issues"] });
+    void cache.invalidate({ queryKey: inboxKey });
   };
   const submit = (value: Value): void => {
     // Two picks of this control that have not gone out are one request, the newest: the one
@@ -163,7 +161,7 @@ export function useIssueFieldWrite<Value>(
     setInHand((count) => count + 1);
     for (const queryKey of [detailKey, projectListsKey, inboxKey]) {
       // A read in flight would otherwise answer with the server's older value over the pick.
-      void queryClient.cancelQueries({ queryKey });
+      void cache.cancel({ queryKey });
     }
     // A value here is a priority, a login or a repository, so the same value is the same press
     // made again, under the key Dispatch may already have taken that press under.
@@ -211,7 +209,7 @@ export function useIssueFieldWrite<Value>(
           return;
         }
         if (answer !== null) {
-          mergeIssue(queryClient, answer);
+          mergeIssue(cache, answer);
         }
         reread();
       },

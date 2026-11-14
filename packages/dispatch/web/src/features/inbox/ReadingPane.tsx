@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { isText } from "../../api/artifact-version";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { AskApproval, InboxRow } from "../../api/types";
@@ -20,7 +21,6 @@ import { loadBlockSchema } from "../doc/schema";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { useShownQuery } from "../writes/shown-query";
 import { AskCard } from "./AskCard";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";

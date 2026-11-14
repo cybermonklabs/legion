@@ -1,11 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 
-import { api } from "../api/client";
-import { mergeIssue } from "../api/issue-cache";
-import { issueQuery } from "../api/queries";
-import type { IssueDetails } from "../api/types";
-import { issue as fixture } from "../features/margin/margin-fixture";
+import { issue as fixture } from "../../features/margin/margin-fixture";
+import { api } from "../client";
+import { issueQuery } from "../queries";
+import type { IssueDetails } from "../types";
+import { mergeIssue } from "./issue-cache";
+import { cacheOf, QueryObserver } from "./test-client";
 
 function cachedAfterPatch(before: IssueDetails, patch: Partial<IssueDetails>): IssueDetails {
   const queryClient = new QueryClient();
@@ -17,7 +18,7 @@ function cachedAfterPatch(before: IssueDetails, patch: Partial<IssueDetails>): I
     route_status_reason: _reason,
     ...response
   } = { ...before, ...patch };
-  mergeIssue(queryClient, response);
+  mergeIssue(cacheOf(queryClient), response);
   const cached = queryClient.getQueryData<IssueDetails>(["issue", before.key]);
   if (cached === undefined) throw new Error("the merge dropped the cached issue");
   return cached;
@@ -77,7 +78,7 @@ test("a slow GET answered after a PATCH leaves the PATCH's answer in place", asy
 
     const refetch = observer.refetch();
     const { artifacts: _artifacts, children: _children, open_asks: _asks, ...issue } = read;
-    mergeIssue(queryClient, {
+    mergeIssue(cacheOf(queryClient), {
       ...issue,
       status: "done",
       updated_at: "2026-10-01T00:00:00.123456Z",

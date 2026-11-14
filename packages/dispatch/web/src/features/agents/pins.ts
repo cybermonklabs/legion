@@ -9,14 +9,14 @@
  * of the same person without a reload, from the `user_agent_state.updated` event that write
  * announces (`api/event-refresh.ts`).
  */
-import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { useAgentText } from "../refs/AgentName";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { storeAgentState } from "./unread";
 
@@ -90,11 +90,11 @@ function withPin(state: UserAgentState | undefined, pinned: boolean, at: string)
  * them has landed (`app.tsx`).
  */
 export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Promise<boolean> {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const reread = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
-  }, [queryClient]);
+    void cache.invalidate({ queryKey: userAgentStateQuery().queryKey });
+  }, [cache]);
   // The pin is a change the write shows: the session's `pinned_at` alone, over the viewer's agent
   // state as it stands (`shows`), so the store composes it over each answer or event that lands
   // on that state while the pin is live, and every other session's state that answer carries
@@ -117,7 +117,7 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
       // A write Dispatch made and has no answer to give for is a landing: what it changed is
       // read again rather than left as the press drew it.
       if (next === null) reread();
-      else storeAgentState(queryClient, sessionId, next);
+      else storeAgentState(cache, sessionId, next);
     },
     request: ({ pinned, sessionId }) => agentStateRequest(sessionId, { pinned }),
     target: ({ sessionId }) => `pin:agent:${sessionId}`,

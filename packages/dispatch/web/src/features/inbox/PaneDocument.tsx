@@ -8,8 +8,9 @@
  * placement problem, and the same pane.
  */
 
-import { queryOptions } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, AuthenticatedUser } from "../../api/types";
@@ -18,7 +19,6 @@ import { focusVisibleRing, quoteAccentBorder } from "../../theme/classes";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { liveTextQueryOptions, ProofDocument, type ProofDocumentProps } from "../doc/ProofDocument";
 import { cancelBlockScroll, scrollBlockToTop, scrollElementToTop } from "../doc/scroll-block";
-import { useShownQuery } from "../writes/shown-query";
 import { holdSection, type SectionHold } from "./pane-placement";
 
 /**

@@ -1,6 +1,8 @@
 import { DISPATCH_SCOPES } from "@legion/contracts";
-import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
+import { useCache } from "../../api/cache/cache";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import {
   agentTokenCreateRequest,
   agentTokenRevokeRequest,
@@ -31,7 +33,6 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsSubmitButton,
@@ -169,7 +170,7 @@ function TokenScopeChoices({
 }
 
 export function AgentTokensSection(): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const [name, setName] = useState("");
   /** What the mint form's boxes hold: both scopes until the reader clears one. */
   const [newScopes, setNewScopes] = useState<readonly DispatchScope[]>(BOTH_SCOPES);
@@ -206,13 +207,13 @@ export function AgentTokensSection(): ReactNode {
         // (`createToken.unanswered`): the token is listed once the list is read again, and the
         // reader can replace it.
         setShownToken(undefined);
-        void queryClient
-          .invalidateQueries({ queryKey: agentTokensQueryKey })
+        void cache
+          .invalidate({ queryKey: agentTokensQueryKey })
           .then(() => setRereadAt(Date.now()));
         return;
       }
       const { token, ...safeToken } = created;
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) => [
+      cache.setDispatched<AgentToken[]>(agentTokensQueryKey, (current = []) => [
         safeToken,
         ...current,
       ]);
@@ -225,7 +226,7 @@ export function AgentTokensSection(): ReactNode {
     request: (id: string) => agentTokenRevokeRequest(id),
     target: (id) => `agent-token:${id}`,
     onSuccess: (_result, id) => {
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
+      cache.setDispatched<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>
           token.id === id ? { ...token, revoked_at: new Date().toISOString() } : token
         )
@@ -241,7 +242,7 @@ export function AgentTokensSection(): ReactNode {
       agentTokenScopesRequest(input.id, input.scopes),
     target: (input) => `agent-token:${input.id}`,
     onSuccess: (updated, input) => {
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
+      cache.setDispatched<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>
           token.id === input.id ? (updated ?? { ...token, scopes: input.scopes }) : token
         )

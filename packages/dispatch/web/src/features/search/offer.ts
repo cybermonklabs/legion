@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
 
+import { type Attempt, plainWrite, type WriteLine, type Writes } from "../../api/cache/write-store";
 import type { WriteRequest } from "../../api/client";
 import { textMutedOnSurface } from "../../theme/classes";
-import { type Attempt, plainWrite, type WriteLine, type Writes } from "../writes/write-store";
 
 /** The one row an offer lists in the bar: the id the arrows and `aria-activedescendant` read,
  *  what it says, and what pressing it does. The row carries its own `select`, so an offer with

@@ -1,8 +1,8 @@
 import { writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
-import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/cache/live-socket";
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/cache/query-client";
 
 import {
   createAsk,

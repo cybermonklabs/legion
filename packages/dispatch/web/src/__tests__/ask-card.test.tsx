@@ -1,10 +1,11 @@
 import { afterAll, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, a form's own submit, the same-task pair of presses, a press on a control the send holds disabled, and a key that must not press the button it reaches
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
+
+import { cacheOf, QueryClient, QueryClientProvider } from "../api/cache/test-client";
 
 import { ApiError, api, type WriteBounds } from "../api/client";
 import type {
@@ -20,7 +21,6 @@ import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
 import { Inbox } from "../features/inbox/Inbox";
-import { writesOf } from "../features/writes/write-store";
 import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
@@ -1338,10 +1338,10 @@ test("AskCard's inbox entry is listed again if an optimistic answer fails", asyn
     await user.click(await view.findByRole("radio", { name: "Ship" }));
     await user.click(view.getByRole("button", { name: "Answer" }));
 
-    await waitFor(() => expect(writesOf(queryClient).shown<InboxRow[]>(["inbox"])).toEqual([]));
+    await waitFor(() => expect(cacheOf(queryClient).shown<InboxRow[]>(["inbox"])).toEqual([]));
     rejectAnswer(new Error("offline"));
     await waitFor(() =>
-      expect(writesOf(queryClient).shown<InboxRow[]>(["inbox"])).toEqual([inboxInput])
+      expect(cacheOf(queryClient).shown<InboxRow[]>(["inbox"])).toEqual([inboxInput])
     );
   } finally {
     view.unmount();

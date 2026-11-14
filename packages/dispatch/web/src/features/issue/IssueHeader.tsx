@@ -1,5 +1,4 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -9,6 +8,9 @@ import {
   useState,
 } from "react";
 import { Link } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { mergeIssue } from "../../api/cache/issue-cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import {
   AGENT_LIST_REFILLING,
   api,
@@ -19,7 +21,6 @@ import {
   issueStateRequest,
   issueUnsubscribeRequest,
 } from "../../api/client";
-import { mergeIssue } from "../../api/issue-cache";
 import { issueQuery, pinnedIssuesKey, projectsQuery, userStateQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { InPlaceEditBox, type InPlaceReadProps } from "../../components/InPlaceEditBox";
@@ -60,7 +61,6 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
@@ -117,7 +117,7 @@ export function IssueHeader({
   priorityWrite: IssuePriorityWrite;
   state: UserIssueState;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const [editingTitle, setEditingTitle] = useState(false);
   // The route and the parent editors open over their rail item in a panel, which takes the
   // focus into itself (`AnchoredPanel`); the item they hang off stays where it is.
@@ -181,7 +181,7 @@ export function IssueHeader({
     label: (sessionId) =>
       `${agentText.sessionText(sessionId, subscriberList.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${issue.key}`,
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["subscribers", issue.key] });
+      void cache.invalidate({ queryKey: ["subscribers", issue.key] });
     },
   });
   const releaseClaim = useKeyedWrite({
@@ -190,8 +190,8 @@ export function IssueHeader({
     inline: true,
     label: () => `Claim on ${issue.key} released`,
     onSuccess: (next) => {
-      if (next !== null) mergeIssue(queryClient, next);
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      if (next !== null) mergeIssue(cache, next);
+      void cache.invalidate({ queryKey: ["issues"] });
     },
   });
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
@@ -206,12 +206,12 @@ export function IssueHeader({
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
     onSuccess: (next) => {
       if (next === null) {
-        void queryClient.invalidateQueries({ queryKey: issueQuery(issue.key).queryKey });
+        void cache.invalidate({ queryKey: issueQuery(issue.key).queryKey });
       } else {
-        mergeIssue(queryClient, next);
+        mergeIssue(cache, next);
       }
       drafts.onIssueSuccess(next ?? issue);
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      void cache.invalidate({ queryKey: ["issues"] });
     },
   });
   const labelsMutation = useKeyedWrite({
@@ -219,8 +219,8 @@ export function IssueHeader({
     target: () => `issue:${issue.key}`,
     request: (labels: string[]) => issuePatchRequest(issue.key, { labels }),
     onSuccess: (next) => {
-      if (next !== null) mergeIssue(queryClient, next);
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      if (next !== null) mergeIssue(cache, next);
+      void cache.invalidate({ queryKey: ["issues"] });
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);
@@ -307,15 +307,15 @@ export function IssueHeader({
     },
     onSettled: () => {
       pinGuard.release();
-      void queryClient.invalidateQueries({ queryKey: userStateQuery().queryKey });
+      void cache.invalidate({ queryKey: userStateQuery().queryKey });
       // The sidebar lists the pinned issues from their own read, which follows the pin however
       // its write settled: with an answer, landed with none (`null`), or refused.
-      void queryClient.invalidateQueries({ exact: true, queryKey: pinnedIssuesKey });
+      void cache.invalidate({ exact: true, queryKey: pinnedIssuesKey });
     },
     // A read already out was asked before this press.
-    onMutate: () => queryClient.cancelQueries({ queryKey: userStateQuery().queryKey }),
+    onMutate: () => cache.cancel({ queryKey: userStateQuery().queryKey }),
     onSuccess: (next) => {
-      if (next !== null) storeIssueState(queryClient, issue.key, next);
+      if (next !== null) storeIssueState(cache, issue.key, next);
     },
   });
   const saveTitleOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {

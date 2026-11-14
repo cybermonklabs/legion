@@ -1,6 +1,5 @@
-import type { QueryClient } from "@tanstack/react-query";
-
-import type { Artifact, DocumentRole, Issue, IssueDetails } from "./types";
+import type { Artifact, DocumentRole, Issue, IssueDetails } from "../types";
+import type { Cache } from "./cache";
 
 /** The issue's primary document (its spec), or undefined until the details have loaded. */
 export function primarySpec(
@@ -44,8 +43,8 @@ export function roleDocument(
  * is merged into Dispatch's issue and that pick stays over it; a response older than the issue
  * held is kept out by the issue read's own rule (`issueQuery`).
  */
-export function mergeIssue(queryClient: QueryClient, next: Issue): void {
-  queryClient.setQueryData<IssueDetails>(["issue", next.key], (current) => {
+export function mergeIssue(cache: Cache, next: Issue): void {
+  cache.setDispatched<IssueDetails>(["issue", next.key], (current) => {
     if (current === undefined) {
       return undefined;
     }

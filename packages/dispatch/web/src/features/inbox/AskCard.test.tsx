@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -12,6 +11,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskHandOns, answerRoute, answerThreadReads } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
@@ -360,7 +360,7 @@ function renderUnreadAsk(props: {
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  seedUnread(queryClient, { issue: "CORE-1" }, [ask.id]);
+  seedUnread(cacheOf(queryClient), { issue: "CORE-1" }, [ask.id]);
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -801,7 +801,7 @@ test("an unread reply is never folded away", async () => {
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  seedUnread(queryClient, { issue: "CORE-1" }, []);
+  seedUnread(cacheOf(queryClient), { issue: "CORE-1" }, []);
   // The reader read the thread through its first reply, so replies 2 to 4 are unread.
   queryClient.setQueryData(myRepliesOwnerQuery({ issue: "CORE-1" }).queryKey, {
     as_of: "2026-10-12T00:00:00Z",

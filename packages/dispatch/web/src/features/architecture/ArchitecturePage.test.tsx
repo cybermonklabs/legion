@@ -1,11 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerArchitectureSourceSyncs, answerIssuePatches } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type {
   ArchitectureTree,
@@ -14,7 +14,6 @@ import type {
   ArchitectureTreeSource,
 } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { writesOf } from "../writes/write-store";
 import { ArchitecturePage } from "./ArchitecturePage";
 
 function component(
@@ -445,12 +444,12 @@ test("a refused Refresh goes to the shell's pending writes, and the button is re
     );
     await user.click(screen.getByRole("button", { name: "Refresh legion/legion" }));
     await waitFor(() => {
-      const [refused] = writesOf(pane.queryClient).rows();
+      const [refused] = cacheOf(pane.queryClient).writes.rows();
       expect(refused?.status === "refused" ? refused.refusal.message : undefined).toBe(
         "GitHub is unreachable"
       );
     });
-    expect(writesOf(pane.queryClient).rows()[0]?.label).toBe(
+    expect(cacheOf(pane.queryClient).writes.rows()[0]?.label).toBe(
       "Refresh of CORE's architecture source legion/legion"
     );
     await screen.findByRole("button", { name: "Refresh legion/legion" });

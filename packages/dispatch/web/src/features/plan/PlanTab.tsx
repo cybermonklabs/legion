@@ -1,5 +1,6 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 import { type ReactNode, useMemo } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, ArtifactBlock } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -10,7 +11,6 @@ import { BlockReferences } from "../refs/ReferencedBy";
 import { ReferenceLink } from "../refs/ReferenceLink";
 import { useReferenceTarget } from "../refs/reference-target";
 import { buildDispatchReference, documentRoute, parseNodeReference } from "../refs/routes";
-import { useShownQuery } from "../writes/shown-query";
 
 /** The `block[]` attribute `name` of `block` as the pointers it holds; empty for a block that
  *  carries none and for a value the server would refuse, which no stored block holds. */

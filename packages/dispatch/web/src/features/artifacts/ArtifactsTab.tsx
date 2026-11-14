@@ -1,5 +1,6 @@
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -27,7 +28,6 @@ import {
   parseIssuePath,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { useShownQuery } from "../writes/shown-query";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
 import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
 import { CLOSED_ISSUE_DOCUMENT_REFUSAL, CreateDocument } from "./CreateDocument";

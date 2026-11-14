@@ -25,10 +25,10 @@ import { asUser } from "./users";
 // complete read to a refilling one in place, keeping the rows they had; assertions on those two
 // pages wait for that poll with `POLL_TIMEOUT`. The other views read again on a reload or a Retry.
 // A refused read surfaces only once the shared retry policy's two retries are out
-// (`web/src/main.tsx`), and a refusal that names a wait is left alone for it: Dispatch passes the
+// (`web/src/api/cache/provider.tsx`), and a refusal that names a wait is left alone for it: Dispatch passes the
 // listener's `Retry-After: 5` on with ENVOY_REFILLING (`agentsAnswer` below pins it), and each
 // retry waits those 5 s plus a random share of them again (`queryRetryDelay`,
-// `web/src/api/query-client.ts`), so a view's first refilling read says so up to 20 s after the
+// `web/src/api/cache/query-client.ts`), so a view's first refilling read says so up to 20 s after the
 // page made it. Every assertion that waits for one gives it `REFILL_TIMEOUT`. Running-state marks
 // are found by their accessible names (`Running`, `Not running`, `Running state unknown`:
 // `AgentName`'s mark).

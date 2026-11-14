@@ -1,20 +1,15 @@
-import {
-  type DefaultError,
-  type UseMutationOptions,
-  type UseMutationResult,
-  useMutation,
-} from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 
-import type { WriteBounds, WriteRequest } from "../../api/client";
-import { pressKey, type StoppedPress, stoppedPress } from "./keyed-write";
+import { useWrites } from "../../api/cache/cache";
+import { type MutationOptions, type MutationResult, useMutation } from "../../api/cache/mutation";
 import {
   type FromPress,
   plainWrite,
-  useWrites,
   type WriteChange,
   type WriteLine,
-} from "./write-store";
+} from "../../api/cache/write-store";
+import type { WriteBounds, WriteRequest } from "../../api/client";
+import { pressKey, type StoppedPress, stoppedPress } from "./keyed-write";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
  *  the write path makes from `write` or `request` and `label`. Its data is Dispatch's answer, or
@@ -23,7 +18,7 @@ import {
  *  create form lets go of its draft and says what was made (`LandedWithoutAnswer`) rather than
  *  opening it. */
 export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
-  UseMutationOptions<TData | null, DefaultError, TVariables, TContext>,
+  MutationOptions<TData | null, Error, TVariables, TContext>,
   "mutationFn" | "networkMode"
 > & {
   /** What the shell's pending-writes indicator names this write, in the reader's words. */
@@ -79,9 +74,9 @@ export interface UnansweredLanding<TVariables> {
 /** `useMutation`'s result, with the one "made, but Dispatch lost its answer" state every create
  *  form shows (`LandedWithoutAnswer`): the last press that landed with `null`, until the next
  *  press starts or the form lets it go (`forgetUnanswered`, on an edit). */
-export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
+export type KeyedWriteResult<TData, TVariables, TContext> = MutationResult<
   TData | null,
-  DefaultError,
+  Error,
   TVariables,
   TContext
 > & {

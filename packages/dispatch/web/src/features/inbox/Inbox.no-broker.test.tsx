@@ -1,21 +1,26 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
-import { focusManager, type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
+import { liveSocketFor } from "../../api/cache/live-socket";
+import { DispatchQueryClient, queryRetryDelay } from "../../api/cache/query-client";
+import { refreshQueries } from "../../api/cache/query-refresh";
+import {
+  cacheOf,
+  focusManager,
+  type QueryClient,
+  QueryClientProvider,
+} from "../../api/cache/test-client";
 import { api, isRetryableQueryError } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
-import { liveSocketFor } from "../../api/live-socket";
-import { DispatchQueryClient, queryRetryDelay } from "../../api/query-client";
-import { refreshQueries } from "../../api/query-refresh";
 import type { CredentialPendingResponse } from "../../api/types";
 import { Inbox } from "./Inbox";
 
 // A Dispatch with no secrets broker answers the credential-request list with `null`, an answer that
 // holds until the page reloads or the event feed has a gap (the server reads its broker setting at
-// boot). The QueryClient here is main.tsx's own. Every credential-list call after the first is held
+// boot). The QueryClient here is api/cache/provider.tsx's own. Every credential-list call after the first is held
 // open, so a refetch, had one started, would leave the list loading and the empty state off the
 // screen.
 const never = () => Promise.withResolvers<never>().promise;
@@ -112,7 +117,7 @@ test("with no broker, a focus, a stream refresh and a return to the Inbox neithe
     await act(async () => {
       await Promise.resolve();
     });
-    act(() => refreshQueries(queryClient));
+    act(() => refreshQueries(cacheOf(queryClient)));
     // The refresh refetches the inbox list; once that has landed, any credential refetch it
     // started would already be on the wire.
     await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(2));
@@ -187,7 +192,7 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
       });
     });
     // The gap's refresh goes through the scheduler, which fetches a read at most once a second
-    // (`api/query-refresh.ts`), and the page loaded the Inbox well under a second ago; each wait
+    // (`api/cache/query-refresh.ts`), and the page loaded the Inbox well under a second ago; each wait
     // gives that interval room.
     await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(2));
     // The gap's whole-cache refresh refetches the inbox list; the held answer is not asked a
@@ -218,7 +223,7 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
     expect(screen.queryByText("Nothing needs you")).not.toBeInTheDocument();
   } finally {
     view.unmount();
-    liveSocketFor(queryClient).close();
+    liveSocketFor(cacheOf(queryClient)).close();
     sockets.restore();
   }
 });

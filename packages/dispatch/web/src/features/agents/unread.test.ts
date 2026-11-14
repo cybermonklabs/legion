@@ -1,8 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { answerAgentStates } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import type {
@@ -11,7 +11,6 @@ import type {
   UserAgentStateInput,
   UserAgentStates,
 } from "../../api/types";
-import { writesOf } from "../writes/write-store";
 import { totalUnreadReplies, useMarkShownRepliesRead } from "./unread";
 
 // An API older than the unread count answers a session's state with its Clear alone. The badge
@@ -72,7 +71,7 @@ function renderShownReplies(put: (body: UserAgentStateInput) => Promise<UserAgen
     }
   );
   /** Waits until the store holds no mark still out. */
-  const settled = () => waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
+  const settled = () => waitFor(() => expect(cacheOf(queryClient).writes.rows()).toEqual([]));
   return {
     hook,
     queryClient,
@@ -114,7 +113,7 @@ test("a superseded mark that is refused sends nothing more", async () => {
   try {
     await waitFor(() => expect(page.sent).toEqual([{ read_replies: ["a1"] }]));
     page.hook.rerender({ replies: [reply("a1"), reply("a2")] });
-    await waitFor(() => expect(writesOf(page.queryClient).rows()).toHaveLength(2));
+    await waitFor(() => expect(cacheOf(page.queryClient).writes.rows()).toHaveLength(2));
     expect(page.sent).toHaveLength(1);
     held.resolve();
     await page.settled();

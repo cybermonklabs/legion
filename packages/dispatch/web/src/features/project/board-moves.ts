@@ -1,11 +1,11 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
+import { useCache, useWrites } from "../../api/cache/cache";
 
+import type { FromPress } from "../../api/cache/write-store";
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { projectIssuesQueryKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { type FromPress, useWrites } from "../writes/write-store";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
 
 export const staleBoardMessage =
@@ -56,7 +56,7 @@ function placeDrop(
  * of dispatch://INFRA-299) - the card keeps the place the person dropped it at and every other
  * card's move the answer carries arrives with it. Moves on one board are serialised through a
  * single mutation scope, so a second drop computes its neighbours from the board as the person
- * sees it, the first drop's placement composed in (`Writes.shown`), and never overtakes it on the
+ * sees it, the first drop's placement composed in (`Cache.shown`), and never overtakes it on the
  * wire. A failed move stops being composed - the board is Dispatch's list with every other live
  * move over it (R10) - and the list is read again, and the board says so: a stale rank
  * (`RANK_INPUT`, the neighbours moved under the drag) gets `staleBoardMessage`; anything else the
@@ -84,7 +84,7 @@ export function useBoardMoves(
     insertionIndex: number
   ) => Promise<void>;
 } {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const writes = useWrites();
   const [error, setError] = useState<string>();
   const queryKey = projectIssuesQueryKey(project, labels);
@@ -106,7 +106,7 @@ export function useBoardMoves(
   const commit = useCallback(
     async (key: string, drop: Drop) => {
       // The board as the person sees it: every earlier drop still out composed over Dispatch's.
-      const previous = writes.shown<IssueSummary[]>(queryKey);
+      const previous = cache.shown<IssueSummary[]>(queryKey);
       if (previous === undefined) {
         return;
       }
@@ -120,7 +120,7 @@ export function useBoardMoves(
       // earlier drop still out, as it was placed, and over every answer that lands before its
       // write joins. A read already out was asked before this press; the refetch below reads the
       // board again.
-      void queryClient.cancelQueries({ queryKey, exact: true });
+      void cache.cancel({ queryKey, exact: true });
       const pressed = writes.fromPress((shown) => {
         shown.on<IssueSummary[]>(
           queryKey,
@@ -131,7 +131,7 @@ export function useBoardMoves(
         await mutateAsync({ input: moved.input, key, pressed });
         setError(undefined);
         if (labels.length > 0) {
-          await queryClient.invalidateQueries({ queryKey: projectIssuesQueryKey(project, []) });
+          await cache.invalidate({ queryKey: projectIssuesQueryKey(project, []) });
         }
       } catch (cause) {
         setError(
@@ -143,10 +143,10 @@ export function useBoardMoves(
         );
       } finally {
         pressed.release();
-        await queryClient.invalidateQueries({ queryKey });
+        await cache.invalidate({ queryKey });
       }
     },
-    [isVisible, labels, mutateAsync, project, queryClient, queryKey, writes]
+    [isVisible, labels, mutateAsync, project, cache, queryKey, writes]
   );
   const moveCard = useCallback(
     (key: string, targetStatus: IssueStatus, insertionIndex: number) =>

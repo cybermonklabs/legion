@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useCache } from "../../api/cache/cache";
 
 import { issuePatchRequest } from "../../api/client";
 import { architectureTreeQuery, issueQuery } from "../../api/queries";
@@ -52,7 +52,7 @@ function predictComponents(input: IssueComponentsInput): IssueComponents | undef
 export function useIssueComponents(
   issue: ArchitectureTreeIssueRef & { project: string }
 ): IssueComponentsWrite {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const detailKey = issueQuery(issue.key).queryKey;
   const treeKey = architectureTreeQuery(issue.project).queryKey;
   const mutation = useKeyedWrite({
@@ -64,10 +64,7 @@ export function useIssueComponents(
     request: (input: IssueComponentsInput) => issuePatchRequest(issue.key, { components: input }),
     // A read already out was asked before this press.
     onMutate: () =>
-      Promise.all([
-        queryClient.cancelQueries({ queryKey: detailKey }),
-        queryClient.cancelQueries({ queryKey: treeKey }),
-      ]),
+      Promise.all([cache.cancel({ queryKey: detailKey }), cache.cancel({ queryKey: treeKey })]),
     /** The attachment this press shows: the issue's own `components`, where the server's answer
      *  can be predicted, and the tree with the issue moved to where it now belongs. Both are
      *  read off the cache as it stands, so an answer this is shown over again carries the move. */
@@ -81,10 +78,10 @@ export function useIssueComponents(
       );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: treeKey });
+      void cache.invalidate({ queryKey: treeKey });
       // Every open issue, this one included: descendants inherit the change with no event of
       // their own.
-      void queryClient.invalidateQueries({ queryKey: ["issue"] });
+      void cache.invalidate({ queryKey: ["issue"] });
     },
   });
   return {

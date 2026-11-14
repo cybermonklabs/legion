@@ -5,16 +5,16 @@
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { answerInboxDismisses, answerInboxReads } from "../../__tests__/send-answers";
+import { DispatchQueryClient } from "../../api/cache/query-client";
+import { QueryClient, QueryClientProvider, useQuery } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import { inboxThreadsQuery, myRepliesCountQuery, whoAmIQuery } from "../../api/queries";
-import { DispatchQueryClient } from "../../api/query-client";
 import type {
   InboxDismissResponse,
   InboxReadResponse,

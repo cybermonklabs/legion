@@ -1,10 +1,10 @@
 import type { BlockMark } from "@legion/proof-editor";
-import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, documentReadRequest } from "../../api/client";
 import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
-import { useShownQuery } from "../writes/shown-query";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
 /** What a stale block says when the reader rests on it. */
@@ -127,7 +127,7 @@ export function useSpecMarks({
   /** The version the page shows: the spec's latest. */
   shownVersion: number | undefined;
 }): { changed: ChangedSinceRead | undefined; marks: readonly BlockMark[] } {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const decisions = useShownQuery(issueDecisionsQuery(issueKey, enabled));
   const readKey = ["document-read", artifact.id] as const;
   const read = useShownQuery({
@@ -174,7 +174,7 @@ export function useSpecMarks({
       enabled && readAtOpen !== undefined && shownVersion !== undefined
         ? { key: `${artifact.id}@${shownVersion}`, value: shownVersion }
         : undefined,
-    onSuccess: (result) => queryClient.setQueryData(readKey, result),
+    onSuccess: (result) => cache.setDispatched(readKey, result),
     request: (version) => documentReadRequest(artifact.id, version),
     shouldSend: true,
     target: `read:document:${artifact.id}`,

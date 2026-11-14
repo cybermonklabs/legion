@@ -14,7 +14,7 @@ import { asUser } from "./users";
 //
 // Dispatch passes the listener's `Retry-After: 5` on with that refusal, and the shared retry
 // policy leaves a read that names a wait alone for it before each of its two retries, plus a
-// random share of it again (`queryRetryDelay`, `web/src/api/query-client.ts`), so a view's first
+// random share of it again (`queryRetryDelay`, `web/src/api/cache/query-client.ts`), so a view's first
 // refilling read says so up to 20 s after the page made it: `REFILL_TIMEOUT` is that wait and a
 // margin, and the test's own deadline covers the two reads below that take it.
 

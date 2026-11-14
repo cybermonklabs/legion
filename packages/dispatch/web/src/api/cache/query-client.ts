@@ -7,7 +7,7 @@ import {
   type RefetchQueryFilters,
 } from "@tanstack/react-query";
 
-import { ApiError, isEventHeadUnavailable, isRetryableQueryError } from "./client";
+import { ApiError, isEventHeadUnavailable, isRetryableQueryError } from "../client";
 
 /** The wait before a failed read's retry when the server asked for none. */
 export const QUERY_RETRY_DELAY_MS = 500;
@@ -22,7 +22,7 @@ const RETRY_AFTER_CEILING_MS = 30_000;
 export const EVENT_HEAD_RETRY_CEILING_MS = 5_000;
 
 /**
- * Whether a failed query is asked again (`retry` in `main.tsx`). An auth outcome (401) is
+ * Whether a failed query is asked again (`retry` in `provider.tsx`). An auth outcome (401) is
  * definitive; everything else retryable (a dropped connection, a 5xx) gets two quick retries
  * before the page shows an error. The sign-in check's `503 EVENT_HEAD_UNAVAILABLE` is asked again
  * for as long as it lasts: Dispatch answers it while an event write open since before its restart
@@ -34,7 +34,7 @@ export function queryRetry(failureCount: number, error: unknown): boolean {
 }
 
 /**
- * The wait before every query's retry (`retryDelay` in `main.tsx`). A server refusing excess load
+ * The wait before every query's retry (`retryDelay` in `provider.tsx`). A server refusing excess load
  * (503 `OVERLOADED`, `DATABASE_BUSY` or `REQUEST_TIMEOUT`) says how long to stay away in
  * `Retry-After`: the retry waits that long, at most `RETRY_AFTER_CEILING_MS`, plus a random share
  * of it again, so the tabs it refused together do not all come back in the same instant, and the

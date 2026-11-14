@@ -1,5 +1,5 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
+import { useCache } from "../../api/cache/cache";
 
 import type { WriteRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -99,7 +99,7 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
   removesRow,
   request,
 }: OutstandingAnswerWriteOptions<TData, TVariables>): KeyedWriteResult<TData, TVariables, unknown> {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   /** Whether the press now going takes the ask's row out: `removesRow` read once, where it is
    *  read, and held for the change that press shows. */
   const removing = useRef(false);
@@ -124,7 +124,7 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
       if (!removing.current) return;
       markAnswerOutstanding(askId, true);
       // A read already out was asked before this press.
-      await queryClient.cancelQueries({ queryKey: inboxQuery().queryKey });
+      await cache.cancel({ queryKey: inboxQuery().queryKey });
     },
     onError,
     onSettled,

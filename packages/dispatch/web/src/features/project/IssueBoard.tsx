@@ -14,6 +14,8 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import type { CSSProperties, ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { projectIssuesQuery, projectIssuesQueryKey, userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
@@ -44,8 +46,6 @@ import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
-import { useShownQuery } from "../writes/shown-query";
-import { useWrites } from "../writes/write-store";
 import {
   announceMove,
   type BoardFocus,
@@ -314,7 +314,7 @@ export function IssueBoard({
    *  cell. */
   lanes?: boolean;
 }): ReactNode {
-  const writes = useWrites();
+  const cache = useCache();
   const { labels, matches } = useIssueFilters();
   // The same query-key pair the List keeps: the plain project list, or the server-filtered
   // list while labels are active - shared keys, shared caches.
@@ -408,7 +408,7 @@ export function IssueBoard({
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     landCard();
     // The board as the person sees it, every live drop composed over Dispatch's list.
-    const current = writes.shown<IssueSummary[]>(queryKey);
+    const current = cache.shown<IssueSummary[]>(queryKey);
     if (over === null || current === undefined) {
       return;
     }
@@ -532,7 +532,7 @@ export function IssueBoard({
       void moveCard(key, target.status, target.insertionIndex);
     }
     // The announcement's position and count are the visible cell - the one the user sees.
-    const column = (writes.shown<IssueSummary[]>(queryKey) ?? []).filter(
+    const column = (cache.shown<IssueSummary[]>(queryKey) ?? []).filter(
       (issue) =>
         issue.status === target.status &&
         isVisible(issue) &&

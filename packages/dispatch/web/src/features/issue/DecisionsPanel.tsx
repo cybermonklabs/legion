@@ -1,6 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, decisionKeepRequest, issueCommentRequest } from "../../api/client";
 import type {
   Artifact,
@@ -29,7 +30,6 @@ import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** The word that opens the paragraph the server reads as a decision's doubt
@@ -382,7 +382,7 @@ function WaitingDecision({
   issueKey: string;
   spec: Artifact | undefined;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const [changing, setChanging] = useState(false);
   // A change anchors on the decision's first block below its heading, by the words that block
   // holds: an anchor quote names the document's own text, which is what the server matches it
@@ -397,10 +397,10 @@ function WaitingDecision({
     target: (id) => `document:${id}`,
     onSuccess: (kept) => {
       if (kept === null) {
-        void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
+        void cache.invalidate({ exact: true, queryKey: ["decisions", issueKey] });
         return;
       }
-      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
+      cache.setDispatched<IssueDecisions>(["decisions", issueKey], (view) =>
         view === undefined
           ? view
           : {

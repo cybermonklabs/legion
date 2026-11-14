@@ -1,9 +1,9 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { Cache } from "../../api/cache/cache";
 
+import { defineWriteKind, liveWrite, ofKind, type Writes } from "../../api/cache/write-store";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { UserIssueState, UserState } from "../../api/types";
 import { type Shape, shape } from "../writes/write-storage";
-import { defineWriteKind, liveWrite, ofKind, type Writes, writesOf } from "../writes/write-store";
 import { pinnedItemMarker, stateForIssue } from "./pins";
 
 export type PinStateOperation = { readonly id: string; readonly op: "pin" | "unpin" };
@@ -81,8 +81,8 @@ function pinsOut(writes: Writes, issueKey: string): boolean {
  *  mark's - into the viewer's state (`["user-state"]`), so every surface reads it at once. The
  *  cache holds only Dispatch's answers, so a pin of any issue still out stays composed over it
  *  and none is carried into Dispatch's state. */
-export function storeIssueState(client: QueryClient, issueKey: string, next: UserIssueState): void {
-  client.setQueryData<UserState>(["user-state"], (current) => ({
+export function storeIssueState(cache: Cache, issueKey: string, next: UserIssueState): void {
+  cache.setDispatched<UserState>(["user-state"], (current) => ({
     ...current,
     [issueKey]: next,
   }));
@@ -102,20 +102,20 @@ export function storeIssueState(client: QueryClient, issueKey: string, next: Use
  */
 const pinWrite = defineWriteKind<PinWrite>({
   kept: keptPin,
-  landed: (client, write, answer) => {
+  landed: (cache, write, answer) => {
     const { issueKey } = write.detail;
-    if (pinsOut(writesOf(client), issueKey)) return;
+    if (pinsOut(cache.writes, issueKey)) return;
     authoritative.delete(issueKey);
     if (answer === null) {
-      void client.invalidateQueries({ queryKey: ["user-state"] });
+      void cache.invalidate({ queryKey: ["user-state"] });
       return;
     }
-    storeIssueState(client, issueKey, answer as UserIssueState);
+    storeIssueState(cache, issueKey, answer as UserIssueState);
   },
   name: "pin",
   reset: () => authoritative.clear(),
   resume: (detail) => pinAttempt(detail),
-  undone: (_client, write) => {
+  undone: (_cache, write) => {
     authoritative.delete(write.detail.issueKey);
   },
 });
@@ -123,15 +123,15 @@ const pinWrite = defineWriteKind<PinWrite>({
 /** Pins or unpins one item of `issueKey` for the viewer: one write of the store, which shows the
  *  pin on the page's state at once and composes it over each answer that lands there until it
  *  settles, made behind every pin of that issue still out. The operation may be derived from the
- *  `dismissed` list the person sees at the moment of the write (`Writes.shown`: Dispatch's state
+ *  `dismissed` list the person sees at the moment of the write (`Cache.shown`: Dispatch's state
  *  with every live pin over it), which is what a toggle needs. */
 export function writePin(
-  client: QueryClient,
+  cache: Cache,
   issueKey: string,
   operation: PinStateOperation | ((dismissed: string[]) => PinStateOperation)
 ): void {
-  const writes = writesOf(client);
-  const pressed = stateForIssue(writes.shown<UserState>(["user-state"]), issueKey);
+  const writes = cache.writes;
+  const pressed = stateForIssue(cache.shown<UserState>(["user-state"]), issueKey);
   const applied = typeof operation === "function" ? operation(pressed.dismissed ?? []) : operation;
   const detail = { issueKey, operation: applied };
   writes

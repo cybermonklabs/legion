@@ -1,13 +1,9 @@
-import {
-  type QueryClient,
-  type QueryKey,
-  type QueryObserverOptions,
-  type QueryStatus,
-  queryOptions,
-  type UseQueryResult,
-} from "@tanstack/react-query";
+import type { Cache } from "../../api/cache/cache";
+import { primarySpec } from "../../api/cache/issue-cache";
+import type { QueryKey, UseQueryResult } from "../../api/cache/keys";
+import { queryOptions, type ReadOptions, type ReadStatus } from "../../api/cache/read-options";
+import { useShownQuery, watchShownQuery } from "../../api/cache/shown-query";
 import { ApiError, api, artifactVersionPath } from "../../api/client";
-import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
 import type {
   Artifact,
@@ -22,8 +18,6 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
-import { useShownQuery, watchShownQuery } from "../writes/shown-query";
-import { writesOf } from "../writes/write-store";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
 import {
@@ -59,8 +53,8 @@ import { prefixReference, routeWithWholeIds, type TextSource } from "./text-refe
  * is fetched even over the data it holds, which an event's refetch that failed leaves fresh by
  * age (`staleTime: Infinity`).
  */
-const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
-  query.state.status === "error" ? "always" : false;
+const refetchFailedOnFocus = (read: { readonly status: ReadStatus }) =>
+  read.status === "error" ? "always" : false;
 
 export interface ReferenceTarget {
   readonly title: string | undefined;
@@ -269,35 +263,34 @@ export interface ReferenceReadOptions {
  * document, and no document text (a block of a comment or message is its graph read alone, whose
  * node carries the block's text); an ask's, comment's or message's own read. Every key comes from
  * the query builders above. The document whose text is warmed is the one Dispatch's answer names
- * (`Writes.dispatched`): a text read is Dispatch's, and the card composes its own reads. */
-export function prefetchReference(queryClient: QueryClient, route: DispatchReferenceRoute): void {
-  const writes = writesOf(queryClient);
+ * (`Cache.dispatched`): a text read is Dispatch's, and the card composes its own reads. */
+export function prefetchReference(cache: Cache, route: DispatchReferenceRoute): void {
   const warmText = (
     artifact: Pick<ReferenceArtifact, "id" | "kind"> | undefined,
     version: number | undefined
   ) => {
     if (artifact?.kind === "doc") {
-      void queryClient.prefetchQuery(artifactTextQuery(artifact.id, version));
+      void cache.prefetch(artifactTextQuery(artifact.id, version));
     }
   };
   const block = blockReferenceOf(route);
   if (block !== undefined) {
-    void queryClient.prefetchQuery(blockQuery(block));
+    void cache.prefetch(blockQuery(block));
     if (itemOfBlock(route) !== undefined) {
       return;
     }
     if (route.kind === "document") {
-      void queryClient.prefetchQuery(documentSummaryQuery(route.project, route.slug));
+      void cache.prefetch(documentSummaryQuery(route.project, route.slug));
     } else if ("key" in route) {
-      void queryClient.prefetchQuery(issueSummaryQuery(route.key));
+      void cache.prefetch(issueSummaryQuery(route.key));
     }
     return;
   }
   switch (route.kind) {
     case "agent-artifact": {
       const query = agentArtifactQuery(route.session, route.slug);
-      void queryClient.prefetchQuery(query).then(() => {
-        const artifact = writes.dispatched(query.queryKey);
+      void cache.prefetch(query).then(() => {
+        const artifact = cache.dispatched(query.queryKey);
         warmText(
           artifact === undefined ? undefined : agentReferenceArtifact(artifact),
           route.version
@@ -306,33 +299,33 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
       return;
     }
     case "message":
-      void queryClient.prefetchQuery(messageQuery(route.key, route.id));
+      void cache.prefetch(messageQuery(route.key, route.id));
       return;
     case "ask":
-      void queryClient.prefetchQuery(askQuery(route.id));
+      void cache.prefetch(askQuery(route.id));
       return;
     case "comment":
-      void queryClient.prefetchQuery(commentQuery(route.id));
+      void cache.prefetch(commentQuery(route.id));
       return;
     case "document": {
       if (route.item?.kind === "ask") {
-        void queryClient.prefetchQuery(askQuery(route.item.id));
+        void cache.prefetch(askQuery(route.item.id));
         return;
       }
       if (route.item?.kind === "comment") {
-        void queryClient.prefetchQuery(commentQuery(route.item.id));
+        void cache.prefetch(commentQuery(route.item.id));
         return;
       }
       const query = documentSummaryQuery(route.project, route.slug);
-      void queryClient
-        .prefetchQuery(query)
-        .then(() => warmText(writes.dispatched(query.queryKey), route.version));
+      void cache
+        .prefetch(query)
+        .then(() => warmText(cache.dispatched(query.queryKey), route.version));
       return;
     }
     case "artifact": {
       const query = issueSummaryQuery(route.key);
-      void queryClient.prefetchQuery(query).then(() => {
-        const documents = writes.dispatched(query.queryKey)?.documents;
+      void cache.prefetch(query).then(() => {
+        const documents = cache.dispatched(query.queryKey)?.documents;
         warmText(
           documents?.find((candidate) => candidate.slug === route.slug),
           route.version
@@ -342,9 +335,9 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
     }
     default: {
       const query = issueQuery(route.key);
-      void queryClient
-        .prefetchQuery(query)
-        .then(() => warmText(primarySpec(writes.dispatched(query.queryKey)), undefined));
+      void cache
+        .prefetch(query)
+        .then(() => warmText(primarySpec(cache.dispatched(query.queryKey)), undefined));
     }
   }
 }
@@ -648,32 +641,32 @@ function picturePath(
  *  whenever the summary changes (an event refreshes it, a failed read recovers), until the
  *  returned function unsubscribes. Undefined while the summary is unread or unreadable. */
 function observePicturePath<TData, TKey extends QueryKey>(
-  queryClient: QueryClient,
-  options: QueryObserverOptions<TData, Error, TData, TData, TKey>,
+  cache: Cache,
+  options: ReadOptions<TData, Error, TData, TKey>,
   artifactOf: (data: TData) => ReferenceArtifact | undefined,
   named: ReferencedArtifact,
   onPicture: (path: string | undefined) => void
 ): () => void {
-  return watchShownQuery(queryClient, options, (data) =>
+  return watchShownQuery(cache, options, (data) =>
     onPicture(data === undefined ? undefined : picturePath(named, artifactOf(data)))
   );
 }
 
 /** `useReferenceTarget`'s `picture`, for a caller outside React (the document editors' picture
- *  node view): it observes the same summary queries through `queryClient`, so every picture of
+ *  node view): it observes the same summary queries through `cache`, so every picture of
  *  one issue shares one summary read with the links and cards on the page, and follows the
  *  summary as an event refreshes it - a new version uploaded, a failed read recovered. Calls
  *  `onPicture` at once and on every change, with undefined for a reference to anything but an
  *  image artifact or while its summary is unread or unreadable; the returned function stops. */
 export function watchPicturePath(
-  queryClient: QueryClient,
+  cache: Cache,
   route: DispatchReferenceRoute,
   onPicture: (path: string | undefined) => void
 ): () => void {
   const named = referencedArtifact(route);
   if (named !== undefined && route.kind === "document") {
     return observePicturePath(
-      queryClient,
+      cache,
       documentSummaryQuery(route.project, route.slug),
       (summary) => summary,
       named,
@@ -682,7 +675,7 @@ export function watchPicturePath(
   }
   if (named !== undefined && route.kind === "agent-artifact") {
     return observePicturePath(
-      queryClient,
+      cache,
       agentArtifactQuery(route.session, route.slug),
       agentReferenceArtifact,
       named,
@@ -691,7 +684,7 @@ export function watchPicturePath(
   }
   if (named !== undefined && route.kind === "artifact") {
     return observePicturePath(
-      queryClient,
+      cache,
       issueSummaryQuery(route.key),
       (summary) => (summary.documents ?? []).find((candidate) => candidate.slug === route.slug),
       named,
@@ -727,14 +720,12 @@ export function useReferencePath(route: DispatchReferenceRoute | undefined): str
  *  read, as the hook's path does before it is. The slug is the one Dispatch's answer names
  *  (`fetchDispatched`): the path opens a page Dispatch serves. */
 export async function fetchReferencePath(
-  queryClient: QueryClient,
+  cache: Cache,
   route: DispatchReferenceRoute
 ): Promise<string> {
   if (!needsSpecSlug(route)) {
     return buildReferencePath(route);
   }
-  const issue = await writesOf(queryClient)
-    .fetchDispatched(issueSummaryQuery(route.key))
-    .catch(() => undefined);
+  const issue = await cache.fetchDispatched(issueSummaryQuery(route.key)).catch(() => undefined);
   return buildReferencePath(route, summarySpec(issue)?.slug);
 }

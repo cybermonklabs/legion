@@ -1,11 +1,10 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueQuery, projectIssuesQuery } from "../../api/queries";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
-import { useShownQuery } from "../writes/shown-query";
-import { writesOf } from "../writes/write-store";
 import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
 
 /** How many parent reads the ancestry walk keeps in flight. A project that has been running a
@@ -29,7 +28,7 @@ export function useProjectIssueItems(
   project: string,
   { wantsDone, registry }: { wantsDone: boolean; registry: AgentRegistry }
 ) {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const everyIssue = useShownQuery({ ...projectIssuesQuery(project, []), enabled: wantsDone });
   const doneLoaded = wantsDone && everyIssue.data !== undefined;
@@ -76,9 +75,7 @@ export function useProjectIssueItems(
         for (let from = 0; from < missing.length; from += PARENT_READS_IN_FLIGHT) {
           const slice = missing.slice(from, from + PARENT_READS_IN_FLIGHT);
           const answers = await Promise.allSettled(
-            slice.map((key) =>
-              writesOf(queryClient).fetchDispatched({ ...issueQuery(key), staleTime: Infinity })
-            )
+            slice.map((key) => cache.fetchDispatched({ ...issueQuery(key), staleTime: Infinity }))
           );
           answers.forEach((answer, index) => {
             const key = slice[index];

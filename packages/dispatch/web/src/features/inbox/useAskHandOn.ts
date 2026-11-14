@@ -1,10 +1,9 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useCache } from "../../api/cache/cache";
 
 import { askHandOnRequest } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { writesOf } from "../writes/write-store";
 import { invalidateOwnerReads } from "./owner-reads";
 
 export interface AskHandOnWrite {
@@ -36,7 +35,7 @@ export interface AskHandOnWrite {
  * named either way, and the three stored fields behind it - `asked_of`, empty when the ask was
  * handed to the assignee of its own issue, since an empty field means the ask follows that
  * issue again; `asked_of_by`, the reader; and `asked_of_at`, now. The reader is the person
- * Dispatch's `/auth/whoami` answer the shell already holds names (`Writes.dispatched`), not read
+ * Dispatch's `/auth/whoami` answer the shell already holds names (`Cache.dispatched`), not read
  * again: it is in the cache before any card can be pressed, and a hand-on made without it leaves
  * the pair unnamed until the refetch answers. Both are read once, at the press, so the change
  * shown again over a later answer is the same change; whom the ask is stored against is read from
@@ -44,7 +43,7 @@ export interface AskHandOnWrite {
  * than by a value taken before it.
  */
 export function useAskHandOn(ask: Ask): AskHandOnWrite {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const inboxKey = inboxQuery().queryKey;
   // The card says why its hand-on was refused, where the reader pressed it. It writes the ask,
   // so it stands in that row's line (`ask:<id>`).
@@ -54,7 +53,7 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
     inline: true,
     label: (askedOf) => `Ask handed to ${askedOf}`,
     shows: (askedOf) => {
-      const by = writesOf(queryClient).dispatched(whoAmIQuery().queryKey)?.login ?? null;
+      const by = cache.dispatched(whoAmIQuery().queryKey)?.login ?? null;
       const at = new Date().toISOString();
       return (shown) => {
         shown.under<InboxRow[]>(inboxKey, (current) =>
@@ -76,19 +75,19 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
       };
     },
     // A read already out was asked before this press.
-    onMutate: () => queryClient.cancelQueries({ queryKey: inboxKey }),
+    onMutate: () => cache.cancel({ queryKey: inboxKey }),
     onSettled: () => {
       // Every surface that draws this ask follows the write, not the `ask.asked_of` event that
       // lands after it: on the issue page, in a document's margin and in its ask block the card
       // reads the ask from its owner's list, where the control's own value comes from, so an
       // Inbox-only refresh would snap the picker back to the person before the hand-on.
-      invalidateOwnerReads(queryClient, ask);
+      invalidateOwnerReads(cache, ask);
       // The Inbox's own Reply-thread card is the one surface that reads the ask from its thread
       // instead (`ThreadBody`, `askThreadQuery`), which is kept for the session and never goes
       // stale of itself. It is read again here rather than in `invalidateOwnerReads`, whose
       // other caller - `useAskAnswerForm` - already refreshes that thread in each branch that
       // moves it, and whose own subject is the reads that carry an ask besides its own thread.
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+      void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
     },
   });
   return {

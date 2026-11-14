@@ -1,6 +1,6 @@
+import { useShownQuery } from "../../api/cache/shown-query";
 import { myRepliesCountQuery } from "../../api/queries";
 import { useIsHuman } from "../../hooks/useIsHuman";
-import { useShownQuery } from "../writes/shown-query";
 import { useNeedsYouCount } from "./BlockedOnYou";
 
 /** How many of the Inbox's thread rows are unread: the `total` of

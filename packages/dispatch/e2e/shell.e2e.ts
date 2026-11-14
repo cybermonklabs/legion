@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { EVENT_HEAD_RETRY_CEILING_MS } from "../web/src/api/query-client";
+import { EVENT_HEAD_RETRY_CEILING_MS } from "../web/src/api/cache/query-client";
 import { baseUrl, createIssue, createProject, sessionCookieName } from "./api";
 import { holdFirstRequest } from "./editor";
 import { failBuildScript, missEntryChunk, recordTabReloads, tabReloads } from "./shell";
@@ -76,7 +76,7 @@ test("a page asks whoami again while it answers EVENT_HEAD_UNAVAILABLE, and open
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   // The page asks again on a timer of its own - 500 ms doubling to the ceiling
-  // (`web/src/api/query-client.ts`) - so the refusals are counted rather than timed out, and
+  // (`web/src/api/cache/query-client.ts`) - so the refusals are counted rather than timed out, and
   // each wait between two of them is spent on the page's clock. Five of them is past the two
   // retries any other failed read gets.
   const refusals = 5;

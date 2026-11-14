@@ -1,6 +1,7 @@
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
-import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
+
+import { useCache } from "../../api/cache/cache";
 
 import { apiErrorMessage, askDeclineRequest, type DeclineAskInput } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
@@ -156,7 +157,7 @@ export function DeclineControl({
   /** Called once the server has recorded the decline, as an answer from this card calls it. */
   onDeclined?: (id: string) => void;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const submitGuard = useSubmitGuard();
   const [open, setOpen] = useState(false);
   // The dialog shows a refused decline itself, over the note it keeps, so the write is inline:
@@ -170,12 +171,12 @@ export function DeclineControl({
       setOpen(false);
       // The card reads its ask from the thread, so the record it swaps to is this decline.
       if (declined !== null) {
-        queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+        cache.setDispatched<AskRead>(["ask-thread", ask.id], (current) =>
           current === undefined ? undefined : { ...current, ask: declined }
         );
       }
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
-      invalidateOwnerReads(queryClient, ask);
+      void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
+      invalidateOwnerReads(cache, ask);
       onDeclined?.(ask.id);
     },
   });

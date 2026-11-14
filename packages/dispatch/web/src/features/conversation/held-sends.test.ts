@@ -1,11 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
-import {
-  type MutationKey,
-  onlineManager,
-  QueryClient,
-  QueryClientProvider,
-} from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
@@ -18,6 +12,14 @@ import {
   UnloadTarget,
 } from "../../__tests__/kept-sends-harness";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import {
+  cacheOf,
+  type MutationKey,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from "../../api/cache/test-client";
+import { Writes } from "../../api/cache/write-store";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Comment, Message } from "../../api/types";
@@ -29,7 +31,6 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import { KEPT_SEND_RESUME_MS } from "../writes/write-storage";
-import { Writes } from "../writes/write-store";
 import { type HeldSend, HeldSends, heldSends, stoppable } from "./held-sends";
 import { PendingSendTurn } from "./PendingSendTurn";
 import { carriedIdsOf, type SentRequest, saveCommentEdit } from "./send-request";
@@ -117,7 +118,7 @@ function signedIn(login = "alice"): QueryClient {
 
 /** The held sends of a page of `tab`, over a store of their own. */
 function heldOf(tab = keptTab(), client = signedIn(), unload?: EventTarget) {
-  const writes = new Writes(client, tab.page(unload), memoryFiles());
+  const writes = new Writes(cacheOf(client), tab.page(unload), memoryFiles());
   return { held: new HeldSends(writes), writes };
 }
 
@@ -465,7 +466,7 @@ test("a session's sends are one line, shown and acted on from every surface of i
         live.result.current.send(["agent-live", "planner-session"], "two", "steer");
       });
       act(() => {
-        heldSends(client).send(agentKey, { ...agentSend, sendKey: "row-1" });
+        heldSends(cacheOf(client)).send(agentKey, { ...agentSend, sendKey: "row-1" });
       });
       await act(settle);
       // One out, the rest waiting their turn behind it, in press order, on both surfaces.

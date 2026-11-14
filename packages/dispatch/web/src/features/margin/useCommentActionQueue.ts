@@ -1,5 +1,13 @@
 import { useMemo, useState } from "react";
 
+import { useWriteSelection, useWrites } from "../../api/cache/cache";
+import {
+  defineWriteKind,
+  liveWrite,
+  ofKind,
+  type WriteChange,
+  type Writes,
+} from "../../api/cache/write-store";
 import {
   api,
   apiErrorCodeIn,
@@ -12,15 +20,6 @@ import {
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey, SendStoppedError } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/write-storage";
-import {
-  defineWriteKind,
-  liveWrite,
-  ofKind,
-  useWriteSelection,
-  useWrites,
-  type WriteChange,
-  type Writes,
-} from "../writes/write-store";
 
 export type CommentAction = "accept" | "reject" | "resolve" | "reopen";
 

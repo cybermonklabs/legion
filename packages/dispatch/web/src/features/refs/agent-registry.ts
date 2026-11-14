@@ -1,8 +1,8 @@
-import { queryOptions } from "@tanstack/react-query";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, isAgentListRefilling } from "../../api/client";
 import type { Agent } from "../../api/types";
-import { useShownQuery } from "../writes/shown-query";
 
 /**
  * The agent registry (`GET /api/v1/agents`: the sessions the Envoy listener lists, as of

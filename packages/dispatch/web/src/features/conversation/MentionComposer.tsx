@@ -1,4 +1,3 @@
-import { hashKey, type MutationKey } from "@tanstack/react-query";
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -14,6 +13,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { hashKey, type MutationKey } from "../../api/cache/keys";
+import { useShownQuery } from "../../api/cache/shown-query";
 import {
   type ArtifactOwner,
   api,
@@ -76,7 +77,6 @@ import { ReferencePicker } from "../refs/ReferencePicker";
 import { composerReferences } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
-import { useShownQuery } from "../writes/shown-query";
 import {
   type FollowedBlocks,
   followEdit,

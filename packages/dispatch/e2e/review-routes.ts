@@ -158,7 +158,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // document, so it proves the header and the editor are on the screen as well as
     // connected. Spelled here rather than imported from `./editor`, which locates the same
     // dot: `./editor` reaches no `./psql`, so the container rule would allow it, but it pulls
-    // `@hocuspocus/provider`, `lib0` and `web/src/api/live-socket` - and so React and
+    // `@hocuspocus/provider`, `lib0` and `web/src/api/cache/live-socket` - and so React and
     // @tanstack/react-query - into a module of data and locators that a bun unit test imports.
     //
     // And the margin's decision card with the block its decision shaped named by that block's

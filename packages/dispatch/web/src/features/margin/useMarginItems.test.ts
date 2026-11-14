@@ -1,6 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
 import type { AcceptSuggestionResponse } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
@@ -9,6 +8,8 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerCommentActions } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import { plainWrite, type Writes } from "../../api/cache/write-store";
 import { ApiError, api } from "../../api/client";
 import type {
   Artifact,
@@ -18,7 +19,6 @@ import type {
   DispatchEvent,
   IssueDecisions,
 } from "../../api/types";
-import { plainWrite, type Writes, writesOf } from "../writes/write-store";
 import {
   anchoredThreadComments,
   fetchPinnedEvents,
@@ -543,8 +543,8 @@ function actionState(): { error: string | null; pending: string[] } {
 /** The lines the store holds a comment action on, in press order: where the actions waiting
  *  their turn live, now that no component holds them (R8 of dispatch://INFRA-299). */
 function actionLines(client: QueryClient): string[] {
-  return writesOf(client)
-    .rows()
+  return cacheOf(client)
+    .writes.rows()
     .map((row) => row.target ?? "no line");
 }
 
@@ -641,7 +641,7 @@ test("a sign-out ends the wait of an action behind another, and nothing of it is
     return save.promise;
   });
   const { listComments, queryClient, unmount } = renderActionButtons();
-  const writes = writesOf(queryClient);
+  const writes = cacheOf(queryClient).writes;
   try {
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await user.click(screen.getByRole("button", { name: "Accept B" }));
@@ -694,7 +694,7 @@ async function heldBehindAnother(
   });
   const { listComments, queryClient, unmount } = renderActionButtons();
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const writes = writesOf(queryClient);
+  const writes = cacheOf(queryClient).writes;
   const statuses = () => writes.rows().map((row) => `${row.target} ${row.status}`);
   try {
     await user.click(screen.getByRole("button", { name: "Accept A" }));

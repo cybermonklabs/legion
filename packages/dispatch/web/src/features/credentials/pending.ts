@@ -1,8 +1,8 @@
-import { type Query, type QueryClient, queryOptions } from "@tanstack/react-query";
+import type { Cache } from "../../api/cache/cache";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/types";
-import { useShownQuery } from "../writes/shown-query";
-import { Writes, writesOf } from "../writes/write-store";
 
 /** How long a credential request may sit unseen on an open tab before the poll below notices it:
  *  short enough that an approver waiting on it never feels the wait, long enough that one GET a
@@ -13,10 +13,11 @@ const CREDENTIAL_POLL_INTERVAL_MS = 15_000;
 /** `null` is a Dispatch with no secrets broker; anything else - even an empty list - is one that
  *  answered. `enabled` and `refetchInterval` below both gate on this one fact through this one
  *  function, so the two can never drift apart: a `null`-holding query can neither fetch again on
- *  its own nor have the poll armed for it. It is Dispatch's answer the gate reads
- *  (`Writes.dispatchedOf`), since whether a broker answered is no write's to change. */
-function holdsList(query: Query<CredentialPendingResponse | null>): boolean {
-  return Writes.dispatchedOf(query) !== null;
+ *  its own nor have the poll armed for it. It is Dispatch's answer the gate reads - what the
+ *  cache layer hands `enabled` and `refetchInterval` (`ReadOptions`) - since whether a broker
+ *  answered is no write's to change. */
+function holdsList(dispatched: CredentialPendingResponse | null | undefined): boolean {
+  return dispatched !== null;
 }
 
 /** Every credential request waiting on the viewer, as the Inbox's credential-requests section
@@ -34,18 +35,18 @@ export const credentialPendingQuery = () =>
     enabled: holdsList,
     queryKey: ["credential-pending"],
     queryFn: () => api.getCredentialPending(),
-    refetchInterval: (query) => (holdsList(query) ? CREDENTIAL_POLL_INTERVAL_MS : false),
+    refetchInterval: (dispatched) => (holdsList(dispatched) ? CREDENTIAL_POLL_INTERVAL_MS : false),
   });
 
 /** The event feed's first start after a gap - any reconnect but a 4001 rotation whose next socket
- *  opens, which no restart causes (`api/live-socket.ts`) - is the one moment the server may have
+ *  opens, which no restart causes (`api/cache/live-socket.ts`) - is the one moment the server may have
  *  restarted, perhaps with a broker configured, so it asks a held `null` again. The fetch runs
  *  over the held answer, so the list stays listed and empty while it is out and nothing blinks; a
  *  list that comes back makes the query an ordinary one that every refresh refetches. */
-export function reaskHeldCredentialList(queryClient: QueryClient): void {
+export function reaskHeldCredentialList(cache: Cache): void {
   const query = credentialPendingQuery();
-  if (writesOf(queryClient).dispatched(query.queryKey) !== null) return;
-  void queryClient.prefetchQuery({ ...query, staleTime: 0 });
+  if (cache.dispatched(query.queryKey) !== null) return;
+  void cache.prefetch({ ...query, staleTime: 0 });
 }
 
 /** What the Inbox knows about the credential requests waiting on the viewer. `listed` carries the

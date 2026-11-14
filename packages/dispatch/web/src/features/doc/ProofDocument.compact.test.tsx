@@ -1,5 +1,4 @@
 import { beforeEach, expect, spyOn, test } from "bun:test";
-import { QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -10,6 +9,7 @@ import {
   createQueryClient,
   documentSurfaceHandlers,
 } from "../../__tests__/proof-document";
+import { QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import { MarginProvider } from "../margin/margin-context";
 import { ProofDocument } from "./ProofDocument";

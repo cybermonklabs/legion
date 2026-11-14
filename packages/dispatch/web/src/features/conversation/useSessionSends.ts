@@ -1,5 +1,5 @@
 import type { MessageDeliveryMode } from "@legion/contracts";
-import type { MutationKey } from "@tanstack/react-query";
+import type { MutationKey } from "../../api/cache/keys";
 
 import { newSendKey } from "../../lib/send-key";
 import { type HeldSend, useHeldSendOutcomes, useHeldSends, useHeldSendsTo } from "./held-sends";

@@ -6,7 +6,6 @@ import {
   IDEMPOTENCY_KEY_TTL_MS,
   LIVE_SOCKET_MAX_AGE_CLOSE,
 } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
   cleanup,
@@ -30,8 +29,9 @@ import {
 } from "../../__tests__/live-socket-harness";
 import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
+import { liveSocketFor } from "../../api/cache/live-socket";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
-import { liveSocketFor } from "../../api/live-socket";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { Sidebar } from "../sidebar/Sidebar";
@@ -119,7 +119,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   for (const spy of spies.splice(0)) spy.mockRestore();
-  for (const client of clients.splice(0)) liveSocketFor(client).close();
+  for (const client of clients.splice(0)) liveSocketFor(cacheOf(client)).close();
   sockets.restore();
 });
 
@@ -1309,7 +1309,7 @@ test("a missing-scope refusal shows the view unavailable", async () => {
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
   // The app's event feed rides the same socket, so the socket outlives the refused view.
-  liveSocketFor(queryClient).subscribeEvents({
+  liveSocketFor(cacheOf(queryClient)).subscribeEvents({
     onEvent: () => undefined,
     onStart: () => undefined,
     since: () => null,

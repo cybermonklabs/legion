@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 
@@ -31,13 +31,6 @@ export function shippedSources(): readonly string[] {
   return shipped;
 }
 
-/** Every module the app ships, by its path under `web/src`, with its text. */
-export function shippedTexts(): ReadonlyMap<string, string> {
-  return new Map(
-    shippedSources().map((path) => [path, readFileSync(join(webSrc, path), "utf8")] as const)
-  );
-}
-
 /** `source`, the module at `path`, parsed as the compiler parses it: a `.tsx` module as TSX, any
  *  other as TypeScript, where `<T>(value: T) => value` is a generic function and not JSX. */
 export function parsed(path: string, source: string): ts.SourceFile {
@@ -59,19 +52,4 @@ export function nodesOf(file: ts.SourceFile): ts.Node[] {
 /** `file`'s path and the line `node` starts on, counted from one: `path:line`. */
 export function siteOf(file: ts.SourceFile, node: ts.Node): string {
   return `${file.fileName}:${file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1}`;
-}
-
-/** The name a property is written under, where it is written as a name or a string: `a.b`'s `b`,
- *  `a["b"]`'s, `{ b: c }`'s and `{ b }`'s. A name computed at run time has none. */
-export function writtenName(node: ts.Node): string | undefined {
-  if (ts.isPropertyAccessExpression(node)) return node.name.text;
-  if (ts.isElementAccessExpression(node)) {
-    const { argumentExpression } = node;
-    return ts.isStringLiteralLike(argumentExpression) ? argumentExpression.text : undefined;
-  }
-  if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
-    const name = node.propertyName ?? node.name;
-    return ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : undefined;
-  }
-  return undefined;
 }

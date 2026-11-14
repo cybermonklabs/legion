@@ -1,6 +1,7 @@
 import { canonicalRepo } from "@legion/contracts/repo";
-import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { apiErrorMessage, repoProjectDeleteRequest, repoProjectRequest } from "../../api/client";
 import { projectsQuery, repoProjectsQuery } from "../../api/queries";
 import type { RepoProject } from "../../api/types";
@@ -21,7 +22,6 @@ import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentTokensSection } from "./AgentTokensSection";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
@@ -67,7 +67,7 @@ function withMapping(current: RepoProject[], mapping: RepoProject): RepoProject[
 
 export function SettingsPage(): ReactNode {
   useDocumentTitle("Settings · Dispatch");
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const [repository, setRepository] = useState("");
   const [project, setProject] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>();
@@ -92,7 +92,7 @@ export function SettingsPage(): ReactNode {
       });
     },
     // A read already out was asked before this press.
-    onMutate: () => queryClient.cancelQueries({ queryKey: ["repo-projects"] }),
+    onMutate: () => cache.cancel({ queryKey: ["repo-projects"] }),
     /** The mapping this press shows, composed over the list as it stands - so an answer it is
      *  composed over carries the mapping, and every other mapping that answer brought with it
      *  stays (R7). */
@@ -119,7 +119,7 @@ export function SettingsPage(): ReactNode {
     // the merged list.
     onSuccess: (mapping, variables) => {
       if (mapping !== null) {
-        queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
+        cache.setDispatched<RepoProject[]>(["repo-projects"], (current = []) =>
           withMapping(current, mapping)
         );
       }
@@ -133,7 +133,7 @@ export function SettingsPage(): ReactNode {
     // answer arrives: another write (another browser's default pick, read through a mapping event
     // while this one was on the way) may have changed them since. Reading them again once the
     // write settles leaves the page on the server's state, as useIssueFieldWrite does an issue's.
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
+    onSettled: () => cache.invalidate({ queryKey: ["repo-projects"] }),
   });
   const deleteMapping = useKeyedWrite<void, string>({
     request: (repo: string) => repoProjectDeleteRequest(repo),
@@ -148,7 +148,7 @@ export function SettingsPage(): ReactNode {
       });
     },
     // A read already out was asked before this press.
-    onMutate: () => queryClient.cancelQueries({ queryKey: ["repo-projects"] }),
+    onMutate: () => cache.cancel({ queryKey: ["repo-projects"] }),
     /** The removal this press shows: the row out of the list as it stands, so an answer it is
      *  composed over loses it too while every other mapping it carries stays. */
     shows: (repo) => (shown) => {
@@ -157,7 +157,7 @@ export function SettingsPage(): ReactNode {
       );
     },
     onSuccess: () => setFailedAction(undefined),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
+    onSettled: () => cache.invalidate({ queryKey: ["repo-projects"] }),
   });
 
   const retry = () => {

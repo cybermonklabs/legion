@@ -1,6 +1,6 @@
+import type { Shown } from "../../api/cache/write-store";
 import { issueQuery, projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
-import type { Shown } from "../writes/write-store";
 import { inboxKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssuePriorityWrite {

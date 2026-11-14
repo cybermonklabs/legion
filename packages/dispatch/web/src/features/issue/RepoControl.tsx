@@ -1,9 +1,9 @@
 import { type ReactNode, useId, useState } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { apiErrorMessage } from "../../api/client";
 import { repoProjectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary, textSecondaryOnSurface } from "../../theme/classes";
-import { useShownQuery } from "../writes/shown-query";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectRailWrapper } from "./badge-select";
 import { reservedOpenTextWidth } from "./reserved-width";
 import { useIssueRepo } from "./useIssueRepo";

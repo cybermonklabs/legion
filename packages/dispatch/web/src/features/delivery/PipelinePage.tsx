@@ -22,6 +22,7 @@
 
 import { type ReactNode, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { isDeliveryNotConfigured } from "../../api/client";
 import { deliveryPipelineQuery } from "../../api/queries";
 import type {
@@ -45,7 +46,6 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useShownQuery } from "../writes/shown-query";
 import { formatDue, formatDuration, formatRate } from "./lib/format";
 import { formatAge } from "./lib/freshness";
 import { SourceFreshness } from "./SourceFreshness";

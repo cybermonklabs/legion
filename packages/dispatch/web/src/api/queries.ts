@@ -1,19 +1,18 @@
 import { INBOX_THREAD_KINDS } from "@legion/contracts";
 
-import {
-  infiniteQueryOptions,
-  keepPreviousData,
-  type QueryFunctionContext,
-  type QueryKey,
-  queryOptions,
-  replaceEqualDeep,
-} from "@tanstack/react-query";
-
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
+import { cacheFetching } from "./cache/cache";
+import { type QueryKey, replaceEqualDeep } from "./cache/keys";
+import { liveSocketFor } from "./cache/live-socket";
+import {
+  infiniteQueryOptions,
+  keepPreviousData,
+  queryOptions,
+  type ReadContext,
+} from "./cache/read-options";
 import { api } from "./client";
-import { liveSocketFor } from "./live-socket";
 import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
@@ -36,19 +35,20 @@ export const whoAmIQuery = () =>
 
 /** Every ask the viewer can see, as the Inbox lists them. The Inbox lists every project's
  *  issues, so a write of an issue or an ask that is live is composed over each answer of this
- *  read (R7 of dispatch://INFRA-299, `features/writes/write-store.ts`): the answer arrives whole
+ *  read (R7 of dispatch://INFRA-299, `api/cache/write-store.ts`): the answer arrives whole
  *  and the person's unsaved change is still on it. */
 export const inboxQuery = () =>
   queryOptions({
     queryKey: ["inbox"],
-    queryFn: async ({ client }) => {
-      const fetch = beginInboxFetch(client);
+    queryFn: async (context) => {
+      const cache = cacheFetching(context);
+      const fetch = beginInboxFetch(cache);
       let asks: InboxRow[] | undefined;
       try {
         asks = await api.getInbox();
         return asks;
       } finally {
-        finishInboxFetch(client, fetch, asks);
+        finishInboxFetch(cache, fetch, asks);
       }
     },
   });
@@ -86,7 +86,7 @@ function olderIssue(next: unknown, cached: unknown): boolean {
  * its head (`mergeEventPages`). The rule is the query's own, so it holds for every writer of the
  * key: a read from any of its views, and a PATCH's answer (`mergeIssue`). It runs only where an
  * answer enters the cache, and the cache holds only Dispatch's answers - a live pick is composed
- * over the issue as a reader reads it (`features/writes/shown-query.ts`), outside TanStack, never
+ * over the issue as a reader reads it (`api/cache/shown-query.ts`), outside TanStack, never
  * written into the cache - so the rule judges one answer of this key against Dispatch's issue of
  * this key, never a composed value nor the issue a reader showed before its key changed.
  */
@@ -358,9 +358,9 @@ export const projectIssuesQuery = (project: string, labels: readonly string[], o
   });
 
 /** What every live-owned delivery query shares (LEGION-690): its first load subscribes its view
- *  over the page's one live socket (`api/live-socket.ts`), which writes the snapshot and every
+ *  over the page's one live socket (`api/cache/live-socket.ts`), which writes the snapshot and every
  *  later change into the cache, so nothing here reads again. `meta.live` keeps the event feed's
- *  refresh paths away from it (`api/query-refresh.ts`); `gcTime` 0 drops the subscription with the
+ *  refresh paths away from it (`api/cache/query-refresh.ts`); `gcTime` 0 drops the subscription with the
  *  last observer; the page keeps the previous answer on screen while a new view's snapshot is out,
  *  as a filter change in the prototype it ports never blanks it. */
 const LIVE = {
@@ -380,12 +380,12 @@ interface DeliveryLiveBodies {
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. */
 function subscribeLive<V extends DeliveryLiveView>(
-  context: QueryFunctionContext,
+  context: ReadContext,
   view: V
 ): Promise<DeliveryLiveBodies[V["kind"]]> {
   // The socket answers each view with its own route's body (packages/contracts DeliveryLiveView);
   // the frame carries the union, and the view's kind names the member.
-  return liveSocketFor(context.client).subscribe(context.queryKey, view) as Promise<
+  return liveSocketFor(cacheFetching(context)).subscribe(context.queryKey, view) as Promise<
     DeliveryLiveBodies[V["kind"]]
   >;
 }

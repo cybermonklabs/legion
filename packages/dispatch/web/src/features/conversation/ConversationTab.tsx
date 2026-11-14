@@ -1,6 +1,9 @@
-import { type MutationKey, queryOptions, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import type { MutationKey } from "../../api/cache/keys";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
 import type {
@@ -60,7 +63,6 @@ import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { threadLayout } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { Avatar } from "./Avatar";
@@ -207,13 +209,13 @@ function ConversationReply({
   replyDisabled: boolean;
   root: MessageConversation;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const targetName = recipientOf(reply.deliveries ?? [], root.root.target);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+    onSuccess: () => void cache.invalidate({ queryKey: ["issue-messages", issueKey] }),
     unlined: "a delivery sends a message to one session again and names no row",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
@@ -678,7 +680,7 @@ function CommentTurn({
   setExpanded: (expanded: boolean) => void;
   viewerLogin: string;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const agentText = useAgentText();
   const [editingCommentId, setEditingCommentId] = useState<string>();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
@@ -690,13 +692,13 @@ function CommentTurn({
       setSavingCommentEditId(id);
       try {
         const comment = await api.editComment(id, { body, ...carried }, bounds);
-        void queryClient.invalidateQueries({ queryKey: commentsQueryKey({ issue: issueKey }) });
+        void cache.invalidate({ queryKey: commentsQueryKey({ issue: issueKey }) });
         return comment;
       } finally {
         setSavingCommentEditId(undefined);
       }
     },
-    [issueKey, queryClient]
+    [issueKey, cache]
   );
   const replySendKey = useMemo(
     () => threadReplySendKey(sendKey, item.root.id),
@@ -713,8 +715,7 @@ function CommentTurn({
       `Delivery of the comment to ${agentText.part(targetPart(delivery.target))} again, as ${MODE_LABELS[delivery.delivery]}`,
     onSettled: () => retryGuard.release(),
     unlined: "a delivery sends a comment to one session again and names no row",
-    onSuccess: () =>
-      void queryClient.invalidateQueries({ queryKey: commentsQueryKey({ issue: issueKey }) }),
+    onSuccess: () => void cache.invalidate({ queryKey: commentsQueryKey({ issue: issueKey }) }),
     write: (delivery, bounds) =>
       api.createCommentDelivery(delivery.comment_id, delivery.target, delivery.delivery, bounds),
   });
@@ -845,13 +846,13 @@ function TargetedMessageTurn({
   register?: DwellRef;
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const targetName = recipientOf(item.root.deliveries ?? [], item.root.target);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+    onSuccess: () => void cache.invalidate({ queryKey: ["issue-messages", issueKey] }),
     unlined: "a delivery sends a message to one session again and names no row",
     write: (delivery, bounds) => api.createMessageDelivery(item.root.id, delivery, bounds),
   });
@@ -913,7 +914,7 @@ export function ConversationTab({
   state,
   visible,
 }: ConversationTabProps): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   // Every composer this tab shows names its send with `sendKey`, or beneath it: the docked one
   // with the key itself, the phone thread's composer and a thread card's inline reply beneath it
   // (`usePhoneThread`'s `composerKey`, `threadReplySendKey`).
@@ -1055,9 +1056,9 @@ export function ConversationTab({
     // reply the reader was writing as they were, and a thread whose own reply is out stays open,
     // which closing would unmount.
     onSuccess: ({ id, kind }) => {
-      void queryClient.invalidateQueries({ queryKey: commentsQueryKey({ issue: issueKey }) });
+      void cache.invalidate({ queryKey: commentsQueryKey({ issue: issueKey }) });
       if (kind === "reopen") return;
-      if (queryClient.isMutating({ mutationKey: threadReplySendKey(sendKey, id) }) > 0) return;
+      if (cache.pendingMutations({ mutationKey: threadReplySendKey(sendKey, id) }) > 0) return;
       setThreadOpen(id, false);
       if (phone.id === id) phone.hide();
     },
@@ -1192,7 +1193,7 @@ export function ConversationTab({
     mark: read === undefined ? undefined : { key: `${read.issueKey} ${read.seq}`, value: read },
     // Into the viewer's state, which holds Dispatch's answers alone (`storeIssueState`), so a pin
     // of any issue still out stays composed over the mark's answer and none is carried into it.
-    onSuccess: (next, mark) => storeIssueState(queryClient, mark.issueKey, next),
+    onSuccess: (next, mark) => storeIssueState(cache, mark.issueKey, next),
     request: (mark: { issueKey: string; seq: number }) =>
       issueStateRequest(mark.issueKey, { last_read_seq: mark.seq }),
     shouldSend: read !== undefined && read.seq > lastReadSeq,
@@ -1201,7 +1202,7 @@ export function ConversationTab({
   });
 
   const pinConversation = (id: string) =>
-    writePin(queryClient, issueKey, (dismissed) => ({
+    writePin(cache, issueKey, (dismissed) => ({
       id,
       op: isPinnedConversation(dismissed, id) ? "unpin" : "pin",
     }));

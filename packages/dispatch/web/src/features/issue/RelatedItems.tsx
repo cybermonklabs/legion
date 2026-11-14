@@ -1,5 +1,6 @@
 import { relatedCheckFormOf, relatedCheckSearchWords } from "@legion/contracts";
 import { type ReactNode, useEffect, useState } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { SearchOwner, Suggestions, WriteSuggestion } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -13,7 +14,6 @@ import {
 import { statusText } from "../project/board-model";
 import { AskHitStatus } from "../search/AskHitStatus";
 import { kindLabel, searchResultKind } from "../search/search-model";
-import { useShownQuery } from "../writes/shown-query";
 import { RELATED_DEBOUNCE_MS, RELATED_TITLE_MIN } from "./related-timing";
 
 /**
@@ -35,7 +35,7 @@ function useRelatedItems(project: string, title: string) {
   const shown = project !== "" && trimmed.length >= RELATED_TITLE_MIN;
   const query = useShownQuery({
     enabled,
-    // This check opts out of the app's `staleTime: 30_000` (`web/src/main.tsx`) and of
+    // This check opts out of the app's `staleTime: 30_000` (`web/src/api/cache/provider.tsx`) and of
     // react-query's five-minute `gcTime`: nothing invalidates this key, and the answer is
     // advice about what exists right now, so an answer kept from before an issue was filed
     // would tell the reader the opposite of the truth. Every settled title is asked fresh, and

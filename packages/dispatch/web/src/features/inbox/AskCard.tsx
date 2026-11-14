@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { type ArtifactOwner, api } from "../../api/client";
 import { usersQuery } from "../../api/queries";
 import type { Ask, AskRead, AskUrgency } from "../../api/types";
@@ -52,7 +53,6 @@ import { textSourceOf } from "../refs/text-references";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
-import { useShownQuery } from "../writes/shown-query";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";

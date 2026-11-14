@@ -1,5 +1,5 @@
-import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
-import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/cache/query-client";
+import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/cache/query-refresh";
 import { getUnsubscribeCalls, setInterests, setLiveSessions } from "./agents";
 import {
   createAsk,
@@ -1946,7 +1946,7 @@ test("an issue page whose mappings read fails says so and retries it, rather tha
       refused += 1;
       return route.abort();
     });
-    // The read is retried twice, `QUERY_RETRY_DELAY_MS` apart (`web/src/api/query-client.ts`),
+    // The read is retried twice, `QUERY_RETRY_DELAY_MS` apart (`web/src/api/cache/query-client.ts`),
     // before the rail may say so; those waits are page timers its own clock fires.
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
@@ -2128,7 +2128,7 @@ function countProjectListReads(page: Page, project: string): () => number {
 //    write store on the issue's line (`issue:<KEY>`). No read of those rows is held: a list
 //    answer carrying the priority the server still holds lands whole while the PATCH is
 //    unanswered, and the live write shows the pick again over it (`WriteSpec.shows` in
-//    `web/src/features/writes/write-store.ts`), so every other row of that answer arrives.
+//    `web/src/api/cache/write-store.ts`), so every other row of that answer arrives.
 //  - An older pick is stored last. A pick made while a save is out is a write of its own on the
 //    issue's line, kept with the request it will send, and the store sends one write of a line
 //    at a time in press order; a pick that replaces one of the same control's that has not gone

@@ -1,6 +1,6 @@
+import type { Writes } from "../../api/cache/write-store";
 import { api, issueCreateRequest, issuePatchRequest } from "../../api/client";
 import type { Issue, NewIssueSettings } from "../../api/types";
-import type { Writes } from "../writes/write-store";
 import { press, refusalText } from "./offer";
 
 /**

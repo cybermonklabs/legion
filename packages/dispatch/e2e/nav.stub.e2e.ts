@@ -12,7 +12,7 @@
  */
 import { expect, type Page } from "@playwright/test";
 
-import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/cache/query-client";
 import { createAsk, createIssue, createProject } from "./api";
 import { stubbed } from "./stub/stub-test";
 
@@ -94,7 +94,7 @@ test("issue tabs are URL-driven and keyboard-navigable, and titles follow direct
   await expect(page.getByRole("list", { name: "Issue activity" })).toBeVisible();
 
   // A read the server answers 404 is asked again twice, QUERY_RETRY_DELAY_MS apart
-  // (web/src/api/query-client.ts), before the page says the issue is missing: the clock runs
+  // (web/src/api/cache/query-client.ts), before the page says the issue is missing: the clock runs
   // those two waits once the page has taken each refusal. `page.clock.install()` leaves the
   // page's clock running at real speed, so a refusal can land between two samples of a
   // counter that only grows; each wait is synchronised on "this refusal has been taken",

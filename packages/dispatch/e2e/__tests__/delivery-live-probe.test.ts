@@ -14,7 +14,7 @@ import delta from "../../../contracts/fixtures/live/delta.json";
 import error from "../../../contracts/fixtures/live/error.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
-import { RECONNECT_SPREAD_MS } from "../../web/src/api/live-socket";
+import { RECONNECT_SPREAD_MS } from "../../web/src/api/cache/live-socket";
 import type {
   DeliveryLiveDelta,
   DeliveryLiveSnapshot,

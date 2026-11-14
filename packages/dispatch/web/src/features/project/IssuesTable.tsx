@@ -1,5 +1,6 @@
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { userStateQuery } from "../../api/queries";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -13,7 +14,6 @@ import {
 import { useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useShownQuery } from "../writes/shown-query";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";

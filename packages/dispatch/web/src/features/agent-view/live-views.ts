@@ -25,8 +25,8 @@
  * rebuilds the view from the session's replay. An unsent draft is never thrown away (R2).
  */
 import { AGENT_STREAM_WATCH_TTL_MS } from "@legion/contracts";
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
+import { type Cache, useCache } from "../../api/cache/cache";
 
 /** Where a reader was in a view's transcript: the turn they were reading, by the key it carries
  *  in `data-message-id`, and where that turn sat on their screen. `use-live-follow.ts` measures
@@ -65,7 +65,7 @@ export interface LiveViewSnapshot {
 export interface DispatchLiveViews {
   views?: Record<string, LiveViewSnapshot>;
   /** How many agent subscriptions the page's one live socket holds now
-   *  (`api/live-socket.ts`), which is the live socket's key here, not the registry's. */
+   *  (`api/cache/live-socket.ts`), which is the live socket's key here, not the registry's. */
   agentSubscriptions?: number;
   [key: string]: unknown;
 }
@@ -264,20 +264,20 @@ export class LiveViews {
   }
 }
 
-const registries = new WeakMap<QueryClient, LiveViews>();
+const registries = new WeakMap<Cache, LiveViews>();
 
 /** The live views that live with `client`: one store per app, as there is one client. */
-export function liveViewsOf(client: QueryClient): LiveViews {
-  let views = registries.get(client);
+export function liveViewsOf(cache: Cache): LiveViews {
+  let views = registries.get(cache);
   if (views === undefined) {
     views = new LiveViews();
-    registries.set(client, views);
+    registries.set(cache, views);
   }
   return views;
 }
 
 export function useLiveViews(): LiveViews {
-  return liveViewsOf(useQueryClient());
+  return liveViewsOf(useCache());
 }
 
 /** The word for `sessionId`'s view, re-rendering whenever it changes: what the rail row shows. */

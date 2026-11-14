@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { isText } from "../../api/artifact-version";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
 import {
@@ -16,7 +17,6 @@ import { ChangeView } from "../doc/ChangeView";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { useShownQuery } from "../writes/shown-query";
 import {
   artifactVersionUrl,
   formatArtifactBytes,

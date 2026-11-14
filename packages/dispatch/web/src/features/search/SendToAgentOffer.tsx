@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
+import { useWrites } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { claimHoldingFromRead } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
-import { useShownQuery } from "../writes/shown-query";
-import { useWrites } from "../writes/write-store";
 import { barNoteClassName, type Offer, refusalText, useWordsState } from "./offer";
 import { type SendToAgent, sendToAgent } from "./send-to-agent";
 

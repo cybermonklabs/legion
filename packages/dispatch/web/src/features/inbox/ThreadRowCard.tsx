@@ -1,7 +1,8 @@
 import { inboxThreadRow } from "@legion/contracts";
-import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+
+import { useCache } from "../../api/cache/cache";
 
 import { agentStateRequest, threadReadRequest } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
@@ -37,7 +38,7 @@ import { ThreadTitle } from "./ThreadTitle";
  * is no place to open one.
  */
 export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const read = inboxThreadRow(thread);
   const session = read.kind === "agent" ? read.session.id : undefined;
   const markRead = useKeyedWrite<UserAgentState | undefined>({
@@ -56,9 +57,9 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
       read.kind === "agent" ? `read:agent:${read.session.id}` : `read:thread:${thread.thread_id}`,
     onSuccess: (state) => {
       if (state !== null && state !== undefined && session !== undefined) {
-        storeAgentState(queryClient, session, state);
+        storeAgentState(cache, session, state);
       }
-      return queryClient.invalidateQueries({ queryKey: myRepliesKey });
+      return cache.invalidate({ queryKey: myRepliesKey });
     },
   });
   const row = { kind: "thread", thread } as const;

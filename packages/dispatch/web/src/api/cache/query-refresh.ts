@@ -1,18 +1,30 @@
 import type { Query, QueryClient, QueryKey } from "@tanstack/react-query";
 
-import { Writes } from "../features/writes/write-store";
-import { ApiError } from "./client";
+import { ApiError } from "../client";
+import type { Cache } from "./cache";
+import { clientOf } from "./client-handle";
 
 /** Whether a query is owned by a live socket subscription (a delivery view) rather than refreshed
- *  by events. */
+ *  by events (`CacheFilters.live`). */
 export function isLiveQuery(query: Pick<Query, "meta">): boolean {
   return query.meta?.live === true;
 }
 
-/** Whether a query's last answer was a 404: the record it reads does not exist. A refresh that
- *  only the event creating that record could change asks it no further (`RefreshTarget.when`). */
-export function answeredNotFound(query: Pick<Query, "state">): boolean {
-  return query.state.error instanceof ApiError && query.state.error.status === 404;
+/** What a refresh's check is told of the read beside its data: its key, and whether its last
+ *  answer was a 404 - the record it reads does not exist, so a refresh that only the event
+ *  creating that record could change asks it no further (`RefreshTarget.when`). */
+export interface RefreshedRead {
+  readonly queryKey: QueryKey;
+  readonly answeredNotFound: boolean;
+}
+
+/** What `query` tells a refresh's check. */
+function refreshedRead(query: Query): RefreshedRead {
+  const { error } = query.state;
+  return {
+    answeredNotFound: error instanceof ApiError && error.status === 404,
+    queryKey: query.queryKey,
+  };
 }
 
 /**
@@ -30,7 +42,7 @@ export function answeredNotFound(query: Pick<Query, "state">): boolean {
  * When a fetch takes longer than the interval, the in-flight rule wins: the next fetch starts when
  * it settles. A refresh is owed from the moment it is asked for, and any fetch that begins later -
  * one this scheduler starts, a mount's, a mutation's - pays it. The live-owned queries
- * (`meta.live`, `api/live-socket.ts`) are never touched: their subscription keeps them current.
+ * (`meta.live`, `api/cache/live-socket.ts`) are never touched: their subscription keeps them current.
  */
 
 /** The shortest gap between the starts of two fetches of one query that this scheduler starts. */
@@ -39,10 +51,11 @@ export const MIN_REFETCH_INTERVAL_MS = 1_000;
 /**
  * Which queries a refresh reaches: every query `queryKey` matches (by prefix unless `exact`), and,
  * with `when`, only those whose answer it accepts. `when` runs against Dispatch's answer the
- * query holds at the flush (`Writes.dispatchedOf`, with no live change over it: the event moved
+ * query holds at the flush (the query's own data, with no live change over it: the event moved
  * what Dispatch said), and against `undefined` for a query that holds none and is not fetching (an
- * error, a query never fetched); the query itself is beside it, for a test on the answer rather
- * than the body, such as a 404 a later event cannot change (`answeredNotFound`). For a query with
+ * error, a query never fetched); the read's key and whether it last answered a 404 are beside it
+ * (`RefreshedRead`), for a test on the key or the answer rather than the body, such as a 404 a
+ * later event cannot change. For a query with
  * a fetch out - a first load or a refetch - it runs on the response that lands, not on the data
  * that response replaces, which is then fetched again if `when` accepts it; a body composed after
  * the event is not.
@@ -53,7 +66,7 @@ export interface RefreshTarget {
   readonly when?: RefreshCheck;
 }
 
-export type RefreshCheck = (data: unknown, query: Query) => boolean;
+export type RefreshCheck = (data: unknown, read: RefreshedRead) => boolean;
 
 interface DeferredCheck {
   readonly requestedAt: number;
@@ -112,8 +125,8 @@ function schedulerFor(queryClient: QueryClient): SchedulerState {
       // which is judged instead.
       const check = state.deferred.get(hash);
       state.deferred.delete(hash);
-      const data = Writes.dispatchedOf(query);
-      if (data !== undefined && check?.when.some((when) => when(data, query)) === true) {
+      const data = query.state.data;
+      if (data !== undefined && check?.when.some((when) => when(data, refreshedRead(query)))) {
         owe(state, query, check.requestedAt);
       }
     }
@@ -123,7 +136,10 @@ function schedulerFor(queryClient: QueryClient): SchedulerState {
         state.deferred.delete(hash);
         const started = state.started.get(hash);
         const composedAfter = started !== undefined && started > check.requestedAt;
-        if (!composedAfter && check.when.some((when) => when(Writes.dispatchedOf(query), query))) {
+        if (
+          !composedAfter &&
+          check.when.some((when) => when(query.state.data, refreshedRead(query)))
+        ) {
           owe(state, query, check.requestedAt);
         }
       }
@@ -142,8 +158,8 @@ function schedulerFor(queryClient: QueryClient): SchedulerState {
  * already keeps the interval. `useEventFeed` calls it once it subscribes; `refreshQueries`
  * starts it too, for any caller that has not.
  */
-export function trackQueryFetches(queryClient: QueryClient): void {
-  schedulerFor(queryClient);
+export function trackQueryFetches(cache: Cache): void {
+  schedulerFor(clientOf(cache));
 }
 
 /** Marks a query stale and, while something renders it or a fetch of it is out, records that it
@@ -219,7 +235,8 @@ function driveAfter(
  * live-owned ones (the whole-cache refresh after a gap in the feed, or an event this build cannot
  * read), through the rules above.
  */
-export function refreshQueries(queryClient: QueryClient, targets?: readonly RefreshTarget[]): void {
+export function refreshQueries(of: Cache, targets?: readonly RefreshTarget[]): void {
+  const queryClient = clientOf(of);
   const state = schedulerFor(queryClient);
   const cache = queryClient.getQueryCache();
   const requestedAt = Date.now();
@@ -255,7 +272,7 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
         });
         continue;
       }
-      if (!condition.some((when) => when(Writes.dispatchedOf(query), query))) {
+      if (!condition.some((when) => when(query.state.data, refreshedRead(query)))) {
         continue;
       }
     }

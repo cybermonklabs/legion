@@ -219,7 +219,7 @@ test("on a phone, the Conversation opens with its newest message in view whichev
 // refetch brings the list without changing which conversation is newest, nothing else would
 // bring the reader to it. The refetch here is TanStack Query's own refetch on focus: the
 // `visibilitychange` this row dispatches on `document` bubbles to `window`, where its focusManager
-// listens, and a read in error holds no data, so it is stale and is fetched again (`main.tsx` sets
+// listens, and a read in error holds no data, so it is stale and is fetched again (`api/cache/provider.tsx` sets
 // `refetchOnWindowFocus`). The live socket's gap no longer brings it: a drop of the tab's socket
 // resumes the event feed, which Dispatch replays in full (`replay_complete` on `events_start`), so
 // the page refreshes nothing for that gap (`api/event-feed.ts`). The row depends on the focus

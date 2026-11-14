@@ -1,6 +1,6 @@
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
-import { useShownQuery } from "../writes/shown-query";
 
 /** What the credential pages may offer against this deployment's secrets broker. The server
  *  relays it from the broker's own RFC 8414 metadata behind a cache of its own, so a page asks

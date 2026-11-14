@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { renderWithQueries as render } from "../../__tests__/query-provider";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import type { AskAnswer, DispatchEvent } from "../../api/types";
 import { EventBody } from "./EventBody";
 

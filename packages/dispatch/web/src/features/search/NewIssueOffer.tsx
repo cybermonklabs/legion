@@ -1,8 +1,8 @@
-import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import { useCache, useWrites } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
+import type { Writes } from "../../api/cache/write-store";
 import { newIssueSettingsQuery } from "../../api/queries";
-import { useShownQuery } from "../writes/shown-query";
-import { useWrites, type Writes } from "../writes/write-store";
 import { type FiledIssue, fileNewIssue, type NewIssueWrite } from "./new-issue";
 import { barNoteClassName, type Offer, type OfferRow, refusalText, useWordsState } from "./offer";
 
@@ -56,7 +56,7 @@ export function useNewIssueOffer({
   /** The words in the box, as the person typed them. */
   readonly words: string;
 }): Offer | undefined {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const writes = useWrites();
   // The two settings decide what the press writes, so the row waits for them: a press made
   // without them would file an issue carrying neither the label nor the session the deployment
@@ -81,7 +81,7 @@ export function useNewIssueOffer({
     setState({ kind: "making", words });
     file(writes, { project, settings: settled, words }).then(
       (made) => {
-        void queryClient.invalidateQueries({ queryKey: ["issues"] });
+        void cache.invalidate({ queryKey: ["issues"] });
         setState({ filed: made, kind: "made", words });
         // Opening the issue closes the bar, so it waits on a filing nothing was refused in: a
         // refusal is read here, against the issue it is about.

@@ -1,5 +1,4 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,15 +8,16 @@ import { realClock, tick } from "./__tests__/fake-clock";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
+import { liveSocketFor } from "./api/cache/live-socket";
+import { cacheOf, QueryClient, QueryClientProvider } from "./api/cache/test-client";
+import { plainWrite } from "./api/cache/write-store";
 import { ApiError, api, NetworkError } from "./api/client";
-import { liveSocketFor } from "./api/live-socket";
 import { AuthGate } from "./app";
 import {
   OTHER_TABS_ANSWER_MS,
   SIGN_OUT_SETTLE_MS,
   type UnsentChange,
 } from "./features/shell/sign-in-channel";
-import { plainWrite, writesOf } from "./features/writes/write-store";
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });
@@ -80,7 +80,7 @@ function renderApp({
     queryClient,
     teardown: () => {
       view.unmount();
-      liveSocketFor(queryClient).close();
+      liveSocketFor(cacheOf(queryClient)).close();
       sockets.restore();
       for (const spy of spies) spy.mockRestore();
       logoutSpy.mockRestore();
@@ -99,8 +99,8 @@ function aliceWrite(
   label: string,
   refuse = false
 ): Promise<unknown> {
-  return writesOf(queryClient)
-    .run({
+  return cacheOf(queryClient)
+    .writes.run({
       detail: null,
       kind: plainWrite,
       label,
@@ -196,7 +196,7 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
     void aliceWrite(app.queryClient, attempts, "CORE-2 set to done", true);
-    await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(2));
+    await waitFor(() => expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(2));
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.logout).toHaveBeenCalledTimes(1));
@@ -205,7 +205,7 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
     const made = attempts.length;
     await tick(2_500);
     expect(attempts).toHaveLength(made);
-    expect(writesOf(app.queryClient).rows()).toHaveLength(3);
+    expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(3);
     expect(keptWrites()).toHaveLength(3);
 
     act(() => first.reject(new ApiError(403, { code: "FORBIDDEN", error: "not now" })));
@@ -213,8 +213,8 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
     expect(alert).toHaveTextContent("The sign-out did not go through.");
     expect(screen.getByText("Signed in as alice")).toBeTruthy();
     expect(
-      writesOf(app.queryClient)
-        .rows()
+      cacheOf(app.queryClient)
+        .writes.rows()
         .map((row) => row.label)
     ).toEqual(["CORE-1 set to done", "CORE-2 set to done"]);
     expect(keptWrites()).toHaveLength(2);
@@ -224,7 +224,7 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
 
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
     await screen.findByRole("link", { name: "Sign in with Google" });
-    expect(writesOf(app.queryClient).rows()).toEqual([]);
+    expect(cacheOf(app.queryClient).writes.rows()).toEqual([]);
     expect(keptWrites()).toEqual([]);
     await waitFor(() => expect(tab.told).toContainEqual(about("signedOut", "alice")));
   } finally {
@@ -258,14 +258,14 @@ test("a sign-out answered 401 discards what it said it would, and nothing goes o
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
-    await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
+    await waitFor(() => expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(1));
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.asked).toHaveLength(1));
     await screen.findByRole("link", { name: "Sign in with Google" });
     await waitFor(() => expect(tab.told).toContainEqual(about("signedOut", "alice")));
     expect(tab.told).not.toContainEqual(about("stillSignedIn", "alice"));
-    expect(writesOf(app.queryClient).rows()).toEqual([]);
+    expect(cacheOf(app.queryClient).writes.rows()).toEqual([]);
     expect(keptWrites()).toEqual([]);
     expect(screen.queryByRole("region", { name: "Kept changes" })).not.toBeInTheDocument();
 
@@ -275,7 +275,7 @@ test("a sign-out answered 401 discards what it said it would, and nothing goes o
     const made = attempts.length;
     await tick(2_500);
     expect(attempts).toHaveLength(made);
-    expect(writesOf(app.queryClient).rows()).toEqual([]);
+    expect(cacheOf(app.queryClient).writes.rows()).toEqual([]);
   } finally {
     realClock();
     tab.close();
@@ -304,7 +304,7 @@ test("a session that ends under its sign-out discards, and keeps nothing for the
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
-    await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
+    await waitFor(() => expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(1));
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.logout).toHaveBeenCalledTimes(1));
@@ -313,7 +313,7 @@ test("a session that ends under its sign-out discards, and keeps nothing for the
     await screen.findByRole("link", { name: "Sign in with Google" });
     await waitFor(() => expect(tab.told).toContainEqual(about("signedOut", "alice")));
     expect(tab.told).not.toContainEqual(about("stillSignedIn", "alice"));
-    expect(writesOf(app.queryClient).rows()).toEqual([]);
+    expect(cacheOf(app.queryClient).writes.rows()).toEqual([]);
     expect(keptWrites()).toEqual([]);
     expect(screen.queryByRole("region", { name: "Kept changes" })).not.toBeInTheDocument();
 
@@ -353,12 +353,12 @@ test("a sign-out answered 401 lands while the sign-in check cannot be read", asy
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
-    await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
+    await waitFor(() => expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(1));
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(tab.told).toContainEqual(about("signedOut", "alice")));
     expect(app.logout).toHaveBeenCalledTimes(1);
-    expect(writesOf(app.queryClient).rows()).toEqual([]);
+    expect(cacheOf(app.queryClient).writes.rows()).toEqual([]);
     expect(keptWrites()).toEqual([]);
   } finally {
     tab.close();
@@ -387,7 +387,7 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
-    await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
+    await waitFor(() => expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(1));
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     // The first 401 may be a session that rotated between the two reads, so the sign-out is
@@ -398,8 +398,8 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
     expect(app.logout).toHaveBeenCalledTimes(2);
     expect(screen.getByText("Signed in as alice")).toBeTruthy();
     expect(
-      writesOf(app.queryClient)
-        .rows()
+      cacheOf(app.queryClient)
+        .writes.rows()
         .map((row) => row.label)
     ).toEqual(["CORE-1 set to done"]);
     expect(keptWrites()).toHaveLength(1);
@@ -443,7 +443,7 @@ test("the writes held for a tab that went are discarded once whoami says the sig
     signer.close();
 
     await screen.findByRole("link", { name: "Sign in with Google" });
-    expect(writesOf(app.queryClient).rows()).toEqual([]);
+    expect(cacheOf(app.queryClient).writes.rows()).toEqual([]);
     expect(keptWrites()).toEqual([]);
     expect(screen.queryByRole("region", { name: "Kept changes" })).not.toBeInTheDocument();
     const made = attempts.length;
@@ -490,8 +490,8 @@ test("the writes held for a tab that went go on once whoami still names the pers
     await waitFor(() => expect(attempts.length).toBeGreaterThan(held));
     expect(screen.queryByText(/Waiting for a sign-out in another tab/)).not.toBeInTheDocument();
     expect(
-      writesOf(app.queryClient)
-        .rows()
+      cacheOf(app.queryClient)
+        .writes.rows()
         .map((row) => row.label)
     ).toEqual(["CORE-1 set to done"]);
     expect(screen.getByText("Signed in as alice")).toBeTruthy();
@@ -540,7 +540,7 @@ async function holdingForAnotherTab() {
  *  clock: the window nothing goes out in is moved past here rather than waited out. */
 async function discardedFor(app: ReturnType<typeof renderApp>, attempts: string[]) {
   await screen.findByRole("link", { name: "Sign in with Google" });
-  expect(writesOf(app.queryClient).rows()).toEqual([]);
+  expect(cacheOf(app.queryClient).writes.rows()).toEqual([]);
   expect(keptWrites()).toEqual([]);
   expect(screen.queryByRole("region", { name: "Kept changes" })).not.toBeInTheDocument();
   const made = attempts.length;
@@ -562,7 +562,7 @@ test("a 401 while another tab's sign-out holds the writes discards them, before 
     // That tab going afterwards changes nothing: there is nothing of alice's left to hold.
     signer.close();
     await tick(200);
-    expect(writesOf(app.queryClient).rows()).toEqual([]);
+    expect(cacheOf(app.queryClient).writes.rows()).toEqual([]);
   } finally {
     realClock();
     signer.close();
@@ -697,7 +697,7 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
     );
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
-    await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
+    await waitFor(() => expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(1));
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.asked).toHaveLength(1));
@@ -723,7 +723,7 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
       silent.close();
     }
     expect(app.logout).not.toHaveBeenCalled();
-    expect(writesOf(app.queryClient).rows()).toHaveLength(1);
+    expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(1);
   } finally {
     realClock();
     second.close();
@@ -751,8 +751,8 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
     await screen.findByText("Signed in as alice");
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
-    await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
-    const own = writesOf(app.queryClient).rows()[0]?.key ?? "";
+    await waitFor(() => expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(1));
+    const own = cacheOf(app.queryClient).writes.rows()[0]?.key ?? "";
     const copies = [change("CORE-1 set to done", own), change("CORE-4 set to backlog", "k-4")];
     tabs.push(otherTab("tab-2", copies), otherTab("tab-3", copies), otherTab("tab-4", "silent"));
     for (const other of tabs) {
@@ -853,7 +853,7 @@ test("a lapsed tab's sign-in page lists the writes it keeps, a refused one with 
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-7 set to todo");
     void aliceWrite(app.queryClient, attempts, "CORE-7 set to backlog", true);
-    await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(2));
+    await waitFor(() => expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(2));
 
     signedIn = false;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
@@ -866,8 +866,8 @@ test("a lapsed tab's sign-in page lists the writes it keeps, a refused one with 
     await user.click(buttons[0] as HTMLElement);
     await waitFor(() =>
       expect(
-        writesOf(app.queryClient)
-          .rows()
+        cacheOf(app.queryClient)
+          .writes.rows()
           .map((row) => row.label)
       ).toEqual(["CORE-7 set to todo"])
     );
@@ -901,7 +901,7 @@ test("the sign-in link of a lapsed tab raises no leave prompt", async () => {
     await screen.findByText("Signed in as alice");
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-7 set to todo");
-    await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
+    await waitFor(() => expect(cacheOf(app.queryClient).writes.rows()).toHaveLength(1));
     signedIn = false;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
     const link = await screen.findByRole("link", { name: "Sign in with Google" });

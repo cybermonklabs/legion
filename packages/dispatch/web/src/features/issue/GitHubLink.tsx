@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { ApiError, api } from "../../api/client";
 import type { ExternalLink } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { safeExternalHref } from "../../lib/external-href";
 import { badgeLow, linkHoverText, linkText, textMutedOnSurface } from "../../theme/classes";
-import { useShownQuery } from "../writes/shown-query";
 
 interface GitHubReference {
   head?: { sha?: string };

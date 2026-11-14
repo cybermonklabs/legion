@@ -1,5 +1,6 @@
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import type { GraphEdge } from "../../api/types";
 import {
   borderDefault,
@@ -8,7 +9,6 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useShownQuery } from "../writes/shown-query";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery } from "./reference-target";

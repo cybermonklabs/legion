@@ -1,7 +1,8 @@
 import { DELIVERY_CAPABILITIES, type MessageDeliveryMode } from "@legion/contracts";
-import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { agentMessageRequest, apiErrorMessage } from "../../api/client";
 import { agentMessagesQuery, whoAmIQuery } from "../../api/queries";
 import type { Message } from "../../api/types";
@@ -29,7 +30,6 @@ import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentNam
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { SendStoppedError } from "../writes/keyed-write";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentRuntimeThread } from "./AgentRuntimeThread";
 import { sessionCommands, sessionSettingsView } from "./conversation";
@@ -152,7 +152,7 @@ export function AgentConversationPage({
   // follow the session's answer, and its pending state holds the next message until that answer.
   // It goes in the session's line with every message to it (`session:<id>`), and its refusal is
   // shown here, on the session it went to.
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const switchWrite = useKeyedWrite<Message, { request: SwitchRequest; session: string }>({
     inline: true,
     label: ({ request }) =>
@@ -161,7 +161,7 @@ export function AgentConversationPage({
         : `Switch ${label}'s thinking level to ${request.value}`,
     onSuccess: (_message, { session }) => {
       if (session === sessionId) setOwnSendCount((previous) => previous + 1);
-      void queryClient.invalidateQueries({ queryKey: agentMessagesQuery(session).queryKey });
+      void cache.invalidate({ queryKey: agentMessagesQuery(session).queryKey });
     },
     target: ({ session }) => `session:${session}`,
     request: ({ request, session }) =>

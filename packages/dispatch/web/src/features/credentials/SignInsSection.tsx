@@ -1,10 +1,10 @@
-import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { PersonSignInResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { useShownQuery } from "../writes/shown-query";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 import { shortThumbprint, signInsQuery } from "./signins";
 
@@ -41,7 +41,7 @@ const columns: readonly RevocableColumn<PersonSignInResp>[] = [
  * stay reachable on a deployment whose broker serves no machine-code page at all.
  */
 export function SignInsSection(): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const signIns = useShownQuery({ ...signInsQuery(), select: (data) => data.signins ?? [] });
 
   return (
@@ -56,7 +56,7 @@ export function SignInsSection(): ReactNode {
       heading="Sign-ins"
       headingId="signins-heading"
       noun="sign-ins"
-      onRevoked={() => void queryClient.invalidateQueries({ queryKey: signInsQuery().queryKey })}
+      onRevoked={() => void cache.invalidate({ queryKey: signInsQuery().queryKey })}
       query={signIns}
       revoke={(signIn, bounds) => api.revokeSignIn(signIn.signin_id, bounds)}
       revokeError="Could not revoke this sign-in."

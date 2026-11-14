@@ -1,4 +1,3 @@
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import { reaskHeldCredentialList } from "../features/credentials/pending";
@@ -6,12 +5,12 @@ import {
   markPendingAskThreadInvalidation,
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
-import { writesOf } from "../features/writes/write-store";
+import { type Cache, useCache } from "./cache/cache";
 
+import { liveSocketFor } from "./cache/live-socket";
+import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./cache/query-refresh";
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
-import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
-import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
 import type { AuthenticatedUser, DispatchEvent, EventType } from "./types";
 
 const knownEventTypes: Record<EventType, true> = {
@@ -103,11 +102,11 @@ export function mergeEventPages(current: EventPages | undefined, incoming: Event
   return { ...incoming, pages: [[...newer, ...fetched], ...incoming.pages.slice(1)] };
 }
 
-export function prependEventToLog(queryClient: QueryClient, event: DispatchEvent): void {
+export function prependEventToLog(cache: Cache, event: DispatchEvent): void {
   if (event.issue_key === null) {
     return;
   }
-  queryClient.setQueryData<EventPages>(["events", event.issue_key], (current) => {
+  cache.setDispatched<EventPages>(["events", event.issue_key], (current) => {
     if (current === undefined) {
       return current;
     }
@@ -123,7 +122,7 @@ export function prependEventToLog(queryClient: QueryClient, event: DispatchEvent
 }
 
 // Leading window for a burst: a cold-start replay or a flurry of events on one issue is handed to
-// the refresh scheduler (`api/query-refresh.ts`) as one batch, 100ms after the first event of the
+// the refresh scheduler (`api/cache/query-refresh.ts`) as one batch, 100ms after the first event of the
 // burst - later events join the pending batch but do not extend the window.
 const BATCH_WINDOW_MS = 100;
 
@@ -152,24 +151,20 @@ export const WHOLE_CACHE_REFRESH_MS = 5_000;
  * the threads already cached. Exported for the tests, which hold an Inbox fetch open around it.
  */
 export function markAskThreadsSeededByAnInFlightInbox(
-  queryClient: QueryClient,
+  cache: Cache,
   targets: readonly RefreshTarget[],
   issue: string | null
 ): void {
-  if (queryClient.getQueryState(inboxQueryKey)?.fetchStatus !== "fetching") {
+  if (!cache.fetching(inboxQueryKey)) {
     return;
   }
   for (const { queryKey } of targets) {
-    if (
-      queryKey[0] === "ask-thread" &&
-      typeof queryKey[1] === "string" &&
-      queryClient.getQueryState(queryKey) === undefined
-    ) {
-      markPendingAskThreadInvalidation(queryClient, queryKey[1]);
+    if (queryKey[0] === "ask-thread" && typeof queryKey[1] === "string" && !cache.holds(queryKey)) {
+      markPendingAskThreadInvalidation(cache, queryKey[1]);
     }
   }
   if (issue !== null) {
-    markPendingAskThreadsOnIssue(queryClient, issue);
+    markPendingAskThreadsOnIssue(cache, issue);
   }
 }
 
@@ -201,7 +196,7 @@ function eventPosition(id: string): bigint | null {
 
 /**
  * Keeps the query cache current from the workspace's event feed, one subscription on the page's
- * live socket (`api/live-socket.ts`). `wholeCacheRefreshMs` overrides the whole-cache refresh
+ * live socket (`api/cache/live-socket.ts`). `wholeCacheRefreshMs` overrides the whole-cache refresh
  * throttle; the only callers that set it are tests that would otherwise have to wait out the real
  * 5 s window. Production calls this with no argument.
  */
@@ -210,7 +205,7 @@ export function useEventFeed({
 }: {
   wholeCacheRefreshMs?: number;
 } = {}): void {
-  const queryClient = useQueryClient();
+  const cache = useCache();
 
   useEffect(() => {
     // The greatest event id the page has seen, which the subscription resumes after; never
@@ -221,7 +216,7 @@ export function useEventFeed({
     // here: a later check names a head no read of the page was made after. The cursor is null
     // only where there is no answer to read it from - no page of the app, which mounts under
     // that answer - and the feed then adopts where Dispatch starts it (`events_start`).
-    const signedIn = writesOf(queryClient).dispatched<AuthenticatedUser>(["whoami"]);
+    const signedIn = cache.dispatched<AuthenticatedUser>(["whoami"]);
     let cursor = signedIn === undefined ? null : eventPosition(signedIn.event_head);
     let flush: number | undefined;
     // `pendingAll` is the whole-cache entry of the pending batch: it means "something changed
@@ -234,7 +229,7 @@ export function useEventFeed({
     let pending: RefreshTarget[] = [];
     // Record when each query's fetches begin from now on, so the scheduler's one-a-second rule
     // holds for the first batch after the page's own loads too.
-    trackQueryFetches(queryClient);
+    trackQueryFetches(cache);
 
     const scheduleFlush = () => {
       if (flush !== undefined) {
@@ -245,7 +240,7 @@ export function useEventFeed({
         const targets = pendingAll ? undefined : dedupeRefreshTargets(pending);
         pendingAll = false;
         pending = [];
-        refreshQueries(queryClient, targets);
+        refreshQueries(cache, targets);
       }, BATCH_WINDOW_MS);
     };
 
@@ -282,7 +277,7 @@ export function useEventFeed({
       scheduleFlush();
     };
 
-    const stop = liveSocketFor(queryClient).subscribeEvents({
+    const stop = liveSocketFor(cache).subscribeEvents({
       since: () => (cursor === null ? null : cursor.toString()),
       onStart: (since, afterGap, replayComplete) => {
         if (cursor === null) {
@@ -302,7 +297,7 @@ export function useEventFeed({
         // `["block-schema"]` with an infinite `staleTime`, resolves from a module-level
         // per-session cache (`features/doc/schema.ts`), so its refetch issues no request. The
         // refresh runs at the start itself, which follows a reopen `reconnectDelayMs`
-        // (`api/live-socket.ts`) already spreads after a dropped socket, so it waits no further:
+        // (`api/cache/live-socket.ts`) already spreads after a dropped socket, so it waits no further:
         // tabs a restart dropped together and Dispatch does not replay in full refresh spread as
         // well.
         if (!replayComplete) {
@@ -311,7 +306,7 @@ export function useEventFeed({
         // The one query a refresh skips: a credential list held at `null` (no broker), which a
         // server restarted since with a broker configured would now answer with a list. A
         // restart replays nothing that says so.
-        reaskHeldCredentialList(queryClient);
+        reaskHeldCredentialList(cache);
       },
       onEvent: (id, raw) => {
         // The cursor advances before the event is read on purpose: an event this page cannot
@@ -336,12 +331,12 @@ export function useEventFeed({
         // payload, which the route table carries as `unknown`.
         const event = raw as DispatchEvent;
         try {
-          prependEventToLog(queryClient, event);
+          prependEventToLog(cache, event);
           const targets = eventRefreshTargets(
             event,
-            writesOf(queryClient).dispatched<AuthenticatedUser>(["whoami"])?.login
+            cache.dispatched<AuthenticatedUser>(["whoami"])?.login
           );
-          markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
+          markAskThreadsSeededByAnInFlightInbox(cache, targets, askThreadsIssue(event));
           queueRefresh(targets);
         } catch (error) {
           // A known type whose payload this page cannot map: no target can be derived from it.
@@ -357,5 +352,5 @@ export function useEventFeed({
       window.clearTimeout(wholeCacheTrailing);
       pending = [];
     };
-  }, [queryClient, wholeCacheRefreshMs]);
+  }, [cache, wholeCacheRefreshMs]);
 }

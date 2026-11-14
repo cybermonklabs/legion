@@ -1,11 +1,10 @@
 import type { ReactNode } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { userAgentStateQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
 import { LabelPill } from "../../components/Pill";
 import { borderDefault, card, textMutedOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
-import { useShownQuery } from "../writes/shown-query";
-
 import { unreadRepliesLabel } from "./unread";
 
 /**

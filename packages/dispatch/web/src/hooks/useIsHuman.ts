@@ -1,5 +1,5 @@
+import { useShownQuery } from "../api/cache/shown-query";
 import { whoAmIQuery } from "../api/queries";
-import { useShownQuery } from "../features/writes/shown-query";
 
 /** Whether the signed-in principal is a person (`/auth/whoami`'s `kind: "user"`), whose sign-in
  *  holds the `person` scope that the routes behind these surfaces require: false while the

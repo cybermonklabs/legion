@@ -1,7 +1,8 @@
+import { useCache } from "../../api/cache/cache";
+import type { Shown } from "../../api/cache/write-store";
 import { issueQuery, projectDefaultAssigneesQuery, projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
 import { issueProject } from "../inbox/list-row";
-import { type Shown, useWrites } from "../writes/write-store";
 import { type IssueFieldWrite, inboxKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 /**
@@ -18,14 +19,14 @@ import { type IssueFieldWrite, inboxKey, useIssueFieldWrite } from "./useIssueFi
  * follows the new assignee here, and one somebody handed to a person keeps that person whoever
  * holds its issue. An unassign moves a row nobody handed on to its project's default assignee,
  * taken from Dispatch's answer to the defaults read the Settings page holds
- * (`projectDefaultAssigneesQuery`, `Writes.dispatched`: the change is composed over Dispatch's
+ * (`projectDefaultAssigneesQuery`, `Cache.dispatched`: the change is composed over Dispatch's
  * data, so it reads no other write's change) where the client has it; where it does not, the
  * row keeps the person it waited on until the refetch names the default. It never names nobody:
  * every project names a default, so no row the server answers does, and one written so would
  * read as an ask no person waits on.
  */
 export function useIssueAssignee(issueKey: string): IssueFieldWrite<string | null> {
-  const writes = useWrites();
+  const cache = useCache();
   const detailKey = issueQuery(issueKey).queryKey;
   const showAssignee = (assignee: string | null, shown: Shown) => {
     shown.on<IssueDetails>(detailKey, (current) => ({ ...current, assignee }));
@@ -38,7 +39,7 @@ export function useIssueAssignee(issueKey: string): IssueFieldWrite<string | nul
     const project = issueProject(issueKey);
     const person =
       assignee ??
-      writes
+      cache
         .dispatched(projectDefaultAssigneesQuery().queryKey)
         ?.find((entry) => entry.project === project)?.assignee;
     shown.under<InboxRow[]>(inboxKey, (current) =>

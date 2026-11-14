@@ -1,4 +1,5 @@
 import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { projectIssuesQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -10,7 +11,6 @@ import {
   surfaceMutedStrongBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useShownQuery } from "../writes/shown-query";
 import { reservedOpenTextWidth } from "./reserved-width";
 
 const maxLabelLength = 40;

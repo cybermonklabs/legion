@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { MermaidDrawing } from "@legion/proof-editor/mermaid";
 import * as mermaidRenderer from "@legion/proof-editor/mermaid-render";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
@@ -10,6 +9,7 @@ import type { ReactNode } from "react";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { userOnFakeClock } from "../../__tests__/user";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import {

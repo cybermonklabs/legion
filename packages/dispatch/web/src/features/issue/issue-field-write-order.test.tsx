@@ -1,18 +1,23 @@
 import { expect, type Mock, test } from "bun:test";
-import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { settle } from "../../__tests__/fake-clock";
 import { memoryFiles, UnloadTarget } from "../../__tests__/kept-sends-harness";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { mergeIssue } from "../../api/cache/issue-cache";
+import { useShownQuery } from "../../api/cache/shown-query";
+import {
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "../../api/cache/test-client";
+import { plainWrite, Writes } from "../../api/cache/write-store";
 import { ApiError, issuePatchRequest, type WriteBounds } from "../../api/client";
-import { mergeIssue } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
 import type { Issue, IssueDetails, UpdateIssueInput } from "../../api/types";
-import { useShownQuery } from "../writes/shown-query";
 import { WriteStorage } from "../writes/write-storage";
-import { plainWrite, Writes, writesOf } from "../writes/write-store";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
 
@@ -246,7 +251,7 @@ test("a waiting pick discarded in Pending changes leaves the screen on the pick 
   const patchIssue = answerSaves(first.promise);
   const user = userEvent.setup();
   const client = pageClient();
-  const writes = writesOf(client);
+  const writes = cacheOf(client).writes;
   const read = () => Promise.resolve(details);
   const view = render(
     <QueryClientProvider client={client}>
@@ -266,7 +271,7 @@ test("a waiting pick discarded in Pending changes leaves the screen on the pick 
     });
     await act(settle);
     expect(writes.rows().map((row) => row.status)).toEqual(["sending"]);
-    expect(writesOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(0);
+    expect(cacheOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(0);
     expect(select("Board card").value).toBe("0");
 
     await act(async () => {
@@ -304,7 +309,7 @@ test("a waiting pick discarded while the issue cannot be read leaves the screen 
   const patchIssue = answerSaves(first.promise);
   const user = userEvent.setup();
   const client = pageClient();
-  const writes = writesOf(client);
+  const writes = cacheOf(client).writes;
   const { read, tries } = failingRead();
   const view = render(
     <QueryClientProvider client={client}>
@@ -327,7 +332,7 @@ test("a waiting pick discarded while the issue cannot be read leaves the screen 
     expect(tries()).toBe(1);
     expect(client.getQueryState(detailKey)?.status).toBe("error");
     expect(writes.rows().map((row) => row.status)).toEqual(["sending"]);
-    expect(writesOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(0);
+    expect(cacheOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(0);
     expect(select("Board card").value).toBe("0");
     expect(select("Issue page").value).toBe("0");
 
@@ -356,7 +361,7 @@ test("two surfaces' picks both refused while the issue cannot be read leave the 
     .mockImplementation(() => Promise.reject(refusal));
   const user = userEvent.setup();
   const client = pageClient();
-  const writes = writesOf(client);
+  const writes = cacheOf(client).writes;
   const { read, tries } = failingRead();
   const view = render(
     <QueryClientProvider client={client}>
@@ -379,7 +384,7 @@ test("two surfaces' picks both refused while the issue cannot be read leave the 
     // Each refusal read the issue again, and each read failed.
     expect(tries()).toBeGreaterThan(0);
     expect(client.getQueryState(detailKey)?.status).toBe("error");
-    expect(writesOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(1);
+    expect(cacheOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(1);
     expect(select("Board card").value).toBe("1");
     expect(select("Issue page").value).toBe("1");
   } finally {
@@ -400,7 +405,7 @@ test("a pick that landed, then a newer pick refused while the issue cannot be re
     .mockImplementation(() => Promise.reject(refusal));
   const user = userEvent.setup();
   const client = pageClient();
-  const writes = writesOf(client);
+  const writes = cacheOf(client).writes;
   const { read } = failingRead();
   const view = render(
     <QueryClientProvider client={client}>
@@ -421,7 +426,7 @@ test("a pick that landed, then a newer pick refused while the issue cannot be re
     expect(sentPriorities(patchIssue)).toEqual([0, 2]);
     expect(writes.rows()).toEqual([]);
     expect(client.getQueryState(detailKey)?.status).toBe("error");
-    expect(writesOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(0);
+    expect(cacheOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(0);
     expect(select("Board card").value).toBe("0");
     expect(select("Issue page").value).toBe("0");
   } finally {
@@ -433,7 +438,7 @@ test("a pick that landed, then a newer pick refused while the issue cannot be re
 // R5. A reload inside the store's resume window (`KEPT_SEND_RESUME_MS`) while a pick has not gone
 // out: the reloaded page is a second `Writes` over the writes the tab kept, as
 // `two writes on one line survive a reload and land once each, in press order` builds one in
-// `features/writes/write-store.test.ts`. A pick the person saw is kept like every other write,
+// `api/cache/write-store.test.ts`. A pick the person saw is kept like every other write,
 // so the reload sends the first save again under its key and then that pick.
 test("a pick that has not gone out is sent after a reload inside the store's resume window", async () => {
   const first = Promise.withResolvers<Issue>();
@@ -453,7 +458,7 @@ test("a pick that has not gone out is sent after a reload inside the store's res
     // The reload: the page and all it held in memory are gone, and the app that loads takes up
     // what the tab kept.
     view.unmount();
-    const reloaded = new Writes(pageClient(), kept, memoryFiles());
+    const reloaded = new Writes(cacheOf(pageClient()), kept, memoryFiles());
     reloaded.resume("alice");
     await act(settle);
     // The first save goes out again under its own key, which Dispatch answers with what it
@@ -462,7 +467,7 @@ test("a pick that has not gone out is sent after a reload inside the store's res
   } finally {
     // The page the reload replaced is gone with it: its writes stop rather than go on trying
     // through the real client once this test's answers are taken back.
-    writesOf(client).clear();
+    cacheOf(client).writes.clear();
     kept.retire();
     patchIssue.mockRestore();
   }
@@ -483,9 +488,9 @@ test("an issue answer merged while a pick is out stays once the pick is refused 
     queryKey: detailKey,
     staleTime: Number.POSITIVE_INFINITY,
   }).subscribe(() => {});
-  const shown = () => writesOf(client).shown<IssueDetails>(detailKey);
+  const shown = () => cacheOf(client).shown<IssueDetails>(detailKey);
   try {
-    const pick = writesOf(client).run({
+    const pick = cacheOf(client).writes.run({
       detail: null,
       kind: plainWrite,
       label: "CORE-1 priority set to 3",
@@ -499,7 +504,7 @@ test("an issue answer merged while a pick is out stays once the pick is refused 
     expect(shown()?.priority).toBe(3);
 
     // The assignee's save lands meanwhile, and its answer is merged into the issue.
-    mergeIssue(client, { ...issue, assignee: "bob", updated_at: "2026-09-09T00:01:00Z" });
+    mergeIssue(cacheOf(client), { ...issue, assignee: "bob", updated_at: "2026-09-09T00:01:00Z" });
     expect(shown()).toMatchObject({ assignee: "bob", priority: 3 });
 
     refused.reject(new ApiError(422, { code: "INVALID_PRIORITY", error: "not a priority" }));
@@ -509,7 +514,7 @@ test("an issue answer merged while a pick is out stays once the pick is refused 
     expect(shown()).toMatchObject({ assignee: "bob", priority: 1 });
   } finally {
     unsubscribe();
-    writesOf(client).clear();
+    cacheOf(client).writes.clear();
     patchIssue.mockRestore();
   }
 });
@@ -534,9 +539,9 @@ test("a read equal to the screen while a pick is out is Dispatch's answer once t
         : Promise.reject(new Error("Failed to fetch")),
     staleTime: Number.POSITIVE_INFINITY,
   }).subscribe(() => {});
-  const shown = () => writesOf(client).shown<IssueDetails>(detailKey);
+  const shown = () => cacheOf(client).shown<IssueDetails>(detailKey);
   try {
-    const pick = writesOf(client).run({
+    const pick = cacheOf(client).writes.run({
       detail: null,
       kind: plainWrite,
       label: "CORE-1 priority set to 2",
@@ -559,7 +564,7 @@ test("a read equal to the screen while a pick is out is Dispatch's answer once t
     expect(shown()?.priority).toBe(2);
   } finally {
     unsubscribe();
-    writesOf(client).clear();
+    cacheOf(client).writes.clear();
     patchIssue.mockRestore();
   }
 });
@@ -585,11 +590,11 @@ test("an older issue answer merged while a pick is out leaves the issue Dispatch
         : Promise.reject(new Error("Failed to fetch")),
     staleTime: Number.POSITIVE_INFINITY,
   }).subscribe(() => {});
-  const shown = () => writesOf(client).shown<IssueDetails>(detailKey);
+  const shown = () => cacheOf(client).shown<IssueDetails>(detailKey);
   try {
     await client.refetchQueries({ queryKey: detailKey });
     expect(shown()).toMatchObject({ priority: 3, updated_at: later });
-    const pick = writesOf(client).run({
+    const pick = cacheOf(client).writes.run({
       detail: null,
       kind: plainWrite,
       label: "CORE-1 priority set to 0",
@@ -603,7 +608,7 @@ test("an older issue answer merged while a pick is out leaves the issue Dispatch
     expect(shown()?.priority).toBe(0);
 
     // Another field's save, answered with the issue as it stood earlier.
-    mergeIssue(client, { ...issue, priority: 1, updated_at: "2026-09-09T00:02:00Z" });
+    mergeIssue(cacheOf(client), { ...issue, priority: 1, updated_at: "2026-09-09T00:02:00Z" });
     expect(shown()).toMatchObject({ priority: 0, updated_at: later });
 
     online = false;
@@ -613,7 +618,7 @@ test("an older issue answer merged while a pick is out leaves the issue Dispatch
     expect(shown()).toMatchObject({ priority: 3, updated_at: later });
   } finally {
     unsubscribe();
-    writesOf(client).clear();
+    cacheOf(client).writes.clear();
     patchIssue.mockRestore();
   }
 });

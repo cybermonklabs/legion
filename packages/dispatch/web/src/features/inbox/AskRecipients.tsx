@@ -1,5 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, type WriteBounds } from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
@@ -10,7 +11,6 @@ import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteR
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds): Promise<void> =>
@@ -228,7 +228,7 @@ export function AskRecipients({
   routeHolder,
   routeStatus,
 }: AskRecipientsProps): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const subscription = ownerSubscription(owner);
   // The subscribers endpoints need the `person` scope, which a signed-in browser holds; the card
   // only asks once the sign-in read says the principal is a user, so nothing without the scope
@@ -271,7 +271,7 @@ export function AskRecipients({
     write: (sessionId: string, bounds) => removeFollower(askId, sessionId, bounds),
     label: (sessionId) => `${text.sessionText(sessionId, undefined)} taken off this ask`,
     unlined: "one row per session: a repeat of this unfollow is the same DELETE",
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ask-thread", askId] }),
+    onSuccess: () => cache.invalidate({ queryKey: ["ask-thread", askId] }),
   });
   const unsubscribe = useKeyedWrite({
     write: (sessionId: string, bounds) => {
@@ -283,7 +283,7 @@ export function AskRecipients({
     unlined: "one row per session: a repeat of this unsubscribe is the same DELETE",
     label: (sessionId) =>
       `${text.sessionText(sessionId, subscribers.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${subscription?.label ?? "this ask"}`,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["subscribers", subscription?.id] }),
+    onSuccess: () => cache.invalidate({ queryKey: ["subscribers", subscription?.id] }),
   });
 
   if (

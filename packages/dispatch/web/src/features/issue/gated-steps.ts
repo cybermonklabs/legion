@@ -1,6 +1,6 @@
 import { GATED_STEPS } from "@legion/contracts";
 
-import { primarySpec, roleDocument } from "../../api/issue-cache";
+import { primarySpec, roleDocument } from "../../api/cache/issue-cache";
 import type { Artifact, GatedStep, IssueDetails, Project } from "../../api/types";
 
 /** What the page calls the document each design-gate step reviews: Dispatch's own name for that

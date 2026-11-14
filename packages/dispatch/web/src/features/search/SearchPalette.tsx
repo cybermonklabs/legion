@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -44,7 +45,6 @@ import {
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
-import { useShownQuery } from "../writes/shown-query";
 import { AskHitStatus } from "./AskHitStatus";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type Offer, type OfferRow } from "./offer";

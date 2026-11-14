@@ -1,9 +1,10 @@
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { type Cache, useCache } from "./api/cache/cache";
+import { useLiveSocketPill } from "./api/cache/live-socket";
+import { useShownQuery } from "./api/cache/shown-query";
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
-import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import type { AuthenticatedUser } from "./api/types";
 import { useLiveViews } from "./features/agent-view/live-views";
@@ -65,12 +66,11 @@ import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
-import { useShownQuery } from "./features/writes/shown-query";
 import "./features/writes/kinds";
+import type { Write } from "./api/cache/write-store";
 import { KeptWrites } from "./features/writes/KeptWrites";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
-import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
@@ -243,7 +243,7 @@ function InboxPage(): ReactNode {
  *  its sign-in link asks nothing on leaving: the page comes back to this tab, where every kept
  *  write resumes (`Writes.leavingToSignIn`). */
 function SignInPage(): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   return (
     <ShellMessagePage title="Make the next decision clear.">
       <p className={`mt-3 ${textSecondaryOnSurface}`}>
@@ -255,7 +255,7 @@ function SignInPage(): ReactNode {
         onClick={(event) => {
           // A press that opens the link elsewhere leaves this page in place.
           if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-          writesOf(queryClient).leavingToSignIn();
+          cache.writes.leavingToSignIn();
         }}
       >
         Sign in with Google
@@ -408,7 +408,7 @@ function NavigationContents({
 }
 
 function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
   // Whether the bar is open. `$mod+k`, `/`, `g p` and the rail's Search control open the one
@@ -628,12 +628,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     onSuccess: () => {
       // `resetQueries` (not `clear`) forces the active `["whoami"]` observer in AuthGate to
       // refetch immediately — a signed-out user must land on sign-in without a manual reload.
-      void queryClient.resetQueries({ queryKey: ["whoami"] });
-      queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "whoami" });
+      void cache.reset({ queryKey: ["whoami"] });
+      cache.remove({ predicate: (queryKey) => queryKey[0] !== "whoami" });
       // Only now, with Dispatch's answer, are the person's writes discarded, in every tab of this
       // browser: none outlives their session, the next person to sign in here resumes nothing of
       // theirs and sees none of their refusals, and the page stops asking to confirm leaving.
-      writesOf(queryClient).clear();
+      cache.writes.clear();
       signIns.signedOut(login);
     },
     // Dispatch's own 401 (`NO_IDENTITY`) says the session the sign-out would end is already gone
@@ -694,7 +694,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           setAskingTabs(false);
           const unsent = new Map<string, string>();
           for (const { key, label } of [
-            ...unsentChanges(writesOf(queryClient).rows(), login),
+            ...unsentChanges(cache.writes.rows(), login),
             ...elsewhere.unsent,
           ]) {
             if (!unsent.has(key)) unsent.set(key, label);
@@ -935,11 +935,11 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
   // broadcast, a pin, a read mark and every other write. In an effect, not in the render: a
   // resume sends requests and writes to the store, which a render must not do, and React runs the
   // render twice under StrictMode. The store takes them up once, so a later effect does nothing.
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const login = user.login;
   useEffect(() => {
-    writesOf(queryClient).resume(login);
-  }, [login, queryClient]);
+    cache.writes.resume(login);
+  }, [login, cache]);
   useEventFeed();
   // Every Markdown body the shell renders - routes, the margin, the inbox drawer, previews and
   // dialogs - draws a decision block in its text as the read-only card (`TextAskCard`).
@@ -1001,8 +1001,8 @@ export function signOutQuestion(unsent: readonly string[], unanswered = false): 
  *  login's; one that goes out before that read lands carries their `Dispatch-Login` and is
  *  refused `409 LOGIN_CHANGED` before it runs.
  */
-async function heldWritesOfGoneHolder(queryClient: QueryClient, login: string): Promise<void> {
-  const writes = writesOf(queryClient);
+async function heldWritesOfGoneHolder(cache: Cache, login: string): Promise<void> {
+  const writes = cache.writes;
   // The hold this read decides about. A sign-out of the same person that begins while it reads
   // takes a hold of its own, which this release must not lift (`Writes.heldSignOut`).
   const held = writes.heldSignOut(login);
@@ -1021,11 +1021,11 @@ async function heldWritesOfGoneHolder(queryClient: QueryClient, login: string): 
   if (who === null) writes.dropLogin(login);
   else if (who === login) writes.releaseUnsettled(login, held);
   else writes.release(login, held);
-  if (who !== login) void queryClient.invalidateQueries({ queryKey: ["whoami"] });
+  if (who !== login) void cache.invalidate({ queryKey: ["whoami"] });
 }
 
 export function AuthGate(): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const whoAmI = useShownQuery(whoAmIQuery());
   // A sign-in check that comes back 401 ends this page's session: every read it holds was made
   // for the person who has gone, and the sign-in that follows - in this tab or another - answers
@@ -1035,8 +1035,8 @@ export function AuthGate(): ReactNode {
   const signedOut = whoAmI.isError && isUnauthorized(whoAmI.error);
   useEffect(() => {
     if (!signedOut) return;
-    queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "whoami" });
-  }, [queryClient, signedOut]);
+    cache.remove({ predicate: (queryKey) => queryKey[0] !== "whoami" });
+  }, [cache, signedOut]);
   // A write belongs to the person who pressed it: once someone else is signed in here - in place,
   // from another tab - every write of another login is dropped and stops trying, and once no one
   // is (the session lapsed), every write stops trying and waits, kept, for the sign-in that
@@ -1046,14 +1046,14 @@ export function AuthGate(): ReactNode {
   const known = signedOut || whoAmI.data !== undefined;
   useEffect(() => {
     if (!known) return;
-    writesOf(queryClient).signedIn(login);
+    cache.writes.signedIn(login);
     signIns.signedIn(login ?? null);
-  }, [known, login, queryClient]);
+  }, [known, login, cache]);
   useEffect(() => {
-    const writes = writesOf(queryClient);
+    const writes = cache.writes;
     return signIns.listen({
-      changed: () => void queryClient.invalidateQueries({ queryKey: ["whoami"] }),
-      holderGone: (gone) => void heldWritesOfGoneHolder(queryClient, gone),
+      changed: () => void cache.invalidate({ queryKey: ["whoami"] }),
+      holderGone: (gone) => void heldWritesOfGoneHolder(cache, gone),
       // The person signed out in another tab: every write they pressed goes here too, its file
       // with it, so no tab holds a write whose file another tab let go of.
       signedOut: (signedOut) => writes.dropLogin(signedOut),
@@ -1062,7 +1062,7 @@ export function AuthGate(): ReactNode {
       stillSignedIn: (still) => writes.release(still),
       unsent: (of) => unsentChanges(writes.rows(), of),
     });
-  }, [queryClient]);
+  }, [cache]);
 
   if (whoAmI.isPending) {
     return <ShellSkeleton />;

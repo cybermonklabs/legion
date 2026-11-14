@@ -6,8 +6,9 @@ import { configure } from "@testing-library/react";
 // happy-dom has no IndexedDB; the store of a document's unsent edits (`pending-edits.ts`) runs on
 // this in-memory one, which keeps IndexedDB's transaction ordering.
 import "fake-indexeddb/auto";
-import { notifyManager } from "@tanstack/react-query";
 import serverBlockSchema from "../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
+import { notifyManager } from "../api/cache/test-client";
+import { type Writes, watchWriteStores } from "../api/cache/write-store";
 import { resetReachability } from "../api/reachability";
 import type { BlockSchema } from "../api/types";
 import { blockSchemaCache } from "../features/doc/schema";
@@ -16,7 +17,6 @@ import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
 import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
 import { resetWriteStorage } from "../features/writes/write-storage";
-import { type Writes, watchWriteStores } from "../features/writes/write-store";
 import { reportableJestDomMatchers } from "./jest-dom-matchers";
 import { forgetTestAnswers, requestsThatReachedNetwork } from "./network";
 import { resetRouteAnswers } from "./send-answers";

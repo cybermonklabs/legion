@@ -1,11 +1,17 @@
 import { DELIVERY_CAPABILITIES } from "@legion/contracts";
-import type { QueryClient } from "@tanstack/react-query";
+import type { Cache } from "../../api/cache/cache";
 
+import {
+  defineWriteKind,
+  liveWrite,
+  ofKind,
+  type Write,
+  type Writes,
+} from "../../api/cache/write-store";
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { BroadcastCreated } from "../../api/types";
 import { type Shape, shape } from "../writes/write-storage";
-import { defineWriteKind, liveWrite, ofKind, type Write, type Writes } from "../writes/write-store";
 import type { BroadcastRequest } from "./broadcast-plan";
 
 /** What one press of Send handed the queue: the request, the key it goes under, and the selection
@@ -65,11 +71,11 @@ const keptBroadcast = shape.record({
 }) satisfies Shape<Broadcast>;
 
 /** Reads again what a broadcast made: every recipient's conversation and the broadcasts. */
-function refreshRecipients(client: QueryClient, sessions: readonly string[]): void {
+function refreshRecipients(cache: Cache, sessions: readonly string[]): void {
   for (const session of sessions) {
-    void client.invalidateQueries({ queryKey: agentMessagesQuery(session).queryKey });
+    void cache.invalidate({ queryKey: agentMessagesQuery(session).queryKey });
   }
-  void client.invalidateQueries({ queryKey: ["broadcast"] });
+  void cache.invalidate({ queryKey: ["broadcast"] });
 }
 
 /**
@@ -86,9 +92,9 @@ function refreshRecipients(client: QueryClient, sessions: readonly string[]): vo
 const broadcastSend = defineWriteKind<Broadcast>({
   keepsMade: true,
   kept: keptBroadcast,
-  landed: (client, write, answer) =>
+  landed: (cache, write, answer) =>
     refreshRecipients(
-      client,
+      cache,
       answer === null
         ? write.detail.input.session_ids
         : ((answer as BroadcastCreated).recipients ?? []).map((recipient) => recipient.session_id)

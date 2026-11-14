@@ -1,6 +1,6 @@
+import type { Shown } from "../../api/cache/write-store";
 import { issueQuery, projectListsKey } from "../../api/queries";
 import type { IssueDetails, IssueSummary } from "../../api/types";
-import type { Shown } from "../writes/write-store";
 import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 /**

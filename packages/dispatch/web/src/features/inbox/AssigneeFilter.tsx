@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { usersQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
-import { useShownQuery } from "../writes/shown-query";
 import { EVERYONE_FILTER_VALUE, isOwnList, UNASSIGNED_FILTER_VALUE } from "./sections";
 
 function triggerText(selected: readonly string[], viewer: string): string {

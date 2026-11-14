@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -29,7 +30,6 @@ import { ApprovalChip } from "../doc/ApprovalChip";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath, buildProjectPath, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { useShownQuery } from "../writes/shown-query";
 
 function documentUpdatedAt(document: Artifact): string {
   return document.versions?.at(-1)?.created_at ?? document.created_at;

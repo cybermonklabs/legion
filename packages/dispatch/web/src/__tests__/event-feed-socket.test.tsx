@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, QueryObserver, useQuery } from "@tanstack/react-query";
 import {
   act,
   type RenderResult,
@@ -10,10 +9,17 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 
+import { liveSocketFor } from "../api/cache/live-socket";
+import { DispatchQueryClient } from "../api/cache/query-client";
+import {
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+  useQuery,
+} from "../api/cache/test-client";
 import { api } from "../api/client";
 import { useEventFeed, WHOLE_CACHE_REFRESH_MS } from "../api/event-feed";
-import { liveSocketFor } from "../api/live-socket";
-import { DispatchQueryClient } from "../api/query-client";
 import type { AuthenticatedUser, DispatchEvent, LiveServerFrame } from "../api/types";
 import { credentialPendingQuery } from "../features/credentials/pending";
 import { realClock, tick } from "./fake-clock";
@@ -33,7 +39,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const client of clients.splice(0)) {
-    liveSocketFor(client).close();
+    liveSocketFor(cacheOf(client)).close();
     client.clear();
   }
   sockets.restore();

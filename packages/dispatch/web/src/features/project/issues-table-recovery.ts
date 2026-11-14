@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useWrites } from "../../api/cache/cache";
+import { defineWriteKind, type WriteOutcome } from "../../api/cache/write-store";
 import { ApiError } from "../../api/client";
 import { projectIssuesQueryKey } from "../../api/queries";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
-import { defineWriteKind, useWrites, type WriteOutcome } from "../writes/write-store";
 import { WRITES_IN_FLIGHT } from "./issues-table-model";
 import { readTableAction, type TableAction, writeTableAction } from "./issues-table-storage";
 
@@ -13,7 +14,7 @@ export type { TableAction } from "./issues-table-storage";
 export const tableEpicWrite = defineWriteKind<string>({
   name: "issues-table-epic",
   kept: (value): value is string => typeof value === "string",
-  landed: (client, write, answer, awaited) => {
+  landed: (cache, write, answer, awaited) => {
     const action = readTableAction(write.detail);
     if (
       action?.writes.create === write.key &&
@@ -27,8 +28,8 @@ export const tableEpicWrite = defineWriteKind<string>({
     // What a created epic changes is this project's listings and the ancestry read that hangs
     // off them, not every query the tab holds.
     if (!awaited || answer === null) {
-      void client.invalidateQueries({ queryKey: projectIssuesQueryKey(write.detail, []) });
-      void client.invalidateQueries({ queryKey: ["issue-ancestors", write.detail] });
+      void cache.invalidate({ queryKey: projectIssuesQueryKey(write.detail, []) });
+      void cache.invalidate({ queryKey: ["issue-ancestors", write.detail] });
     }
   },
 });

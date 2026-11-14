@@ -1,15 +1,19 @@
 import { expect, jest, test } from "bun:test";
-import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keptTab } from "../../__tests__/kept-sends-harness";
 import { answerAskAnswers } from "../../__tests__/send-answers";
+import {
+  cacheOf,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from "../../api/cache/test-client";
 import { ApiError, askAnswerRequest, NetworkError } from "../../api/client";
 import { SEND_DEADLINE_MS, SendStoppedError } from "./keyed-write";
 import { useKeyedWrite } from "./useKeyedWrite";
-import { writesOf } from "./write-store";
 
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
@@ -49,10 +53,10 @@ test("a surface's Retry keeps the key after Stop trying, and takes a new one aft
   try {
     act(() => hook.result.current.mutate(input));
     await tick(SEND_DEADLINE_MS + 1_000);
-    const [late] = writesOf(client).rows();
+    const [late] = cacheOf(client).writes.rows();
     expect(late?.status).toBe("late");
     act(() => {
-      writesOf(client).stop(late?.id ?? 0);
+      cacheOf(client).writes.stop(late?.id ?? 0);
     });
     await tick(60_000);
     expect(hook.result.current.error).toBeInstanceOf(SendStoppedError);
@@ -119,7 +123,7 @@ test("a write answered KEY_COMMITTED succeeds with null: no error, and what it s
     expect(hook.result.current.data).toBeNull();
     expect(rolledBack).toBe(0);
     expect(succeeded).toEqual([null]);
-    expect(writesOf(client).rows()).toEqual([]);
+    expect(cacheOf(client).writes.rows()).toEqual([]);
   } finally {
     hook.unmount();
     tab.close();
@@ -142,7 +146,7 @@ test("a write pressed offline is attempted and goes late", async () => {
     await tick(0);
     expect(answerAsk).toHaveBeenCalledTimes(1);
     await tick(SEND_DEADLINE_MS + 1_000);
-    expect(writesOf(client).rows()[0]?.status).toBe("late");
+    expect(cacheOf(client).writes.rows()[0]?.status).toBe("late");
   } finally {
     onlineManager.setOnline(online);
     hook.unmount();

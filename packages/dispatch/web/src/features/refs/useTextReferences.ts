@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useShownQueries, useShownQuery } from "../writes/shown-query";
+import { useShownQueries, useShownQuery } from "../../api/cache/shown-query";
 
 import type { ReferenceLinking } from "./RefLink";
 import {

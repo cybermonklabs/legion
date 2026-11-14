@@ -1,5 +1,6 @@
 import { type ReactNode, useMemo, useState } from "react";
 import { isText } from "../../api/artifact-version";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { AskApproval } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
@@ -7,7 +8,6 @@ import { dangerText, textMutedOnSurface } from "../../theme/classes";
 import { ChangeView } from "../doc/ChangeView";
 import { cutDecisionBlocks } from "../doc/decision-blocks";
 import { AgentName } from "../refs/AgentName";
-import { useShownQuery } from "../writes/shown-query";
 
 /**
  * What changed between the version a human approved and the version the request names, with every

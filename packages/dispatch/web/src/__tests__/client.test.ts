@@ -1,5 +1,6 @@
 import { expect, jest, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
+import { QUERY_RETRY_DELAY_MS, queryRetryDelay } from "../api/cache/query-client";
+import { QueryClient } from "../api/cache/test-client";
 
 import {
   AnswerNotKeptError,
@@ -34,7 +35,6 @@ import {
   UnreadableAnswerError,
   type UploadImplementation,
 } from "../api/client";
-import { QUERY_RETRY_DELAY_MS, queryRetryDelay } from "../api/query-client";
 import { FIRST_BACKOFF_MS, writeUnderKey } from "../features/writes/keyed-write";
 import { onFakeClock, settle } from "./fake-clock";
 
@@ -1046,13 +1046,13 @@ test("a refusal keeps the server's Retry-After in delta-seconds, and no delay fo
 
 test(
   "the production retry policy issues one credential request when the broker is unconfigured, " +
-    "not three (every query shares this policy from main.tsx)",
+    "not three (every query shares this policy from api/cache/provider.tsx)",
   async () => {
     const stub = stubFetch(() =>
       Response.json({ error: "not configured", code: "FEATURE_OFF" }, { status: 404 })
     );
     const client = createApiClient(stub.fetch);
-    // Mirrors main.tsx's shared QueryClient retry options exactly.
+    // Mirrors api/cache/provider.tsx's shared QueryClient retry options exactly.
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: {

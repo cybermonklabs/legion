@@ -1,6 +1,6 @@
 import { useMemo } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
-import { useShownQuery } from "../writes/shown-query";
 import type { MarginOwner } from "./useMarginItems";
 
 /**

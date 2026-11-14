@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueQuery } from "../../api/queries";
 import type { Artifact, DispatchEvent } from "../../api/types";
 import { linkText } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
-import { useShownQuery } from "../writes/shown-query";
 
 type ArtifactVersionEvent = Extract<DispatchEvent, { type: "artifact.version" }>;
 

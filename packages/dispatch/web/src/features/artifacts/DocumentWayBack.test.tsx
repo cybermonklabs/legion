@@ -1,5 +1,4 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -7,6 +6,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerArtifactRemovals, answerArtifactRenames } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider, useQuery } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";

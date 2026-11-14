@@ -1,9 +1,9 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import type { UseQueryResult } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import type { UseQueryResult } from "../../api/cache/keys";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { SearchResponse } from "../../api/types";
-import { useShownQuery } from "../writes/shown-query";
 import type { SearchRequest } from "./search-filters";
 
 /** How long the bar waits after a keystroke before it searches the words alone. Short enough

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
@@ -12,7 +13,6 @@ import {
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { useCredentialRequests } from "../credentials/pending";
-import { useShownQuery } from "../writes/shown-query";
 import { formatAskAge } from "./ask-age";
 import { isMine } from "./sections";
 import { isSnoozed } from "./snooze";

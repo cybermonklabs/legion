@@ -1,9 +1,10 @@
 import { itemFromSearch } from "@legion/contracts";
-import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { primarySpec } from "../../api/cache/issue-cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import type { WriteBounds } from "../../api/client";
-import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
@@ -14,7 +15,6 @@ import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
-import { useShownQuery } from "../writes/shown-query";
 import type { MarginComposer } from "./CommentsTab";
 import type { MarginSheetModel } from "./MarginSheet";
 import {
@@ -91,7 +91,7 @@ export function useMarginSheet(): MarginSheetModel {
     shownCompose,
   } = useMargin();
   const store = useHeldSends();
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const { key: locationKey, pathname, search } = useLocation();
   const issueRoute = parseIssuePath(pathname, search);
   const projectRoute = parseProjectPath(pathname, search);
@@ -160,9 +160,9 @@ export function useMarginSheet(): MarginSheetModel {
   const visibleArtifactId = visibleArtifact?.id;
   const removePin = useCallback(
     (id: string) => {
-      if (owner?.kind === "issue") writePin(queryClient, owner.key, { id, op: "unpin" });
+      if (owner?.kind === "issue") writePin(cache, owner.key, { id, op: "unpin" });
     },
-    [owner, queryClient]
+    [owner, cache]
   );
   const unpin = useCallback(
     (eventId: number) => removePin(eventItemId({ id: eventId })),

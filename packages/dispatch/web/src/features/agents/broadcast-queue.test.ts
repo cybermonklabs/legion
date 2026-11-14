@@ -1,12 +1,13 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted, memoryFiles } from "../../__tests__/kept-sends-harness";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import { Writes } from "../../api/cache/write-store";
 import { ApiError, api } from "../../api/client";
 import type {
   BroadcastCreated,
@@ -15,7 +16,6 @@ import type {
   MessageDelivery,
 } from "../../api/types";
 import { FIRST_BACKOFF_MS, SendExpiredError } from "../writes/keyed-write";
-import { Writes } from "../writes/write-store";
 import { BroadcastSends } from "./BroadcastSends";
 import { type BroadcastSend, broadcastRows, enqueueBroadcast } from "./broadcast-queue";
 
@@ -93,7 +93,7 @@ test("broadcasts go in press order, survive a reload, and a made one is kept no 
     const input = request.body as CreateBroadcastInput;
     return created(input) as never;
   });
-  const before = new Writes(signedIn(), tab.page(), memoryFiles());
+  const before = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
   try {
     enqueueBroadcast(before, press("First.", "key-1"));
     enqueueBroadcast(before, press("Second.", "key-2"));
@@ -102,7 +102,7 @@ test("broadcasts go in press order, survive a reload, and a made one is kept no 
     expect(broadcastRows(before.rows()).map((row) => row.status)).toEqual(["queued", "sending"]);
     expect(tab.kept("key-2")).toMatchObject({ kind: "broadcast", state: { status: "queued" } });
 
-    const after = new Writes(signedIn(), tab.page(), memoryFiles());
+    const after = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
     after.resume("alice");
     await settle();
     // Both are made again behind each other, in press order, each under its own key.
@@ -130,7 +130,7 @@ test("a broadcast answered KEY_COMMITTED leaves the strip as made", async () => 
   const createBroadcast = spyOn(api, "createBroadcast").mockRejectedValueOnce(
     new ApiError(409, { code: "KEY_COMMITTED", error: "made" })
   );
-  const writes = new Writes(client, keptTab().page(), memoryFiles());
+  const writes = new Writes(cacheOf(client), keptTab().page(), memoryFiles());
   try {
     enqueueBroadcast(writes, press("First.", "key-1"));
     await waitFor(() => expect(broadcastRows(writes.rows())).toEqual([]));
@@ -150,7 +150,7 @@ test("a broadcast answered 201 with a recipient still delivering is made and del
     created(input, "pending")
   );
   const getBroadcast = spyOn(api, "getBroadcast").mockResolvedValue(created(input, "sent"));
-  const writes = new Writes(client, keptTab().page(), memoryFiles());
+  const writes = new Writes(cacheOf(client), keptTab().page(), memoryFiles());
   try {
     enqueueBroadcast(writes, press("Ship it.", "key-1"));
     await waitFor(() =>
@@ -197,7 +197,7 @@ test("a refused broadcast does not hold the line, and its Retry takes a new key"
   const createBroadcast = spyOn(api, "createBroadcast")
     .mockRejectedValueOnce(new ApiError(400, { code: "BROADCAST_INPUT", error: "too long" }))
     .mockImplementation(async (input) => created(input));
-  const writes = new Writes(signedIn(), keptTab().page(), memoryFiles());
+  const writes = new Writes(cacheOf(signedIn()), keptTab().page(), memoryFiles());
   try {
     enqueueBroadcast(writes, press("First.", "key-1"));
     enqueueBroadcast(writes, press("Second.", "key-2"));
@@ -230,7 +230,7 @@ test("a broadcast held for a sign-out in another tab says so, and goes on once r
     .mockReturnValueOnce(first.promise)
     .mockImplementation(async (input) => created(input));
   const client = signedIn();
-  const writes = new Writes(client, keptTab().page(), memoryFiles());
+  const writes = new Writes(cacheOf(client), keptTab().page(), memoryFiles());
   const strip = () =>
     render(
       createElement(
@@ -297,7 +297,7 @@ test("a broadcast whose key has run out says so, with Retry and Discard", async 
         new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
       );
     });
-    const writes = new Writes(client, keptTab().page(), memoryFiles());
+    const writes = new Writes(cacheOf(client), keptTab().page(), memoryFiles());
     try {
       enqueueBroadcast(writes, press("Ship it.", keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS)));
       await settle();

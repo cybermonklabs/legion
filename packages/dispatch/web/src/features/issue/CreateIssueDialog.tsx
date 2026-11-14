@@ -1,7 +1,8 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
-import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { ApiError, issueCreateRequest } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import type { CreateIssueInput } from "../../api/types";
@@ -26,7 +27,6 @@ import {
 import { buildIssuePath, routeProjectOf } from "../refs/routes";
 import { useDialog } from "../shell/useDialog";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { RelatedItems } from "./RelatedItems";
 
@@ -46,7 +46,7 @@ import { RelatedItems } from "./RelatedItems";
 export function CreateIssueDialog({ onClose }: { onClose: () => void }): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const titleRef = useRef<HTMLInputElement>(null);
   const dialog = useDialog<HTMLFormElement>({ initialFocusRef: titleRef, onClose, open: true });
   const projects = useShownQuery(projectsQuery());
@@ -62,8 +62,8 @@ export function CreateIssueDialog({ onClose }: { onClose: () => void }): ReactNo
     request: (input: CreateIssueInput) => issueCreateRequest(input),
     target: (input) => `project:${input.project}`,
     onSuccess: (issue) => {
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
-      void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
+      void cache.invalidate({ queryKey: ["issues"] });
+      void cache.invalidate({ queryKey: projectsQuery().queryKey });
       if (issue !== null) {
         onClose();
         navigate(buildIssuePath({ key: issue.key, kind: "issue" }));

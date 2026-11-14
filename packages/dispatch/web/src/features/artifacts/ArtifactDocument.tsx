@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IDCandidate } from "../../api/types";
@@ -10,7 +11,6 @@ import { ambiguousItems } from "../issue/useItemLanding";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { useWholeRouteRead } from "../refs/reference-target";
 import type { DispatchReferenceRoute } from "../refs/routes";
-import { useShownQuery } from "../writes/shown-query";
 
 /** The item a document address names, as `?comment=` or `?ask=` writes it. Its id may be written
  *  short, which only the reference it stands for can resolve. */

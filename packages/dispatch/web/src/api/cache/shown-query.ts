@@ -1,22 +1,28 @@
 import {
+  type DefaultError,
+  type DefinedUseQueryResult,
   hashKey,
-  type QueryClient,
+  type InfiniteData,
   type QueryKey,
   QueryObserver,
-  type QueryObserverOptions,
   replaceEqualDeep,
+  type UseInfiniteQueryResult,
+  type UseQueryResult,
   useInfiniteQuery,
   useQueries,
   useQuery,
-  useQueryClient,
 } from "@tanstack/react-query";
 import { useRef, useSyncExternalStore } from "react";
 
-import { type Writes, writesOf } from "./write-store";
+import { type Cache, useCache } from "./cache";
+import { clientOf } from "./client-handle";
+import { libraryOptions, type PagesOptions, type ReadOptions } from "./read-options";
+import type { Writes } from "./write-store";
 
 /**
- * Every hook read of the page's caches, and the one observer outside React, through the one
- * module that may import TanStack's query hooks and observers (`no-bare-cache-reads.test.ts`).
+ * Every hook read of the page's caches, and the one observer outside React, in the cache layer:
+ * the one place TanStack's query hooks and observers are called, as only the layer imports
+ * TanStack (`biome.json`) and a feature's `Cache` offers neither (`cache.ts`).
  * The cache holds only Dispatch's answers; what a component reads is that data with every live
  * write's change over it, composed at the moment it reads, in the store's order
  * (`Writes.overlay`, R7 and R10 of dispatch://INFRA-299).
@@ -126,25 +132,27 @@ function useShownData(
 }
 
 /** The options every read below is handed, as far as the composition reads them. */
-interface ReadOptions {
+interface Composed {
   readonly queryKey: QueryKey;
   readonly select?: (data: never) => unknown;
 }
 
-function useComposedQuery({ select, ...options }: ReadOptions, client?: QueryClient) {
-  const writes = writesOf(useQueryClient(client));
+function useComposedQuery({ select, ...options }: Composed) {
+  const { writes } = useCache();
   const overlay = useOverlay(writes, options.queryKey);
-  const result = useQuery(options as Parameters<typeof useQuery>[0], client);
+  const result = useQuery(libraryOptions(options) as Parameters<typeof useQuery>[0]);
   return withData(
     result,
     useShownData(options.queryKey, result.data, overlay, select as Select | undefined)
   );
 }
 
-function useComposedInfiniteQuery({ select, ...options }: ReadOptions, client?: QueryClient) {
-  const writes = writesOf(useQueryClient(client));
+function useComposedInfiniteQuery({ select, ...options }: Composed) {
+  const { writes } = useCache();
   const overlay = useOverlay(writes, options.queryKey);
-  const result = useInfiniteQuery(options as Parameters<typeof useInfiniteQuery>[0], client);
+  const result = useInfiniteQuery(
+    libraryOptions(options) as Parameters<typeof useInfiniteQuery>[0]
+  );
   return withData(
     result,
     useShownData(options.queryKey, result.data, overlay, select as Select | undefined)
@@ -160,31 +168,25 @@ interface ShownQueries {
 
 const NOTHING_SHOWN: ShownQueries = { byHash: new Map(), combined: undefined };
 
-function useComposedQueries(
-  {
-    combine,
-    queries,
-    ...options
-  }: {
-    readonly combine?: (results: never) => unknown;
-    readonly queries: readonly ReadOptions[];
-  },
-  client?: QueryClient
-) {
-  const writes = writesOf(useQueryClient(client));
+function useComposedQueries({
+  combine,
+  queries,
+  ...options
+}: {
+  readonly combine?: (results: never) => unknown;
+  readonly queries: readonly Composed[];
+}) {
+  const { writes } = useCache();
   const keys = queries.map((query) => query.queryKey);
   const overlays = useOverlays(writes, keys);
-  const results = useQueries(
-    {
-      ...options,
-      queries: queries.map(({ select: _select, ...query }) => query),
-    } as Parameters<typeof useQueries>[0],
-    client
-  ) as readonly { readonly data: unknown }[];
+  const results = useQueries({
+    ...options,
+    queries: queries.map(({ select: _select, ...query }) => libraryOptions(query)),
+  } as Parameters<typeof useQueries>[0]) as readonly { readonly data: unknown }[];
   const last = useRef<ShownQueries>(NOTHING_SHOWN);
   const byHash = new Map<string, Shown>();
   const shown = results.map((result, at) => {
-    const query = queries[at] as ReadOptions;
+    const query = queries[at] as Composed;
     const hash = hashKey(query.queryKey);
     const one = shownOf(
       last.current.byHash.get(hash),
@@ -204,17 +206,65 @@ function useComposedQueries(
   return combined;
 }
 
-/** `useQuery`, with every live change over Dispatch's data. */
-export const useShownQuery = useComposedQuery as typeof useQuery;
+/** A read of one cache, with every live change over Dispatch's data: TanStack's `useQuery` over
+ *  options in the layer's terms (`ReadOptions`). One whose `initialData` is defined is never
+ *  without data. */
+export function useShownQuery<
+  TQueryFnData = unknown,
+  TError = DefaultError,
+  TData = TQueryFnData,
+  TQueryKey extends QueryKey = QueryKey,
+>(
+  options: ReadOptions<TQueryFnData, TError, TData, TQueryKey> & {
+    readonly initialData: TQueryFnData | (() => TQueryFnData);
+  }
+): DefinedUseQueryResult<NoInfer<TData>, TError>;
+export function useShownQuery<
+  TQueryFnData = unknown,
+  TError = DefaultError,
+  TData = TQueryFnData,
+  TQueryKey extends QueryKey = QueryKey,
+>(
+  options: ReadOptions<TQueryFnData, TError, TData, TQueryKey>
+): UseQueryResult<NoInfer<TData>, TError>;
+export function useShownQuery(options: Composed): unknown {
+  return useComposedQuery(options);
+}
 
-/** `useInfiniteQuery`, with every live change over Dispatch's pages: a page a fetch-more reads is
- *  built from Dispatch's own pages, and `hasNextPage` and the page params are read off them, so
- *  a change that takes a row out never moves the cursor. */
-export const useShownInfiniteQuery = useComposedInfiniteQuery as typeof useInfiniteQuery;
+/** A paged read of one cache, with every live change over Dispatch's pages: a page a fetch-more
+ *  reads is built from Dispatch's own pages, and `hasNextPage` and the page params are read off
+ *  them, so a change that takes a row out never moves the cursor. */
+export function useShownInfiniteQuery<
+  TQueryFnData,
+  TError = DefaultError,
+  TData = InfiniteData<TQueryFnData>,
+  TQueryKey extends QueryKey = QueryKey,
+  TPageParam = unknown,
+>(
+  options: PagesOptions<TQueryFnData, TError, TData, TQueryKey, TPageParam>
+): UseInfiniteQueryResult<TData, TError> {
+  return useComposedInfiniteQuery(options as Composed) as UseInfiniteQueryResult<TData, TError>;
+}
 
-/** `useQueries`, with every live change over each query's data; a `combine` is handed the
- *  results as shown. */
-export const useShownQueries = useComposedQueries as unknown as typeof useQueries;
+/** Reads of several caches of one kind, with every live change over each one's data; a
+ *  `combine` is handed the results as shown. */
+export function useShownQueries<
+  TQueryFnData = unknown,
+  TError = DefaultError,
+  TData = TQueryFnData,
+  TQueryKey extends QueryKey = QueryKey,
+  TCombined = UseQueryResult<TData, TError>[],
+>(options: {
+  readonly queries: readonly ReadOptions<TQueryFnData, TError, TData, TQueryKey>[];
+  readonly combine?: (results: UseQueryResult<TData, TError>[]) => TCombined;
+}): TCombined {
+  return useComposedQueries(
+    options as {
+      readonly queries: readonly Composed[];
+      readonly combine?: () => unknown;
+    }
+  ) as TCombined;
+}
 
 /**
  * A read of the cache at `options.queryKey` for a reader outside React (a document editor's
@@ -226,13 +276,16 @@ export const useShownQueries = useComposedQueries as unknown as typeof useQuerie
  * Undefined while the query holds no data. The returned function stops.
  */
 export function watchShownQuery<TData, TKey extends QueryKey>(
-  client: QueryClient,
-  { select, ...options }: QueryObserverOptions<TData, Error, TData, TData, TKey>,
+  cache: Cache,
+  { select, ...options }: ReadOptions<TData, Error, TData, TKey>,
   onData: (data: TData | undefined) => void
 ): () => void {
-  const writes = writesOf(client);
+  const { writes } = cache;
   const hash = hashKey(options.queryKey);
-  const observer = new QueryObserver(client, options);
+  const observer = new QueryObserver(
+    clientOf(cache),
+    libraryOptions(options) as ConstructorParameters<typeof QueryObserver>[1]
+  );
   let last: Shown | undefined;
   const tell = () => {
     const shown = shownOf(

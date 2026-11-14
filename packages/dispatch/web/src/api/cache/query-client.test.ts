@@ -1,7 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryObserver } from "@tanstack/react-query";
 
-import { ApiError, createApiClient, isRetryableQueryError } from "./client";
+import { ApiError, createApiClient, isRetryableQueryError } from "../client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./query-client";
 
 /**
@@ -111,7 +111,7 @@ test("an invalidation of an idle read fetches it at once", async () => {
 });
 
 /**
- * When each request of one read went out, in ms after the first, through main.tsx's retry options
+ * When each request of one read went out, in ms after the first, through api/cache/provider.tsx's retry options
  * and the real API client, with every response a 503 refusal carrying `headers`. The clock is
  * fake and moves in 10 ms steps until `ms` have passed.
  */

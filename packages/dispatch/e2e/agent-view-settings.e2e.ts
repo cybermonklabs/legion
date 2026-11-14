@@ -523,7 +523,7 @@ test("a thinking level picked in the header sends /effort, and the session's ans
 // SLOW(>=2s): the session's own reason is the claim, so the row pays a whole round trip for it -
 // the pick's send through the fake listener, Dispatch's store, the session's reply - over the
 // live view's first load. The header reads that reply on the page's next fetch of the thread,
-// which the app holds to one a second (MIN_REFETCH_INTERVAL_MS, web/src/api/query-refresh.ts).
+// which the app holds to one a second (MIN_REFETCH_INTERVAL_MS, web/src/api/cache/query-refresh.ts).
 test("a switch the session refuses shows its reason and leaves the header on the values it last reported", async ({
   browser,
 }) => {
@@ -689,7 +689,7 @@ test("a person's own token sends a switch recorded as them with the agent beside
 // (no live session took it) says so as soon as Dispatch answers with the failed attempt, without
 // waiting for that deadline.
 // SLOW(>=2s): two switches, each a round trip of its own: the answered one waits out the page's
-// once-a-second read of the thread (MIN_REFETCH_INTERVAL_MS, web/src/api/query-refresh.ts), and
+// once-a-second read of the thread (MIN_REFETCH_INTERVAL_MS, web/src/api/cache/query-refresh.ts), and
 // the failed one waits out the listener take-over window Dispatch answers after, as the comment
 // on it below says. The deadline itself costs nothing - it is spent on the page's own clock.
 test("a switch the session never answers says so after 30 seconds and keeps the header, a late answer replaces that, and a send that failed says so without waiting for the deadline @phone", async ({

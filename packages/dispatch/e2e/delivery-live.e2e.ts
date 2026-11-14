@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/cache/live-socket";
 import { PIPELINE_AT, seedDeliveryFixture, seedPipelineFixture } from "./delivery-seed";
 import { seedDeliveryReconcileGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
@@ -352,7 +352,7 @@ test("after every socket is dropped, the page resumes and equals the GET answer 
   const page = await context.newPage();
 
   try {
-    // The page waits a draw from [0, RECONNECT_SPREAD_MS) (`web/src/api/live-socket.ts`) before
+    // The page waits a draw from [0, RECONNECT_SPREAD_MS) (`web/src/api/cache/live-socket.ts`) before
     // it reopens; its own clock spends it. The jump repeats because the 1012 close may not have
     // reached the page when the first one lands.
     await page.clock.install();

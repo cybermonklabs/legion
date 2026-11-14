@@ -1,5 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
+
+import { useCache } from "../../api/cache/cache";
 
 import { api, apiErrorMessage } from "../../api/client";
 import type { DecisionResponse, StateResponse } from "../../api/types";
@@ -66,7 +67,7 @@ function MachineLoginDecision({
  */
 export function MachineLoginPage(): ReactNode {
   const [code, setCode] = useState("");
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const submitGuard = useSubmitGuard();
 
   // A lookup and a decision are the form's own: it shows a refusal, beside the code it names.
@@ -91,8 +92,8 @@ export function MachineLoginPage(): ReactNode {
     label: () => "Approval of a machine login",
     onSettled: () => submitGuard.release(),
     onSuccess: (decided) => {
-      void queryClient.invalidateQueries({ queryKey: ["credential-pending"] });
-      void queryClient.invalidateQueries({ queryKey: machineLoginsQuery().queryKey });
+      void cache.invalidate({ queryKey: ["credential-pending"] });
+      void cache.invalidate({ queryKey: machineLoginsQuery().queryKey });
       // Decided, with no answer to say how: the record is looked up again for its decision.
       if (decided === null) lookup.mutate(lookedUpCode);
     },
@@ -105,7 +106,7 @@ export function MachineLoginPage(): ReactNode {
     label: () => "Denial of a machine login",
     onSettled: () => submitGuard.release(),
     onSuccess: (decided) => {
-      void queryClient.invalidateQueries({ queryKey: ["credential-pending"] });
+      void cache.invalidate({ queryKey: ["credential-pending"] });
       if (decided === null) lookup.mutate(lookedUpCode);
     },
   });

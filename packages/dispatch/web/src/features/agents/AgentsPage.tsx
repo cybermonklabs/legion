@@ -1,6 +1,5 @@
 import { DELIVERY_CAPABILITIES } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   type RefObject,
@@ -13,6 +12,8 @@ import {
   useState,
 } from "react";
 import { Link } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import {
   agentMessagesQuery,
@@ -77,7 +78,6 @@ import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentMessageComposer, type AgentReply, agentSendKey } from "./AgentMessageComposer";
 import { AGENT_GROUP_LABELS, AGENT_GROUPS, type AgentGroup, agentGroup } from "./agent-groups";
@@ -199,14 +199,14 @@ function AgentExchangeReply({
   reply: MessageWithTrees;
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () =>
-      void queryClient.invalidateQueries({
+      void cache.invalidate({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
     unlined: "a delivery sends a message to one session again and names no row",
@@ -277,14 +277,14 @@ function AgentTargetedMessage({
   read: MessageRead;
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () =>
-      void queryClient.invalidateQueries({
+      void cache.invalidate({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
     unlined: "a delivery sends a message to one session again and names no row",
@@ -372,7 +372,7 @@ function AgentMessageList({
   /** Holds every Reply while the row's send is in flight, as the picker is held. */
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const messages = useShownQuery(agentMessagesQuery(agent.session_id));
   const agentState = useShownQuery(userAgentStateQuery());
   const [showOlder, setShowOlder] = useState(false);
@@ -408,7 +408,7 @@ function AgentMessageList({
     // A landing with no answer to give has the store read every query again.
     onSuccess: (next) => {
       setShowCleared(false);
-      if (next !== null) storeAgentState(queryClient, agent.session_id, next);
+      if (next !== null) storeAgentState(cache, agent.session_id, next);
     },
   });
   if (messages.isPending || agentState.isPending) return null;

@@ -1,4 +1,5 @@
 import { type ReactNode, useMemo } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { DisplayTree } from "../../api/types";
 import {
@@ -8,8 +9,6 @@ import {
   surfaceMutedBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useShownQuery } from "../writes/shown-query";
-
 import { MarkdownPreview } from "./MarkdownPreview";
 import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferencePath, useReferenceTarget } from "./reference-target";

@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
-import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/cache/live-socket";
+import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/cache/query-refresh";
 import {
   createAsk,
   createIssue,
@@ -548,7 +548,7 @@ test("live: a change committed while the first live socket fails to open is show
     );
 
     // The second socket waits a draw from [0, RECONNECT_SPREAD_MS) armed when the first
-    // handshake failed (`web/src/api/live-socket.ts`), which the page's own clock spends.
+    // handshake failed (`web/src/api/cache/live-socket.ts`), which the page's own clock spends.
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
     const head: string = (await (await whoami).json()).event_head;

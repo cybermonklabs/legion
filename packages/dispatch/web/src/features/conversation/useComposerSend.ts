@@ -1,5 +1,6 @@
-import { hashKey, type MutationKey } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef } from "react";
+
+import { hashKey, type MutationKey } from "../../api/cache/keys";
 
 import { type HeldDraft, type HeldSend, useHeldSend, useHeldSends } from "./held-sends";
 import type { SentRequest } from "./send-request";

@@ -1,7 +1,7 @@
 import { PROJECT_NAME_MAX } from "@legion/contracts";
-import type { Mutation } from "@tanstack/react-query";
-import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
+import { useCache, useMutations } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, apiErrorMessage } from "../../api/client";
 import {
   projectDefaultAssigneesQuery,
@@ -24,7 +24,6 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsFieldLabel,
@@ -42,7 +41,7 @@ import {
  * the same `["projects"]` query, so a project created here is immediately selectable there
  * without any explicit wiring between the two sections. */
 export function ProjectsSection(): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const [projectKey, setProjectKey] = useState("");
   const [projectName, setProjectName] = useState("");
   // Who the new project defaults to until the reader picks somebody else: `null` is "nobody has
@@ -60,10 +59,10 @@ export function ProjectsSection(): ReactNode {
     // Made either way, so the form empties; with no answer to give, it says what was made
     // (`createProject.unanswered`).
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
+      void cache.invalidate({ queryKey: projectsQuery().queryKey });
       // The project list carries no default assignee: the defaults read is the one place the new
       // project's default comes from, and the read the page holds was answered before it existed.
-      void queryClient.invalidateQueries({ queryKey: projectDefaultAssigneesQuery().queryKey });
+      void cache.invalidate({ queryKey: projectDefaultAssigneesQuery().queryKey });
       setProjectKey("");
       setProjectName("");
       setProjectAssignee(null);
@@ -334,14 +333,8 @@ type DefaultAssigneePick = { assignee: string };
 /** What a pick's save resolves to when a newer pick was waiting behind it: nothing was sent. */
 type DefaultAssigneeSuperseded = { superseded: true };
 
-type DefaultAssigneeSave = Mutation<
-  ProjectDefaultAssignee | DefaultAssigneeSuperseded | null,
-  Error,
-  DefaultAssigneePick
->;
-
 /** One project's default-assignee saves. The mutation scope runs a project's saves one at a time
- *  in pick order in the QueryClient's mutation cache, so a save still out or waiting when the row
+ *  in pick order in the page's mutations, so a save still out or waiting when the row
  *  unmounts keeps its place, and a pick on a remounted row waits behind it. When a save's turn
  *  comes and a newer pick is waiting behind it, it is superseded and sends nothing: while a save
  *  is out, only the newest pick follows it, from whichever mount made it. The server ends at the
@@ -364,7 +357,7 @@ function useDefaultAssigneeWrite(project: string): {
   shown: string | undefined;
   submit: (assignee: string) => void;
 } {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const defaultsKey = projectDefaultAssigneesQuery().queryKey;
   const mutationKey = ["project-default-assignee", project];
   const mutation = useKeyedWrite<
@@ -381,24 +374,26 @@ function useDefaultAssigneeWrite(project: string): {
     label: (pick) => `${project}'s default assignee ${pick.assignee}`,
     unlined: "one project's picks are ordered by the newest press, not by a line (`scope`)",
     write: async (pick, bounds): Promise<ProjectDefaultAssignee | DefaultAssigneeSuperseded> => {
-      // The cache lists mutations in the order they were made, so the last pending one is the
+      // The page lists mutations in the order they were made, so the last pending one is the
       // newest pick. Any other is waiting behind this save, and only it need reach the server.
-      const waiting = queryClient
-        .getMutationCache()
-        .findAll({ exact: true, mutationKey, status: "pending" });
-      if (waiting.at(-1)?.state.variables !== pick) {
+      const waiting = cache.mutations<DefaultAssigneePick>({
+        exact: true,
+        mutationKey,
+        status: "pending",
+      });
+      if (waiting.at(-1)?.variables !== pick) {
         return { superseded: true };
       }
       return api.putProjectDefaultAssignee(project, { assignee: pick.assignee }, bounds);
     },
     // A defaults read already out was asked before this save and could land over its answer.
-    onMutate: () => queryClient.cancelQueries({ queryKey: defaultsKey }),
+    onMutate: () => cache.cancel({ queryKey: defaultsKey }),
     onSuccess: (saved) => {
       // Saved with no answer to give: the store reads every query again.
       if (saved === null || "superseded" in saved) {
         return;
       }
-      queryClient.setQueryData<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
+      cache.setDispatched<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
         if (rows === undefined) {
           return rows;
         }
@@ -410,48 +405,28 @@ function useDefaultAssigneeWrite(project: string): {
       // With gcTime Infinity nothing else clears this project's saves. A save settles in pick
       // order and is still pending while this runs, so every settled save left is older than it
       // and no longer the one a row reports: drop them, keeping at most the newest settled save
-      // and the pending ones.
-      const cache = queryClient.getMutationCache();
-      for (const older of cache.findAll({ exact: true, mutationKey })) {
-        if (older.state.status !== "pending") {
-          cache.remove(older);
-        }
-      }
+      // and the pending ones. cache.forgetSettledMutations({ exact: true, mutationKey });
       // A superseded save changed nothing on the server. Not awaited: the next pick in the scope
       // need not wait for this refetch.
       if (saved == null || !("superseded" in saved)) {
-        void queryClient.invalidateQueries({ queryKey: defaultsKey });
+        void cache.invalidate({ queryKey: defaultsKey });
       }
     },
   });
-  const saves = useMutationState<
-    {
-      error: Error | null;
-      pick: DefaultAssigneePick | undefined;
-      status: DefaultAssigneeSave["state"]["status"];
-    },
-    DefaultAssigneeSave
-  >({
-    filters: { exact: true, mutationKey },
-    select: (save) => ({
-      error: save.state.error,
-      pick: save.state.variables,
-      status: save.state.status,
-    }),
-  });
+  const saves = useMutations<DefaultAssigneePick>({ exact: true, mutationKey });
   const pendingPicks = saves.filter((save) => save.status === "pending");
-  // The cache lists mutations in the order they were made, so the last is the newest.
+  // The page lists mutations in the order they were made, so the last is the newest.
   const newest = saves.at(-1);
   const refused = newest?.status === "error" ? newest : undefined;
   return {
     error: refused?.error ?? null,
     pending: pendingPicks.length > 0,
     retry: () => {
-      if (refused?.pick !== undefined) {
-        mutation.mutate({ assignee: refused.pick.assignee });
+      if (refused?.variables !== undefined) {
+        mutation.mutate({ assignee: refused.variables.assignee });
       }
     },
-    shown: pendingPicks.at(-1)?.pick?.assignee,
+    shown: pendingPicks.at(-1)?.variables?.assignee,
     submit: (assignee) => mutation.mutate({ assignee }),
   };
 }

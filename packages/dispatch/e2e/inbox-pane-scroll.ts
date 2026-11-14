@@ -575,7 +575,7 @@ export async function watchLiveGap(page: Page): Promise<LiveGap> {
 }
 
 /** How far past the reads' staleness the window is left before it is given the focus again
- *  (`staleTime` is 30 s in `web/src/main.tsx`). */
+ *  (`staleTime` is 30 s in `web/src/api/cache/provider.tsx`). */
 const PAST_STALENESS_MS = 31_000;
 
 /**

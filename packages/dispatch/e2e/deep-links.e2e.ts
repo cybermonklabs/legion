@@ -1123,7 +1123,7 @@ test("an unanchored comment deep link still focuses its Conversation turn", asyn
   }
 });
 
-/** Two retry waits (`QUERY_RETRY_DELAY_MS`, `web/src/api/query-client.ts`) and the asks between
+/** Two retry waits (`QUERY_RETRY_DELAY_MS`, `web/src/api/cache/query-client.ts`) and the asks between
  *  them: what an item lookup that cannot resolve costs before the page names it missing. A 404
  *  and a 400 are both retryable (`isRetryableQueryError`, `web/src/api/client.ts`), so
  *  `useItemLanding` asks three times over. */

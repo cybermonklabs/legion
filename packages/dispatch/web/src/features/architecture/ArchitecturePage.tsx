@@ -1,6 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { architectureSourceSyncRequest } from "../../api/client";
 import { architectureSourcesQuery, architectureTreeQuery } from "../../api/queries";
 import type {
@@ -38,7 +39,6 @@ import { Timestamp } from "../refs/Timestamp";
 import { sourceLine } from "../settings/ArchitectureSourcesSection";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, roveFocus } from "../shell/roving";
-import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AttachmentLists, type AttachmentView } from "./AttachmentLists";
 import {
@@ -113,7 +113,7 @@ function usePaneState(): {
  * title and status), and on every import event, so a bar moves in place when an issue closes.
  */
 export function ArchitecturePage({ project }: { project: string }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const tree = useShownQuery(architectureTreeQuery(project));
   // A rejected model comes back 200 with the reason in last_error; either way the tree's source
   // line settles from the refetch. A refusal of the request itself is the shell's to show, with
@@ -123,9 +123,9 @@ export function ArchitecturePage({ project }: { project: string }): ReactNode {
     request: (repo: string) => architectureSourceSyncRequest(project, repo),
     target: (repo) => sourceLine({ project, repo }),
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: architectureTreeQuery(project).queryKey });
+      void cache.invalidate({ queryKey: architectureTreeQuery(project).queryKey });
       // Its key prefixes the project's own list, so both refresh.
-      void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey });
+      void cache.invalidate({ queryKey: architectureSourcesQuery().queryKey });
     },
   });
   const { component: selectedId, update, view } = usePaneState();

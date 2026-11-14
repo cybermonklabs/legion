@@ -1,5 +1,6 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { projectIssuesQuery } from "../../api/queries";
 import { Chip } from "../../components/Chip";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -10,7 +11,6 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useUserPreference } from "../shell/userPreference";
-import { useShownQuery } from "../writes/shown-query";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 

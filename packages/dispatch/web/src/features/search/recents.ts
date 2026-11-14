@@ -16,11 +16,11 @@
 
 import { useEffect } from "react";
 import { useLocation } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { buildIssuePath, buildProjectPath, parseIssuePath } from "../refs/routes";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { useShownQuery } from "../writes/shown-query";
 import { documentRouteOf } from "./bar-scope";
 
 /** How many recent items the browser keeps, which is also how many the bar lists: enough to hold

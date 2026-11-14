@@ -1,8 +1,8 @@
 import { type RefObject, useMemo } from "react";
+import { useShownInfiniteQuery, useShownQuery } from "../../api/cache/shown-query";
 import { dismissedThreadsQuery, inboxThreadsQuery } from "../../api/queries";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import type { InboxShow } from "../refs/routes";
-import { useShownInfiniteQuery, useShownQuery } from "../writes/shown-query";
 import type { InboxListRow } from "./list-row";
 import { useMotionHold } from "./motion-hold";
 

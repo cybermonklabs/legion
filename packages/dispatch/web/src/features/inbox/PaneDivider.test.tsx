@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useRef } from "react";
+
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { DEFAULT_PANE_WIDTH, PaneDivider, usePaneWidth } from "./PaneDivider";

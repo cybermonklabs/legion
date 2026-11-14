@@ -8,8 +8,18 @@ import {
   type FakeLiveSocket,
   type FakeLiveSockets,
   installFakeLiveSockets,
-} from "../__tests__/live-socket-harness";
-import { ApiError, isDeliveryNotConfigured } from "./client";
+} from "../../__tests__/live-socket-harness";
+import { ApiError, isDeliveryNotConfigured } from "../client";
+import type {
+  DeliveryLiveBody,
+  DeliveryLiveDelta,
+  DeliveryLiveRevs,
+  DeliveryLiveSnapshot,
+  DeliveryLiveView,
+  DeliveryPR,
+  DeliveryTimelineWithMeasures,
+  LiveEventFrame,
+} from "../types";
 import {
   type AgentHandlers,
   createLiveSocket,
@@ -23,16 +33,7 @@ import {
   useLiveSocketPill,
 } from "./live-socket";
 import { refreshQueries } from "./query-refresh";
-import type {
-  DeliveryLiveBody,
-  DeliveryLiveDelta,
-  DeliveryLiveRevs,
-  DeliveryLiveSnapshot,
-  DeliveryLiveView,
-  DeliveryPR,
-  DeliveryTimelineWithMeasures,
-  LiveEventFrame,
-} from "./types";
+import { cacheOf } from "./test-client";
 
 const view: DeliveryLiveView = { kind: "timeline", window: { preset: 28 }, query: "" };
 const key = ["delivery", "timeline", view] as const;
@@ -141,7 +142,7 @@ let live: LiveSocket;
 beforeEach(() => {
   sockets = installFakeLiveSockets();
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  live = createLiveSocket(queryClient);
+  live = createLiveSocket(cacheOf(queryClient));
 });
 
 afterEach(() => {
@@ -585,7 +586,7 @@ test("refreshQueries neither cancels nor invalidates a live query on its first l
     expect(subscribed).toHaveLength(1);
     expect(ordinaryCalls).toBe(1);
 
-    refreshQueries(queryClient);
+    refreshQueries(cacheOf(queryClient));
     await settle();
     // The live query's first load is still the one in flight, its queryFn run once.
     expect(queryClient.getQueryState(key)?.fetchStatus).toBe("fetching");
@@ -599,7 +600,7 @@ test("refreshQueries neither cancels nor invalidates a live query on its first l
     socket.receive(snapshot(sub));
     await settle();
     expect(queryClient.getQueryData<DeliveryTimelineWithMeasures>(key)).toEqual(body);
-    refreshQueries(queryClient);
+    refreshQueries(cacheOf(queryClient));
     await settle();
     expect(queryClient.getQueryState(key)?.isInvalidated).toBe(false);
     expect(subscribed).toHaveLength(1);
@@ -822,7 +823,7 @@ test("a 4001 whose reopen fails reads reconnecting, shows the pill and reports a
   jest.useFakeTimers();
   const random = spyOn(Math, "random").mockReturnValue(0.5);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const shared = liveSocketFor(client);
+  const shared = liveSocketFor(cacheOf(client));
   const feed = eventFeed();
   const stopFeed = shared.subscribeEvents(feed.handlers);
   const pill = renderHook(() => useLiveSocketPill(), {
@@ -1536,7 +1537,7 @@ test("a feed dropped during its backoff is unsubscribed, so its slot goes back",
 
 test("the connection pill holds its value through a delta with a new change time", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const shared = liveSocketFor(client);
+  const shared = liveSocketFor(cacheOf(client));
   const observer = new QueryObserver(client, {
     queryKey: key,
     queryFn: ({ queryKey: k }) => shared.subscribe(k, view),

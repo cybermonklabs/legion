@@ -1,5 +1,4 @@
 import { afterAll, afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the answer form's own submit, which user-event has no form for
 import { fireEvent, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -12,6 +11,7 @@ import {
   answerAskAnswers,
   answerIssueComments,
 } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api, type WriteBounds } from "../../api/client";
 import type { AnswerAskInput, Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
 import { AskBlockCard } from "./AskBlockCard";
