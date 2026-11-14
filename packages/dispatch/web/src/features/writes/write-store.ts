@@ -408,12 +408,25 @@ export interface FromPress {
   readonly release: () => void;
 }
 
-/** Whether `showing` names `query`'s cache, by key or by prefix. */
+/** Whether `showing` names the cache at `key` (hashed `hash`), by key or by prefix. */
+function names(showing: Showing, key: QueryKey, hash: string): boolean {
+  return showing.exact.has(hash) || showing.under.some((head) => startsWith(key, head));
+}
+
+/** Whether `showing` names `query`'s cache. */
 function wrote(showing: Showing, query: Query): boolean {
-  return (
-    showing.exact.has(query.queryHash) ||
-    showing.under.some((head) => startsWith(query.queryKey, head))
-  );
+  return names(showing, query.queryKey, query.queryHash);
+}
+
+/** The overlay of a cache no live change names: Dispatch's data as it is. One function for every
+ *  such cache, whatever the store composes elsewhere. */
+const AS_DISPATCHED = (data: unknown): unknown => data;
+
+/** The overlay the store holds for the cache at `key`, with the changes it composes there. */
+interface HeldOverlay {
+  readonly compose: (data: unknown) => unknown;
+  readonly key: QueryKey;
+  readonly named: readonly Showing[];
 }
 
 /** Whether `entry`'s change is on the screen: a live write that shows one, whether or not a
@@ -557,13 +570,11 @@ export class Writes {
   /** Every live change, in the store's order (`joined`): what every read of a cache composes
    *  over Dispatch's data. One array until a change starts or stops being composed. */
   #live: readonly Showing[] = NO_SHOWINGS;
-  /** Counted up each time `#live` is taken afresh, so every reader composes again
-   *  (`useShownQuery`). */
-  #version = 0;
-  /** The overlay of each cache read since `#live` was last taken, by its hash: each holds the
-   *  last data it composed and what it composed, so a tree prediction or a row filter runs once
-   *  per answer and per composition, not once per reader and per render. */
-  readonly #overlays = new Map<string, (data: unknown) => unknown>();
+  /** The overlay of each cache some live change names, by its hash, with the changes it
+   *  composes: each holds the last data it composed and what it composed, so a tree prediction
+   *  or a row filter runs once per answer and per composition, not once per reader and per
+   *  render. One is kept while the changes naming its cache are the same ones (`#compose`). */
+  readonly #overlays = new Map<string, HeldOverlay>();
 
   constructor(
     client: QueryClient,
@@ -596,11 +607,6 @@ export class Writes {
     return () => this.#outcomes.delete(listener);
   };
 
-  /** Which composition of the live changes the page reads now: counted up each time a change
-   *  starts or stops being composed, and read by every hook read (`useShownQuery`) so it
-   *  composes again. The same number while only a write's progress or its row changes. */
-  readonly version = (): number => this.#version;
-
   /**
    * What every read of the cache at `key` hands the page in place of the cache's own data:
    * Dispatch's data - the cache holds nothing else - with every live change named for that cache
@@ -612,28 +618,33 @@ export class Writes {
    * pages, and a write that leaves its line without landing simply stops being composed (R10):
    * nothing is put back, because nothing was overwritten.
    *
-   * The function is one value for as long as the composition holds (`version`), and hands back
-   * the same value for the same data, so a hook read's `select` reruns only when the data or the
-   * composition changes, and the compose step runs once for every reader of the cache.
+   * The function is one value for as long as the changes naming the cache are the same ones -
+   * one value for every cache no change names (`AS_DISPATCHED`), whatever starts or stops being
+   * composed elsewhere - and hands back the same value for the same data. So a hook read, which
+   * reads it through `useSyncExternalStore` (`features/writes/shown-query.ts`), renders again
+   * only when its own composition changes, and the compose step runs once for every reader of
+   * the cache.
    */
   overlay(key: QueryKey): (data: unknown) => unknown {
+    if (this.#live.length === 0) return AS_DISPATCHED;
     const hash = hashKey(key);
     const held = this.#overlays.get(hash);
-    if (held !== undefined) return held;
-    const live = this.#live;
+    if (held !== undefined) return held.compose;
+    const named = this.#live.filter((showing) => names(showing, key, hash));
+    if (named.length === 0) return AS_DISPATCHED;
     let last: { readonly data: unknown; readonly shown: unknown } | undefined;
-    const overlay = (data: unknown): unknown => {
-      if (data === undefined || live.length === 0) return data;
+    const compose = (data: unknown): unknown => {
+      if (data === undefined) return data;
       if (last !== undefined && Object.is(last.data, data)) return last.shown;
-      const shown = live.reduce(
+      const shown = named.reduce(
         (over: unknown, showing) => shownOn(key, hash, showing, over, false),
         data
       );
       last = { data, shown };
       return shown;
     };
-    this.#overlays.set(hash, overlay);
-    return overlay;
+    this.#overlays.set(hash, { compose, key, named });
+    return compose;
   }
 
   /** The cache at `key` as the person sees it: Dispatch's data with every live change over it
@@ -685,8 +696,8 @@ export class Writes {
   }
 
   /** Takes the live changes afresh - each live write's that shows one, and each composed from a
-   *  press - in the store's order; a set that differs from the one held, or `force`, counts the
-   *  version up and lets every overlay go. Says whether it did. */
+   *  press - in the store's order. A set that differs from the one held lets go of each overlay
+   *  whose cache it names otherwise; `force` lets every overlay go. Says whether either did. */
   #compose(force: boolean): boolean {
     const live = [...this.#pressed.values()];
     for (const entry of this.#entries.values()) {
@@ -698,8 +709,19 @@ export class Writes {
       return false;
     }
     this.#live = live.length === 0 ? NO_SHOWINGS : live;
-    this.#version += 1;
-    this.#overlays.clear();
+    if (force) {
+      this.#overlays.clear();
+      return true;
+    }
+    for (const [hash, overlay] of this.#overlays) {
+      const named = live.filter((showing) => names(showing, overlay.key, hash));
+      if (
+        named.length !== overlay.named.length ||
+        named.some((one, at) => one !== overlay.named[at])
+      ) {
+        this.#overlays.delete(hash);
+      }
+    }
     return true;
   }
 

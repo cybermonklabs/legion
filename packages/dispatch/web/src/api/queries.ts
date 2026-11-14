@@ -84,9 +84,11 @@ function olderIssue(next: unknown, cached: unknown): boolean {
  * the cached issue, and is dropped: the cache never takes an issue whose `updated_at` is earlier
  * than the one it holds, as the event log never lets a fetched page take back the events above
  * its head (`mergeEventPages`). The rule is the query's own, so it holds for every writer of the
- * key: a read from any of its views, and a PATCH's answer (`mergeIssue`). The cache holds only
- * Dispatch's answers - a live pick is composed over the issue as it is read, never written into
- * the cache - so the rule always judges an answer against Dispatch's issue.
+ * key: a read from any of its views, and a PATCH's answer (`mergeIssue`). It runs only where an
+ * answer enters the cache, and the cache holds only Dispatch's answers - a live pick is composed
+ * over the issue as a reader reads it (`features/writes/shown-query.ts`), outside TanStack, never
+ * written into the cache - so the rule judges one answer of this key against Dispatch's issue of
+ * this key, never a composed value nor the issue a reader showed before its key changed.
  */
 export const issueQuery = (key: string | undefined) =>
   queryOptions({

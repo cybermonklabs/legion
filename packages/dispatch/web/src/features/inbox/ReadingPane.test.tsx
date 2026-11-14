@@ -1177,6 +1177,58 @@ test("a selection changed twice inside the settle opens the second document alon
   }
 });
 
+// The reviewer's j/k: the column keeps its document flow mounted from one question to the next, so
+// its issue read moves from one key to another. The issue moved to was changed long before the one
+// left, which `issueQuery`'s own rule for Dispatch's answers would keep out of a cache - but that
+// rule judges answers, never what the column shows for another issue.
+test("a reader moved between two issues shows the issue it is on: the column's document, from an open issue's ask to a closed one's", async () => {
+  const openIssue = {
+    closed_at: null,
+    key: "CORE-1",
+    updated_at: "2026-11-10T00:00:00Z",
+  } as unknown as IssueDetails;
+  const closedIssue = {
+    closed_at: "2026-01-01T00:00:00Z",
+    key: "CORE-2",
+    updated_at: "2026-01-01T00:00:00Z",
+  } as unknown as IssueDetails;
+  getIssue.mockImplementation(async (key) => (key === "CORE-1" ? openIssue : closedIssue));
+  const { runtime, rerender, view } = renderPane({
+    ask: decisionAsk({ id: "ask-1" }),
+    seed: (client) => {
+      seedDocument(client, document());
+      seedDocument(
+        client,
+        document({ id: "artifact-2", issue_key: "CORE-2", name: "notes.md", slug: "notes" })
+      );
+      client.setQueryData(["issue", "CORE-1"], openIssue);
+      client.setQueryData(["issue", "CORE-2"], closedIssue);
+    },
+  });
+
+  try {
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    runtime.sync();
+    await waitFor(() => expect(runtime.editors).toHaveLength(1));
+    expect(screen.queryByText("This issue is closed. Its document is read-only.")).toBeNull();
+
+    rerender(
+      decisionAsk({
+        block_artifact: { id: "artifact-2", primary: false, slug: "notes" },
+        block_id: "later",
+        id: "ask-2",
+        issue: { assignee: "alice", key: "CORE-2", title: "A closed issue" },
+        issue_key: "CORE-2",
+      })
+    );
+    expect(
+      await screen.findByText("This issue is closed. Its document is read-only.")
+    ).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
 // ---------------------------------------------------------------------------------------------
 // The four thread bodies: what the column shows for a Reply or an Agent row.
 // ---------------------------------------------------------------------------------------------

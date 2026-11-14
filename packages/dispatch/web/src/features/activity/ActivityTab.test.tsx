@@ -89,6 +89,42 @@ test("ActivityTab lists the issue's events under its own label and writes no rea
   }
 });
 
+// The log's own rule keeps a streamed event a refetch predates (`mergeEventPages`): a rule about
+// Dispatch's answers for one issue, which must never carry one issue's events into another's when
+// the mounted tab is handed another issue.
+test("a reader moved between two issues shows the issue it is on: the event log", async () => {
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["events", "CORE-1"], {
+    pageParams: [null],
+    pages: [[message(12), message(11)]],
+  });
+  queryClient.setQueryData(["events", "CORE-2"], {
+    pageParams: [null],
+    pages: [[message(3), message(2), message(1)]],
+  });
+  const tab = (issueKey: string) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <ActivityTab issueKey={issueKey} state={{}} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tab("CORE-1"));
+  const rows = () =>
+    within(screen.getByRole("list", { name: "Issue activity" })).getAllByText("sent a message");
+
+  try {
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    view.rerender(tab("CORE-2"));
+    expect(rows()).toHaveLength(3);
+    expect(getIssueEvents).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    getIssueEvents.mockRestore();
+  }
+});
+
 test("ActivityTab's Load older fetches the page before the oldest event it holds", async () => {
   const user = userEvent.setup();
   const firstPage = Array.from({ length: 200 }, (_, index) => message(200 - index));
