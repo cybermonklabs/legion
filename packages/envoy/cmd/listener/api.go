@@ -2227,6 +2227,8 @@ type githubRepositoryTopic struct {
 	spelled string
 	// kindFollows is whether a kind, rather than a wildcard or the topic's end, ended the name.
 	kindFollows bool
+	// rest holds the tokens after the name: `pr`, `7`, `>` in `...example-repo.pr.7.>`.
+	rest []string
 }
 
 func parseGithubRepositoryTopic(topic string) (githubRepositoryTopic, bool) {
@@ -2253,7 +2255,48 @@ func parseGithubRepositoryTopic(topic string) (githubRepositoryTopic, bool) {
 		repo:        repo,
 		spelled:     githubTopicPrefix + strings.Join(append([]string{parts[0], repo}, parts[end:]...), "."),
 		kindFollows: end < len(parts) && slices.Contains(contracts.GithubTopicKinds, parts[end]),
+		rest:        parts[end:],
 	}, true
+}
+
+// lifecycleOnly is whether the topic is a pull request's bare subject, `pr.<n>` with nothing after
+// it. That subject carries the pull request's opened, synchronize and closed events and nothing
+// else: its reviews, comments, mentions and checks are published as `pr.<n>.<kind>`, which only a
+// trailing wildcard such as `pr.<n>.>` reaches.
+func (g githubRepositoryTopic) lifecycleOnly() bool {
+	return len(g.name) == 1 && len(g.rest) == 2 && g.rest[0] == "pr" && g.rest[1] != "" &&
+		strings.Trim(g.rest[1], "0123456789") == ""
+}
+
+// subjectMatches reports whether the NATS subject pattern matches the concrete subject: `*` takes
+// one token, and a last `>` one or more.
+func subjectMatches(pattern, subject string) bool {
+	want, got := strings.Split(pattern, "."), strings.Split(subject, ".")
+	for i, token := range want {
+		if token == ">" {
+			return i == len(want)-1 && len(got) > i
+		}
+		if i >= len(got) || (token != "*" && token != got[i]) {
+			return false
+		}
+	}
+	return len(want) == len(got)
+}
+
+// lifecycleOnlyWarning is what a session is told when it follows a pull request's bare subject and
+// none of its topics reaches that pull request's reviews: it would hear the pull request open,
+// change and close, and no review, comment or check of it. The plugins register the bare subject
+// beside every `pr.<n>.>` they are asked for (a NATS `>` does not match its base), so a session
+// that asked for the family holds both and is told nothing.
+func lifecycleOnlyWarning(parsed githubRepositoryTopic, topic string, topics []string) string {
+	if !parsed.lifecycleOnly() {
+		return ""
+	}
+	review := topic + ".review"
+	if slices.ContainsFunc(topics, func(other string) bool { return subjectMatches(other, review) }) {
+		return ""
+	}
+	return fmt.Sprintf("%s carries only the pull request's opened, synchronize and closed events: subscribe to %s.> for its reviews, comments, mentions and checks as well", topic, topic)
 }
 
 // warning is what a subscription to the topic is told when its name spans several tokens. A kind
@@ -2835,6 +2878,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			if warning := parsed.warning(topic); warning != "" {
 				warnings = append(warnings, warning)
 				continue
+			}
+			if warning := lifecycleOnlyWarning(parsed, topic, body.Topics); warning != "" {
+				warnings = append(warnings, warning)
 			}
 			key := parsed.owner + "\x00" + parsed.repo
 			if _, seen := warnedRepositories[key]; seen {

@@ -100,7 +100,7 @@ Every topic starts with `notifications.`.
   Envoy also subscribes you to the lifecycle subject `pr.<n>`, which NATS `>` alone does not match, because `>` needs one or more trailing tokens.
 
 - Read the `warnings` that `envoy_subscribe` returns, and confirm the active topics with `envoy_list`.
-  A warning names the spelling Envoy publishes, or a token that is not a GitHub topic kind; fix the topic it names.
+  A warning names the spelling Envoy publishes, a token that is not a GitHub topic kind, or a pull request's bare subject `pr.<n>` that no topic of yours extends to its reviews; fix the topic it names.
   "No GitHub event ... in the stream's retention window" means nothing came from that repository in the last 72 hours:
   check that the GitHub App that sends Envoy its webhooks is installed on that repository before you rely on a wake.
 
