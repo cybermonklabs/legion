@@ -58,9 +58,11 @@ type Written struct {
 // into the eval's value.
 //
 // A correction (replaces) supersedes the reading it names in the same transaction. A logged
-// eval's day rows of every day the batch touches are kept in the same transaction by increment
-// (writeDays), so the write reads no stored reading but the readings it replaces and, where a
-// replaced reading was its day's last, that day's newest standing reading (newestStanding).
+// eval's day rows of every day the batch touches are kept in the same transaction (writeDays):
+// appended to where the batch replaces no reading of their day, and folded again from the
+// readings that stand where it does, so the write reads no stored reading but the readings it
+// replaces and the standing readings of the days it corrects. A batch that would leave a day row
+// holding a value past what a float holds is refused (CodeReadingDayOverflow).
 func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error) {
 	if !slugPattern.MatchString(batch.Slug) {
 		return Written{}, refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)
@@ -124,11 +126,9 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 }
 
 // foldedReadings is each of replaced that its eval's day rows hold: one written while the eval
-// was logged (the version in force at its recorded_at, which is the write's own transaction time
-// as a version's created_at is, has source logged). A reading written while the eval was computed
-// was stored and never folded (WriteReadings), so a correction of it after a register write made
-// the eval logged takes nothing away from a day row, where taking its value away would take
-// another reading's equal sample.
+// was logged (writtenWhileLogged). A reading written while the eval was computed was stored and
+// never folded (WriteReadings), so a correction of it after a register write made the eval logged
+// appends to its day rows as a write that replaces nothing does.
 func foldedReadings(ctx context.Context, tx pgx.Tx, replaced []Reading) ([]Reading, error) {
 	if len(replaced) == 0 {
 		return nil, nil
@@ -138,12 +138,7 @@ func foldedReadings(ctx context.Context, tx pgx.Tx, replaced []Reading) ([]Readi
 		ids[index] = reading.ID
 	}
 	rows, err := tx.Query(ctx, `
-		select r.id::text from eval_readings r
-		where r.id = any($1::text[]::uuid[])
-		  and (select v.source from eval_versions v
-		       where v.eval_id = r.eval_id and v.created_at <= r.recorded_at
-		       order by v.version desc limit 1) = $2
-	`, ids, SourceLogged)
+		select r.id::text from eval_readings r where r.id = any($1::text[]::uuid[]) and `+writtenWhileLogged, ids)
 	if err != nil {
 		return nil, fmt.Errorf("read which corrected readings were folded: %w", err)
 	}

@@ -6,12 +6,12 @@
 // An eval is one number a project's pages show. Its definition is append-only: each change
 // writes the next version (Register), and a reader reads the newest (Current). Its readings are
 // append-only too: a correction is a new reading naming the one it replaces (WriteReadings). A
-// logged eval's day rows are kept by the readings write in its own transaction, by increment, so
-// no window read reads a reading (DayWindow); a computed eval's day rows are the refresher's,
-// which builds the delivery and CI evals' from one day's delivery population
-// (delivery_days.go) and the Legion evals' from one day's stored Legion facts and filings
-// (legion_days.go), and a reading logged under a computed eval's slug is stored and answered by
-// its items alone.
+// logged eval's day rows are kept by the readings write in its own transaction (days.go), so no
+// window read reads a reading (DayWindow); a computed eval's day rows are the refresher's, which
+// builds the delivery and CI evals' from one day's delivery population (delivery_days.go) and the
+// Legion evals' from one day's stored Legion facts and filings (legion_days.go), and a reading
+// logged under a computed eval's slug is stored and answered by its items alone. Each row records
+// which of the two wrote it, and an eval's reads read its own writer's rows alone.
 //
 // The package serves no request (the routes are api's) and makes none: a link is stored as its
 // caller wrote it and its far side is never fetched, so the package's own files import no HTTP
@@ -147,6 +147,25 @@ func (d Definition) Computed() bool {
 	return strings.HasPrefix(d.Source, SourceComputedPrefix)
 }
 
+// The writers of a day row (eval_days.writer, R3): the computation, the refresher and the day
+// builders, which write a computed eval's rows; and the readings write, which keeps a logged
+// eval's rows, beside the zero rows the refresher fills on that eval's days with no reading. Each
+// read of an eval's rows reads its definition's writer's alone (Definition.writer), so an eval
+// whose source changes never folds the rows the other writer made.
+const (
+	writerComputation = "computation"
+	writerReadings    = "readings"
+)
+
+// writer is the writer whose day rows the eval's fold reads: the computation's for a computed
+// eval, the readings write's for a logged one.
+func (d Definition) writer() string {
+	if d.Computed() {
+		return writerComputation
+	}
+	return writerReadings
+}
+
 // Series is one version of one series of an eval, every column of eval_series.
 type Series struct {
 	EvalID    string    `json:"eval_id"`
@@ -191,8 +210,9 @@ type Reading struct {
 	SupersededAt      *time.Time     `json:"superseded_at"`
 }
 
-// DayRow is one stored day row, every column of eval_days. Day is the day's UTC midnight. Sum,
-// Num, Den, Max and LastValue are nil where the row holds no such part.
+// DayRow is one stored day row, every column of eval_days but its writer, which each write of a
+// row knows and each read names (Definition.writer). Day is the day's UTC midnight. Sum, Num,
+// Den, Max and LastValue are nil where the row holds no such part.
 type DayRow struct {
 	ProjectKey    string             `json:"project_key"`
 	EvalID        string             `json:"eval_id"`
@@ -315,6 +335,10 @@ const (
 	// CodeReadingSeriesInvalid: a row names no series, or one with whitespace, a control
 	// character or a `.` in it.
 	CodeReadingSeriesInvalid = "READING_SERIES_INVALID"
+	// CodeReadingDayOverflow: the row's value, added to its day row of a logged eval, makes a
+	// value that row stores (its sum, numerator or denominator) larger than a float holds, which
+	// no read could answer.
+	CodeReadingDayOverflow = "READING_DAY_OVERFLOW"
 )
 
 // Error is a write the registry refused before it wrote anything: a stable code, the reason in

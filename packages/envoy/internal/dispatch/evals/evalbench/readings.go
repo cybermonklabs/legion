@@ -27,9 +27,10 @@ import (
 // readings write, one batch an eval a day in day order, as an agent logging each day's results
 // writes them, so the table is in measured_at order as a live one is and every invariant of the
 // write holds as it does for any caller: superseded_at set on a corrected reading in the
-// correction's transaction, and the eval's day rows (eval_days) kept by increment in that same
-// transaction. A batch after the eval's first corrects one reading of the batch before it, so
-// the store holds corrections of every eval through the whole history.
+// correction's transaction, and the eval's day rows (eval_days) kept in that same transaction, a
+// day a correction reaches folded again from the readings that stand. A batch after the eval's
+// first corrects one reading of the batch before it, so the store holds corrections of every eval
+// through the whole history.
 
 // RowKinds are the row kinds every eval's readings are spread over.
 var RowKinds = []string{"day", "issue", "pull_request", "deploy", "job"}

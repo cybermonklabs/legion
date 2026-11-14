@@ -78,7 +78,7 @@ begin
   for span in
     select project_key, eval_id, min(day) as first_day, max(day) as last_day
     from written new_row
-    full join replaced old_row using (project_key, eval_id, series, repo, day)
+    full join replaced old_row using (project_key, eval_id, writer, series, repo, day)
     where (to_jsonb(old_row) - ignored) is distinct from (to_jsonb(new_row) - ignored)
     group by project_key, eval_id
     order by project_key, eval_id

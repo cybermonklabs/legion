@@ -897,22 +897,26 @@ func (r *refresh) walkDays(ctx context.Context, walks map[walkKey]walkState, key
 	return last.Before(r.today), nil
 }
 
-// deliveryStart is the first input day of the delivery walk: the earliest of the first merge of a
-// pull request, the first start of a run of the deploy repository and the first day any project
-// holds a delivery or CI row of, nil where none exists.
+// deliveryStart is the first input day of the delivery walk, the UTC midnight of the earliest of
+// the first merge of a pull request, the first start of a run of the deploy repository and the
+// first day any project holds a delivery or CI row of, nil where none exists. Every project's
+// first days are taken together, so the walk begins at a midnight however many projects there
+// are, none included.
 func (r *refresh) deliveryStart(ctx context.Context) (*time.Time, error) {
 	earliest, err := r.store.deliveryInputStart(ctx, r.settings.DeployRepo)
 	if err != nil {
 		return nil, err
 	}
+	firsts := map[string]time.Time{}
 	for _, project := range r.projects {
 		first, err := r.firstOf(ctx, walkDelivery, project)
 		if err != nil {
 			return nil, err
 		}
-		earliest = earliestOf(earliest, first)
+		// An eval id names its project, so no two projects' entries share a key.
+		maps.Copy(firsts, first)
 	}
-	return earliest, nil
+	return earliestOf(earliest, firsts), nil
 }
 
 // legionStart is the first input day of project's Legion walk: the earliest of its first close of

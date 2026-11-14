@@ -950,8 +950,8 @@ func (s *server) writeEvalError(w http.ResponseWriter, err error) {
 // parameter every operation carries (actingPerson): a window means nothing to a write, so any
 // other key is 400 INVALID_QUERY naming it (R7). The body's actor follows Dispatch's bearer rule
 // (bearerSessionActor); the server sets recorded_by and recorded_at, and a row carrying either is
-// refused (READING_FIELD_SERVER_SET). The day rows the write keeps record s.deps.Build as their
-// writer.
+// refused (READING_FIELD_SERVER_SET). The day rows the write keeps record s.deps.Build as the
+// build that wrote them.
 func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

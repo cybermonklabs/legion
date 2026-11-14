@@ -189,7 +189,8 @@ func (c *headChecks) k16() {
 			if repo == "" {
 				project, projectRead = route, true
 			}
-			hand, err := c.handFold(ctx, fold.hand+` where project_key = $1 and eval_id = $2 and series = $3 and repo = $4 and day >= $5 and day < $6`,
+			// A computed eval's fold reads the computation's rows alone (eval_days.writer).
+			hand, err := c.handFold(ctx, fold.hand+` where project_key = $1 and eval_id = $2 and writer = 'computation' and series = $3 and repo = $4 and day >= $5 and day < $6`,
 				evals.EvalID(c.o.project, fold.slug), fold.series, repo, w84)
 			if err != nil {
 				c.r.fail("k16 %s.%s.%s repo=%q: %v", fold.slug, fold.series, fold.stat, repo, err)

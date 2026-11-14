@@ -329,7 +329,7 @@ func (s *server) evalItemSources(ctx context.Context, project string, entry eval
 // both read them.
 func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.DayRow, error) {
 	if !read.shared.read {
-		days, err := s.registry().EvalDays(ctx, read.project, read.entry.Definition.EvalID, read.request.series, read.request.repos, read.rng.days)
+		days, err := s.registry().EvalDays(ctx, read.entry.Definition, read.request.series, read.request.repos, read.rng.days)
 		if err != nil {
 			return nil, err
 		}

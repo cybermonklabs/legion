@@ -4,13 +4,26 @@
 -- read folds: a window's value is the fold of its days' rows, and a compare range is a second
 -- read of the same rows, so no page read reads a project's population.
 --
--- eval_days holds one row per project, eval, series, repository and day.
+-- eval_days holds one row per project, eval, writer, series, repository and day.
 --   project_key     the project the row counts for, which is also the project of its eval id.
 --   eval_id, series the series the row is a day of.
+--   writer          which writer made the row (R3): `computation`, the refresher and the day
+--                   builders, which write a computed eval's rows; or `readings`, the readings
+--                   write, which keeps a logged eval's rows, beside the zero rows the refresher
+--                   fills on that eval's days with no reading. A computed eval's fold reads only
+--                   the computation's rows, and a logged eval's only the readings write's, so an
+--                   eval whose source changes (a register write, or the seed making computed a
+--                   slug a reading registered as logged) never folds a row the other writer made:
+--                   a reading logged while the eval was logged is in no row its computed fold
+--                   reads, even before the refresher rewrites that day. The writer is in the key,
+--                   so the two writers' rows of one eval, series, repository and day stand side by
+--                   side, and an eval whose source changes back finds its own rows as it left
+--                   them. The default is the computation, which writes every row the readings
+--                   write does not.
 --   repo            '' for the row of all the project's repositories, and a repository's name for
 --                   that repository's own row, so a read cut by repository folds those rows and
 --                   a read of the whole project folds the '' rows alone.
---   day             the day. A day with no '' row reads "no data": the writer stores an explicit
+--   day             the day. A day with no '' row reads "no data": each writer stores an explicit
 --                   zero row for each day from a series' first input day on, so a missing row
 --                   means the series had no input yet, never that it counted 0.
 --   listed          the series' own flag, copied here so the window index holds the listed
@@ -34,8 +47,9 @@
 -- eval_days_window, (project_key, repo, day) over the listed rows, is the list read's window: one
 -- index range per project, repository and range of days, measured on 1,533,000 rows (712 MB) as
 -- one Bitmap Index Scan per range, 18 to 24 ms for 84 days with an 84-day compare range
--- (dispatch://INFRA-2916/artifact/plan-md, "The design in one page"). The primary key is the
--- read and the upsert of one series' days.
+-- (dispatch://INFRA-2916/artifact/plan-md, "The design in one page"); the read keeps each eval's
+-- rows of its own writer from what the range holds. The primary key is the read and the upsert of
+-- one writer's days of one series.
 --
 -- eval_day_members holds, for each item a family of day rows counted, where it was last counted:
 -- the day and the repository. An item whose day moves, an issue closed again on another day or a
@@ -50,6 +64,8 @@
 --                   request, moves which run ships it (containment), and the run it left counts it
 --                   in its own day's rows: this is how the refresher finds that day once the
 --                   stored rows no longer say it.
+-- Only the computation counts items: a logged eval's day folds readings, each of which is its own
+-- row of eval_readings, so no member names a writer.
 -- eval_day_members_day, (project_key, family, day), is the read of the items one write of a day
 -- counted before it: the write of a project's day deletes the members of its families recorded on
 -- that day that the day no longer holds, which the primary key answers only by walking every item
@@ -65,6 +81,7 @@
 create table eval_days (
     project_key text not null references projects (key) on delete cascade,
     eval_id text not null,
+    writer text not null default 'computation' check (writer in ('computation', 'readings')),
     series text not null,
     repo text not null default '',
     day date not null,
@@ -81,7 +98,7 @@ create table eval_days (
     via_repository integer not null default 0,
     built_by text not null,
     updated_at timestamptz not null default now(),
-    primary key (project_key, eval_id, series, repo, day),
+    primary key (project_key, eval_id, writer, series, repo, day),
     constraint eval_days_eval_of_project check (starts_with(eval_id, project_key || '/'))
 );
 create index eval_days_window on eval_days (project_key, repo, day) where listed;

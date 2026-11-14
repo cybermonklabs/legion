@@ -150,6 +150,54 @@ func TestABatchWithABadLastRowStoresNothing(t *testing.T) {
 	}
 }
 
+// TestABatchThatWouldOverflowADayRowIsRefusedNamingItsRow: a batch whose readings would take a sum
+// of a logged eval's day row past what a float holds is refused whole, naming the row whose value
+// does it: the second of two readings of 1e308 on one day (the day's sum), a reading of 1e300
+// measured over an n of 1e10 (its weighted sum, num), and a reading of 1e308 on a day an earlier
+// write left holding one. Each stores no reading, registers no eval and moves no day row; the same
+// values spread over days whose sums stay within a float are stored.
+func TestABatchThatWouldOverflowADayRowIsRefusedNamingItsRow(t *testing.T) {
+	r := newRig(t)
+	huge := func(key string, value float64, n int64, measured time.Time) json.RawMessage {
+		return row(t, map[string]any{"series": "bytes", "row_kind": "run", "row_key": key, "value": value, "n": n, "measured_at": measured})
+	}
+	held := r.write(t, "held", alice, huge("held", 1e308, 1, at(4, 8, 0))).Definition.EvalID
+	for _, test := range []struct {
+		what, slug string
+		rows       []json.RawMessage
+		index      int
+	}{
+		{"two readings of 1e308 on one day", "fresh", []json.RawMessage{
+			good(t), huge("a", 1e308, 1, at(5, 8, 0)), huge("b", 1e308, 1, at(5, 9, 0)),
+		}, 2},
+		{"a reading of 1e300 over an n of 1e10", "fresh", []json.RawMessage{good(t), huge("c", 1e300, 1e10, at(5, 8, 0))}, 1},
+		{"a reading of 1e308 on a day that holds one", "held", []json.RawMessage{huge("d", 1e308, 1, at(4, 9, 0))}, 0},
+	} {
+		readings, versions := r.count(t, `select count(*) from eval_readings`), r.count(t, `select count(*) from eval_versions`)
+		_, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: test.slug, Rows: test.rows, Caller: alice, BuiltBy: testBuild})
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != CodeReadingDayOverflow || len(refused.Rows) != 1 ||
+			refused.Rows[0].Index != test.index || refused.Rows[0].Code != CodeReadingDayOverflow || refused.Rows[0].Field != "value" {
+			t.Errorf("%s: the batch was answered %v, want a refusal of row %d alone, %s on its value", test.what, err, test.index, CodeReadingDayOverflow)
+		} else {
+			t.Logf("%s: refused %s: %s; rows %+v", test.what, refused.Code, refused.Message, refused.Rows)
+		}
+		if after := r.count(t, `select count(*) from eval_readings`); after != readings {
+			t.Errorf("%s: the refused batch moved eval_readings from %d rows to %d", test.what, readings, after)
+		}
+		if after := r.count(t, `select count(*) from eval_versions`); after != versions {
+			t.Errorf("%s: the refused batch moved eval_versions from %d rows to %d", test.what, versions, after)
+		}
+	}
+	if day := r.day(t, held, "bytes", "", at(4, 0, 0)); day.N != 1 || *day.Sum != 1e308 {
+		t.Errorf("the day an earlier write left holding 1e308 holds n %d, sum %v after the refused batch; want 1 and 1e308", day.N, *day.Sum)
+	}
+	spread := r.write(t, "fresh", alice, huge("a", 1e308, 1, at(5, 8, 0)), huge("b", 1e308, 1, at(6, 8, 0)))
+	if len(spread.Readings) != 2 {
+		t.Errorf("the readings spread over two days stored %d readings, want 2", len(spread.Readings))
+	}
+}
+
 // TestTwoFirstWritesOfOneSlugRegisterItOnce: two writes of a slug no eval holds, on two
 // connections at once, both store their readings, and the eval is registered once: one version,
 // written by a reading, the caller its owner, and one section in the project's evals-md, which

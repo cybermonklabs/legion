@@ -116,6 +116,61 @@ func TestItemsAnswersTheStandingReadingsOfOneRowKindNewestFirst(t *testing.T) {
 	}
 }
 
+// TestEachEvalReadsTheDayRowsOfItsOwnWriter: a logged eval's readings write and the computation
+// each hold a row of one eval, series and day side by side (eval_days.writer, R3), and every read
+// of an eval's rows reads its definition's writer's alone: the window read, the first day and the
+// items route's day rows. Logged, the eval reads the reading's row and its day as its first; read
+// as computed, the computation's two rows, the earlier of them its first day.
+func TestEachEvalReadsTheDayRowsOfItsOwnWriter(t *testing.T) {
+	r := newRig(t)
+	evalID := r.write(t, "load", alice, row(t, map[string]any{
+		"series": "load", "row_kind": "run", "row_key": "r", "value": 7, "measured_at": at(4, 9, 0),
+	})).Definition.EvalID
+	if _, err := r.database.Pool.Exec(t.Context(), `
+		insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, n, sum, built_by)
+		values ($1, $2, 'computation', 'load', '', '2026-11-03', true, 3, 3, 'test'),
+		       ($1, $2, 'computation', 'load', '', '2026-11-04', true, 3, 3, 'test')
+	`, r.project, evalID); err != nil {
+		t.Fatalf("write the computation's rows of %s: %v", evalID, err)
+	}
+	logged := r.entries(t, evalID)[0]
+	computed := logged
+	computed.Definition.Source = SourceFoldDeployFrequency
+	window := Range{From: at(1, 0, 0), To: at(7, 0, 0)}
+	for _, test := range []struct {
+		as    string
+		entry Entry
+		rows  []string
+		first string
+	}{
+		{"logged", logged, []string{"window 2026-11-04 7 no samples"}, "2026-11-04"},
+		{"computed", computed, []string{"window 2026-11-03 3 no samples", "window 2026-11-04 3 no samples"}, "2026-11-03"},
+	} {
+		days, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{test.entry}, nil, window, nil)
+		if err != nil {
+			t.Fatalf("%s: read the window: %v", test.as, err)
+		}
+		firsts, err := r.registry.FirstDays(t.Context(), []Entry{test.entry})
+		if err != nil {
+			t.Fatalf("%s: read the first days: %v", test.as, err)
+		}
+		items, err := r.registry.EvalDays(t.Context(), test.entry.Definition, "", nil, window)
+		if err != nil {
+			t.Fatalf("%s: read the items' day rows: %v", test.as, err)
+		}
+		var itemDays []string
+		for _, day := range items {
+			itemDays = append(itemDays, fmt.Sprintf("window %s %v no samples", day.Day.Format(time.DateOnly), *day.Sum))
+		}
+		slices.Sort(itemDays)
+		first := firsts[evalID]["load"].Format(time.DateOnly)
+		t.Logf("%s: the window reads %v, the items %v, the first day %s", test.as, dayLabels(days), itemDays, first)
+		if !slices.Equal(dayLabels(days), test.rows) || !slices.Equal(itemDays, test.rows) || first != test.first {
+			t.Errorf("%s: the window reads %v, the items %v and the first day is %s; want %v and %s", test.as, dayLabels(days), itemDays, first, test.rows, test.first)
+		}
+	}
+}
+
 // dayLabels names each day row by its range, day, sum and sample list, sorted.
 func dayLabels(days []WindowRow) []string {
 	labels := make([]string, len(days))

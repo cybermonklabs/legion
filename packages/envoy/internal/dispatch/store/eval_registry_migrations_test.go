@@ -326,7 +326,7 @@ func TestAnUpsertOfDayRowsLogsOneChangeSpanningItsDays(t *testing.T) {
 			insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
 			select $1, $2, 'minutes', '', day::date, true, 1, value, $3
 			from unnest($4::text[], $5::double precision[]) as given(day, value)
-			on conflict (project_key, eval_id, series, repo, day) do update
+			on conflict (project_key, eval_id, writer, series, repo, day) do update
 			set listed = excluded.listed, n = excluded.n, sum = excluded.sum,
 			    built_by = excluded.built_by, updated_at = now()
 			where (eval_days.listed, eval_days.n, eval_days.sum, eval_days.built_by)
@@ -384,7 +384,7 @@ func TestAnUpsertOfDayRowsLogsOneChangeSpanningItsDays(t *testing.T) {
 	moved, err := store.Pool.Exec(ctx, `
 		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, last_value, last_at, built_by)
 		values ($1, $2, 'minutes', '', '2026-11-06', true, 1, 50, 7, $3, 'build-b')
-		on conflict (project_key, eval_id, series, repo, day) do update
+		on conflict (project_key, eval_id, writer, series, repo, day) do update
 		set last_value = excluded.last_value, last_at = excluded.last_at, updated_at = now()
 		where (eval_days.last_value, eval_days.last_at) is distinct from (excluded.last_value, excluded.last_at)
 	`, evalProject, evalID, evalAt(6, 18))

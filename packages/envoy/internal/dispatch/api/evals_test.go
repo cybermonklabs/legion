@@ -1145,6 +1145,85 @@ func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
 	t.Logf("%d seeded computed evals, each with its rows", computed)
 }
 
+// TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged: each day row records the
+// writer that made it, and a computed eval's fold reads only the computation's rows (R3). An eval's
+// source turns from logged to computed in two ways, and in neither does the computed eval fold a
+// reading logged while it was logged, though no refresher has rewritten that day: the seed makes
+// computed deploy-frequency, which a reading registered as logged in a project made by SQL; and a
+// register write makes computed an eval a reading registered. Each then reads "no data" and lists
+// no day row, since the computation has written none, until the computation writes its own row of
+// the day, which the eval then folds alone, beside the readings write's row of the same eval,
+// series and day.
+func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	ctx := t.Context()
+	today := measures.Midnight(time.Now().UTC())
+	window := url.Values{"from": {today.Format(time.RFC3339)}, "to": {today.AddDate(0, 0, 1).Format(time.RFC3339)}}.Encode()
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('SQL', 'Made by SQL')`); err != nil {
+		t.Fatalf("make a project by SQL: %v", err)
+	}
+	logged := func(slug, key string) {
+		t.Helper()
+		response := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/SQL/evals/"+slug+"/readings",
+			map[string]any{"readings": []any{reading(measures.SeriesDeploys, 500, today)}}, key)
+		if response.Code != http.StatusCreated || !decodeBody[evalReadingsResponse](t, response).Registered {
+			t.Fatalf("a reading under %s: status %d, body %s; want 201 registering it", slug, response.Code, response.Body.String())
+		}
+	}
+	// deploys is slug's series deploys over today, and how many day rows its items list.
+	deploys := func(slug string) (evalSeriesValues, int) {
+		t.Helper()
+		detail := evalGet[evalDetailResponse](t, handler, "/api/v1/projects/SQL/evals/"+slug+"?"+window)
+		if len(detail.Items) == 0 {
+			t.Fatalf("the read of %s answers no item", slug)
+		}
+		days := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/SQL/evals/"+slug+"/items?row_kind=day&"+window)
+		return seriesValues(t, detail.Items[0], measures.SeriesDeploys), days.Total
+	}
+
+	logged(evals.SlugDeployFrequency, "seeded-reading")
+	logged("flip", "flip-reading")
+	if series, days := deploys("flip"); series.Window["value"] == nil || *series.Window["value"] != 500 || days != 1 {
+		t.Fatalf("while flip is logged it reads %v and lists %d day rows; want the reading's 500 and its day's row", series.Window, days)
+	}
+	if _, err := evals.New(database, deps.Docs, deps.Events).Ensure(ctx, "SQL"); err != nil {
+		t.Fatalf("seed the evals of SQL: %v", err)
+	}
+	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/SQL/evals",
+		map[string]any{"slug": "flip", "source": evals.SourceFoldDeployFrequency}, "flip-computed")
+	if registered.Code != http.StatusCreated {
+		t.Fatalf("make flip computed: status %d, body %s", registered.Code, registered.Body.String())
+	}
+	for _, slug := range []string{evals.SlugDeployFrequency, "flip"} {
+		series, days := deploys(slug)
+		since := "null"
+		if series.DataSince != nil {
+			since = *series.DataSince
+		}
+		t.Logf("%s, computed now: deploys %s, data since %s, %d day rows listed", slug, showFigure(series.Window["deploys"]), since, days)
+		if series.Window["deploys"] != nil || series.DataSince != nil || days != 0 {
+			t.Errorf("%s, computed now and with no row of the computation's, reads deploys %s from %s and lists %d day rows; want no data and no row",
+				slug, showFigure(series.Window["deploys"]), since, days)
+		}
+	}
+
+	// The computation's own row of the day, as the refresher writes it: three deploys, two with
+	// pull requests.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, counts, built_by)
+		values ('SQL', 'SQL/deploy-frequency', 'deploys', '', $1, true, 3, 3, '{"with_prs": 2}', 'test')
+	`, today); err != nil {
+		t.Fatalf("write the computation's row of deploy-frequency: %v", err)
+	}
+	series, days := deploys(evals.SlugDeployFrequency)
+	stored := countRows(t, database, `select count(*) from eval_days where eval_id = 'SQL/deploy-frequency' and repo = '' and day = $1`, today)
+	t.Logf("with the computation's row deploy-frequency reads deploys %s and lists %d day rows; the day holds %d rows of it", showFigure(series.Window["deploys"]), days, stored)
+	if series.Window["deploys"] == nil || *series.Window["deploys"] != 3 || days != 1 || stored != 2 {
+		t.Errorf("with the computation's row of three deploys deploy-frequency reads deploys %s, lists %d day rows, and the day holds %d rows of it; want 3, the one row, and the two writers' rows",
+			showFigure(series.Window["deploys"]), days, stored)
+	}
+}
+
 // showFigure is a statistic for a failure message.
 func showFigure(value *float64) string {
 	if value == nil {
