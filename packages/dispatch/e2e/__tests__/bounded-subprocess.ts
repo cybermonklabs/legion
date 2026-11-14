@@ -124,12 +124,12 @@ export function rowLimit(...waits: readonly (BoundName | AtOnce)[]): number {
 }
 
 /** What `beforeDeadline` answers where the deadline came before the answer. */
-const pastDeadline = Symbol("past the deadline");
+export const pastDeadline = Symbol("past the deadline");
 
 /** Answers `answer` where it settles before `deadline`, a `performance.now()` reading, and
  *  `pastDeadline` where the deadline comes first. A rejection before the deadline rejects here.
  *  The timer is cleared either way. */
-async function beforeDeadline<T>(
+export async function beforeDeadline<T>(
   answer: T | Promise<T>,
   deadline: number
 ): Promise<T | typeof pastDeadline> {

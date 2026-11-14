@@ -15,7 +15,7 @@ import error from "../../../contracts/fixtures/live/error.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
 import { REQUEST_DEADLINE_MS } from "../../web/src/api/client";
-import { LIVE_SOCKET_SILENT_MS, RECONNECT_SPREAD_MS } from "../../web/src/api/live-socket";
+import { RECONNECT_SPREAD_MS } from "../../web/src/api/live-socket";
 import type {
   DeliveryLiveDelta,
   DeliveryLiveSnapshot,
@@ -31,7 +31,7 @@ import type {
   ProbeLine,
   ProbeOpenLine,
 } from "../delivery-live-probe";
-import { rowLimit, runBounded } from "./bounded-subprocess";
+import { beforeDeadline, pastDeadline, rowLimit, runBounded } from "./bounded-subprocess";
 
 // The probe runs as an agent runs it, a process of its own, against a stand-in for Dispatch that
 // replays the frames Dispatch's own diff writes (packages/contracts/fixtures/live): a
@@ -681,17 +681,19 @@ test(
 // a refused connection ends it, and not as a clean watch. Its stderr must name the flag's 1 s, so
 // a probe that misreads the value fails here, as does an exit 1 for any other reason, a crash at
 // load included. The server notes when it accepted the connection and when that connection
-// closed, and the row holds the time between to at least 500 ms, half the 1 s the flag gave, and
-// to under 22.5 s, half `LIVE_SOCKET_SILENT_MS`, the 45 s the probe waits without the flag. So
-// the row catches a timer set well short and one left at the default. Each bound stands at half
-// the time it guards rather than at that time itself, because the time between is the timer give
-// or take the scheduling of the probe's dial and of this process's accept and close handlers, so
-// load can shorten it as well as lengthen it, and a bound at the timer's own value is a verdict
-// load can turn: with six busy loops on two CPUs, 11 of 30 runs of the 1 s timer measured below
-// 1 000 ms, the lowest at 994.9 ms, and 3 of 5 runs of a timer left at the default measured
-// below 45 000 ms. So the row does not catch a timer set between 0.5 s and 1 s, nor one set near
-// the value above it, 2 s for 1 s: no upper time that is safe under load can tell 1 s from 2 s in
-// a child process, and fake timers cannot reach a subprocess.
+// closed, and the row holds the time between to at least half the flag's 1 s and under
+// `heldUnderMs`. The lower bound stands at half the timer rather than at the timer itself
+// because the time between is the timer give or take the scheduling of the probe's dial and of
+// this process's accept and close handlers, so load can shorten it as well as lengthen it: with
+// six busy loops on two CPUs, 11 of 30 runs of the 1 s timer measured below 1 000 ms, the lowest
+// at 994.9 ms. The upper bound follows the module's rule, three times the largest reading of its
+// kind under load: the largest accept-to-close of a correct 1 s timer, in 44 runs under six busy
+// loops on two CPUs on 2026-11-14, was 1 012.4 ms, so the bound is 3 100 ms, three times that
+// rounded up to the next 100 ms. So the row catches a timer set well short, one set several times
+// too long and one left at the 45 s default; it does not catch one set between about 0.5 s and
+// about 3 s, such as 2 s for 1 s, which held 1 987-2 029 ms.
+const heldUnderMs = 3_100;
+
 test(
   "a watch whose socket never opens ends on its own, and not as a clean watch",
   async () => {
@@ -712,8 +714,9 @@ test(
       },
     });
     try {
+      const openWithinMs = 1_000;
       const argv = args({ url: `http://127.0.0.1:${silent.port}` }, TOKEN, "0.01");
-      argv.push("--open-within", "1");
+      argv.push("--open-within", `${openWithinMs / 1_000}`);
       const run = await runProbeToEnd(argv);
       expect(run.code).toBe(1);
       expect(
@@ -732,14 +735,15 @@ test(
       const held = (await closed.promise) - accepted[0];
       expect(
         held,
-        "the probe gave up on its connection before 500 ms, half the 1 s that --open-within gave it"
-      ).toBeGreaterThanOrEqual(500);
+        `the probe gave up on its connection before ${openWithinMs / 2} ms, half the ` +
+          `${openWithinMs} ms that --open-within gave it`
+      ).toBeGreaterThanOrEqual(openWithinMs / 2);
       expect(
         held,
-        `the probe held its connection for ${LIVE_SOCKET_SILENT_MS / 2} ms or longer, half the ` +
-          `${LIVE_SOCKET_SILENT_MS} ms it waits without --open-within, rather than the 1 s the ` +
-          "flag gave it"
-      ).toBeLessThan(LIVE_SOCKET_SILENT_MS / 2);
+        `the probe held its connection for ${heldUnderMs} ms or longer, three times the largest ` +
+          `hold a correct ${openWithinMs} ms timer showed under load, against the ${openWithinMs} ms ` +
+          "that --open-within gave it"
+      ).toBeLessThan(heldUnderMs);
     } finally {
       silent.stop(true);
     }
@@ -796,7 +800,16 @@ function compareArgs(url: string, readWithin: string): string[] {
 }
 
 // A `--compare` read that receives nothing for `--read-within` fails the probe, naming its route,
-// where without that bound the probe waits on the read for good.
+// where without that bound the probe waits on the read for good. The read starts once SIGINT
+// ends the watch, so the time from SIGINT to the probe's exit is the read's 1 s of silence give
+// or take scheduling, and the row holds it to at least half that 1 s and under `exitUnderMs`:
+// three times the largest such time a correct probe took, 1 049.1 ms in 8 runs under six busy
+// loops on two CPUs on 2026-11-14, rounded up to the next 100 ms. So a read timer set well short
+// or several times too long fails here by name, and not on this row's own clock; one set between
+// about 0.5 s and about 3 s does not, and `silence-read.test.ts` holds the timer to its value on
+// Bun's fake clock.
+const exitUnderMs = 3_200;
+
 test(
   "a --compare read that receives nothing fails the probe with exit 1, naming the route",
   async () => {
@@ -804,8 +817,20 @@ test(
     const dispatch = slowDispatch(() => new Promise<Response>(() => {}));
     const run = runProbe(compareArgs(dispatch.url, "1"));
     await run.until(() => run.lines.some((line) => line.type === "snapshot"));
+    const stopped = performance.now();
     run.kill("SIGINT");
-    expect(await run.exited()).toBe(1);
+    const code = await beforeDeadline(run.exited(), stopped + exitUnderMs);
+    const took = performance.now() - stopped;
+    expect(
+      code,
+      `the probe had not exited ${exitUnderMs} ms after SIGINT, three times the largest time a ` +
+        "correct probe takes to fail a read that --read-within 1 gave 1 s of silence"
+    ).not.toBe(pastDeadline);
+    expect(
+      took,
+      "the probe exited before 500 ms had passed since SIGINT, half the 1 s --read-within gave its read"
+    ).toBeGreaterThanOrEqual(500);
+    expect(code).toBe(1);
     expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline"]);
     const stderr = run.stderr.join("\n");
     expect(stderr).toContain("the read of /api/v1/delivery/timeline?");
@@ -814,7 +839,7 @@ test(
   {
     // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
     // runs after that. 30 s is enough because the row waits for the probe's start, one loopback
-    // watch and the 1 s of silence `--read-within 1` allows the read; `runProbe` says what ends
+    // watch and the read, whose wait ends by name at `exitUnderMs`; `runProbe` says what ends
     // the row where the snapshot line never comes.
     timeout: 30_000,
   }

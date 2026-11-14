@@ -101,6 +101,33 @@ function startRead(get: HandGet): Reading {
   };
 }
 
+/** Answers whether `waiting` has settled yet, without awaiting it. */
+function watch(waiting: Promise<unknown>): () => boolean {
+  let settled = false;
+  const done = () => {
+    settled = true;
+  };
+  waiting.then(done, done);
+  return () => settled;
+}
+
+/** One macrotask turn, on a `setImmediate` that Bun's fake clock leaves real: it comes only once
+ *  every promise the read chained has run as far as it goes. */
+const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** Moves the fake clock to the deadline and checks the read has failed by then, so a read whose
+ *  timer is set past its `--read-within` fails on this line rather than waiting for good. */
+async function failsAtDeadline(read: Reading): Promise<void> {
+  const settled = watch(read.reading);
+  jest.advanceTimersByTime(withinMs);
+  await nextTurn();
+  expect(
+    settled(),
+    "the read had not failed once the fake clock reached its 3 s --read-within"
+  ).toBe(true);
+  await expect(read.reading).rejects.toThrow(silent);
+}
+
 test("the deadline starts over on the headers and on each piece, so a long read is read whole", async () => {
   const get = handGet();
   const read = startRead(get);
@@ -132,9 +159,7 @@ test("a read whose body falls silent for the deadline fails, naming its route", 
   const give = await read.asked();
   give('{"prs":');
   await read.asked();
-  jest.advanceTimersByTime(withinMs);
-
-  await expect(read.reading).rejects.toThrow(silent);
+  await failsAtDeadline(read);
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -142,8 +167,6 @@ test("a read whose headers never come fails at the deadline, naming its route", 
   const get = handGet();
   const read = startRead(get);
 
-  jest.advanceTimersByTime(withinMs);
-
-  await expect(read.reading).rejects.toThrow(silent);
+  await failsAtDeadline(read);
   expect(jest.getTimerCount()).toBe(0);
 });
