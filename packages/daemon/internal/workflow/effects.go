@@ -660,8 +660,9 @@ const (
 	newsOfTheIssue movement = true
 	// reassertion is the daemon sending a phase worker again work the record already owes it:
 	// every send of an owed entry (sendOwedEntry) and the phase's resume task sent to a claim
-	// level with its entry by the boot's resume by rule and by the silence repair. It is no
-	// movement of the issue (startOrOwe says why).
+	// level with its entry by the boot's resume by rule, by the cutover's one-time repair
+	// (cutoverMergerRepair) and by the silence repair. It is no movement of the issue (startOrOwe
+	// says why).
 	reassertion movement = false
 )
 
@@ -777,7 +778,8 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 	// and it is marked here rather than at each caller because this is where every start of a
 	// phase worker is written: every one of them is built by Engine.started, which a transition's
 	// start, the held phase's retry, admission's start of a mid-phase member, the sends of an
-	// owed entry and the two resumes of a claim level with its entry all go through. The moment
+	// owed entry and the three resumes of a claim level with its entry (the boot's, the cutover
+	// repair's and the silence repair's) all go through. The moment
 	// is the one the caller was handed, the fact's own, not a clock read again here.
 	//
 	// It is marked whether or not the row written takes out one the issue already owes: an issue
@@ -787,8 +789,9 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 	// A reassertion is not marked. It is the daemon sending a phase worker work the record
 	// already owes it: every send of an owed entry (sendOwedEntry, whose callers are admission's
 	// sweep on every pass and each minute, its slot repair, readyWorkerTask, the boot's resume by
-	// rule and the silence repair), and the phase's resume task the boot's resume and the silence
-	// repair send a claim level with its entry. A movement is a fact new to the record, and the
+	// rule, the cutover's one-time repair (cutoverMergerRepair) and the silence repair), and the
+	// phase's resume task the boot's resume, the cutover's repair and the silence repair send a
+	// claim level with its entry. A movement is a fact new to the record, and the
 	// daemon's own re-assertions are none (dispatch://INFRA-2560, R3): nothing outside the daemon
 	// happened, and the work is not new to the record. The fact that made it so is the one that
 	// raised the entry, and that fact marked the issue where it raised it: a transition's phase

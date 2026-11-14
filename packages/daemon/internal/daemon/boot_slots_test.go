@@ -412,7 +412,8 @@ func finish(t *testing.T, pool *store.Pool, records record.Store, key string) {
 			return err
 		}
 		// Its work is over, which on this release is the phase the merge leaves: merging is the
-		// merger's own phase and holds a slot until its merge closes the issue.
+		// merger's own phase, which holds no slot (record.PhaseKeepsSlot), and the merge's close
+		// is what ends the issue.
 		issue.Phase, issue.Status, issue.DispatchStatus = phase.Done, "done", "done"
 		return records.PutIssue(ctx, tx, *issue)
 	}); err != nil {
