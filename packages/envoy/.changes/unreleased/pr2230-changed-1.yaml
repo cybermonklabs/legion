@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The listener hands no message to a Legion daemon for a session whose claim the daemon released
+  when its issue pod sat idle. The Legion agent registry's entry gains `released` (a boolean,
+  absent and false for every writer that does not state it), which the Legion daemon sets while
+  the session's claim is suspended by idle release and clears when the claim resumes. A send to
+  such a session answers 404 and reports the session's wake, a message nothing could place is
+  given up with its wake, and a message on the interest path is refused, each exactly as before
+  the hand-off existed, so the wake brings the pod back and the sender's next attempt reaches the
+  resumed agent. Dispatch's registry reader names no session for a released entry either, and
+  records the listener's own answer. The registry routes decode an entry leniently, so a listener
+  from before this change ignores the field and still hands such a message off.
+time: 2026-11-14T04:40:00.000000000Z
+custom:
+    Issue: pr2230

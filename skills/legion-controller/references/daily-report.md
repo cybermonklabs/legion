@@ -105,6 +105,11 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   name, its `detail`, and a deployment row's `configLine`. Say who acts on it, as
   `skill://legion-controller/references/wakes.md` says for `tick`. With none open, say nothing of
   them.
+- **Questions the deployment could not answer.** Each entry of `read_state`'s
+  `questionsForController` since the previous report whose `reason` is `over_limit`,
+  `no_provider`, `no_price`, `unmetered`, `unknown_format`, `no_conversation` or `post_refused`:
+  its issue, role and reason, for the operator, whose `answers` configuration fixes it. With none,
+  say nothing of them.
 - **The week** (on the report of your first turn of each UTC week only, from
   `skill://legion-controller/references/weekly-audit.md`): the window's two times; the forced
   creates by filer with the no-answer creates apart; the tree sizes in the five buckets with the

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -213,6 +214,135 @@ func TestAHistoryEndingInThinkingIsStillMarked(t *testing.T) {
 	// cannot carry a mark, so the history's goes on the request before it.
 	if marks := marked(t, got[0]); !reflect.DeepEqual(marks, []int{0, 2}) {
 		t.Errorf("the call marks messages %v, want [0 2] (the history's last message that can carry a mark and the newest message)", marks)
+	}
+}
+
+// cacheFiller is one turn of a conversation long enough for Anthropic to cache it: the
+// provider writes no entry for a prefix below its model's minimum cacheable length, and the
+// short histories of the tests above are under it, where a conversation the answer loop keeps
+// for an agent runs well past it.
+func cacheFiller(turn string) string {
+	return turn + " " + strings.Repeat("The migration runs before the release. ", 64)
+}
+
+// anthropicAnswered is a conversation on Anthropic, long enough to cache, that a run has
+// already answered once: a question and the model's turn, then the question an earlier run was
+// given and the answer it wrote back, as a caller that appends every exchange it makes carries
+// the conversation.
+func anthropicAnswered() []Message {
+	return []Message{
+		{Role: User, Blocks: []Block{{Kind: TextBlock, Text: cacheFiller("Write the plan.")}}},
+		{Role: Assistant, Blocks: []Block{
+			{Kind: ThinkingBlock, Text: "The plan needs a migration.", Signature: historySignature},
+			{Kind: TextBlock, Text: cacheFiller("The plan is written.")},
+		}},
+		{Role: User, Blocks: []Block{{Kind: TextBlock, Text: cacheFiller("What is left to do?")}}},
+		{Role: Assistant, Blocks: []Block{{Kind: TextBlock, Text: cacheFiller("The migration is left.")}}},
+	}
+}
+
+// withoutMarks is v with every cache mark taken out of it, which is the content Anthropic
+// keys a cached prefix by: a later request reads an entry an earlier one wrote at a position
+// whether or not it marks that position itself.
+func withoutMarks(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, child := range v {
+			if key == "cache_control" {
+				continue
+			}
+			out[key] = withoutMarks(child)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, child := range v {
+			out[i] = withoutMarks(child)
+		}
+		return out
+	}
+	return v
+}
+
+// cacheWrites are the prefixes a request writes to the cache, by the message each one ends at:
+// Anthropic caches the tools, the system prompt and the messages up to and including every
+// marked message, and those are the entries a later request can read.
+func cacheWrites(t *testing.T, r recorded) map[int]string {
+	t.Helper()
+	body := r.decoded(t)
+	content, _ := body["messages"].([]any)
+	writes := make(map[int]string, 4)
+	for _, at := range marked(t, r) {
+		prefix, err := json.Marshal(withoutMarks([]any{body["tools"], body["system"], content[:at+1]}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writes[at] = string(prefix)
+	}
+	return writes
+}
+
+// readsFrom is the deepest message of r whose own breakpoint sits on a prefix already written,
+// which is the entry r reads without Anthropic's lookback having to walk back to it, and -1
+// where no breakpoint of r sits on one.
+func readsFrom(t *testing.T, written map[int]string, r recorded) int {
+	t.Helper()
+	deepest := -1
+	for at, prefix := range cacheWrites(t, r) {
+		for _, wrote := range written {
+			if wrote == prefix && at > deepest {
+				deepest = at
+			}
+		}
+	}
+	return deepest
+}
+
+// A second run of a conversation the caller grew by an exchange reads what the run before it
+// wrote: its request carries a breakpoint on the message the first run's history ended at and
+// on the question that run was given, the two positions the first run wrote entries at, so the
+// second reads one back where it marks it and not only where a lookback finds it. Neither
+// request carries more than the four breakpoints Anthropic allows.
+func TestASecondRunMarksTheBoundariesTheRunBeforeItWrote(t *testing.T) {
+	t.Parallel()
+	const answer = "The migration is still left."
+	s := newStandIn(t,
+		anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 5, CacheWrite: 2200}, anthropicText(answer)),
+		anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 5, CacheRead: 2200}, anthropicText(answer)),
+	)
+	f := newFixture(t, s, AnthropicMessages, 1)
+	question := Message{Role: User, Blocks: []Block{{Kind: TextBlock, Text: "What does note.txt say?"}}}
+	f.req.History, f.req.Input = anthropicAnswered(), []Message{question}
+	if result, err := Run(context.Background(), f.req); err != nil || result.Fault != "" {
+		t.Fatalf("the first run: %+v, %v", result, err)
+	}
+	// The caller appends the exchange the first run made and asks the next question, which
+	// is what the answer loop does with a second question to the same agent.
+	f.req.History = append(anthropicAnswered(), question, Message{Role: Assistant, Blocks: []Block{{Kind: TextBlock, Text: answer}}})
+	f.req.Input = []Message{{Role: User, Blocks: []Block{{Kind: TextBlock, Text: "And what does other.txt say?"}}}}
+	if result, err := Run(context.Background(), f.req); err != nil || result.Fault != "" {
+		t.Fatalf("the second run: %+v, %v", result, err)
+	}
+	got := s.requests()
+	if len(got) != 2 {
+		t.Fatalf("%d model calls, want 2", len(got))
+	}
+	// The first call's messages on the wire: the conversation's two exchanges (0, 1, 2, 3)
+	// and the new question (4), marked at the end of the exchange before the last (1), on
+	// the question the earlier run answered (2), at the history's end (3) and on the newest
+	// message (4). The second call carries the same four marks two messages on.
+	wantMarks := [][]int{{1, 2, 3, 4}, {3, 4, 5, 6}}
+	for i, r := range got {
+		if n := countKey(r.decoded(t), "cache_control"); n > 4 || n != len(wantMarks[i]) {
+			t.Errorf("call %d carries %d cache marks, want %d (never above 4)", i+1, n, len(wantMarks[i]))
+		}
+		if marks := marked(t, r); !reflect.DeepEqual(marks, wantMarks[i]) {
+			t.Errorf("call %d marks messages %v, want %v", i+1, marks, wantMarks[i])
+		}
+	}
+	if at := readsFrom(t, cacheWrites(t, got[0]), got[1]); at != 4 {
+		t.Errorf("the second call reads the cache at message %d, want 4: the whole of what the first call wrote, through the question it answered", at)
 	}
 }
 

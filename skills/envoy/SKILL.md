@@ -139,6 +139,8 @@ Every topic starts with `notifications.`.
   The forward is kept on the holder's inbox, so the holder's session gets it once from its own durable consumer, also after a restart, a reconnect, or while it was not running.
   From a shell with no tool device, read the holder with `envoy role <role>` where sjawhar/dotfiles' `scripts/envoy` is on the PATH, and in a Legion pod, which has no `envoy` command, with `curl -sS -H "Authorization: Bearer $(cat "$ENVOY_TOKEN_FILE")" "$ENVOY_URL/v1/roles/<role>" | jq -r '.holder // .reason // .error'`, which prints the holder's session id, `unclaimed` for a role nobody holds, or the error of a refused read, such as `unauthorized` for a bad token.
 
+- A Legion agent that has stopped is the exception where its daemon answers for it: a publish to its role, or a send to its session, is accepted and answered in its name (`skill://envoy/references/legion.md`).
+
 - A message that must reach more than 4 role topics is the project controller's to send, not yours.
   Each publish wakes a session, and a woken session reads its whole context again, which the provider charges as uncached input: a mean of 576,083 tokens a wake, a median of 493,636 and a ninetieth percentile of 1,327,888.
   The controller is also the one session that can read whether a wave of wakes is already running, and a fan-out sent into a daemon restart or a pod roll is what puts an Anthropic organization over its per-minute uncached-input cap.

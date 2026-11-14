@@ -76,6 +76,12 @@ func legionEntry(id, issue, role, started string) string {
 		id, issue, role, "legion-infra-"+strings.ToLower(issue)+"-"+role, "Legion "+role+" · "+issue, started)
 }
 
+// finishedLegionEntry is legionEntry's entry for a session whose issue has left the workflow, so
+// no next holder of its role is coming (legionagents.Entry.Finished).
+func finishedLegionEntry(id, issue, role, started string) string {
+	return strings.TrimSuffix(legionEntry(id, issue, role, started), "}") + `,"finished":true}`
+}
+
 // legionAnswer is one entry as a read answers it.
 type legionAnswer struct {
 	SessionID     string  `json:"session_id"`

@@ -1,0 +1,4 @@
+{"time":"2026-11-08T23:10:00.100Z","level":"INFO","msg":"legion daemon starting","store":"files"}
+{"time":"2026-11-08T23:10:01.000Z","level":"INFO","msg":"the project's answering heartbeat says this daemon does not answer","project":"alx","answers":false}
+{"time":"2026-11-08T23:10:02.000Z","level":"WARN","msg":"the Envoy listener answers 404 on PUT /v1/legion/projects/{project}; the daemon's answering heartbeat is not heard","route":"PUT /v1/legion/projects/{project}"}
+{"time":"2026-11-08T23:11:02.000Z","level":"WARN","msg":"the Envoy listener answers 404 on PUT /v1/legion/projects/{project}; the daemon's answering heartbeat is not heard","route":"PUT /v1/legion/projects/{project}"}

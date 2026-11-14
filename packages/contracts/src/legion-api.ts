@@ -585,6 +585,24 @@ const legionHeldOutboxRow = z.object({
   waitsOn: z.number().int().positive(),
 });
 
+/** `api.QuestionForController` — one question to a stopped agent that the daemon's answer loop
+ * passed to the controller (its `agent-question` notice, contract 126): the question's id, the
+ * agent's issue, role and session, who asked (`user:<login>`, or `session:<id>` with the asking
+ * session's title when known), where (a `dispatch://` reference, or `envoy:<event id>`), why it was
+ * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
+ * `no_provider`, `no_price`, `unmetered`, `no_conversation`, `post_refused`), and when. `asker`
+ * and `ref` are empty for a question whose recorded hand-off no longer reads. */
+const legionQuestionForController = z.object({
+  id: nonEmptyString,
+  issue: issueKey,
+  role: z.enum(LEGION_ROLES),
+  session: nonEmptyString,
+  asker: z.string(),
+  ref: z.string(),
+  reason: nonEmptyString,
+  passedAt: timestamp,
+});
+
 /** `api.WakeWaiting` — one wake the daemon's pacing is holding until its turn
  * (`worker_wakes_per_minute`, `worker_wake_burst`, contract 53): the claim it will wake, that
  * claim's issue and role, what kind of wake it is, and `dueAt`, the moment the pacing gave it,
@@ -972,7 +990,10 @@ const legionConsumerLag = z.object({
  * the route strips it for a caller in a pod below 75, and for that caller alone, since a reader
  * before 75 refuses the key (`api.stateFor`, `withoutRecordFields`). A caller in a pod whose
  * claims record no contract and a caller the daemon can place in no pod are served the mark, and
- * the shapes `internal/projection` answers before the route marks them carry none either. */
+ * the shapes `internal/projection` answers before the route marks them carry none either.
+ * `questionsForController` is every question the answer loop passed to the controller in the last
+ * seven days, newest first, at most 100, never null: the `agent-question` notice is a live wake
+ * only, so a controller that starts later reads here what it missed (contract 126). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   contract: legionContract.optional(),
@@ -989,6 +1010,7 @@ export const LegionStateResponse = z.object({
   repositories: legionRepositories,
   settings: legionSettings,
   consumers: z.array(legionConsumerLag),
+  questionsForController: z.array(legionQuestionForController).max(100),
 });
 
 export type LegionState = z.output<typeof LegionStateResponse>;

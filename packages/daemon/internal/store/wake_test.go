@@ -102,6 +102,30 @@ func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(
 	}
 }
 
+// ReleasedSessions names the session a released claim kept, with its issue, for the registry's
+// `released`, and names it no longer once another path takes the claim over.
+func TestReleasedSessionsNamesTheSessionOfEveryReleasedClaim(t *testing.T) {
+	store := migratedStore(t)
+	ctx := context.Background()
+	seedReleasedPod(t, store, "session-1")
+
+	released, err := store.ReleasedSessions(ctx, "legion")
+	if err != nil || len(released) != 1 || released["session-1"] != rootIssue {
+		t.Fatalf("ReleasedSessions = %v, %v; want session-1 of %s", released, err, rootIssue)
+	}
+	if other, err := store.ReleasedSessions(ctx, "another"); err != nil || len(other) != 0 {
+		t.Fatalf("another project's ReleasedSessions = %v, %v; want none", other, err)
+	}
+
+	if _, err := store.Pool().Exec(ctx, `update claims set suspended_by = $2 where token = $1`,
+		string(releasedToken), string(supervise.SuspendedByDaemon)); err != nil {
+		t.Fatalf("take the claim over: %v", err)
+	}
+	if released, err := store.ReleasedSessions(ctx, "legion"); err != nil || len(released) != 0 {
+		t.Fatalf("ReleasedSessions once the workflow suspended the claim = %v, %v; want session-1 named no longer", released, err)
+	}
+}
+
 // One open resume per role is the whole of the dedupe: the second wake of a role whose pod is
 // already coming back writes nothing and answers false, and the wake of another role of the same
 // pod is taken, since a wake resumes one claim. A role whose resume has its first turn stamped

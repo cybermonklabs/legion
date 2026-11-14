@@ -1,0 +1,26 @@
+kind: Added
+body: |-
+  Dispatch records a stopped Legion agent as a delivery's recipient. A targeted
+  message (on an issue or on the agent's conversation page) or a mention whose session the
+  listener holds no live record of or calls gone, or whose role has finished and has no live
+  holder, is looked up
+  in the listener's Legion agent registry (`GET /v1/legion/agents/sessions/{id}`, or for a role
+  its token's newest entry from `GET /v1/legion/agents/roles/{token}`). A session the registry
+  names is the attempt's session, whatever the delivery mode (the capability check is skipped),
+  the send goes to it through the listener, which hands it to the agent's daemon, so the attempt
+  is `sent`, and the reply the daemon posts as that session on that attempt is accepted. A target
+  the registry does not name still fails `no live session <id>` (or the listener's no-holder
+  text), a registry read that does not answer is logged and changes nothing, and a send the
+  listener refuses because no daemon answers for that agent records the listener's own answer and
+  session, exactly as before the registry existed. The Dispatch Envoy client's `Role` reports the
+  listener's 404 as an error matching `ErrNoHolder`, and `Send`'s 404 as one matching
+  `ErrNotFound`, each carrying the listener's own text.
+
+  A role is looked up only when the registry's newest entry for its token says `finished`: its
+  issue has left the workflow, so no next worker of that role is coming. A role whose issue
+  still runs keeps the listener's own no-holder answer and is recorded against no session, as
+  it was before the registry was read for a role at all: nobody holds the role between two of
+  its workers, Envoy keeps what is published to it, and the next worker takes it on its claim.
+time: 2026-11-08T10:01:00.000000000Z
+custom:
+    Issue: pr2230

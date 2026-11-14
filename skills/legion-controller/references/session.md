@@ -33,8 +33,10 @@ answer to your ask, a mention), Envoy or Slack. No `legion controller start` can
   in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with
   one word for why nothing of it runs and the issues that hold it;
   `skill://legion-controller/references/admission.md` gives the word for each row and what ends
-  it), `capabilities[]`, `daemon.project`, and
-  `settings` (the daemon's resolved `legion.yaml`, with no credential in it).
+  it), `capabilities[]`, `daemon.project`, `settings` (the daemon's resolved `legion.yaml`, with
+  no credential in it) and `questionsForController` (the questions to stopped agents the daemon's
+  answer loop passed on in the last seven days: `skill://legion-controller/references/wakes.md`,
+  `agent-question`).
 - `op: "set_status"` with `issue` and `status` (`todo`, `backlog` or `icebox`) moves an issue. Each
   call mints its grant in-process from the secret the session registered with, so a stale secret
   fails it with a 403.

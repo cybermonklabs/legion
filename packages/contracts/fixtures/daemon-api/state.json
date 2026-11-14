@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 123,
-    "caller": 123
+    "daemon": 126,
+    "caller": 126
   },
   "admission": {
     "cap": 3,
@@ -895,6 +895,18 @@
       "lastHandledAt": null,
       "stalled": false,
       "unavailable": "read the consumer's info: context deadline exceeded"
+    }
+  ],
+  "questionsForController": [
+    {
+      "id": "5f0c2a9e7b14d3866a1e0c4b9d2f7a35",
+      "issue": "LEGION-207",
+      "role": "tester",
+      "session": "ses_tester_207",
+      "asker": "user:octocat",
+      "ref": "dispatch://LEGION-207/message/m-4411",
+      "reason": "not_answered",
+      "passedAt": "2026-09-22T09:14:03Z"
     }
   ]
 }

@@ -735,6 +735,12 @@ type Deps struct {
 	// before the task (adopts). nil, for a daemon with no workflow or no GitHub Apps, adopts
 	// nothing.
 	Identity func(ctx context.Context, role claim.Role, issue string) (runtime.GitIdentity, error)
+	// Registered is told of every registration the claim persisted, a first one (register) and the
+	// recorded session registering again (reregister), with the claim as written: the daemon's record
+	// of the conversations its agents have had (agent_conversations), which no close, suspension or
+	// retirement takes back. It is called while the machine decides, so it must not wait on anything
+	// slower than a store write. nil tells no one.
+	Registered func(ctx context.Context, c Claim)
 	// IssueInTurn names a claim of issue other than except whose agent is in a turn now, or is
 	// about to be, and reports whether there is one. The roles of an issue work one jj workspace,
 	// so the adoption a phase task makes of its working copy is not a private act: one run while
@@ -2997,6 +3003,13 @@ func (m *Machine) putClaimAndPending(ctx context.Context) error {
 // made again at the claim's next decision rather than lost with the event that failed.
 func (m *Machine) persist(ctx context.Context) error {
 	return m.owes("PutClaim", m.putClaim(ctx))
+}
+
+// registered tells Deps.Registered of the registration persist just wrote.
+func (m *Machine) registered(ctx context.Context) {
+	if m.deps.Registered != nil {
+		m.deps.Registered(ctx, StoredClaim(m.claim))
+	}
 }
 
 // putStep writes the claim's step columns and nothing else (Store.PutClaimStep): what the

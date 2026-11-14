@@ -21,10 +21,13 @@ import (
 )
 
 // ResolvedMention binds a canonical mention to the session that owned it when the comment was
-// created. SessionID is nil when no live holder was found; attemptSessionID remains internal so
-// legacy message attempts retain their existing session-id representation. unanswered says the
-// lookup was cut short by its bound while the request was still live (resolveMentionTarget), so
-// the listener has not said who holds the target.
+// created: its live holder, or the stopped Legion agent the listener's agent registry names for
+// it (resolveDeliveryTarget). SessionID is nil when neither was found; attemptSessionID remains
+// internal so legacy message attempts retain their existing session-id representation.
+// listenerAnswer is set only beside a registry's session, and is the resolution the listener's
+// own answer gave, which the attempt records when the listener refuses the send. unanswered says
+// the lookup was cut short by its bound while the request was still live (resolveMentionTarget),
+// so the listener has not said who holds the target.
 type ResolvedMention struct {
 	Target       string
 	Delivery     string
@@ -33,6 +36,7 @@ type ResolvedMention struct {
 
 	title            string
 	attemptSessionID string
+	listenerAnswer   *ResolvedMention
 	unanswered       bool
 }
 
@@ -63,14 +67,17 @@ const mentionLookupTimeout = 250 * time.Millisecond
 // (mentionedSession) when it decides what the mention makes redundant. Its attempt row records
 // neither a session nor an error, which is the shape of an attempt stranded before anything was
 // resolved, so the sender resolves it when it sends (mentionResolutionFor).
+//
+// A target the listener holds no live session for that the Legion agent registry names resolves
+// to that stopped agent's session, carrying the listener's own answer beside it
+// (listenerAnswer), which the attempt records when the listener refuses the send
+// (sendResolvedDelivery).
 func (s *server) resolveMentionTarget(
 	ctx context.Context, target, delivery string, timeout time.Duration,
 ) ResolvedMention {
-	item := ResolvedMention{Target: target, Delivery: delivery}
 	route, err := model.ParseRoute(target)
 	if err != nil {
-		item.ResolveError = err.Error()
-		return item
+		return ResolvedMention{Target: target, Delivery: delivery, ResolveError: err.Error()}
 	}
 	lookup := ctx
 	if timeout > 0 {
@@ -78,15 +85,25 @@ func (s *server) resolveMentionTarget(
 		lookup, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	sessionID, title, resolveError := s.resolveDeliveryTarget(lookup, route, delivery)
-	if sessionID == "" && resolveError != "" && ctx.Err() == nil &&
+	found := s.resolveDeliveryTarget(lookup, route, delivery)
+	if found.sessionID == "" && found.resolveError != "" && ctx.Err() == nil &&
 		errors.Is(lookup.Err(), context.DeadlineExceeded) {
-		item.unanswered = true
-		return item
+		return ResolvedMention{Target: target, Delivery: delivery, unanswered: true}
 	}
-	item.title = title
-	item.attemptSessionID = sessionID
-	item.ResolveError = resolveError
+	item := resolvedMention(target, delivery, found)
+	if found.listenerAnswer != nil {
+		answer := resolvedMention(target, delivery, *found.listenerAnswer)
+		item.listenerAnswer = &answer
+	}
+	return item
+}
+
+// resolvedMention is the mention of target in delivery mode that found resolves to.
+func resolvedMention(target, delivery string, found deliveryTarget) ResolvedMention {
+	item := ResolvedMention{
+		Target: target, Delivery: delivery, ResolveError: found.resolveError,
+		title: found.title, attemptSessionID: found.sessionID,
+	}
 	// A missing session is not a resolved target, even though the legacy message delivery
 	// model retains its requested id in an attempt row. A live session that lacks a mode is
 	// still resolved and participates in the event's session-level suppression calculation.
@@ -95,8 +112,8 @@ func (s *server) resolveMentionTarget(
 	// whose requested id is kept on the attempt row, from a capability refusal. A read that
 	// did not answer gives no session id here, so it sets no pin; an existing attempt keeps
 	// the one it holds only through the coalesce(session_id, ...) update further down.
-	if sessionID != "" && !strings.HasPrefix(resolveError, "no live session ") {
-		item.SessionID = new(sessionID)
+	if found.sessionID != "" && !strings.HasPrefix(found.resolveError, "no live session ") {
+		item.SessionID = new(found.sessionID)
 	}
 	return item
 }
@@ -118,15 +135,22 @@ func (s *server) resolveMentionTarget(
 // packages/contracts states the promise - so that guidance is composed at render time against
 // the attempt's age, never frozen into the row here. A row written today would otherwise still
 // promise a safe retry next week.
+//
+// A send to a session the Legion agent registry named that the listener refuses with no live
+// session - no daemon answers for that agent's project now - answers the listener's own
+// resolution of the route (target.listenerAnswer) as refused, and its resolve error as the
+// failure. The caller records that resolution's session on the attempt in place of the
+// registry's, so the attempt reads exactly as it did before the registry existed: a role's
+// listener answer with no session, a session's "no live session <id>".
 func (s *server) sendResolvedDelivery(
 	ctx context.Context, target ResolvedMention, body, idempotencyKey string, urgency *string,
 	wanted contracts.ExpectsReply, frame []byte,
-) (*string, bool, string) {
+) (*string, bool, string, *ResolvedMention) {
 	if target.ResolveError != "" {
-		return nil, false, target.ResolveError
+		return nil, false, target.ResolveError, nil
 	}
 	if target.SessionID == nil {
-		return nil, false, "no live session"
+		return nil, false, "no live session", nil
 	}
 	// What the delivered thing wants back, except in btw mode, which interrupts the session it
 	// reaches to ask something of it and so always waits on an answer, whatever the thing
@@ -150,16 +174,19 @@ func (s *server) sendResolvedDelivery(
 		ExpectsReply:   expectsReply,
 	})
 	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
-		return nil, false, receiptTimeoutText
+		return nil, false, receiptTimeoutText, nil
+	}
+	if target.listenerAnswer != nil && errors.Is(err, dispatchenvoy.ErrNotFound) {
+		return nil, false, target.listenerAnswer.ResolveError, target.listenerAnswer
 	}
 	if err != nil {
-		return nil, false, deliveryErrorText(err)
+		return nil, false, deliveryErrorText(err), nil
 	}
 	// A duplicate names an envelope JetStream discarded, so the attempt records none.
 	if send.Duplicate {
-		return nil, true, ""
+		return nil, true, "", nil
 	}
-	return &send.EnvelopeID, false, ""
+	return &send.EnvelopeID, false, "", nil
 }
 
 // commentExpectsReply is what a mention of one comment wants back. A comment that joins no ask
@@ -429,9 +456,11 @@ func commentDeliveryReceipt(
 // what the send did on the attempt this sender claimed and appends the comment.delivery
 // receipt, holding no listener call. recorded is the row recordCommentDeliveryResolution left
 // before the send, so this receipt states what that row says - the session holding the frame
-// included - rather than what the resolution behind the send happened to find. A failed settle
-// changes nothing of the comment's comment.created event: a copy the outbox held back for this
-// mention is the outbox's fallback pass's (publishFallbackCopies in internal/dispatch/outbox).
+// included - rather than what the resolution behind the send happened to find. Its session and
+// resolve error are written back with the outcome, which changes them only for a send the
+// listener refused to a session the registry named (deliverResolvedCommentMention). A failed
+// settle changes nothing of the comment's comment.created event: a copy the outbox held back for
+// this mention is the outbox's fallback pass's (publishFallbackCopies in internal/dispatch/outbox).
 func (s *server) completeCommentDelivery(
 	ctx context.Context,
 	comment model.Comment,
@@ -448,11 +477,13 @@ func (s *server) completeCommentDelivery(
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
 			return scanCommentDelivery(tx.QueryRow(ctx, `
-				update comment_deliveries set envelope_id = $5, state = $6, error = $7, duplicate = $8
+				update comment_deliveries
+				set envelope_id = $5, state = $6, error = $7, duplicate = $8, session_id = $9, resolve_error = $10
 				where comment_id = $1 and target = $2 and attempt = $3
 				  and state = 'pending' and claimed_at = $4
 				returning `+commentDeliveryColumns,
 				comment.ID, sent.Target, claim.attempt, claim.claimedAt, envelopeID, sent.State, sent.Error, duplicate,
+				sent.SessionID, sent.ResolveError,
 			))
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
@@ -563,6 +594,7 @@ func (s *server) mentionResolutionFor(
 		resumed.ResolveError = recheck.ResolveError
 		resumed.attemptSessionID = recheck.attemptSessionID
 		resumed.title = recheck.title
+		resumed.listenerAnswer = recheck.listenerAnswer
 	}
 	return resumed, pending.ResolveError
 }
@@ -678,6 +710,7 @@ func (s *server) deliverResolvedCommentMention(
 	stored := claimed.comment
 	decided := claimed.pending != nil && claimed.pending.Attempt == 1 &&
 		(claimed.pending.SessionID != nil || claimed.pending.ResolveError != nil) && mentionsDecideRoutes(created)
+	mention := target
 	target, resolveError := s.mentionResolutionFor(ctx, target, claimed.pending)
 	recorded, held, _, err := s.recordCommentDeliveryResolution(ctx, stored, target, claimed.attemptClaim, resolveError)
 	if err != nil {
@@ -711,9 +744,10 @@ func (s *server) deliverResolvedCommentMention(
 	wanted := commentExpectsReply(stored)
 	var envelopeID *string
 	var duplicate bool
+	var refused *ResolvedMention
 	send := func() string {
 		var failure string
-		envelopeID, duplicate, failure = s.sendResolvedDelivery(
+		envelopeID, duplicate, failure, refused = s.sendResolvedDelivery(
 			ctx, target, stored.Body, key, nil, wanted, frame,
 		)
 		return failure
@@ -740,6 +774,12 @@ func (s *server) deliverResolvedCommentMention(
 		if err != nil {
 			return model.CommentDelivery{}, err
 		}
+	}
+	// The listener refused the session the registry named, so the attempt records the session and
+	// resolve error the listener's own answer gave, as it did before the registry existed.
+	if answer := refusedMentionAnswer(mention, claimed.pending, refused); answer != nil {
+		recorded.SessionID, recorded.ResolveError = answer.SessionID, &answer.ResolveError
+		deliveryError = answer.ResolveError
 	}
 	settled, err := s.completeCommentDelivery(
 		ctx, stored, recorded, actor, held, envelopeID, duplicate, deliveryError,
@@ -799,6 +839,30 @@ func (s *server) supersedeOvertakenAttempts(
 		}
 	}
 	return nil
+}
+
+// refusedMentionAnswer is the listener's own answer a mention's attempt records when the listener
+// refused the send to the session the Legion agent registry named for it (refused, from
+// sendResolvedDelivery), so the attempt reads as it did before the registry existed: the
+// listener's own session for the route, and that answer as both its resolve error and its
+// failure. nil keeps what the attempt recorded.
+//
+// An attempt resolved now takes the answer behind that resolution. The comment's first attempt
+// was pinned when the comment was written, to the session the registry named for mention then,
+// and takes the answer mention carries - for a role, the listener's no-holder answer rather than
+// the recheck's "no live session" for the pinned session. An attempt pinned by any other
+// resolution keeps its pin, as a recheck that found its session gone does.
+func refusedMentionAnswer(mention ResolvedMention, pending *model.CommentDelivery, refused *ResolvedMention) *ResolvedMention {
+	switch {
+	case refused == nil:
+		return nil
+	case pending == nil || pending.SessionID == nil:
+		return refused
+	case mention.listenerAnswer != nil && mention.SessionID != nil && *mention.SessionID == *pending.SessionID:
+		return mention.listenerAnswer
+	default:
+		return nil
+	}
 }
 
 // mentionsDecideRoutes reports whether a comment.created event records that the comment's other

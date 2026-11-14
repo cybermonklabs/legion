@@ -155,6 +155,24 @@ var settingsEmitted = map[string]string{
 	"GitHubApp.AppID":                                "github_apps.<app>.app_id",
 	"GitHubApp.Installations":                        "github_apps.<app>.installations",
 	"Capabilities.Decided":                           "capabilities.decided",
+	"Config.Answers":                                 "answers",
+	"Answers.Providers":                              "answers.providers",
+	"Answers.Prices":                                 "answers.prices",
+	"Answers.Bounds":                                 "answers.bounds",
+	"AnswerEndpoint.BaseURL":                         "answers.providers.<provider>.base_url",
+	"AnswerEndpoint.Credential":                      "answers.providers.<provider>.api_key_source (the key the file names, api_key_file or api_key_command, and nothing of the key, its command or its file)",
+	"AnswerPrice.Input":                              "answers.prices.<model>.input",
+	"AnswerPrice.Output":                             "answers.prices.<model>.output",
+	"AnswerPrice.CacheWrite":                         "answers.prices.<model>.cache_write",
+	"AnswerPrice.CacheRead":                          "answers.prices.<model>.cache_read",
+	"AnswerBounds.Answer":                            "answers.bounds.answer_seconds",
+	"AnswerBounds.ModelCalls":                        "answers.bounds.model_calls",
+	"AnswerBounds.OutputTokens":                      "answers.bounds.output_tokens",
+	"AnswerBounds.GHCall":                            "answers.bounds.gh_seconds",
+	"AnswerBounds.GHOutputChars":                     "answers.bounds.gh_output_chars",
+	"AnswerBounds.GHCalls":                           "answers.bounds.gh_calls",
+	"AnswerBounds.Concurrent":                        "answers.bounds.concurrent",
+	"AnswerBounds.DailyUSD":                          "answers.bounds.daily_usd",
 	"Config.Hooks":                                   "hooks",
 	"Hook.Name":                                      "hooks[].name",
 	"Hook.On":                                        "hooks[].on",
@@ -191,6 +209,12 @@ var settingsExcluded = map[string]string{
 	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
 	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `--check-config` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"AnswerCredential.File":           "the path of a file holding a credential: a model provider's key",
+	"AnswerCredential.Command":        "the source of a credential: the command that prints a model provider's key",
+	"Answers.ConversationStore":       "the daemon's own connection to the conversation store: the path of a file holding its URL, or the login the daemon signs in as",
+	"ConversationStore.DSNFile":       "the path of a file holding a credential: the conversation store's URL, password and all",
+	"ConversationStore.Database":      "the instance and IAM login behind the daemon's conversation store, left out as runtime.kubernetes.session_database is",
+	"Tmux.SessionDSNFile":             "the path of a file holding a credential: the tmux session database's URL, password and all",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
 	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
@@ -232,14 +256,15 @@ func TestSettingsOfClassifiesEveryConfigField(t *testing.T) {
 }
 
 // The tmux block shows the runtime whose claims the daemon takes over, and leaves the key out when
-// the file names none.
+// the file names none; its session store is always shown, `files` where the file names none.
 func TestTheTmuxSettingsShowTheTakeOver(t *testing.T) {
 	for _, tc := range []struct {
 		block *config.Tmux
 		want  string
 	}{
-		{&config.Tmux{TakeOver: config.TakeOverKubernetes}, `{"pane_env":[],"pi_config_files":[],"take_over":"kubernetes"}`},
-		{&config.Tmux{}, `{"pane_env":[],"pi_config_files":[]}`},
+		{&config.Tmux{TakeOver: config.TakeOverKubernetes}, `{"pane_env":[],"pi_config_files":[],"take_over":"kubernetes","session_store":"files"}`},
+		{&config.Tmux{}, `{"pane_env":[],"pi_config_files":[],"session_store":"files"}`},
+		{&config.Tmux{SessionDSNFile: "/etc/legion/session-dsn"}, `{"pane_env":[],"pi_config_files":[],"session_store":"postgres"}`},
 	} {
 		encoded, err := json.Marshal(tmuxSettingsOf(tc.block))
 		if err != nil {
@@ -272,6 +297,7 @@ var settingsFixturePlanted = []string{
 var settingsForbiddenKeys = []string{
 	"postgres_dsn", "private_key", "private_key_command", "private_key_secret", "token_command",
 	"kubeconfig", "context", "session_dsn_secret", "session_database", "pod", "env", "volumes", "volume_mounts", "service_account",
+	"api_key_file", "api_key_command", "conversation_store", "dsn_file", "user",
 	// A hook's own words, which the settings leave out whichever key the file writes them in.
 	"prompt",
 }
@@ -441,6 +467,78 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 }
 
+// settingsAnswersBlock is an `answers` block for settingsFixtureFile's postgres session store,
+// planting each credential source and file path the block can hold, and userinfo on one base URL.
+// The state golden's fixture stays without it, so the golden pins the shape a deployment with the
+// loop off serves.
+const settingsAnswersBlock = `answers:
+  providers:
+    anthropic: {base_url: "https://legion:fixture-gateway-password@gateway.internal.example/anthropic/", api_key_file: /var/run/legion/ANTHROPIC_MODEL_KEY}
+    openai: {base_url: https://gateway.internal.example/openai, api_key_command: cat /var/run/legion/fixture-openai-key-command}
+  prices:
+    anthropic/claude-opus-5-5: {input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}
+    openai/gpt-6.1: {input: 1.25, output: 10, cache_write: 0, cache_read: 0.125}
+  conversation_store: {dsn_file: /var/run/legion/CONVERSATIONS_DSN}
+  bounds: {model_calls: 3, daily_usd: 12.5}
+`
+
+// An `answers` block reaches the settings as each provider's base URL, its userinfo masked, and
+// the name of its key's source; the prices; and every bound, the defaults filled in. No key, key
+// command, key file, conversation store file or credential-shaped key reaches the wire.
+func TestSettingsOfAnAnswersBlockCarriesNoCredential(t *testing.T) {
+	settings := SettingsOf(loadSettingsFile(t, settingsFixtureFile+settingsAnswersBlock))
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	answers := keysOf(t, keysOf(t, encoded)["answers"])
+	assertKeys(t, "settings.answers", answers, []string{"providers", "prices", "bounds"})
+	assertKeys(t, "settings.answers.providers.anthropic", keysOf(t, keysOf(t, answers["providers"])["anthropic"]), []string{"base_url", "api_key_source"})
+
+	want := &AnswersSettings{
+		Providers: map[string]AnswerProviderSettings{
+			"anthropic": {BaseURL: "https://xxxxx@gateway.internal.example/anthropic", APIKeySource: "api_key_file"},
+			"openai":    {BaseURL: "https://gateway.internal.example/openai", APIKeySource: "api_key_command"},
+		},
+		Prices: map[string]AnswerPriceSettings{
+			"anthropic/claude-opus-5-5": {Input: 5, Output: 25, CacheWrite: 6.25, CacheRead: 0.5},
+			"openai/gpt-6.1":            {Input: 1.25, Output: 10, CacheWrite: 0, CacheRead: 0.125},
+		},
+		Bounds: AnswerBoundsSettings{
+			AnswerSeconds: 180, ModelCalls: 3, OutputTokens: 4000, GHSeconds: 30, GHOutputChars: 60000, GHCalls: 20,
+			Concurrent: 4, DailyUSD: 12.5,
+		},
+	}
+	if !reflect.DeepEqual(settings.Answers, want) {
+		t.Errorf("answers = %+v, want %+v", settings.Answers, want)
+	}
+
+	for _, planted := range []string{
+		"fixture-gateway-password", "/var/run/legion/ANTHROPIC_MODEL_KEY", "fixture-openai-key-command",
+		"/var/run/legion/CONVERSATIONS_DSN",
+	} {
+		if !strings.Contains(settingsAnswersBlock, planted) {
+			t.Errorf("the test names %q, which settingsAnswersBlock does not plant", planted)
+		}
+		if bytes.Contains(encoded, []byte(planted)) {
+			t.Errorf("settings carry %q: %s", planted, encoded)
+		}
+	}
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range everyKey(document, "settings") {
+		if _, path := settingsPathKeys[key]; path {
+			continue
+		}
+		name := key[strings.LastIndex(key, ".")+1:]
+		if slices.Contains(settingsForbiddenKeys, name) || strings.HasSuffix(name, "_file") {
+			t.Errorf("settings carry the key %s", key)
+		}
+	}
+}
+
 // endpointOf keeps an address's scheme, host and path and masks its userinfo, a user alone or a
 // user and password, as xxxxx@; "" stays "", and an address that yields no scheme and host is xxxxx
 // whole.
@@ -491,8 +589,8 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 	if settings.ReviewRoundCap != 3 || settings.WorkerBootTimeoutSeconds != 120 {
 		t.Errorf("review_round_cap %d, worker_boot_timeout_seconds %d; want the defaults 3 and 120", settings.ReviewRoundCap, settings.WorkerBootTimeoutSeconds)
 	}
-	if settings.Runtime.Name != "tmux" || settings.Runtime.Kubernetes != nil {
-		t.Errorf("runtime = %+v, want tmux with no kubernetes block", settings.Runtime)
+	if settings.Runtime.Name != "tmux" || settings.Runtime.Kubernetes != nil || settings.Runtime.Tmux != nil {
+		t.Errorf("runtime = %+v, want tmux with no kubernetes block and no tmux block", settings.Runtime)
 	}
 	if settings.GitHubApps != nil {
 		t.Errorf("github_apps = %+v, want none", settings.GitHubApps)
@@ -503,7 +601,7 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 			t.Errorf("%s = %s, want %s", key, got, want)
 		}
 	}
-	for _, absent := range []string{"advertise_host", "omp_invocation", "instructions", "dispatch_url", "github_apps"} {
+	for _, absent := range []string{"advertise_host", "omp_invocation", "instructions", "dispatch_url", "github_apps", "answers"} {
 		if raw, present := top[absent]; present {
 			t.Errorf("%s = %s, want absent", absent, raw)
 		}
@@ -523,6 +621,27 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
 	if set.ReviewRoundCap != 5 {
 		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
+	}
+}
+
+// A tmux file whose panes keep their sessions in Postgres shows runtime.tmux.session_store beside
+// the block's other settled keys, and never the path of the file holding the session database's
+// URL.
+func TestSettingsOfATmuxSessionDatabaseShowsTheStoreAndNotItsFile(t *testing.T) {
+	const dsnFile = "/var/run/legion/TMUX_SESSION_DSN_FIXTURE"
+	settings := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"runtime: {tmux: {session_store: postgres, session_dsn_file: "+dsnFile+"}}\n"))
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	runtimeKeys := keysOf(t, keysOf(t, encoded)["runtime"])
+	assertKeys(t, "settings.runtime", runtimeKeys, []string{"name", "tmux"})
+	assertKeys(t, "settings.runtime.tmux", keysOf(t, runtimeKeys["tmux"]), []string{"pane_env", "pi_config_files", "session_store"})
+	if settings.Runtime.Tmux == nil || settings.Runtime.Tmux.SessionStore != "postgres" {
+		t.Errorf("runtime.tmux = %+v, want session_store postgres", settings.Runtime.Tmux)
+	}
+	if bytes.Contains(encoded, []byte("TMUX_SESSION_DSN_FIXTURE")) {
+		t.Errorf("settings carry the session database's URL file: %s", encoded)
 	}
 }
 

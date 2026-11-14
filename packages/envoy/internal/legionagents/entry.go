@@ -4,8 +4,8 @@
 // the listener's PUT routes; Dispatch reads it through the GET routes (cmd/listener/api.go).
 //
 // Key layout. session.<session_id> holds the entry, and two index keys hold the same entry JSON:
-// issue.<ISSUE>.<session_id> and role.<role_token>.<session_id>. project.<legion_project> is
-// reserved for the daemon's own record (INFRA-204), and no read here reaches it: every read is a
+// issue.<ISSUE>.<session_id> and role.<role_token>.<session_id>. project.<legion_project> is the
+// daemon's answering record (Project, INFRA-204), which no agent read reaches: every one is a
 // session key or an issue or role prefix. A write claims the session key first, by compare-and-swap,
 // and writes the index keys after it, so a session two writes race for is listed under the winner's
 // issue alone. Nothing is ever deleted, so a closed issue's agents keep their entries and no read
@@ -47,6 +47,30 @@ type Entry struct {
 	// RecordedAt is when the listener first recorded the session, RFC 3339 UTC. The listener sets
 	// it; a writer's value is ignored.
 	RecordedAt string `json:"recorded_at"`
+	// Finished is whether the session's issue has left the workflow, so no later holder of its
+	// role token will come: the issue is closed or done, parked, or its tree retired or lingering
+	// after its close. The daemon's mirror sets it from the issue's state it records, and writes
+	// the entry again whenever that changes, in either direction. It is false by default, and a
+	// writer that never states it leaves every entry of its project unfinished.
+	//
+	// A message to a role nobody holds reads it (handOffToLegion): an unfinished role's message
+	// is kept on the role's kept lane for the next worker of that phase, while a finished role's
+	// is handed to the daemon, because no holder is coming for it.
+	Finished bool `json:"finished,omitempty"`
+	// Released is whether the session's claim is suspended by idle release: the daemon released
+	// its idle issue pod (dispatch://INFRA-945) and kept the session, its phase and its pending
+	// task, so the next message to the session or its role is a wake that brings the pod back and
+	// resumes that very session, not a question for the daemon's answer loop. The daemon's mirror
+	// sets it from the claim's state each minute, and writes the entry again whenever that changes,
+	// in either direction. It is false by default.
+	//
+	// Every hand-off reads it (answeringAgent): a released session is never handed off, on the
+	// session path or the role path, so its message gets exactly what it got before the hand-off
+	// existed - the send route's 404 beside its wake, the give-up's no_holder notice beside its
+	// wake, the interest path's refusal - and the wake reaches the worker. The routes decode an
+	// entry leniently (decodeLegionAgentBody), so a listener older than this field ignores it and
+	// hands such a session off as it did before.
+	Released bool `json:"released,omitempty"`
 }
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by
@@ -185,11 +209,8 @@ func Validate(entry Entry) error {
 	if err := ValidateSessionID(entry.SessionID); err != nil {
 		return err
 	}
-	if len(entry.LegionProject) > maxProjectBytes {
-		return invalid("legion_project is %d bytes, past %d", len(entry.LegionProject), maxProjectBytes)
-	}
-	if !projectTokenPattern.MatchString(entry.LegionProject) {
-		return invalid("legion_project %q is not a Legion project token (lower-case letters and digits)", entry.LegionProject)
+	if err := ValidateProject(entry.LegionProject); err != nil {
+		return err
 	}
 	if err := ValidateIssue(entry.Issue); err != nil {
 		return err

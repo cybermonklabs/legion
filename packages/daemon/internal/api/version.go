@@ -1585,4 +1585,19 @@ package api
 // main's 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118
 // (#3659), 119 (#3712), 120 (#3993), 121 (#3519) and 122 (#2230); 123 is the lowest number above
 // them all.)
-const DaemonAPIVersion = 123
+//
+// 126: INFRA-204 -- api.State gains `questionsForController`, every question to a stopped agent
+// that the daemon's answer loop passed to the controller in the last seven days (id, issue, role,
+// session, asker, ref, reason, passedAt), newest first and at most 100: the controller's
+// `agent-question` notice is a live wake only, so a controller that starts later reads what it
+// missed here. Never null, and the 126 reader requires it, so a 126 plugin refuses the state of a
+// daemon below 126; the boot gate and `legion probe-image` refuse the mixed pair. (This branch
+// took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main
+// stood at 57, then 59 while main stood at 58, then 60 while main stood at 59, then 61 while main
+// stood at 59 and #2539 and #2731 also declared 60, then 122 while main stood at 111. It takes 126
+// because main stood at 123 (#3793) and #4021 and #4030 declared 124 and 125, so 126 is the lowest
+// number above main's that no open pull request declares, as
+// .github/scripts/check-daemon-api-contract.sh names it. main held 123 at the forward merge that
+// renumbered this entry, main's 25f3e38a; read main's own number again at the next merge rather
+// than from this line.)
+const DaemonAPIVersion = 126

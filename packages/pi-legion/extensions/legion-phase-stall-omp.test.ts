@@ -161,6 +161,7 @@ const STALL_STATE = {
   },
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
+  questionsForController: [],
 };
 
 const cleanup: Cleanup = [];

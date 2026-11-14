@@ -129,9 +129,9 @@ func readCredentialRequest(r io.Reader) map[string]string {
 // repository repo (ghconfig.RepositoryDir): the repository's own, `<owner>/<repo>`, whose token
 // reaches that one repository, where the bundle holds it, and the owner's own otherwise. That
 // helper normalizes the name for a directory (ghconfig.RepositoryName), so a caller — the gh
-// wrapper's target (gh_selectors.go) as much as a git credential request's path — may hand it as
-// it was given it; the gh wrapper keys a repository by that same name as it reads a command, so
-// two spellings of one repository are one repository, and normalizing it again there changes
+// wrapper's target (internal/ghroute) as much as a git credential request's path — may hand it
+// as it was given it; the gh wrapper keys a repository by that same name as it reads a command,
+// so two spellings of one repository are one repository, and normalizing it again there changes
 // nothing for any name GitHub holds.
 // A repo no bundle directory could be named for (ghconfig.IsDirName) is one the bundle holds
 // none for, so the owner's is answered rather than a refusal. An owner the bundle holds no

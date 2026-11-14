@@ -186,6 +186,13 @@ Each item below names a script, then what it proves.
   and, the pod deleted, its replacement installs its own generation's copy and runs `claude --resume <that id>` on the transcript its launcher restored from the table, its earlier bytes unchanged, and an earlier marker quoted back out of its context.
   Devbox only
 
+- `answer-loop.sh`
+
+  the answer loop (INFRA-204, acceptance A1-A10, A12-A19) on the branch's daemon, listener and Dispatch with real Anthropic models, under both tmux conversation stores (`files`, then `session_store: postgres`):
+  stopped agents with real conversations about decisions `answer-loop/questions.json` records, a boot that records them and mirrors them to the listener's Legion agent registry, and one check per criterion with its evidence and a negative control, ending in a PASS / FAIL / WAITING summary that names what each waiting criterion waits on.
+  A13 compares a stopped agent's `404`s and failed Dispatch deliveries with the base commit's binaries byte for byte.
+  Runs in a Legion issue pod (no docker, no root) and on a devbox; the answering criteria need both role Apps' keys, and A3's second leg drives Playwright's Chromium against the SPA this checkout builds and this run's Dispatch serves
+
 - `verifiers-staging-token.sh`
 
   `dispatch` and the Envoy listener authenticate a projected service-account token the staging EKS cluster actually minted
@@ -1296,6 +1303,290 @@ kubectl --kubeconfig "$kubeconfig" --context '<restricted context>' -n legion au
 The last line is the identity check: its list holds `sandboxes.agents.x-k8s.io` with `create`, `get`, `list`, `watch`, `patch` and `delete`, and none of the operator context's own rights.
 Name the file as `LEGION_E2E_RUNTIME_KUBECONFIG` and the context as `LEGION_E2E_RUNTIME_CONTEXT`, and name the cluster's admin context as `LEGION_E2E_OPERATOR_CONTEXT` (default `production`) when it has another name.
 A token that expires mid-run takes the runtime's access with it, so its duration must outlast the whole run.
+
+## answer-loop.sh
+
+```sh
+LEGION_E2E_ANTHROPIC_KEY_FILE=<file holding the key> LEGION_E2E_MODEL_BASE_URL=<the endpoint it is for> \
+  LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND='<command that prints the implement App PEM private key>' \
+  LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
+  LEGION_E2E_REPO_SECOND_OWNER=<owner/name> \
+  bash scripts/e2e/answer-loop.sh     # → a summary of every criterion; exit 0 when none FAILs
+```
+
+The live proof of the daemon's answer loop (docs/kubernetes.md, "The answer loop"):
+the branch's `legion`, `envoy-listener` and `envoy-dispatch`, built from the checkout, run on this host with real Anthropic models, once under `runtime: tmux`'s files store and once under `runtime.tmux.session_store: postgres`, each pass with its own project, database and state directory.
+It needs no docker, no root and no psql or tmux on the host, so it runs in a Legion issue pod as well as on a devbox.
+CI does not run it.
+
+**What it brings up**, every piece pinned and kept in a cache (`$TMPDIR/legion-e2eal-cache`) between runs, and every process stopped by its exact pid on exit:
+
+- Postgres 17 from the zonky embedded-postgres jar (`embedded-postgres-binaries-linux-amd64` 17.6.0, unpacked with Python's `lzma`, sha256 pinned), with Debian trixie's `postgresql-17-pgvector` 0.8.0 copied into it, since Dispatch's migrations create the `vector` extension ([the INFRA-42 note](../../docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md) ran Dispatch on Debian's packages for the same reason).
+  One server holds Dispatch's databases, each daemon's, and the session database the postgres pass's panes keep their Oh My Pi sessions in.
+  SQL goes through Bun's own Postgres client.
+
+- `nats-server` v2.10.29 (`packages/envoy/go.mod`'s pin), installed with `go install` so its pid is its own;
+  tmux 3.5a from Debian's packages with a wrapper binding its libraries when the host has none ([the worker-pod note](../../docs/solutions/testing/a-worker-pod-ships-no-go-or-tmux-provision-them-under-home-each-relaunch-and-record-every-figure-in-the-handoff.md));
+  Claude Code at the repository's own `.claude-code-pin` (`bun add --exact`, the release `.github/actions/install-claude-code` installs);
+  Oh My Pi from `LEGION_E2E_OMP_BIN`, else `/opt/omp/bin/omp`, else the `.omp-pin` mise resolves (the run prints which, and the pin beside it, since a pod's build can differ from the pin).
+
+- [`lib/recording-proxy.ts`](lib/recording-proxy.ts), in front of the model route's own endpoint:
+  every model call of the run, the agents' (`/tag/agents`), Claude Code's (`/tag/claude-<store>`) and the daemon's loop's (`/tag/daemon-<store>`), goes through it, and each request and response body is a line of `model-calls.jsonl` in the evidence, the key redacted.
+  All three send their key as `x-api-key` and none can be told otherwise, so under `LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND`, whose gateway reads `Authorization: Bearer`, the run starts the proxy with `--api-key-as-bearer`:
+  a forwarded request's `x-api-key` is dropped and its value sent as `Authorization: Bearer <token>`, and the record keeps both headers `<redacted>`.
+  That translation is for that route alone; every other run forwards the headers as they arrived.
+  A label's ordinal counts every request it proxies, and not all of them are model calls:
+  Claude Code sends a `HEAD /api/hello` reachability preflight as each session starts and an Oh My Pi agent a `GET /v1/models`, both with no body.
+  A check that waits for an agent's next model call, or reads the request it sent, counts and selects the requests that carry a `messages` body (`proxy_count`, `first_request_after`);
+  a hold names an ordinal (`proxy_ordinal`).
+  A hold file per label stops a label's calls past a given ordinal (`<label>.held` names each waiting one), which is how A7 and A18 put an operator's resume or a daemon's kill between a `gh` call and the reply;
+  a stand-in file answers one label with a reply of the proof's own:
+  A12's reply out of form and its first reply that calls the `gh` tool, the two model steps no real model gives on demand.
+
+- [`lib/envoy-inbox.ts`](lib/envoy-inbox.ts):
+  the inbox of the run's two stand-in sessions, a core NATS subscriber (`--nats`, `--record`, one `--watch <session>=<subject>[,<subject>]` each).
+  It watches the asker's own subject, `notifications.agent.<asker>`, and both passes' controller lanes, `notifications.legion.<project token>.controller`, and writes each envelope that lands there as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the payload, `Topic: …`), the same dedupe key never twice.
+  Neither subject can be heard through the listener:
+  it delivers nothing to a port of a session's own (`/v1/interests/subscribe` refuses `port`) and drops a private stream subject, the controller lane included, from a registration.
+
+- The listener and Dispatch (`DISPATCH_IDENTITY=header:X-Dispatch-User`), the scratch Dispatch project mapped to `sjawhar/legion-smoke` (and to `LEGION_E2E_REPO_SECOND_OWNER` when given), and each daemon, all started with `env -i` and every variable named, so a pod's own `ENVOY_*`, `DISPATCH_*`, `LEGION_*` and model keys reach none of them.
+  The daemon's `PATH` starts with the run's tmux and the first compiled `gh` on the host's `PATH` (a pane's first `gh` is the `legion
+  gh` wrapper script, which the daemon refuses).
+  Ports are picked below the kernel's ephemeral range from `/proc/net/tcp`, since `lib/free-port.sh` needs `ss` and a range above 21000, and a pod has neither.
+
+- Only for A3's conversation-page leg, the one surface of this proof that is a page:
+  Dispatch's SPA, built from this checkout (`bun run build:web` into `packages/dispatch/web/dist`, which Dispatch serves as `DISPATCH_WEB_DIST`), and Playwright's own Chromium, installed once under `PLAYWRIGHT_BROWSERS_PATH` — the caller's when it names one, else the run's cache, never a pod's home directory, whose disk a browser fills.
+  A run with no workflow (no review App grant, so every answering criterion only waits) and a run narrowed past A3 build and install neither, and Dispatch then serves its API alone.
+  Do not run `bun run build:web` or `bun run e2e` in this checkout while a run is live: either rewrites that directory under the Dispatch process.
+
+The daemon's `answers` block names the model route's endpoint through the proxy, keyed by the route's own key file or key command, with the list prices (`claude-opus-5-5` 5/25/6.25/0.5 and `claude-sonnet-5-5` 3/15/3.75/0.3 USD per million input, output, cache-write and cache-read tokens) and the default bounds;
+the postgres pass adds `runtime.tmux.session_store: postgres` with a `session_dsn_file` on the embedded Postgres.
+
+**The stopped agents, and why this way.**
+The agents are real Oh My Pi panes (and Claude Code panes) the daemon launches through its own claim path, the operator's `legion claims spawn`, with a short role prompt and the decision as their first task, on Dispatch issues of the pass's project.
+That is the cheapest real path: the daemon's workflow would also give each agent a workspace, pushes to the smoke repository and phases to wait out, while a claim's pane registers, claims its Envoy role, titles itself `Legion <role> · <ISSUE>` and keeps its conversation in the pass's store exactly as a workflow's does.
+The rig's issues are a person's (no `legion` label), so the workflow admits none of them.
+An operator's spawn opens a tree's lifecycle only for its root architect, so every tree's architect is spawned first (with no task where the tree needs none).
+Each agent is stopped the way the spec's kinds are made:
+
+- the architect, root of the tree: suspended, as a person parking the tree leaves it; with the workflow on it first opens the Dispatch ask A1 replies on;
+
+- the planner, on a child: stopped (retired), as a closed child's claim ends;
+
+- the tester, on a child: suspended, then its claim's session forgotten as the workflow's issue close forgets it, through the daemon's own operator route (`legion claims forget-session`, which takes the session being abandoned so a newly registered one cannot be cleared by mistake), resumed under a new session that takes a second task (and, with the workflow on, opens the ask A6's first leg replies on), and suspended again: the first session is the replaced one;
+
+- a Claude Code reviewer the **base commit's** daemon runs, on a child of a tree of its own (the pre-change tree, its architect spawned with no task and suspended with it), on the pass's database and state directory before the branch's daemon boots on both, as an upgrade does:
+  the branch's boot finds it only by its title, the conversation from before the change that A2 names.
+  The base commit (`LEGION_E2E_BASE_REV`, default `main@origin`) is built once from a `git archive` of it, its three binaries and installed workspace kept in the cache under `base-<commit>`, with that commit's plugins in a profile of its own.
+
+**The issues' workspaces.**
+With the workflow on, an operator's spawn spec carries the repository the project's mapping gives the issue, `sjawhar/legion-smoke`, and the tmux runtime then works in the issue's jj workspace, `<state>/workspaces/sjawhar/legion-smoke/<issue lower-cased>` (`workspace.Location`), which must exist already:
+the workflow's outbox provisions it only for an issue it admits.
+So before each spawn, the pre-change ones included (the branch's daemon resumes that reviewer in A10), the run provisions the issue's workspace as an issue pod's init containers do, with the branch's own `legion workspace-init`:
+`fetch` fills the pass's feed from GitHub once (`LEGION_REPOSITORY_CACHE_URL` unset), under the read-only installation token of the implement App for the smoke repository's owner, released by the App's own `token_command` ([`lib/app-installation.ts`](lib/app-installation.ts)'s `installationFor`) into a 0600 file in the work directory, removed when the fetch ends and never printed;
+`provision --root <state>` then makes the shared clone at `<state>/repos/github.com/sjawhar/legion-smoke` and the issue's workspace on `legion/<ISSUE>` from `main`, with the credential helper a tmux daemon gives its clones (`!legion git-credential`).
+The run refuses a provisioned directory other than the one the runtime looks in.
+Both steps log to `logs/workspaces-<store>.log`.
+Claims-only, a spec has no repository and the runtime makes `<state>/workspaces/<issue>` itself, so the run provisions nothing.
+
+**Session waits.**
+A stopped pane does not unregister its session: its entry in the listener's session bucket lapses with the bucket's 5-minute TTL.
+Every wait for a session to leave (after each agent is made, and in `suspend_agent`) is 420 s long; `resume_agent` waits for the session to be live again.
+A loop renews the run's asker's registration every minute, so a late answer still finds it live:
+the registration carries no port, and the answer published on the asker's own subject is read from NATS by `lib/envoy-inbox.ts`, which also hears each pass's controller lane (the operator launches no controller under tmux), so the controller notices the daemons publish land in `inbox.jsonl` under the stand-in controller's session.
+
+**The checks**, per pass unless said:
+
+- `boot`: the daemon with `answers` set records the pre-change Claude Code conversation as a `scan` row of `agent_conversations`, and the listener's registry holds an entry for each of the architect, planner, replaced tester, tester and pre-change reviewer, on its issue and not live, the replaced tester's `replaced_by` naming the new session;
+  no registry route answered the daemon `404` this boot.
+  `store` (postgres pass): every Oh My Pi pane's session is a row of `omp_session_files`, and no file exists at a claim's session path.
+
+- A1: a person's reply on the parked architect's ask is answered in the thread in its name within four minutes; no claim or pane of the tree starts.
+
+- A2: the tester's role topic, its replaced session and the pre-change session each answer on the asker's topic with the answer key;
+  an unregistered session still answers `404`.
+
+- A3, two legs, both of which must hold.
+  Thread leg: the tester's issue is closed;
+  its role token is read from `GET /issues/{key}/collaborators` (the list the mention picker offers stopped agents from);
+  a person's comment on the closed issue mentions `role:<token>`;
+  the delivery is `sent` to that tester's session and its reply in the thread holds the answer key.
+  Control: a mention of a role no entry names fails as today.
+  Conversation-page leg: the same person, in Playwright's Chromium signed in by the trusted identity header, opens the closed issue's Collaborators tab, reads every Legion agent row it draws, follows the tester's own row (the one no later session replaced) by its link to `/agents/<session>/live`, sends a second question there in the mode the page offers a stopped agent (Aside), and waits four minutes for the answer;
+  it must hold that question's key both on the page's own thread and in the record the page reads (`GET /agents/{session}/messages`).
+  A screenshot per step goes to `a3/<store>/`, and a Collaborators view that names no such tester, or a link that leads elsewhere, is a FAIL naming every row the page drew.
+
+- A4, A5: the planner's reply is `not_answered` / `needs_work`, and `legion state` lists the question in `questionsForController`; the planner stays retired.
+
+- A6: first leg, a person's reply on the replacing tester's ask (a child of the parked tree) decides and asks;
+  the decision reaches the controller stand-in exactly once as an `agent-decision` notice and the daemon logs `answers: decision passed on` once with `to: the controller`.
+  Second leg, a tree whose root architect runs, with a child whose tester opened an ask and was suspended;
+  a person's reply there reaches that architect once (its conversation holds the notice) and not the controller.
+  Each leg's question is answered on the ask's thread with its key.
+  **Departure:** the daemon routes a notice only through the trees it records, and the rig's issues are a person's, so the running tree is written into the daemon's record with the daemon stopped, as admission writes a tree it admits:
+  the root and child `issues` rows (status `in_progress`, phase `implementing`, the Dispatch sequence they are at) and the root's `tree_lifecycles` row, epoch one under the workflow's own authority.
+  Both halves are needed — a tree is live only while that lifecycle stands open, and the next boot's admission pass takes a root at a running status whose tree is not live out of the workflow altogether (`released a root no tree of which runs and nothing would ever start`)
+  — so the tree's architect is spawned before the stop, its operator spawn being what writes the lifecycle row the seeding takes over (an operator's spawn on a tree the workflow holds is refused).
+  The second leg runs only once `legion state` shows the root under `admission.trees` and still at `implementing`, with its architect holding its role again after the restart;
+  otherwise A6 is a FAIL naming the tree that was not live.
+
+- A7: a question to the resumed, running architect reaches its conversation and the daemon logs no `answers:` line;
+  then, suspended again, a question whose loop model call the proxy holds while the claim is resumed is dropped and forwarded (`... the answer is dropped and the question
+  forwarded`, started), reaches the running architect, and nothing is appended or posted.
+  Appended is counted as a delta over the architect's conversation
+  — the `legion-answer` marker entries an append ends with, counted before the question and again after
+  — because this architect was answered before (A1 appended an exchange to the same conversation), so the count must not move, not be zero.
+
+- A8: one envelope sent three times under one idempotency key, the third after a restart:
+  the listener publishes a hand-off for each send, every hand-off carries the envelope's dedupe key as its MsgId (`legion.handoff.<dedupe key>:<subject>`, `cmd/listener/legion_handoff.go`), so the stream stores one copy.
+  One reply on the asker's topic across the three, and the restarted daemon logs no `answers:` line naming that question at all
+  — neither an answer nor a `handed off again`, the question having never been handed to it a second time.
+  A kill -9 the moment the reply lands, a restart and a redelivery still one reply.
+  A question to the planner sent as the replaced tester's session gets the planner's answer, which the listener hands to the daemon because that tester is stopped too (a `listener handed a message to its legion
+  daemon` line naming its session): the loop never answers an answer of its own, so no question and no `answers: answered` line names that tester, no model call's body holds the answer's `legion-answer:<question>` marker and nothing is passed to the controller as `post_refused`;
+  the answer is written into that tester's conversation instead, once
+  — one more `legion-answer` marker entry (`appended_exchanges`), holding the answer's own marker once.
+  A person's edit of A1's comment, on the open root issue (a closed issue refuses every comment edit, `409 ISSUE_CLOSED`), creates no question for the architect.
+
+- A9: two questions at once are answered in order;
+  the resumed architect's first captured request holds each question once, and its conversation holds exactly one appended exchange per question
+  — the `legion-answer` marker entry naming that question id, which each reply carries in its `<!-- legion-answer:<id> -->` marker.
+  The exchange is counted there and not by the answer's own words in the request, because an architect that answered the same thing itself before it stopped holds those words in its own earlier turns.
+  Its turn after the resume quotes both answers.
+
+- A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime:
+  the first request's effort equals the transcript's last `effort`, every thinking signature in the transcript appears byte for byte in it, the second answer's cost line reads `cacheReadTokens >
+  0`, and the resumed reviewer's first model call holds both exchanges once
+  — its first call, not its first proxied request, which is the reachability preflight Claude Code sends as it starts and which holds nothing.
+  The second question is asked once the first answer is posted and ten seconds after that, since a cache entry is not always readable the moment it is written (in the run of 2026-11-08 the second call read 0 tokens of the 2,125 the first had written 2.5 s earlier), and the cache-read clause judges the loop's cache policy, not the provider's propagation delay.
+  Compaction leg: a person's `/compact` from the architect's conversation page (`POST /agents/{session}/messages`, delivery `steer`) puts a `"type":"compaction"` entry in its conversation;
+  a question then is answered from the compacted conversation, and the resumed architect's first request holds that exchange once.
+  The GPT-6.1 leg records WAITING: the OpenAI API is paused (dispatch://OSSV-201/ask/71cd9fe8-913a-409d-a6de-1adae3f6dd19).
+
+- A12: the daemon restarted with each bound in turn (`model_calls: 1`, `answer_seconds: 1`, `output_tokens: 16`, a stand-in reply out of form, `daily_usd: 0.01`):
+  each ends with `answers: question passed to the controller` naming the fault and the daemon's own reply.
+  Two of the five legs are answered by a stand-in reply of the proof's own, each a model step no real model gives on demand:
+  the reply out of form, and the `model_calls` leg's first reply, which calls the `gh` tool, so the one model call that bound allows still called a tool and its `answers: answered` line carries `fault` `model_calls` after `calls` 1.
+  A question cannot be trusted to reach that bound
+  — the loop's prompt tells the model its last call offers no tool and must be the reply, and the `go.mod` question these legs ask is the one A15 had the planner answer earlier in the pass, which the loop answered again from the conversation in one call with no tool.
+
+- A14: every `answers: answered` line of the run
+  — every boot of it, since A12 restarts the daemon five times before this check and its own boot has answered nothing
+  — has a `costUSD` that recomputes from its tokens at the configured prices, cache writes included.
+
+- A15 (before every other check that asks the same question, which is why the pass runs it right after A5):
+  the planner and the Claude Code reviewer answer from `go.mod` at a fixed commit of the smoke repository read with `gh`;
+  the `answers: gh` line names the review App and owner `sjawhar`, and each conversation holds the call.
+  Asked first, neither agent can answer it from its own conversation, so the loop has to call the tool;
+  asked after A8's own-answer leg and A12's five legs, which send the planner that same question, it is one the loop may rightly answer from the conversation with no call at all, and then the check proves nothing.
+  That is how it failed under postgres in the run of 2026-11-08 (question 405247a2…, `calls: 1`, no `answers: gh` line, the planner's own reply saying it had read the file earlier in the conversation) while passing under files, where the model chose to read again.
+
+- A17: a stopped implementer whose conversation holds its smoke pull request (opened by the run as the implement App) posts the asked comment there as the implement App with its session's footer, logged with App and owner;
+  the rig reads the comment back with a read-only implement-App token of its own (**GitHub** below), the one GitHub read its own `gh` cannot make.
+  That leg is the control of the one after it: a stand-in check refusing every call, and a path that wrote nothing at all, each fail it.
+  Then the same implementer is asked for a comment whose body is the run's refusal marker, which the stand-in shared check refuses:
+  GitHub's listing holds the control's own comment and no comment carrying that marker, the agent's reply quotes the check's own reason, and the daemon's `answers: gh call refused by the leak guard` line names the issue, the role, the repository and that reason.
+  Both halves are read, since a case reading the reply alone passes with the guard wired to nothing;
+  and the listing is read for the control's comment, since jq's `all` over an empty array is true, so a listing of nothing, or of another pull request, would otherwise pass the half that is meant to show the write was never made.
+  The pre-change reviewer asked to write to the second owner's repository gets GitHub's refusal and says so.
+
+  The stand-in is the run's own `$work/bin/public-leak-check.sh`, written before the first boot (`install_leak_check`), since the real shared check is a private script no clone of this repository holds and the guard refuses every call it can run no check for:
+  without it the loop's every `gh` call is refused before `gh` starts, so A15, A17, A18 and A19 all depend on that file.
+  The stand-in refuses the run's own marker and clears every other call, so the leg proves the wiring — a refused call is not made, the model is told the check's reason, and the daemon logs it — and never the real check's detection of anything.
+
+- A18: the proxy holds the loop's model call after the comment's `gh` call;
+  the daemon is killed and restarted (one comment, one answer), and in a second run the claim is resumed there (the question is forwarded with the call, one comment, no reply from the loop).
+
+- A19: a smoke pull request, the issue's architect (no task) and a Claude Code reviewer told its round is complete, both suspended.
+  **Departure:** with the daemon stopped the run writes the open round into the daemon's record (issue phase `reviewing`, its tree's `tree_lifecycles` row open under the workflow as A6's is, the reviewer's `phases` row with its claim, handoff commit and completion, the `pull_requests` row at the head), as the workflow writes it when a reviewer completes undecided;
+  driving a tree there with real agents is the stage proofs' work.
+  Without the lifecycle row the next boot's admission pass would take the whole round out of the workflow before the control could read it.
+  Control: a review-App approval whose footer names another session leaves the round open (phase `reviewing`, no decision, `review_seen` 0) over 270 s.
+  Then the stopped reviewer approves with its `gh` tool:
+  the review App's single approval of the head carries its session's footer, the phase leaves `reviewing`, and `review_seen` is that review's id.
+  The rig reads the approvals back as the implement App, as A17 reads the comments (**GitHub** below).
+
+- A13 (after both passes): the bus is snapshotted with the stopped agents in it;
+  the branch's listener, Dispatch and daemon with `answers` removed take, for each pass's architect, an `envoy_send` to its session, a Dispatch message to its session and to its role, and a publish to its role topic;
+  then the bus is restored and the base commit's three binaries take the same four.
+  Each of the eight answers must say what the base commit's says, byte for byte but for the identifiers a listener mints for an event it accepts;
+  the `envoy_send` must be `404` and both Dispatch deliveries `failed`.
+  The role publish is `404` while the role's holder record has only lapsed and `202` once it has aged out of the bus, which is what both stacks then answer.
+  The control is the daemon's own log: with `answers` removed it writes no conversation to the agent registry and no `answers:` line.
+  It does write the project's answering heartbeat, saying it does not answer, so that an operator who removes `answers` stops the listener's hand-offs at the next boot;
+  on a listener without that route the heartbeat is the one 404 the boot shows.
+  Each daemon of this check boots on a project of its own, so each one maps the smoke repository to that project in the Dispatch running then (`map_repo`):
+  a repository names one project at a time, the second pass's own mapping call moved the mapping off the first pass's project, and with the workflow on a daemon whose project maps no repository exits at boot (`project <key>
+  has no repository mapped in Dispatch`).
+  The base stack's Dispatch is a database of its own, so the base daemon's project is created and mapped there too.
+
+- A16 (once): the case-insensitive search for the spec's five phrases over the loop's packages, the daemon's prompts, `skills/`, `docs/` less `docs/plans/` and `docs/solutions/`, and every `AGENTS.md`, each hit printed;
+  a hit fails unless `questions.json` records it as not about the loop.
+  Then `go test ./internal/answer -run TestTheLoopsToolListHoldsGh`.
+
+**The reads.**
+Every read a criterion is judged by — the daemon's log boot by boot, the stopped agents' conversations, the asker's inbox, the listener's log, the recording proxy's records, Dispatch, GitHub and the daemon's own state — lives in [`lib/answer-loop-reads.sh`](lib/answer-loop-reads.sh), which the rig sources.
+A read is the one part of this proof a live run cannot check:
+a read that is wrong reports a pass over evidence that holds nothing, and each round of this proof has had one.
+So [`lib/answer-loop-reads.test.ts`](lib/answer-loop-reads.test.ts) runs every one of them, the same functions under the rig's own `set -Eeuo pipefail`, over fixtures of the shapes a run writes ([`lib/testdata/answer-loop`](lib/testdata/answer-loop), small and synthetic, taken from a real run's evidence).
+Each read is given three things: evidence that must pass, evidence that must fail, and an empty input, which it must judge rather than end the run on under `pipefail`.
+The test needs no model, no network, no Postgres and no NATS, runs in seconds with `bun test scripts/e2e/lib` (the `typescript` job of `ci.yaml`), and fails if a read is put back to a bug it names:
+the reachability preflight counted as a model call, the agent's own words counted as the loop's append, an asks body read as an object, a review id compared as a number, a duplicate under one dedupe key counted as one.
+
+**PASS, FAIL and WAITING.**
+A criterion whose prerequisite is missing records WAITING naming it, each read from the run rather than assumed:
+the daemon's workflow, which carries the answer loop and boots only with two distinct role Apps (without the review App's grant every answering criterion and `boot` wait on it);
+the listener's hand-off, read from the boot's `404` on the heartbeat route;
+INFRA-448's registry routes, read from the checkout (A3); the OpenAI API (A10's GPT-6.1 leg); `LEGION_E2E_REPO_SECOND_OWNER` (A17).
+Everything else that runs records PASS or FAIL, and the run exits non-zero on any FAIL.
+**Departure:** the review role cannot stand in as the implement App to boot the workflow without the review App:
+the daemon refuses it at boot (`the review App names bot login "<login>" and the implement App "<login>"; the workflow needs
+two different Apps`).
+
+**Inputs.**
+`LEGION_E2E_MODEL_ROUTE` picks the model route, as Stage 2's and Stage 3's proofs take it: `key-file`, the default, or `gateway`.
+Under `key-file` the key comes from `LEGION_E2E_ANTHROPIC_KEY_FILE`, `LEGION_E2E_CLAUDE_KEY_FILE` or `ANTHROPIC_API_KEY`, and the endpoint it is for from `LEGION_E2E_MODEL_BASE_URL` or `ANTHROPIC_BASE_URL`, Anthropic's own when neither is set;
+the key is copied once into a 0600 file in the work directory, held to `model_key_preflight` ([`lib/model-endpoint.sh`](#libmodel-endpointsh):
+the endpoint takes it and refuses a call without one), unset from the run's environment and never printed, and the agents' key command, Claude Code's `apiKeyHelper` and the daemon's `api_key_file` all read that copy.
+The work directory goes on every exit.
+Under `gateway` the endpoint is `LEGION_E2E_MODEL_GATEWAY_URL` and one key command keys all three, the daemon's answers block through `api_key_command`: `hawk-token`, or the shell text `LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND` holds.
+That input is for a gateway keyed by a short-lived bearer rather than by a hawk login — a CI runner's federated identity, say, whose token expires long before a run of this length ends — and with it set `hawk-token` is not required.
+`prerequisites` writes the text into a `0700` script of the work directory, never the evidence, removed with that directory on exit.
+The script carries this shell's `PATH`, `HOME`, XDG base directories and `DBUS_SESSION_BUS_ADDRESS`, since the daemon runs a key command under `env -i` and a pane's `HOME` is the run's own; a command that needs anything else names it itself.
+Every model call runs it again and nothing is kept, so a token that expires mid-run is never served, and `prerequisites` runs it once before anything is created, refusing a command that fails or prints something no `Authorization` header can carry.
+The token is echoed nowhere and written to no evidence, and the recording proxy sends it on as `Authorization: Bearer <token>` ([`lib/recording-proxy.ts`](lib/recording-proxy.ts), `--api-key-as-bearer`), the header shape none of the three clients can be told to send itself.
+
+The App inputs are [`lib/github-apps.sh`](#libgithub-appssh)'s, and both role Apps come from their own key commands:
+`LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND` and `LEGION_E2E_REVIEW_APP_KEY_COMMAND`, each shell text that prints that App's PEM private key on stdout, are required and have no default.
+`prerequisites` runs each once, here on the driver, in the operator's own environment — so a command may read their `HOME`, their own gcloud or kubectl configuration and any variable of their shell — into `$work/app-key/<role>/key.pem`, 0600 in a directory of mode 0700, and every token of the run is minted from those two files:
+the daemon's, through each App's `private_key_command`, a `cat` of its own file that the daemon runs again at every load, and the rig's own, which [`lib/app-logins.ts`](lib/app-logins.ts), [`lib/app-installation.ts`](lib/app-installation.ts) and [`lib/smoke-pull-request.ts`](lib/smoke-pull-request.ts) sign an App JWT with and mint an installation token from.
+The run asks the secrets broker for nothing, so it needs no `agent-secrets` on `PATH` and files no request in anyone's inbox.
+The cleanup removes that directory on every exit, after the GitHub undo that mints from it, and `app_key_left` fails the run when anything of it is left.
+The run proves the implement App against GitHub (`check_github_apps`) and installed on the smoke repository with `lib/app-installation.ts`, whose `GET /installation/repositories` under that owner's own installation token names exactly the repositories the installation is on, stopping there when the smoke repository is not one.
+The daemon's workflow boots only with two distinct Apps, and the answer loop runs in that workflow, so a run given both key commands is in workflow mode and a run missing either runs claims-only:
+the daemon then gets no `dispatch_url` and no `github_apps`, the mode note names the input that was not given, and every answering criterion records `WAITING (needs <that input>)`.
+With the implement key command alone the run still proves that App and its installation;
+with neither it proves no App and reads nothing of GitHub, which a claims-only run writes nothing to anyway.
+`LEGION_E2E_REPO_SECOND_OWNER` (owner/name) is an operator input, never written in the tree.
+`LEGION_E2E_ANSWER_LOOP_EVIDENCE_DIR` and `LEGION_E2E_ANSWER_LOOP_CACHE` move the evidence (default a new directory under `$TMPDIR`) and the cache.
+While a check is being fixed, `LEGION_E2E_ANSWER_LOOP_ONLY` (criteria, e.g. `boot A6 A13`) and `LEGION_E2E_ANSWER_LOOP_STORES` (e.g. `files`) narrow a run;
+the bring-up and the stopped agents are made as always.
+A run that proves the criteria sets neither.
+
+**Evidence**: `transcript.log`, `summary.txt` (one `store|criterion|verdict|detail` line each), `logs/` (each service and daemon), `model-calls.jsonl`, `inbox.jsonl` (the asker's and the controller stand-in's deliveries), `sessions/<store>/` (each agent's conversation as its store holds it), `a3/<store>/` (the conversation-page leg's screenshots:
+the Collaborators view, the conversation it led to, the question sent and the answer, or the step that failed), and `a13/{branch,base}/<store>/` (the bodies A13 compares).
+
+**GitHub.**
+The run reads the smoke repository, and reads it as the implement App:
+it mints a read-only installation token of its own for each read (`smoke_gh`, which `mint_provision_token` mints from the App's key) and hands it to the compiled `gh`, since the rig's own `gh` reads nothing there
+— in a Legion pane the first `gh` on `PATH` is the `legion gh` wrapper, and the pane's token is narrowed to its own owner, so either answers `{"message":"Not Found",…}`, whose body is no array of comments and reads as none.
+Its writes there are A17's, A18's and A19's:
+the pull requests [`lib/smoke-pull-request.ts`](lib/smoke-pull-request.ts) opens as the implement App, the comments the stopped implementer posts, and A19's approvals;
+each pull request and comment is recorded by id and closed (with its branch) or deleted as the implement App on exit.
+Each of those calls acts under the repository owner's installation token, which the App's own key mints and which stays inside that one process.
+A17's one write on the second owner's repository is the reviewer's, which GitHub refuses.
+Claims-only, none of these checks runs and the run writes nothing to GitHub.
+
 
 ## Port admission
 
@@ -5255,14 +5546,20 @@ Its refusal names the variable on stderr and never prints the value.
 
 ## lib/install-model-gateway.sh
 
-Routes a named OMP profile's model turns to the Hawk model gateway (middleman) on the operator's own hawk login, the route a devbox's agent sessions use when it is configured for the gateway (`~/.omp/agent/models.yml`:
-`X-Api-Key: !hawk-token`), so the tmux stage proofs' panes reach Anthropic with no provider key.
+Routes a named OMP profile's model turns to the model gateway, so a proof's panes reach Anthropic with no provider key.
+Two ways to key it, and the caller picks one.
+`--cache-dir` is the Hawk model gateway (middleman) on the operator's own hawk login, the route a devbox's agent sessions use when it is configured for the gateway (`~/.omp/agent/models.yml`:
+`X-Api-Key: !hawk-token`): `hawk-token` mints the key, and it is kept until shortly before it expires.
+`--token-command` is the caller's own command, run again for every model call, for a gateway whose bearer is minted outside this tree (a CI runner's federated identity: [`answer-loop.sh`](#answer-loopsh)'s `LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND`);
+nothing is kept, since such a token expires inside a run.
 Stage 2 and Stage 3 run it under the operator's own `HOME`, before they move any XDG directory of their own.
 
 ```sh
 export LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic
 key_command=$(bash scripts/e2e/lib/install-model-gateway.sh --profile legion-e2e-$$ --home "$work/omp-home" --dest "$work/model-gateway" --cache-dir "$work/model-gateway-cache")
 # → $work/model-gateway/hawk-token
+key_command=$(bash scripts/e2e/lib/install-model-gateway.sh --profile legion-e2e-$$ --home "$work/omp-home" --dest "$work/model-gateway" --token-command "$work/model-gateway-token")
+# → $work/model-gateway/gateway-token
 ```
 
 `LEGION_E2E_MODEL_GATEWAY_URL` is required:
@@ -5291,11 +5588,21 @@ Each item below names a flag, then what it means.
   where the key command keeps the key it minted; created `0700`.
   Refused when it exists and is not an empty directory, so a key left there is never served.
   A private directory of the run, never its evidence: the key is a live gateway credential.
+  One of this and `--token-command` is required.
+
+- `--token-command <path>`
+
+  an executable that prints the gateway's bearer, run again for every call.
+  Refused when it does not exist or is not an executable file, and when `--cache-dir` is given too: this route keeps no key, so there is nothing to cache.
+  Under it `hawk-token`, `flock` and `DBUS_SESSION_BUS_ADDRESS` are not required, and the key command, its log and its call record are named `gateway-token`, `gateway-token.log` and `gateway-token.calls` in place of the three below.
+  The command is the caller's own script and gets none of the operator's environment: whatever it needs, the caller writes into it ([`answer-loop.sh`](#answer-loopsh) does).
 
 It writes `<dir>/hawk-token`, the key command:
 `hawk-token` (resolved on `PATH`) run under the caller's `HOME`, `DBUS_SESSION_BUS_ADDRESS` and XDG base directories (a variable the caller has unset is unset for it), for that one command.
 It appends one line per invocation, one per mint, one per call that got no key and why, and `hawk-token`'s own stderr to `<dir>/hawk-token.log`, and one line per call and its outcome to `<dir>/hawk-token.calls` ([`lib/model-gateway-unserved.sh`](#libmodel-gateway-unservedsh) reads it); stdout carries the key alone.
-The profile's `agent/models.yml` points the `anthropic` provider at `LEGION_E2E_MODEL_GATEWAY_URL` with `apiKey` and `X-Api-Key` both `!exec <dir>/hawk-token` (Oh My Pi runs a `!command` through `/bin/sh -c`, and `exec` makes the key command the process it started, so the call's clock starts when Oh My Pi started it), and its `agent/config.yml` pins every model role, the roles Legion's task agents name included, to `anthropic/claude-opus-4-8`, sets `enabledModels: [anthropic/*]`, disables `amazon-bedrock`, `bedrock-mantle`, `google`, `ollama`, `llama.cpp` and `lm-studio`, and sets `startup.setupWizard: false`, so Oh My Pi opens no setup wizard in the fresh profile, whatever setup version its build counts to.
+A `--token-command` route's `<dir>/gateway-token` is the same shape with nothing to mint: it runs the command under `timeout`, logs each invocation and each call that got no token, records the call as `served` or `failed`, and prints the token alone, with every space and tab stripped and anything an `Authorization` header cannot carry refused.
+The profile's `agent/models.yml` points the `anthropic` provider at `LEGION_E2E_MODEL_GATEWAY_URL` with `apiKey` and `X-Api-Key` both `!exec <dir>/<key command>` (Oh My Pi runs a `!command` through `/bin/sh -c`, and `exec` makes the key command the process it started, so the call's clock starts when Oh My Pi started it), and its `agent/config.yml` pins every model role, the roles Legion's task agents name included, to `anthropic/claude-opus-4-8`, sets `enabledModels: [anthropic/*]`, disables `amazon-bedrock`, `bedrock-mantle`, `google`, `ollama`, `llama.cpp` and `lm-studio`, and sets `startup.setupWizard: false`, so Oh My Pi opens no setup wizard in the fresh profile, whatever setup version its build counts to.
+The key goes out in `x-api-key`, which is what the Hawk gateway reads; a gateway that reads `Authorization: Bearer` takes it from the hop the caller already puts in front of the endpoint ([`lib/recording-proxy.ts`](lib/recording-proxy.ts), `--api-key-as-bearer`), which is the one place that translation lives.
 Stdout is the key command's path.
 
 A pane cannot run `hawk-token` itself, which is why the command, and only it, gets the operator's environment.
@@ -5319,6 +5626,7 @@ Its first mint is the preflight, before any pane exists.
 It exits 1 naming the cause when `hawk-token`, `flock` or `timeout` is not on `PATH`, when `DBUS_SESSION_BUS_ADDRESS` is unset, when `lib/model-gateway-url.sh` refuses `LEGION_E2E_MODEL_GATEWAY_URL`, when the keyring is locked (`the operator's keyring is locked, so hawk-token cannot read the hawk login: unlock it (the
 unlock-keyring skill) and rerun`), when the key command gets no key (quoting its own reason:
 the outcome and `hawk-token`'s last stderr line), and when `hawk-token` prints anything but one JWT; an argument refusal exits 2.
+A `--token-command` route needs `timeout` alone, and refuses only a command that fails or prints nothing: its gateway's bearer need not be a JWT.
 The installer runs that one call with `--preflight`, which exempts it from the key command's deadline (below):
 on a machine where `hawk-token` has never run, its first-run build takes about a minute in the foreground, and it happens here rather than inside a pane's ten-second `!command`.
 The key is never printed.
@@ -5944,7 +6252,7 @@ changed` line for a move (`sign_off`, `pull_request_merged`).
 
 Legion's two role Apps as a live proof takes them, sourced by `lib/workflow.sh` (so by every stage proof that sources it) and by Stage 4a directly.
 Each App is an id and one credential, which operator inputs give:
-the implement App's credential is the name of a secrets broker github-app secret, and the review App's is a command that prints that App's private key.
+a command that prints that App's private key, for either role, and for the implement App the name of a secrets broker github-app secret instead, where the run was given no key command for it.
 
 Each item below names an input, then what it names.
 
@@ -5952,37 +6260,41 @@ Each item below names an input, then what it names.
 
   the App's numeric id
 
-- `LEGION_E2E_IMPLEMENT_APP_SECRET`
+- `LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND`, `LEGION_E2E_REVIEW_APP_KEY_COMMAND`
 
-  the github-app secret `agent-secrets` releases the implement App's installation tokens from, as `{"installations":{"<login>":{"installation_id":…,"token":"ghs_…","expires_at":…}}}`
-
-- `LEGION_E2E_REVIEW_APP_KEY_COMMAND`
-
-  shell text that prints the review App's PEM private key on stdout, which the run runs once, on the driver, in the operator's own environment, and the daemon never runs.
+  shell text that prints that role App's PEM private key on stdout, which the run runs once, on the driver, in the operator's own environment, and the daemon never runs.
   It may therefore read the operator's `HOME`, their own gcloud or kubectl configuration and any variable of their shell:
   it is their command, run where they ran the script.
-  What it prints goes to the run's own `review/key.pem`, mode 0600 in a directory of mode 0700, and the review App's `private_key_command` is `cat -- '<that file>'`, the shape a Legion reviewer pod is configured with (`deploy/kubernetes/daemon/legion.yaml.example`, `private_key_command: cat ./review-app.pem`).
+  What it prints goes to the run's own `<role>/key.pem`, mode 0600 in a directory of mode 0700, and that App's `private_key_command` is `cat -- '<that file>'`, the shape a Legion reviewer pod is configured with (`deploy/kubernetes/daemon/legion.yaml.example`, `private_key_command: cat ./review-app.pem`).
 
-  It is required, with no default and nothing behind it, of every run of the six proofs that drive the review App, this deployment's own included:
+  The review App's is required, with no default and nothing behind it, of every run of the six proofs that drive that App, this deployment's own included:
   this repository is public (`AGENTS.md`), so a value a live script needs is a required operator input the script refuses to start without, never a name in the script, and no name of the store a deployment keeps that key in belongs here either.
+  The implement App's is optional, and the one input that chooses that App's credential:
+  given, it is that App's one credential, every token of the run is minted from the key it prints, the broker is asked for nothing, and `LEGION_E2E_IMPLEMENT_APP_SECRET` set beside it is refused by name, since the two name one App's credential two ways;
+  left unset, that App keeps the broker secret below.
+  [`answer-loop.sh`](#answer-loopsh) is the proof that gives both.
 
-  `require_app_inputs review` refuses a value that is unset, empty or whitespace alone.
-  A key command is arbitrary shell text — a `cat` of a file, an `awk` between two markers, a deployment's own secret-store client — so no shape every legitimate command has exists and no positive test can stand.
-  The guard is therefore the refusal of the common pastes of the key where its command goes, and it takes every other value:
-  it refuses a value that is a PEM, one that is base64 of a PEM, and one with three or more lines that are 40 or more base64 characters alone.
-  Each test reads its text with the whitespace, the surrounding quotes and a leading byte-order mark taken out, and the line test one leading `>` as well, so an indented paste, a quoted one, one a mail client quoted line by line, one behind a mark an editor left and a key wrapped at the 76 columns `base64` prints by default are the same value here.
-  The `>` earns its own strip: a key quoted with `> ` before each line holds no line that is base64 alone, so it passed, and `sh` then read each of its lines as a redirection and created an empty file named after that line in the working directory — key text on disk under names no relay can mask, which jj snapshots when a proof runs from the repository root.
-  One `>` is taken off, not every one, so a paste quoted twice (`>> ` before each line) is still taken and still writes its lines to disk that way.
-  Each refusal is its own message, which names the input and prints no part of the value.
-  A command that names a PEM marker is still a command, `awk '/-----BEGIN/,/-----END/' <file>` among them, and so is one carrying a long base64 word.
-  The PEM test is a prefix test — it refuses a value whose text, read that way, begins `-----BEGIN`, and that one begins `awk` — and the two base64 tests ask for base64 characters and nothing else: 200 or more of them as the whole value, or three lines of 40 or more apiece, which is a key's shape and no realistic command's, since a PEM body line is 64 such characters and a `base64` line 76.
-  A paste none of the three catches is run: `sh` echoes back the lines of it that it cannot run, and the key relay below masks a PEM's armour and the body lines of a key at its usual width, but not every shape a key can arrive in.
+- `LEGION_E2E_IMPLEMENT_APP_SECRET`
 
-The three other inputs default to this deployment's own Apps, `legion-implementer` (App ID 5341240, secret `LEGION_IMPLEMENT_APP`, agent tier: no person's grant) and `legion-reviewer` (App ID 5341243), which the lib holds in one place (`default_implement_app_id`, `default_implement_app_secret`, `default_review_app_id`), so a run here sets the key command alone.
+  the github-app secret `agent-secrets` releases the implement App's installation tokens from, as `{"installations":{"<login>":{"installation_id":…,"token":"ghs_…","expires_at":…}}}`, for a run that gave that App no key command
+
+`require_app_inputs` refuses a key command that is unset (the review role's) or set to a value that is empty or whitespace alone (either role's: an input set to an empty value is a command that printed nothing, not a choice of the broker).
+A key command is arbitrary shell text — a `cat` of a file, an `awk` between two markers, a deployment's own secret-store client — so no shape every legitimate command has exists and no positive test can stand.
+The guard is therefore the refusal of the common pastes of the key where its command goes, and it takes every other value:
+it refuses a value that is a PEM, one that is base64 of a PEM, and one with three or more lines that are 40 or more base64 characters alone.
+Each test reads its text with the whitespace, the surrounding quotes and a leading byte-order mark taken out, and the line test one leading `>` as well, so an indented paste, a quoted one, one a mail client quoted line by line, one behind a mark an editor left and a key wrapped at the 76 columns `base64` prints by default are the same value here.
+The `>` earns its own strip: a key quoted with `> ` before each line holds no line that is base64 alone, so it passed, and `sh` then read each of its lines as a redirection and created an empty file named after that line in the working directory — key text on disk under names no relay can mask, which jj snapshots when a proof runs from the repository root.
+One `>` is taken off, not every one, so a paste quoted twice (`>> ` before each line) is still taken and still writes its lines to disk that way.
+Each refusal is its own message, which names the input and prints no part of the value.
+A command that names a PEM marker is still a command, `awk '/-----BEGIN/,/-----END/' <file>` among them, and so is one carrying a long base64 word.
+The PEM test is a prefix test — it refuses a value whose text, read that way, begins `-----BEGIN`, and that one begins `awk` — and the two base64 tests ask for base64 characters and nothing else: 200 or more of them as the whole value, or three lines of 40 or more apiece, which is a key's shape and no realistic command's, since a PEM body line is 64 such characters and a `base64` line 76.
+A paste none of the three catches is run: `sh` echoes back the lines of it that it cannot run, and the key relay below masks a PEM's armour and the body lines of a key at its usual width, but not every shape a key can arrive in.
+
+The three other inputs default to this deployment's own Apps, `legion-implementer` (App ID 5341240, secret `LEGION_IMPLEMENT_APP`, agent tier: no person's grant) and `legion-reviewer` (App ID 5341243), which the lib holds in one place (`default_implement_app_id`, `default_implement_app_secret`, `default_review_app_id`), so a run here sets the key commands alone.
 The review App has no default credential, since the only credential it takes is a key.
 The input that named a broker secret for that App is retired, and a run that still exports it is refused by name when the review role is read, with the key command to set in its place.
-A deployment with its own Apps gives the two ids, stores the implement App's credential as a broker github-app secret and names it, and writes a key command for the review App.
-A deployment whose broker holds no github-app secret for the implement App must set `LEGION_E2E_IMPLEMENT_APP_SECRET`:
+A deployment with its own Apps gives the two ids, writes a key command for each App, or stores the implement App's credential as a broker github-app secret and names it.
+A deployment whose broker holds no github-app secret for the implement App must set `LEGION_E2E_IMPLEMENT_APP_SECRET`, or give that App a key command of its own:
 the broker otherwise serves nothing under the name the default gave, and the check fails naming that role and the input to set.
 
 Two key commands an operator might give, as examples and not as values any script here holds:
@@ -6003,35 +6315,37 @@ the command still runs on the devbox, as it does in every other mode, and only t
 `require_app_inputs ROLE...` reads each role's inputs, taking the default for an id or the implement secret that is unset, and fails naming the input that is set but malformed:
 an id that is not a number of at most 12 digits, or a secret name that is not letters, digits and underscores of at most 64 (so it is safe in a shell command and as a variable name, and a pasted token is refused by its length).
 A refusal never prints the value.
-For the review role it applies the key command's own refusals above, and refuses a run that still exports the retired `LEGION_E2E_REVIEW_APP_SECRET`, naming the key command to set in its place.
+To each role's key command it applies that input's own refusals above;
+for the review role it also refuses a run that still exports the retired `LEGION_E2E_REVIEW_APP_SECRET`, naming the key command to set in its place, and for the implement role a run that sets both `LEGION_E2E_IMPLEMENT_APP_SECRET` and that role's key command.
 With both roles read it also refuses one id for both Apps.
 `app_token_command NAME` prints the token command for the github-app secret `NAME`, `agent-secrets NAME --ttl 12h --reason=legion-live-proof-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$NAME"'`, whose three `${…}` expansions the daemon's `sh` expands:
 the daemon sets `LEGION_GITHUB_OWNER` to the owner it needs a token for (empty for every installation), `LEGION_GITHUB_REPOS` to the repositories of that owner the token may touch, separated by single spaces (one `--github-repo` each, empty where it asks for no narrowing), and `LEGION_GITHUB_READ_ONLY` to `1` for a read-only token (contents, metadata, pull requests and Actions read, the last left out for an installation that does not hold it).
 The `--ttl 12h` is the deployment example's (`docs/deployment.md`): a deployment may hold a role's github-app secret at human tier, a request of one naming no lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one, so without the flag every renewal of such a run would wait for a person again, where with it the approver reads the twelve hours on the card and decides them once.
 It depends on nothing but `NAME`.
 `write_github_apps (--token-dir DIR | --key-dir DIR) ROLE...` writes `$work/github-apps.yaml`, the `github_apps` block a run's `legion.yaml` includes as it is:
-each App's `app_id` and exactly one credential field, which is what the daemon admits (`packages/daemon/internal/config/stage3.go`, `readGitHubApp`) — the implement App a `token_command`, `app_token_command`'s, and the review App a `private_key_command` that reads the run's own key file, `cat -- 'DIR/review/key.pem'`, in any POSIX `sh` (busybox's included).
-The operator's key command is never that field and the daemon never runs it, so a call that writes the review role names the directory that key file goes in, one of the two ways below, or is refused having written nothing;
+each App's `app_id` and exactly one credential field, which is what the daemon admits (`packages/daemon/internal/config/stage3.go`, `readGitHubApp`) — a role read with a key command a `private_key_command` that reads the run's own key file, `cat -- 'DIR/<role>/key.pem'`, in any POSIX `sh` (busybox's included), and an implement App read with a broker secret a `token_command`, `app_token_command`'s.
+The operator's key command is never that field and the daemon never runs it, so a call that writes a role whose credential is a key names the directory that key file goes in, one of the two ways below, or is refused having written nothing;
 a call naming both is refused the same way, since the two name one key file by two routes.
-`--key-dir DIR` resolves the key here:
-this call runs `LEGION_E2E_REVIEW_APP_KEY_COMMAND` once, on the driver, in the caller's own environment, into `DIR/review/key.pem` (0600, in a directory of mode 0700, through `app_token_mint_key`), before a line of the block is written, so a key command that fails leaves no block behind either, and the implement App's `token_command` still runs `agent-secrets`.
-`--token-dir DIR` is the directory `mint_app_tokens` already wrote, which holds that key file and the releases:
-each command reads a file of it with `cat --` instead, the implement App's `token_command` the release file `DIR/implement/${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json`, the owner lowercased and refused unless it is letters, digits and `-`, and the review App's `private_key_command` that same `DIR/review/key.pem`.
+`--key-dir DIR` resolves each key here:
+this call runs that role's `LEGION_E2E_<ROLE>_APP_KEY_COMMAND` once, on the driver, in the caller's own environment, into `DIR/<role>/key.pem` (0600, in a directory of mode 0700, through `app_token_mint_key`), before a line of the block is written, so a key command that fails leaves no block behind either, and an implement App on a broker secret keeps the `token_command` that runs `agent-secrets`.
+`--token-dir DIR` is the directory `mint_app_tokens` already wrote, which holds each key file and the releases:
+each command reads a file of it with `cat --` instead, the implement App's `token_command` the release file `DIR/implement/${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json`, the owner lowercased and refused unless it is letters, digits and `-`, and a role on a key its own `DIR/<role>/key.pem`.
 That second form serves what the refresher minted, which is keyed by owner and the read-only flag alone, so it ignores `LEGION_GITHUB_REPOS` and answers a token over every repository of the owner's installation.
-Either `DIR` must be a path the caller's cleanup removes unconditionally, on every exit, since the App's private key is in it:
+Either `DIR` must be a path the caller's cleanup removes unconditionally, on every exit, since an App's private key is in it:
 not the evidence directory, and not a workspace a failing run keeps for debugging — the rule [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)'s own `--key-dir` states for the model key, and the reason is the same.
 It refuses, writing nothing, a role the last `require_app_inputs` did not read, and the block it writes names commands, never a token and never a key.
 
 In the four tmux proofs — [`stage3-devbox-workflow.sh`](#stage3-devbox-workflowsh), [`stage3-4b13b-acceptance.sh`](#stage3-4b13b-acceptancesh), [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) and [`parked-decision-devbox.sh`](#parked-decision-devboxsh) — that key is `$work/app-key/review/key.pem`, mode 0600 in a directory of mode 0700, and `$work` is a `mktemp -d` under `/tmp`, or under `$TMPDIR` where the proof takes one.
+[`answer-loop.sh`](#answer-loopsh) writes `$work/app-key/implement/key.pem` beside it, since it gives both roles a key command.
 [`stage4b-sandbox-tree.sh`](#stage4b-sandbox-treesh) writes that same file under its own `$work` (`/tmp/legion-e2e4b.<pid>.<random>`), and so does [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh) under `aws-private-ip`, its one pod-reachability mode other than `bridge`:
-six proofs in all leave the review App's private key on the driver for as long as their run lasts.
+seven proofs in all leave a role App's private key on the driver for as long as their run lasts.
 Owner-only there is the operator's own uid, so every process of that uid can read the key, the four tmux proofs' agent panes included:
 a pane runs as the operator, and an agent's own bash can `cat` that file.
 The other two run their agents in pods, so no agent of theirs reads the driver's filesystem at all.
-Each proof's `EXIT` trap removes the key directory first and unconditionally, before anything slower in the teardown can hang, and `app_key_left`, which every one of those traps calls at its end, is what holds it to that:
-the lib's own check that the directory the removal was to take is gone, failing the run when it is still there — `FAIL cleanup: the review App's private key remains in <dir>` on stderr, or, under Stage 4b, the `CHECK app-key: FAIL: …` line its verdict and its exit status carry.
+Each proof's `EXIT` trap removes the key directory unconditionally — first, before anything slower in the teardown can hang, except in `answer-loop.sh`, whose GitHub undo acts as the implement App and mints from that very file, so there the removal follows that one step and everything after it is local — and `app_key_left`, which every one of those traps calls at its end, is what holds it to that:
+the lib's own check that the directory the removal was to take is gone, failing the run when it is still there — `FAIL cleanup: a role App's private key remains in <dir>` on stderr, or, under Stage 4b, the `CHECK app-key: FAIL: …` line its verdict and its exit status carry.
 A private key never expires, so a run that leaves one behind leaves a usable credential on the driver whatever else its teardown did, and fails itself for it.
-A run killed outright — `SIGKILL`, a crashed host — runs no trap at all, so in any of those six the key stays where it was written until a person removes it:
+A run killed outright — `SIGKILL`, a crashed host — runs no trap at all, so in any of those seven the key stays where it was written until a person removes it:
 nothing later in that run removes it, that check never runs, and no run after it removes it either, since [`lib/leftovers.sh`](#libleftoverssh) refuses an earlier driver's leftovers by naming what is still running and removes no directory.
 An operator whose run died that way removes that run's `$work` themselves, the path the run prints when it keeps one (`the run's scratch workspace …`, which the 4b.13b acceptance prints after every outcome, since it keeps its workspace always), and for Stage 4b, which prints no such line, the `/tmp/legion-e2e4b.<pid>.<random>` its own `mktemp -d` made.
 Under `bridge` the key is not under `$work`:
@@ -6042,11 +6356,11 @@ it bakes in `--key-file`'s resolved path, so anyone who can run it reads that ke
 This is the same exposure an operator already takes for the model key, written here for the App key too.
 
 The refresher is for a daemon that can run neither `agent-secrets` nor anything else of the devbox's (the Claude Code sandbox proof's container under `bridge`).
-`mint_app_tokens DIR OWNER...` records the owners the run serves and mints, once and synchronously, the implement App's releases into `DIR/implement/` — `_all.json`, and `<owner>.json` and `<owner>.read.json` for each `OWNER`, lowercased — when the last `require_app_inputs` read that role, since that App is the one whose credential the broker holds, and, when it read the review role, writes that App's private key once to `DIR/review/key.pem`, each directory 0700 and each file 0600.
+`mint_app_tokens DIR OWNER...` records the owners the run serves and mints, once and synchronously, the implement App's releases into `DIR/implement/` — `_all.json`, and `<owner>.json` and `<owner>.read.json` for each `OWNER`, lowercased — when the last `require_app_inputs` read that role with a broker secret, since those are the only credentials the broker holds, and writes the private key of each role it read with a key command once to `DIR/<role>/key.pem`, each directory 0700 and each file 0600.
 Each release, and the key with it, passes from its command's `sh` child to a temporary file of the same directory, and `mv` renames it over the file, so a reader sees the whole old file or the whole new one;
 a mint that fails or prints nothing leaves no temporary file, keeps the last good file, and fails the run naming the App by its role and id — a release also by its secret and `agent-secrets`' exit status, the key by the file it was to be written to and what went wrong — never a token and never a byte of the key.
 `start_app_token_refresher DIR` mints the same release files again every `app_token_refresh_seconds` (900) in the background, keeping the last good files when a round fails, and `stop_app_token_refresher` stops it.
-It never touches `DIR/review/key.pem`: a private key does not expire, and that App has no broker secret to ask for.
+It never touches a `DIR/<role>/key.pem`: a private key does not expire, and a role on a key command has no broker secret to ask for.
 A `DIR` holding anything but letters, digits and `_ . / -` is refused, by `mint_app_tokens` and by `write_github_apps --token-dir` and `--key-dir` alike, since the credential commands carry it in their shell text.
 
 Two relays carry a credential command's stderr to the run's, whole lines only and at most `app_token_release_limit` bytes, and `app_token_mint_command` picks between them by channel: `app_token_redact` for a release mint, and `app_token_redact_key`, which its `key` mode selects, for the operator's key command alone.
@@ -6084,7 +6398,7 @@ A credential command's stderr is not promised to be text, so those bytes are rep
 
 `check_github_apps ROLE...` runs [`lib/app-logins.ts`](#libworkflowsh) `--roles` over `$work/github-apps.yaml` and fails the check unless each App's one credential gives a token whose GraphQL viewer is an App's bot, `<slug>[bot]`, and GitHub's `GET /apps/<slug>`, under that token, answers the configured id and the write permission the role's work needs (the implement role's `contents`, the review role's `checks`):
 a token GitHub does not take is refused by GitHub's 401, an answer naming another id is refused naming both ids, and the two Apps configured the other way round are refused by the permission, since the implement App holds `checks: read` alone.
-The implement App's `token_command` releases that token, and the review App's `private_key_command` prints the PEM that signs an RS256 App JWT, under which `GET /app/installations` names an installation of the App and `POST /app/installations/<id>/access_tokens` mints that installation's token, so a key-configured App is held to every observation a token-configured one is.
+A `token_command` releases that token, and a `private_key_command` prints the PEM that signs an RS256 App JWT, under which `GET /app/installations` names an installation of the App and `POST /app/installations/<id>/access_tokens` mints that installation's token, so a key-configured App is held to every observation a token-configured one is.
 A broker that serves no github-app secret under the name the implement role gave refuses that role's token command outright (`UNKNOWN_SECRET`, `no agent secret has this name`), the one failure of this check whose fix is an input and not GitHub.
 `lib/app-logins.ts` reads that refusal out of the run it already makes, asking the broker nothing of its own, since a probe of a human-tier secret would raise a person's approval card, and names the role and the input to set in place of its reason for that one failure:
 `LEGION_E2E_IMPLEMENT_APP_SECRET` for the implement role, and for a review role, which a hand-written `github_apps.yaml` can still give a `token_command`, the key command `LEGION_E2E_REVIEW_APP_KEY_COMMAND` and the `private_key_command` that reads it, since that App asks the broker for nothing.
@@ -6092,19 +6406,21 @@ It reads the whole of the command's stderr, so a refusal the client prints under
 The key that command prints, and the App JWT it signs, stay in `lib/app-logins.ts`'s own memory: neither is printed, written to a file, or handed to another process.
 No token and no key enters the script's shell or an argv:
 each passes from its command's stdout to an owner-only file of a directory its caller names and removes at teardown, and the commands the block carries read those files.
-The review App's key reaches such a file in every mode, under `$work/app-key` or, under the sandbox proof's `bridge`, beside the releases on the devbox user's tmpfs (`XDG_RUNTIME_DIR`);
+Each key reaches such a file in every mode, under `$work/app-key` or, under the sandbox proof's `bridge`, beside the releases on the devbox user's tmpfs (`XDG_RUNTIME_DIR`);
 a token reaches one only where the daemon can run neither `agent-secrets` nor a key command, which is that `bridge` container, and the run's teardown removes them ([Pod reachability](#pod-reachability)).
 A run refuses before its first write anywhere:
 Stage 3, 4b.13b, the Claude Code backend and Stage 4b check both Apps (`read_app_logins`), Stage 4a, which acts as the implement App alone, checks that one.
 `TestRealGitHubCredentialSurface` sources this lib and runs its `require_app_inputs implement`, `app_token_command` and `check_github_apps implement` (through `liveProofImplementApp` and `proveLiveProofApps` in `packages/daemon/internal/api/real_github_test.go`;
-`proveLiveProofApps` checks the very block the proofs act with), so it holds no copy of the App, its checks or its token command, and it proves the implement App as the stage proofs do before it acts: it takes the implement inputs and no others, so no review input, the key command included, is read for it.
+`proveLiveProofApps` checks the very block the proofs act with), so it holds no copy of the App, its checks or its token command, and it proves the implement App as the stage proofs do before it acts: it takes the implement inputs and no others, so no review input, that role's key command included, is read for it.
+It takes the implement App's broker secret alone, since its harness runs a token command and resolves no key;
+a run that exports `LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND` leaves `implement_app_secret` empty, and `liveProofImplementApp` refuses it by name (`printed field 2 of the implement App empty…`) rather than acting on half a credential.
 Stage 4a hands its Go harness the implement App's id, its secret and that App's `app_token_command`, which the harness's token manager runs with `sh -c`, so it holds no copy of the token command either.
 The checks run in the C locale whatever the caller's, so a UTF-8 locale does not admit fullwidth digits or accented letters.
 `require_app_inputs` also fills `app_key_unsets`, the `env` argument list (`-u NAME` …) every proof passes to a process it starts, so no such process inherits an App credential, the proof human's included.
-It strips the implement App's broker secret name when that role is read — the review App has no broker secret — and the implement default's name;
+It strips the implement App's broker secret name when that role is read with one — a role on a key command has none — and the implement default's name;
 `LEGION_REVIEW_APP`, the broker secret that released the review App's tokens before its key replaced them;
 `GH_REVIEW_APP_PRIVATE_KEY_B64`, the variable an older recipe's `private_key_command` read that key out of;
-`LEGION_E2E_REVIEW_APP_KEY_COMMAND`, which this lib alone reads and whose value may be a key itself, since the refusals above turn back the common pastes but a value that holds a key and still runs — a one-line `printf` of a PEM — is taken, and no process a run starts needs it;
+both `LEGION_E2E_<ROLE>_APP_KEY_COMMAND`s, which this lib alone reads and whose values may be keys themselves, since the refusals above turn back the common pastes but a value that holds a key and still runs — a one-line `printf` of a PEM — is taken, and no process a run starts needs them;
 and every exported variable whose name holds `PRIVATE_KEY`.
 `lib/github-apps.test.ts` drives the functions under a stage script's shell options against a stand-in GitHub that serves GraphQL's viewer, `GET /apps/<slug>` and the two App-JWT routes a key proof takes, those two to a request signed with that App's own key, with a stand-in `agent-secrets`:
 the defaults, an unset input taking its default, an empty one refused rather than read as a choice of the default, a malformed one refused by name with its value unprinted, the review App's key command required and an unset, empty or blank one refused by name, a run that still exports the retired review secret input refused by name, a key command that is the key itself refused with no part of the key printed and the same PEM behind a leading newline or space refused the same way, one that is the key as a single base64 word and one that is the key as `base64` wraps it at 76 columns each refused with no line of it printed, a command that reads the key between its PEM markers and one carrying a long base64 word each taken as the command it is, `app_token_command`'s text and the `--github-owner`, `--github-repo` and `--github-read-only` words it passes only when the daemon sets each variable, `write_github_apps` refusing an unread role and writing the daemon's block (the implement App's `token_command`, the review App's `private_key_command`), `app_key_unsets` leaving no App secret in a child's environment, an answer naming another App id refused naming both ids, a secret the broker does not serve failing the check by its role and its input, the same refusal below the first line of the command's stderr failing it the same way, no token and no key in any message, and a match accepted (`lib/app-logins.test.ts` holds the rows over the helper beneath them: a role's missing write permission refused, a failed token command named by its field, exit code and stderr, that command run without the NATS seeds and with owner, repositories and read-only empty, and an App proved from its key, its two JWT routes asked before the viewer, refused there too for another id or a missing permission, and its key command named by its field, exit code and stderr when it fails or prints nothing);
@@ -6112,6 +6428,8 @@ the six shapes a pasted key arrives in — quoted, behind a byte-order mark, its
 the same six put straight into the variable the key mint reads, as a guard that missed a shape would leave them, with no 20-character head of any line of the key, or of the key's `base64`, reaching the run's output or the file it wrote — 20 is the bound below which the key relay passes a run — the key relay masking a line's PEM armour and base64 while the command's own words pass on, and a release mint reaching the operator with the approval link of a waiting request whole while the key command's relay masks a key's body line;
 the key command's first line reaching the run's stderr while that command is still running, read as it arrives rather than after the exit, with the key the command printed after it still reaching its file whole; the relay writing nothing of its own, the run's stderr holding the command's one masked line and nothing besides, proved behind a stand-in `awk` that warns when it is given `-W` and is the host's own awk otherwise, first on `PATH` for that row alone, since the awk here takes `-W interactive` without a word and a probe that wrongly accepted a warning would pass the row against it; and a key command whose stderr holds NUL bytes bounded at a megabyte all the same, refused with 123, leaving no key file, with the lines that fitted relayed and masked, no NUL byte in the run's stderr and the token the command wrote after them not relayed at all;
 and `mint_app_tokens` writing each release 0600 and atomically and the review App's key once beside them, the broker asked for the implement App's releases alone, a failed or empty mint or key command leaving no file and the last good release, the refresher minting the releases again and never the key and stopping, `write_github_apps --key-dir` running the key command once, here, and writing a block that reads the file it wrote, a call that writes the review role with neither directory flag refused naming both and writing nothing, the two flags together refused as one key file named twice, `write_github_apps --token-dir`'s commands reading the right release file and the key file under busybox `sh`, its block proved with `agent-secrets` broken after the mint, the key reaching its own file and nothing else with the run's teardown leaving neither it nor its directory, and a credential directory unsafe in shell text refused.
+The implement App on a key command of its own has rows beside those: both Apps proved from their own keys with each key file 0600 in a 0700 directory and the stand-in `agent-secrets` never run at all, that role's broker secret set beside its key command refused naming both, its key command held to the same refusals as the review one with no part of the key printed, a call that writes it with neither directory flag refused naming both flags and writing nothing, and `mint_app_tokens` writing one key a role, no release file at all, and a block whose two `private_key_command`s the check then proves.
+
 `app_key_left` names a key directory a teardown left behind, on stderr and as a `CHECK` line, and says nothing once it is gone.
 
 ## lib/namespace-rig.sh

@@ -64,6 +64,8 @@ type workflowRuntime struct {
 	dispatchProject string
 	stateDir        string
 	log             *slog.Logger
+	// answers is the answer loop with `answers` set, nil without it.
+	answers *answering
 	// conn is the Envoy NATS connection. It is written only on run's own goroutine while the
 	// daemon boots, once per connect attempt: connect runs there, inside bootprobe.Run, which
 	// retries it, and a failed attempt stores nil (daemon.go). Every one of those writes is
@@ -623,6 +625,18 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		conn.Close()
 		w.conn.Store(nil)
 		return natsauth.WithLastError(err, conn)
+	}
+	if w.answers != nil {
+		// The answer loop's hand-offs (intake.HandoffSubject): the listener hands this project's
+		// stopped agents' messages to the daemon there.
+		w.answers.handoffs, err = intake.OpenHandoffs(ctx, js, w.pool, intake.HandoffSpec{
+			Project: w.answers.project, AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
+		})
+		if err != nil {
+			conn.Close()
+			w.conn.Store(nil)
+			return natsauth.WithLastError(err, conn)
+		}
 	}
 	w.bootID = fmt.Sprintf("%d", time.Now().UnixNano())
 	return nil
@@ -1321,6 +1335,18 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		w.outbox.Run(store.ForConcurrentWorker(running))
 		return nil
 	})
+	if w.answers != nil {
+		group.Go(func() error {
+			if err := w.answers.handoffs.Run(store.ForConcurrentWorker(running), w.answers.loop.Receive); err != nil {
+				return fmt.Errorf("the answer loop's hand-offs stopped: %w", natsauth.WithLastError(err, w.conn.Load()))
+			}
+			return nil
+		})
+		group.Go(func() error {
+			w.answers.loop.Run(store.ForConcurrentWorker(running))
+			return nil
+		})
+	}
 	group.Go(func() error {
 		w.pollHoldRelease(store.ForConcurrentWorker(running))
 		return nil

@@ -352,6 +352,7 @@ const MOVED_ON = {
   },
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
+  questionsForController: [],
 } satisfies LegionState;
 
 test.skipIf(skip)(

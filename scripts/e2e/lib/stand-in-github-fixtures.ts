@@ -229,8 +229,15 @@ export function standInGitHub(prefix: string): StandInGitHub {
         const signer = signerOf(authorization);
         if (typeof signer === "string") return Response.json({ message: signer }, { status: 401 });
         verified.push(signer.claims);
+        // The installation's own permissions ride with it, as GitHub's do: a mint that narrows
+        // a token to a read asks for what this names and leaves the rest out
+        // (lib/app-installation.ts, readPermissions).
         return Response.json([
-          { id: installationOf(signer.app.id), account: { login: accountLogin } },
+          {
+            id: installationOf(signer.app.id),
+            account: { login: accountLogin },
+            permissions: signer.app.permissions,
+          },
         ]);
       }
       const minting = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(path);

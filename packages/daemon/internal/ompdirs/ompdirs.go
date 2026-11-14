@@ -62,6 +62,28 @@ func ProfileRoot(env map[string]string, workDir string) (root, profile string, e
 	return xdgRoot(env, workDir, "XDG_DATA_HOME")
 }
 
+// SessionsDir is where Oh My Pi, started under env in workDir, keeps its sessions (getSessionsDir,
+// @oh-my-pi/pi-utils src/dirs.ts): `sessions` under the agent directory, `<config root>/agent`,
+// except where an XDG data root holds the profile (ProfileRoot), which flattens the `agent/`
+// prefix to `$XDG_DATA_HOME/omp[/profiles/<name>]/sessions`. PI_CODING_AGENT_DIR, which would move
+// the agent directory itself, is not read, as ProfileRoot says of its own reads.
+func SessionsDir(env map[string]string, workDir string) (string, error) {
+	root, profile, err := ProfileRoot(env, workDir)
+	if err != nil {
+		return "", err
+	}
+	if data := env["XDG_DATA_HOME"]; data != "" {
+		xdg := filepath.Join(data, "omp")
+		if profile != "" {
+			xdg = filepath.Join(xdg, "profiles", profile)
+		}
+		if root == xdg {
+			return filepath.Join(root, "sessions"), nil
+		}
+	}
+	return filepath.Join(root, "agent", "sessions"), nil
+}
+
 // StateRoot is the root under which Oh My Pi, started under env in workDir, keeps the profile's
 // state-class directories — `run/daemons`, the browser broker's lock and socket; `logs`;
 // `browser-profiles`; `reports`; `terminal-sessions` (sessions are data-class, under ProfileRoot)

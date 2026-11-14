@@ -1969,6 +1969,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         },
         settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
         consumers: [],
+        questionsForController: [],
       };
       const booted = await bootPane({
         role: options.role ?? "implementer",

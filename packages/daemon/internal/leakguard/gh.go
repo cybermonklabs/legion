@@ -26,7 +26,7 @@ type GhRequest struct {
 	Repo string
 	// Files are the files this call would send to GitHub as content, read by a caller that
 	// parses the argv as gh does. `legion gh` is that caller: it reads the command's own help
-	// for every option's arity before it reaches the guard (cmd/legion's ghTargetOf), so it
+	// for every option's arity before it reaches the guard (internal/ghroute's TargetOf), so it
 	// knows a `-dF <file>` and a `-F=<file>` for what they are, which a reader of the argv
 	// alone cannot.
 	//

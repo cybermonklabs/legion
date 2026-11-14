@@ -107,6 +107,9 @@ type listenerDeliveryHandlerConfig struct {
 	// main.go makes one and sets it once, so every handler and every route built from that config
 	// guards one set of roles. A test that builds a config sets its own.
 	roleKeepDrains *roleKeepGuards
+	// handoff hands an agent-subject message no session took to the stopped Legion agent's daemon
+	// in place of its no_holder exception (agentSubjectDelivery); nil hands nothing off.
+	handoff *legionHandoff
 }
 
 // wireRoleForwarder builds the role forwarder every delivery path hands its forwards to and
@@ -189,6 +192,12 @@ func (message deliveryMessage) finalizeAfter(delay time.Duration) {
 func jetStreamDeliveryHandler(cfg listenerDeliveryHandlerConfig) nats.MsgHandler {
 	handler := listenerDeliveryHandler(cfg)
 	return func(msg *nats.Msg) {
+		// A hand-off (notifications.legion.<project>.agents.<session>) is the Legion daemon's to
+		// read, and holds no envelope, so every listener's durable acknowledges it unread.
+		if isLegionHandoffSubject(msg.Subject) {
+			_ = msg.Ack()
+			return
+		}
 		message := deliveryMessage{data: msg.Data, mode: durableDelivery, msg: msg}
 		if metadata, err := msg.Metadata(); err == nil {
 			message.metadata = metadata
@@ -790,6 +799,18 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 		return
 	}
 	if result.Err != nil {
+		// An interest row naming this listener outlives the session entry written beside it, so
+		// every Legion agent that ran here leaves one behind, and a reply on its Dispatch ask
+		// reaches that row with no entry under it: the interest path's own
+		// session.ErrNoSessionRecord (session.HandleAgentMessage). That message is exactly what
+		// the stopped agent's daemon answers from the agent's own conversation, so the hand-off
+		// is offered it before anything is recorded and before the message is disposed of: an
+		// exception and a NAK written first would refuse, and report as failed, a message that
+		// was in fact answered. Every other interest-path failure, and a message no daemon took,
+		// keeps the refusal below exactly as it was.
+		if errors.Is(result.Err, session.ErrNoSessionRecord) && offerAgentDeliveryToLegion(cfg, message, item, sessionID) {
+			return
+		}
 		// The interest path's resolution failed, which is the one outcome this delivery NAKs:
 		// the message is reported as a delivery exception and redelivered. The attempt recorded
 		// above is rolled back, since the redelivery must not be skipped as one already on its
