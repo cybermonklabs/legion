@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -162,6 +163,10 @@ type SessionConsumers struct {
 	// pullExpires and pullHeartbeat are sessionPullExpires and sessionPullHeartbeat, shortened by
 	// a test of a pull's later requests.
 	pullExpires, pullHeartbeat time.Duration
+	// logger is where create writes the line of a caller's start it lowered to the session's
+	// resume record and the warning of a start it clamped to the stream's end: the logger the
+	// connection was opened with (ConnectSessionConsumers), slog.Default() where that was nil.
+	logger *slog.Logger
 	// pendingMu guards pending and createFault.
 	pendingMu sync.Mutex
 	// pending holds, by consumer name, the start of each consumer a restart (RestartAtFloor) read
@@ -194,7 +199,16 @@ type SessionConsumers struct {
 // constructor's setting alone, where a ConnectOption is every program's; taking it here means no
 // consumer is created before the deployment's threshold is in hand, and nothing writes that
 // field while a create reads it.
-func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, options ...ConnectOption) (*SessionConsumers, error) {
+//
+// logger is where every create on this handle writes what it did to its start (create): the
+// INFO line of a caller's start it lowered to the session's resume record, and the WARN line of
+// a start past the stream's end it created at the sequence after the stream's last.
+// slog.Default() stands in for a nil logger. The listener passes its own JSON logger
+// (cmd/listener connectSessionDelivery, logging.Logger.Slog), so those lines carry its
+// machine_id as its other session-consumer lines do, and it never sets the default instead
+// (store.WithLogger says why). It is a parameter for the reason inactiveThreshold is: no create
+// runs before the logger is set, and nothing writes the field while a create reads it.
+func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, logger *slog.Logger, options ...ConnectOption) (*SessionConsumers, error) {
 	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers")}, options...)...)
 	if err != nil {
 		return nil, err
@@ -205,6 +219,7 @@ func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, opt
 		inactiveThreshold: cmp.Or(max(inactiveThreshold, 0), SessionConsumerInactiveThreshold),
 		pullExpires:       sessionPullExpires,
 		pullHeartbeat:     sessionPullHeartbeat,
+		logger:            cmp.Or(logger, slog.Default()),
 	}, nil
 }
 
@@ -261,7 +276,9 @@ type SessionConsumerStart struct {
 	// starts at, and, for one it found and updated, the one it was created at (an update may not
 	// change it, and a restart that recreated it reports where it started again). Every message at
 	// or after it is the consumer's to deliver, so the listener records it on the session's entry
-	// (session.SessionEntry.ConsumerStart).
+	// (session.SessionEntry.ConsumerStart). A consumer the call created never starts past the
+	// stream's last sequence + 1 as the create read it: a start past that is created there
+	// instead, and that clamped start is the one reported here (create).
 	StartSeq uint64
 	// Gap is set when StartSeq is below the stream's first sequence: messages the consumer would
 	// have delivered from StartSeq have aged out of the stream or been discarded.
@@ -291,11 +308,16 @@ type SessionConsumerStart struct {
 // A missing consumer is created at the first of these the call has: the start a restart of it
 // (RestartAtFloor) on this SessionConsumers left pending, because that restart deleted the
 // consumer, or may have, and did not confirm its create, so the session loses nothing it had not
-// acked whatever startSeq is; then stream sequence startSeq; then the floor the session's resume
-// record holds, from the last delete of its consumer (SessionResumeSubject); then the first
-// sequence the stream holds on the session's own agent subject (create); then the sequence after
-// the stream's last, which delivers what the stream stores from then on, as DeliverNew does, and
-// gives the consumer a start its ack floor never reads below (RestartAtFloor).
+// acked whatever startSeq is; then stream sequence startSeq, the caller's start, lowered to the
+// floor the session's resume record holds plus one (SessionResumeSubject) when that is lower and
+// the record names the stream's identity, so a session that comes back with a start past the
+// floor its consumer's last delete recorded is handed everything stored since that floor; then,
+// for a startSeq of 0, that record's floor plus one; then the first sequence the stream holds on
+// the session's own agent subject (create); then the sequence after the stream's last, which
+// delivers what the stream stores from then on, as DeliverNew does, and gives the consumer a
+// start its ack floor never reads below (RestartAtFloor). Every one of those is clamped to the
+// sequence after the stream's last, so no consumer is created past the stream's end, and a
+// start the record lowered or the clamp moved is logged once the create is confirmed (create).
 func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subjects []string, startSeq uint64) (SessionConsumerStart, error) {
 	name, filters, err := sessionConsumerTarget(sessionID, subjects)
 	if err != nil {
@@ -304,11 +326,11 @@ func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subject
 	for attempt := 0; ; attempt++ {
 		info, err := s.info(ctx, name)
 		if errors.Is(err, ErrSessionConsumerNotFound) {
-			start := startSeq
+			start, callerStart := startSeq, true
 			if pending, ok := s.pendingStart(name); ok {
-				start = pending
+				start, callerStart = pending, false
 			}
-			created, err := s.create(ctx, sessionID, name, filters, start)
+			created, err := s.create(ctx, sessionID, name, filters, start, callerStart)
 			// A consumer that appeared since the info, created by another call, is updated instead.
 			if errors.Is(err, jetstream.ErrConsumerExists) && attempt == 0 {
 				continue
@@ -410,7 +432,7 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 	default:
 		return SessionConsumerStart{}, err
 	}
-	start, err := s.create(ctx, sessionID, name, filters, startSeq)
+	start, err := s.create(ctx, sessionID, name, filters, startSeq, false)
 	if err != nil {
 		return SessionConsumerStart{}, err
 	}
@@ -708,11 +730,38 @@ func (s *SessionConsumers) updated(current jetstream.ConsumerConfig, filters []s
 }
 
 // create creates consumer name, of session sessionID, filtering on filters and starting at stream
-// sequence startSeq. A startSeq of 0 starts it at the floor the session's resume record holds
-// (SessionResumeSubject) plus one; when the stream holds no record of this stream's own identity,
-// at the first sequence the stream holds on the session's own agent subject
-// (Client.NextStoredMessage); and when it holds none of those either, at the sequence after the
-// stream's last, which delivers what the stream stores from then on, as DeliverNew does (Ensure).
+// sequence startSeq, which callerStart says is the caller's own start (Ensure's startSeq) rather
+// than a pending one a restart left (RestartAtFloor). A startSeq of 0 starts it at the floor the
+// session's resume record holds (SessionResumeSubject) plus one; when the stream holds no record
+// of this stream's own identity, at the first sequence the stream holds on the session's own
+// agent subject (Client.NextStoredMessage); and when it holds none of those either, at the
+// sequence after the stream's last, which delivers what the stream stores from then on, as
+// DeliverNew does (Ensure).
+//
+// A caller's start above 0 reads the same record, and is lowered to its floor plus one when that
+// is lower and the record names the stream's own identity. A client's resume point only rises, so
+// a session whose consumer was once created at a clamped start comes back with the same point
+// past the stream's end, and without the record it would be clamped again, past every message
+// stored while it was away; the record's floor is where those begin. A pending start reads no
+// record: it is the floor of the consumer the restart deleted, which is newer than any record. A
+// read of the record that fails, for a start of 0 or a caller's, fails the create (resumeFloor).
+//
+// Whatever its source, the start is never past the sequence after the stream's last. The read the
+// start was fixed from can trail it, since a message stored after that read can be the agent
+// subject's first, so a start past that read's end is held to a second read (streamState, whose
+// read begins after this call), and is set to that read's last sequence plus one only when it is
+// past that read's end too; the second read is then the one the answer's Gap and StreamID come
+// from. So a start that is not past the stream's real end is never moved, and the answer's
+// StartSeq and AckFloor are the clamped start and the sequence before it.
+//
+// Once the server has confirmed the create (upsert), and only then, create logs what it did to
+// the start: an INFO line for a caller's start the record lowered, naming the caller's start
+// (asked_start), the record's floor (record_floor) and the stream's identity; and a WARN line for
+// a start it clamped, naming the start before the clamp (asked_start), the last sequence of the
+// read it was clamped to (stream_last_seq), the stream's identity and the start the consumer was
+// created at (consumer_start). A create that fails - the create fault (SetCreateFault), an error
+// the server answered, a consumer another call created first (jetstream.ErrConsumerExists, which
+// Ensure then updates) - writes neither, so each line is one create the server confirmed.
 //
 // An agent subject is one session's alone and no message can be stored there before the session id
 // exists, so that start reaches back no further than the session itself and hands it what was
@@ -720,32 +769,50 @@ func (s *SessionConsumers) updated(current jetstream.ConsumerConfig, filters []s
 // or one that raced its first registration - which is what sjawhar/legion#2720's sweep delivered
 // before this release removed the sweep (dispatch://INFRA-771). A session whose consumer was
 // deleted has a resume record, so it starts at that floor and is handed nothing it had acked.
-func (s *SessionConsumers) create(ctx context.Context, sessionID, name string, filters []string, startSeq uint64) (SessionConsumerStart, error) {
+func (s *SessionConsumers) create(ctx context.Context, sessionID, name string, filters []string, startSeq uint64, callerStart bool) (SessionConsumerStart, error) {
 	state, err := s.streamState(ctx)
 	if err != nil {
 		return SessionConsumerStart{}, err
 	}
-	if startSeq == 0 {
-		floor, recorded, err := s.resumeFloor(ctx, sessionID, state.id)
-		if err != nil {
+	var floor uint64
+	var recorded bool
+	if startSeq == 0 || callerStart {
+		if floor, recorded, err = s.resumeFloor(ctx, sessionID, state.id); err != nil {
 			return SessionConsumerStart{}, err
 		}
-		switch {
-		case recorded:
-			startSeq = floor + 1
+	}
+	asked, lowered := startSeq, false
+	switch {
+	case startSeq > 0:
+		// A pending start read no record, so only a caller's start is lowered here.
+		if recorded && floor+1 < startSeq {
+			startSeq, lowered = floor+1, true
+		}
+	case recorded:
+		startSeq = floor + 1
+	default:
+		// One stored-message read of the session's own agent subject, which creates nothing on
+		// the server: its nats.ErrMsgNotFound is the stream holding nothing there, no failure but
+		// a session nothing was ever sent to, whose start is then the stream's end.
+		switch stored, err := s.client.NextStoredMessage(ctx, contracts.AgentSubject(sessionID), 1); {
+		case err == nil:
+			startSeq = stored.Sequence
+		case errors.Is(err, nats.ErrMsgNotFound):
+			startSeq = state.lastSeq + 1
 		default:
-			// One stored-message read of the session's own agent subject, which creates nothing
-			// on the server: its nats.ErrMsgNotFound is the stream holding nothing there, no
-			// failure but a session nothing was ever sent to, whose start is then the stream's
-			// end.
-			switch stored, err := s.client.NextStoredMessage(ctx, contracts.AgentSubject(sessionID), 1); {
-			case err == nil:
-				startSeq = stored.Sequence
-			case errors.Is(err, nats.ErrMsgNotFound):
-				startSeq = state.lastSeq + 1
-			default:
-				return SessionConsumerStart{}, err
-			}
+			return SessionConsumerStart{}, err
+		}
+	}
+	// bound is the stream read the start is held to: state, or a read that began after this call
+	// when the start is past state's end.
+	bound := state
+	unclamped, clamped := startSeq, false
+	if startSeq > bound.lastSeq+1 {
+		if bound, err = s.streamState(ctx); err != nil {
+			return SessionConsumerStart{}, err
+		}
+		if startSeq > bound.lastSeq+1 {
+			startSeq, clamped = bound.lastSeq+1, true
 		}
 	}
 	config := jetstream.ConsumerConfig{
@@ -765,7 +832,22 @@ func (s *SessionConsumers) create(ctx context.Context, sessionID, name string, f
 	if _, err := s.upsert(ctx, name, config, "create"); err != nil {
 		return SessionConsumerStart{}, err
 	}
-	return SessionConsumerStart{Created: true, StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id, AckFloor: startSeq - 1}, nil
+	if lowered {
+		s.logger.Info("session consumer created at its resume record's floor, below the start the caller asked",
+			slog.String("session_id", sessionID),
+			slog.Uint64("asked_start", asked),
+			slog.Uint64("record_floor", floor),
+			slog.String("stream_id", state.id))
+	}
+	if clamped {
+		s.logger.Warn("session consumer start past the stream's end, created at the sequence after the stream's last",
+			slog.String("session_id", sessionID),
+			slog.Uint64("asked_start", unclamped),
+			slog.Uint64("stream_last_seq", bound.lastSeq),
+			slog.String("stream_id", bound.id),
+			slog.Uint64("consumer_start", startSeq))
+	}
+	return SessionConsumerStart{Created: true, StartSeq: startSeq, Gap: startSeq < bound.firstSeq, StreamID: bound.id, AckFloor: startSeq - 1}, nil
 }
 
 // consumerAPI is the JetStream API subject of operation op on consumer name of the stream.

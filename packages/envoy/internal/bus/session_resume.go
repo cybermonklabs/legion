@@ -26,9 +26,14 @@ const SessionResumeSubjectPrefix = NotificationTopicPrefix + "envoy.resume."
 
 // SessionResumeSubject is the lane the listener records session sessionID's consumer resume floor
 // on before it deletes that consumer (SessionConsumers.Delete), one message per session, read back
-// when a registration that carries no resume point creates the consumer again
-// (SessionConsumers.Ensure). Without it a session that comes back with no resume point of its own
-// would start at the stream's end and lose what was published while it was away.
+// when the consumer is created again, both for a create with no start and for one from a caller's
+// start (SessionConsumers.Ensure, SessionConsumers.create): a create with no start of its own
+// starts at the record's floor plus one, and a caller's start above that is lowered to it. A
+// create at a pending start a restart left reads none. Without it a session that comes back with
+// no resume point of its own would start at the stream's end and lose what was published while
+// it was away, and so would one that comes back with a resume point past the stream's end, which
+// a consumer created at a clamped start leaves its client holding, since that point is clamped to
+// the stream's end again.
 //
 // The record expires with the stream's own MaxAge (streamDuplicateWindow, 72 hours), which is the
 // stream's retention, so a floor older than that named a sequence the stream no longer holds.
@@ -45,8 +50,9 @@ func SessionResumeSubject(sessionID string) string {
 // sequence up to which the session's consumer had every message acked when that consumer was
 // deleted (ackFloor), and the identity of the stream those sequences belong to
 // (StreamIDMetadataKey). A consumer created again for the session with no start of its own starts
-// at Floor + 1, and a record naming another stream's identity is ignored, since its sequences
-// name messages of a stream this one is not.
+// at Floor + 1, one created from a caller's start above Floor + 1 starts at Floor + 1 instead
+// (SessionConsumers.create), and a record naming another stream's identity is ignored by both,
+// since its sequences name messages of a stream this one is not.
 type SessionResumeRecord struct {
 	Floor    uint64 `json:"floor"`
 	StreamID string `json:"stream_id"`
@@ -74,9 +80,13 @@ func (s *SessionConsumers) recordResumeFloorAt(ctx context.Context, sessionID st
 // whether the stream holds one that counts: a record naming an identity other than streamID, the
 // stream's own, names sequences of a stream this one is not and is ignored, as is a session with
 // no record at all, which is the ordinary answer (nats.ErrMsgNotFound) for a session whose
-// consumer was never deleted. Any other failure of the read is returned, which leaves the
-// registration behind it on core delivery, where the durable path serves it, rather than creating
-// a consumer at the stream's end that would miss every message stored since the floor.
+// consumer was never deleted. Any other failure of the read is returned, and the create that read
+// it fails rather than create a consumer that could skip every message stored since the floor:
+// both creates that read the record, one at start 0 and one at a caller's start (a pending start
+// reads none), fail when the read fails (SessionConsumers.create). A registration is then refused
+// 503 (cmd/listener sessionDelivery.refused), consumer_error unless the server refused the read
+// for want of a grant (no_grant), and its next heartbeat tries again; a repair logs the failure
+// (cmd/listener repairRegistered).
 func (s *SessionConsumers) resumeFloor(ctx context.Context, sessionID, streamID string) (uint64, bool, error) {
 	stored, err := s.client.LastStoredMessage(ctx, SessionResumeSubject(sessionID))
 	if errors.Is(err, nats.ErrMsgNotFound) {
