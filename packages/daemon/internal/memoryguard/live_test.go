@@ -778,9 +778,9 @@ func (w *guardWatch) observe(now time.Time, reading, limit uint64) {
 	}
 	for i := range w.killed {
 		k := &w.killed[i]
-		// The guard's own rule (decide): half the killed size below the reading at the kill, or
-		// below the mark.
-		if !k.fallen && (reading < mark || (k.ReadingBytes >= k.SizeBytes/2 && reading <= k.ReadingBytes-k.SizeBytes/2)) {
+		// The guard's own rule (fell): below the reading at the kill by any amount, or below the
+		// mark.
+		if !k.fallen && fell(k.ReadingBytes, reading, mark) {
 			k.fallen, k.fall = true, now.Sub(k.At)
 			w.poke()
 		}

@@ -4505,9 +4505,10 @@ A kill that fails, for a reason other than the end of the process, is logged onc
 
 **After a kill: the rise rule.**
 After a kill the guard takes a reading each interval.
-The reading has fallen when it is at least half the killed process's size below the reading at the kill, or when it is below the mark.
+The reading has fallen when it is below the reading at the kill by any amount, or when it is below the mark.
 When it has fallen and is still at or above the mark, the guard ends the next largest process once the killed one has exited or once the wait has passed, `wait_seconds` (5 by default).
-When the wait passes and the reading has not fallen, or when no process may be ended, the guard writes one `stopped for this rise` line and ends nothing more for that rise:
+So a pool of forked workers, which share their parent's pages and each count them whole (`make -j`, `lake build`), is ended one worker at a time while the reading stays at the mark, rather than left for the kernel to stop the whole sandbox.
+When the wait passes and a kill has not lowered the reading at all, or when no process may be ended, the guard writes one `stopped for this rise` line and ends nothing more for that rise:
 it acts again only after the reading has gone below the mark.
 
 **What it protects, and why.**
@@ -4626,12 +4627,9 @@ The daemon also drops, with a warning in its own log, a report that fails the fr
 
 - It does not free the pages of the pod's memory filesystems (tmpfs): `AnonPages` counts them and no kill frees them, so they show in a `stopped for this rise` line as `unheld`.
 
-- It does not act again while memory it may not end holds the pod above the mark.
-  When the processes it may end hold less than the floor, it writes `reason=nothing to end` and waits for the reading to fall below the mark, and the kernel can still stop the sandbox in that wait.
-
-- It does not act again after the kill of a forked worker that lowers the reading by less than half the worker's size.
-  After `fork` a parent and its child share their pages and each counts them whole, so ending the child frees almost nothing: the wait passes, the guard writes `reason=not fallen`, and it too waits for the reading to fall below the mark.
-  In this case and the one above, a process that grows in that wait is not ended.
+- It does not act again while memory it may not end holds the pod above the mark, or after a kill that lowered the reading by nothing within the wait.
+  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing, `reason=not fallen`.
+  Either way it waits for the reading to fall below the mark, a process that grows in that wait is not ended, and the kernel can still stop the sandbox in that wait.
 
 - It does not stop a fill faster than its margin.
   Between the mark and the point where the kernel stops the sandbox, measured at 95.6% to 99.3% of the limit, the guard must take a reading at or above the mark and end the process.

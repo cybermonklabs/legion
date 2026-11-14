@@ -633,7 +633,7 @@ func TestMemoryGuardEndsTheNextLargestWhenAKillFallsAndTheReadingStaysAtTheMark(
 	)
 	pod.setAnon(4050 * mib)
 	h := newHarness(t, pod, protect("tester", 100))
-	// 550 MiB freed: more than half of 600 MiB, and 3500 MiB is still above the mark.
+	// 550 MiB freed, and 3500 MiB is still above the mark.
 	h.signal.onKill = exitFreeing(pod, 550*mib)
 	h.run()
 	h.requireKilled(600)
@@ -641,9 +641,9 @@ func TestMemoryGuardEndsTheNextLargestWhenAKillFallsAndTheReadingStaysAtTheMark(
 	h.requireKilled(600, 601)
 }
 
-// A killed process whose memory has half gone but which has not exited yet is waited on: the rest
-// of its memory can take the reading below the mark, and a second kill then would end a process
-// for nothing. Once it has exited, the guard ends the next largest.
+// A killed process whose memory has partly gone but which has not exited yet is waited on: the
+// rest of its memory can take the reading below the mark, and a second kill then would end a
+// process for nothing. Once it has exited, the guard ends the next largest.
 func TestMemoryGuardWaitsForAKilledProcessToExitBeforeItEndsAnother(t *testing.T) {
 	pod := newFakePod(t)
 	pod.add(
@@ -668,18 +668,54 @@ func TestMemoryGuardWaitsForAKilledProcessToExitBeforeItEndsAnother(t *testing.T
 	h.requireKilled(610, 611)
 }
 
+// A pool of forked workers shares its parent's pages, so each worker's smaps reads the whole
+// 262 MiB while its kill frees only the 4 MiB it wrote itself. That small fall is a fall: with the
+// reading still at the mark, the guard ends the next worker, one at a time, until the reading is
+// below the mark.
+func TestMemoryGuardEndsTheNextForkedWorkerWhenAKillFreesLittle(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(3214*mib),
+		fakeProcess{pid: 700, ppid: 100, start: 5000, args: []string{"make", "-j4"}, anon: 262 * mib},
+		fakeProcess{pid: 701, ppid: 700, start: 5100, args: []string{"make", "-j4"}, anon: 262 * mib},
+		fakeProcess{pid: 702, ppid: 700, start: 5200, args: []string{"make", "-j4"}, anon: 262 * mib},
+		fakeProcess{pid: 703, ppid: 700, start: 5300, args: []string{"make", "-j4"}, anon: 262 * mib},
+	)
+	// The agent, the pool's 262 MiB once, and the 4 MiB each worker wrote: 3488 MiB, above the
+	// mark of 3481.6 MiB.
+	pod.setAnon(3488 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 4*mib)
+	h.run()
+	// Of the equal sizes, the newest worker first.
+	h.requireKilled(703)
+	// 3484 MiB: 4 MiB fallen and still at the mark, so the next worker.
+	h.tick()
+	h.requireKilled(703, 702)
+	// 3480 MiB is below the mark: the rise is over.
+	for range 3 {
+		h.tick()
+	}
+	h.requireKilled(703, 702)
+	if lines := h.log.with("stopped"); len(lines) != 0 {
+		t.Fatalf("the guard gave up on a rise its kills lowered: %q", lines)
+	}
+}
+
+// A kill that lowers the reading by nothing within the wait freed nothing: the killed child held
+// only pages its parent keeps. The guard logs the stopped line once the wait passes and ends
+// nothing more until the reading has gone below the mark.
 func TestMemoryGuardStopsForARiseAKillDoesNotLower(t *testing.T) {
 	pod := newFakePod(t)
-	// A parent and the child it forked with 262 MiB held: each reads 262 MiB of Anonymous, and
-	// the pod's AnonPages holds the pages once.
 	pod.add(
 		agent(3230*mib),
 		fakeProcess{pid: 700, ppid: 100, start: 5000, args: []string{"python3", "pool.py"}, anon: 262 * mib},
 		fakeProcess{pid: 701, ppid: 700, start: 5100, args: []string{"python3", "pool.py"}, anon: 262 * mib},
+		fakeProcess{pid: 702, ppid: 100, start: 5200, args: []string{"python3", "work.py"}, anon: 200 * mib},
 	)
-	pod.setAnon(3496 * mib)
+	pod.setAnon(3692 * mib)
 	h := newHarness(t, pod, protect("tester", 100))
-	h.signal.onKill = exitFreeing(pod, 4*mib)
+	h.signal.onKill = exitFreeing(pod, 0)
 	h.run()
 	h.requireKilled(701)
 	for range 3 {
@@ -690,8 +726,9 @@ func TestMemoryGuardStopsForARiseAKillDoesNotLower(t *testing.T) {
 		t.Fatalf("the guard gave up before its wait passed: %q", lines)
 	}
 	h.tickAfter(5 * time.Second)
+	h.requireKilled(701)
 	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d",
-		3492*mib, 262*mib, 3230*mib, 0, podLimit)
+		3692*mib, 462*mib, 3230*mib, 0, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want one: %q", got, want)
 	}

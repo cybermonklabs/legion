@@ -13,11 +13,13 @@
 // At or above the act share of the limit (the mark), the guard lists the processes it may end,
 // reads the smaps of those alone, and acts where their sizes sum to at least the floor share of
 // the limit: it sends SIGKILL to the largest through a pidfd, then takes a reading at each
-// interval. The reading has fallen when it is at least half the killed process's size below the
-// reading at the kill, or below the mark. Fallen and still at or above the mark, once the process
-// has exited, the guard ends the next largest. When the wait passes and the reading has not
-// fallen, or when no process may be ended, the guard logs the sizes it saw and ends nothing more
-// for that rise, until the reading has gone below the mark.
+// interval. The reading has fallen when it is below the reading at the kill by any amount, or
+// below the mark (fell). Fallen and still at or above the mark, once the process has exited or
+// the wait has passed, the guard ends the next largest, so a pool of forked workers (make -j, a
+// Lean build), whose shared pages no one worker's kill frees, is ended one worker at a time. When
+// the wait passes and the kill has not lowered the reading at all, or when no process may be
+// ended, the guard logs the sizes it saw and ends nothing more for that rise, until the reading
+// has gone below the mark.
 //
 // What it may end is its caller's to say (Classifier): the launcher protects Legion's own
 // processes and the agents', and INFRA-3531's controller pod protects its own. The package
@@ -167,11 +169,10 @@ const (
 	stopped
 )
 
-// afterKill is the kill a waiting guard watches: the process held, its size and the reading at
-// the kill, which the reading must fall half that size below, and when the wait passes.
+// afterKill is the kill a waiting guard watches: the process held, the reading at the kill, which
+// the reading must fall below (fell), and when the wait passes.
 type afterKill struct {
 	handle   Handle
-	size     uint64
 	reading  uint64
 	deadline time.Time
 	exited   bool
@@ -442,7 +443,7 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 	case waiting:
 		w := &g.wait
 		w.exited = w.exited || w.handle.Exited()
-		w.fallen = w.fallen || reading < mark || (w.reading >= w.size/2 && reading <= w.reading-w.size/2)
+		w.fallen = w.fallen || fell(w.reading, reading, mark)
 		passed := !now.Before(w.deadline)
 		switch {
 		case reading < mark:
@@ -450,9 +451,9 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 			g.endWait()
 			return
 		case w.fallen && (w.exited || passed):
-			// The kill freed what it held and the pod is still at the mark: the next largest.
-			// The guard waits for the exit, while the wait lasts, because the reading can fall
-			// below the mark as the rest of the process's memory goes.
+			// The kill freed something and the pod is still at the mark: the next largest. The
+			// guard waits for the exit, while the wait lasts, because the reading can fall below
+			// the mark as the rest of the process's memory goes.
 			g.endWait()
 		case passed:
 			g.endWait()
@@ -468,6 +469,15 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 	}
 	g.act(now, s, reading, limit)
 }
+
+// fell is whether a reading has fallen after a kill taken at the reading atKill: it is below that
+// reading by any amount, or below the mark. Any fall counts, not one the size of the killed
+// process, because a forked worker shares most of its pages with its parent and its siblings: its
+// kill frees only the pages it wrote itself, far less than the size its smaps read, and a rule
+// that waited for that size would stop for the rise after the first worker of a pool that is
+// still filling the pod. A kill that lowers the reading by nothing freed nothing, and the guard
+// stops there rather than end process after process for memory no kill frees.
+func fell(atKill, reading, mark uint64) bool { return reading < atKill || reading < mark }
 
 // act ends the largest process the guard may end, or gives the rise up when the processes it may
 // end hold less than the floor between them: ending one of them would free too little to matter.
@@ -514,7 +524,7 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
 		})
 	}
 	g.phase = waiting
-	g.wait = afterKill{handle: h, size: target.size, reading: reading, deadline: now.Add(s.Wait)}
+	g.wait = afterKill{handle: h, reading: reading, deadline: now.Add(s.Wait)}
 }
 
 // killFailed acts on a kill that failed: a system with no way to hold or signal a process turns
