@@ -256,7 +256,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
 		UpdateHead:              "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 		UpdateToldAt:            &answeredAt,
-		UpdateAnsweredByTurnEnd: true, UpdateReaskedForPushCheck: true, UpdateLeftRound: "pod:older",
+		UpdateAnsweredByTurnEnd: true, UpdateLeftRound: "pod:older",
 		ProviderErrorRun: 6,
 		LastTurnStart:    projectedAt.Add(-2 * time.Minute),
 		LastTurnEnd:      projectedAt.Add(-30 * time.Second),

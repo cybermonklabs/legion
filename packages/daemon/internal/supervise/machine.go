@@ -394,17 +394,6 @@ type Claim struct {
 	// ready_for_update operation lost its answer to its own reminder every fifteen minutes and
 	// its round never ended.
 	UpdateAnsweredByTurnEnd bool
-	// UpdateReaskedForPushCheck is whether this round has already asked this claim's worker
-	// again because the pod's shim could not run the daemon's push check
-	// (internal/daemon's checkUnpushed). A pod whose shim predates that check is guarded by the
-	// workers' answers alone, and a turn's end is the weakest of those answers, so each such
-	// claim is asked once more — with the call, or with a second turn — before the disk goes.
-	//
-	// Once only, which is what this mark is for: the second answer sets
-	// UpdateAnsweredByTurnEnd again, and a round that read that mark alone would refuse its own
-	// replacement at every attempt and never end. It goes with the round (clearUpdate), so the
-	// next round asks again once of its own.
-	UpdateReaskedForPushCheck bool
 	// UpdateLeftRound is the pod round this claim left, and "" when it has left none: the daemon
 	// started the claim's process again in another pod than the one that round was opened over
 	// (launchAfter).
@@ -3200,8 +3189,6 @@ func claimOf(ev Event) claim.Token {
 	case PodUpdateEnded:
 		return ev.Claim
 	case PodUpdateSignalled:
-		return ev.Claim
-	case PodUpdateReask:
 		return ev.Claim
 	case RequestSpawn:
 		return ev.Claim

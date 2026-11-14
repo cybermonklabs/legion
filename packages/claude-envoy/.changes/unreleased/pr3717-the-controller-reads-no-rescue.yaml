@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr3717
+body: |-
+  The controller's escalation reference (`skills/legion-controller/references/escalation.md`) no
+  longer describes a push check before a pod replacement, its rescue branches or its failure: the
+  daemon reads nothing of the pod's disk before it replaces the pod, so work a worker did not push
+  when it answered goes with the pod, and its agent does it again in the new one. A round blocked
+  on the daemon's own side is now a turn that has not ended or a pod replacement the cluster keeps
+  refusing.

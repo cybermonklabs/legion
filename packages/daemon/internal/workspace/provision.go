@@ -320,9 +320,8 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 // would case differently — is in no layout this inverts, and is refused rather than guessed at.
 //
 // It reads no file and is the one inverse of Location the daemon keeps: located asks it whether
-// the pair it was handed is a workspace Location names, WorkspaceOf (gitworktree.go) asks it for
-// the clone of the directory a process stands in, and rescue.RepositoryOf asks it for the
-// repository of a workspace a push check reports. A caller's own refusals — the derivation's
+// the pair it was handed is a workspace Location names, and WorkspaceOf (gitworktree.go) asks it
+// for the clone of the directory a process stands in. A caller's own refusals — the derivation's
 // absolute path among them — stay with that caller.
 func LocationOf(dir string) (Workspace, error) {
 	stateDir := dir

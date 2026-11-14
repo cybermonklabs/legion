@@ -158,7 +158,10 @@ func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 // MessagePost is a Dispatch message body. The runner posts it as Posted: the body, then its outbox
 // marker. Artifact, when set, is a document the body links (dispatch://<issue>/artifact/<name>):
 // the runner puts it on the issue before it posts the body, so the link never comes before its
-// document.
+// document. No message of this release sets Artifact: its one producer was the pod rescue's
+// message, removed with the rescue (INFRA-2848). The field stays because the outbox decodes a
+// payload strictly and refuses an unknown field, so a row an older daemon queued with an artifact
+// must still decode and still put its document up.
 type MessagePost struct {
 	Body     string           `json:"body"`
 	Artifact *MessageArtifact `json:"artifact,omitempty"`

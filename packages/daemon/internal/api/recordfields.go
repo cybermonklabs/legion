@@ -129,7 +129,6 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the commit the worker reported when it answered its round, which says what the replacement must carry"},
 	{Field: "UpdateToldAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateAnsweredByTurnEnd", Column: ColumnWithheld, Reason: BookkeepingReason},
-	{Field: "UpdateReaskedForPushCheck", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateLeftRound", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ProviderErrorRun", Column: ColumnAgents, Keys: []string{"providerErrorRun"},
 		Reason: "the run of provider-error turns, which bounds nothing and which the controller is told of once at six, so without it the number behind that telling stands on no surface its reader can reach"},

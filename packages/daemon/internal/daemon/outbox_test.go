@@ -743,7 +743,7 @@ func (d *artifactDispatch) UploadArtifact(_ context.Context, _, name, content st
 	return slug, nil
 }
 
-// rescueListRow is a message row whose body links its own document, as a rescue's message does.
+// rescueListRow is a message row whose body links its own document.
 func rescueListRow(t *testing.T) (record.OutboxRow, record.MessageArtifact) {
 	t.Helper()
 	document := record.MessageArtifact{Name: "rescue-pod-9d3f0c7a", Content: "```\nbranch: legion/LEGION-208-rescue\n```\n"}
@@ -790,8 +790,8 @@ func TestAMessagePutsItsDocumentOnTheIssueOnceBeforeItPosts(t *testing.T) {
 
 // A document Dispatch refuses the same way on every run costs the message nothing: the message is
 // posted with one more sentence, which says Dispatch refused the full list and gives its status
-// and code, and the refusal is logged. The issue's message is its one word on the rescue, so it
-// always posts (dispatch://INFRA-2704).
+// and code, and the refusal is logged. The message may be the issue's one word on what its
+// document lists, so it always posts (dispatch://INFRA-2704).
 func TestAMessageWhoseDocumentDispatchRefusesStillPostsAndSaysSo(t *testing.T) {
 	const line = "outbox Dispatch message's document refused by Dispatch; the message is posted and says so"
 	row, _ := rescueListRow(t)

@@ -23,8 +23,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
-	"github.com/sjawhar/legion/daemon/internal/rescue"
-	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -47,7 +45,7 @@ func TestMain(m *testing.M) {
 	if os.Getenv(fakeOMPEnv) == "1" {
 		os.Exit(fakeOMP())
 	}
-	// The tests run real git and jj, in the shim's adoption and push check (fixtureenv.MustGuard).
+	// The tests run real git and jj, in the shim's adoption (fixtureenv.MustGuard).
 	fixtureenv.MustGuard()
 	os.Exit(m.Run())
 }
@@ -477,46 +475,6 @@ func (p *peer) next(t *testing.T) shimwire.Frame {
 	return frame
 }
 
-// nextWhole is the shim's next frame as the daemon's reader takes it (stream.Conn.read), read
-// within limit: an rpc_chunk sequence is put back together and read as the frame it carries. A
-// whole frame in the middle of a sequence would make the daemon drop that sequence, so it fails
-// the test.
-func (p *peer) nextWhole(t *testing.T, limit time.Duration) shimwire.Frame {
-	t.Helper()
-	if err := p.conn.SetReadDeadline(time.Now().Add(limit)); err != nil {
-		t.Fatalf("set a read deadline: %v", err)
-	}
-	var chunks shimwire.Reassembler
-	for {
-		line, err := p.r.ReadLine()
-		if err != nil {
-			t.Fatalf("read a frame from the shim: %v", err)
-		}
-		frame, err := shimwire.Decode(line)
-		if err != nil {
-			t.Fatalf("decode a frame from the shim: %v", err)
-		}
-		chunk, ok := frame.(shimwire.RPCChunk)
-		if !ok {
-			if err := chunks.Interrupt(); err != nil {
-				t.Fatalf("the shim sent a %s frame in the middle of an rpc_chunk sequence: %v", frame.FrameType(), err)
-			}
-			return frame
-		}
-		whole, err := chunks.Push(chunk)
-		if err != nil {
-			t.Fatalf("reassemble the shim's rpc_chunk sequence: %v", err)
-		}
-		if whole == nil {
-			continue
-		}
-		if frame, err = shimwire.Decode(whole); err != nil {
-			t.Fatalf("decode the shim's reassembled frame: %v", err)
-		}
-		return frame
-	}
-}
-
 func (p *peer) expect(t *testing.T, want shimwire.Frame) {
 	t.Helper()
 	if got := p.next(t); !reflect.DeepEqual(got, want) {
@@ -692,9 +650,7 @@ func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 
 // A role whose environment carries the pin and whose pod holds no install of it runs no agent at
 // all: the shim ends with exit 1 and the read's own refusal. Every write path of such a role would
-// refuse anyway, and the rescue helper runs in this same shim — the daemon's frames are read only
-// once the spawn has returned — so a pod that started one would lose a dying pod's work for a
-// reason nobody could see.
+// refuse anyway.
 func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1215,166 +1171,32 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 	}
 }
 
-// `rescue-unpushed` is answered by the shim itself, as its role and in its role's environment: it
-// checks every workspace on the disk its LEGION_WORKSPACE is on, pushes the issue's own work the
-// remote lacks to the branch the frame's target names, and answers one entry per workspace; OMP
-// never sees the frame. A shim with no LEGION_WORKSPACE has no disk to check and refuses. A target
-// the shim dropped would send the check to the frame's per-pod branch, with nothing failing, so
-// the branch it pushed to is read back as the frame's target.
-//
-// The test process's own environment names a decoy disk in LEGION_WORKSPACE, as a Legion issue
-// pod's does its live workspace: neither case may check it or push from it, so the disk's
-// environment (fixtureenv.Isolated) carries none of the process's LEGION_ variables.
-func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
-	decoy := rescuetest.New(t, "DECOY-7")
-	decoy.Write(decoy.Workspace, "decoy.txt", "work on the pod's own disk\n")
-	decoy.JJ("commit", "-m", "work on the pod's own disk")
-	decoyBranches := decoy.RemoteBranches()
-	t.Setenv("LEGION_WORKSPACE", decoy.Workspace)
-	t.Setenv("LEGION_ISSUE", "DECOY-7")
-	d := rescuetest.New(t, "WIDGETS-42")
-	for _, entry := range d.Env {
-		if strings.HasPrefix(entry, "LEGION_") {
-			t.Fatalf("the disk's environment holds %s, want none of the process's LEGION_ variables", entry)
-		}
-	}
-	d.Write(d.Workspace, "feature.txt", "work jj alone holds\n")
-	d.JJ("commit", "-m", "work jj alone holds")
-	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-	for _, tc := range []struct {
-		name        string
-		noWorkspace bool
-	}{{name: "a shim on the issue's workspace"}, {name: "a shim with no LEGION_WORKSPACE", noWorkspace: true}} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := socketPath(t)
-			daemon := listen(t, path)
-			child := newOMP(t)
-			cfg := config(t, path, child)
-			cfg.Env = append(slices.Clone(d.Env), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker, "FAKE_OMP_LOG="+child.log)
-			if !tc.noWorkspace {
-				cfg.Env = append(cfg.Env, "LEGION_WORKSPACE="+d.Workspace)
-			}
-			run(t, cfg, newClock())
-			p := daemon.accept(t)
-			p.open(t)
-
-			// The bounds are the check's own, the ones the daemon sets on every request
-			// (rescue.WorkspaceTimeout and rescue.Timeout): the guard keeps a reserve of the
-			// workspace's bound for the push it clears, wide enough for the second run of the
-			// check a pod's pre-push hook makes (rescue.GuardReserve), and a smaller bound here
-			// would be refused for want of time rather than checked.
-			request := shimwire.RescueUnpushed{
-				ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a", Target: "legion/WIDGETS-42-rescue",
-				WorkspaceTimeoutMs: int(rescue.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(rescue.Timeout.Milliseconds()),
-			}
-			p.send(t, request)
-			got, ok := p.next(t).(shimwire.RescueUnpushedResult)
-			if !ok || got.ID != request.ID {
-				t.Fatalf("the shim answered %#v, want a result for %s", got, request.ID)
-			}
-			if tc.noWorkspace {
-				if got.OK || !strings.Contains(got.Error, "LEGION_WORKSPACE is not set") {
-					t.Fatalf("the shim answered %#v, want a refusal naming LEGION_WORKSPACE", got)
-				}
-			} else {
-				if !got.OK || len(got.Workspaces) != 1 || got.Workspaces[0].Dir != d.Workspace || got.Workspaces[0].Status != "rescued" || len(got.Workspaces[0].Branches) != 1 {
-					t.Fatalf("the shim answered %#v, want one rescued branch of %s", got, d.Workspace)
-				}
-				b := got.Workspaces[0].Branches[0]
-				if b.Name != request.Target || !b.Pushed || b.Previous != "" || len(b.Commits) == 0 {
-					t.Fatalf("the shim reported %+v, want the frame's target %s pushed as a new branch, with its commits", b, request.Target)
-				}
-				if held := d.RemoteBranch(request.Target); held != b.Commit {
-					t.Fatalf("the remote holds %s at %q, want %s", request.Target, held, b.Commit)
-				}
-				if parents := strings.Fields(d.Run(d.Remote, "git", "log", "-1", "--format=%P", b.Commit)); !reflect.DeepEqual(parents, []string{commit}) {
-					t.Fatalf("the rescue commit %s's parents are %v, want the workspace's own %s", b.Commit, parents, commit)
-				}
-				if held := d.RemoteBranch(request.Branch); held != "" {
-					t.Fatalf("the remote holds the per-pod %s at %s, want only the frame's target", request.Branch, held)
-				}
-			}
-
-			p.send(t, shimwire.GetState{ID: "after"})
-			p.next(t)
-			if got := frameTypes(child.received(t)); !reflect.DeepEqual(got, []string{shimwire.TypeGetState}) {
-				t.Fatalf("OMP read %v; rescue-unpushed is the shim's own", got)
-			}
-			if got := decoy.RemoteBranches(); !reflect.DeepEqual(got, decoyBranches) {
-				t.Fatalf("the decoy's remote holds %v after the check, want %v: the check reached the process's LEGION_WORKSPACE", got, decoyBranches)
-			}
-		})
-	}
-}
-
-// The push check's answer carries every commit each branch carries, each with a subject of up to
-// 200 bytes, so the answer for a long line of work is longer than one line of the stream
-// (shimwire.MaxFrameBytes). A writer refuses such a line, and the shim's outbox would close the
-// connection and send the same line again on every reconnect, so the role's stream would stay down
-// and the replacement would be refused. The shim sends that answer as an rpc_chunk sequence, as it
-// sends a bundle, and the daemon's reader puts it back together: a report of 8,000 commits with
-// 200-byte subjects reaches the daemon whole, with every commit id in order.
-//
-// The disk is in the state a second check of the same pod meets: the issue's rescue branch on the
-// remote already holds the line, so the check pushes nothing and reports the 8,000 commits only
-// that branch holds. A push of them would have the leak guard read the records of each commit,
-// which takes minutes for 8,000, and the answer is the same frame either way.
-func TestRescueUnpushedAnswersAReportLongerThanALineInChunksTheDaemonReassembles(t *testing.T) {
-	d := rescuetest.New(t, "WIDGETS-42")
-	line := d.CommitLine(8000, func(i int) string {
-		subject := fmt.Sprintf("work %d of the issue's own line, ", i)
-		return subject + strings.Repeat("x", 200-len(subject))
-	})
-	const target = "legion/WIDGETS-42-rescue"
-	// A fetch into the remote, rather than a push from the clone: a pod's git runs the pre-push
-	// hook, and with it the leak guard, on every push.
-	d.Run(d.Remote, "git", "fetch", "--quiet", d.Clone, "refs/heads/"+d.Branch+":refs/heads/"+target)
+// An older daemon still asks a pod's shim for the push check it ran before it replaced the pod,
+// in a frame of a type this shim no longer knows. The shim passes that line to OMP unchanged, as
+// it does every frame that is not its own. OMP refuses it as a command it does not know, and an
+// older daemon reads that refusal as a shim that predates the check, so it replaces the pod on
+// its workers' answers alone. A shim that dropped the line would leave that daemon with no
+// answer, which it reads as a check that failed, and the pod would not be replaced.
+func TestShimForwardsAnUnknownRescueFrameToItsChild(t *testing.T) {
 	path := socketPath(t)
 	daemon := listen(t, path)
 	child := newOMP(t)
-	cfg := config(t, path, child)
-	cfg.Env = append(slices.Clone(d.Env), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker, "FAKE_OMP_LOG="+child.log,
-		"LEGION_WORKSPACE="+d.Workspace)
-	run(t, cfg, newClock())
+	run(t, config(t, path, child), newClock())
 	p := daemon.accept(t)
 	p.open(t)
 
-	request := shimwire.RescueUnpushed{
-		ID: "long", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a", Target: target,
-		WorkspaceTimeoutMs: int(rescue.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(rescue.Timeout.Milliseconds()),
+	const older = `{"type":"rescue-unpushed","id":"r1"}`
+	p.sendLine(t, older)
+	p.send(t, shimwire.GetState{ID: "after"})
+	if answer, ok := p.next(t).(shimwire.Response); !ok || answer.ID != "after" {
+		t.Fatalf("the shim sent %#v, want OMP's answer to the get_state after the older daemon's frame", answer)
 	}
-	p.send(t, request)
-	got, ok := p.nextWhole(t, rescue.Timeout).(shimwire.RescueUnpushedResult)
-	if !ok || got.ID != request.ID {
-		t.Fatalf("the shim answered %#v, want a result for %s", got, request.ID)
+	got := child.received(t)
+	if len(got) != 2 || got[1].FrameType() != shimwire.TypeGetState {
+		t.Fatalf("OMP read %v, want the older daemon's frame and then the get_state", frameTypes(got))
 	}
-	if !got.OK || len(got.Workspaces) != 1 || got.Workspaces[0].Status != "rescued" || len(got.Workspaces[0].Branches) != 1 {
-		t.Fatalf("the shim answered OK %v, error %q, workspaces %+v, want one rescued branch of %s",
-			got.OK, got.Error, got.Workspaces, d.Workspace)
-	}
-	if encoded, err := json.Marshal(got); err != nil || len(encoded) < shimwire.MaxFrameBytes {
-		t.Fatalf("the answer is %d bytes (%v), want one longer than a line's %d: the case is a report that does not fit one line",
-			len(encoded), err, shimwire.MaxFrameBytes)
-	}
-	b := got.Workspaces[0].Branches[0]
-	if b.Name != target || b.Pushed || b.Commit != line[len(line)-1] {
-		t.Fatalf("the shim reported the branch %s at %s, pushed %v, want %s at the line's tip %s, pushed by no check of this one",
-			b.Name, b.Commit, b.Pushed, target, line[len(line)-1])
-	}
-	// rev-list's order: the line, newest first.
-	want := slices.Clone(line)
-	slices.Reverse(want)
-	ids := make([]string, len(b.Commits))
-	for i, c := range b.Commits {
-		ids[i] = c.ID
-	}
-	if !slices.Equal(ids, want) {
-		same := 0
-		for same < len(ids) && same < len(want) && ids[same] == want[same] {
-			same++
-		}
-		t.Fatalf("the report carries %d commits, want the %d the branch holds; the first %d are as it holds them, then %q, want %q",
-			len(ids), len(want), same, ids[same:min(same+3, len(ids))], want[same:min(same+3, len(want))])
+	if raw, ok := got[0].(shimwire.Raw); !ok || string(raw.JSON) != older {
+		t.Fatalf("OMP read %#v, want the older daemon's line unchanged: %s", got[0], older)
 	}
 }
 

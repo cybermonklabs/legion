@@ -434,8 +434,7 @@ func ownCommitsRevset(workspaceName string) string {
 // RemovingSuffix marks a workspace directory Remove has renamed aside, about to delete: a sibling
 // name in the same parent directory, so the rename is one atomic same-filesystem operation
 // regardless of how large the directory is, unlike the `os.RemoveAll` that follows it, which a
-// kill can interrupt partway through a large tree. The push check before a pod's replacement
-// (internal/rescue) leaves such a directory out: its removal already let its work go.
+// kill can interrupt partway through a large tree.
 const RemovingSuffix = ".removing"
 
 // removingPath is where Remove renames workspace.Dir to before deleting it.
