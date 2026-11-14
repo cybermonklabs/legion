@@ -37,12 +37,12 @@ const (
 	// lane's drain and the NATS drain) are hard, and the process exits after them. So the margin
 	// covers the kubelet's own latency between the preStop hook's return and SIGTERM, the
 	// container's teardown and a late tick on a loaded node, and not a listener that runs over
-	// its own budget. A hung pod holds its durable for the whole grace, so the relation that
-	// matters is the replacement pod's time to its first /healthz answer plus this grace, under
-	// the 135 s bind deadline at which a starting listener gives up waiting for the durable this
-	// one holds (packages/envoy/cmd/listener/durable.go): at 40 s the start allowance is 95 s. A
-	// longer grace costs nothing on a normal stop, because the kubelet proceeds as soon as the
-	// container exits.
+	// its own budget. The replacement pod stands by for the machine's delivery lease for as long
+	// as it runs (packages/envoy/cmd/listener/lease.go), so no deadline of the listener's own ends
+	// its wait for the durable this one holds. The 135 s listener_grace_test.go still holds this
+	// grace under is the bind deadline at which a listener from before cybermonklabs/legion#2404
+	// gave up its start: at 40 s that start allowance is 95 s. A longer grace costs nothing on a
+	// normal stop, because the kubelet proceeds as soon as the container exits.
 	clusteredHubListenerGraceSeconds = clusteredHubListenerPreStopSeconds + clusteredHubListenerShutdownSeconds + 7
 
 	// The listener pod's seed volume and where its container mounts it: its NATS seed from the

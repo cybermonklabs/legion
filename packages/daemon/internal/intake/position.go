@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -54,7 +53,7 @@ func recordStreamPosition(ctx context.Context, tx pgx.Tx) error {
 
 // storedStreamTime is the stream time of the last message consumer applied, and false when it
 // has applied none.
-func storedStreamTime(ctx context.Context, pool *pgxpool.Pool, consumer string) (time.Time, bool, error) {
+func storedStreamTime(ctx context.Context, pool Pool, consumer string) (time.Time, bool, error) {
 	var at time.Time
 	err := pool.QueryRow(ctx, `select stream_time from consumer_positions where consumer = $1`, consumer).Scan(&at)
 	if errors.Is(err, pgx.ErrNoRows) {

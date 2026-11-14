@@ -31,6 +31,8 @@ function heldBy(actor: IssueClaim["actor"]): IssueSummary {
 
 function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
+    advances: [],
+    advances_revision: 0,
     route: null,
     repo: null,
     resolved_repo: null,

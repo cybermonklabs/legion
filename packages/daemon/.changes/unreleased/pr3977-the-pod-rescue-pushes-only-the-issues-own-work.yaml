@@ -1,0 +1,17 @@
+kind: Fixed
+custom:
+  Issue: pr3977
+body: |-
+  The push check before an update round replaces an issue pod pushes only the issue's own unpushed
+  work: its working copy's line, its bookmark, its git HEAD and the files no commit holds. It
+  pushes that work to one branch, `legion/<KEY>-rescue`, which only moves forward, through one
+  rescue commit whose trailers name the working copy and the issue's bookmarks. Before, it pushed
+  every local branch, visible head, tag, stash entry and other worktree that origin lacked, one
+  numbered branch for each, so other trees' commits went out under the issue's name. The daemon's
+  message about a rescue is a summary that fits one Dispatch block and links an artifact with the
+  full list. A shim of an older image keeps its per-pod branches. Legion's git wrapper passes every
+  command that is not a push through unchanged, the shared clone sets `core.warnAmbiguousRefs`
+  false, and the leak guard's own rules skip commits that a remote-tracking ref holds, so the
+  check's reads stop paying for each argument. A leak check that its bound stops now names its
+  time and its bound, and the launcher's put-back starts its git and jj through the guard that
+  PID 1's reaper skips, so it no longer fails with `waitid: no child processes`.

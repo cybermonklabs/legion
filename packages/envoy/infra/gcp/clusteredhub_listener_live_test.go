@@ -58,9 +58,11 @@ const (
 	// (cmd/listener/main.go).
 	clusteredHubListenerHealthWindow = 2 * time.Minute
 
-	// clusteredHubListenerBindDeadline is cmd/listener/durable.go's durableBindDeadline, where a
-	// listener that still cannot bind the durable ends its start, and so the time the hand-over
-	// below has to land inside.
+	// clusteredHubListenerBindDeadline is this test's own bound on the hand-over below. A
+	// standby waits for the delivery lease for as long as it runs and takes it within seconds of
+	// its holder's stop (cmd/listener/lease.go), so no listener gives up its start any more; the
+	// bound is the 135 s of cmd/listener's durableTakeoverAlarmAfter, past which a pod that took
+	// the lease and still cannot receive the durable answers /healthz 503 (receive.go).
 	clusteredHubListenerBindDeadline = 135 * time.Second
 
 	// clusteredHubListenerHandoverWindow is the window the hand-over is measured in. It is longer
@@ -318,9 +320,10 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 // receives from it, and the second runs as a standby, answering /healthz 200 with role
 // "standby" and the holder's instance for as long as the first holds the lease. It takes the
 // lease over within seconds of the first pod's stop. The pod's readiness probe reads the status
-// alone, so a standby is Ready, which is what lets the rolling update finish, and the hand-over
-// has to land well inside durableBindDeadline, the 135 s at which a listener that can reach
-// neither the lease nor the durable gives up its start (cmd/listener/durable.go).
+// alone, so a standby is Ready, which is what lets the rolling update finish. A standby waits for
+// the lease for as long as it runs (cmd/listener/lease.go), and the hand-over has to land well
+// inside clusteredHubListenerBindDeadline, the 135 s past which a pod that took the lease and
+// still cannot receive the durable answers /healthz 503.
 func TestClusteredNatsHubListenerHandsOverItsDurable(t *testing.T) {
 	binary := buildLiveListener(t)
 	ports := newLoopbackPorts()
@@ -366,7 +369,7 @@ func TestClusteredNatsHubListenerHandsOverItsDurable(t *testing.T) {
 	require.NotZero(t, reads, "no /healthz answer was read while waiting for the hand-over")
 	t.Logf("the hand-over took %.1fs: %s", handover.Seconds(), strings.TrimSpace(body))
 	require.Less(t, handover, clusteredHubListenerBindDeadline,
-		"the hand-over took %.1fs, at or past the %s at which the second listener gives up its start:\n%s",
+		"the hand-over took %.1fs, at or past the %s this test allows it, at which a pod that took the lease and still cannot receive the durable answers /healthz 503:\n%s",
 		handover.Seconds(), clusteredHubListenerBindDeadline, second.Output.String())
 
 	t.Logf("%d listener process(es) run, %d HTTP answer(s) read", listeners, answers)

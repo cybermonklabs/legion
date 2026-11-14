@@ -143,7 +143,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	) || !requireGeneration(w, req.Generation) {
 		return
 	}
-	m, ok := s.authenticated(req.ClaimToken, req.Secret)
+	m, _, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
@@ -207,7 +207,7 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 	) || !requireGeneration(w, req.Generation) {
 		return
 	}
-	m, ok := s.authenticated(req.ClaimToken, req.Secret)
+	m, _, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
@@ -332,7 +332,7 @@ func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, cal
 	) {
 		return "", nil, false
 	}
-	m, ok := s.authenticated(caller.ClaimToken, caller.Secret)
+	m, _, ok := s.authenticated(caller.ClaimToken, caller.Secret)
 	if !ok {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return "", nil, false
@@ -348,14 +348,17 @@ func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, cal
 // session's pod may be released. It decides nothing about the claim, so it posts no request to
 // the claim's machine: the report is written onto the claim's row alone
 // (store.Store.PutClaimActivity, reached through Options.ClaimActivity), where a machine's own
-// write neither carries it nor erases it, and where a report older than the one recorded is
-// dropped rather than written.
+// write never carries it and a launch's write clears it, and where a report older than the one
+// recorded is dropped rather than written. It is written onto the launch whose secret
+// authenticated it — the generation read with the capability check — and nowhere else.
 //
 // It refuses exactly as its siblings do — a blank field with the field's name, a claim this
 // daemon does not hold or a wrong secret with claim.InvalidSecret, a stale plugin with the
-// stale-contract 409 — and answers 204, as ready and exit do. A report the daemon cannot write
-// is a 500 the session's next one replaces: a claim with no report after its last turn is never
-// released, so nothing lost here costs anything but a release.
+// stale-contract 409 — and answers 204, as ready and exit do. A report of a launch that is gone
+// by the time it is written, a relaunch having moved the claim on after the check, is refused
+// with claim.InvalidSecret too, since its secret was that launch's. A report the daemon cannot
+// write is a 500 the session's next one replaces: a claim with no report after its last turn is
+// never released, so nothing lost here costs anything but a release.
 func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 	var req claim.ActivityRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
@@ -367,7 +370,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("activity.at is required"))
 		return
 	}
-	m, ok := s.authenticated(req.ClaimToken, req.Secret)
+	m, held, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
@@ -379,7 +382,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon has no store to record session activity in"))
 		return
 	}
-	known, err := s.claimActivity.PutClaimActivity(r.Context(), req.ClaimToken, req.Activity)
+	known, err := s.claimActivity.PutClaimActivity(r.Context(), req.ClaimToken, held.Generation, req.Activity)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: a session's activity report was not recorded", "claim", req.ClaimToken,
 			"session", req.SessionID)
@@ -483,7 +486,7 @@ func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("since must be an RFC 3339 time: "+err.Error()))
 		return
 	}
-	m, ok := s.authenticated(token, req.Secret)
+	m, _, ok := s.authenticated(token, req.Secret)
 	if !ok {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
@@ -541,19 +544,20 @@ func recordedAt(at time.Time) string {
 	return at.UTC().Format(time.RFC3339)
 }
 
-// authenticated is the claim's machine when secret is the one its registration was issued. A
-// claim the daemon does not supervise, one no agent has registered on, and a wrong secret all
-// answer the same: nothing about the claim is told to a caller that cannot prove it holds it.
-func (s *server) authenticated(token claim.Token, secret string) (*supervise.Machine, bool) {
+// authenticated is the claim's machine, with the claim as it stood when secret was checked
+// against it, when secret is the one its registration was issued. A claim the daemon does not
+// supervise, one no agent has registered on, and a wrong secret all answer the same: nothing
+// about the claim is told to a caller that cannot prove it holds it.
+func (s *server) authenticated(token claim.Token, secret string) (*supervise.Machine, supervise.Claim, bool) {
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		return nil, false
+		return nil, supervise.Claim{}, false
 	}
-	held := m.Claim().CapabilityHash
-	if len(held) == 0 || subtle.ConstantTimeCompare(held, capabilityHash(secret)) != 1 {
-		return nil, false
+	held := m.Claim()
+	if len(held.CapabilityHash) == 0 || subtle.ConstantTimeCompare(held.CapabilityHash, capabilityHash(secret)) != 1 {
+		return nil, supervise.Claim{}, false
 	}
-	return m, true
+	return m, held, true
 }
 
 // claimFailure answers an agent request its machine did not take: a claim refusal with its own
@@ -745,7 +749,7 @@ func (s *server) claimSecretCheck(w http.ResponseWriter, r *http.Request, body [
 	if json.Unmarshal(body, &id) != nil || id.ClaimToken == "" || id.Secret == "" {
 		return false
 	}
-	m, ok := s.authenticated(id.ClaimToken, id.Secret)
+	m, _, ok := s.authenticated(id.ClaimToken, id.Secret)
 	if !ok {
 		return false
 	}

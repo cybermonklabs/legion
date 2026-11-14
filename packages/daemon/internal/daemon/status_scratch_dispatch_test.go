@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -159,7 +159,7 @@ func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing
 // hand-over left it, and the correction leaves it alone so that `todo` keeps it in the waiting
 // line (correctStatuses). The slot is kept beside the lifecycle: this root is at work, so it
 // holds one.
-func seedPlanningRoot(t *testing.T, pool *pgxpool.Pool, records record.Store, key string) {
+func seedPlanningRoot(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
@@ -182,7 +182,7 @@ func seedPlanningRoot(t *testing.T, pool *pgxpool.Pool, records record.Store, ke
 
 // bootQueuesTheWrite applies the daemon's boot and holds it to the one status write it queues for
 // issue: in_progress, conditional on the todo the record holds.
-func bootQueuesTheWrite(t *testing.T, pool *pgxpool.Pool, issue string, engine *workflow.Engine) {
+func bootQueuesTheWrite(t *testing.T, pool *store.Pool, issue string, engine *workflow.Engine) {
 	t.Helper()
 	if _, err := intake.ApplyFact(context.Background(), pool, "daemon", "boot", intake.DaemonBooted{}, engine); err != nil {
 		t.Fatalf("apply the boot: %v", err)
@@ -208,7 +208,7 @@ func dispatchStatusOf(t *testing.T, baseURL, token, key string) string {
 }
 
 // recordOf is the daemon's own record of key.
-func recordOf(t *testing.T, pool *pgxpool.Pool, records record.Store, key string) record.Issue {
+func recordOf(t *testing.T, pool *store.Pool, records record.Store, key string) record.Issue {
 	t.Helper()
 	var issue *record.Issue
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -225,7 +225,7 @@ func recordOf(t *testing.T, pool *pgxpool.Pool, records record.Store, key string
 }
 
 // statusRowsOf is how many status writes of issue the outbox still holds.
-func statusRowsOf(t *testing.T, pool *pgxpool.Pool, issue string) int {
+func statusRowsOf(t *testing.T, pool *store.Pool, issue string) int {
 	t.Helper()
 	var rows int
 	if err := pool.QueryRow(context.Background(),

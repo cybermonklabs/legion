@@ -27,6 +27,7 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -626,11 +627,13 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stdout, line)
 	}
 	fmt.Fprintln(stdout, blockedSummary(state.Admission.Blocked))
+	fmt.Fprintln(stdout, heldAdmissionSummary(state.Admission.Held))
 	fmt.Fprintln(stdout, memorySummary(state.Issues))
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
 	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
+	fmt.Fprintln(stdout, entrySummary(state.Issues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
@@ -673,6 +676,38 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 		waits[i] = issue.Issue + " waits on " + strings.Join(issue.BlockedBy, ", ")
 	}
 	return fmt.Sprintf("blocked on Dispatch links: %d — %s", len(blocked), strings.Join(waits, "; "))
+}
+
+// heldAdmissionSummary is the one line an operator reads for the issues the daemon's own record
+// holds in the workflow that stand in neither the active set nor the waiting line
+// (api.Admission.Held): how many, and how many of each word for why, in the ladder's own order
+// (record.HeldReasons), so two readings of one state print one line. A word no row carries is
+// left out.
+//
+// The prefix names the admission list because `legion state` prints a second held line below
+// this one, the lifecycle rows the daemon holds behind their issues' running ones
+// (heldSummary): these are issues nothing starts, those are outbox rows nothing has sent, and a
+// reader counting one must not read the other's number. It names no issue: a deployment holding
+// hundreds would print a line per issue, and each row with its word is in `legion state --json`.
+func heldAdmissionSummary(held []api.HeldIssue) string {
+	if len(held) == 0 {
+		return "admission.held: none"
+	}
+	counts := map[record.HeldReason]int{}
+	for _, issue := range held {
+		counts[issue.Reason]++
+	}
+	words := make([]string, 0, len(counts))
+	for _, reason := range record.HeldReasons {
+		if count := counts[reason]; count > 0 {
+			words = append(words, fmt.Sprintf("%s %d", reason, count))
+		}
+	}
+	noun := "issues"
+	if len(held) == 1 {
+		noun = "issue"
+	}
+	return fmt.Sprintf("admission.held: %d %s — %s", len(held), noun, strings.Join(words, ", "))
 }
 
 // waitingLineLines are the lines an operator reads for the issues waiting for an admission slot
@@ -1054,6 +1089,63 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 		}
 	}
 	return fmt.Sprintf("claims nothing will wake: %d — %s", len(stranded), strings.Join(groups, "; "))
+}
+
+// entryBehind is one issue whose role has not been given the work its phase entry names: the
+// issue, the role of its current phase (phase.RoleFor, the role the state's two numbers are
+// of), the entry that role's phases row stands on and the entry it was given.
+type entryBehind struct {
+	issue string
+	role  legionclaim.Role
+	entry int64
+	given int64
+}
+
+// entriesBehind is every issue of the state whose two entry numbers differ
+// (api.Issue.PhaseEntry and GivenEntry), by issue key. An issue whose current phase names no
+// phase worker role carries neither number, so it is never named here: the projection writes
+// them only where phase.RoleFor names a role, and that is the role this reads back for the
+// line.
+func entriesBehind(issues map[string]api.Issue) []entryBehind {
+	var behind []entryBehind
+	for _, key := range slices.Sorted(maps.Keys(issues)) {
+		issue := issues[key]
+		if issue.PhaseEntry == issue.GivenEntry {
+			continue
+		}
+		behind = append(behind, entryBehind{issue: key, role: phase.RoleFor(issue.Phase),
+			entry: issue.PhaseEntry, given: issue.GivenEntry})
+	}
+	return behind
+}
+
+// entrySummary is the one line an operator reads for the roles that have not been given the work
+// their phase entry names: how many, and each by issue and role with the two numbers. A
+// difference here is one of four things. An entry raised seconds ago, which the next pass
+// closes: the daemon sends that entry's work on every admission pass and on a sweep of its own
+// each minute (admit's resumeSlottedWorkers). An issue waiting for its admission slot, whose
+// start row the outbox holds unclaimable until the slot comes (workflow.StartOrOwe) and which
+// the pass passes over, since it reads the slotted issues alone — every issue in the waiting
+// line is named here, and its difference stands for as long as it waits, which is hours on a
+// full cap. A claim whose worker is still working an earlier entry's task, which the pass passes
+// over while that delivery is worked: a start the slot held back reaches its worker mid-turn, so
+// the difference reads for the rest of that turn and closes on the first pass after the task is
+// retired. Or a role the pass skips and sends nothing to at all (admit's owedEntryRoles, which
+// states each skip), whose difference stands until something outside that pass moves it.
+//
+// The daemon's own "a role was behind the entry its phases row names" log line names the roles
+// that pass sends the work to and no others, so a difference of that last kind is read here and
+// nowhere else.
+func entrySummary(issues map[string]api.Issue) string {
+	behind := entriesBehind(issues)
+	if len(behind) == 0 {
+		return "roles not given their phase entry: none"
+	}
+	named := make([]string, len(behind))
+	for i, row := range behind {
+		named[i] = fmt.Sprintf("%s %s: entry %d, given %d", row.issue, row.role, row.entry, row.given)
+	}
+	return fmt.Sprintf("roles not given their phase entry: %d — %s", len(behind), strings.Join(named, "; "))
 }
 
 // wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding

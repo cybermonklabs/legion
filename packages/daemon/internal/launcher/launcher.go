@@ -25,6 +25,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -74,6 +75,10 @@ type Config struct {
 	// SessionDialer builds that proxy's upstream dialer. Nil is the Cloud SQL connector's, which
 	// is the only one a pod uses; a test passes a fake.
 	SessionDialer func(ctx context.Context) (sessionproxy.Dialer, error)
+	// LeakCheckDir is where the launcher installs the shared public leak check the daemon serves
+	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
+	// names a temporary one.
+	LeakCheckDir string
 }
 
 // reconnectDelay is the pause between daemon connections. A lost connection never stops the
@@ -100,7 +105,10 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	managers, err := newManagers(cfg)
+	// The guard comes before the managers: the pod's put-back of a released workspace starts its
+	// jj and git through it (newManagers), as the test database's script starts through it below.
+	guard := &pidGuard{}
+	managers, err := newManagers(cfg, guard)
 	if err != nil {
 		return err
 	}
@@ -109,7 +117,6 @@ func Run(ctx context.Context, cfg Config) error {
 	// of their own, whose init reaps theirs, but anything else started in the container (a
 	// `kubectl exec` and what it leaves behind) is this process's. The reaper never waits on a
 	// generation's own process, whose exit its manager reads.
-	guard := &pidGuard{}
 	if os.Getpid() == 1 {
 		exits := make(chan os.Signal, 1)
 		signal.Notify(exits, syscall.SIGCHLD)
@@ -119,6 +126,16 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.RolesDir == "" {
 		return managers[0].serveUntil(ctx, address)
 	}
+	// The clone's stale git locks, swept for the life of the pod (gitLockSweep). This is an
+	// issue pod's roles container: the single-role form returned above is the project
+	// controller's pod, whose working directory is no jj workspace and whose generations carry
+	// no workspace at all. The first pass is this call's, before serveTestPG, which starts a
+	// PostgreSQL: the first pass's rule is that no process of the container holds a lock yet.
+	sweep := newGitLockSweep(managers[0].log.linef)
+	for _, m := range managers {
+		m.gitLocks = sweep
+	}
+	locks := sweep.serve(ctx)
 	// The pod's own test database, before any role starts: a role that starts at once finds the
 	// server serving its DSN (serveTestPG). Its ticker is waited on with the roles below, so Run
 	// returns with nothing of the launcher's still running.
@@ -138,20 +155,28 @@ func Run(ctx context.Context, cfg Config) error {
 	if testPG != nil {
 		<-testPG
 	}
+	<-locks
 	return ctx.Err()
 }
 
 // newManagers is one manager per role the launcher serves, each with its own token, private
 // directory, launcher id and, in an issue pod's container, its own prefix in the container's log.
-func newManagers(cfg Config) ([]*manager, error) {
+// guard holds the launcher's own children out of PID 1's reaper (pidGuard).
+func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// One restore per pod: the daemon sends the released workspace's bundle to whichever role's
 	// connection it reaches, and the first role to start applies it for the pod, with every other
-	// role's start waiting on that one restore.
-	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+	// role's start waiting on that one restore. Its jj and git start through the guard: they are
+	// this process's children, and the reaper would otherwise take an exit before the restore's
+	// own wait read it, which then fails with `waitid: no child processes` and puts nothing back.
+	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: guard.starter()}
+	// One install of the shared public leak check per launcher process, for the pin of its own
+	// environment: the daemon pushes it to whichever role's connection it starts first, and
+	// every other role's connection finds it installed.
+	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir)
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
-			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore,
+			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check,
 		}}, nil
 	}
 	log := &roleLog{stdout: cfg.Stdout, stderr: cfg.Stderr}
@@ -172,7 +197,7 @@ func newManagers(cfg Config) ([]*manager, error) {
 		managers = append(managers, &manager{
 			cfg: cfg, role: role, token: strings.TrimSpace(string(token)), namespaced: true,
 			private: filepath.Join(cfg.RolesDir, role, RolePrivateDir), launcherID: randomID(),
-			log: log, stderr: own, requests: map[string]request{}, restore: restore,
+			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check,
 		})
 	}
 	return managers, nil
@@ -206,8 +231,10 @@ func (m *manager) logf(format string, args ...any) {
 }
 
 // serve is one authenticated daemon connection: hello, acknowledgement, the launcher's actual
-// state, then start and stop commands until the connection ends. The acknowledgement is logged as
-// one line, so a launcher the daemon accepted reads apart from one still dialing.
+// state, then start, stop, bundle and leak-check commands until the connection ends. The hello
+// names the launcher's leak-check pin and whether this process has installed it, so the daemon
+// pushes the check only to a launcher that still needs it. The acknowledgement is logged as one
+// line, so a launcher the daemon accepted reads apart from one still dialing.
 func (m *manager) serve(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -217,9 +244,11 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopClose()
 	writer := shimwire.NewWriter(conn)
-	if err := writer.WriteFrame(shimwire.LauncherHello{
+	hello := shimwire.LauncherHello{
 		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID,
-	}); err != nil {
+	}
+	hello.LeakCheckTag, hello.LeakCheckInstalled = m.check.hello()
+	if err := writer.WriteFrame(hello); err != nil {
 		return fmt.Errorf("hello: %w", err)
 	}
 	reader := shimwire.NewReader(conn)
@@ -261,6 +290,8 @@ func (m *manager) serve(ctx context.Context, address string) error {
 			answer = m.stop(command)
 		case shimwire.LauncherBundle:
 			answer = m.restore.receive(command)
+		case shimwire.LauncherLeakCheck:
+			answer = m.check.receive(ctx, command, m.logf)
 		default:
 			return fmt.Errorf("command: got %T", frame)
 		}
@@ -417,6 +448,13 @@ type manager struct {
 	// container shares: the bundle a released pod's work was saved as arrives on one role's
 	// connection and is applied once, before the first role of the pod starts.
 	restore *bundleRestore
+	// gitLocks is the pod's one sweep of the clone's stale git locks, which every role manager
+	// of the container shares: the first role start that carries a workspace tells it which
+	// clone to sweep, when the container's working directory did not (gitLockSweep.learn).
+	gitLocks *gitLockSweep
+	// check is the launcher process's one install of the shared public leak check, which every
+	// role manager of the container shares as it shares restore.
+	check *checkInstall
 }
 
 // state reports the actual child to the current daemon connection, if one is up. A state change
@@ -536,6 +574,10 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	if err := keeper.open(ctx, sessions); err != nil {
 		return abandon(err)
 	}
+	// The clone's stale git locks: this start names the workspace the sweep works, and a sweep
+	// that had none sweeps it here, before the restore below runs real git and jj against that
+	// clone, where a stale lock would fail it (gitLockSweep.learn).
+	m.gitLocks.learn(ctx, envValue(env, "LEGION_WORKSPACE"))
 	// The pod's one workspace-bundle restore, if a release saved one: after writeFiles, which
 	// clears the role's private directory, and before any role of the pod runs, so no role works
 	// a workspace that is half restored. Every other role's start waits here for this one. A

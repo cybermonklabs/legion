@@ -133,7 +133,8 @@ func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry,
 // its next cycle.
 //
 // A reaper answers no caller, so it holds no request context and reads under context.Background()
-// with roleHolderReadTimeout as its bound, the same bound role delivery's resolution waits.
+// with roleHolderReadTimeout as its bound, the same bound each read of role delivery's resolution
+// waits.
 func sessionMayBeLive(sessions *session.SessionRegistry, sessionID string) (bool, error) {
 	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone)
 	if errors.Is(err, nats.ErrKeyNotFound) {
@@ -569,6 +570,25 @@ type healthAnswer struct {
 // runs curl -f or -sf against /healthz, which a 200 passes. For the same reason the view is no
 // part of Ping or WatchErr, whose terminal failures the self-health monitor self-terminates the
 // listener over: a restart completes no scan that keeps timing out.
+//
+// The answer reports the role claim copy's freshness too, under "role_claim_repair"
+// (roleClaimRepairHealth): when the role claim watcher's last whole read of the role bucket
+// completed, as RFC 3339 in UTC, and how long ago on the registry's clock, both null until a read
+// has completed; the bound that age is held to, store.RoleClaimRepairBound, in seconds; and how many
+// claims that read put back into the copy and took out of it (store.Registry.RoleClaimRepair). The
+// healthy answer carries it, and so does every degraded answer that keeps the healthy body's
+// fields, so a reader and an alert see how stale the copy is in either. A copy whose last whole
+// read is older than the bound (store.RoleClaimRepairReport.Err) is 200 "degraded" with the
+// error "role claim repair unavailable: …", keeping every other field. It is judged after the role
+// claim view and only while the view answers: a view that cannot answer refuses every read of the
+// copy whatever its last read's age, and is reported as itself. Degraded and never unhealthy,
+// whatever the age: the dispatch-listener's readiness probe runs curl -fsS against /healthz and
+// would take that pod out of service in about ten seconds on a 503, and every listener runs this
+// one binary. A late repair is the scheduled read's to repair, while the grant guard
+// (roleOwnSessionVerdict) refuses to give a role away from its holder meanwhile, and GET
+// /v1/sessions keeps answering the copy, which it refuses only when the view cannot be served. The
+// answers dependencyHealth gives carry only status and error, as before: they report a fault
+// below the copy, not its freshness.
 func healthzHandler(deps *atomic.Pointer[listenerDeps], verifier *apiVerifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), healthzDeadline)
@@ -680,6 +700,40 @@ func listenerHealth(ctx context.Context, d *listenerDeps, verifier *apiVerifier)
 	return okAnswer(response, d)
 }
 
+// roleClaimRepairHealth is the "role_claim_repair" field of a /healthz answer: the role claim
+// watcher's last whole read of the role bucket that completed, which repairs the copy every claim
+// view answers from (store.Registry.RoleClaimRepair), beside the bound its age is held to. The two
+// fields that name that read are null until one has completed, so a reader never takes the zero
+// time for a read; the counts are 0 then, as they are for the first read of an epoch, which fills
+// the copy rather than repairing it.
+type roleClaimRepairHealth struct {
+	// CompletedAt is when the read completed, RFC 3339 in UTC.
+	CompletedAt *string `json:"completed_at"`
+	// AgeSeconds is how long before the answer the read completed, on the registry's clock, the
+	// age store.RoleClaimRepairReport.Err judges.
+	AgeSeconds *float64 `json:"age_seconds"`
+	// BoundSeconds is store.RoleClaimRepairBound, past which the answer is degraded.
+	BoundSeconds float64 `json:"bound_seconds"`
+	// PutBack and TookOut are the claims the read put back into the copy and took out of it.
+	PutBack int `json:"put_back"`
+	TookOut int `json:"took_out"`
+}
+
+// roleClaimRepairHealthOf is report as /healthz answers it, its age to the millisecond.
+func roleClaimRepairHealthOf(report store.RoleClaimRepairReport) roleClaimRepairHealth {
+	health := roleClaimRepairHealth{
+		BoundSeconds: store.RoleClaimRepairBound.Seconds(),
+		PutBack:      report.PutBack,
+		TookOut:      report.TookOut,
+	}
+	if report.Completed > 0 {
+		completedAt := report.CompletedAt.UTC().Format(time.RFC3339Nano)
+		age := report.Age.Round(time.Millisecond).Seconds()
+		health.CompletedAt, health.AgeSeconds = &completedAt, &age
+	}
+	return health
+}
+
 // healthzBudget bounds the bus checks of one /healthz answer.
 const healthzBudget = 3 * time.Second
 
@@ -710,13 +764,19 @@ func dependencyHealth(dependency string, err error, terminal bool) healthAnswer 
 }
 
 // okAnswer is /healthz's 200 answer over response, and the last thing the endpoint decides. Only
-// the 200 answers come through here, below every 503 check, so neither report it adds ever stands
-// in for a worse fault.
+// the 200 answers come through here, below every 503 check, so no report it adds ever stands in
+// for a worse fault.
 //
 // It reads the role claim view first (store.Registry.RoleViewErr): until that view answers, the
 // two routes that report a session's roles - GET /v1/sessions and GET /v1/registry/<session_id> -
 // answer 503 while every other check passes, and every pod of a machine serves them, so an active
 // pod's answer and a standby's each carry it.
+//
+// Then the role claim copy's repair (store.Registry.RoleClaimRepair), read once and after the
+// view, so the "role_claim_repair" field and its report are one reading, and a view that answers
+// already has a completed whole read in that reading. Every answer through here carries the field;
+// a repair past its bound is reported only while the view answers, since a view that cannot answer
+// is what every read of the copy is refused by.
 //
 // Then the rewatch: a rewatch of the KV caches that keeps failing after a reconnect ends no
 // watcher and clears no cache, so every other check answers while the caches follow buckets they
@@ -728,12 +788,17 @@ func dependencyHealth(dependency string, err error, terminal bool) healthAnswer 
 //
 // Each report makes the answer "degraded" and is carried beside, not instead of, one the pod
 // already has - a standby's failing takeover, an active pod's durable lag that could not be read,
-// the role claim view - in the order they are read here (carryReport): every one of them is this
-// same 200 "degraded", and an operator reading the answer wants the whole of what is wrong, not
-// whichever part the endpoint found last.
+// the role claim view or its late repair - in the order they are read here (carryReport): every
+// one of them is this same 200 "degraded", and an operator reading the answer wants the whole of
+// what is wrong, not whichever part the endpoint found last.
 func okAnswer(response map[string]interface{}, d *listenerDeps) healthAnswer {
-	if err := d.registry.RoleViewErr(); err != nil {
-		carryReport(response, "role claim view", err)
+	viewErr := d.registry.RoleViewErr()
+	repair := d.registry.RoleClaimRepair()
+	response["role_claim_repair"] = roleClaimRepairHealthOf(repair)
+	if viewErr != nil {
+		carryReport(response, "role claim view", viewErr)
+	} else if err := repair.Err(); err != nil {
+		carryReport(response, "role claim repair", err)
 	}
 	stall, hookErr := d.client.HookStall()
 	if stall < bus.RepairGrace {
@@ -1176,6 +1241,17 @@ func listenerStreamOptions(cfg config.Service) []bus.ConnectOption {
 // /v1 opens, and while a list would answer the refilling 503, a gauge writes no sample: a count of
 // a copy that cannot be served is no count of the live sessions, and a missing sample is not read
 // as zero, which only a complete empty copy reads.
+//
+// Beside them it registers the three gauges of the role claim copy's repair, which report what
+// /healthz's "role_claim_repair" reports (store.Registry.RoleClaimRepair), so an alert reads the
+// copy's freshness without a person: envoy_role_claim_repair_completed_timestamp_seconds, the Unix
+// time the role claim watcher's last whole read of the role bucket completed, whose age past
+// store.RoleClaimRepairBound is the late repair /healthz reports degraded, and
+// envoy_role_claim_repair_put_back and envoy_role_claim_repair_took_out, what that read put back
+// into the copy and took out of it. Each writes no sample before /v1 opens or before the first
+// read completes: a time of zero would read as a repair late by decades, and a count of zero as a
+// read that found the copy right. After that each always has one, the copy's view serving or not,
+// since a stale timestamp is what the alert is for.
 func registerListGauges(met *metrics.Registry, served *atomic.Pointer[listenerDeps]) {
 	met.NewOptionalGaugeFunc("envoy_active_sessions", "Number of active sessions", func() (int64, bool) {
 		d := served.Load()
@@ -1199,6 +1275,28 @@ func registerListGauges(met *metrics.Registry, served *atomic.Pointer[listenerDe
 		}
 		return int64(len(interests)), true
 	})
+	roleClaimRepairGauge := func(name, help string, value func(store.RoleClaimRepairReport) int64) {
+		met.NewOptionalGaugeFunc(name, help, func() (int64, bool) {
+			d := served.Load()
+			if d == nil {
+				return 0, false
+			}
+			report := d.registry.RoleClaimRepair()
+			if report.Completed == 0 {
+				return 0, false
+			}
+			return value(report), true
+		})
+	}
+	roleClaimRepairGauge("envoy_role_claim_repair_completed_timestamp_seconds",
+		"Unix time the last whole read of the role claims completed, which repairs the listener's copy of them",
+		func(report store.RoleClaimRepairReport) int64 { return report.CompletedAt.Unix() })
+	roleClaimRepairGauge("envoy_role_claim_repair_put_back",
+		"Role claims the last whole read of the role claims put back into the listener's copy",
+		func(report store.RoleClaimRepairReport) int64 { return int64(report.PutBack) })
+	roleClaimRepairGauge("envoy_role_claim_repair_took_out",
+		"Role claims the last whole read of the role claims took out of the listener's copy",
+		func(report store.RoleClaimRepairReport) int64 { return int64(report.TookOut) })
 }
 
 // inactiveThresholdFor is the threshold the server removes an idle session consumer after, as
@@ -1458,8 +1556,8 @@ func main() {
 	// roles - GET /v1/sessions and GET /v1/registry/<session_id> - answer a live client the
 	// bus-unavailable 503 while the bus is healthy, because the role claim view refuses every read
 	// until its watcher has delivered every claim. So the gate waits for that view to be complete,
-	// not merely ready: a first scan nats.go's idle timer ended releases readiness, and the
-	// watcher's rescan ends this wait.
+	// not merely ready: a first scan that its idle wait ended (kvwatch.ScanIdleTimeout) releases
+	// readiness, and the watcher's own re-read of the bucket ends this wait.
 	//
 	// Bounded at 30s: a healthy NATS cluster completes the scan in milliseconds. The wait also
 	// ends before that bound with the role claim watcher's terminal error - a first start that

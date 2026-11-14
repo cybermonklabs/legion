@@ -350,17 +350,19 @@ func deliveryConsumerConfig() natsgo.ConsumerConfig {
 	}
 }
 
-// durableBindInterval is how often an intake with nothing bound tries its durable again. It is
-// cmd/listener/durable.go's interval, for the reason measured there: a push durable's binding is
-// its holder's until that process stops, which took 35 to 71 s in production, so a two-second
-// poll lands the bind within one interval of the holder going away. The dead holder's work
-// resumes in seconds rather than up to the 30-second settings poll the bind once rode on.
+// durableBindInterval is how often an intake with nothing bound tries its durable again. It was
+// the listener's own bind interval until cybermonklabs/legion#2404's delivery lease replaced that
+// bind, for the reason measured there: a push durable's binding is its holder's until that process
+// stops, which took 35 to 71 s in production, so a two-second poll lands the bind within one
+// interval of the holder going away. The dead holder's work resumes in seconds rather than up to
+// the 30-second settings poll the bind once rode on.
 //
-// Unlike the listener, which gives up at its durableBindDeadline and exits so the runtime starts
-// it again, Dispatch's standby polls for the life of the process: there is no deadline and no
-// exit. A durable another envoy-dispatch process holds is not a failed start but the ordinary
-// state of the second process, which has every other thing a Dispatch server does to get on with
-// meanwhile.
+// Dispatch's standby polls for the life of the process: there is no deadline and no exit. The
+// listener's standby does the same now: it waits for the machine's delivery lease for as long as
+// it runs, reading the lease record every half second, and takes the lease over within seconds of
+// its holder's stop (cmd/listener/lease.go). A durable another envoy-dispatch process holds is
+// not a failed start but the ordinary state of the second process, which has every other thing a
+// Dispatch server does to get on with meanwhile.
 const durableBindInterval = 2 * time.Second
 
 // standbyLogEvery bounds how often one intake says it is standing by for its durable, and for
@@ -488,7 +490,8 @@ const (
 // already has a subscription on it ("consumer is already bound to a subscription"): the one
 // refusal that means another process holds the durable rather than something being wrong with it.
 // Matched on the message because the server sends it as a plain error with no code the client
-// surfaces -- cmd/listener/durable.go and cmd/listener/main.go rely on the same string.
+// surfaces -- the listener's bind matched the same string until cybermonklabs/legion#2404's
+// delivery lease replaced it.
 func consumerHeldElsewhere(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "consumer is already bound")
 }

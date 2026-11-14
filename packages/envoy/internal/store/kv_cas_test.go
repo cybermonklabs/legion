@@ -190,7 +190,7 @@ func TestInterestAndClaimWritesKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
 
 	// The registration's renewal adopts the claim, which names no process, for the registering
 	// one: a write of the claim, which must carry the newer build's field over.
-	if err := a.RenewRoleClaims(context.Background(), sessionID, roleClaimInstance); err != nil {
+	if _, err := renewRoleClaims(t, a, sessionID, roleClaimInstance); err != nil {
 		t.Fatalf("renew keeper: %v", err)
 	}
 	claim = storedJSON(t, roles, "keeper")

@@ -35,7 +35,7 @@ const (
 func seedUnlabelledEmbeddings(t *testing.T, database *Store, issues int) int64 {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('FILL', 'Fill')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('FILL', 'Fill', 'alice@d.example')`); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `

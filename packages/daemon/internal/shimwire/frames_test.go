@@ -124,19 +124,6 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			AdoptWorkingCopyResult{ID: "r4", OK: false, Error: "no workspace"},
 		},
 		{
-			"rescue-unpushed",
-			`{"type":"rescue-unpushed","id":"r5","branch":"legion/LEGION-484-rescue-9d3f0c7a","workspaceTimeoutMs":120000,"timeoutMs":300000}`,
-			RescueUnpushed{ID: "r5", Branch: "legion/LEGION-484-rescue-9d3f0c7a", WorkspaceTimeoutMs: 120_000, TimeoutMs: 300_000},
-		},
-		{
-			"rescue-unpushed-result",
-			`{"type":"rescue-unpushed-result","id":"r5","ok":true,"workspaces":[{"dir":"/legion/workspaces/acme/widgets/legion-484","status":"rescued","branches":[{"name":"legion/LEGION-484-rescue-9d3f0c7a-1","commit":"c0ffee"}]},{"dir":"/legion/workspaces/acme/widgets/legion-485","status":"error","error":"push refused"}]}`,
-			RescueUnpushedResult{ID: "r5", OK: true, Workspaces: []RescueWorkspace{
-				{Dir: "/legion/workspaces/acme/widgets/legion-484", Status: "rescued", Branches: []RescueBranch{{Name: "legion/LEGION-484-rescue-9d3f0c7a-1", Commit: "c0ffee"}}},
-				{Dir: "/legion/workspaces/acme/widgets/legion-485", Status: "error", Error: "push refused"},
-			}},
-		},
-		{
 			"rpc_chunk",
 			`{"type":"rpc_chunk","chunkId":"agent-end-1","index":0,"count":2,"byteLength":1048577,"data":"eA=="}`,
 			RPCChunk{ChunkID: "agent-end-1", Index: 0, Count: 2, ByteLength: 1_048_577, Data: "eA=="},
@@ -145,6 +132,12 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			"launcher_hello",
 			`{"type":"launcher_hello","token":"launcher-token","sandbox":"legion-legion-legion-208","role":"tester","podUid":"pod-1","launcherId":"launcher-1"}`,
 			LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "launcher-1"},
+		},
+		{
+			// A launcher whose environment pins the shared public leak check and has installed it.
+			"launcher_hello naming an installed leak check",
+			`{"type":"launcher_hello","token":"launcher-token","sandbox":"legion-legion-legion-208","role":"tester","podUid":"pod-1","launcherId":"launcher-1","leakCheckTag":"leak-check-v15","leakCheckInstalled":true}`,
+			LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "launcher-1", LeakCheckTag: "leak-check-v15", LeakCheckInstalled: true},
 		},
 		{"launcher_hello_ack", `{"type":"launcher_hello_ack"}`, LauncherHelloAck{}},
 		{
@@ -168,6 +161,23 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			LauncherStop{ID: "stop-1", Generation: 7, GraceMs: 10_000},
 		},
 		{"launcher_stop_result", `{"type":"launcher_stop_result","id":"stop-1","ok":true}`, LauncherStopResult{ID: "stop-1", OK: true}},
+		{
+			"launcher_leak_check",
+			`{"type":"launcher_leak_check","id":"leak-check-leak-check-v15-2c26b46b68ff","index":0,"count":1,"tag":"leak-check-v15","sha256":"2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae","payload":"Zm9v"}`,
+			LauncherLeakCheck{ID: "leak-check-leak-check-v15-2c26b46b68ff", Index: 0, Count: 1, Tag: "leak-check-v15",
+				SHA256: "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", Payload: []byte("foo")},
+		},
+		{
+			"launcher_leak_check_result of an install",
+			`{"type":"launcher_leak_check_result","id":"leak-check-leak-check-v15-2c26b46b68ff","index":0,"ok":true,"installed":true}`,
+			LauncherLeakCheckResult{ID: "leak-check-leak-check-v15-2c26b46b68ff", Index: 0, OK: true, Installed: true},
+		},
+		{
+			"refused launcher_leak_check_result",
+			`{"type":"launcher_leak_check_result","id":"leak-check-leak-check-v15-2c26b46b68ff","index":0,"ok":false,"error":"the shared public leak check could not be installed: the pod's launcher was served leak-check-v15, not its own pin leak-check-v16"}`,
+			LauncherLeakCheckResult{ID: "leak-check-leak-check-v15-2c26b46b68ff", Index: 0,
+				Error: "the shared public leak check could not be installed: the pod's launcher was served leak-check-v15, not its own pin leak-check-v16"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decoded, err := Decode([]byte(tc.line))
@@ -430,24 +440,6 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 	}{
 		{"no id", Compact{CustomInstructions: "Write the summary as text."}},
 		{"no instructions", Compact{ID: "r9"}},
-	} {
-		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
-			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
-		}
-	}
-	rescue := RescueUnpushed{ID: "r5", Branch: "legion/LEGION-484-rescue-9d3f0c7a", WorkspaceTimeoutMs: 1, TimeoutMs: 2}
-	if err := rescue.Validate(); err != nil {
-		t.Fatalf("RescueUnpushed.Validate: %v", err)
-	}
-	for _, tc := range []struct {
-		name  string
-		frame RescueUnpushed
-	}{
-		{"no id", RescueUnpushed{Branch: rescue.Branch, WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
-		{"a branch outside legion/", RescueUnpushed{ID: "r5", Branch: "main", WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
-		{"a branch a refspec misreads", RescueUnpushed{ID: "r5", Branch: "legion/x:refs/heads/main", WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
-		{"no workspace bound", RescueUnpushed{ID: "r5", Branch: rescue.Branch, TimeoutMs: 2}},
-		{"a workspace bound above the whole", RescueUnpushed{ID: "r5", Branch: rescue.Branch, WorkspaceTimeoutMs: 3, TimeoutMs: 2}},
 	} {
 		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)

@@ -245,16 +245,6 @@ export const ProjectSchema = z
   })
   .readonly();
 
-/**
- * A project's default assignee: the last step of an issue create's assignee chain, reached when
- * the create named nobody, the session acts for nobody, and no parent carries one. `assignee` is
- * a person's lowercase email, or null for a project that names nobody — which
- * `GET /api/v1/settings/project-default-assignees` leaves out of its list entirely.
- */
-export const ProjectDefaultAssigneeSchema = z
-  .strictObject({ project: z.string(), assignee: z.string().nullable() })
-  .readonly();
-
 export const RepoProjectSchema = z
   .strictObject({
     repo: z.string(),
@@ -304,9 +294,20 @@ export const RepoProjectUpdatedEventPayloadSchema = z
 
 export type RepoProjectUpdatedEventPayload = z.output<typeof RepoProjectUpdatedEventPayloadSchema>;
 
-/** `settings.project_default_assignee.updated`: a human set or cleared a project's default
- *  assignee. The payload is the stored row, so a clear carries `assignee: null`. */
-export const ProjectDefaultAssigneeUpdatedEventPayloadSchema = ProjectDefaultAssigneeSchema;
+/** `settings.project_default_assignee.updated`: a person moved a project's default assignee to
+ *  another person. The payload is the stored row - no write clears a default, so `assignee`
+ *  names somebody - plus `thread_logins`, the previous default and the new one, sorted and each
+ *  named once. A project's default is the last step of the chain that decides who a question
+ *  reaches, so the move carries every question on an issue nobody holds between those two
+ *  Inboxes, and a reader refreshes the lists of both. An event retained from before every
+ *  project named a default can record a clear, `assignee: null`, and names no `thread_logins`. */
+export const ProjectDefaultAssigneeUpdatedEventPayloadSchema = z
+  .strictObject({
+    project: z.string(),
+    assignee: z.string().nullable(),
+    thread_logins: z.array(z.string()).optional(),
+  })
+  .readonly();
 
 export type ProjectDefaultAssigneeUpdatedEventPayload = z.output<
   typeof ProjectDefaultAssigneeUpdatedEventPayloadSchema
@@ -349,3 +350,16 @@ export const ArchitectureSyncFailedEventPayloadSchema = z
 export type ArchitectureSyncFailedEventPayload = z.output<
   typeof ArchitectureSyncFailedEventPayloadSchema
 >;
+
+/** `priority.updated`: one write of one priority committed - a create, a PATCH of its title,
+ *  description, owner or place in the order, or a delete, which writes the state gone. It names
+ *  the priority and which of the three writes it was, and carries no row: a reader refetches its
+ *  priorities reads on every write, and on a delete also the work under that priority, the work
+ *  under none and every issue read or listing whose rows advance it.
+ *  A priority belongs to no project, so the event names no owner (`issue_key` null, `project`
+ *  empty), wakes nobody (`notify` false) and the outbox publishes it on no subject. */
+export const PriorityUpdatedEventPayloadSchema = z
+  .strictObject({ id: z.string(), change: z.enum(["created", "updated", "deleted"]) })
+  .readonly();
+
+export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPayloadSchema>;

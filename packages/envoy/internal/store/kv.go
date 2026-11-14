@@ -103,15 +103,22 @@ type Registry struct {
 	watcher *kvwatch.Watcher
 	// roleWatcher feeds roleHolders from the role bucket, so a session's roles are read from the
 	// claims with no bucket call (RolesHeldBy), which answers only while its copy can be served
-	// (kvwatch.Watcher.Servable), and a role's holder is too (CachedRoleHolder). holdersMu guards
+	// (kvwatch.Watcher.Servable). A role's holder is never read from it: every act that turns on
+	// who holds a role reads that role's claim record (RoleClaim). holdersMu guards
 	// roleHolders, the copy of the role bucket: the session each role's claim names, its revision
 	// fence, which keeps a delayed watcher record from undoing a claim this registry wrote or read,
 	// its marks and its read epoch (kvwatch.Copy, newRoleHolderCopy), so a claim write this registry
 	// made through a handle on a bucket since recreated cannot land in the new bucket's view and
-	// fence out its lower revisions.
+	// fence out its lower revisions. It guards roleRepair too, what the watcher's whole reads of the
+	// bucket repaired in that copy (roleCache, RoleClaimRepair), which each read's hooks write
+	// beside the copy they repair.
 	roleWatcher *kvwatch.Watcher
 	holdersMu   sync.RWMutex
 	roleHolders kvwatch.Copy[string]
+	roleRepair  roleClaimRepair
+	// renewalFailures is this registry's record of the role claim renewals that failed, by role
+	// and holder session (RenewalFailedWithin), under a mutex of its own (role_renewal.go).
+	renewalFailures renewalFailures
 }
 
 // OpenOption configures the registry.
@@ -122,6 +129,7 @@ type openOpts struct {
 	now          func() time.Time
 	log          *slog.Logger
 	serviceSince func() time.Time
+	roleWatch    []kvwatch.Option
 }
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
@@ -163,6 +171,14 @@ func WithServiceSince(since func() time.Time) OpenOption {
 	return func(o *openOpts) { o.serviceSince = since }
 }
 
+// WithRoleClaimWatch adds options to the role claim watcher's own, after them, so a test sets the
+// watcher's AfterFunc (kvwatch.WithAfterFunc), its clock (kvwatch.WithNow) or the interval of its
+// scheduled read (kvwatch.WithScheduledRead) and fires the scheduled read itself rather than wait
+// a minute for it, without reaching into the registry. The listener passes none.
+func WithRoleClaimWatch(options ...kvwatch.Option) OpenOption {
+	return func(o *openOpts) { o.roleWatch = append(o.roleWatch, options...) }
+}
+
 func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	opts := openOpts{replicas: 1, now: time.Now, log: slog.Default()}
 	for _, o := range options {
@@ -184,14 +200,14 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 		roleKV:       roleKV,
 		log:          opts.log,
 		index:        newSubjectIndex(),
-		roleHolders:  newRoleHolderCopy(),
 		now:          opts.now,
 		started:      opts.now(),
 		serviceSince: opts.serviceSince,
 	}
 	r.cache = newInterestCopy(r)
+	r.roleHolders = newRoleHolderCopy(r)
 	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, kvwatch.WithLogger(opts.log))
-	r.roleWatcher = r.newRoleWatcher(roleKV)
+	r.roleWatcher = r.newRoleWatcher(roleKV, opts.roleWatch...)
 	// No eager load: the watchers populate the caches asynchronously. A synchronous load of N
 	// individual kv.Get() calls blocks indefinitely when the KV stream leader is on a remote node.
 	r.watcher.Start()
@@ -214,9 +230,13 @@ func (r *Registry) serviceStart() time.Time {
 
 // newRoleWatcher returns the watcher that feeds the holder view from kv. A read whose scan timed
 // out is read again by the watcher itself, so a view RolesHeldBy refuses becomes servable without
-// waiting for a Rewatch.
-func (r *Registry) newRoleWatcher(kv bus.KeyValue) *kvwatch.Watcher {
-	return kvwatch.New("role claims", kv, roleCache{r}, kvwatch.WithLogger(r.log))
+// waiting for a Rewatch, and the bucket is read whole again roleClaimRepairInterval after each read
+// that completed, which repairs a copy that drifted from the bucket in either direction (roleCache
+// counts what each such read repaired). options follow the watcher's own, so one of them replaces
+// the scheduled read's interval (WithRoleClaimWatch).
+func (r *Registry) newRoleWatcher(kv bus.KeyValue, options ...kvwatch.Option) *kvwatch.Watcher {
+	options = append([]kvwatch.Option{kvwatch.WithLogger(r.log), kvwatch.WithScheduledRead(roleClaimRepairInterval)}, options...)
+	return kvwatch.New("role claims", kv, roleCache{r}, options...)
 }
 
 // Ping verifies both KV buckets are reachable through the current NATS connection and reports
@@ -338,34 +358,4 @@ func (r *Registry) Rewatch(conn *nats.Conn) error {
 // reads the cache by (cmd/listener/durable.go).
 func (r *Registry) CachedInterest(sessionID string) (Interest, bool) {
 	return r.Cached(sessionID)
-}
-
-// CachedRoleHolder returns role's holder from the role claim watcher's copy of the bucket, and on
-// a miss reads the bucket as RoleHolder does, which fills the copy (setOwnRoleHolder). The copy
-// holds every claim this registry wrote, read or watched, so it answers without a round trip; a
-// claim another listener wrote reaches it through the watcher, a moment after the bucket. The
-// listener's role lane resolves each role message's holder through it, and reads the bucket
-// itself (RoleHolder) when the holder it found was superseded. An unclaimed role is a miss, which
-// returns an empty holder without an error.
-func (r *Registry) CachedRoleHolder(role string) (string, error) {
-	r.holdersMu.RLock()
-	holder, ok := r.roleHolders.Get(role)
-	r.holdersMu.RUnlock()
-	if ok {
-		return holder, nil
-	}
-	// The epoch is read before the bucket, so a claim read through a handle on a bucket since
-	// recreated is dropped rather than fencing out the new bucket's lower revisions.
-	epoch := r.roleViewEpoch()
-	claim, err := r.RoleClaim(context.Background(), role)
-	if err != nil {
-		return "", err
-	}
-	// A zero revision is a role no record claims (RoleClaim): the bucket's revisions start at one,
-	// and the zero claim a miss answers carries none.
-	if claim.Revision == 0 {
-		return "", nil
-	}
-	r.setOwnRoleHolder(role, claim.HolderSessionID, claim.Revision, epoch)
-	return claim.HolderSessionID, nil
 }

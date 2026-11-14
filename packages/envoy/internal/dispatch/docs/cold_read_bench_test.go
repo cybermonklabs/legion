@@ -84,7 +84,7 @@ func newColdBenchmarkDocument(b *testing.B, size int) (*Service, *PgVersioned, s
 		b.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `insert into projects (key, name) values ('BENCH', 'Benchmark')`); err != nil {
+	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('BENCH', 'Benchmark', 'alice')`); err != nil {
 		b.Fatal(err)
 	}
 	issueKey := "BENCH-" + suffix

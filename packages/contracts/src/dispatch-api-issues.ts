@@ -113,6 +113,16 @@ export const issueFields = {
   parent: z.string().nullable(),
   /** Issue keys in the same project this issue waits on, sorted. */
   blocked_by: z.array(z.string()),
+  /** Every priority this issue advances: the ones it states itself and, marked `inherited`, the
+   *  ones an issue above it states. Absent from a Dispatch older than priorities. */
+  advances: z
+    .array(z.strictObject({ id: z.string(), inherited: z.boolean() }).readonly())
+    .nullable()
+    .optional(),
+  /** The revision of the issue's own `advances` set, which a whole-set write carries so two
+   *  writers cannot each move a relation off the same read. Absent from a Dispatch older than
+   *  priorities. */
+  advances_revision: z.number().int().optional(),
   /** Lowercase email of the person who answers this issue's asks; null when unassigned. */
   assignee: z.string().nullable(),
   /** The session or human working this issue, or null when nobody has claimed it. */
@@ -200,8 +210,9 @@ export const issueEventChangesFields = {
   ancestors: z.array(z.string()).optional(),
   /** Present only when the status or the assignee moved: for a close or a reopen every login
    *  with a Replies row on one of the issue's open asks, for an assignee move the assignee the
-   *  issue was taken from and the one it was given to, for the two together the sorted union of
-   *  both, and for any other status move `[]`. */
+   *  issue was taken from and the one it was given to - a side holding nobody named as the
+   *  project's default assignee, the person the issue's questions reach while nobody holds it -
+   *  for the two together the sorted union of both, and for any other status move `[]`. */
   thread_logins: z.array(z.string()).optional(),
   /** On an `issue.created` whose create went past the near-copy refusal with `force`: `past`
    *  names the issues that refusal named, and is the empty list when the check did not answer.

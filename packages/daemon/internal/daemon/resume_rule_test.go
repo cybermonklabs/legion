@@ -80,6 +80,19 @@ func resumesOf(rt *fake.Runtime, token claim.Token) []fake.Call {
 	return of
 }
 
+// adoptionsOf is the App git name of every adoption of the working copy rt was asked to make for
+// token's claim, in order. An adoption runs in the claim's own process, so the locator it is made
+// over names that claim.
+func adoptionsOf(rt *fake.Runtime, token claim.Token) []string {
+	var made []string
+	for _, call := range rt.CallsOf("AdoptWorkingCopy") {
+		if call.Locator.Claim == token {
+			made = append(made, call.Identity.Name)
+		}
+	}
+	return made
+}
+
 // The boot's start of a daemon-suspended phase owner resumes it by rule. If that owner can never
 // launch, the resume spends its launch budget and the claim fails; the start row then finishes
 // rather than retrying the failed claim with fresh budgets (RequestRetry), so the owner is launched

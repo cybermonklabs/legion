@@ -96,8 +96,8 @@ const (
 // longer than bucketAppliedDeadline. It returns the first answer that is not that, and the last
 // miss as it is once the deadline passes, so its caller wraps one error however the wait ended.
 // Any other error, a refusal included, is returned at once: only a member that has not caught up
-// is waited out. The first miss is logged, as bindListenerDurable logs its first refusal, so a
-// start that waited says which bucket it waited for.
+// is waited out. The first miss is logged, so a start that waited says which bucket it waited
+// for.
 func awaitBucketApplied[T any](bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
 	start := time.Now()
 	for attempt := 1; ; attempt++ {

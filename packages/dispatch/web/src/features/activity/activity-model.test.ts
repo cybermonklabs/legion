@@ -96,6 +96,25 @@ test("an architecture import names the repository it came from; a retained event
   ).toEqual(["failed to sync the architecture model: duplicate component id api"]);
 });
 
+test("a project's default assignee names the person it moved to; a retained clear reads as cleared", () => {
+  expect(
+    activityDescription({
+      ...projectEvent,
+      payload: { assignee: "bob", project: "CORE", thread_logins: ["alice", "bob"] },
+      type: "settings.project_default_assignee.updated",
+    })
+  ).toEqual(["set the default assignee of CORE to bob"]);
+  // Written before every project named a default: the stored row of a clear, and no
+  // `thread_logins`.
+  expect(
+    activityDescription({
+      ...projectEvent,
+      payload: { assignee: null, project: "CORE" },
+      type: "settings.project_default_assignee.updated",
+    })
+  ).toEqual(["cleared the default assignee of CORE"]);
+});
+
 function commentDelivery(receipt: {
   state: "sent" | "failed";
   duplicate?: boolean;

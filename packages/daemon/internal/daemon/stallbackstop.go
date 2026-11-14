@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -30,9 +31,10 @@ import (
 // never read again. A claim in no turn has no turn to end: a claim's record is never cleared, so
 // the step of a turn that ended hours ago still stands on an idle claim, and reading it would end
 // a turn nobody is in. A claim in an update round is the round's to carry: the round replaces
-// that process once every worker of its pod has answered, and tells the controller when it does
-// not finish (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it would
-// replace a process the round is waiting on and start its clock again.
+// that process with its pod once every worker of the pod has answered and no turn runs, or at
+// the round's bound whatever the workers answered, and tells the controller when something holds
+// it past that bound (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it
+// would replace a process the round is about to replace and start its clock again.
 //
 // The stop itself is the machine's (supervise's backstopStalledTurn), which re-reads the claim's
 // own record before it acts and charges nothing. The post is made at every tick that finds the
@@ -75,7 +77,7 @@ const stallNoticeBudget = 30 * time.Second
 // (supervise.Deps.StallBackstopped), and the only thing that tells the owner: a request the
 // machine answered by leaving the turn alone is told to nobody, and a turn a held suspension
 // ended is told as that. It is called inside the machine's decision, so the row is written on a
-// goroutine of its own, bounded like a terminal fact; the sweep is not waited for, because a
+// goroutine of its own, bounded by stallNoticeBudget; the sweep is not waited for, because a
 // notice whose whole purpose is that somebody hears it should not wait a tick for a tick it does
 // not need.
 //
@@ -85,7 +87,9 @@ const stallNoticeBudget = 30 * time.Second
 // notice gets (tellUpdateStalled).
 func (s *supervision) stallBackstopped(c supervise.Claim, stop supervise.StallBackstopStop) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), stallNoticeBudget)
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), stallNoticeBudget)
 		defer cancel()
 		if !s.tellStallBackstopped(ctx, c, stop) {
 			s.oweStallNotice(c, stop)

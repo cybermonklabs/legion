@@ -13,6 +13,7 @@ import {
   PhaseOpArguments,
   type PhaseOpRuntime,
   phaseOpParameters,
+  STALE_ENTRY_INSTRUCTION,
 } from "./legion-phase-ops";
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -113,9 +114,29 @@ test("the description sets the host's sentences before and after handoff_complet
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
   expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
+});
+
+// The daemon ends its HANDOFF_STALE_ENTRY refusal with the words that tell the worker what to do,
+// and the description must give the code those same words, so a worker reads one instruction in
+// its tool and in the refusal. The daemon's golden test
+// (`packages/daemon/internal/api`, TestStaleEntryInstructionGolden) writes its code and its
+// constant to `stale-entry.json`; this case holds the description's sentence for that code to the
+// file, so a word changed on either side alone fails one test or the other.
+test("the description gives HANDOFF_STALE_ENTRY the instruction the daemon's refusal ends with, word for word", () => {
+  const { code, instruction } = daemonFixture("stale-entry.json") as {
+    readonly code: string;
+    readonly instruction: string;
+  };
+  expect(code).toBe("HANDOFF_STALE_ENTRY");
+  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
+  const opens = description.indexOf(`${code} (`);
+  expect(opens, `the description names no ${code} (`).toBeGreaterThan(-1);
+  const sentence = description.slice(opens, description.indexOf("), ", opens));
+  expect(sentence).toEndWith(`nothing was recorded. ${instruction}`);
+  expect(STALE_ENTRY_INSTRUCTION).toBe(instruction);
 });
 
 test("each op refuses its arguments whole before any daemon request, naming every problem", async () => {
@@ -1085,7 +1106,7 @@ test("ready_for_update answers for the round its task named, with the branch hea
     branchHead,
   });
   // The claim authenticates the signal, so no grant is minted: the one request is the signal.
-  // The round is the agent's own word, read from the update task it answers, and it travels as
+  // The round is the agent's own word, read from the update message it answers, and it travels as
   // it was given.
   await expect(
     executePhaseOp(

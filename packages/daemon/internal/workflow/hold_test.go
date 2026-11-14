@@ -493,7 +493,7 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 	if _, err := intake.ApplyFact(ctx, pool, "architect", "retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	task := startTask(t, pool, RoleFor(phase.Implementing))
+	task := startTask(t, pool, phase.RoleFor(phase.Implementing))
 	if !strings.Contains(task, "Pull request: #42.") {
 		t.Fatalf("task = %q, want it to name pull request #42", task)
 	}

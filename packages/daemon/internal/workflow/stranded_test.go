@@ -255,8 +255,8 @@ func TestStrandedNamesTheClaimsNothingWillWake(t *testing.T) {
 		// A finished phase's worker is started again only when its phase comes.
 		strandedClaim(t, "LEGION-1", "LEGION-1", claim.RolePlanner, supervise.StateSuspended),
 		suspendedArchitect,
-		// A failed sub-architect the operator started, and one on a child in accepting, whose phase
-		// RoleFor gives the tree's architect, not the sub-architect.
+		// A failed sub-architect the operator started, and one on a child in accepting, where
+		// phase.RoleFor gives the tree's architect, not the sub-architect.
 		strandedClaim(t, "LEGION-1", "LEGION-2", claim.RoleArchitect, supervise.StateFailed),
 		strandedClaim(t, "LEGION-1", "LEGION-12", claim.RoleArchitect, supervise.StateFailed),
 		retro,

@@ -9,11 +9,14 @@
 # (rows.jsonl) is refused by the Markdown-name rule before a request is sent, so the issue holds
 # no such document; and a create with --path and one with --content each still make a document.
 #
-# Inputs: DISPATCH_URL (the server) and DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer,
-# read here and never printed). It makes its own project (MAKEDOC, taken as it stands where the
-# server already holds it) and one issue in that project, holding the documents the checks read;
-# it closes that issue, also when a check fails. Nothing it writes is read by a second run, so it
-# may be run again at once.
+# Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer,
+# read here and never printed), and DISPATCH_DEFAULT_ASSIGNEE (a person who has signed in to that
+# server). The bearer acts for no person, and every project names the person its unowned work
+# lands on, so the server refuses a project this bearer creates naming none (400
+# INVALID_PROJECT), and the project names DISPATCH_DEFAULT_ASSIGNEE. It makes its own project
+# (MAKEDOC, taken as it stands where the server already holds it) and one issue in that project,
+# holding the documents the checks read; it closes that issue, also when a check fails. Nothing
+# it writes is read by a second run, so it may be run again at once.
 # Each passing check prints `PASS: <section> <what>` on stderr; the first failing one prints
 # `FAIL: <section> <what>: <observed>` there and the script exits 1. Every diagnostic goes to
 # stderr: the one line a run writes on stdout is its last, `all <n> assertions passed`, written
@@ -28,14 +31,15 @@ set +x
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token create-document.sh
-       (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN)
+Usage: DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token DISPATCH_DEFAULT_ASSIGNEE=alice create-document.sh
+       (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN;
+       DISPATCH_DEFAULT_ASSIGNEE names a person who has signed in to that server)
 USAGE
 }
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-require_env DISPATCH_URL
+require_env DISPATCH_URL DISPATCH_DEFAULT_ASSIGNEE
 require_commands bun curl jq
 read_bearer
 # No child process inherits the bearer from here: read_bearer has unset it from the environment,
@@ -173,8 +177,10 @@ document_listed() {
 }
 
 # Setup: this driver's project, which a server that already holds it keeps, and one issue in it.
+# The bearer acts for nobody, so the create names the person the project's unowned work lands on.
 send POST "/api/v1/projects" "$(jq -cn --arg k "$project" --arg s "$session" \
-  '{key: $k, name: "Documents made from a name", actor: {kind: "session", id: $s}}')"
+  --arg a "$DISPATCH_DEFAULT_ASSIGNEE" \
+  '{key: $k, name: "Documents made from a name", default_assignee: $a, actor: {kind: "session", id: $s}}')"
 case "$status" in
   201 | 409) ;;
   *) fail setup "create the project $project" "HTTP $status: $(body)" ;;

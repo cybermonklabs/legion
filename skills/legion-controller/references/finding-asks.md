@@ -47,9 +47,9 @@ The work goes to whoever already owns that code. You file an issue only when nob
 3. Find the running tree whose code it is: a root in `admission.trees`, the live trees, whose
    repository and component match, read from `read_state` and `dispatch read`. Read it there
    rather than in `admission.active`, which holds the issues the daemon has started: an issue
-   takes its slot when the daemon starts it and keeps it
-   until it is done or leaves the workflow, and a tree runs whether or
-   not any issue of it holds one. When one matches, hand it over.
+   holds one of the cap's slots from the moment the daemon starts it until its work is past its
+   review, until it is done, or until Dispatch takes it out of the workflow, and a tree runs
+   whether or not any issue of it holds one. When one matches, hand it over.
    `envoy_publish` the defect, its evidence reference and the fix to that tree's architect topic,
    `notifications.role.<issues.<KEY>.architect.locator.claim>`. The architect decides whether it
    is a child of the tree or part of an open issue's work. Reply `Handed dispatch://<that KEY>`
@@ -88,6 +88,12 @@ dispatch follow --ask 'dispatch://<KEY>/ask/<id>' --action follow
 When `dispatch read --ref` shows it answered already, act on its answer now.
 
 ## Act on its answer
+
+A park ask (`Park it`, `Leave it admitted`) and a deferral ask (`Defer it`, `Let it run`) take
+none of the four finding actions below. Act on the answer to a park ask as
+`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4 says, and on
+the answer to a deferral ask as
+`skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 says.
 
 Once it is answered (an ask you follow brings its answer to you), read it with
 `dispatch read --ref 'dispatch://<KEY>/ask/<id>'` and act on the newest answer. When its typed
@@ -148,7 +154,7 @@ finding asks roles opened on their own issues while no controller ran:
 
    ```text
    asks=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1") || { echo "Dispatch read failed" >&2; exit 1; }
-   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
+   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
    Read it for the report issue, then for each issue in `needs_review`, whose architect holds its

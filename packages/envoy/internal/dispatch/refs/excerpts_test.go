@@ -117,7 +117,7 @@ func owedDocument(t *testing.T, database *store.Store, slug string) string {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `insert into projects (key, name) values ('CORE', 'CORE project') on conflict (key) do nothing`); err != nil {
+	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('CORE', 'CORE project', 'alice') on conflict (key) do nothing`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	document, _ := createReferenceArtifact(t, tx, "", "CORE", slug)

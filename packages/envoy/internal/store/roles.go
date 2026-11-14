@@ -57,8 +57,7 @@ type RoleClaim struct {
 	// Revision is the role bucket revision the claim was read at, which RoleClaim stamps on
 	// every claim it decodes and nothing stores: it belongs to the entry, not to the record,
 	// so it is never marshalled back into the bucket. Zero means no claim record was read -
-	// an unclaimed role, a claim built to be written, or the holder-only claim a watched copy
-	// of the bucket gives (roles.ResolveHolderFrom's firstHolder). It is what a conditional
+	// an unclaimed role, or a claim built to be written. It is what a conditional
 	// claim names as its precondition (SetRoleWithPrevious's ifClaimRevision) and what GET
 	// /v1/roles/<role> reports as claim_revision, so a caller can read a role and then claim
 	// it only while no other claim has landed.
@@ -237,35 +236,53 @@ func encodeRoleClaim(claim RoleClaim) ([]byte, error) {
 
 // newRoleHolderCopy is an empty copy of the role claim bucket, which keeps the session each claim
 // it can read names. A claim this build cannot read (ErrMalformedRoleClaim) gives its role to
-// nobody, so the copy keeps no entry for it, as a delete marker leaves none.
-func newRoleHolderCopy() kvwatch.Copy[string] {
+// nobody, so the copy keeps no entry for it, as a delete marker leaves none. Each entry it removes
+// is handed to r's repair (roleClaimRepair.swept), which counts the ones a repairing read's sweep
+// took out.
+func newRoleHolderCopy(r *Registry) kvwatch.Copy[string] {
 	return kvwatch.NewCopy(kvwatch.Rows[string]{Decode: func(entry kvwatch.Entry) (string, bool, error) {
 		claim, err := DecodeRoleClaim(entry.Value)
 		if err != nil {
 			return "", false, err
 		}
 		return claim.HolderSessionID, true, nil
-	}})
+	}, Removed: r.roleRepair.swept})
 }
 
 // roleCache is the registry as the role claim cache its watcher feeds (kvwatch.Cache). The hooks
-// are its own type's, not the registry's methods, so nothing but the watcher calls them.
+// are its own type's, not the registry's methods, so nothing but the watcher calls them. Beside the
+// copy they count what each whole read of the bucket repaired in it (roleClaimRepair), which
+// RoleClaimRepair reports.
 type roleCache struct{ r *Registry }
 
 // BeginRead starts a read of the role claim bucket (kvwatch.Copy.BeginRead). Every holder stays.
+// Whether the read repairs the copy, and so counts what it repairs, is the repair's to say
+// (roleClaimRepair.begin).
 func (c roleCache) BeginRead(read kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
 	defer r.holdersMu.Unlock()
 	r.roleHolders.BeginRead(read)
+	r.roleRepair.begin(read)
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a claim it could
 // not read, which gave its role to nobody, as the interest watcher logs a value it cannot decode.
+// What the record did to the role's entry is handed to the repair while a read that repairs is
+// under way (roleClaimRepair.delivered); a record delivered while the copy follows its bucket
+// costs no look at the entry beside its own write.
 func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
-	malformed := r.roleHolders.Delivered(entry)
+	var malformed error
+	if r.roleRepair.repairing {
+		before, held := r.roleHolders.Get(entry.Key)
+		malformed = r.roleHolders.Delivered(entry)
+		after, holds := r.roleHolders.Get(entry.Key)
+		r.roleRepair.delivered(entry.Key, before, held, after, holds)
+	} else {
+		malformed = r.roleHolders.Delivered(entry)
+	}
 	r.holdersMu.Unlock()
 	if malformed != nil {
 		r.logger().Warn("role claim watcher found a claim it cannot read; it names no holder",
@@ -277,12 +294,26 @@ func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 }
 
 // CompleteRead removes every holder and fence entry the read found no evidence of: the bucket no
-// longer holds that role's claim.
-func (c roleCache) CompleteRead(kvwatch.Read) {
+// longer holds that role's claim. The repair runs that sweep (roleClaimRepair.sweep), so a read
+// that repairs counts each holder the sweep removes as taken out (roleClaimRepair.swept), and no
+// removal outside the sweep is counted so. Every completed read, whether it repaired or filled the
+// copy, is recorded as the last on the registry's clock, with what it repaired
+// (roleClaimRepair.complete); a read that repaired anything logs it at INFO, with the counts and
+// the first roleClaimRepairLoggedRoles of the roles it repaired.
+func (c roleCache) CompleteRead(read kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
-	defer r.holdersMu.Unlock()
-	r.roleHolders.CompleteRead()
+	r.roleRepair.sweep(&r.roleHolders)
+	found := r.roleRepair.complete(read, r.now())
+	r.holdersMu.Unlock()
+	if found.putBack > 0 || found.tookOut > 0 {
+		r.logger().Info(fmt.Sprintf("role claim repair put back %d claims and took out %d", found.putBack, found.tookOut),
+			slog.Int("put_back", found.putBack),
+			slog.Int("took_out", found.tookOut),
+			slog.Any("put_back_roles", found.putBackRoles),
+			slog.Any("took_out_roles", found.tookOutRoles),
+		)
+	}
 }
 
 // setOwnRoleHolder records a claim write this registry made through a handle of epoch
@@ -848,9 +879,9 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 }
 
 // RoleHolder returns the authoritative session ID for role, read with no deadline of its own. Only
-// tests call it, to read what a claim left behind; every route and the role lane read RoleClaim
-// within a deadline, through the one resolution (roles.ResolveHolder and roles.ResolveHolderFrom,
-// internal/roles). An unclaimed role returns an empty holder without an error.
+// tests call it, to read what a claim left behind; the listener reads RoleClaim within a deadline,
+// its routes and its role lane through the one resolution (roles.ResolveHolder, internal/roles)
+// and its kept lane directly. An unclaimed role returns an empty holder without an error.
 func (r *Registry) RoleHolder(role string) (string, error) {
 	claim, err := r.RoleClaim(context.Background(), role)
 	if err != nil {

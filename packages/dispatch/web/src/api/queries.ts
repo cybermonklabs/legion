@@ -10,6 +10,7 @@ import {
 
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
 import { projectIssuesQueryKey } from "../features/project/issue-filters";
+import type { AdvancesListing } from "../features/project/issues-table-data";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { api } from "./client";
@@ -268,8 +269,10 @@ export const projectArchitectureSourcesQuery = (project: string) =>
     queryFn: () => api.listProjectArchitectureSources(project),
   });
 
-/** Every project that names a default assignee, read by the Settings page's Projects table and
- *  refreshed by the event a write appends. A project absent from the answer names nobody. */
+/** Every project with the person it defaults to, one row per project: every project names one,
+ *  and this read is the one place the page learns who, since the project list carries no default.
+ *  Read by the Settings page's Projects table, and refreshed by the event a default write appends
+ *  and by a project's creation. A project absent from the answer is one created since the read. */
 export const projectDefaultAssigneesQuery = () =>
   queryOptions({
     queryKey: ["project-default-assignees"],
@@ -330,6 +333,69 @@ function boardMovesSettled(context: QueryFunctionContext, project: string): Prom
   signal.addEventListener("abort", abort);
   return settled.promise;
 }
+
+/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, in the
+ *  statuses it names, with their move into backlog or icebox where it asks for that. `open`
+ *  leaves the closed issues out, as the project listing's own flag does. */
+export const advancesIssuesParams = (listing: AdvancesListing, open = false) => ({
+  advances: [listing.advances],
+  ...(listing.statuses === undefined ? {} : { status: [...listing.statuses] }),
+  ...(listing.moved ? { moved: true } : {}),
+  ...(open ? { open: true } : {}),
+});
+
+/** Every issue an advances listing holds, as the server narrows the listing itself
+ *  (`GET /api/v1/issues?advances=<id>`, `none` or `any`). A priority belongs to no project, so
+ *  the read names none: the work under it is the whole deployment's. No board move gates it - a
+ *  move is one project's, and this listing is of no project. Every key sits under
+ *  `["issues", "advances"]`, the prefix the event feed refreshes when an `advances`, a status
+ *  or a parent moves; a deleted priority refreshes the listing under it and the work under none,
+ *  and every listing whose rows advance it (`priorityWriteTargets`, `api/event-refresh.ts`). */
+export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
+  queryOptions({
+    // Typed as widely as the project listing's key (`projectIssuesQueryKey`), so the table that
+    // reads one or the other sees one options type rather than two that differ by their key.
+    queryKey: [
+      "issues",
+      "advances",
+      listing.advances,
+      ...(listing.statuses === undefined ? [] : ["status", ...listing.statuses]),
+      ...(listing.moved ? ["moved"] : []),
+      ...(open ? ["open"] : []),
+    ] as unknown[],
+    queryFn: () => api.listIssues(advancesIssuesParams(listing, open)),
+  });
+
+/** Every live priority with the work under each and the two faults beside them
+ *  (`GET /api/v1/priorities`), in rank order. `projects` narrows the counts to the work of those
+ *  projects and nothing else: the rows are the deployment's whichever projects are named. Its
+ *  key sits under the summary's prefix, so one refresh moves both reads (`api/event-refresh.ts`). */
+export const prioritiesQuery = (projects: readonly string[] = []) =>
+  queryOptions({
+    queryKey: ["priorities", "full", ...projects],
+    queryFn: () => api.listPriorities(projects.length ? { project: [...projects] } : {}),
+  });
+
+/** The two fault counts alone (`GET /api/v1/priorities?summary=true`): the work under no
+ *  priority and the work parked under one, which the navigation rail shows without reading a
+ *  row or an issue of either list. */
+export const prioritySummaryQuery = (projects: readonly string[] = []) =>
+  queryOptions({
+    queryKey: ["priorities", "summary", ...projects],
+    queryFn: () =>
+      api.listPriorities({ summary: true, ...(projects.length ? { project: [...projects] } : {}) }),
+  });
+
+/** One priority's own history, newest first (`GET /api/v1/priorities/{id}/history`): each write
+ *  of its title, description, owner and order, and each `advances` relation an issue asserted or
+ *  retracted on it, which the priority page's margin lists. Its key sits under the same
+ *  `priorities` prefix as the rows, so the one refresh rule for `advances`, `status` and
+ *  `parent`, and the one for `priority.updated`, read it again with them (`api/event-refresh.ts`). */
+export const priorityHistoryQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["priorities", "history", id],
+    queryFn: () => api.getPriorityHistory(id),
+  });
 
 /** What every live-owned delivery query shares (LEGION-690): its first load subscribes its view
  *  over the page's one live socket (`api/live-socket.ts`), which writes the snapshot and every

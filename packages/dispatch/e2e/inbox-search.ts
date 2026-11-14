@@ -58,8 +58,8 @@ const RUNNER_SESSION = "e2e-sweep-runner";
 export const SILENT_SESSION = "e2e-silent-session";
 
 /** The address every row but the drawer's reads: the cleared assignee filter, so the question on
- *  the project document - which nobody holds, a document having no assignee - and the unassigned
- *  issue's question are listed beside the four Alice holds. */
+ *  the project document and the one on the issue the shared token made - both of which reach
+ *  `MIRROR`'s own default assignee, dave - are listed beside the four Alice holds. */
 export const INBOX = "/?assignee=everyone";
 
 /** The pending credential request the fake broker lists for Alice throughout, so the empty state
@@ -71,7 +71,7 @@ export interface Seed {
   budgetAskId: string;
   /** `LEDGER-1`, the only row whose title holds `clock` and `drift`. */
   clockAskId: string;
-  /** `MIRROR-2`, the unassigned issue's question, by the agent whose owner is bob. */
+  /** `MIRROR-2`, the question on the issue dave holds, by the agent whose owner is bob. */
   leaseAskId: string;
   /** How many rows the seeded Inbox lists at `INBOX`. */
   listed: number;
@@ -88,17 +88,21 @@ export interface Seed {
 }
 
 /**
- * Eight questions across two projects, three agent authors, two assignees and one project
+ * Eight questions across two projects, three agent authors, three assignees and one project
  * document, plus one pending credential request.
  *
- * Alice holds `LEDGER-1` and `LEDGER-2` (four questions), Bob holds `MIRROR-1` (two), nobody
- * holds `MIRROR-2` (one, so its row offers "Assign to me"), and the project document's question
- * is nobody's. One of Bob's waits on its agent, because Alice replied to it: `?section=needs-you`
- * has a row to drop.
+ * Alice holds `LEDGER-1` and `LEDGER-2` (four questions), Bob holds `MIRROR-1` (two), and dave
+ * holds `MIRROR-2` (one) and the project document's question, which reach him as `MIRROR`'s
+ * default assignee: every project names one, and naming a fourth person keeps each count here
+ * as it was when nobody held those two. Carol holds nothing at all, which is the filter the
+ * empty-state rows read. One of Bob's waits on its agent, because Alice replied to it:
+ * `?section=needs-you` has a row to drop.
  */
 export async function seedInbox(): Promise<Seed> {
   await createProject({ key: "LEDGER", name: "Ledger service" });
-  await createProject({ key: "MIRROR", name: "Mirror service" });
+  // MIRROR names dave, a person no row of this file reads a list for: the issue the shared
+  // token makes below and the project document's question both fall to him.
+  await createProject({ key: "MIRROR", name: "Mirror service" }, "dave");
   // The owner a session's ask carries is the owner of the credential that wrote it, never a
   // field of the body, so bob's own token is what puts `bob` in that row's author.
   const bobsToken = await mintAgentToken("search-seed", "bob");
@@ -165,12 +169,13 @@ export async function seedInbox(): Promise<Seed> {
   );
   await expect.poll(() => getAsk(replay.id)).toMatchObject({ ask: { waiting_on: "agent" } });
 
-  // The shared token holds nobody, so this issue is unassigned and its row offers "Assign to me".
+  // The shared token holds nobody and names nobody, so this issue falls to MIRROR's own default
+  // assignee, dave; no list this file reads is his.
   const leaseIssue = await createIssue(
     { project: "MIRROR", title: "Lease handover" },
     { as: "agent" }
   );
-  expect(leaseIssue.assignee).toBeNull();
+  expect(leaseIssue.assignee).toBe("dave");
   await patchIssue(leaseIssue.key, { priority: 3 });
   const lease = await createAsk(
     leaseIssue.key,

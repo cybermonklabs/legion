@@ -21,6 +21,8 @@ const issue: IssueDetails = {
   holder_state: null,
   last_seen: null,
   takeable_at: null,
+  advances: [],
+  advances_revision: 0,
   artifacts: [
     {
       created_at: "2026-09-10T00:00:00Z",
@@ -120,6 +122,8 @@ function renderShellAt(
   });
   api.listIssues = async () => [
     {
+      advances: [],
+      advances_revision: 0,
       route: null,
       repo: null,
       resolved_repo: null,

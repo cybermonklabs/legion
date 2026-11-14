@@ -42,7 +42,7 @@ import {
   issueSummary,
   liveAgents,
   logSummary,
-  repositoryFieldsWarnings,
+  olderServerWarnings,
   routeHeldBySession,
 } from "./render-issue";
 import { askSummary, commentSummary, messageSummary } from "./render-item";
@@ -331,6 +331,6 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     ),
     details: { issue: read.issue.key },
     ...showImages(pictures),
-    ...repositoryFieldsWarnings(read.issue),
+    ...olderServerWarnings(read.issue),
   };
 }
