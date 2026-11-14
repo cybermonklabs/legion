@@ -1,5 +1,3 @@
-import type { IssueStatus } from "@legion/contracts/dispatch-tools";
-
 import type { Swatch } from "./palette";
 import * as P from "./palette";
 
@@ -201,44 +199,53 @@ registerText("success text on surface", SUCCESS_TEXT, SURFACE);
 registerText("success text on canvas", SUCCESS_TEXT, CANVAS);
 
 /**
- * A single light-to-dark lifecycle scale, independent of the page's background: one row per
- * issue status, holding the rendered class string and, beside it, the OKLCH background and
- * foreground swatches the contrast check registers. The class string stays a static literal
- * (Tailwind's scanner reads this file as text), so the row is what ties `bg-sky-700` to
- * `P.SKY_700`: changing a shade means editing one row, and a status with no row of its own is
- * a type error rather than an unstyled chip.
+ * The one muted palette keyed by stage (`features/project/issues-stages.ts`), which the bar under
+ * the view tabs, the group heading's bar, the Stage cell's mark and the Board's column heads all
+ * draw from: one neutral gray for the five stages of work not started, one hue ramp from light
+ * to dark for the stages from Design to Merging, ochre for Waiting on a person, a darker gray
+ * for Held, a hatch over the same ramp for the status stages of work Legion does not run, and a
+ * muted green for Done. No text is drawn on these fills - every label sits beside its swatch -
+ * so no contrast pair is registered for them. Each value is a static literal, as Tailwind's
+ * scanner needs.
  */
-const ISSUE_STATUS_SCALE: Record<IssueStatus, readonly [string, Swatch, Swatch]> = {
-  triage: ["bg-sky-100 text-sky-950 dark:bg-sky-100 dark:text-sky-950", P.SKY_100, P.SKY_950],
-  icebox: ["bg-sky-200 text-sky-950 dark:bg-sky-200 dark:text-sky-950", P.SKY_200, P.SKY_950],
-  backlog: ["bg-sky-300 text-sky-950 dark:bg-sky-300 dark:text-sky-950", P.SKY_300, P.SKY_950],
-  todo: ["bg-sky-400 text-sky-950 dark:bg-sky-400 dark:text-sky-950", P.SKY_400, P.SKY_950],
-  in_progress: ["bg-sky-500 text-sky-950 dark:bg-sky-500 dark:text-sky-950", P.SKY_500, P.SKY_950],
-  testing: ["bg-sky-700 text-white dark:bg-sky-700 dark:text-white", P.SKY_700, P.WHITE],
-  needs_review: ["bg-sky-800 text-white dark:bg-sky-800 dark:text-white", P.SKY_800, P.WHITE],
-  retro: ["bg-sky-900 text-white dark:bg-sky-900 dark:text-white", P.SKY_900, P.WHITE],
-  done: ["bg-sky-950 text-white dark:bg-sky-950 dark:text-white", P.SKY_950, P.WHITE],
-};
-/** The class string of each row, which is all a chip needs. Written out rather than derived,
- *  because `Object.fromEntries` answers a string-keyed map and recovering the nine keys from
- *  it takes an assertion — the thing this scale is typed to avoid. */
-export const issueStatusScale: Record<IssueStatus, string> = {
-  triage: ISSUE_STATUS_SCALE.triage[0],
-  icebox: ISSUE_STATUS_SCALE.icebox[0],
-  backlog: ISSUE_STATUS_SCALE.backlog[0],
-  todo: ISSUE_STATUS_SCALE.todo[0],
-  in_progress: ISSUE_STATUS_SCALE.in_progress[0],
-  testing: ISSUE_STATUS_SCALE.testing[0],
-  needs_review: ISSUE_STATUS_SCALE.needs_review[0],
-  retro: ISSUE_STATUS_SCALE.retro[0],
-  done: ISSUE_STATUS_SCALE.done[0],
-};
-for (const [status, [, background, foreground]] of Object.entries(ISSUE_STATUS_SCALE))
-  registerText(
-    `issue status scale: ${status}`,
-    pair(foreground, foreground),
-    pair(background, background)
-  );
+export const stageFill = {
+  triage: "bg-[oklch(0.86_0.004_255)]",
+  icebox: "bg-[oklch(0.86_0.004_255)]",
+  backlog: "bg-[oklch(0.86_0.004_255)]",
+  todo: "bg-[oklch(0.86_0.004_255)]",
+  queue: "bg-[oklch(0.86_0.004_255)]",
+  design: "bg-[oklch(0.89_0.035_250)]",
+  planning: "bg-[oklch(0.83_0.05_250)]",
+  implementing: "bg-[oklch(0.77_0.065_250)]",
+  in_progress:
+    "bg-[oklch(0.72_0.07_250)] bg-[repeating-linear-gradient(135deg,rgba(255,255,255,0.5)_0_3px,transparent_3px_7px)]",
+  testing: "bg-[oklch(0.67_0.075_250)]",
+  reviewing: "bg-[oklch(0.61_0.075_250)]",
+  needs_review:
+    "bg-[oklch(0.56_0.07_250)] bg-[repeating-linear-gradient(135deg,rgba(255,255,255,0.4)_0_3px,transparent_3px_7px)]",
+  accepting: "bg-[oklch(0.51_0.065_250)]",
+  retro:
+    "bg-[oklch(0.46_0.06_250)] bg-[repeating-linear-gradient(135deg,rgba(255,255,255,0.35)_0_3px,transparent_3px_7px)]",
+  merging: "bg-[oklch(0.41_0.055_250)]",
+  awaiting_person: "bg-[oklch(0.75_0.1_80)]",
+  held: "bg-[oklch(0.56_0.004_255)]",
+  done: "bg-[oklch(0.73_0.08_155)]",
+} as const;
+/** The Waiting bar's fills: steps of the stage palette, in the order of the reasons. */
+export const waitingFill = {
+  ready: stageFill.planning,
+  slot: stageFill.reviewing,
+  blocked: stageFill.held,
+  person: stageFill.awaiting_person,
+} as const;
+/** The Slot use bar's fills: steps of the stage palette, in the order of the five uses. */
+export const slotUseFill = {
+  working: stageFill.implementing,
+  between_turns: stageFill.reviewing,
+  held_children: stageFill.merging,
+  held_person: stageFill.awaiting_person,
+  held_idle: stageFill.held,
+} as const;
 export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300";
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));
 export const tableResizeActive = "bg-sky-500 dark:bg-sky-400";
@@ -827,6 +834,20 @@ export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:tex
  */
 export const scrollFadeTrailing =
   "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),#0000)]";
+
+/**
+ * The 48 px fades at the ends of a control row's chips strip (`components/ControlRow.tsx`), one at
+ * each end that has a chip out of view beyond it: `leading` while the strip is scrolled away from
+ * its start, `trailing` while there is more to the right, `both` while both are true. The row's
+ * round scroll button laid over that end then sits over faded chips rather than over the opaque
+ * end of one. 48 px is the width the strip's scroll padding keeps clear, so a chip brought into
+ * view is never under a fade. Masks, not colours, like `scrollFadeTrailing`.
+ */
+export const chipStripFade: Record<"both" | "leading" | "trailing", string> = {
+  both: "[mask-image:linear-gradient(to_right,#0000,#000_48px,#000_calc(100%-48px),#0000)]",
+  leading: "[mask-image:linear-gradient(to_right,#0000,#000_48px)]",
+  trailing: "[mask-image:linear-gradient(to_right,#000_calc(100%-48px),#0000)]",
+};
 
 // ---------------------------------------------------------------------------------------------
 // Spec block marks: editor decorations (`ProofEditorHandle.setBlockMarks`), never classes written

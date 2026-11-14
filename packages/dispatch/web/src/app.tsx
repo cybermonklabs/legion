@@ -28,7 +28,6 @@ import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
-  buildInboxPath,
   buildProjectPath,
   liveViewSessionOf,
   parseIssuePath,
@@ -72,6 +71,7 @@ import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
+import { buildInboxPath } from "./lib/page-address";
 import {
   backdrop50,
   badgeBlocking,
@@ -902,6 +902,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
+                <Route element={<ProjectPage />} path="/projects/:key/settings" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
                 <Route element={<InboxPage />} path="/credentials/*" />
                 <Route element={<MachineLoginRoute />} path="/credentials/machine" />

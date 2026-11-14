@@ -27,9 +27,9 @@ import { asUser } from "./users";
  *
  * The first row drives the hand-on control the ask card carries on every surface that draws an
  * open ask, with both people's Inboxes open at once, and holds the server's one expression
- * (`coalesce(a.asked_of, i.assignee)`, which it answers as `waiting_on_person`) to what every
- * reader of that ask shows: which list the row is in, the counts beside it, each person's
- * Replies, and the issue page.
+ * (`coalesce(a.asked_of, i.assignee, p.default_assignee)`, which it answers as
+ * `waiting_on_person`) to what every reader of that ask shows: which list the row is in, the
+ * counts beside it, each person's Replies, and the issue page.
  *
  * The second row drives `dispatch issue-update --assignee` as an agent runs it, against the
  * issue page a person is reading, so the command's write and the page agree with no reload.
@@ -101,7 +101,9 @@ test("a person hands an ask to another person and it moves between the two Inbox
 }, testInfo) => {
   test.setTimeout(240_000);
   await setLiveSessions([{ session_id: asker.actor.id, title: "Planner" }]);
-  await createProject({ key: "CORE", name: "Core" });
+  // CORE names carol, a third person: every project names a default assignee, and making it
+  // somebody other than these two readers keeps the two questions below out of both counts.
+  await createProject({ key: "CORE", name: "Core" }, "carol");
 
   // A human's issue is assigned to its creator, so these two are alice's and bob's own. Two
   // questions sit on alice's and one on bob's, so every count below moves by one rather than
@@ -114,9 +116,10 @@ test("a person hands an ask to another person and it moves between the two Inbox
   expect(his.assignee).toBe("bob");
   await createAsk(his.key, { question: "Drop the legacy column?" }, asker);
 
-  // Two more open asks nobody waits on - a project document's, and an `:::ask` block on an issue
-  // the shared token created, which nobody holds - so the card's control is read on a document's
-  // margin and in a document's ask block without either moving a count above.
+  // Two more open asks neither reader waits on - a project document's, and an `:::ask` block on
+  // an issue the shared token created, which nobody holds, so both reach CORE's default - so the
+  // card's control is read on a document's margin and in a document's ask block without either
+  // moving a count above.
   const runbook = await createProjectDocument(
     "CORE",
     { content: "# Runbook\n\nRestart, reseed, reopen.\n", name: "Runbook" },
@@ -135,7 +138,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     },
     asker
   );
-  expect(blocked.assignee).toBeNull();
+  expect(blocked.assignee).toBe("carol");
   const blockAsk = await indexedBlockAsk(blocked.key, "rollout-decision");
 
   const alice = await asUser(browser, "alice");
@@ -164,7 +167,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(alicePage, moved.id)).toBeVisible();
     await expect(alicePage.locator("[data-inbox-row]")).toHaveCount(2);
     await expect(bandHeadings(alicePage)).toHaveText(["Waiting on you (2)"]);
-    await expect(alicePage.getByText(/^Blocked on you: 2 items/)).toBeVisible();
+    await expect(alicePage.getByRole("button", { name: /^Blocked on you: 2 items/ })).toBeVisible();
     await expect(
       agentRow(aliceAgents, asker.actor.id).getByRole("link", { name: "Needs you 2" })
     ).toBeVisible();
@@ -172,7 +175,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(1);
     await expect(bandHeadings(bobPage)).toHaveText(["Waiting on you (1)"]);
-    await expect(bobPage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(bobPage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await expect(
       agentRow(bobAgents, asker.actor.id).getByRole("link", { name: "Needs you 1" })
     ).toBeVisible();
@@ -191,7 +194,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
     await expect(alicePage.locator("[data-inbox-row]")).toHaveCount(1);
     await expect(bandHeadings(alicePage)).toHaveText(["Waiting on you (1)"]);
-    await expect(alicePage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(alicePage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await expect(
       agentRow(aliceAgents, asker.actor.id).getByRole("link", { name: "Needs you 1" })
     ).toBeVisible();
@@ -199,7 +202,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(bobPage, moved.id)).toBeVisible();
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(2);
     await expect(bandHeadings(bobPage)).toHaveText(["Waiting on you (2)"]);
-    await expect(bobPage.getByText(/^Blocked on you: 2 items/)).toBeVisible();
+    await expect(bobPage.getByRole("button", { name: /^Blocked on you: 2 items/ })).toBeVisible();
     await expect(
       agentRow(bobAgents, asker.actor.id).getByRole("link", { name: "Needs you 2" })
     ).toBeVisible();
@@ -334,11 +337,13 @@ test("an agent sets and clears the issue assignee from the command", async ({
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
   test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  // The shared token holds nobody, so this issue starts with no assignee and no Inbox lists its
-  // question: the command is the only thing that can put either on a person.
+  // CORE names carol, so neither reader below holds anything of it to start with.
+  await createProject({ key: "CORE", name: "Core" }, "carol");
+  // The shared token holds nobody and names nobody, so this issue starts on CORE's default and
+  // no Inbox of the two readers lists its question: the command is the only thing that can put
+  // either on one of them.
   const issue = await createIssue({ project: "CORE", title: "Rotate the agent token" }, asker);
-  expect(issue.assignee).toBeNull();
+  expect(issue.assignee).toBe("carol");
   const ask = await createAsk(issue.key, { question: "Rotate before the deploy?" }, asker);
   const closed = await createIssue({ project: "CORE", title: "Already finished" }, asker);
   await patchIssue(closed.key, { status: "done" }, asker);
@@ -350,7 +355,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
     const assignee = page.getByLabel(`Assignee of ${issue.key}`);
-    await expect(assignee).toHaveValue("");
+    await expect(assignee).toHaveValue("carol");
 
     const bobPage = await bob.newPage();
     await bobPage.goto("/?group=waiting-on");
@@ -398,7 +403,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
     );
     expect(onClosed.code).not.toBe(0);
     expect(`${onClosed.stdout}${onClosed.stderr}`).toContain("ISSUE_CLOSED");
-    expect((await getIssue(closed.key)).assignee).toBeNull();
+    expect((await getIssue(closed.key)).assignee).toBe("carol");
   } finally {
     await alice.close();
     await bob.close();

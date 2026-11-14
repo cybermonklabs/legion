@@ -270,8 +270,10 @@ export const projectArchitectureSourcesQuery = (project: string) =>
     queryFn: () => api.listProjectArchitectureSources(project),
   });
 
-/** Every project that names a default assignee, read by the Settings page's Projects table and
- *  refreshed by the event a write appends. A project absent from the answer names nobody. */
+/** Every project with the person it defaults to, one row per project: every project names one,
+ *  and this read is the one place the page learns who, since the project list carries no default.
+ *  Read by the Settings page's Projects table, and refreshed by the event a default write appends
+ *  and by a project's creation. A project absent from the answer is one created since the read. */
 export const projectDefaultAssigneesQuery = () =>
   queryOptions({
     queryKey: ["project-default-assignees"],
@@ -301,6 +303,27 @@ export const projectIssuesQuery = (project: string, labels: readonly string[], o
         ...(labels.length ? { label: [...labels] } : {}),
         ...(open ? { open: true } : {}),
       });
+    },
+  });
+
+/** A project's done issues, for a view that lists closed issues: those closed in a window
+ *  (`closed_since`, and `closed_before` for a window with an end), or every done issue where the
+ *  view names no window. Under the project listing's prefix, so the events that refresh the
+ *  open listing refresh this too. */
+export const projectDoneIssuesQuery = (
+  project: string,
+  window: { readonly closed_since?: string; readonly closed_before?: string }
+) =>
+  queryOptions({
+    queryKey: [
+      ...projectIssuesQueryKey(project, []),
+      "done",
+      window.closed_since ?? "",
+      window.closed_before ?? "",
+    ],
+    queryFn: async (context) => {
+      await boardMovesSettled(context, project);
+      return api.listIssues({ project, status: "done", ...window });
     },
   });
 

@@ -24,8 +24,9 @@ function LocationProbe() {
 }
 
 /** One open ask. The person it waits on is resolved as the server resolves it
- *  (`coalesce(a.asked_of, i.assignee)`), so an override that moves the issue's assignee, or
- *  hands the ask to somebody, moves that person with it. */
+ *  (`coalesce(a.asked_of, i.assignee, p.default_assignee)`, through `withWaitingOnPerson`), so
+ *  an override that moves the issue's assignee, or hands the ask to somebody, moves that person
+ *  with it. */
 function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
   const row: InboxRow = {
     anchor: null,
@@ -202,6 +203,28 @@ test("the bare project path opens on Architecture when the project has sources, 
     // One read of the project's source list decides it; the Architecture pane reads the tree.
     expect(page.listProjectArchitectureSources).toHaveBeenCalledTimes(1);
     expect(page.listProjectArchitectureSources).toHaveBeenCalledWith("CORE");
+  } finally {
+    page.restore();
+  }
+});
+
+test("the bare project path with a query opens on Architecture without it when the project has sources", async () => {
+  const page = renderPage(
+    "/projects/CORE?label=frontend&q=core",
+    undefined,
+    "alice",
+    [],
+    [coreSource]
+  );
+  try {
+    // The filter parameters are the Issues tab's; the Architecture tab carries no query.
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/architecture")
+    );
+    expect(screen.getByRole("tab", { name: "Architecture" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
   } finally {
     page.restore();
   }
@@ -455,7 +478,7 @@ test("List table and Board strip share the URL's status, labels and search", asy
     expect(screen.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeTruthy();
     expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
     await user.click(screen.getByRole("button", { name: "Board" }));
-    expect(await screen.findByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Filters · 2" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "List" }));

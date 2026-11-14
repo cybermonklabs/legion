@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import {
@@ -12,70 +12,37 @@ import {
 } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
+import { AddressRedirect, usePageAddress } from "../../lib/page-address";
 import {
-  borderDefault,
   dangerText,
-  surfaceMutedBg,
   surfaceMutedStrongBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryHoverToPrimary,
-  textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ArchitecturePage } from "../architecture/ArchitecturePage";
 import { BlockedOnYou } from "../inbox/BlockedOnYou";
-import { LegionView } from "../legion/LegionView";
 import { buildProjectPath, parseProjectPath } from "../refs/routes";
-import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
-import { IssueBoard } from "./IssueBoard";
-import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
+import { ProjectSettings } from "./ProjectSettings";
 
-type ProjectTab = "architecture" | "issues" | "documents";
+type ProjectTab = "architecture" | "issues" | "documents" | "settings";
 
 const architectureTab: TabDefinition<ProjectTab> = { id: "architecture", label: "Architecture" };
+const settingsTab: TabDefinition<ProjectTab> = { id: "settings", label: "Settings" };
 const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "issues", label: "Issues" },
   { id: "documents", label: "Documents" },
 ];
 
-/** Which view of a project's issues is on screen. `legion` is offered only for a project that
- *  names a Legion daemon (`GET /api/v1/settings/legion`); a stored preference naming it on a
- *  project without one falls back to the list rather than showing an empty view. */
-type IssueView = "list" | "board" | "legion";
-
-/** The order `v` cycles the views in, which is the order the selector draws them. */
-const issueViews = ["list", "board", "legion"] as const;
-
-const issueViewLabels: Record<IssueView, string> = {
-  list: "List",
-  board: "Board",
-  legion: "Legion",
-};
-
 export function ProjectPage(): ReactNode {
-  const location = useLocation();
+  const location = usePageAddress();
   const navigate = useNavigate();
-  const [storedView, setIssueView] = useUserPreference<IssueView>(
-    "project.issue-view",
-    (stored) => (stored === "board" || stored === "legion" ? stored : "list"),
-    (view) => view
-  );
-  const [showEdges, setShowEdges] = useUserPreference(
-    "project.board-edges",
-    (stored) => stored === "shown",
-    (shown) => (shown ? "shown" : "hidden")
-  );
-  const [lanes, setLanes] = useUserPreference(
-    "project.board-lanes",
-    (stored) => stored === "shown",
-    (shown) => (shown ? "shown" : "hidden")
-  );
   const route = parseProjectPath(location.pathname, location.search);
   const projectKey = route?.project;
   const inbox = useQuery({
@@ -95,27 +62,13 @@ export function ProjectPage(): ReactNode {
     enabled: projectKey !== undefined,
   });
   const hasSource = (sources.data?.length ?? 0) > 0;
-  // Which projects name a Legion daemon: one deployment-wide read, shared with the Delivery
-  // page's Legion section. A project that names none has no Legion view at all, so a stored
-  // preference naming it falls back to the list.
+  // Which projects name a Legion daemon: one deployment-wide read. A project that names one has
+  // a Settings tab, which holds its daemon's settings panel.
   const legionSettings = useQuery(legionSettingsQuery());
   const hasLegion =
     projectKey !== undefined &&
     (legionSettings.data ?? []).some((setting) => setting.project === projectKey);
-  const views: readonly IssueView[] = hasLegion
-    ? issueViews
-    : issueViews.filter((view) => view !== "legion");
-  const issueView: IssueView = storedView === "legion" && !hasLegion ? "list" : storedView;
   useKeymapScope("project");
-  useKeymap("project", [
-    {
-      id: "toggle-view",
-      keys: "v",
-      label: hasLegion ? "Toggle List / Board / Legion" : "Toggle List / Board",
-      run: () => setIssueView(views[(views.indexOf(issueView) + 1) % views.length] ?? "list"),
-      when: () => route?.kind === "issues",
-    },
-  ]);
   useDocumentTitle(
     project === undefined || route === undefined
       ? "Not found · Dispatch"
@@ -143,8 +96,8 @@ export function ProjectPage(): ReactNode {
   if (route.kind === "project") {
     // The open-on rule: a project with an architecture source opens on its Architecture; one
     // without (the list is empty) opens on Issues, the filter parameters forwarded. A failed
-    // read is shown, never quietly turned into Issues. `replace` keeps Back sane; sidebar links
-    // stay on the bare path.
+    // read is shown, never quietly turned into Issues. `AddressRedirect` replaces the entry, so
+    // Back leaves for the page before; sidebar links stay on the bare path.
     if (sources.isPending) {
       return null;
     }
@@ -153,16 +106,13 @@ export function ProjectPage(): ReactNode {
     }
     if (hasSource) {
       return (
-        <Navigate replace to={buildProjectPath({ kind: "architecture", project: route.project })} />
+        <AddressRedirect to={buildProjectPath({ kind: "architecture", project: route.project })} />
       );
     }
     return (
-      <Navigate
-        replace
-        to={{
-          pathname: buildProjectPath({ kind: "issues", project: route.project }),
-          search: location.search,
-        }}
+      <AddressRedirect
+        keepQuery
+        to={buildProjectPath({ kind: "issues", project: route.project })}
       />
     );
   }
@@ -179,6 +129,10 @@ export function ProjectPage(): ReactNode {
       // A direct link to /architecture on a project without a source: nothing to show there.
       return <NotFoundPage />;
     }
+  }
+  if (route.kind === "settings") {
+    if (legionSettings.isPending) return null;
+    if (!hasLegion) return <NotFoundPage />;
   }
 
   const activeTab: ProjectTab = route.kind;
@@ -225,53 +179,13 @@ export function ProjectPage(): ReactNode {
             compact
             idPrefix="project"
             onSelect={selectTab}
-            tabs={hasSource ? [architectureTab, ...tabs] : tabs}
+            tabs={[
+              ...(hasSource ? [architectureTab] : []),
+              ...tabs,
+              ...(hasLegion ? [settingsTab] : []),
+            ]}
           />
         </div>
-        {activeTab === "issues" ? (
-          <fieldset
-            className={`order-6 inline-flex shrink-0 rounded-xl border p-1 md:order-4 md:ml-auto ${borderDefault}`}
-          >
-            <legend className="sr-only">Issue view</legend>
-            {views.map((view) => (
-              <button
-                aria-pressed={issueView === view}
-                className={`min-h-11 rounded-lg px-3 text-sm font-medium md:min-h-9 md:px-2 ${
-                  issueView === view ? surfaceMutedStrongBg : surfaceMutedBg
-                } ${textSecondaryOnCanvas}`}
-                key={view}
-                onClick={() => setIssueView(view)}
-                type="button"
-              >
-                {issueViewLabels[view]}
-              </button>
-            ))}
-          </fieldset>
-        ) : null}
-        {activeTab === "issues" && issueView === "board" ? (
-          <button
-            aria-pressed={showEdges}
-            className={`order-7 min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${
-              showEdges ? surfaceMutedStrongBg : surfaceMutedBg
-            } ${textSecondaryOnCanvas}`}
-            onClick={() => setShowEdges(!showEdges)}
-            type="button"
-          >
-            {showEdges ? "Hide Icebox & Done" : "Show Icebox & Done"}
-          </button>
-        ) : null}
-        {activeTab === "issues" && issueView === "board" ? (
-          <button
-            aria-pressed={lanes}
-            className={`order-8 min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${
-              lanes ? surfaceMutedStrongBg : surfaceMutedBg
-            } ${textSecondaryOnCanvas}`}
-            onClick={() => setLanes(!lanes)}
-            type="button"
-          >
-            {lanes ? "Hide lanes" : "Show lanes"}
-          </button>
-        ) : null}
       </header>
       {hasSource ? (
         <div
@@ -294,18 +208,7 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "issues" ? (
-          issueView === "legion" ? (
-            // The Legion view has its own columns and its own header; the filter strip's chips
-            // belong to Dispatch's own list and board, and none of them reaches the daemon.
-            <LegionView project={route.project} />
-          ) : issueView === "list" ? (
-            <IssuesTable key={route.project} project={route.project} />
-          ) : (
-            <>
-              <IssueFilters key={route.project} project={route.project} />
-              <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
-            </>
-          )
+          <IssuesTable key={route.project} project={route.project} />
         ) : null}
       </div>
       <div
@@ -317,6 +220,18 @@ export function ProjectPage(): ReactNode {
       >
         {activeTab === "documents" ? <DocumentList project={route.project} /> : null}
       </div>
+      {hasLegion ? (
+        <div
+          aria-hidden={activeTab !== "settings"}
+          aria-labelledby="project-settings-tab"
+          className="mt-3"
+          hidden={activeTab !== "settings"}
+          id="project-settings-panel"
+          role="tabpanel"
+        >
+          {activeTab === "settings" ? <ProjectSettings project={route.project} /> : null}
+        </div>
+      ) : null}
     </section>
   );
 }

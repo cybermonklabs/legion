@@ -27,6 +27,7 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -40,8 +41,28 @@ const (
 	// signal before then waits out the boot step under way first, each bounded by the boot's own
 	// 30 s (the daemon package's Run).
 	stopTimeout = 30 * time.Second
-	// requestTimeout bounds a CLI read of a daemon's HTTP API.
-	requestTimeout = 5 * time.Second
+	// requestTimeout bounds a CLI read of a daemon's HTTP API: one budget for every read these
+	// commands make, rather than one per route, because a budget sized for a small body and a
+	// second sized for a large one drift apart and nobody re-sizes either as the fleet grows.
+	//
+	// Sixty seconds, from a measurement rather than from a failure. Read on 2026-11-12 from an
+	// issue pod of the INFRA deployment (the test handoff of dispatch://INFRA-2554): six reads
+	// of `GET /legion/v1/state` of that daemon, 2368 issues and 610 of them waiting, answered in
+	// 7.05 s, 7.06 s and 7.30 s to the first byte and 7.07 s, 7.08 s and 7.32 s for the whole
+	// 4.0 MB body. That is a dated reading of one deployment and no property of the daemon: the
+	// body grows with the issues a project holds, and the issue that reading came from adds a
+	// sentence to every waiting issue and an answer to every issue that is not working. A reader
+	// who needs another number re-sizes from that measurement rather than from a guess, and
+	// takes a reading of the deployment in hand.
+	//
+	// What it buys and what it costs, both halves, since the second is the price of the first. A
+	// daemon that is merely slow is read instead of given up on, which is the common case, and a
+	// command that cannot run at all is the worse failure. A daemon that accepts a connection and
+	// then hangs now keeps an operator waiting a minute, where five seconds used to end it; a
+	// daemon that is down refuses the connection and still fails at once, so the minute is the
+	// hung case alone. The refusal names the route, how long the read took and this budget
+	// (get), so that minute reads as a budget passed rather than as a mystery.
+	requestTimeout = 60 * time.Second
 	// aliveInterval is how often a wait re-asks whether a process is gone.
 	aliveInterval = 20 * time.Millisecond
 )
@@ -611,12 +632,17 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
+	for _, line := range waitingLineLines(state.Admission.Waiting, state.Issues) {
+		fmt.Fprintln(stdout, line)
+	}
 	fmt.Fprintln(stdout, blockedSummary(state.Admission.Blocked))
+	fmt.Fprintln(stdout, heldAdmissionSummary(state.Admission.Held))
 	fmt.Fprintln(stdout, memorySummary(state.Issues))
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
 	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
+	fmt.Fprintln(stdout, entrySummary(state.Issues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
@@ -660,6 +686,103 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 	}
 	return fmt.Sprintf("blocked on Dispatch links: %d — %s", len(blocked), strings.Join(waits, "; "))
 }
+
+// heldAdmissionSummary is the one line an operator reads for the issues the daemon's own record
+// holds in the workflow that stand in neither the active set nor the waiting line
+// (api.Admission.Held): how many, and how many of each word for why, in the ladder's own order
+// (record.HeldReasons), so two readings of one state print one line. A word no row carries is
+// left out.
+//
+// The prefix names the admission list because `legion state` prints a second held line below
+// this one, the lifecycle rows the daemon holds behind their issues' running ones
+// (heldSummary): these are issues nothing starts, those are outbox rows nothing has sent, and a
+// reader counting one must not read the other's number. It names no issue: a deployment holding
+// hundreds would print a line per issue, and each row with its word is in `legion state --json`.
+func heldAdmissionSummary(held []api.HeldIssue) string {
+	if len(held) == 0 {
+		return "admission.held: none"
+	}
+	counts := map[record.HeldReason]int{}
+	for _, issue := range held {
+		counts[issue.Reason]++
+	}
+	words := make([]string, 0, len(counts))
+	for _, reason := range record.HeldReasons {
+		if count := counts[reason]; count > 0 {
+			words = append(words, fmt.Sprintf("%s %d", reason, count))
+		}
+	}
+	noun := "issues"
+	if len(held) == 1 {
+		noun = "issue"
+	}
+	return fmt.Sprintf("admission.held: %d %s — %s", len(held), noun, strings.Join(words, ", "))
+}
+
+// waitingLineLines are the lines an operator reads for the issues waiting for an admission slot
+// (api.State.Admission.Waiting), under the counts the `admission:` line gives: a header with how
+// many wait, then one line per issue — its key, its place in the line, the part of the line it
+// waits in and the daemon's own rendered sentence for why it waits there
+// (api.WaitingLineView.Reason) — in the order `waiting` publishes them, which is the order
+// admission promotes them in.
+//
+// It names waitingLineNamedCap issues and then how many more there are, the shape every capped
+// list of these commands prints (claims.go's issuesOrNone): the line on a live deployment runs to
+// hundreds, and hundreds of lines are no summary. The whole of it is in `legion state --json`,
+// which writes the served body as it stands and carries every member with its own reason.
+//
+// A daemon that served this caller no reason at all is told from a line with nothing in it by the
+// two facts the body carries: `waiting` names issues and not one of them carries a reason. That
+// is the answer for a daemon older than the contract that added the sentence and for one older
+// than the contract that added `waitingLine` itself, which sends no such key at all, and the
+// reader is told which of the two it is reading rather than shown an empty line that is not true.
+func waitingLineLines(waiting []string, issues map[string]api.Issue) []string {
+	if len(waiting) == 0 {
+		return []string{"waiting line: none"}
+	}
+	rendered := false
+	for _, key := range waiting {
+		if view := issues[key].WaitingLine; view != nil && view.Reason != "" {
+			rendered = true
+			break
+		}
+	}
+	if !rendered {
+		return []string{"waiting line: the daemon sent no reasons at this caller's contract"}
+	}
+	named := waiting
+	if len(named) > waitingLineNamedCap {
+		named = named[:waitingLineNamedCap]
+	}
+	lines := make([]string, 0, len(named)+2)
+	lines = append(lines, fmt.Sprintf("waiting line: %d", len(waiting)))
+	for _, key := range named {
+		// A body naming an issue in `waiting` whose issue carries no `waitingLine` is no body
+		// this daemon sends — the strip that empties the field empties it for every member, which
+		// the line above answers — so this line says what it was given rather than printing a
+		// place of 0 that no reader could tell from a true one.
+		view := issues[key].WaitingLine
+		if view == nil {
+			lines = append(lines, "  "+key+": the daemon sent no place for this issue")
+			continue
+		}
+		// Both numbers of the printed place come from the member's own view, which is where the
+		// daemon put them and what its sentence was rendered against; the count in the header
+		// and the one after the named issues are about the list this caller holds.
+		lines = append(lines, fmt.Sprintf("  %s %d of %d, %s: %s", key, view.Place, view.Length, view.Part, view.Reason))
+	}
+	if len(waiting) > waitingLineNamedCap {
+		lines = append(lines, fmt.Sprintf("  and %d more", len(waiting)-waitingLineNamedCap))
+	}
+	return lines
+}
+
+// waitingLineNamedCap is how many waiting issues the block above names, the count after them
+// standing for the rest. Ten, because the block is a summary under a summary: a deployment whose
+// cap holds a dozen trees queues hundreds behind them, and 392 lines of sentence would scroll
+// every other line of `legion state` away. Every member with its own sentence is in
+// `legion state --json`.
+const waitingLineNamedCap = 10
 
 // memorySummary is the one line an operator reads for the memory groups the project's work was
 // drawn into: how many issues carry a draw at all, and how many of those under each group and
@@ -812,8 +935,10 @@ func checksSummary(checks []issueCheck) string {
 }
 
 // issueRound is one update round an issue has open, and the claims in it, by role: the round a
-// pod's drift opened over every role of the issue (`pod:<pod uid>`), or one role's own plugin
-// round (`plugin:<daemon contract>`).
+// pod's drift opened over every role of the issue (`pod:<pod uid>`), which is the one round this
+// daemon opens. One role's own plugin round (`plugin:<daemon contract>`) is an earlier daemon's,
+// and a boot takes every claim out of one it finds (internal/daemon's endPluginRounds), so this
+// reads one only in the moments before that pass.
 type issueRound struct {
 	issue string
 	round string
@@ -973,6 +1098,63 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 		}
 	}
 	return fmt.Sprintf("claims nothing will wake: %d — %s", len(stranded), strings.Join(groups, "; "))
+}
+
+// entryBehind is one issue whose role has not been given the work its phase entry names: the
+// issue, the role of its current phase (phase.RoleFor, the role the state's two numbers are
+// of), the entry that role's phases row stands on and the entry it was given.
+type entryBehind struct {
+	issue string
+	role  legionclaim.Role
+	entry int64
+	given int64
+}
+
+// entriesBehind is every issue of the state whose two entry numbers differ
+// (api.Issue.PhaseEntry and GivenEntry), by issue key. An issue whose current phase names no
+// phase worker role carries neither number, so it is never named here: the projection writes
+// them only where phase.RoleFor names a role, and that is the role this reads back for the
+// line.
+func entriesBehind(issues map[string]api.Issue) []entryBehind {
+	var behind []entryBehind
+	for _, key := range slices.Sorted(maps.Keys(issues)) {
+		issue := issues[key]
+		if issue.PhaseEntry == issue.GivenEntry {
+			continue
+		}
+		behind = append(behind, entryBehind{issue: key, role: phase.RoleFor(issue.Phase),
+			entry: issue.PhaseEntry, given: issue.GivenEntry})
+	}
+	return behind
+}
+
+// entrySummary is the one line an operator reads for the roles that have not been given the work
+// their phase entry names: how many, and each by issue and role with the two numbers. A
+// difference here is one of four things. An entry raised seconds ago, which the next pass
+// closes: the daemon sends that entry's work on every admission pass and on a sweep of its own
+// each minute (admit's resumeSlottedWorkers). An issue waiting for its admission slot, whose
+// start row the outbox holds unclaimable until the slot comes (workflow.StartOrOwe) and which
+// the pass passes over, since it reads the slotted issues alone — every issue in the waiting
+// line is named here, and its difference stands for as long as it waits, which is hours on a
+// full cap. A claim whose worker is still working an earlier entry's task, which the pass passes
+// over while that delivery is worked: a start the slot held back reaches its worker mid-turn, so
+// the difference reads for the rest of that turn and closes on the first pass after the task is
+// retired. Or a role the pass skips and sends nothing to at all (admit's owedEntryRoles, which
+// states each skip), whose difference stands until something outside that pass moves it.
+//
+// The daemon's own "a role was behind the entry its phases row names" log line names the roles
+// that pass sends the work to and no others, so a difference of that last kind is read here and
+// nowhere else.
+func entrySummary(issues map[string]api.Issue) string {
+	behind := entriesBehind(issues)
+	if len(behind) == 0 {
+		return "roles not given their phase entry: none"
+	}
+	named := make([]string, len(behind))
+	for i, row := range behind {
+		named[i] = fmt.Sprintf("%s %s: entry %d, given %d", row.issue, row.role, row.entry, row.given)
+	}
+	return fmt.Sprintf("roles not given their phase entry: %d — %s", len(behind), strings.Join(named, "; "))
 }
 
 // wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding
@@ -1246,21 +1428,35 @@ func findLegion(team string) (registry.Entry, bool, error) {
 	return registry.Find(legions, team)
 }
 
+// get reads one route of a daemon's API, under the one budget every CLI read of it takes
+// (requestTimeout). A read the budget ends says so in the words a reader needs — the route, how
+// long it took and the budget it passed — rather than in the transport's own
+// `context deadline exceeded`, which names none of the three and leaves the reader to guess
+// whether the daemon is slow, the body is large or the command gave up early. The caller's own
+// cancellation is not that case and keeps the error it has.
 func get(ctx context.Context, url string) ([]byte, error) {
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
+	began := time.Now()
+	refuse := func(err error) error {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return fmt.Errorf("read %s: no answer in %s, past the %s this command allows one read of a daemon's API",
+				url, time.Since(began).Round(time.Millisecond), requestTimeout)
+		}
+		return fmt.Errorf("read %s: %w", url, err)
+	}
 	request, err := http.NewRequestWithContext(timed, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", url, err)
+		return nil, refuse(err)
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", url, err)
+		return nil, refuse(err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", url, err)
+		return nil, refuse(err)
 	}
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, strings.TrimSpace(string(body)))

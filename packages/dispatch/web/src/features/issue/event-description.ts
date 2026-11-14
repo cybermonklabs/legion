@@ -17,6 +17,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Project updated: ${event.payload.name}`;
     case "settings.repo_project.updated":
       return `${event.payload.deleted ? "Repository mapping removed" : "Repository mapping updated"}: ${event.payload.mapping.repo}`;
+    // No write clears a default now: a project always names somebody. An event retained from
+    // before that rule can record a clear, and keeps its wording.
     case "settings.project_default_assignee.updated":
       return event.payload.assignee === null
         ? `Default assignee cleared: ${event.payload.project}`
@@ -55,7 +57,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Ask handed back: ${event.payload.question}`;
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
-      // assignee of its own issue, which is where an ask with no `asked_of` waits.
+      // assignee of its own issue: an ask with no `asked_of` waits on that assignee, or on its
+      // project's default assignee while the issue holds nobody.
       return `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: ${event.payload.question}`;
     case "comment.resolved":
       return "Comment resolved";
@@ -110,6 +113,10 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
       return `Added ${event.payload.artifact.name}`;
+    case "artifact.renamed":
+      return `Renamed ${event.payload.previous_name} to ${event.payload.artifact.name}`;
+    case "artifact.removed":
+      return `Removed ${event.payload.artifact.name}`;
     case "artifact.approved":
       return `Approved v${event.payload.version}`;
     case "artifact.changes_requested":

@@ -10,7 +10,7 @@ import {
   listIssues,
   patchIssue,
 } from "./api";
-import { filterPicker } from "./filters";
+import { chooseDisplay, controlRow, displayChoice, filterPicker, openDisplayMenu } from "./filters";
 import { dropFirstAnswer, watchWrites } from "./keyed-writes";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -71,7 +71,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await search.fill("searchble impossible");
     await expect(page.getByText("No issues match these filters.")).toBeVisible();
     await search.fill("searchble work");
-    await page.getByRole("combobox", { name: "Group by" }).selectOption("epic");
+    await chooseDisplay(page, "Group by", "epic");
+    await page.keyboard.press("Escape");
     await expect(page.getByText(new RegExp(`${epic.key} · Table epic`)).first()).toBeVisible();
     await expect(page.getByText(/next in queue #1/)).toBeVisible();
     await page.getByRole("combobox", { name: "Rows per page" }).selectOption("25");
@@ -81,7 +82,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.reload();
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
     await expect(search).toHaveValue("searchble work");
-    await expect(page.getByRole("combobox", { name: "Group by" })).toHaveValue("epic");
+    await expect(displayChoice(await openDisplayMenu(page), "Group by", "epic")).toBeChecked();
+    await page.keyboard.press("Escape");
 
     // A different browser page makes an ordinary issue edit. The first page is never navigated
     // or reloaded after the edit; its existing live subscription must update the visible row.
@@ -122,7 +124,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.screenshot({ path: testInfo.outputPath("issues-table-live.png"), fullPage: true });
     await page.getByRole("button", { name: "Clear selection", exact: true }).click();
 
-    await page.getByRole("combobox", { name: "Group by" }).selectOption("");
+    await chooseDisplay(page, "Group by", "");
+    await page.keyboard.press("Escape");
     await page.getByRole("combobox", { name: "Rows per page" }).selectOption("50");
     const selected = rows[25];
     if (!selected) throw new Error("The queue seed did not create 26 issues");
@@ -254,7 +257,8 @@ test("selection actions move, remove and create an epic, whose name can then cha
     if (!epicKey) throw new Error("The new epic was not assigned");
     await expect.poll(() => getIssue(second.key).then((issue) => issue.parent)).toBe(epicKey);
     expect((await getIssue(epicKey)).labels).toContain("epic");
-    await page.getByRole("combobox", { name: "Group by" }).selectOption("epic");
+    await chooseDisplay(page, "Group by", "epic");
+    await page.keyboard.press("Escape");
     const group = page
       .getByRole("row")
       .filter({ has: page.getByRole("button", { name: /Coordinate onboarding release/ }) });
@@ -431,9 +435,18 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
       .getByRole("checkbox", { name: "Updated", exact: true })
       .check();
     await page.keyboard.press("Escape");
+    // Below `sm` the row wraps, so the search box takes a line of its own: at 390 px it is as
+    // wide as the row itself, which is the box a reader had before the controls moved into one
+    // row. The three controls beside it sit on the line under it.
     await expect(page.getByRole("searchbox", { name: "Search issues" })).toBeVisible();
     const search = await page.getByRole("searchbox", { name: "Search issues" }).boundingBox();
-    expect(search?.width).toBeGreaterThan(300);
+    const row = await controlRow(page).boundingBox();
+    const trigger = await page.getByRole("button", { name: /^Filters/ }).boundingBox();
+    if (!search || !row || !trigger) throw new Error("The control row could not be measured");
+    expect(search.width).toBeGreaterThan(300);
+    expect(search.x).toBeCloseTo(row.x, 0);
+    expect(search.width).toBeGreaterThan(row.width - 1);
+    expect(trigger.y).toBeGreaterThanOrEqual(search.y + search.height);
     const keyHeader = page
       .getByRole("columnheader")
       .filter({ has: page.getByRole("button", { name: "Key", exact: true }) });
@@ -496,7 +509,8 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     // An epic is an ordinary row of the table, searchable and selectable like any other, and
     // becomes a heading only in the grouping that makes it one.
     await expect(page.locator(`[data-issue-row="${epic.key}"]`)).toHaveCount(1);
-    await page.getByRole("combobox", { name: "Group by" }).selectOption("epic");
+    await chooseDisplay(page, "Group by", "epic");
+    await page.keyboard.press("Escape");
     await expect(page.locator(`[data-issue-row="${epic.key}"]`)).toHaveCount(0);
     await expect(
       page.getByRole("link", { name: `${epic.key} · Phone epic`, exact: true }).first()

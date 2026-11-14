@@ -489,7 +489,7 @@ func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.
 }
 
 // enterAwaiting moves root into awaiting_person on waiting, which keeps the slot the root holds:
-// an issue keeps its row until it is done, leaves the workflow or waits only for its merge
+// an issue keeps its row until it is done or leaves the workflow
 // (record.KeepsSlot). The architect stays live to read the person's answer, and the controller
 // is told.
 func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {

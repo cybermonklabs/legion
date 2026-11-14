@@ -1295,7 +1295,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			t.Run("router", func(t *testing.T) {
 				database := storetest.Open(t)
 				if _, err := database.Pool.Exec(context.Background(), `
-					insert into projects (key, name) values ('ARCH', 'ARCH');
+					insert into projects (key, name, default_assignee) values ('ARCH', 'ARCH', 'alice');
 					insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 					values ('ARCH', 'acme/arch', 'main', 1, '{"kind":"session","id":"test"}');
 				`); err != nil {

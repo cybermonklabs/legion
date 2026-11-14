@@ -7,7 +7,7 @@ import {
   patchIssue,
   putIssueState,
 } from "./api";
-import { filterPicker, pickFilterOption } from "./filters";
+import { filterPicker, openFilterPanel, pickFilterOption } from "./filters";
 import { navigateInApp } from "./sends";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -116,7 +116,10 @@ test("project table filters narrow issues; documents stay scoped to the project"
     await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
     await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
     await search.clear();
-    await page.getByRole("button", { name: "Needs you", exact: true }).click();
+    // Needs you is one of the chips in the panel the row's one Filters trigger opens.
+    const flags = await openFilterPanel(page);
+    await flags.getByRole("button", { name: "Needs you", exact: true }).click();
+    await page.keyboard.press("Escape");
     await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
     await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
 
@@ -126,9 +129,10 @@ test("project table filters narrow issues; documents stay scoped to the project"
     await page.getByRole("textbox", { name: "Title" }).fill("Design notes");
     await page.getByRole("button", { name: "Create" }).click();
     await expect(page).toHaveURL("/projects/CORE/documents/design-notes");
-    await expect(page.getByRole("textbox", { name: "Document editor" })).toContainText(
-      "Design notes"
-    );
+    // The document opens empty, under the title the person typed: the title is the page's
+    // heading, and the editor holds nothing until the person writes in it.
+    await expect(page.getByRole("heading", { name: "Design notes" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Document editor" })).toHaveText("");
     await navigateInApp(page, "/projects/CORE/documents");
     await expect(page.getByRole("link", { name: "Design notes", exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("project-documents.png"), fullPage: true });

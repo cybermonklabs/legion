@@ -27,6 +27,14 @@ import type {
   LegionSettingsChangeResult,
   LegionSettingVerdict,
 } from "../../api/types";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import {
   dangerText,
@@ -37,13 +45,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import {
-  settingsMonoInput,
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-} from "../settings/classes";
+import { settingsMonoInput, settingsSubmitButton } from "../settings/classes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { describeSettingSource, describeVerdict, formatSettingValue } from "./lib/format";
 
@@ -242,86 +244,76 @@ export function LegionSettingsPanel({ board }: { readonly board: LegionBoardResp
           No read of this daemon has recorded its settings yet.
         </p>
       ) : (
-        <div className={settingsTableWrapper}>
-          <table className="w-full text-left text-sm">
-            <thead className={settingsTableHead}>
-              <tr>
-                <th className="px-3 py-2 font-medium" scope="col">
-                  Setting
-                </th>
-                <th className="px-3 py-2 font-medium" scope="col">
-                  Value
-                </th>
-                <th className="px-3 py-2 font-medium" scope="col">
-                  Where it came from
-                </th>
-                {human ? (
-                  <th className="px-3 py-2 font-medium" scope="col">
-                    Change it
-                  </th>
-                ) : null}
-              </tr>
-            </thead>
-            <tbody>
-              {keys.map((key) => {
-                const value = formatSettingValue(settings[key]);
-                const source = sources[key];
-                const result = results[key];
-                return (
-                  <tr className={settingsTableRow} data-legion-setting={key} key={key}>
-                    <th
-                      className={`px-3 py-2 text-left font-mono font-normal ${textPrimaryOnSurface}`}
-                      scope="row"
+        <TableShell className="mt-6" label="Daemon settings">
+          <TableHead>
+            <TableHeadCell>Setting</TableHeadCell>
+            <TableHeadCell>Value</TableHeadCell>
+            <TableHeadCell>Where it came from</TableHeadCell>
+            {human ? <TableHeadCell>Change it</TableHeadCell> : null}
+          </TableHead>
+          <TableBody>
+            {keys.map((key) => {
+              const value = formatSettingValue(settings[key]);
+              const source = sources[key];
+              const result = results[key];
+              return (
+                <TableRow data-legion-setting={key} key={key}>
+                  <TableHeadCell scope="row">
+                    <span
+                      className={`inline-block min-w-32 break-all font-mono font-normal ${textPrimaryOnSurface}`}
                     >
                       {key}
-                    </th>
-                    <td
-                      className={`px-3 py-2 font-mono ${textPrimaryOnSurface}`}
-                      data-legion-setting-value={key}
-                    >
+                    </span>
+                  </TableHeadCell>
+                  <TableCell data-legion-setting-value={key} mono tone="primary">
+                    {/* A value is JSON of any length: it wraps, so the columns after it stay in
+                        the box. */}
+                    <span className="inline-block min-w-28 max-w-80 break-all md:min-w-48">
                       {value}
-                    </td>
-                    <td
-                      className={`px-3 py-2 ${textSecondaryOnSurface}`}
-                      data-legion-setting-source={source?.source ?? "unknown"}
-                    >
-                      {describeSettingSource(source)}
-                    </td>
-                    {human ? (
-                      <td className="px-3 py-2">
-                        <form
-                          className="flex flex-wrap items-center gap-2"
-                          onSubmit={(event) => submit(event, key)}
+                    </span>
+                  </TableCell>
+                  <TableCell
+                    data-legion-setting-source={source?.source ?? "unknown"}
+                    tone="secondary"
+                  >
+                    {describeSettingSource(source)}
+                  </TableCell>
+                  {human ? (
+                    <TableCell>
+                      <form
+                        className="flex items-center gap-2 whitespace-nowrap"
+                        onSubmit={(event) => submit(event, key)}
+                      >
+                        <input
+                          aria-label={`New value for ${key}`}
+                          className={`${settingsMonoInput} w-40 text-sm`}
+                          onChange={(event) =>
+                            setDrafts((current) => ({ ...current, [key]: event.target.value }))
+                          }
+                          value={drafts[key] ?? value}
+                        />
+                        <button
+                          className={`${settingsSubmitButton} text-sm`}
+                          disabled={change.isPending}
+                          type="submit"
                         >
-                          <input
-                            aria-label={`New value for ${key}`}
-                            className={`${settingsMonoInput} w-40 text-sm`}
-                            onChange={(event) =>
-                              setDrafts((current) => ({ ...current, [key]: event.target.value }))
-                            }
-                            value={drafts[key] ?? value}
-                          />
-                          <button
-                            className={`${settingsSubmitButton} text-sm`}
-                            disabled={change.isPending}
-                            type="submit"
-                          >
-                            Change {key}
-                          </button>
-                          {result === undefined ? null : (
-                            <span data-legion-setting-result={key}>
-                              <RowAnswer result={result} />
-                            </span>
-                          )}
-                        </form>
-                      </td>
-                    ) : null}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                          {/* The row names the setting already; its name stays in the button's
+                              accessible name, so the column stays narrow. */}
+                          Change<span className="sr-only"> {key}</span>
+                        </button>
+                        {result === undefined ? null : (
+                          <span data-legion-setting-result={key}>
+                            <RowAnswer result={result} />
+                          </span>
+                        )}
+                      </form>
+                    </TableCell>
+                  ) : null}
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </TableShell>
       )}
     </section>
   );

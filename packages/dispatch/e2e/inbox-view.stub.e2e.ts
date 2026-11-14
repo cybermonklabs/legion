@@ -10,6 +10,7 @@
  */
 import { expect } from "@playwright/test";
 
+import { controlRow } from "./filters";
 import { inboxList, inboxPane } from "./inbox-pane";
 import {
   bandHeadings,
@@ -112,12 +113,15 @@ test("a row wears its marks without overlap, shows its issue key whole, and the 
   }
   expect(lefts.size).toBe(1);
 
-  // The bar carries three buttons and no other control of this issue's.
+  // The row carries the page's own controls and no other control of this issue's: the filter
+  // trigger, Mark all read, the count the blocked-on-you banner carried (INFRA-3135, R7) and
+  // the display menu.
   await page.goto("/");
   await expect(page.locator("[data-inbox-row]").first()).toBeVisible();
-  await expect(page.locator("[data-inbox-bar] button")).toHaveText([
+  await expect(controlRow(page).getByRole("button")).toHaveText([
     "Filter",
     "Mark all read",
+    "Blocked on you · 5",
     "View",
   ]);
 });
@@ -136,10 +140,13 @@ test("each of the five fields filters, bands and orders the list @pr", async ({ 
     // The Filter control counts each value and narrows the list to the one chosen.
     const options = await openField(page, field);
     const offeredOptions = options.getByRole("option");
+    // The assignee field offers one row more than its values: `Unassigned` is offered always and
+    // first, whatever the list holds (`features/inbox/AssigneeFilter.tsx`), and every project
+    // names a default assignee, so no row the server answers is nobody's and that row reads 0.
+    const offered = values.length + (field === "assignee" ? 1 : 0);
     // `count()` waits for nothing, so the popover's rows are waited for before they are
     // counted: every value of this field, plus `none` where the field has one.
-    await expect(offeredOptions).toHaveCount(values.length);
-    const offered = values.length;
+    await expect(offeredOptions).toHaveCount(offered);
     for (const value of values) {
       const name = valueLabel(field, value);
       const option = options.getByRole("option", { name: new RegExp(`^${name},`) });
@@ -147,6 +154,12 @@ test("each of the five fields filters, bands and orders the list @pr", async ({ 
         "aria-label",
         new RegExp(`\\b${counts.get(value)} rows$`)
       );
+    }
+    if (field === "assignee") {
+      await expect(
+        options.getByRole("option", { name: /^Unassigned,/ }),
+        "assignee:unassigned"
+      ).toHaveAttribute("aria-label", /\b0 rows$/);
     }
     const chosen = values[0] ?? "";
     const chosenName = valueLabel(field, chosen);

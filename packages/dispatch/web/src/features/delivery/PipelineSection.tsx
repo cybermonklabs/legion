@@ -42,6 +42,14 @@ import type {
 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
+import {
   borderDefault,
   dangerText,
   linkText,
@@ -301,49 +309,47 @@ export function PipelineView({
         {(checks.slowest_jobs ?? []).length === 0 ? (
           <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job has 50 timed results yet.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="mt-1 w-full max-w-6xl text-xs tabular-nums">
-              <thead className={textMutedOnCanvas}>
-                <tr>
-                  <th className="px-2 py-1 text-left font-normal">Job</th>
-                  <th className="px-2 py-1 text-right font-normal">Today median</th>
-                  <th className="px-2 py-1 text-right font-normal">Today p90</th>
-                  <th className="px-2 py-1 text-right font-normal">Today</th>
-                  <th className="px-2 py-1 text-right font-normal">{dayCount}-day median</th>
-                  <th className="px-2 py-1 text-right font-normal">{dayCount}-day p90</th>
-                  <th className="px-2 py-1 text-right font-normal">{dayCount} days</th>
-                  <th className="px-2 py-1 text-right font-normal">Success</th>
-                  <th className="w-40 px-2 py-1 text-left font-normal">Trend</th>
-                </tr>
-              </thead>
-              <tbody className={textSecondaryOnCanvas}>
-                {(checks.slowest_jobs ?? []).map((job) => {
-                  const today = lastDay(job);
-                  return (
-                    <tr className={`border-t ${borderDefault}`} data-job={job.name} key={job.name}>
-                      <td className="px-2 py-1">{job.name}</td>
-                      <td className="px-2 py-1 text-right font-semibold">
-                        {formatDuration(today.median_minutes)}
-                      </td>
-                      <td className="px-2 py-1 text-right">{formatDuration(today.p90_minutes)}</td>
-                      <td className={`px-2 py-1 text-right ${textMutedOnCanvas}`}>{today.n}</td>
-                      <td className="px-2 py-1 text-right font-semibold">
-                        {formatDuration(job.total.median_minutes)}
-                      </td>
-                      <td className="px-2 py-1 text-right">
-                        {formatDuration(job.total.p90_minutes)}
-                      </td>
-                      <td className={`px-2 py-1 text-right ${textMutedOnCanvas}`}>{job.total.n}</td>
-                      <td className="px-2 py-1 text-right">{formatRate(job.total.success_rate)}</td>
-                      <td className="px-2 py-1">
-                        <SpreadBars days={job.days ?? []} format={formatDuration} noun="results" />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <TableShell className="mt-1 max-w-6xl" label="PR CI: slowest jobs" size="compact">
+            <TableHead>
+              <TableHeadCell>Job</TableHeadCell>
+              <TableHeadCell align="right">Today median</TableHeadCell>
+              <TableHeadCell align="right">Today p90</TableHeadCell>
+              <TableHeadCell align="right">Today</TableHeadCell>
+              <TableHeadCell align="right">{dayCount}-day median</TableHeadCell>
+              <TableHeadCell align="right">{dayCount}-day p90</TableHeadCell>
+              <TableHeadCell align="right">{dayCount} days</TableHeadCell>
+              <TableHeadCell align="right">Success</TableHeadCell>
+              <TableHeadCell style={{ width: "10rem" }}>Trend</TableHeadCell>
+            </TableHead>
+            <TableBody>
+              {(checks.slowest_jobs ?? []).map((job) => {
+                const today = lastDay(job);
+                return (
+                  <TableRow data-job={job.name} key={job.name}>
+                    <TableCell>{job.name}</TableCell>
+                    <TableCell align="right" weight="semibold">
+                      {formatDuration(today.median_minutes)}
+                    </TableCell>
+                    <TableCell align="right">{formatDuration(today.p90_minutes)}</TableCell>
+                    <TableCell align="right" tone="muted">
+                      {today.n}
+                    </TableCell>
+                    <TableCell align="right" weight="semibold">
+                      {formatDuration(job.total.median_minutes)}
+                    </TableCell>
+                    <TableCell align="right">{formatDuration(job.total.p90_minutes)}</TableCell>
+                    <TableCell align="right" tone="muted">
+                      {job.total.n}
+                    </TableCell>
+                    <TableCell align="right">{formatRate(job.total.success_rate)}</TableCell>
+                    <TableCell>
+                      <SpreadBars days={job.days ?? []} format={formatDuration} noun="results" />
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </TableShell>
         )}
       </section>
 
@@ -358,47 +364,43 @@ export function PipelineView({
         {(checks.failing_jobs ?? []).length === 0 ? (
           <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job failed in the last 24 hours.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="mt-1 w-full max-w-4xl text-xs tabular-nums">
-              <thead className={textMutedOnCanvas}>
-                <tr>
-                  <th className="px-2 py-1 text-left font-normal">Job</th>
-                  <th className="px-2 py-1 text-right font-normal">Failures</th>
-                  <th className="px-2 py-1 text-right font-normal">Of runs</th>
-                  <th className="px-2 py-1 text-right font-normal">Failure share</th>
-                  <th className="px-2 py-1 text-left font-normal">Last failure</th>
-                </tr>
-              </thead>
-              <tbody className={textSecondaryOnCanvas}>
-                {(checks.failing_jobs ?? []).map((job) => (
-                  <tr
-                    className={`border-t ${borderDefault}`}
-                    data-failing-job={job.name}
-                    key={job.name}
-                  >
-                    <td className="px-2 py-1">{job.name}</td>
-                    <td className={`px-2 py-1 text-right font-semibold ${dangerText}`}>
-                      {job.failures}
-                    </td>
-                    <td className={`px-2 py-1 text-right ${textMutedOnCanvas}`}>{job.results}</td>
-                    <td className="px-2 py-1 text-right">
-                      {formatRate(job.failures / job.results)}
-                    </td>
-                    <td className="px-2 py-1">
-                      <a
-                        className={`hover:underline ${linkText}`}
-                        href={job.last_run_url}
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        {formatAge(Math.max(0, (nowMs - Date.parse(job.last_failed_at)) / 1000))}
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <TableShell
+            className="mt-1 max-w-4xl"
+            label="PR CI: jobs that failed in the last 24 hours"
+            size="compact"
+          >
+            <TableHead>
+              <TableHeadCell>Job</TableHeadCell>
+              <TableHeadCell align="right">Failures</TableHeadCell>
+              <TableHeadCell align="right">Of runs</TableHeadCell>
+              <TableHeadCell align="right">Failure share</TableHeadCell>
+              <TableHeadCell>Last failure</TableHeadCell>
+            </TableHead>
+            <TableBody>
+              {(checks.failing_jobs ?? []).map((job) => (
+                <TableRow data-failing-job={job.name} key={job.name}>
+                  <TableCell>{job.name}</TableCell>
+                  <TableCell align="right" tone="danger" weight="semibold">
+                    {job.failures}
+                  </TableCell>
+                  <TableCell align="right" tone="muted">
+                    {job.results}
+                  </TableCell>
+                  <TableCell align="right">{formatRate(job.failures / job.results)}</TableCell>
+                  <TableCell>
+                    <a
+                      className={`hover:underline ${linkText}`}
+                      href={job.last_run_url}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      {formatAge(Math.max(0, (nowMs - Date.parse(job.last_failed_at)) / 1000))}
+                    </a>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </TableShell>
         )}
       </section>
     </>

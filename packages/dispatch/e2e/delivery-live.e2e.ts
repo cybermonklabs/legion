@@ -404,7 +404,8 @@ test("after every socket is dropped, the page resumes and equals the GET answer 
 test("an issue title change reaches the page", async ({ browser }) => {
   await seedDeliveryFixture();
   await sql(
-    `INSERT INTO projects (key, name) VALUES ('ACME', 'Acme') ON CONFLICT DO NOTHING`,
+    // Every project names a default assignee; alice is the person this fixture is read as.
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-690', 'ACME', 690, 'Initial live issue title', 'todo', 1, '{"kind":"system","id":"e2e"}', 'U690')`,
     `INSERT INTO delivery_pull_requests (

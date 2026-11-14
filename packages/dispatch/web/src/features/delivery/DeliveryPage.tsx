@@ -1,15 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
+import type { ColumnFiltersState, OnChangeFn, SortingState } from "@tanstack/react-table";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useSearchParams } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 
 import { isDeliveryNotConfigured } from "../../api/client";
+import { queryString } from "../../api/paths";
 import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries";
-import type { DeliverySessionGroup } from "../../api/types";
+import type { DeliverySessionGroup, DeliveryTimelineWithMeasures } from "../../api/types";
+import { Chip } from "../../components/Chip";
+import { ControlRow } from "../../components/ControlRow";
 import { MultiSelect } from "../../components/MultiSelect";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
-import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
+import { SearchBox } from "../../components/SearchBox";
+import {
+  textParam,
+  useAddressParams,
+  useAddressUpdate,
+  useRepeatableAddressParams,
+} from "../../lib/page-address";
 import {
   borderStrong,
+  card,
   linkText,
   surfaceBg,
   surfaceMutedBg,
@@ -25,7 +37,6 @@ import { useDocumentTitle } from "../shell/useDocumentTitle";
 import type { ChartRange } from "./Chart";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
 import { DrillDown } from "./DrillDown";
-import { FacetPanel } from "./FacetPanel";
 import { LegionSection } from "./LegionSection";
 import {
   buildColorScale,
@@ -37,6 +48,7 @@ import {
   type DeployedFacet,
   FACET_KEYS,
   FACET_PARAMS,
+  type FacetKey,
   type Filters,
   PLACEHOLDER_LABELS,
   type ReworkFacet,
@@ -52,11 +64,15 @@ import {
 } from "./lib/window";
 import { MeasuresPanel } from "./MeasuresPanel";
 import { PipelineSection } from "./PipelineSection";
-import { PRList } from "./PRList";
+import { COLUMN_FACETS, PRList } from "./PRList";
 import { type SegmentedOption, SegmentedToggle } from "./SegmentedToggle";
+import { SessionGroupsEditor } from "./SessionGroupsEditor";
 import { SourceFreshness } from "./SourceFreshness";
 import { Timeline, type TimelineSelection } from "./Timeline";
 import { WindowControl } from "./WindowControl";
+
+/** A facet the page's one filter panel holds: the four that are no column of the list. */
+type PanelFacet = Exclude<FacetKey, (typeof COLUMN_FACETS)[number]>;
 
 /** How long the search waits after the last keystroke before the server is asked again. */
 const SEARCH_DEBOUNCE_MS = 250;
@@ -98,18 +114,44 @@ interface DeliveryUrlState {
    *  custom range. The range a preset resolved to is the answer's `window`. */
   window: WindowChoice;
   filters: Filters;
+  /** What the list is ordered by, as the table holds it. */
+  sorting: SortingState;
   view: DeliveryView;
   brush: BrushWindow | null;
 }
 
-/** The delivery page's full state, read from and written to the URL — the same pattern
+/** The order the list opens in, newest merge first, which is left out of the address: `?sort=`
+ *  is absent until the reader presses a header, and goes again when they come back to this. */
+const DEFAULT_SORT: SortingState = [{ id: "merged", desc: true }];
+
+/** `?sort=` as the shared grammar spells one: the sorted columns in order, `-` for descending
+ *  (`lib/page-address.ts`'s `tableAddressGrammar`). This page writes it beside its own facet
+ *  parameters rather than taking that whole grammar, which would rename them. */
+const SORT_PARAM = textParam();
+
+/** `?sort=`'s text as the sorted columns it names; the page's opening order while it names
+ *  none. Takes the text rather than the parameters so a caller can memoize on it: the object
+ *  the router hands out is new on every write of the address, the text only on a new sort. */
+function readSorting(sorted: string): SortingState {
+  const columns = sorted
+    .split(",")
+    .filter((part) => part !== "" && part !== "-")
+    .map((part) => ({ id: part.replace(/^-/, ""), desc: part.startsWith("-") }));
+  return columns.length === 0 ? DEFAULT_SORT : columns;
+}
+
+function sortingText(sorting: SortingState): string {
+  return sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
+}
+
+/** The delivery page's full state, read from and written to the address — the same pattern
  *  `features/project/issue-filters.ts`'s `useIssueFilters` uses: repeatable facet params through
- *  the shared `useRepeatableSearchParams`, one `update` (`useSearchParamsUpdate`) funnelling every
- *  write through `setSearchParams(..., {replace: true})`. `window` and `filters` are memoized on the
- *  URL's own identity, so a render with an unchanged URL builds the same live view. */
+ *  the shared `useRepeatableAddressParams`, one `update` (`useAddressUpdate`) funnelling every
+ *  write through one `replace`d write of the address. `window` and `filters` are memoized on the
+ *  address's own identity, so a render with an unchanged address builds the same live view. */
 function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => void] {
-  const [searchParams] = useSearchParams();
-  const update = useSearchParamsUpdate();
+  const searchParams = useAddressParams();
+  const update = useAddressUpdate();
   const malformedWindow = hasMalformedWindowParams(searchParams);
   const windowChoice = useMemo(() => readWindow(searchParams), [searchParams]);
   useEffect(() => {
@@ -120,6 +162,7 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
       params.delete("window");
       params.delete("ws");
       params.delete("we");
+      return params;
     });
   }, [malformedWindow, update]);
   const search = searchParams.get("q") ?? "";
@@ -127,7 +170,7 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   const colorBy = COLOR_FACETS.find((facet) => facet === colorByParam) ?? DEFAULT_COLOR_BY;
   const lanes = searchParams.get("lanes") === "1";
   const mode: Mode = searchParams.get("mode") === "list" ? "list" : "timeline";
-  const { agents: agentParams } = useRepeatableSearchParams(AGENTS_PARAM);
+  const { agents: agentParams } = useRepeatableAddressParams(AGENTS_PARAM);
   const agents = useMemo(() => [...new Set(agentParams)], [agentParams]);
   const view = useMemo(() => ({ colorBy, lanes, mode, agents }), [colorBy, lanes, mode, agents]);
   const ws = searchParams.get("ws");
@@ -136,7 +179,12 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
     () => (ws === null || we === null ? null : { start: ws, end: we }),
     [ws, we]
   );
-  const arrayParams = useRepeatableSearchParams(FACET_KEYS);
+  // On the `?sort=` text, not on the parameters: the search box writes `?q=` on every keystroke
+  // and hands out a new `URLSearchParams` each time, while TanStack compares its sorted row
+  // model's dependencies by reference and would re-sort the whole window per letter typed.
+  const sortText = SORT_PARAM.read(searchParams, "sort");
+  const sorting = useMemo(() => readSorting(sortText), [sortText]);
+  const arrayParams = useRepeatableAddressParams(FACET_KEYS);
   const filters: Filters = useMemo(
     () => ({
       ...arrayParams,
@@ -164,6 +212,8 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
           params.delete(key);
           for (const value of next.filters[key]) params.append(key, value);
         }
+        const sorted = sortingText(next.sorting);
+        SORT_PARAM.write(params, "sort", sorted === sortingText(DEFAULT_SORT) ? "" : sorted);
         if (next.filters.search.trim() === "") params.delete("q");
         else params.set("q", next.filters.search);
         if (next.view.colorBy === DEFAULT_COLOR_BY) params.delete("colorBy");
@@ -181,12 +231,13 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
           params.set("ws", next.brush.start);
           params.set("we", next.brush.end);
         }
+        return params;
       });
     },
     [update]
   );
 
-  return [{ window: windowChoice, filters, view, brush }, setState];
+  return [{ window: windowChoice, filters, sorting, view, brush }, setState];
 }
 
 /** `value`, once it has held still for `delayMs`. */
@@ -284,6 +335,231 @@ function OwnColourPicker({
   );
 }
 
+/** The four facets that are no column of the list, so the one trigger of the control row holds
+ *  them (INFRA-3135, R3). The other five sit on the headers of the columns they narrow
+ *  (`PRList`'s `COLUMN_FACETS`). */
+const PANEL_FACETS: { key: PanelFacet; label: string }[] = [
+  { key: "repo", label: "Repository" },
+  { key: "session", label: "Session" },
+  { key: "priority", label: "Priority" },
+  { key: "component", label: "Component" },
+];
+
+const facetLabelClass = `mb-1 block text-xs tracking-wide uppercase ${textMutedOnCanvas}`;
+const facetTriggerClass = `flex h-7 w-full items-center justify-between rounded border px-2 text-left text-xs ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`;
+
+/** The panel the row's one trigger opens: a column of the four facets, portalled over the page
+ *  so opening it moves no row of the list beneath (INFRA-3135, R1). */
+const FACET_PANEL_CLASS = `z-50 flex max-h-[min(24rem,calc(100dvh-16px))] w-72 max-w-[calc(100vw-16px)] flex-col gap-4 overflow-y-auto rounded-lg border p-3 text-sm font-normal shadow-lg ${card}`;
+
+/** One facet's searchable checkbox list: "Any <facet>" until something is picked, each value
+ *  with its count, sorted by count. A facet with no values in the window and nothing picked is
+ *  not shown. */
+function Facet({
+  label,
+  values,
+  counts,
+  selected,
+  valueLabel,
+  open,
+  onOpenChange,
+  onChange,
+}: {
+  label: string;
+  values: readonly string[];
+  counts: Readonly<Record<string, number>>;
+  selected: readonly string[];
+  valueLabel: (value: string) => string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onChange: (next: string[]) => void;
+}): ReactNode {
+  if (values.length === 0 && selected.length === 0) return null;
+  const options = [...new Set([...selected, ...values])];
+  const state =
+    selected.length === 0 ? `Any ${label.toLowerCase()}` : `${selected.length} selected`;
+  const countOf = (value: string) => counts[value] ?? 0;
+  return (
+    <div>
+      <span className={facetLabelClass}>{label}</span>
+      <MultiSelect
+        emptyMessage="No matches."
+        label={label}
+        onChange={onChange}
+        onOpenChange={onOpenChange}
+        open={open}
+        optionDetail={(value) => String(countOf(value))}
+        optionDetailLabel={(value) => {
+          const count = countOf(value);
+          return `${count} PR${count === 1 ? "" : "s"}`;
+        }}
+        optionLabel={valueLabel}
+        options={options}
+        searchLabel={`Search ${label.toLowerCase()}\u2026`}
+        selected={selected}
+        triggerAriaLabel={`${label}: ${state}`}
+        triggerClassName={facetTriggerClass}
+      >
+        <span className="truncate">{state}</span>
+      </MultiSelect>
+    </div>
+  );
+}
+
+/** Which of the row's popovers stands open: one of the four facets inside the panel. The panel
+ *  has its own open below, for the Inbox's reason: a control opening inside it must not take
+ *  the panel's open away and unmount the control the reader pressed. */
+type OpenFacet = PanelFacet;
+
+/**
+ * The one row the page's controls sit in: the search box, the one trigger over the four facets
+ * that are no column of the list, and the chips of the values that are on (INFRA-3135, R1 and
+ * R3). Every other facet is on its column's own header, where `ColumnFilter` draws it.
+ *
+ * Each facet is counted by Dispatch with every other facet applied and its own ignored, so the
+ * counts here are the answer's, never the page's. Under Parent agent's old place, **Edit
+ * groups** opened the session-groups editor; it sits at the foot of this panel now, since that
+ * facet is a column.
+ */
+function DeliveryControls({
+  data,
+  filters,
+  onFilters,
+}: {
+  data: Pick<
+    DeliveryTimelineWithMeasures,
+    "facet_counts" | "components" | "session_groups" | "session_titles" | "session_pr_counts"
+  >;
+  filters: Filters;
+  onFilters: (next: Filters) => void;
+}): ReactNode {
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [openFacet, setOpenFacet] = useState<OpenFacet | undefined>(undefined);
+  const [editingGroups, setEditingGroups] = useState(false);
+  const countsOf = (key: PanelFacet) => data.facet_counts?.[FACET_PARAMS[key]] ?? {};
+  const byCount = (key: PanelFacet) => {
+    const counts = countsOf(key);
+    return Object.keys(counts).sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0));
+  };
+  // How many sub-components each component has in the window's projects: selecting a parent
+  // selects them too (the server expands it), and the prototype lists components flat, so the
+  // option says so. One walk up from each component counts it under every ancestor, rather than
+  // one descendant walk per component as architecture-model.ts's descendantComponents would take.
+  const subComponents = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const component of Object.values(data.components ?? {})) {
+      const seen = new Set<string>();
+      for (let parent = component.parent; parent !== null && !seen.has(parent); ) {
+        seen.add(parent);
+        counts.set(parent, (counts.get(parent) ?? 0) + 1);
+        parent = data.components?.[parent]?.parent ?? null;
+      }
+    }
+    return counts;
+  }, [data.components]);
+  const valueLabel = (key: PanelFacet, value: string): string => {
+    const placeholder = PLACEHOLDER_LABELS[value];
+    if (placeholder !== undefined) return placeholder;
+    if (key === "component") {
+      const title = data.components?.[value]?.title ?? value;
+      const children = subComponents.get(value) ?? 0;
+      if (children === 0) return title;
+      return `${title} (includes ${children} sub-component${children === 1 ? "" : "s"})`;
+    }
+    return value;
+  };
+  const chosen = PANEL_FACETS.flatMap(({ key, label }) =>
+    filters[key].map((value) => ({
+      key: `${key}:${value}`,
+      label: `${label}: ${valueLabel(key, value)}`,
+      remove: () => onFilters({ ...filters, [key]: filters[key].filter((one) => one !== value) }),
+    }))
+  );
+  return (
+    <ControlRow
+      chips={
+        chosen.length === 0
+          ? undefined
+          : chosen.map(({ key, label, remove }) => (
+              <Chip
+                aria-label={`Remove filter ${label}`}
+                key={key}
+                onClick={remove}
+                removable
+                selected
+                size="compact"
+                title={label}
+              >
+                {label}
+              </Chip>
+            ))
+      }
+      search={
+        <SearchBox
+          className="w-full"
+          label="Search pull requests"
+          onChange={(value) => onFilters({ ...filters, search: value })}
+          placeholder="Title or PR id"
+          size="compact"
+          value={filters.search}
+        />
+      }
+      size="compact"
+      trigger={
+        <PanelTrigger
+          count={chosen.length}
+          label="Filter"
+          onOpenChange={(open) => {
+            // An outside press while one of the facets is open is that facet's, not the
+            // panel's: `AnchoredPanel` tells both that the press was outside them.
+            if (!open && openFacet !== undefined) return;
+            setPanelOpen(open);
+          }}
+          open={panelOpen}
+          panelClassName={FACET_PANEL_CLASS}
+          size="compact"
+        >
+          {() => (
+            <>
+              {PANEL_FACETS.map(({ key, label }) => (
+                <Facet
+                  counts={countsOf(key)}
+                  key={key}
+                  label={label}
+                  onChange={(next) => onFilters({ ...filters, [key]: next })}
+                  onOpenChange={(open) =>
+                    setOpenFacet((current) => (open ? key : current === key ? undefined : current))
+                  }
+                  open={openFacet === key}
+                  selected={filters[key]}
+                  valueLabel={(value) => valueLabel(key, value)}
+                  values={byCount(key)}
+                />
+              ))}
+              <button
+                className={`text-xs underline ${linkText}`}
+                onClick={() => setEditingGroups(true)}
+                type="button"
+              >
+                Edit groups
+              </button>
+            </>
+          )}
+        </PanelTrigger>
+      }
+    >
+      {editingGroups ? (
+        <SessionGroupsEditor
+          counts={data.session_pr_counts ?? {}}
+          groups={data.session_groups ?? []}
+          onClose={() => setEditingGroups(false)}
+          titles={data.session_titles ?? {}}
+        />
+      ) : null}
+    </ControlRow>
+  );
+}
+
 /** `/delivery`: the three sections INFRA-1077's spec gives the page, in its order and under one
  *  window control - Legion (issue to merge), Pipeline (CI and deploy) and Delivery (merge to
  *  production) - the last being successful production deploys, pipeline failures, and merged PRs
@@ -310,12 +586,10 @@ export function DeliveryPage(): ReactNode {
   // Every active facet and the search, as the query string the GET route would take without its
   // window: Dispatch applies them, so `query.data.prs` is already the filtered list.
   const liveQuery = useMemo(() => {
-    const params = new URLSearchParams();
-    if (search !== "") params.set("q", search);
-    for (const key of FACET_KEYS) {
-      for (const value of state.filters[key]) params.append(FACET_PARAMS[key], value);
-    }
-    return params.toString();
+    const values: Record<string, string | string[]> = {};
+    if (search !== "") values.q = search;
+    for (const key of FACET_KEYS) values[FACET_PARAMS[key]] = [...state.filters[key]];
+    return queryString(values);
   }, [state.filters, search]);
   const query = useQuery(
     deliveryTimelineQuery({ kind: "timeline", window: liveWindow(state.window), query: liveQuery })
@@ -415,6 +689,49 @@ export function DeliveryPage(): ReactNode {
   }, [selection, data]);
 
   const setView = (view: DeliveryView) => setState({ ...state, view });
+  const setFilters = (filters: Filters) => setState({ ...state, filters });
+
+  // The five facets that are columns, as TanStack holds a column's filter, and back again: the
+  // adapter is the page's, so the header's filter writes the page's own parameter (`parentAgent`
+  // keeps its camelCase spelling, whatever the server's is) and the shared control reads no
+  // query of its own (decision 7).
+  // On what the five facets hold, written out as the address writes them, rather than on
+  // `state.filters`: that object is rebuilt on every write of the address - the search box
+  // writes `?q=` per keystroke - while TanStack compares its filtered row model's dependencies
+  // by reference and would re-filter the whole window per letter typed.
+  const columnFilterKey = COLUMN_FACETS.map((key) => `${key}=${state.filters[key].join(",")}`).join(
+    "&"
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `columnFilterKey` stands in for `state.filters`, which is a new object on every address write
+  const columnFilters = useMemo<ColumnFiltersState>(
+    () =>
+      COLUMN_FACETS.flatMap((key) =>
+        state.filters[key].length === 0 ? [] : [{ id: key, value: [...state.filters[key]] }]
+      ),
+    [columnFilterKey]
+  );
+  const setColumnFilters: OnChangeFn<ColumnFiltersState> = (update) => {
+    const next = typeof update === "function" ? update(columnFilters) : update;
+    const picked = new Map(next.map((filter) => [filter.id, filter.value as string[]]));
+    setFilters({
+      ...state.filters,
+      author: picked.get("author") ?? [],
+      deployed: (picked.get("deployed") ?? []) as DeployedFacet[],
+      issue: picked.get("issue") ?? [],
+      parentAgent: picked.get("parentAgent") ?? [],
+      rework: (picked.get("rework") ?? []) as ReworkFacet[],
+    });
+  };
+  const setSorting: OnChangeFn<SortingState> = (update) => {
+    const next = typeof update === "function" ? update(state.sorting) : update;
+    // A third press on a header takes TanStack's sort off the column; this list has always
+    // cycled between the two directions instead, so a sort it removed goes back to the
+    // ascending one the column offers first.
+    setState({
+      ...state,
+      sorting: next.length > 0 ? next : state.sorting.map(({ id }) => ({ id, desc: false })),
+    });
+  };
 
   // Whether the page shows the setup form: the last settled timeline read's answer, held while a
   // read is in flight. A refetch with nothing cached clears `query.error` the moment it starts
@@ -573,14 +890,9 @@ export function DeliveryPage(): ReactNode {
                   </span>
                 </div>
 
+                <DeliveryControls data={data} filters={state.filters} onFilters={setFilters} />
+
                 <div className="flex min-h-0 flex-1 flex-col gap-4 xl:flex-row">
-                  <div className="shrink-0 xl:w-56 xl:overflow-y-auto">
-                    <FacetPanel
-                      data={data}
-                      filters={state.filters}
-                      onChange={(filters) => setState({ ...state, filters })}
-                    />
-                  </div>
                   <div className="flex h-[75dvh] min-h-[28rem] min-w-0 flex-col xl:h-auto xl:flex-1">
                     {state.view.mode === "timeline" ? (
                       <Timeline
@@ -606,11 +918,17 @@ export function DeliveryPage(): ReactNode {
                         allRepos={allRepos}
                         colorBy={state.view.colorBy}
                         colorScale={colorScale}
+                        columnFilters={columnFilters}
+                        facetCounts={data.facet_counts ?? {}}
+                        issueTitles={data.issue_titles ?? {}}
+                        onColumnFiltersChange={setColumnFilters}
                         onSelect={(id) => setSelection({ kind: "pr", id })}
                         onSelectRun={(id) => setSelection({ kind: "deploy", id })}
+                        onSortingChange={setSorting}
                         prs={shownPRs}
                         selectedId={selection?.kind === "pr" ? selection.id : undefined}
                         sessionGroups={data.session_groups ?? []}
+                        sorting={state.sorting}
                       />
                     )}
                   </div>

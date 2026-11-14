@@ -12,7 +12,6 @@ import { matchPath } from "react-router-dom";
 import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
-import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
 import {
   type BlockTarget,
   blockFragment,
@@ -47,6 +46,7 @@ export type ProjectRoute =
   | { kind: "architecture"; project: string }
   | { kind: "issues"; project: string }
   | { kind: "documents"; project: string }
+  | { kind: "settings"; project: string }
   | ({
       kind: "document";
       project: string;
@@ -70,7 +70,8 @@ export type DispatchReferenceRoute = IssueRoute | ProjectDocumentRoute | AgentAr
  * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
  * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
  * `unassigned` - because a person's email is not a word this page invented, so it rides in
- * `InboxRoute.assignees` rather than in `filters` below.
+ * `InboxRoute.assignees` rather than in that type's `filters` (`lib/page-address.ts`, which
+ * holds the Inbox's address grammar; these are the words it reads and writes).
  */
 export const INBOX_DIMENSIONS = ["priority", "urgency", "type", "project", "assignee"] as const;
 export type InboxDimension = (typeof INBOX_DIMENSIONS)[number];
@@ -106,35 +107,6 @@ export const INBOX_PRIORITY_VALUES = ["P0", "P1", "P2", "P3", NO_FILTER_VALUE] a
 export const INBOX_URGENCY_VALUES = [...ASK_URGENCIES, NO_FILTER_VALUE] as const;
 export const INBOX_TYPE_VALUES = INBOX_ROW_TYPES;
 
-/** The Inbox at `/`, optionally narrowed to one agent's asks (`?agent=<session id>`); with
- *  `section=needs-you` only the asks waiting on the viewer are shown. Every field below is
- *  absent while it holds its default, so a plain `/` is the Inbox as it opens. */
-export interface InboxRoute {
-  agent?: string;
-  /** The row the Inbox has selected, the one its reading pane shows: an ask's id, or a thread's
-   *  `reply:<thread id>` / `agent:<message id>` (`rowId`, `features/inbox/list-row.ts`). The
-   *  address is the whole memory of that selection, so a link carries the reader's place. */
-  item?: string;
-  section?: "needs-you";
-  /** The text the Inbox's search box narrows the list by, as typed. It is a field of the route
-   *  rather than a search parameter of its own because `buildInboxPath` rebuilds the whole query
-   *  string from this type and `usePaneSelection` navigates with it on every selection change, so
-   *  a parameter outside the type would be dropped by the next `j`. */
-  q?: string;
-  /** Who the listed asks are for. Absent is the page's default, the reader's own work; an empty
-   *  array is the cleared filter, every question; a value is a person's lowercase email or the
-   *  literal `unassigned`. */
-  assignees?: readonly string[];
-  /** `?show=dismissed`, the View menu's **Show** switch on **Dismissed**: what the reader has
-   *  dismissed out of their Inbox, newest dismissal first. Absent is the Inbox itself, every
-   *  undismissed row, read or not. */
-  show?: "dismissed";
-  sort?: InboxSort;
-  group?: InboxGroupBy;
-  /** The chosen values of each filter field, one comma list per field in the address. A field
-   *  with nothing chosen is absent, never an empty array. */
-  filters?: Partial<Record<InboxFilterField, readonly string[]>>;
-}
 export type IssueTab =
   | "spec"
   | "verification"
@@ -217,6 +189,7 @@ export function isProjectRoute(route: DispatchRoute | AgentArtifactRoute): route
     route.kind === "architecture" ||
     route.kind === "issues" ||
     route.kind === "documents" ||
+    route.kind === "settings" ||
     route.kind === "document"
   );
 }
@@ -483,6 +456,9 @@ export function parseProjectPath(pathname: string, search = ""): ProjectRoute | 
   }
   if (target === "documents") {
     return { kind: "documents", project };
+  }
+  if (target === "settings") {
+    return { kind: "settings", project };
   }
   const document = target.match(/^documents\/([^/?#\s]+)$/);
   if (document === null) {
@@ -967,7 +943,12 @@ export function buildProjectPath(route: ProjectRoute): string {
   if (route.kind === "project") {
     return project;
   }
-  if (route.kind === "architecture" || route.kind === "issues" || route.kind === "documents") {
+  if (
+    route.kind === "architecture" ||
+    route.kind === "issues" ||
+    route.kind === "documents" ||
+    route.kind === "settings"
+  ) {
     return `${project}/${route.kind}`;
   }
   const document = `${project}/documents/${encodeURIComponent(route.slug)}`;
@@ -980,136 +961,6 @@ export function buildProjectPath(route: ProjectRoute): string {
   }
   const search = query.toString();
   return search === "" ? document : `${document}?${search}`;
-}
-
-/** The values a filter field accepts, or undefined for the one field whose vocabulary is the
- *  workspace's own: a project key is whatever somebody created, so only `none` is reserved. */
-function filterVocabulary(field: InboxFilterField): readonly string[] | undefined {
-  if (field === "priority") return INBOX_PRIORITY_VALUES;
-  if (field === "urgency") return INBOX_URGENCY_VALUES;
-  return field === "type" ? INBOX_TYPE_VALUES : undefined;
-}
-
-/**
- * The page's `?assignee=` deliberately spells its default the opposite way round from the
- * server's own `?assignee=` on `GET /api/v1/inbox`
- * (`packages/envoy/internal/dispatch/api/inbox.go`), where an absent parameter means everybody:
- * here absent means the reader alone and `assignee=everyone` means everybody, so the same name
- * now means different things on the two sides and neither reads the other's URL.
- *
- * Every other field is absent while it holds its default, so the Inbox as it opens is `/` and a
- * link says only what the reader changed. A value this build does not know - an older link, a
- * typo - is dropped rather than refused: the list is a client-side split of what the two reads
- * answered, so an unknown word would match no row anyway.
- */
-export function parseInboxSearch(search: string): InboxRoute {
-  const params = new URLSearchParams(search);
-  const agent = params.get("agent");
-  const route: InboxRoute = {};
-  if (agent !== null && agent !== "") {
-    route.agent = agent;
-  }
-  const item = params.get("item")?.trim() ?? "";
-  if (item !== "") {
-    route.item = item;
-  }
-  if (params.get("section") === "needs-you") {
-    route.section = "needs-you";
-  }
-  // Neither trimmed nor cut: a reader mid-word has a trailing space that is part of what they
-  // typed, and the box rewrites no address a link arrived with.
-  const q = params.get("q");
-  if (q !== null && q !== "") {
-    route.q = q;
-  }
-  // Nothing refuses an email the page has never heard of: the filter is a client-side split of
-  // one inbox response, so an unlisted or misspelled person simply matches no row.
-  const assignees: string[] = [];
-  let everyone = false;
-  for (const raw of params.getAll("assignee")) {
-    const value = raw.trim().toLowerCase();
-    if (value === "") continue;
-    if (value === EVERYONE_FILTER_VALUE) {
-      everyone = true;
-      continue;
-    }
-    if (!assignees.includes(value)) assignees.push(value);
-  }
-  if (assignees.length > 0 || everyone) {
-    route.assignees = assignees;
-  }
-  if (params.get("show") === "dismissed") {
-    route.show = "dismissed";
-  }
-  const sort = params.get("sort");
-  if (sort !== null && sort !== "newest" && (INBOX_SORTS as readonly string[]).includes(sort)) {
-    route.sort = sort as InboxSort;
-  }
-  const group = params.get("group");
-  if (
-    group !== null &&
-    group !== "priority" &&
-    (INBOX_GROUP_BYS as readonly string[]).includes(group)
-  ) {
-    route.group = group as InboxGroupBy;
-  }
-  const filters: Partial<Record<InboxFilterField, readonly string[]>> = {};
-  for (const field of INBOX_FILTER_FIELDS) {
-    const vocabulary = filterVocabulary(field);
-    const chosen: string[] = [];
-    for (const raw of params.getAll(field)) {
-      for (const part of raw.split(",")) {
-        const value = part.trim();
-        if (value === "" || chosen.includes(value)) continue;
-        if (vocabulary !== undefined && !vocabulary.includes(value)) continue;
-        chosen.push(value);
-      }
-    }
-    if (chosen.length > 0) filters[field] = chosen;
-  }
-  if (Object.keys(filters).length > 0) {
-    route.filters = filters;
-  }
-  return route;
-}
-
-export function buildInboxPath(route: InboxRoute = {}): string {
-  const query = new URLSearchParams();
-  if (route.agent !== undefined) {
-    query.set("agent", route.agent);
-  }
-  if (route.item !== undefined) {
-    query.set("item", route.item);
-  }
-  if (route.section !== undefined) {
-    query.set("section", route.section);
-  }
-  if (route.q !== undefined) {
-    query.set("q", route.q);
-  }
-  if (route.assignees !== undefined) {
-    if (route.assignees.length === 0) {
-      query.append("assignee", EVERYONE_FILTER_VALUE);
-    }
-    for (const assignee of route.assignees) {
-      query.append("assignee", assignee);
-    }
-  }
-  if (route.show !== undefined) {
-    query.set("show", route.show);
-  }
-  if (route.sort !== undefined && route.sort !== "newest") {
-    query.set("sort", route.sort);
-  }
-  if (route.group !== undefined && route.group !== "priority") {
-    query.set("group", route.group);
-  }
-  for (const field of INBOX_FILTER_FIELDS) {
-    const chosen = route.filters?.[field];
-    if (chosen !== undefined && chosen.length > 0) query.set(field, chosen.join(","));
-  }
-  const search = query.toString();
-  return search === "" ? "/" : `/?${search}`;
 }
 
 /**

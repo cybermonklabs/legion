@@ -1,5 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import { openFilterPanel } from "./filters";
+
 /**
  * The Inbox's `?assignee=` control (`features/inbox/AssigneeFilter.tsx`), one of the five fields
  * the bar's **Filter** button opens (INFRA-450; before it, the control stood in the bar itself).
@@ -19,25 +21,24 @@ export function assigneeOptions(page: Page): Locator {
   return page.getByRole("listbox", { name: "Assignee options" });
 }
 
-/** Opens the bar's five filter fields unless they are open already, and hands back the panel. */
+/** Opens the row's five filter fields unless they are open already, and hands back the panel
+ *  the row's one **Filter** trigger opens. */
 export async function openFilterFields(page: Page): Promise<Locator> {
-  const fields = page.locator("[data-inbox-filter-fields]");
-  if ((await fields.count()) === 0) {
-    await page.locator("[data-inbox-filter]").click();
-  }
-  await expect(fields).toHaveCount(1);
-  return fields;
+  return openFilterPanel(page);
 }
 
 /** How many rows the **Type** filter counts for one of its values, read off that option's own
- *  accessible name. `within` is the bar the panel belongs to - the page's or the drawer's - and
- *  the popover is shut again before this answers, so the next read of the list is not made
- *  through it. */
-export async function typeFilterCount(page: Page, within: Locator, name: string): Promise<number> {
-  if ((await page.locator("[data-inbox-filter-fields]").count()) === 0) {
-    await within.locator("[data-inbox-filter]").click();
-  }
-  const trigger = within.getByRole("button", { name: "Filter by type" });
+ *  accessible name. `within` is the surface whose row opens the panel - the page itself, or the
+ *  drawer - and the popover is shut again before this answers, so the next read of the list is
+ *  not made through it. The fields themselves are portalled to the body, so they are read off
+ *  the page rather than through `within`. */
+export async function typeFilterCount(
+  page: Page,
+  name: string,
+  within: Locator | Page = page
+): Promise<number> {
+  await openFilterPanel(page, within);
+  const trigger = page.getByRole("button", { name: "Filter by type" });
   if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
   const options = page.getByRole("listbox", { name: "Type options" });
   const label =
@@ -83,10 +84,15 @@ export async function searchInbox(page: Page, text: string): Promise<void> {
   await inboxSearchBox(page).fill(text);
 }
 
-/** Closes the popover the way a reader does, and waits until it is gone, so whatever it covered
- *  is reachable again. Escape is handled by the search box, which holds focus while the popover
- *  is open (a row's press never takes it). */
+/** Closes the popover the way a reader does, and the panel it is drawn in with it, waiting
+ *  until both are gone so whatever they covered is reachable again. Escape is handled by the
+ *  innermost layer the press comes from: the popover first, then the panel. */
 export async function closeAssigneeFilter(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
   await expect(assigneeOptions(page)).toHaveCount(0);
+  const panel = page.getByRole("dialog", { name: "Filter" });
+  if ((await panel.count()) !== 0) {
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
+  }
 }

@@ -28,7 +28,9 @@ const searchRowShape = `select 1::int, 1::int, 'document'::text, 'issue'::text,
 // path refuses that shape - a blob version under a document artifact answers
 // ARTIFACT_KIND_MISMATCH - so the row is reachable by raw SQL rather than through the API, and
 // the scan holds against it anyway: a snippet of nothing is an empty snippet, and the row beside
-// it still carries its marks.
+// it still carries its marks. The display-tree reading of the same headline is asked for here
+// too (scanSearchRows' trees), since it reads the headline a second time and a null one is the
+// snippet tree of no text.
 func TestSearchScanTakesARowWithANullHeadline(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -38,7 +40,7 @@ func TestSearchScanTakesARowWithANullHeadline(t *testing.T) {
 		t.Fatalf("query the null-headline row: %v", err)
 	}
 	defer rows.Close()
-	response, err := scanSearchRows(rows, "astrolabe", 20, 0)
+	response, err := scanSearchRows(rows, "astrolabe", 20, 0, true)
 	if err != nil {
 		t.Fatalf("scan the null-headline row: %v", err)
 	}
@@ -47,6 +49,9 @@ func TestSearchScanTakesARowWithANullHeadline(t *testing.T) {
 	}
 	if got := response.Results[0].Snippet; got != "" {
 		t.Errorf("the null headline became the snippet %q, want none", got)
+	}
+	if got := response.Results[0].SnippetTree; len(got) != 0 {
+		t.Errorf("the null headline became the snippet tree %s, want none", got)
 	}
 	if got := response.Results[0].Href; got == "" {
 		t.Errorf("the row with no headline lost its href: %+v", response.Results[0])
@@ -57,7 +62,7 @@ func TestSearchScanTakesARowWithANullHeadline(t *testing.T) {
 		t.Fatalf("query the headline row: %v", err)
 	}
 	defer marked.Close()
-	response, err = scanSearchRows(marked, "astrolabe", 20, 0)
+	response, err = scanSearchRows(marked, "astrolabe", 20, 0, false)
 	if err != nil {
 		t.Fatalf("scan the headline row: %v", err)
 	}

@@ -6,7 +6,6 @@ import {
   type ReactNode,
   useEffect,
   useId,
-  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -25,6 +24,7 @@ import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../ap
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useScrollEnds } from "../../components/useScrollEnds";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   badgePrimary,
@@ -138,43 +138,9 @@ export function IssueHeader({
       parentInputRef.current?.focus();
     }
   }, [parentEditing]);
-  // Whether the details rail has anywhere left to scroll, which is what its trailing fade says.
-  // The rail element is state rather than a ref so this runs once per rail, not once per render:
-  // three things change the answer and none of them is a render of this component - the reader
-  // scrolling the rail, the rail's box changing with the viewport, and its content arriving (the
-  // labels, the subscriber count, a GitHub title). One listener and two observers cover them,
-  // and the mutation observer re-observes children a render added.
-  const [rail, setRail] = useState<HTMLDivElement | null>(null);
-  const [railScrollable, setRailScrollable] = useState(false);
-  useLayoutEffect(() => {
-    if (rail === null) {
-      return;
-    }
-    // A fractional layout leaves scrollLeft a hair short of the end; one pixel of slack keeps a
-    // rail scrolled to its end from wearing the fade.
-    const measure = () =>
-      setRailScrollable(rail.scrollWidth - rail.clientWidth - rail.scrollLeft > 1);
-    const sizes = new ResizeObserver(measure);
-    const observeAll = () => {
-      sizes.observe(rail);
-      for (const child of rail.children) {
-        sizes.observe(child);
-      }
-    };
-    observeAll();
-    const contents = new MutationObserver(() => {
-      observeAll();
-      measure();
-    });
-    contents.observe(rail, { characterData: true, childList: true, subtree: true });
-    rail.addEventListener("scroll", measure, { passive: true });
-    measure();
-    return () => {
-      rail.removeEventListener("scroll", measure);
-      sizes.disconnect();
-      contents.disconnect();
-    };
-  }, [rail]);
+  // Whether the details rail has anywhere left to scroll, which is what its trailing fade says
+  // (`components/useScrollEnds.ts`, which a control row's chips use too).
+  const { ref: setRail, trailing: railScrollable } = useScrollEnds();
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();

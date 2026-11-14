@@ -926,10 +926,10 @@ func TestStartCheckConfigNamesTheBrokenKey(t *testing.T) {
 // all the same, since nothing reads it and a refusal here would stop a deployment over a word in
 // a file. --check-config exits 0, prints the warning after Config OK and before the project's
 // production-check line and the capability gaps, and the warning says what the refusal would
-// have said: the key, that nothing counts fix attempts, that a red CI verdict always sends the
-// work back to the implementer, that the architect decides when to stop, and review_round_cap,
-// the one cap left that blocks a pull
-// request. The refused keys of TestStartCheckConfigNamesTheBrokenKey (worker_cap,
+// have said: the key, that nothing counts fix attempts, that no CI verdict sends work back on its
+// own — what a settlement names is told to the roles that work the issue
+// (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and review_round_cap,
+// the one cap left that blocks a pull request. The refused keys of TestStartCheckConfigNamesTheBrokenKey (worker_cap,
 // resync_interval_seconds) are the control that the two kinds stay apart.
 func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	legionState(t)
@@ -938,7 +938,7 @@ func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
 
-	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
+	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
 	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -1838,6 +1838,46 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	}
 }
 
+// The operator's guide prints the waiting-line block as its sample, so the block is built here
+// from the state the guide describes and read back out of the guide: the header with the count,
+// one member of each part with its key, its place, its part and the daemon's sentence, and the
+// two lines the block takes instead — nothing waiting, and a daemon that served this caller no
+// sentence at all. A reader of the guide meets all four.
+//
+// The sentences are written here rather than read from the render, which is another package's
+// and unexported (projection's waitingLineReason, held to R5's words by that package's own
+// WaitingLineReason test), so a change to either side is read here as the change it is. What
+// this test holds is the shape the command prints around them: a guide that says the block
+// names the key, the place and the part, while the command prints something else, is the defect
+// it exists to catch. (INFRA-2554.)
+func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
+	const (
+		returned = "Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back," +
+			" and it takes the free slots first."
+		starting = "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank," +
+			" and 1 issue whose work came back stands ahead of all of them."
+	)
+	waiting := []string{"WIDGETS-14", "WIDGETS-15"}
+	issues := map[string]api.Issue{
+		"WIDGETS-14": waitingMember("WIDGETS-14", 1, len(waiting), "returned", returned),
+		"WIDGETS-15": waitingMember("WIDGETS-15", 2, len(waiting), "starting", starting),
+	}
+	guide := filepath.Join("..", "..", "..", "..", "docs", "site", "src", "content", "docs", "legion", "running-legion.md")
+	body, err := os.ReadFile(guide)
+	if err != nil {
+		t.Fatalf("read %s: %v", guide, err)
+	}
+	// A member of `waiting` whose issue carries no view at all, which is the body a daemon below
+	// the contract that added the sentence serves: the block says so on one line.
+	noReasons := waitingLineLines(waiting[:1], map[string]api.Issue{})
+	printed := append(waitingLineLines(waiting, issues), append(waitingLineLines(nil, nil), noReasons...)...)
+	for _, line := range printed {
+		if !strings.Contains(string(body), line) {
+			t.Errorf("running-legion.md does not carry %q", line)
+		}
+	}
+}
+
 // An operator reading plain `legion state` is told how many issues carry a memory draw and under
 // which group and mode, on one line however many issues the state carries. It counts issues
 // rather than trees because the state names no tree: every issue of a tree carries its root's
@@ -2058,7 +2098,7 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
-	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
+	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
 	for _, tc := range []struct {
 		name, gaps, want string
 	}{
@@ -2182,6 +2222,59 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 			}
 			if !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// `legion state` prints what the project holds beside what it waits on: how many issues the
+// admission list holds and how many of each word for why, in the ladder's own order
+// (record.HeldReasons) whatever order the state lists them in, and `none` where it holds
+// nothing, as the blocked line reads. The prefix names the admission list, which is what tells
+// a reader the line from the held lifecycle rows the same output prints below it. A grep of the
+// source would pass on a comment, so this reads what the command prints.
+func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
+	admission := func(held string) string {
+		return `"admission":{"cap":2,"active":["LEGION-208"],"waiting":["LEGION-211"],"blocked":[],"held":` + held + `}`
+	}
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},`
+	for _, tc := range []struct {
+		name, held, want string
+	}{
+		{
+			name: "two words, counted in the ladder's order",
+			held: `[{"issue":"LEGION-209","reason":"design_gate","heldBy":["LEGION-208"]},` +
+				`{"issue":"LEGION-210","reason":"tree_parked","heldBy":["LEGION-212"]},` +
+				`{"issue":"LEGION-213","reason":"design_gate","heldBy":["LEGION-208"]}]`,
+			want: "admission.held: 3 issues — tree_parked 1, design_gate 2\n",
+		},
+		{
+			name: "one issue no word is true of",
+			held: `[{"issue":"LEGION-209","reason":"unclassified"}]`,
+			want: "admission.held: 1 issue — unclassified 1\n",
+		},
+		{name: "none", held: `[]`, want: "admission.held: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + admission(tc.held) + `,"issues":{},"pendingStatusWrites":[]}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+			if !strings.Contains(out.String(), "held lifecycle rows: none\n") {
+				t.Fatalf("legion state printed %q, want the held lifecycle rows on a line of their own: the admission list is not those rows", out.String())
 			}
 		})
 	}

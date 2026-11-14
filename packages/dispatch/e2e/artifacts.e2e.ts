@@ -17,6 +17,7 @@ import {
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
+import { assertPageFits } from "./unclipped";
 
 const tinyPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
@@ -52,6 +53,27 @@ async function confirmUpload(page: Page): Promise<void> {
   await page.getByRole("button", { exact: true, name: "Upload" }).click();
 }
 
+// Whole inside the window: no part of `control` left of the window's left edge or past its right
+// edge, where a phone reader can neither see nor press it. `name` is what a failure calls it. The
+// window is the width the browser was given, not `window.innerWidth`: a page wider than a phone's
+// window widens `innerWidth` to the page (`assertPageFits`, `unclipped.ts`), so a 480 px control
+// on a 390 px phone sits inside an `innerWidth` of 504. The failure names both.
+async function expectWithinWindow(page: Page, control: Locator, name: string): Promise<void> {
+  await expect(control).toBeVisible();
+  const [box, innerWidth] = await Promise.all([
+    control.boundingBox(),
+    page.evaluate(() => window.innerWidth),
+  ]);
+  const windowWidth = page.viewportSize()?.width;
+  if (box === null || windowWidth === undefined) {
+    throw new Error(`expected ${name} to have a box in a window of a set width`);
+  }
+  const right = box.x + box.width;
+  const where = `${name} spans ${box.x}px to ${right}px (${box.width}px wide) in a ${windowWidth}px window (innerWidth ${innerWidth}px)`;
+  expect(box.x, where).toBeGreaterThanOrEqual(0);
+  expect(right, where).toBeLessThanOrEqual(windowWidth);
+}
+
 // `page.request` sends the page's session cookie and no `Origin`, and the server refuses a
 // cookie-authenticated write whose `Origin` is not the dashboard's (enforceCookieOrigin).
 function postAsPage(page: Page, path: string, data?: object) {
@@ -78,10 +100,57 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   await expect(documentEditor(page)).toContainText("The original document.");
   await expect.poll(sockets).toBe(1);
   await openArtifacts(page, testInfo.project.name === "iphone");
+  // The tab's own slot of the control row ran a staged upload off a 390 px window once (CI run
+  // 43204682061), and #3508 put the `New document` control in that same slot beside `Upload`. So
+  // on the phone each control there lies whole inside the window and takes a press, and the form
+  // `New document` opens fits too.
+  if (testInfo.project.name === "iphone") {
+    const newDocument = page.getByRole("button", { exact: true, name: "New document" });
+    const pickFile = page.getByRole("button", { exact: true, name: "Upload" });
+    await expectWithinWindow(page, newDocument, "New document");
+    await expectWithinWindow(page, pickFile, "Upload");
+    // Playwright holds the chooser the press opens, and it is left unanswered: nothing is staged.
+    const chooser = page.waitForEvent("filechooser");
+    await pickFile.click();
+    await chooser;
+    await newDocument.click();
+    const newDocumentForm = page.getByRole("form", { name: "New document" });
+    await expectWithinWindow(
+      page,
+      newDocumentForm.getByRole("textbox", { exact: true, name: "Title" }),
+      "the New document form's Title field"
+    );
+    await expectWithinWindow(
+      page,
+      newDocumentForm.getByRole("button", { exact: true, name: "Create" }),
+      "the New document form's Create"
+    );
+    await newDocumentForm.getByRole("button", { exact: true, name: "Cancel" }).click();
+    await expect(newDocumentForm).toHaveCount(0);
+  }
 
   const upload = page.getByLabel("Upload artifact");
   const diagramUpload = await diagramFile(testInfo);
   await upload.setInputFiles(diagramUpload);
+  // What run 43204682061 caught: the staged file takes the slot's line, and its Summary field and
+  // the two presses that store or discard it stay inside the window.
+  if (testInfo.project.name === "iphone") {
+    await expectWithinWindow(
+      page,
+      page.getByRole("textbox", { exact: true, name: "Summary (optional)" }),
+      "the staged upload's Summary field"
+    );
+    await expectWithinWindow(
+      page,
+      page.getByRole("button", { exact: true, name: "Upload" }),
+      "the staged upload's Upload"
+    );
+    await expectWithinWindow(
+      page,
+      page.getByRole("button", { exact: true, name: "Cancel" }),
+      "the staged upload's Cancel"
+    );
+  }
   await confirmUpload(page);
   const diagram = page.getByTestId("artifact-diagram-png");
   await expect(diagram).toContainText("diagram.png");
@@ -194,9 +263,9 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     await openMargin.click();
     await expect(page.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
     await page.screenshot({ path: testInfo.outputPath("iphone-margin-sheet.png"), fullPage: true });
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-    ).toBe(true);
+    // `scrollWidth <= innerWidth` cannot fail on a phone, which widens `innerWidth` to a page
+    // wider than its window; `assertPageFits` holds `innerWidth` to the window as well.
+    await assertPageFits(page);
   }
 });
 

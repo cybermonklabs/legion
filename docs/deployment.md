@@ -175,9 +175,11 @@ configuration home — and tells the pane where it is
 (`resolveLeakCheck` and `panePairs`, `packages/daemon/internal/runtime/tmux`).
 An operator who points one pane at another copy still wins: `runtime.tmux.pane_env` and a spec's
 own `Env` are told after the resolved one, and the last value of a name is what the pane holds.
-Legion installs no check on a shared box — the pinned install is the pod's, from a tag the worker
-image carries — so a box that writes to public repositories carries it through the check's own
-installer, run on the machine the daemon runs on.
+Legion installs no check on a shared box.
+The pinned install is a pod's: the daemon reads the check at the tag the worker image carries and
+pushes it to the pod's launcher, which installs it ([Worker image](kubernetes.md#worker-image)).
+So a box that writes to public repositories carries the check through the check's own installer,
+run on the machine the daemon runs on.
 A daemon that resolves none logs one line per launch naming the pane, tells that pane no
 `PUBLIC_LEAK_CHECK`, and every write from it to a public repository is then refused with a setup
 error naming the missing check.
@@ -225,7 +227,7 @@ bearer as a service token or a personal token (`optionalActor`, the same file), 
 session then carries that token's service or owner as well. `dispatch whoami` in a pane tells the
 two apart: for a shared agent token it answers
 `Session <id> runs under the shared token: no owner, …`
-(`packages/envoy-client/src/dispatch-execute.ts`). A pod's side of this is in `docs/kubernetes.md`,
+(`packages/envoy-client/src/dispatch-commands/session.ts`). A pod's side of this is in `docs/kubernetes.md`,
 "Anatomy of a Sandbox pod". A person's own session on the same box uses a personal token instead,
 minted from Dispatch's Settings → Agent tokens
 (`docs/site/src/content/docs/dispatch/for-agents.md`).
@@ -538,22 +540,21 @@ written by whichever daemon wrote last — so the order matters:
 3. Set `runtime.tmux.take_over: kubernetes` and boot the tmux daemon with the same Postgres. Each
    claim whose recorded process is a pod is reported gone, displaced, and relaunched in a pane,
    charged nothing, on its session when step 2 put its file in one of those places, searched by
-   file name or session id. While `take_over` is set, a session found nowhere starts a fresh agent,
-   uncharged, which registers a session of its own, whatever the claim's last process was and
-   wherever the session was recorded: a claim the Kubernetes daemon left suspended carries no
-   process, and a host built from the worker image records its own sessions at the paths a pod
-   used, so neither tells the two apart. That is what the key buys and what it costs: in this
-   window a session of this host's own that has gone missing starts fresh too. Each workspace is
-   provisioned before its first launch.
+   file name or session id. A session found nowhere starts a fresh agent, uncharged, which
+   registers a session of its own; the loss is posted on the issue and told to its architect, to
+   the controller and to the new agent in its own prompt. That holds whether or not `take_over` is
+   set — a session no store holds is gone whichever runtime last wrote it — so what this key buys
+   is the takeover of the other runtime's locators: a claim whose pod this daemon cannot see is
+   resumed without waiting that process out. Each workspace is provisioned before its first launch.
 4. Retry what failed to launch meanwhile, once the cause is gone: `legion claims retry --failed`
    (an architect relaunches on its session; a phase worker whose issue is held for its own role
    retries that phase).
 5. Remove `take_over` once no claim can still wake on a session a pod recorded: every claim that
    was running has relaunched in a pane, and no claim the Kubernetes daemon suspended (a
    production check's checking role — the one the project's `production_check` names — waiting
-   for the look its own `wake_at` asked for among them) is left to wake. From then on a session
-   found nowhere is refused again, and a tmux daemon pointed at a store a Kubernetes daemon still
-   drives refuses to start rather than take its claims.
+   for the look its own `wake_at` asked for among them) is left to wake. From then on a resume
+   over a locator of the other runtime is refused, and a tmux daemon pointed at a store a
+   Kubernetes daemon still drives refuses to start rather than take its claims.
 
 ## Rotating broker-held App keys
 

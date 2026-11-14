@@ -4,6 +4,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
 import type { AgentGroup } from "../web/src/features/agents/agent-groups";
 import { createAsk, createComment, createIssue, createProject } from "./api";
+import { openFilterPanel } from "./filters";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
 import { sessionIds } from "./session-ids";
@@ -383,22 +384,35 @@ export async function toggleAgentGroup(page: Page, group: AgentGroup): Promise<v
   await expect(toggle).toHaveAttribute("aria-expanded", expanded === "true" ? "false" : "true");
 }
 
-/** The group, machine or role filter's trigger. Each of the three is a `MultiSelect` (R7), named
- *  by what it filters rather than by what is ticked in it. */
+/** The three filters live in the panel the row's one **Filter** trigger opens: opens it unless
+ *  it is open already, and hands the panel back. */
+export async function openAgentFilters(page: Page): Promise<Locator> {
+  return openFilterPanel(page);
+}
+
+/** The group, machine or role filter's trigger, inside that panel. Each of the three is a
+ *  `MultiSelect` (R7), named by what it filters rather than by what is ticked in it; absent
+ *  until the panel is open. */
 export function agentFilter(page: Page, filter: "group" | "machine" | "role"): Locator {
   return page.getByRole("button", { name: `Filter by ${filter}` });
 }
 
-/** Ticks or unticks one option of a filter and closes its popover, so the portalled panel never
- *  covers the control the row drives next. */
+/** Ticks or unticks one option of a filter and closes its popover, and the panel the three
+ *  stand in with it, so neither portalled layer covers the control the row drives next. */
 export async function pickAgentFilter(
   page: Page,
   filter: "group" | "machine" | "role",
   option: string
 ): Promise<void> {
+  await openAgentFilters(page);
   const trigger = agentFilter(page, filter);
   if ((await trigger.getAttribute("aria-expanded")) === "false") await trigger.click();
   await page.getByRole("option", { exact: true, name: option }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("listbox")).toHaveCount(0);
+  const panel = page.getByRole("dialog", { name: "Filter" });
+  if ((await panel.count()) !== 0) {
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
+  }
 }

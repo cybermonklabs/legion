@@ -22,21 +22,29 @@ import type {
   Issue,
   IssueDetails,
 } from "../../api/types";
+import type { InboxRoute } from "../../lib/page-address";
 import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
-import type { InboxRoute } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";
 import { replyRow } from "../threads/replies-fixture";
 import { Inbox } from "./Inbox";
-import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
+import {
+  FIXTURE_PROJECT_DEFAULT,
+  installInboxApiMocks,
+  issueAsk,
+  mockAskReads,
+  withWaitingOnPerson,
+} from "./inbox-fixture";
 
 const mocks = installInboxApiMocks();
 
-function artifactAsk(): InboxRow {
-  return {
+/** A question on a project document. It has no issue, so the person it reaches is its project's
+ *  default assignee - `projectDefault`, `null` for a row the server resolved nobody for. */
+function artifactAsk(projectDefault: string | null = FIXTURE_PROJECT_DEFAULT): InboxRow {
+  const row: InboxRow = {
     anchor: null,
     answer: null,
     artifact_id: "artifact-1",
@@ -73,6 +81,7 @@ function artifactAsk(): InboxRow {
     waiting_on: "human",
     urgency: "med",
   };
+  return withWaitingOnPerson(row, projectDefault);
 }
 
 function inboxIssue(
@@ -267,9 +276,10 @@ test("Inbox labels an artifact-owned ask with its project and document page link
     replies: [],
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // A document ask belongs to nobody, so the reader's own list is not where it shows.
+  // A document ask has no issue, so it reaches its project's default assignee: that person's
+  // list is where it shows.
   const view = render(
-    <MemoryRouter initialEntries={["/?assignee=unassigned"]}>
+    <MemoryRouter initialEntries={[`/?assignee=${FIXTURE_PROJECT_DEFAULT}`]}>
       <QueryClientProvider client={queryClient}>
         <Inbox />
       </QueryClientProvider>
@@ -529,7 +539,9 @@ test("Inbox preserves server priority order within Waiting on you", async () => 
         )
         .map((card) => card.dataset.testid)
     ).toEqual(["ask-ask-p0", "ask-ask-p2"]);
-    expect(screen.getByText("Blocked on you: 2 items, oldest 2d")).toBeTruthy();
+    // The banner is gone from this page; the row's own needs-you control carries its count, and
+    // its accessible name carries every word the banner said (INFRA-3135, R7).
+    expect(screen.getByRole("button", { name: "Blocked on you: 2 items, oldest 2d" })).toBeTruthy();
   } finally {
     view.unmount();
     getAsk.mockRestore();
@@ -643,7 +655,7 @@ test("a credential request alone is listed and on the banner, and nothing says n
   try {
     const request = await screen.findByRole("link", { name: /Secret request.*DEMO_API_KEY/s });
     expect(request).toHaveAttribute("href", "https://secrets.example.com/approve/record-1");
-    expect(screen.getByText("Blocked on you: 1 item, oldest 3h")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Blocked on you: 1 item, oldest 3h" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Inbox empty state" })).not.toBeInTheDocument();
     expect(screen.queryByText("Nothing needs you")).not.toBeInTheDocument();
   } finally {
@@ -669,7 +681,9 @@ test("the banner counts credential requests beside the asks waiting on you, olde
   const { unmount } = renderInbox();
   try {
     await screen.findByRole("link", { name: /Secret request.*DEMO_API_KEY/s });
-    expect(await screen.findByText("Blocked on you: 2 items, oldest 2d")).toBeTruthy();
+    expect(
+      await screen.findByRole("button", { name: "Blocked on you: 2 items, oldest 2d" })
+    ).toBeTruthy();
   } finally {
     unmount();
     getCredentialCapabilities.mockRestore();
@@ -1477,8 +1491,9 @@ function rowOf(askId: string): HTMLElement {
   return row;
 }
 
-/** The reader, the other person, the issue nobody holds, and a document question - every side
- *  of the assignee filter in one list. */
+/** The reader, the other person, the issue nobody holds and a document question - every side of
+ *  the assignee filter in one list. Neither of the last two names anybody of its own, so both
+ *  reach their project's default assignee, as the server resolves them. */
 function filterRows(): InboxRow[] {
   return [
     issueAsk({ id: "ask-mine" }),
@@ -1564,26 +1579,31 @@ test("?assignee=everyone lists every open question, the document ones included",
   }
 });
 
-test("?assignee=unassigned lists what nobody holds, with Assign to me on the issue rows only", async () => {
+test("?assignee=unassigned lists nothing, and the two rows nobody was handed are their project's", async () => {
   const user = userEvent.setup();
   const rows = filterRows();
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?assignee=unassigned");
+  const unheld = renderInbox("/?assignee=unassigned");
+  try {
+    // Every question reaches somebody - the person it was handed to, its issue's assignee, else
+    // its project's default - so the filter for what nobody holds keeps no row at all.
+    expect(await screen.findByText("Nothing matches this filter")).toBeTruthy();
+    expect(rowIds()).toEqual([]);
+    expect((await filterTrigger(user)).textContent).toBe("Assignee · Unassigned");
+  } finally {
+    unheld.unmount();
+  }
+
+  // The same two rows under the person their project names: neither is missing, both are hers.
+  const theirs = renderInbox(`/?assignee=${FIXTURE_PROJECT_DEFAULT}`);
   try {
     await screen.findByText("Orphan question?");
     expect([...rowIds()].sort()).toEqual(["ask-1", "ask-orphan"]);
-    expect((await filterTrigger(user)).textContent).toBe("Assignee · Unassigned");
-    expect(
-      within(rowOf("ask-orphan")).getByRole("button", { name: "Assign CORE-3 to me" })
-    ).toBeTruthy();
-    // A document ask has no issue to take.
-    expect(
-      within(rowOf("ask-1")).queryByRole("button", { name: /Assign .* to me/ })
-    ).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /Assign .* to me/ })).toHaveLength(1);
+    // Nobody is left to take either: the issue's question is already held.
+    expect(screen.queryByRole("button", { name: /Assign .* to me/ })).not.toBeInTheDocument();
   } finally {
-    unmount();
+    theirs.unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }
@@ -1603,6 +1623,147 @@ test("an address naming somebody who has never signed in lists nothing and refus
     expect((await filterTrigger(user)).textContent).toBe("Assignee · zoe@example.com");
   } finally {
     unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// What `AssigneeFilter.test.tsx` proved of this control before the Inbox drew it inside its own
+// filter panel (INFRA-3135): the words its trigger says, when the people are read, how its rows
+// are ordered and detailed, and that a filter read from the address survives a people list that
+// never arrives. What `MultiSelect`'s own test already proves of every searchable control - that
+// the search narrows the rows and says so when nothing matches - is not repeated here.
+
+/** Opens the assignee control if it is shut, and hands its trigger back. */
+async function openAssignee(user: UserEvent): Promise<HTMLElement> {
+  const trigger = await filterTrigger(user);
+  if (trigger.getAttribute("aria-expanded") !== "true") await user.click(trigger);
+  return trigger;
+}
+
+/** Each row of the assignee control's own listbox, as its whole text: the tick, the label, then
+ *  the muted detail the reader's own row carries. Read from that listbox rather than from the
+ *  screen, because every open ask's card carries a people picker of its own. */
+async function assigneeOptionTexts(): Promise<string[]> {
+  const listbox = await screen.findByRole("listbox", { name: "Assignee options" });
+  return within(listbox)
+    .getAllByRole("option")
+    .map((option) => option.textContent ?? "");
+}
+
+test("the assignee control's trigger counts a selection of several rather than naming one", async () => {
+  const user = userEvent.setup();
+  const rows = filterRows();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox("/?assignee=alice&assignee=bob");
+  try {
+    await screen.findByText("Bob's question?");
+    expect((await filterTrigger(user)).textContent).toBe("Assignee · 2");
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("the people are read on the assignee control's first open and then kept, never on a render", async () => {
+  const user = userEvent.setup();
+  const rows = filterRows();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const listUsers = mockPeople();
+  const { unmount } = renderInbox();
+  try {
+    await screen.findByText("Which approach?");
+    // An Inbox nobody filters costs no read of who has signed in.
+    expect(listUsers).not.toHaveBeenCalled();
+
+    const trigger = await openAssignee(user);
+    await screen.findByRole("option", { name: /bob/ });
+    expect(listUsers).toHaveBeenCalledTimes(1);
+
+    await user.click(trigger);
+    await user.click(trigger);
+    await screen.findByRole("option", { name: /bob/ });
+    expect(listUsers).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    listUsers.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("the assignee options list Unassigned first, then the logins, and detail the reader's own row", async () => {
+  const user = userEvent.setup();
+  const rows = filterRows();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const listUsers = mockPeople();
+  const { unmount } = renderInbox("/?assignee=everyone");
+  try {
+    await screen.findByText("Bob's question?");
+    await openAssignee(user);
+    // The detail runs into the label in `textContent`: each row ends with how many rows that
+    // value holds, counted under the other four fields' filters, and the reader's own says so
+    // first. Unassigned reads 0: the two rows nobody holds or was handed fall to their project's
+    // default assignee (`FIXTURE_PROJECT_DEFAULT`), as the server's third step puts them.
+    expect(await assigneeOptionTexts()).toEqual(["Unassigned0", "aliceyou · 1", "bob1"]);
+  } finally {
+    unmount();
+    listUsers.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("a failed people read says so and leaves the assignee filter working from the address", async () => {
+  const user = userEvent.setup();
+  const rows = filterRows();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const listUsers = spyOn(api, "listUsers").mockRejectedValue(new Error("users unreachable"));
+  const { unmount } = renderInbox("/?assignee=carol@example.com");
+  try {
+    await screen.findByText("Nothing matches this filter");
+    await openAssignee(user);
+    await screen.findByText("Could not load the people list.");
+    // What the address filters by is still there to see and to switch off.
+    expect(await assigneeOptionTexts()).toEqual(["Unassigned0", "✓carol@example.com0"]);
+
+    const listbox = await screen.findByRole("listbox", { name: "Assignee options" });
+    await user.click(within(listbox).getByRole("option", { name: /carol/ }));
+    expect(screen.getByTestId("location").textContent).toBe("/?assignee=everyone");
+    await user.click(within(listbox).getByRole("option", { name: /Unassigned/ }));
+    expect(screen.getByTestId("location").textContent).toBe("/?assignee=unassigned");
+  } finally {
+    unmount();
+    listUsers.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("a selected person the people list does not hold is still a row of the assignee control", async () => {
+  const user = userEvent.setup();
+  const rows = filterRows();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const listUsers = mockPeople();
+  const { unmount } = renderInbox("/?assignee=carol@example.com");
+  try {
+    await screen.findByText("Nothing matches this filter");
+    await openAssignee(user);
+    expect(await assigneeOptionTexts()).toEqual([
+      "Unassigned0",
+      "aliceyou · 1",
+      "bob1",
+      "✓carol@example.com0",
+    ]);
+  } finally {
+    unmount();
+    listUsers.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }
@@ -1695,12 +1856,18 @@ test("a caller supplying onFilterChange (the Inbox drawer) keeps the filter loca
 
 test("Assign to me PATCHes the viewer's lowercase login and keeps its row until the save lands", async () => {
   const user = userEvent.setup();
-  const orphan = issueAsk({
-    id: "ask-orphan",
-    issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
-    issue_key: "CORE-3",
-    question: "Orphan question?",
-  });
+  // A row the server resolved nobody for, which is what the Unassigned filter and "Assign to
+  // me" are written against: every project names a default assignee now, so this is a row an
+  // older server answers, and the control's own behaviour is what this reads.
+  const orphan = issueAsk(
+    {
+      id: "ask-orphan",
+      issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
+      issue_key: "CORE-3",
+      question: "Orphan question?",
+    },
+    null
+  );
   const rows = [orphan];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
@@ -1722,7 +1889,8 @@ test("Assign to me PATCHes the viewer's lowercase login and keeps its row until 
     );
     expect(rowIds()).toEqual(["ask-orphan"]);
     // Once the server has recorded it, the refetched inbox carries the new assignee, and with
-    // it the person the row waits on (`coalesce(asked_of, assignee)`, which the server resolves).
+    // it the person the row waits on (`coalesce(a.asked_of, i.assignee, p.default_assignee)`,
+    // which the server resolves).
     getInbox.mockResolvedValue([
       {
         ...orphan,
@@ -1747,12 +1915,15 @@ test("Assign to me PATCHes the viewer's lowercase login and keeps its row until 
 
 test("a refused Assign to me keeps its row under the Unassigned filter, with the reason and a working Retry", async () => {
   const user = userEvent.setup();
-  const orphan = issueAsk({
-    id: "ask-orphan",
-    issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
-    issue_key: "CORE-3",
-    question: "Orphan question?",
-  });
+  const orphan = issueAsk(
+    {
+      id: "ask-orphan",
+      issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
+      issue_key: "CORE-3",
+      question: "Orphan question?",
+    },
+    null
+  );
   const rows = [orphan];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
@@ -1873,18 +2044,25 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
 
 test("a sibling ask of the same issue leaving the list does not drop an in-flight Assign to me: its refusal still shows", async () => {
   const user = userEvent.setup();
-  const askA = issueAsk({
-    id: "ask-a",
-    issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
-    issue_key: "CORE-3",
-    question: "Question A?",
-  });
-  const askB = issueAsk({
-    id: "ask-b",
-    issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
-    issue_key: "CORE-3",
-    question: "Question B?",
-  });
+  // Two rows the server resolved nobody for, which is what "Assign to me" is written against.
+  const askA = issueAsk(
+    {
+      id: "ask-a",
+      issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
+      issue_key: "CORE-3",
+      question: "Question A?",
+    },
+    null
+  );
+  const askB = issueAsk(
+    {
+      id: "ask-b",
+      issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
+      issue_key: "CORE-3",
+      question: "Question B?",
+    },
+    null
+  );
   const rows = [askA, askB];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
@@ -1946,6 +2124,7 @@ test("Blocked on you counts the reader's own questions, and does not move when t
     issue_key: "CORE-2",
     question: "Bob's question?",
   });
+  // Nobody is named on this issue, so its question reaches the project's default assignee.
   const orphan = issueAsk({
     id: "ask-orphan",
     issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
@@ -1959,8 +2138,9 @@ test("Blocked on you counts the reader's own questions, and does not move when t
   try {
     await screen.findByText("Which approach?");
     expect(rowIds()).toEqual(["ask-mine"]);
-    // One question of the three is on the reader's own issue; the banner counts that one.
-    expect(screen.getByText(/Blocked on you: 1 item/)).toBeTruthy();
+    // One question of the three is on the reader's own issue; the needs-you control counts
+    // that one, as the banner it replaced did (INFRA-3135, R7).
+    expect(screen.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeTruthy();
   } finally {
     own.unmount();
   }
@@ -1968,17 +2148,45 @@ test("Blocked on you counts the reader's own questions, and does not move when t
   try {
     await screen.findByText("Bob's question?");
     expect([...rowIds()].sort()).toEqual(["ask-bob", "ask-mine", "ask-orphan"]);
-    // The list widened; what waits on the reader did not, so the banner says the same thing.
-    expect(screen.getByText(/Blocked on you: 1 item/)).toBeTruthy();
+    // The list widened; what waits on the reader did not, so the control says the same thing.
+    expect(screen.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeTruthy();
   } finally {
     everyone.unmount();
   }
-  const narrowed = renderInbox("/?assignee=unassigned");
+  const narrowed = renderInbox(`/?assignee=${FIXTURE_PROJECT_DEFAULT}`);
   try {
     await screen.findByText("Orphan question?");
-    expect(screen.getByText(/Blocked on you: 1 item/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeTruthy();
   } finally {
     narrowed.unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("the needs-you control narrows the list to what waits on the reader and offers the way back", async () => {
+  const user = userEvent.setup();
+  const rows = filterRows();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox("/?assignee=everyone");
+  try {
+    await screen.findByText("Bob's question?");
+    await user.click(screen.getByRole("button", { name: /Blocked on you: 1 item/ }));
+
+    // The press writes the section and takes the assignee parameter off, so the list is the
+    // reader's own again (INFRA-3135, R7).
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/?section=needs-you")
+    );
+    expect(rowIds()).toEqual(["ask-mine"]);
+
+    // The narrowing is a chip like any other, so **Clear filters** is the way back out of it.
+    expect(screen.getByRole("button", { name: "Remove filter Waiting on you" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/"));
+  } finally {
+    unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }
@@ -2014,7 +2222,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
   try {
     await screen.findByText("Which format?");
     expect(headings()).toEqual(["Waiting on you (2)"]);
-    expect(screen.getByText(/Blocked on you: 2 items/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Blocked on you: 2 items/ })).toBeTruthy();
 
     const row = screen.getByTestId("ask-ask-b").closest<HTMLElement>("[data-inbox-row]");
     if (row === null) throw new Error("ask-b row missing");
@@ -2026,7 +2234,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     // Folded by default: the row leaves the list, and the band's count says where it went.
     await waitFor(() => expect(headings()).toEqual(["Waiting on you (1)", "Later (1)"]));
     expect(rowIds()).toEqual(["ask-a"]);
-    expect(screen.getByText(/Blocked on you: 1 item/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeTruthy();
     expect(snoozeAsk).toHaveBeenCalledTimes(1);
     const [, body] = snoozeAsk.mock.calls[0] ?? [];
     expect(Date.parse(body?.snoozed_until ?? "")).toBeGreaterThan(Date.now());
@@ -2041,7 +2249,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     await waitFor(() => expect(headings()).toEqual(["Waiting on you (2)"]));
     expect(unsnoozeAsk).toHaveBeenCalledWith("ask-b", keyedAttempt);
     expect(rowIds()).toEqual(["ask-a", "ask-b"]);
-    expect(screen.getByText(/Blocked on you: 2 items/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Blocked on you: 2 items/ })).toBeTruthy();
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -2113,7 +2321,7 @@ test("a snooze whose moment has passed is an ordinary row again", async () => {
     await screen.findByText("Which format?");
     expect(headings()).toEqual(["Waiting on you (1)"]);
     expect(rowIds()).toEqual(["ask-lapsed"]);
-    expect(screen.getByText(/Blocked on you: 1 item/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeTruthy();
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -2191,7 +2399,7 @@ test("a refused snooze rolls the row back and says why, where the reader can sti
     await waitFor(() => expect(headings()).toEqual(["Waiting on you (1)"]));
     expect(rowIds()).toEqual(["ask-b"]);
     expect(screen.getByText("snoozed_until must be in the future")).toBeTruthy();
-    expect(screen.getByText(/Blocked on you: 1 item/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeTruthy();
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -3205,12 +3413,17 @@ test("an unmount inside the column keeps the record: the focus falls to the body
   const narrow = widenToReadingPane();
   const rows = [
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
-    issueAsk({
-      id: "ask-b",
-      issue: { assignee: null, key: "CORE-2", title: "Nobody's issue" },
-      issue_key: "CORE-2",
-      question: "Which format?",
-    }),
+    // A row the server resolved nobody for, so the column's head draws "Assign to me": the
+    // control whose unmount this row is about.
+    issueAsk(
+      {
+        id: "ask-b",
+        issue: { assignee: null, key: "CORE-2", title: "Nobody's issue" },
+        issue_key: "CORE-2",
+        question: "Which format?",
+      },
+      null
+    ),
   ];
   let served: InboxRow[] = rows;
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
@@ -3289,12 +3502,15 @@ test("a focus landing outside the column drops the record an unmount inside it l
   const narrow = widenToReadingPane();
   const rows = [
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
-    issueAsk({
-      id: "ask-b",
-      issue: { assignee: null, key: "CORE-2", title: "Nobody's issue" },
-      issue_key: "CORE-2",
-      question: "Which format?",
-    }),
+    issueAsk(
+      {
+        id: "ask-b",
+        issue: { assignee: null, key: "CORE-2", title: "Nobody's issue" },
+        issue_key: "CORE-2",
+        question: "Which format?",
+      },
+      null
+    ),
   ];
   let served: InboxRow[] = rows;
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
@@ -3374,12 +3590,15 @@ test("l back into a column an unmount dropped the focus out of leaves the record
   const narrow = widenToReadingPane();
   const rows = [
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
-    issueAsk({
-      id: "ask-b",
-      issue: { assignee: null, key: "CORE-2", title: "Nobody's issue" },
-      issue_key: "CORE-2",
-      question: "Which format?",
-    }),
+    issueAsk(
+      {
+        id: "ask-b",
+        issue: { assignee: null, key: "CORE-2", title: "Nobody's issue" },
+        issue_key: "CORE-2",
+        question: "Which format?",
+      },
+      null
+    ),
   ];
   let served: InboxRow[] = rows;
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);

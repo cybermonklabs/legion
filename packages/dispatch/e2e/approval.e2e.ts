@@ -19,6 +19,7 @@ import {
   getArtifactVersion,
   getIssueEvents,
   listIssueAsks,
+  patchIssue,
   rejectSuggestion,
   requestApproval,
   reviewArtifact,
@@ -531,7 +532,7 @@ test("an unchanged hand-back after a human comment and a progress note returns t
       await requestApproval(issue.primary_artifact_id, { summary }, session)
     );
     expect(handedBack.ask.id).toBe(requested.ask.id);
-    await expect(page.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await page.reload();
     await expect(row).toHaveAttribute("data-inbox-section", "human");
     await expect(row).toContainText(`Approve spec.md (version 1)? ${summary}`);
@@ -892,10 +893,13 @@ test("an approval request for an unassigned issue's non-primary document remains
   browser,
 }, testInfo) => {
   await createProject({ key: "GATE", name: "Gate" });
-  const issue = await createIssue(
+  // A create always lands on a person, so the issue nobody holds is created and then cleared.
+  const created = await createIssue(
     { project: "GATE", spec: "Primary review target.", title: "Two approval targets" },
     session
   );
+  const issue = await patchIssue(created.key, { assignee: null }, session);
+  expect(issue.assignee).toBeNull();
   const supporting = await createIssueArtifact(
     issue.key,
     { content: "Supporting review target.", name: "supporting-design.md" },
@@ -911,15 +915,10 @@ test("an approval request for an unassigned issue's non-primary document remains
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // Nobody holds the shared-token issue, so its request is nobody's own work: the reader's
-    // default list does not hold it. An unassigned issue's request reaches a person through the
-    // Unassigned filter, where it is as answerable as anywhere, or through the issue itself
-    // (the margin below).
+    // Nobody holds the shared-token issue, so its request reaches the default assignee of its
+    // project - alice, who made GATE - and her own list holds it, where it is as answerable as
+    // through the issue itself (the margin below).
     await page.goto("/");
-    await expect(page.getByTestId(`ask-${nonPrimary.ask.id}`)).toHaveCount(0);
-    await expect(page.getByText("Nothing needs you")).toBeVisible();
-
-    await page.goto("/?assignee=unassigned");
     await expect(inboxRow(page, nonPrimary.ask.id)).toBeVisible();
     // Actionable means the Inbox offers the review where this width draws it: the reading
     // column's head over the document under review from 1280 px (INFRA-575), and the
@@ -936,7 +935,7 @@ test("an approval request for an unassigned issue's non-primary document remains
     }
     const inboxShot = testInfo.outputPath("approval-non-primary-inbox-1280.png");
     await page.screenshot({ path: inboxShot, fullPage: true });
-    await testInfo.attach("non-primary approval under the Unassigned filter", {
+    await testInfo.attach("non-primary approval in the project default's Inbox", {
       contentType: "image/png",
       path: inboxShot,
     });
@@ -1077,11 +1076,12 @@ test("an open approval ask's document link reaches the issue's Conversation, and
     await expect(marginCard.getByRole("link", { name: /spec\.md, version/ })).toHaveCount(0);
 
     // A project-level document's approval request links its own document the same way. A
-    // document has no assignee, so the Unassigned filter is where the Inbox lists it. The link
-    // is the card's named version below 1280 px, and from there the short row's own owner
-    // link, the reading column having drawn the document itself in place of a card
-    // (INFRA-575); both carry the same address.
-    await page.goto("/?assignee=unassigned");
+    // document has no assignee, so its question reaches the default assignee of its project -
+    // alice, who made GATE - and her own list is where the Inbox lists it. The link is the
+    // card's named version below 1280 px, and from there the short row's own owner link, the
+    // reading column having drawn the document itself in place of a card (INFRA-575); both
+    // carry the same address.
+    await page.goto("/");
     const inboxLink = hasReadingPane(page)
       ? inboxRow(page, docApproval.ask.id).locator("[data-inbox-owner]")
       : page

@@ -1,10 +1,12 @@
 import { seedSessionGroupsFixture } from "./delivery-seed";
+import { openFilterPanel } from "./filters";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
-/** The Parent agent facet's option names, as the facet labels them (`<value>, <n> PR(s)`). */
+/** The Parent agent column filter's option names, as it labels them (`<value>, <n> PR(s)`).
+ *  The narrowing is that column's own, so it hangs off the funnel in its header. */
 async function parentAgentOptions(page: Page): Promise<string[]> {
-  await page.getByRole("button", { name: /^Parent agent: / }).click();
+  await page.getByRole("button", { name: /^Filter Parent agent/ }).click();
   const options = page.getByRole("listbox", { name: "Parent agent options" }).getByRole("option");
   await expect(options.first()).toBeVisible();
   const names = await options.evaluateAll((elements) =>
@@ -32,6 +34,8 @@ test("grouping two sessions makes them one Parent agent @pr", async ({ browser }
     "Reviewer, 1 PR",
   ]);
 
+  // **Edit groups** is in the panel the row's one **Filter** trigger opens.
+  await openFilterPanel(page);
   await page.getByRole("button", { name: "Edit groups" }).click();
   const editor = page.getByRole("dialog", { name: "Session groups" });
 

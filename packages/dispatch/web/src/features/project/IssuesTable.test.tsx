@@ -7,14 +7,14 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { readLayout } from "../../components/table-storage";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
-import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
-import { readLayout } from "./issues-table-storage";
+import { ISSUE_TABLE_COLUMNS, tableStorageKey } from "./issues-table-model";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -137,6 +137,14 @@ async function nameTheEpic(user: UserEvent, name: string) {
   await user.clear(field);
   await user.type(field, name);
   await user.click(within(dialog).getByRole("button", { name: /^(Create|Rename) epic$/ }));
+}
+
+/** Picks a grouping in the row's display menu, which is where **Group by** lives: the menu is
+ *  opened if it is shut, and a choice leaves it open for the next one. */
+async function groupRowsBy(user: UserEvent, option: string) {
+  const menu = screen.getByRole("button", { name: "View" });
+  if (menu.getAttribute("aria-expanded") === "false") await user.click(menu);
+  await user.click(screen.getByRole("radio", { name: option }));
 }
 
 test("rows keep parent links, unread marks, asks, progress and route reach, with priority editable", async () => {
@@ -476,7 +484,9 @@ test("Clear filters also clears Needs you, Unread and the lapsed-claim filter", 
   expect(
     screen.getByRole("button", { name: /^Filter Claimed by/ }).getAttribute("aria-label")
   ).toBe("Filter Claimed by");
-  for (const name of ["Needs you", "Unread"]) {
+  // The flags are behind the row's one filter trigger now, so the reader opens it to read them.
+  await user.click(screen.getByRole("button", { name: /^Filters · \d+$/ }));
+  for (const name of ["Needs you", "Unread", "Unclaimed"]) {
     await waitFor(() =>
       expect(screen.getByRole("button", { name }).getAttribute("aria-pressed")).toBe("false")
     );
@@ -813,13 +823,34 @@ test("Claimed by picks the issues nobody is working, and ?unclaimed=1 still open
   table([issue("CORE-1", { claim: held }), issue("CORE-2")], "?unclaimed=1");
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
-  // And no chip of its own: the rule is the Claimed by column's, picked like any other value.
+  // And no chip loose in the control row: the flag sits behind the row's filter trigger, and
+  // the rule is still the Claimed by column's, picked like any other value.
   expect(screen.queryByRole("button", { name: "Unclaimed" })).toBeNull();
   await user.click(screen.getByRole("button", { name: /^Filter Claimed by/ }));
   const picked = screen.getByRole("option", { name: /^Nobody or lapsed/ });
   expect(picked.getAttribute("aria-selected")).toBe("true");
   await user.click(picked);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+});
+
+// R3: a narrowing that is no column of the table sits behind the row's one filter trigger.
+// Unclaimed is `?unclaimed=1` there, which is the Claimed by column's "Nobody or lapsed".
+test("the row's filter panel turns Unclaimed on and the table narrows to it", async () => {
+  const user = userEvent.setup();
+  const held: IssueSummary["claim"] = {
+    actor: { kind: "user", id: "bob" },
+    at: "2026-09-10T00:00:00Z",
+  };
+  table([issue("CORE-1", { claim: held }), issue("CORE-2")]);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await user.click(screen.getByRole("button", { name: "Filters · 0" }));
+  await user.click(screen.getByRole("button", { name: "Unclaimed" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("route-search").textContent).toContain("unclaimed=1")
+  );
+  await waitFor(() => expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull());
+  expect(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "Remove Unclaimed filter" })).toBeDefined();
 });
 
 test("an open epic is an ordinary row, and a group heading only when grouped by Epic", async () => {
@@ -831,7 +862,7 @@ test("an open epic is an ordinary row, and a group heading only when grouped by 
   await screen.findByRole("row", { name: "CORE-1 Platform" });
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-1" }));
   expect(readSelectedIssues()).toEqual(["CORE-1"]);
-  await user.selectOptions(screen.getByRole("combobox", { name: "Group by" }), "epic");
+  await groupRowsBy(user, "Epic");
   await waitFor(() => expect(screen.queryByRole("row", { name: "CORE-1 Platform" })).toBeNull());
   expect(screen.getByRole("link", { name: "CORE-1 · Platform" })).toBeDefined();
 });
@@ -1114,12 +1145,11 @@ test.each([
     search
   );
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  const groupBy = screen.getByRole("combobox", { name: "Group by" });
-  await user.selectOptions(groupBy, "priority");
+  await groupRowsBy(user, "Priority");
   await waitFor(() =>
     expect(headings().map((text) => text.match(/P\d/)?.[0])).toEqual(["P0", "P1", "P2", "P3"])
   );
-  await user.selectOptions(groupBy, "status");
+  await groupRowsBy(user, "Status");
   await waitFor(() =>
     expect(
       headings().map((text) =>
@@ -1128,7 +1158,7 @@ test.each([
     ).toEqual(["Todo", "In progress", "Needs review"])
   );
   // Ungrouped again, the rows follow the reader's sort alone: no grouping order survives it.
-  await user.selectOptions(groupBy, "");
+  await groupRowsBy(user, "Nothing");
   await waitFor(() => expect(headings()).toEqual([]));
   await waitFor(() =>
     expect(
@@ -1293,7 +1323,7 @@ test("the List stores a reader's first layout with Updated hidden", async () => 
 // only a corrupt record holds it, and it is dropped like any other name the table has no column for.
 test("a stored width under an inherited name such as toString is dropped", () => {
   localStorage.setItem("dispatch.project-table.CORE", '{"sizing":{"toString":200,"title":360}}');
-  expect(readLayout("CORE", ISSUE_TABLE_COLUMNS).sizing).toEqual({ title: 360 });
+  expect(readLayout(tableStorageKey("CORE"), ISSUE_TABLE_COLUMNS).sizing).toEqual({ title: 360 });
 });
 
 /** Each header cell of the List, left to right, as `<its column's words> <width> <the offset a

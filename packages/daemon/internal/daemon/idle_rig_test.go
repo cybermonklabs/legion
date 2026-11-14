@@ -728,6 +728,31 @@ func (r *idleWakeRig) newPrompts(issue idleRigIssue) []idleRigMessage {
 	return prompts[from:]
 }
 
+// adoptionsAhead is every adopt-working-copy frame the issue's role was sent ahead of the task at
+// index i of its prompts: after the task before that one was given, and before that one was.
+func (r *idleWakeRig) adoptionsAhead(issue idleRigIssue, i int) []idleRigAdoption {
+	var ahead []idleRigAdoption
+	for _, adoption := range r.agents.adoptions(issue.key, string(issue.role)) {
+		if adoption.Ahead == i {
+			ahead = append(ahead, adoption)
+		}
+	}
+	return ahead
+}
+
+// newAdoptions is every adopt-working-copy frame the issue's role was sent after the tasks
+// markPrompts counted: the frames ahead of each task newPrompts holds, and any ahead of a task
+// still to come. None of the frames the rig's start brought is among them.
+func (r *idleWakeRig) newAdoptions(issue idleRigIssue) []idleRigAdoption {
+	var since []idleRigAdoption
+	for _, adoption := range r.agents.adoptions(issue.key, string(issue.role)) {
+		if adoption.Ahead >= r.baseline[issue.key] {
+			since = append(since, adoption)
+		}
+	}
+	return since
+}
+
 // quiet back-dates when every claim of the project was last written, so the next pass of the
 // daemon's idle tick reads a pod that has done nothing for longer than the idle period. The
 // session's own report is left as the session wrote it, because the rule reads it against that
@@ -960,8 +985,7 @@ func (r *idleWakeRig) publish(subject, source, eventID, payload string) {
 }
 
 // publishSettlement publishes the CI settlement of the issue's pull request head, as Envoy relays
-// GitHub's check report (ci_red_no_takeover_live_test.go's publishSettlement builds the same
-// payload).
+// GitHub's check report.
 func (r *idleWakeRig) publishSettlement(issue idleRigIssue) {
 	r.t.Helper()
 	group := func() map[string]any { return map[string]any{"names": []string{}, "truncated": false} }

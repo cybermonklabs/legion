@@ -913,7 +913,7 @@ test("URL-backed labels drive the List table and Board strip and survive a reloa
     // A reload keeps the filter, on the Board.
     await page.reload();
     await expect(board.getByRole("article")).toHaveText([/Labelled card/]);
-    await expect(page.getByRole("button", { name: "Filters · 1 active" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Filters · 1", exact: true })).toBeVisible();
 
     // Removing the chip on the Board shows every card again.
     await page.getByRole("button", { name: "Remove Label: frontend filter" }).click();

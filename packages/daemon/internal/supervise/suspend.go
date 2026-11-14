@@ -111,6 +111,13 @@ func holdSuspension(m *Machine, _ context.Context, ev Event) error {
 // suspension that may not be held (RequestSuspend.NeverHold), which it refuses before it records
 // anything: a claim read idle can be launching again by the time the request reaches the lock.
 //
+// A claim whose launch this very suspension stopped is suspended here and now instead: the
+// suspension cancelled that start before it took the lock (Handle), so nothing of this claim is
+// running and no ready will ever arrive to run a hold. The caller is answered that the claim is
+// suspended, which is what it asked for, rather than a hold nothing would ever end. A launch
+// waiting to be tried again (relaunchLater), which this suspension did not stop, keeps the hold:
+// its retry runs it.
+//
 // One claim here does not wait: the one whose paced wake is still waiting over no process at all,
 // which the gate wrote launching and parked before it had launched anything (reserveWake,
 // parkWake). A hold protects a turn and a process, and this claim has neither — the launch its
@@ -139,6 +146,10 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
+	}
+	if m.stoppedAStart() && m.launchRecordsNoProcess() {
+		m.log.Info("supervise: the suspension stopped the claim's start, so it suspends the claim now", "reason", request.Reason, "by", request.By)
+		return m.suspendedFor(ctx, request)
 	}
 	if ev.(RequestSuspend).NeverHold {
 		return &RefusedError{State: m.claim.State, Request: "suspend",

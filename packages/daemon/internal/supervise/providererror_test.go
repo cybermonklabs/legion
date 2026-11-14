@@ -45,7 +45,7 @@ func workingClaimOf(t *testing.T, c Claim, set ...func(*Deps)) *harness {
 	h.reach(StateReady)
 	task := RequestDeliver{Claim: c.Token, Task: providerErrorTaskText}
 	if c.Role != claim.RoleArchitect {
-		task.Phase, task.Generation, task.Assignment = phase.Implementing, 7, "A1"
+		task.Phase, task.Generation, task.Entry = phase.Implementing, 7, 1
 	}
 	h.must(task)
 	h.must(StreamTurnStart{Claim: c.Token})
@@ -260,7 +260,7 @@ func TestANewerTaskQueuedWhileTheLadderWaitsReplacesTheTaskItKept(t *testing.T) 
 		t.Fatalf("the owed task is %+v, want one send counted against it and the sentence it would go behind", owed)
 	}
 
-	h.must(RequestDeliver{Claim: testToken, Task: "test the change", Phase: phase.Testing, Generation: 8, Assignment: "A2"})
+	h.must(RequestDeliver{Claim: testToken, Task: "test the change", Phase: phase.Testing, Generation: 8, Entry: 2})
 
 	sent := h.wantPrompts(2)[1]
 	if sent.Message != "test the change" || sent.DeliveryID == owed.ID {
@@ -392,7 +392,7 @@ func TestThePhaseRestartsTaskWaitsBehindTheTaskTheLadderKept(t *testing.T) {
 	h.must(RequestOperatorRetry{Claim: testToken})
 
 	err := h.handle(RequestDeliver{Claim: testToken, Task: "Continue the issue whose provider is overloaded.",
-		Phase: phase.Implementing, Generation: 8, Assignment: "A2"})
+		Phase: phase.Implementing, Generation: 8, Entry: 2})
 
 	if !errors.Is(err, ErrDeliveryPending) {
 		t.Fatalf("the phase restart's task was answered %v, want it to wait behind the task the ladder kept", err)
@@ -693,7 +693,7 @@ func TestANewerTaskDoesNotReplaceTheLaddersTaskWhosePromptIsInFlight(t *testing.
 		t.Fatalf("the owed task is %+v, want it acknowledged and not yet confirmed", p)
 	}
 
-	err := h.handle(RequestDeliver{Claim: testToken, Task: "test the change", Phase: phase.Testing, Generation: 8, Assignment: "A2"})
+	err := h.handle(RequestDeliver{Claim: testToken, Task: "test the change", Phase: phase.Testing, Generation: 8, Entry: 2})
 
 	if !errors.Is(err, ErrDeliveryPending) {
 		t.Fatalf("the newer task was answered %v, want it refused: the task it would replace is in the agent's hands", err)

@@ -35,7 +35,7 @@ export function PriorityControl({
 
 /**
  * The single priority editor: shows the issue's priority as the `P0`–`P3` badge (a muted
- * "Priority" tag when unset) and, on click, tap, Enter or Space, opens a native `<select>` to
+ * "No priority" tag when unset) and, on click, tap, Enter or Space, opens a native `<select>` to
  * pick P0–P3 or Unset — the same picker on desktop and iPhone. The select is laid invisibly over
  * the badge so the tap target stays 44 px (32 px from `md`) while the badge keeps its size, and
  * the wrapper draws the keyboard focus ring. `write` goes through `useIssuePriority`, so every
@@ -66,7 +66,7 @@ export function PriorityEditor({
     <>
       <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
         <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {priority === null ? "Priority" : `P${priority}`}
+          {priority === null ? "No priority" : `P${priority}`}
         </span>
         <select
           aria-label={`Priority of ${issueKey}`}

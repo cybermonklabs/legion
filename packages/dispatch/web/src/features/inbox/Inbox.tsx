@@ -1,5 +1,4 @@
 import { INBOX_DISMISSED_PAGE } from "@legion/contracts";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery } from "@tanstack/react-query";
 import {
   type FocusEvent,
@@ -11,46 +10,72 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
-import { inboxQuery, whoAmIQuery } from "../../api/queries";
+import { inboxQuery, usersQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
+import { Chip } from "../../components/Chip";
+import { ControlRow } from "../../components/ControlRow";
+import { controlPadding } from "../../components/control-names";
+import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { MultiSelect } from "../../components/MultiSelect";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
-import { capSearchQuery } from "../../lib/query-param";
+import { SearchBox } from "../../components/SearchBox";
+import { SelectionBar } from "../../components/SelectionBar";
 import {
+  buildInboxPath,
+  capSearchQuery,
+  type InboxRoute,
+  useInboxRoute,
+} from "../../lib/page-address";
+import {
+  badgeLow,
   borderDefault,
+  card,
   checkboxAccent,
   dangerText,
   focusVisibleRing,
-  inputClasses,
   linkHoverText,
   linkText,
+  secondaryButtonBorder,
+  secondaryButtonHoverBorder,
+  secondaryButtonText,
   surfaceMutedBg,
   textMutedOnCanvas,
   textMutedOnSurfaceMuted,
+  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { searchWords } from "../agents/agent-search";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
+import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
 import {
-  buildInboxPath,
   INBOX_FILTER_FIELDS,
-  type InboxRoute,
+  INBOX_GROUP_BYS,
+  INBOX_PRIORITY_VALUES,
+  INBOX_SHOWS,
+  INBOX_SORTS,
+  INBOX_TYPE_VALUES,
+  INBOX_URGENCY_VALUES,
+  type InboxFilterField,
+  type InboxGroupBy,
   type InboxShow,
-  parseInboxSearch,
+  type InboxSort,
+  NO_FILTER_VALUE,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
-import { useThreadOrder } from "../threads/thread-order";
+import { THREAD_ORDER_LABELS, THREAD_ORDERS, useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
@@ -58,12 +83,21 @@ import { formatAskAge } from "./ask-age";
 import { outsideAskCard } from "./ask-card";
 import { type AskOrdinal, askOrdinals, controlName } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
-import { BlockedOnYou, waitingOnHuman } from "./BlockedOnYou";
-import { BulkBar } from "./BulkBar";
+import { blockedOnYouText, needsYou, waitingOnHuman } from "./BlockedOnYou";
 import { DismissControl, RowDismissContext } from "./DismissControl";
-import { ALL_GROUP_KEY, group, inFieldFilter, LATER_GROUP_KEY, sortRows } from "./grouping";
+import {
+  ALL_GROUP_KEY,
+  DIMENSION_LABELS,
+  dimensionValue,
+  dimensionValueLabel,
+  filterCounts,
+  group,
+  type InboxFilters,
+  inFieldFilter,
+  LATER_GROUP_KEY,
+  sortRows,
+} from "./grouping";
 import { AskHandOnLiveContext } from "./hand-on-live";
-import { InboxBar, type InboxFilters, type InboxPopover } from "./InboxBar";
 import { GROUP_PAGE, groupItems } from "./InboxGroups";
 import { ROW_ATTRIBUTE, ROW_SELECTOR } from "./inbox-row";
 import { matchesInboxSearch } from "./inbox-search";
@@ -76,7 +110,7 @@ import {
   rowUrgency,
   threadReferenceRoute,
 } from "./list-row";
-import { useMarkAllRead } from "./mark-all";
+import { MARK_ALL_REFUSED_TEXT, useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { type PlacedRow, usePaneSelection } from "./pane-selection";
@@ -86,18 +120,102 @@ import { ReadingPane } from "./ReadingPane";
 import { RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
 import { SnoozeControl } from "./SnoozeControl";
 import {
+  EVERYONE_FILTER_VALUE,
   type InboxSection,
   inAssigneeFilter,
   isOwnList,
   isUnassigned,
   sectionOf,
   sectionTitles,
+  UNASSIGNED_FILTER_VALUE,
 } from "./sections";
+import { SNOOZE_PRESETS } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle } from "./ThreadTitle";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
 import { useInboxSelection } from "./useInboxSelection";
 import { useInboxThreadRows } from "./useInboxThreadRows";
+
+/** Which single popover of the page is open, or undefined for none: one of the four filter
+ *  fields, the assignee control beside them, or the display menu. The page owns it so only one
+ *  stands open at a time, and so Escape is that popover's rather than the selection's. */
+type InboxPanel = InboxFilterField | "assignee" | "view";
+
+/** The chrome of the page's own controls - **Mark all read** and the needs-you control - so
+ *  each keeps the row's 44 px line and nothing in the row can grow it. */
+const PAGE_CONTROL_CLASS = `rounded-lg border text-sm font-semibold whitespace-nowrap outline-none focus-visible:ring-2 ${controlPadding.comfortable} ${focusVisibleRing} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
+
+/** One action of the selection bar, as the bar's own line draws it. */
+const BAR_ACTION_CLASS = `min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
+
+/** One removable thing the reader narrowed the list by. */
+interface FilterToken {
+  key: string;
+  label: string;
+  remove: () => void;
+}
+
+/** The values a field offers, in the order its control lists them. Project is the one field
+ *  whose vocabulary is the workspace's, so it is read off the rows themselves. */
+function fieldOptions(
+  field: InboxFilterField,
+  rows: readonly InboxListRow[],
+  viewer: string,
+  chosen: readonly string[]
+): string[] {
+  let listed: readonly string[];
+  if (field === "priority") listed = INBOX_PRIORITY_VALUES;
+  else if (field === "urgency") listed = INBOX_URGENCY_VALUES;
+  else if (field === "type") listed = INBOX_TYPE_VALUES;
+  else {
+    const keys = new Set<string>();
+    for (const row of rows) {
+      const value = dimensionValue(row, "project", viewer);
+      if (value !== NO_FILTER_VALUE) keys.add(value);
+    }
+    listed = [...keys].sort((left, right) => left.localeCompare(right)).concat(NO_FILTER_VALUE);
+  }
+  // A value the address carries that this list has no row for is still a row of the control,
+  // so the reader can always see what they are filtering by and switch it off.
+  return [...listed, ...chosen.filter((value) => !listed.includes(value))];
+}
+
+/** What the assignee control's trigger says, in the reader's own words. */
+function assigneeTriggerText(selected: readonly string[], viewer: string): string {
+  if (selected.length === 0) return "Assignee · everyone";
+  if (isOwnList(selected, viewer)) return "Assignee · you";
+  if (selected.length > 1) return `Assignee · ${selected.length}`;
+  const only = selected[0];
+  return `Assignee · ${only === UNASSIGNED_FILTER_VALUE ? "Unassigned" : only}`;
+}
+
+/** How the list may be ordered, as the display menu names each choice. */
+const SORT_LABELS: Record<InboxSort, string> = { ...DIMENSION_LABELS, newest: "Newest first" };
+
+/** How the list may be banded, as the display menu names each choice. */
+const GROUP_LABELS: Record<InboxGroupBy, string> = {
+  ...DIMENSION_LABELS,
+  none: "None",
+  "waiting-on": "Waiting on",
+};
+
+/** Which list is showing, as the display menu names each choice. */
+const SHOW_LABELS: Record<InboxShow, string> = { dismissed: "Dismissed", inbox: "Inbox" };
+
+/** The choices of one display-menu section, in the order the menu lists them. */
+function menuOptions<T extends string>(
+  values: readonly T[],
+  labels: Record<T, string>
+): DisplayMenuSection["options"] {
+  return values.map((value) => ({ label: labels[value], value }));
+}
+
+/** The value a display-menu section hands back, as one of the words that section lists, or
+ *  undefined for anything else. A menu holds sections of unrelated unions at once, so its own
+ *  value type is a plain `string`; this is where the page reads its own word back out of one. */
+function pick<T extends string>(values: readonly T[], next: string): T | undefined {
+  return values.find((value) => value === next);
+}
 
 /** When an agent replied last on a row that still needs the viewer, that reply is surfaced so
  *  the viewer knows to look before answering. Whose turn it is ("Waiting on you" / "Waiting on
@@ -188,6 +306,9 @@ function MarkCheckbox({
     />
   );
 }
+
+/** The checkbox a row draws for its mark (`MarkCheckbox`), the one checkbox every row has. */
+const MARK_SELECTOR = 'input[type="checkbox"]';
 
 /** The `<li>` both layouts sit in: where the row is, what the reader's hand does to it, and the
  *  marks the selected row carries. Only the short row is selectable, so only it is ever drawn
@@ -646,9 +767,8 @@ export function Inbox({
   pane = true,
   scroller,
 }: InboxProps = {}): ReactNode {
-  const { search } = useLocation();
-  const navigate = useNavigate();
-  const filter = filterOverride ?? parseInboxSearch(search);
+  const [addressRoute, goToRoute] = useInboxRoute();
+  const filter = filterOverride ?? addressRoute;
   // The reading column shows from 1280 px, and only where the host allows one: below that, and
   // in the drawer, the Inbox is the list of cards it has always been.
   const wideEnoughForPane = useMediaQuery(READING_PANE_QUERY);
@@ -692,17 +812,41 @@ export function Inbox({
   const showMore = useCallback((key: string) => {
     setPages((current) => new Map(current).set(key, (current.get(key) ?? 1) + 1));
   }, []);
-  // Which of the bar's popovers is open, so Escape is that popover's rather than the selection's.
-  const [openPopover, setOpenPopover] = useState<InboxPopover | undefined>(undefined);
-  const barOpen = openPopover !== undefined;
+  /** Whether the one **Filter** panel stands open. It is its own state, not one of `openPanel`'s
+   *  words, because the five controls inside it are its children: a field opening inside the
+   *  panel must not take the panel's own open away and unmount the control the reader pressed. */
+  const [filterOpen, setFilterOpen] = useState(false);
+  /** Which single popover is open - one of the five fields, or the display menu - so the page
+   *  keeps one at a time rather than a row of them. */
+  const [openPanel, setOpenPanel] = useState<InboxPanel | undefined>(undefined);
+  // Escape is a panel's while one stands open, never the selection's.
+  const barOpen = filterOpen || openPanel !== undefined;
+  /** The **Filter** panel's own open. A pointer press outside it closes it - except while one
+   *  of its five controls is open, because that press is the field's: `AnchoredPanel` listens
+   *  on the document, so the panel and the popover portalled out of it are each told the press
+   *  was outside them, and a reader picking a value is still in the panel they picked it from.
+   *  The press that then closes the panel is the reader's next one, by which time the field has
+   *  gone and this guard is off. */
+  const openFilterPanel = (open: boolean) => {
+    if (!open && openPanel !== undefined) return;
+    setFilterOpen(open);
+  };
+  /** Opening one popover shuts whichever was open; closing one that has already been replaced
+   *  leaves the replacement alone, since an outside press reaches both. */
+  const openPopover = (name: InboxPanel, open: boolean) =>
+    setOpenPanel((current) => (open ? name : current === name ? undefined : current));
+  // Every Inbox reader draws the assignee control and few open it, so the people are fetched on
+  // its first open and kept from then on: a reader who never filters costs no `/api/v1/users`.
+  const [peopleWanted, setPeopleWanted] = useState(false);
+  const people = useQuery({ ...usersQuery(), enabled: peopleWanted });
   const changeFilter = (next: InboxRoute) => {
     if (onFilterChange) {
       onFilterChange(next);
     } else {
-      // Replace rather than push: a reader trying filters out would otherwise have to walk Back
-      // through every pick, the rule every URL-backed filter here holds to
-      // (`lib/url-array-params.ts`).
-      navigate(buildInboxPath(next), { replace: true });
+      // To the address, which `useInboxRoute` writes with `replace` rather than pushing: a
+      // reader trying filters out would otherwise have to walk Back through every pick, the
+      // rule every address-backed filter here holds to (`lib/page-address.ts`).
+      goToRoute(next);
     }
   };
   /** The search box, so `f` can land the reader's focus in it from anywhere on the page. */
@@ -906,6 +1050,7 @@ export function Inbox({
     dismissPick,
     dismissRows,
     dismissWrite,
+    lastMarked,
     marked,
     onMark,
     selectAll,
@@ -949,7 +1094,7 @@ export function Inbox({
   const focusInPane = () => paneRef.current?.contains(document.activeElement) === true;
   const focusInList = () => listRef.current?.contains(document.activeElement) === true;
   /** The row a recorded origin names: null where nothing was recorded, and null where the row
-   *  it names has since left the list. One lookup, for the two ways back into the list below. */
+   *  it names has since left the list. One lookup, for the ways back into the list below. */
   const originRow = (origin: string | null): HTMLElement | null =>
     origin === null
       ? null
@@ -1483,85 +1628,431 @@ export function Inbox({
       />
     );
 
-  // The bar outlives an empty list: a pick that empties this view leaves its write in the air, and
-  // the refusal that comes back has to land somewhere the reader can see.
-  const bulkBar = bulkBarShown ? (
-    <BulkBar
-      all={allRows}
-      askCount={selectedAsks.length}
-      barRef={bulkBarRef}
-      onClear={clearSelection}
-      onDismiss={dismissPick}
-      onPick={snoozePick}
-      onPickerFocus={(from) => {
-        pickerOrigin.current = rowAround(from)?.dataset.inboxRow ?? null;
-      }}
-      onSelectAll={selectAll}
-      pending={bulkSnoozing}
-      refusal={snoozeRefusal}
-      show={show}
-      threadCount={selectedThreads.length}
-    />
-  ) : null;
-  // The box above the bar's own fields, on a line of its own so the fields it searches stay
-  // readable in its placeholder at a phone's width. Its classes are the Agents page's own field,
-  // the 44 px tap target included, plus the focus ring `inputClasses` does not carry: `f` lands
-  // the focus here, and a reader who arrived by key must see where they are. The cap is said in
-  // the title rather than enforced by a `maxLength`, so `capSearchQuery` in the change handler
-  // is the one rule that cuts what is written and what is filtered by.
-  const searchBox = (
-    <input
-      aria-label="Search asks"
-      className={`min-h-11 min-w-0 flex-1 basis-64 rounded-lg border px-3 py-2 text-sm outline-none focus-visible:ring-2 ${inputClasses(true)} ${focusVisibleRing}`}
-      onChange={(event) => typeQuery(event.target.value)}
-      placeholder="Issue, title, question or author"
-      ref={searchRef}
-      title={`At most ${SEARCH_QUERY_MAX} characters`}
-      type="search"
-      value={filter.q ?? ""}
+  const chooseField = (field: InboxFilterField, chosen: readonly string[]) => {
+    const next: InboxFilters = { ...filters };
+    if (chosen.length === 0) delete next[field];
+    else next[field] = chosen;
+    changeFilter({ ...filter, filters: Object.keys(next).length === 0 ? undefined : next });
+  };
+  const chooseAssignees = (next: readonly string[] | undefined) =>
+    changeFilter({ ...filter, assignees: next });
+
+  /**
+   * The five controls the one **Filter** panel holds: the four fields the address carries as
+   * comma lists, and who the list is for. Each row carries how many rows that value holds.
+   *
+   * Built here rather than above, and handed to `PanelTrigger` as the render prop it takes, so
+   * that a shut panel costs nothing: every count below walks the candidate rows once per field,
+   * and the reader scrolling a list with the panel shut must pay for none of it.
+   */
+  const renderFilterControls = (): ReactNode => {
+    // What each filter control counts against: a row that survives every narrowing but that
+    // control's own, so a reader opening Priority is told what each priority holds inside the
+    // list they have already narrowed, and ticking a value never empties the list by surprise.
+    const matchesOtherFields = (row: InboxListRow, field: InboxFilterField | "assignee"): boolean =>
+      INBOX_FILTER_FIELDS.every(
+        (other) => other === field || inFieldFilter(row, other, filters[other], viewer)
+      ) &&
+      (field === "assignee" || inAssigneeFilter(row, selection, viewer));
+    // A login equal to either reserved word would be a row that means the filter rather than
+    // the person, so neither is offered among the people.
+    const reservedLogins: readonly string[] = [UNASSIGNED_FILTER_VALUE, EVERYONE_FILTER_VALUE];
+    const listedPeople = [
+      UNASSIGNED_FILTER_VALUE,
+      ...(people.data ?? [])
+        .map((person) => person.login)
+        .filter((login) => !reservedLogins.includes(login)),
+    ];
+    // A selected value the list does not hold - a person who has not signed in, or anyone at all
+    // while the request is out or refused - is still a row, so a filter read from the address
+    // always shows what it is filtering by and the reader can switch it off.
+    const assigneeOptions = [
+      ...listedPeople,
+      ...selection.filter((value) => !listedPeople.includes(value)),
+    ];
+    const assigneeCounts = filterCounts(
+      candidates,
+      "assignee",
+      (row) => matchesOtherFields(row, "assignee"),
+      viewer
+    );
+    return (
+      <>
+        {INBOX_FILTER_FIELDS.map((field) => {
+          const chosen = filters[field] ?? [];
+          const counts = filterCounts(
+            candidates,
+            field,
+            (row) => matchesOtherFields(row, field),
+            viewer
+          );
+          return (
+            <MultiSelect
+              emptyMessage={`No matching ${DIMENSION_LABELS[field].toLowerCase()}.`}
+              key={field}
+              label={DIMENSION_LABELS[field]}
+              onChange={(next) => chooseField(field, next)}
+              onOpenChange={(open) => openPopover(field, open)}
+              open={openPanel === field}
+              optionDetail={(value) => `${counts.get(value) ?? 0}`}
+              optionDetailLabel={(value) => `${counts.get(value) ?? 0} rows`}
+              optionLabel={(value) => dimensionValueLabel(field, value)}
+              options={fieldOptions(field, candidates, viewer, chosen)}
+              searchLabel={`Search ${DIMENSION_LABELS[field].toLowerCase()}`}
+              selected={chosen}
+              triggerAriaLabel={`Filter by ${DIMENSION_LABELS[field].toLowerCase()}`}
+            />
+          );
+        })}
+        {/* Who the list is listed for (`?assignee=`): the trigger says the selection in the
+            reader's own words, and the popover picks any number of people, with Unassigned
+            first. Unassigned lists what the server resolved no person for, and every project
+            naming a default assignee leaves nothing: it reads 0 and lists nothing, which is
+            what the filter saying so is for. */}
+        <MultiSelect
+          emptyMessage={people.isPending ? "Loading people…" : "No matching person."}
+          error={people.isError ? "Could not load the people list." : null}
+          label="Assignee"
+          onChange={chooseAssignees}
+          onOpenChange={(open) => {
+            if (open) setPeopleWanted(true);
+            openPopover("assignee", open);
+          }}
+          open={openPanel === "assignee"}
+          optionDetail={(value) =>
+            `${value === viewer ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`
+          }
+          optionDetailLabel={(value) =>
+            `${value === viewer ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`
+          }
+          optionLabel={(value) => (value === UNASSIGNED_FILTER_VALUE ? "Unassigned" : value)}
+          options={assigneeOptions}
+          searchLabel="Search people"
+          selected={selection}
+          triggerAriaLabel="Filter by assignee"
+        >
+          {assigneeTriggerText(selection, viewer)}
+        </MultiSelect>
+      </>
+    );
+  };
+
+  const tokens: FilterToken[] = [];
+  for (const field of INBOX_FILTER_FIELDS) {
+    for (const value of filters[field] ?? []) {
+      tokens.push({
+        key: `${field}:${value}`,
+        label: `${DIMENSION_LABELS[field]}: ${dimensionValueLabel(field, value)}`,
+        remove: () =>
+          chooseField(
+            field,
+            (filters[field] ?? []).filter((current) => current !== value)
+          ),
+      });
+    }
+  }
+  if (filter.assignees !== undefined) {
+    if (filter.assignees.length === 0) {
+      tokens.push({
+        key: `assignee:${EVERYONE_FILTER_VALUE}`,
+        label: "Assignee: everyone",
+        remove: () => chooseAssignees(undefined),
+      });
+    }
+    for (const value of filter.assignees) {
+      tokens.push({
+        key: `assignee:${value}`,
+        label: `Assignee: ${value === UNASSIGNED_FILTER_VALUE ? "Unassigned" : value}`,
+        remove: () => {
+          const kept = (filter.assignees ?? []).filter((current) => current !== value);
+          chooseAssignees(kept.length === 0 ? undefined : kept);
+        },
+      });
+    }
+  }
+  // `?section=needs-you` is a narrowing like the rest, so it has a chip that takes it off. With
+  // an agent filter on, the agent's own chip already reads "waiting on you" and this would say
+  // the same thing twice.
+  if (filter.section === "needs-you" && agent === undefined) {
+    tokens.push({
+      key: "section:needs-you",
+      label: "Waiting on you",
+      remove: () => changeFilter({ ...filter, section: undefined }),
+    });
+  }
+  const chips =
+    agentChip === undefined && tokens.length === 0 ? undefined : (
+      <>
+        {agentChip}
+        {tokens.map((token) => (
+          <Chip
+            aria-label={`Remove filter ${token.label}`}
+            key={token.key}
+            onClick={token.remove}
+            removable
+            selected
+            title={token.label}
+          >
+            {token.label}
+          </Chip>
+        ))}
+      </>
+    );
+  // **Clear filters**, which the row draws at the end of the chips' line while there are chips:
+  // every narrowing off at once - the four fields, who the list is for, the agent and the
+  // needs-you section. What the reader typed, the order, the banding and which of the two lists
+  // is showing are not narrowings of this panel and stay exactly as they are.
+  const clearFilters =
+    chips === undefined
+      ? undefined
+      : () =>
+          changeFilter({
+            ...filter,
+            agent: undefined,
+            assignees: undefined,
+            filters: undefined,
+            section: undefined,
+          });
+
+  // The number the blocked-on-you banner carried on this page, now a control of the row
+  // (INFRA-3135, R7): the asks waiting on the reader plus the credential requests they may
+  // decide, with the oldest age the banner said in its title and its accessible name, so
+  // nothing the banner carried is lost. A press narrows the list to exactly those asks and
+  // leaves the credential requests above it. It is absent at a count of zero, as the banner
+  // was, and absent beside an agent filter or in the Dismissed view, where a count over the
+  // whole inbox would contradict the list under it - the rule the banner held to here.
+  const waiting = needsYou(adoptedInbox ?? [], credentials.requests, viewer);
+  const needsYouControl =
+    agent !== undefined || showDismissed || waiting.count === 0 ? null : (
+      <button
+        aria-label={blockedOnYouText(waiting)}
+        className={PAGE_CONTROL_CLASS}
+        data-inbox-needs-you=""
+        onClick={() => changeFilter({ ...filter, assignees: undefined, section: "needs-you" })}
+        title={blockedOnYouText(waiting)}
+        type="button"
+      >
+        Blocked on you · {waiting.count}
+      </button>
+    );
+  // The page's own controls, or nothing at all: an empty slot would still cost the row a gap.
+  const pageControls =
+    !markAll.offered && !markAll.refused && needsYouControl === null ? undefined : (
+      <>
+        {/* Only while the list holds an unread Reply or Agent row. It asks nothing first: the
+            rows go, and a refusal brings them back. */}
+        {markAll.offered ? (
+          <button
+            className={PAGE_CONTROL_CLASS}
+            data-inbox-mark-all=""
+            onClick={markAll.markAll}
+            type="button"
+          >
+            Mark all read
+          </button>
+        ) : null}
+        {markAll.refused ? (
+          <p
+            className={`text-sm whitespace-nowrap ${dangerText}`}
+            data-inbox-mark-all-refused=""
+            role="alert"
+          >
+            {MARK_ALL_REFUSED_TEXT}
+          </p>
+        ) : null}
+        {needsYouControl}
+      </>
+    );
+
+  // How the list is ordered, how it is banded, which of the reader's two lists is showing, and
+  // which way a thread's own replies read. The first three are the list's, so they ride in the
+  // address and a link carries them; the thread order is the reader's own and is kept for their
+  // browser (`threads/thread-order.ts`).
+  const displayMenu = (
+    <DisplayMenu
+      label="View"
+      onOpenChange={(open) => openPopover("view", open)}
+      open={openPanel === "view"}
+      sections={[
+        {
+          id: "sort",
+          label: "Sort by",
+          onChange: (next) => {
+            const picked = pick(INBOX_SORTS, next);
+            if (picked !== undefined) changeFilter({ ...filter, sort: picked });
+          },
+          options: menuOptions(INBOX_SORTS, SORT_LABELS),
+          value: sort,
+        },
+        {
+          id: "group",
+          label: "Group by",
+          onChange: (next) => {
+            const picked = pick(INBOX_GROUP_BYS, next);
+            if (picked !== undefined) changeFilter({ ...filter, group: picked });
+          },
+          options: menuOptions(INBOX_GROUP_BYS, GROUP_LABELS),
+          value: groupBy,
+        },
+        {
+          id: "show",
+          label: "Show",
+          onChange: (next) =>
+            changeFilter({ ...filter, show: next === "dismissed" ? "dismissed" : undefined }),
+          options: menuOptions(INBOX_SHOWS, SHOW_LABELS),
+          value: show,
+        },
+        {
+          id: "order",
+          label: "Thread order",
+          onChange: (next) => {
+            const picked = pick(THREAD_ORDERS, next);
+            if (picked !== undefined) setThreadOrder(picked);
+          },
+          options: menuOptions(THREAD_ORDERS, THREAD_ORDER_LABELS),
+          value: threadOrder,
+        },
+      ]}
     />
   );
+
+  // The bar outlives an empty list: a pick that empties this view leaves its write in the air,
+  // and the refusal that comes back has to land somewhere the reader can see. It is drawn over
+  // the list rather than in it, so marking a row moves no row (INFRA-3135, R4). It is drawn
+  // always, and given no count and no state while it is not shown, so its going is the bar's
+  // own to see and the focus it held is handed on (`SelectionBar`).
+  const dismissLabel = showDismissed ? "Move to Inbox" : "Dismiss";
+  const selectedCount = selectedAsks.length + selectedThreads.length;
+  // In flight the count is the press's, since the rows it moved have already left this view;
+  // settled, it is what a second press would act on - the rows still marked. Said here rather
+  // than left to the bar's own count so the bar still stands over an emptied selection, which is
+  // where a refusal of that press lands.
+  let barState: string | undefined;
+  if (!bulkBarShown) barState = undefined;
+  else if (bulkSnoozing !== 0) barState = `Snoozing ${bulkSnoozing}…`;
+  else if (allRows) barState = "Every row selected";
+  else barState = `${selectedCount} selected`;
+  const selectionBar = (
+    <SelectionBar
+      barRef={bulkBarRef}
+      count={bulkBarShown ? selectedCount : 0}
+      label="Selected rows"
+      notice={snoozeRefusal}
+      // The bar gone with the focus: the checkbox of the row the reader marked last, else the
+      // first row's, else the search box.
+      returnFocus={() =>
+        originRow(lastMarked())?.querySelector<HTMLElement>(MARK_SELECTOR) ??
+        rows()[0]?.querySelector<HTMLElement>(MARK_SELECTOR) ??
+        searchRef.current
+      }
+      state={barState}
+    >
+      {/* The picker stays while its own write is out: the optimistic fold takes every marked ask
+          off this view, and a picker unmounted under the reader's hand drops their focus. */}
+      {selectedAsks.length === 0 && bulkSnoozing === 0 ? null : (
+        <span className={badgeSelectWrapper}>
+          <span
+            aria-hidden="true"
+            className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}
+          >
+            Snooze
+          </span>
+          {/* One pick at a time: a second while the first is in the air re-sends every id, and
+              its answer can settle after the live one's and overwrite what the reader was told.
+              It is `aria-disabled` rather than `disabled` because the browser takes focus off a
+              control that disables itself under it - dropping the reader on the document
+              mid-write, with no Escape to leave and no way back to the bar. */}
+          <select
+            aria-disabled={bulkSnoozing !== 0}
+            aria-label="Snooze selected asks"
+            className={badgeSelectOverlay}
+            data-inbox-bulk-snooze=""
+            onChange={(event) => {
+              if (bulkSnoozing !== 0) return;
+              const preset = SNOOZE_PRESETS.find((option) => option.id === event.target.value);
+              if (preset !== undefined) snoozePick(preset.until(new Date()));
+            }}
+            onFocus={(event) => {
+              pickerOrigin.current = rowAround(event.relatedTarget)?.dataset.inboxRow ?? null;
+            }}
+            value=""
+          >
+            <option value="">Snooze…</option>
+            {SNOOZE_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+          </select>
+        </span>
+      )}
+      {selectedThreads.length === 0 ? null : (
+        <button
+          aria-label={`${dismissLabel} selected threads`}
+          className={BAR_ACTION_CLASS}
+          data-inbox-bulk-dismiss=""
+          onClick={dismissPick}
+          type="button"
+        >
+          {dismissLabel}
+        </button>
+      )}
+      {allRows ? null : (
+        <button
+          className={BAR_ACTION_CLASS}
+          data-inbox-select-all=""
+          onClick={selectAll}
+          type="button"
+        >
+          Select all
+        </button>
+      )}
+      <button className={BAR_ACTION_CLASS} onClick={clearSelection} type="button">
+        Clear selection
+      </button>
+    </SelectionBar>
+  );
+
   // Everything above the list, the same whether or not any band has a row, and a sibling of the
-  // scrolling list rather than an item in it: the bar stays put while the rows move.
+  // scrolling list rather than an item in it: the controls stay put while the rows move.
+  //
+  // One row holds the page's search, sorting and filtering, and nothing else between the title
+  // and the first row draws a search box, a panel trigger or a chip (INFRA-3135, R1). Nothing
+  // the reader can press here makes the header taller: the filter panel and the display menu
+  // are portalled over the page (`AnchoredPanel`), the selection bar is drawn over the list,
+  // and the chips are the one part of the row that may take a second line.
   const header = (
     <div className="space-y-4">
       <CredentialRequestsSection credentials={credentials} />
-      {/* The box narrows the same list the bar's fields narrow, so it stands with them, above
-          the chrome that opens them. */}
-      <div className="flex flex-wrap items-center gap-2">{searchBox}</div>
-      <InboxBar
-        agentToken={agentChip}
-        assignees={filter.assignees}
-        filters={filters}
-        markAll={markAll}
-        onAssigneesChange={(next) => changeFilter({ ...filter, assignees: next })}
-        onClearAgent={() => changeFilter({ ...filter, agent: undefined, section: undefined })}
-        onFiltersChange={(next) =>
-          changeFilter({ ...filter, filters: Object.keys(next).length === 0 ? undefined : next })
+      <ControlRow
+        chips={chips}
+        display={displayMenu}
+        onClear={clearFilters}
+        search={
+          <SearchBox
+            className="w-full"
+            label="Search asks"
+            // `capSearchQuery` again here, over the box's own `maxLength`: a paste the box
+            // takes whole is still cut to what the address and the list agree on (`typeQuery`).
+            onChange={typeQuery}
+            placeholder="Issue, title, question or author"
+            ref={searchRef}
+            value={filter.q ?? ""}
+          />
         }
-        onPopoverOpenChange={setOpenPopover}
-        rows={candidates}
-        selection={selection}
-        view={{
-          group: groupBy,
-          onGroupChange: (next) => changeFilter({ ...filter, group: next }),
-          onShowChange: (next) =>
-            changeFilter({ ...filter, show: next === "dismissed" ? "dismissed" : undefined }),
-          onSortChange: (next) => changeFilter({ ...filter, sort: next }),
-          onThreadOrderChange: setThreadOrder,
-          show,
-          sort,
-          threadOrder,
-        }}
-        viewer={viewer}
-      />
-      {agent === undefined && !showDismissed ? (
-        <BlockedOnYou
-          asks={adoptedInbox ?? []}
-          credentialRequests={credentials.requests}
-          viewer={viewer}
-        />
-      ) : null}
+        trigger={
+          <PanelTrigger
+            label="Filter"
+            onOpenChange={openFilterPanel}
+            open={filterOpen}
+            panelClassName={`z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`}
+          >
+            {renderFilterControls}
+          </PanelTrigger>
+        }
+      >
+        {pageControls}
+      </ControlRow>
       {/* A dismiss the server refused: the rows are back where they were, and the page says so
           here, above the list, because the control that sent it was on a row this write had
           already taken off the page. */}
@@ -1570,7 +2061,6 @@ export function Inbox({
           {dismissWrite.refusal}
         </p>
       )}
-      {bulkBar}
     </div>
   );
 
@@ -1597,6 +2087,9 @@ export function Inbox({
           show,
         }}
       >
+        {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
+            rather than in it, so the first mark moves no row (INFRA-3135, R4). */}
+        {selectionBar}
         <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
           {header}
           {paneShown ? (

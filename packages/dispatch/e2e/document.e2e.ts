@@ -12,7 +12,6 @@ import {
   documentEditor,
   markSpan,
   selectEditorText,
-  typeAtEnd,
 } from "./editor";
 import { askCard as inboxAskCard, inboxRow } from "./inbox-pane";
 import { navigateInApp } from "./sends";
@@ -39,12 +38,21 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
     const artifact = await getProjectArtifact("CORE", "design-notes");
     const bobPage = await bob.newPage();
     await bobPage.goto("/projects/CORE/documents/design-notes");
-    await expect(documentEditor(alicePage)).toContainText("Design notes");
-    await expect(documentEditor(bobPage)).toContainText("Design notes");
+    // The create sends the title alone, so the document opens empty under the title Alice typed:
+    // the heading the list used to write into it is gone. The title is the page's, not the text's.
+    await expect(alicePage.getByRole("heading", { name: "Design notes" })).toBeVisible();
+    await expect(bobPage.getByRole("heading", { name: "Design notes" })).toBeVisible();
+    await expect(documentEditor(alicePage)).toBeAttached();
+    await expect(documentEditor(bobPage)).toBeAttached();
+    await expect(documentEditor(alicePage)).toHaveText("");
+    await expect(documentEditor(bobPage)).toHaveText("");
     await expect(connectedDot(alicePage)).toHaveText("connected");
     await expect(connectedDot(bobPage)).toHaveText("connected");
 
-    await typeAtEnd(alicePage, "Alice wrote this.");
+    // An empty document holds no text a caret can enter, so the first word is typed where the
+    // click puts the caret rather than after text (`typeAtEnd`).
+    await documentEditor(alicePage).click();
+    await alicePage.keyboard.type("Alice wrote this.");
     await expect(documentEditor(bobPage)).toContainText("Alice wrote this.");
     await alicePage.reload();
     // The editor's textbox role is written at the very end of the reload's admission chain - the
@@ -121,7 +129,9 @@ test("picking a file on the Documents tab uploads it at once and lists it @pr", 
 test("comment, suggest, and ask anchor marks on a project document; accept edits the text; the ask flows through the Inbox @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  // CORE names bob: a document has no assignee, so its question reaches the project's default
+  // assignee, and bob is the reader who answers it from his own Inbox below.
+  await createProject({ key: "CORE", name: "Core" }, "bob");
   const created = await createProjectDocument("CORE", {
     content: "# Design notes\n\nComment target.\n\nSuggestion target.\n\nAsk target.\n",
     name: "Design notes",
@@ -191,11 +201,12 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
       throw new Error("Document ask did not retain its anchor.");
     }
     await expect(markSpan(bobPage, ask.ask.anchor.mark_id)).toContainText(ask.ask.anchor.quote);
-    // A document has no assignee, so its question is in nobody's own list: the Inbox reaches it
-    // under the Unassigned filter. The short row names the document the question belongs to,
-    // and the card - which from 1280 px the reading pane draws (INFRA-575) - answers it.
-    // Neither move is a cold load the row proves: bob is already signed in and on the page.
-    await navigateInApp(bobPage, "/?assignee=unassigned");
+    // A document has no assignee, so its question reaches the default assignee of its project,
+    // which is bob: his own list holds it. The short row names the document the question
+    // belongs to, and the card - which from 1280 px the reading pane draws (INFRA-575) -
+    // answers it. Neither move is a cold load the row proves: bob is already signed in and on
+    // the page.
+    await navigateInApp(bobPage, "/");
     const inboxDocumentRow = inboxRow(bobPage, askId);
     await expect(inboxDocumentRow.getByRole("link", { name: /CORE.*Design notes/ })).toBeVisible();
     const inboxAsk = await inboxAskCard(bobPage, askId);

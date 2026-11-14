@@ -16,7 +16,9 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
+import { CONTROL } from "../../components/control-names";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
@@ -334,6 +336,7 @@ test("an ask hit says where it stands and shows its latest answer", async () => 
 // The answer's three-line clamp is CSS only: whatever text reaches the option is its accessible
 // name, so a long answer is cut to its start before it renders.
 test("an ask hit shows only the start of a long answer, cut at a word with an ellipsis", async () => {
+  await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const text = `Keep **both** frames. ${"The meridian ring stays level. ".repeat(80)}zenithward`;
   const search = spyOn(api, "search").mockResolvedValue(
@@ -359,15 +362,17 @@ test("an ask hit shows only the start of a long answer, cut at a word with an el
     const option = screen.getByRole("option");
     await waitFor(() => expect(option.querySelector("strong")?.textContent).toBe("both"));
 
-    // 280 characters (ANSWER_PREVIEW_CHARS) end inside the ninth sentence's second word, so the
-    // cut falls after its first, with an ellipsis, and the shown answer stays within the bound.
+    // The cut is on the tree now, not on the markdown, so the 280 characters
+    // (ANSWER_PREVIEW_CHARS) are the words a reader sees rather than the source: the four
+    // characters of `**both**`'s markers are no longer spent, and the cut lands two words
+    // further in. A deliberate change of this task; the bound it is held to is the same one.
     const shown = option.textContent ?? "";
     const shownAnswer = shown.slice(shown.indexOf("Keep both frames."));
     expect(ANSWER_PREVIEW_CHARS).toBe(280);
     expect(text.length).toBeGreaterThan(2000);
     expect(shown).not.toContain("zenithward");
     expect(shownAnswer).toBe(
-      `Keep both frames. ${"The meridian ring stays level. ".repeat(8)}The…`
+      `Keep both frames. ${"The meridian ring stays level. ".repeat(8)}The meridian…`
     );
     expect(shownAnswer.length).toBeLessThanOrEqual(ANSWER_PREVIEW_CHARS + 1);
   } finally {
@@ -1256,6 +1261,41 @@ test("says meaning search is not running, and still shows the hits", async () =>
   }
 });
 
+/** Opens the one panel of the bar's control row, which all four narrowings are added from. A
+ *  narrowing already on is a chip in the row instead, so its control is not in the panel. */
+async function openFilters(user: UserEvent): Promise<void> {
+  await user.click(screen.getByRole("button", { name: "Filter" }));
+}
+
+// The dialog's own strip of controls is the control row itself, so the bar's box, the panel the
+// narrowings are added from and the chips of what is on are one row and not two.
+test("the bar's controls are one control row, and nothing above the hits draws a second box", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    const dialog = screen.getByRole("dialog", { name: "Search" });
+    const rows = dialog.querySelectorAll(`[data-control="${CONTROL.controlRow}"]`);
+    const boxes = dialog.querySelectorAll(`[data-control="${CONTROL.searchBox}"]`);
+
+    expect(rows).toHaveLength(1);
+    expect(boxes).toHaveLength(1);
+    // The query box is in that row: nothing between the dialog's top and its first hit is a
+    // search box, a panel trigger or a chip of the bar's own.
+    expect(boxes[0]).toBe(input);
+    expect(rows[0]?.contains(input)).toBe(true);
+    expect(rows[0]?.querySelector(`[data-control="${CONTROL.panelTrigger}"]`)).toBe(
+      screen.getByRole("button", { name: "Filter" })
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("a chip narrows the search, reads back in the person's words, and comes off again", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
@@ -1265,6 +1305,7 @@ test("a chip narrows the search, reads back in the person's words, and comes off
     await searchFor(user, "astrolabe");
     expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
 
+    await openFilters(user);
     await user.click(screen.getByRole("button", { name: "Status" }));
     await user.click(screen.getByRole("button", { name: "In progress" }));
     await waitFor(() =>
@@ -1278,10 +1319,120 @@ test("a chip narrows the search, reads back in the person's words, and comes off
     const chip = screen.getByRole("button", { name: "Remove Status In progress" });
     expect(chip.textContent).toContain("Status In progress");
     expect(chip.textContent).not.toContain("status:in_progress");
+    // The chip is the shared one, in the shared row: what the bar narrows by is said where
+    // every other page says it.
+    expect(chip.getAttribute("data-control")).toBe(CONTROL.chip);
+    expect(chip.closest(`[data-control="${CONTROL.controlRow}"]`)).not.toBeNull();
 
     await user.click(chip);
     await waitFor(() => expect(screen.queryByText("Status In progress")).toBeNull());
+    // Removing the chip brings that narrowing's own control back into the panel.
+    await openFilters(user);
     expect(screen.getByRole("button", { name: "Status" })).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a project picked in the panel narrows the search and reads back as its chip", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "INFRA",
+      name: "Infra",
+      open_asks: 0,
+    },
+  ]);
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    await user.click(await screen.findByRole("button", { name: "INFRA" }));
+
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { keywords_only: true, project: "INFRA" },
+        aborts
+      )
+    );
+    expect(screen.getByRole("button", { name: "Remove Project INFRA" })).not.toBeNull();
+  } finally {
+    listProjects.mockRestore();
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// An item's author is a person's login or a session id, and no list holds both, so the author
+// is typed. Enter takes it, and a login still half-typed searches nothing.
+test("an author typed in the panel is taken on Enter, narrows the search, and comes off again", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    const author = screen.getByRole("searchbox", { name: "Author" });
+    await user.click(author);
+    await user.paste("ali");
+    expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
+
+    await user.paste("ce");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { author: "alice", keywords_only: true },
+        aborts
+      )
+    );
+
+    const chip = screen.getByRole("button", { name: "Remove Author alice" });
+    expect(chip.textContent).toContain("Author alice");
+
+    await user.click(chip);
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts)
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// Shutting the panel is leaving the box: the press that takes the box away is the reader
+// walking off it, and what they typed is taken then rather than dropped.
+test("an author left in the box is taken when the panel shuts", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    await openFilters(user);
+    await user.click(screen.getByRole("searchbox", { name: "Author" }));
+    await user.paste("alice");
+
+    await user.click(input);
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { author: "alice", keywords_only: true },
+        aborts
+      )
+    );
+    expect(screen.getByRole("button", { name: "Remove Author alice" })).not.toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1297,8 +1448,8 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   // The bar opened over an issue reads that issue, to offer the words as a message to an agent
   // holding it (`SendToAgentOffer.tsx`). LEGION-2 is the page's issue and the document hit's
-  // own, and no agent holds it, so the bar offers no such row and the chips below the box are
-  // the whole of what this row reads.
+  // own, and no agent holds it, so the bar offers no such row and the chips of its control row
+  // are the whole of what this row reads.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue({
     ...issueFixture,
     artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
@@ -1319,6 +1470,7 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
       aborts
     );
     expect(screen.queryByRole("button", { name: /^Remove Project/ })).toBeNull();
+    await openFilters(user);
     expect(screen.getByRole("button", { name: "Project" })).not.toBeNull();
   } finally {
     search.mockRestore();

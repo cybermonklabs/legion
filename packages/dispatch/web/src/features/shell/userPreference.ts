@@ -18,6 +18,8 @@ export type UserPreference =
   | "project.board-lanes"
   | "project.issue-filters"
   | "project.issue-view"
+  | "project.phase-hours"
+  | "project.saved-views"
   | "search.recents"
   | "shell.margin"
   | "shell.margin-width"

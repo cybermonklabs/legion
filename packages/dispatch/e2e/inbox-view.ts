@@ -22,6 +22,7 @@ import {
   patchIssue,
   requestApproval,
 } from "./api";
+import { chooseDisplay, openDisplayMenu } from "./filters";
 import { openFilterFields } from "./inbox-filter";
 import { inboxList } from "./inbox-pane";
 import {
@@ -76,7 +77,9 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
  * Eleven rows covering every kind, every priority and none, every urgency and none, two
  * projects and none, and three holders - the last of them a thread the reader has already read,
  * which the Inbox lists like any other, drawn as read, since a thread stays until it is
- * dismissed.
+ * dismissed. Every row is held by somebody: whom a question reaches is three steps resolved
+ * (`coalesce(a.asked_of, i.assignee, p.default_assignee)`) and every project names a default
+ * assignee, so no row of a list this server answers is nobody's.
  */
 export async function seedEveryField(): Promise<{
   read: string;
@@ -84,14 +87,16 @@ export async function seedEveryField(): Promise<{
 }> {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "MIRROR", name: "Mirror" });
+  // MIRROR names carol, which is how she is a person who has signed in and so a person an
+  // issue below may be handed to; the issue this file makes in MIRROR is alice's own.
+  await createProject({ key: "MIRROR", name: "Mirror" }, "carol");
   const rows: ViewRow[] = [];
 
   const question = async (
     title: string,
     priority: IssuePriority | null,
     urgency: "blocking" | "high" | "low" | "med" | undefined,
-    assignee: string | null
+    assignee: string
   ): Promise<string> => {
     const issue = await createIssue({ project: "CORE", title });
     if (priority !== null) await patchIssue(issue.key, { priority });
@@ -102,7 +107,7 @@ export async function seedEveryField(): Promise<{
       asSession()
     );
     rows.push({
-      assignee: assignee ?? "unassigned",
+      assignee,
       id: ask.id,
       issueKey: issue.key,
       priority: priority === null ? "none" : `P${priority}`,
@@ -127,7 +132,9 @@ export async function seedEveryField(): Promise<{
     asSession()
   );
   await question("Clock drift", 3, "med", "alice");
-  await question("Replay budget", null, undefined, null);
+  // Carol's question: the third holder, and the row that was nobody's before every project
+  // named a default assignee.
+  await question("Replay budget", null, undefined, "carol");
 
   const decisionIssue = await createIssue({
     project: "CORE",
@@ -273,7 +280,6 @@ const VALUE_LABELS: Record<string, string> = {
   med: "Medium",
   question: "Question",
   reply: "Reply",
-  unassigned: "Unassigned",
 };
 
 /** The plural each Type band is headed by. */
@@ -304,11 +310,7 @@ export function valuesOf(rows: readonly ViewRow[], field: keyof ViewRow): string
   const fixed = VALUE_ORDER[field] ?? [];
   const seen = [...new Set(rows.map((row) => String(row[field])))];
   const ranked = (value: string) =>
-    value === "none" || value === "unassigned"
-      ? Number.MAX_SAFE_INTEGER
-      : fixed.length === 0
-        ? 0
-        : fixed.indexOf(value);
+    value === "none" ? Number.MAX_SAFE_INTEGER : fixed.length === 0 ? 0 : fixed.indexOf(value);
   return seen.sort((left, right) => ranked(left) - ranked(right) || left.localeCompare(right));
 }
 
@@ -368,20 +370,13 @@ export async function openField(page: Page, field: string): Promise<Locator> {
   return options;
 }
 
-/** The **View** menu, opened. */
+/** The **View** display menu's panel, opened. */
 export async function openView(page: Page): Promise<Locator> {
-  const menu = page.getByRole("menu", { name: "View" });
-  if ((await menu.count()) === 0) await page.locator("[data-inbox-view]").click();
-  await expect(menu).toHaveCount(1);
-  return menu;
+  return openDisplayMenu(page);
 }
 
 /** Picks one choice of one **View** section; the sections share value words, so each is read
- *  through its own fieldset. */
+ *  through its own fieldset, and each choice by the value its radio carries. */
 export async function chooseView(page: Page, section: string, value: string): Promise<void> {
-  const menu = await openView(page);
-  await menu
-    .getByRole("group", { name: section })
-    .locator(`[data-inbox-view-choice="${value}"]`)
-    .click();
+  await chooseDisplay(page, section, value);
 }

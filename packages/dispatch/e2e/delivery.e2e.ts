@@ -6,6 +6,7 @@ import {
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { openFilterPanel } from "./filters";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
 import { pressFinger } from "./touch";
@@ -140,6 +141,8 @@ test("a facet lists each value with its count and narrows the PRs, kept in the U
   await openTimeline(page);
 
   await expect(page.getByText("2 PRs in current filter/window")).toBeVisible();
+  // The facets are in the panel the row's one **Filter** trigger opens.
+  await openFilterPanel(page);
   const priority = page.getByRole("button", { name: /^Priority:/ });
   await expect(priority).toHaveText("Any priority");
   await priority.click();
@@ -389,18 +392,20 @@ test("the Repository facet narrows the list through the server", async ({ browse
 
   await page.getByRole("button", { name: "List", exact: true }).click();
   await expect(page).toHaveURL(/mode=list/);
-  const titles = page.locator("tbody tr td:nth-child(4)");
-  await expect(titles).toHaveCount(2);
+  // The rows carry `data-pr-row`; their cells stand in whatever column order the reader kept.
+  const listed = page.locator("tbody tr[data-pr-row]");
+  await expect(listed).toHaveCount(2);
 
   // The Repository facet narrows the list server-side; acme/widgets is the only repository
   // seeded, so selecting it is a no-op on the result but proves the picker and the facet
   // round-trip to the server run. Each option carries its count.
+  await openFilterPanel(page);
   const repository = page.getByRole("button", { name: /^Repository:/ });
   await repository.click();
   await page.getByRole("option", { name: "acme/widgets, 2 PRs" }).click();
   await page.keyboard.press("Escape");
   await expect(repository).toHaveText("1 selected");
-  await expect(titles).toHaveCount(2);
+  await expect(listed).toHaveCount(2);
   await context.close();
 });
 
@@ -413,7 +418,7 @@ test("the list reaches a deploy's drill-down by keyboard, and Escape hands focus
   await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}&mode=list`);
 
   // The rows are one tab stop: the first row takes focus, the arrow key moves to the next.
-  const rows = page.locator("tbody tr[aria-rowindex]");
+  const rows = page.locator("tbody tr[data-pr-row]");
   await expect(rows).toHaveCount(2);
   await rows.first().focus();
   await page.keyboard.press("ArrowDown");
@@ -604,7 +609,9 @@ test("the measures panel shows the four measures for the window and follows a fa
   const strip = page.getByTestId("measures-strip");
   await expect(strip).toContainText("28.6%");
 
-  // The Repository facet narrows the measures: acme/gadgets#20 drops out, 4 rework of 13.
+  // The Repository facet narrows the measures: acme/gadgets#20 drops out, 4 rework of 13. It
+  // is in the panel the row's one **Filter** trigger opens.
+  await openFilterPanel(page);
   await page.getByRole("button", { name: /^Repository/ }).click();
   await page.getByRole("option", { name: /^acme\/widgets/ }).click();
   await page.keyboard.press("Escape");

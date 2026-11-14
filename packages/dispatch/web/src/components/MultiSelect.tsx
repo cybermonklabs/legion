@@ -15,6 +15,7 @@ import {
   textSecondaryOnSurface,
 } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
+import { type ControlName, type ControlSize, controlPadding } from "./control-names";
 import { TruncatedText } from "./TruncatedText";
 
 function fold(value: string | undefined): string {
@@ -25,6 +26,10 @@ export interface MultiSelectProps {
   /** Trigger content; defaults to the label with the selection count (`Labels · 2`). */
   readonly children?: ReactNode;
   readonly disabled?: boolean;
+  /** Which control of the vocabulary this is, written into the trigger's `data-control`: a
+   *  column filter is a multi-select under its own name, while a multi-select a page draws for
+   *  itself is a part of the vocabulary rather than one of its controls, and carries nothing. */
+  readonly control?: ControlName;
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
    *  rather than looking actionable and doing nothing. */
   readonly ariaDisabled?: boolean;
@@ -56,6 +61,8 @@ export interface MultiSelectProps {
   readonly optionDetailLabel?: (value: string) => string;
   readonly searchLabel: string;
   readonly selected: readonly string[];
+  /** How much room the default trigger takes; a `triggerClassName` decides for itself. */
+  readonly size?: ControlSize;
   readonly triggerAriaLabel?: string;
   readonly triggerClassName?: string;
 }
@@ -70,6 +77,7 @@ export interface MultiSelectProps {
 export function MultiSelect({
   ariaDisabled = false,
   children,
+  control,
   disabled = false,
   emptyMessage,
   error = null,
@@ -85,8 +93,9 @@ export function MultiSelect({
   optionLabel = (value) => value,
   searchLabel,
   selected,
+  size = "comfortable",
   triggerAriaLabel,
-  triggerClassName = `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
+  triggerClassName = `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
 }: MultiSelectProps): ReactNode {
   const id = useId();
   const listboxId = `${id}-options`;
@@ -183,6 +192,7 @@ export function MultiSelect({
         aria-haspopup="listbox"
         aria-label={triggerAriaLabel}
         className={triggerClassName}
+        data-control={control}
         disabled={disabled}
         onClick={() => onOpenChange(!open)}
         ref={triggerRef}

@@ -4,40 +4,50 @@ import { useMutationState, useQuery, useQueryClient } from "@tanstack/react-quer
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { projectDefaultAssigneesQuery, projectsQuery, usersQuery } from "../../api/queries";
+import {
+  projectDefaultAssigneesQuery,
+  projectsQuery,
+  usersQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import type { CreateProjectInput, ProjectDefaultAssignee } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   borderDefault,
   inputClasses,
   textMutedOnCanvas,
-  textMutedOnSurface,
   textPrimaryOnCanvas,
   textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  settingsFieldLabel,
-  settingsMonoInput,
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-} from "./classes";
+import { settingsFieldLabel, settingsMonoInput, settingsSubmitButton } from "./classes";
 
 /** Lists native projects, lets a human create one, and carries each project's default assignee -
- * the person an issue created with nobody named lands on. The Settings route's repository
- * mapping form reads the same `["projects"]` query, so a project created here is
- * immediately selectable there without any explicit wiring between the two sections. */
+ * the person an issue created with nobody named lands on, and the person a question on an issue
+ * nobody holds reaches. Every project names one and no write clears it, so each row of the table
+ * and the create form below it name a person. The Settings route's repository mapping form reads
+ * the same `["projects"]` query, so a project created here is immediately selectable there
+ * without any explicit wiring between the two sections. */
 export function ProjectsSection(): ReactNode {
   const queryClient = useQueryClient();
   const [projectKey, setProjectKey] = useState("");
   const [projectName, setProjectName] = useState("");
+  // Who the new project defaults to until the reader picks somebody else: `null` is "nobody has
+  // picked", not "nobody", and reads as the viewer below.
+  const [projectAssignee, setProjectAssignee] = useState<string | null>(null);
   const projectSubmitGuard = useSubmitGuard();
   const projects = useQuery(projectsQuery());
   // The form shows a refused create beside the key it was refused over.
@@ -50,16 +60,14 @@ export function ProjectsSection(): ReactNode {
     // (`createProject.unanswered`).
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
+      // The project list carries no default assignee: the defaults read is the one place the new
+      // project's default comes from, and the read the page holds was answered before it existed.
+      void queryClient.invalidateQueries({ queryKey: projectDefaultAssigneesQuery().queryKey });
       setProjectKey("");
       setProjectName("");
+      setProjectAssignee(null);
     },
   });
-  const submitProject = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    // An emptied form - a create that landed - sends nothing, whatever submits it.
-    if (projectKey === "" || projectName.trim() === "") return;
-    projectSubmitGuard.guard(() => createProject.mutate({ key: projectKey, name: projectName }));
-  };
   const defaults = useQuery(projectDefaultAssigneesQuery());
   // The people list is read only once a reader reaches for a picker, as `AssigneeControl` does
   // it, so opening Settings makes no request for it.
@@ -67,6 +75,23 @@ export function ProjectsSection(): ReactNode {
   const users = useQuery({ ...usersQuery(), enabled: wantUsers });
   const defaultAssignees = new Map((defaults.data ?? []).map((row) => [row.project, row.assignee]));
   const logins = (users.data ?? []).map((user) => user.login);
+  // The server takes the person creating the project when the call names nobody, so that is what
+  // the form starts on; the reader may pick anyone else who has signed in.
+  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const newProjectAssignee = projectAssignee ?? viewer ?? "";
+  const submitProject = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    // An emptied form - a create that landed - sends nothing, whatever submits it, and so does
+    // one whose default assignee is nobody, which is a page whose viewer has not resolved.
+    if (projectKey === "" || projectName.trim() === "" || newProjectAssignee === "") return;
+    projectSubmitGuard.guard(() =>
+      createProject.mutate({
+        default_assignee: newProjectAssignee,
+        key: projectKey,
+        name: projectName,
+      })
+    );
+  };
 
   return (
     <section aria-labelledby="projects-heading">
@@ -89,64 +114,49 @@ export function ProjectsSection(): ReactNode {
       ) : null}
       {projects.isSuccess ? (
         <>
-          <div className={settingsTableWrapper}>
-            <table className="w-full text-left text-sm">
-              <thead className={settingsTableHead}>
-                <tr>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Key
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Name
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Default assignee
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Created
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {projects.data.length === 0 ? (
-                  <tr>
-                    <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={4}>
-                      No projects yet.
-                    </td>
-                  </tr>
-                ) : (
-                  projects.data.map((candidate) => (
-                    <tr className={settingsTableRow} key={candidate.key}>
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                        {candidate.key}
-                      </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>{candidate.name}</td>
-                      <td className="px-4 py-3">
-                        <DefaultAssigneeCell
-                          logins={logins}
-                          onReach={() => setWantUsers(true)}
-                          project={candidate.key}
-                          readFailed={defaults.isError}
-                          stored={
-                            defaults.data === undefined
-                              ? undefined
-                              : (defaultAssignees.get(candidate.key) ?? null)
-                          }
-                        />
-                      </td>
-                      <td className={`px-4 py-3 ${textMutedOnSurface}`}>
-                        <Timestamp at={candidate.created_at} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <TableShell className="mt-6" label="Projects">
+            <TableHead>
+              <TableHeadCell>Key</TableHeadCell>
+              <TableHeadCell>Name</TableHeadCell>
+              <TableHeadCell>Default assignee</TableHeadCell>
+              <TableHeadCell>Created</TableHeadCell>
+            </TableHead>
+            <TableBody>
+              {projects.data.length === 0 ? (
+                <TableEmpty colSpan={4}>No projects yet.</TableEmpty>
+              ) : (
+                projects.data.map((candidate) => (
+                  <TableRow key={candidate.key}>
+                    <TableCell mono tone="primary">
+                      {candidate.key}
+                    </TableCell>
+                    <TableCell tone="secondary">{candidate.name}</TableCell>
+                    <TableCell>
+                      <DefaultAssigneeCell
+                        logins={logins}
+                        onReach={() => setWantUsers(true)}
+                        project={candidate.key}
+                        readFailed={defaults.isError}
+                        // A project the defaults read has not answered for - one created since
+                        // that read - reads as not read yet rather than as nobody: every project
+                        // names a person, and the read behind this cell is the one place it is.
+                        stored={defaultAssignees.get(candidate.key)}
+                      />
+                    </TableCell>
+                    <TableCell tone="muted">
+                      <Timestamp at={candidate.created_at} />
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </TableShell>
           <p className={`mt-2 text-sm ${textSecondaryOnCanvas}`}>
-            An issue created from a repository with no project mapping lands in the default project,
-            so a default assignee set on that project also receives each such issue that is created
-            with nobody named and with no person, token owner or assigned parent to take it.
+            Every project names a default assignee, and it cannot be cleared: an issue created with
+            nobody named, and with no person, token owner or assigned parent to take it, goes to
+            that person, and so does a question on an issue nobody holds. An issue created from a
+            repository with no project mapping lands in the default project, so that project's
+            default assignee receives each such issue too.
           </p>
           {defaults.isError ? (
             <div className="mt-4">
@@ -159,7 +169,7 @@ export function ProjectsSection(): ReactNode {
           ) : null}
 
           <form
-            className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_auto] sm:items-end ${borderDefault}`}
+            className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_1fr_auto] sm:items-end ${borderDefault}`}
             onSubmit={submitProject}
           >
             <label className={settingsFieldLabel} htmlFor="project-key">
@@ -190,6 +200,32 @@ export function ProjectsSection(): ReactNode {
                 value={projectName}
               />
             </label>
+            <label className={settingsFieldLabel} htmlFor="project-default-assignee">
+              Default assignee
+              <select
+                className={`w-full min-w-0 rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+                disabled={createProject.isPending || newProjectAssignee === ""}
+                id="project-default-assignee"
+                onChange={(event) => setProjectAssignee(event.target.value)}
+                onFocus={() => setWantUsers(true)}
+                onPointerEnter={() => setWantUsers(true)}
+                onTouchStart={() => setWantUsers(true)}
+                required
+                value={newProjectAssignee}
+              >
+                {/* The viewer is a person who has signed in, so they are in the list once it is
+                    read; until it is, they are the only option. An empty value is nobody picked
+                    yet, which is the page before the viewer resolves. */}
+                {assigneeOptions(
+                  newProjectAssignee === "" ? undefined : newProjectAssignee,
+                  logins
+                ).map((login) => (
+                  <option key={login} value={login}>
+                    {login}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
               className={settingsSubmitButton}
               disabled={createProject.isPending}
@@ -218,10 +254,23 @@ export function ProjectsSection(): ReactNode {
   );
 }
 
+/** The options a default-assignee picker offers: everyone who has signed in, with the selected
+ *  login ahead of them when the list does not hold it, so a control never shows a value its
+ *  options lack - a stored default whose person the people list has not read, or has not
+ *  fetched yet, still holds its project. `undefined` is nobody selected, and the list stands as
+ *  it is. Both pickers of this section read this one rule: the create form's and
+ *  `DefaultAssigneeSelect`'s. */
+function assigneeOptions(
+  selected: string | undefined,
+  logins: readonly string[]
+): readonly string[] {
+  return selected === undefined || logins.includes(selected) ? logins : [selected, ...logins];
+}
+
 /** One project's default-assignee cell: the picker and, under it, the error of this project's
- *  newest save when the server refused it. `stored` is the default the page has read, `null` for
- *  none, and `undefined` while the defaults have not been read: the control then takes no pick
- *  and does not read Unassigned, since nobody knows yet whether a default is set. */
+ *  newest save when the server refused it. `stored` is the person the page has read, and
+ *  `undefined` while the defaults read has not answered for this project: the control then takes
+ *  no pick and names nobody, since who holds the project is not known yet. */
 function DefaultAssigneeCell({
   logins,
   onReach,
@@ -233,14 +282,14 @@ function DefaultAssigneeCell({
   onReach: () => void;
   project: string;
   readFailed: boolean;
-  stored: string | null | undefined;
+  stored: string | undefined;
 }): ReactNode {
   const write = useDefaultAssigneeWrite(project);
   const unread = stored === undefined ? (readFailed ? "Unavailable" : "Loading…") : null;
   return (
     <>
       <DefaultAssigneeSelect
-        assignee={write.shown === undefined ? (stored ?? null) : write.shown}
+        assignee={write.shown ?? stored}
         logins={logins}
         onPick={write.submit}
         onReach={onReach}
@@ -260,9 +309,10 @@ function DefaultAssigneeCell({
   );
 }
 
-/** One pick of a project's default assignee. Each pick is its own object, so a save can tell
- *  whether it is still the newest pick by identity. */
-type DefaultAssigneePick = { assignee: string | null };
+/** One pick of a project's default assignee, which always names a person: no write clears a
+ *  default. Each pick is its own object, so a save can tell whether it is still the newest pick
+ *  by identity. */
+type DefaultAssigneePick = { assignee: string };
 
 /** What a pick's save resolves to when a newer pick was waiting behind it: nothing was sent. */
 type DefaultAssigneeSuperseded = { superseded: true };
@@ -294,8 +344,8 @@ function useDefaultAssigneeWrite(project: string): {
   /** Resends the refused value; a no-op unless the project's newest save failed. */
   retry: () => void;
   /** The newest pick still saving or queued; `undefined` shows the stored value. */
-  shown: string | null | undefined;
-  submit: (assignee: string | null) => void;
+  shown: string | undefined;
+  submit: (assignee: string) => void;
 } {
   const queryClient = useQueryClient();
   const defaultsKey = projectDefaultAssigneesQuery().queryKey;
@@ -311,7 +361,7 @@ function useDefaultAssigneeWrite(project: string): {
     gcTime: Number.POSITIVE_INFINITY,
     // The row shows its newest save's refusal itself, beside the control it was refused over.
     inline: true,
-    label: (pick) => `${project}'s default assignee ${pick.assignee ?? "cleared"}`,
+    label: (pick) => `${project}'s default assignee ${pick.assignee}`,
     write: async (pick, bounds): Promise<ProjectDefaultAssignee | DefaultAssigneeSuperseded> => {
       // The cache lists mutations in the order they were made, so the last pending one is the
       // newest pick. Any other is waiting behind this save, and only it need reach the server.
@@ -335,7 +385,7 @@ function useDefaultAssigneeWrite(project: string): {
           return rows;
         }
         const others = rows.filter((row) => row.project !== saved.project);
-        return saved.assignee === null ? others : [...others, saved];
+        return [...others, saved];
       });
     },
     onSettled: (saved) => {
@@ -388,10 +438,11 @@ function useDefaultAssigneeWrite(project: string): {
   };
 }
 
-/** One project's default-assignee picker: everyone who has signed in, with Unassigned first for
- *  clearing it. `onReach` fires the moment a reader points at, touches or focuses the control,
- *  which is when the people list is fetched. Labelled `Default assignee of <KEY>`. While the
- *  defaults are unread, `unread` is the control's only option and the control is disabled. */
+/** One project's default-assignee picker: everyone who has signed in, and nothing else - no
+ *  write clears a default, so the control offers no way to name nobody. `onReach` fires the
+ *  moment a reader points at, touches or focuses the control, which is when the people list is
+ *  fetched. Labelled `Default assignee of <KEY>`. While the defaults are unread, `unread` is the
+ *  control's only option and the control is disabled. */
 function DefaultAssigneeSelect({
   assignee,
   logins,
@@ -400,36 +451,32 @@ function DefaultAssigneeSelect({
   project,
   unread,
 }: {
-  assignee: string | null;
+  /** The person the project names, or `undefined` while `unread` says it has not been read. */
+  assignee: string | undefined;
   logins: readonly string[];
-  onPick: (assignee: string | null) => void;
+  onPick: (assignee: string) => void;
   onReach: () => void;
   project: string;
   unread: string | null;
 }): ReactNode {
-  // A stored default whose person the list does not carry still holds the project; keep it
-  // selectable so the control never shows a value its options lack.
-  const options = assignee === null || logins.includes(assignee) ? logins : [assignee, ...logins];
+  const options = assigneeOptions(assignee, logins);
   return (
     <select
       aria-label={`Default assignee of ${project}`}
       className={`rounded-md px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50 ${inputClasses(false)} ${textPrimaryOnSurface}`}
       disabled={unread !== null}
-      onChange={(event) => onPick(event.target.value === "" ? null : event.target.value)}
+      onChange={(event) => onPick(event.target.value)}
       onFocus={onReach}
       onPointerEnter={onReach}
       onTouchStart={onReach}
       value={unread ?? assignee ?? ""}
     >
       {unread === null ? (
-        <>
-          <option value="">Unassigned</option>
-          {options.map((login) => (
-            <option key={login} value={login}>
-              {login}
-            </option>
-          ))}
-        </>
+        options.map((login) => (
+          <option key={login} value={login}>
+            {login}
+          </option>
+        ))
       ) : (
         <option value={unread}>{unread}</option>
       )}

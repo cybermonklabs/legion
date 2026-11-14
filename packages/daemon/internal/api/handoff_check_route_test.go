@@ -102,16 +102,16 @@ func mergedCloseBehindATestingTurn(t *testing.T) (*harness, *factRecorder, liveC
 		Project: testProject, Title: "LEGION-209", Phase: phase.Testing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-209", Repo: "acme/widgets",
-			Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head", MergeSHA: "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0", Failing: []string{}, Required: []string{"pytest"}})
+			Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head", MergeSHA: "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0", Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the merged pull request: %v", err)
 	}
-	seedAssignment(t, h, "LEGION-209", claim.RoleTester, "testing-1")
+	seedEntry(t, h, "LEGION-209", claim.RoleTester, 1)
 	tester := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleTester)
-	takeTask(t, h, tester.token, "outbox:testing-1", "Continue Workflow. Issue: LEGION-209. Phase: testing.", "testing-1", 1)
+	takeTask(t, h, tester.token, "outbox:testing-1", "Continue Workflow. Issue: LEGION-209. Phase: testing.", 1, 1)
 
 	// The person's done reaches the daemon while that turn runs.
-	applyAssignmentFact(t, h, engine, "done", intake.DispatchIssue{Key: "LEGION-209", Status: "done", Title: "LEGION-209", ResolvedRepo: "acme/widgets"})
+	applyEntryFact(t, h, engine, "done", intake.DispatchIssue{Key: "LEGION-209", Status: "done", Title: "LEGION-209", ResolvedRepo: "acme/widgets"})
 	opened := recordedCheck(t, h, "LEGION-209")
 	if !opened.Open() || opened.Role != claim.RoleTester || opened.Looks != 1 || !opened.LookOpen {
 		t.Fatalf("the check the merged close opened = %+v, want the tester's, open at look 1 with the look open", opened)
@@ -154,7 +154,7 @@ func theCheckIsUntouched(t *testing.T, h *harness, facts *factRecorder) {
 // an answer the agent cannot give to a field. Nothing is recorded, and the check is untouched.
 func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *testing.T) {
 	h, facts, tester, machine := mergedCloseBehindATestingTurn(t)
-	if p := machine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Assignment != "testing-1" {
+	if p := machine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != 1 {
 		t.Fatalf("the tester's delivery after the close is %+v, want the testing task still confirmed and pending: the look's start waits for it", p)
 	}
 	if look := machine.Claim().ServingCheck(); look.Look != 0 {
@@ -172,7 +172,7 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 
 // The same trace one turn later, which the claim's own look field cannot tell apart on its own.
 // The tester's testing turn ends, which retires its task and leaves the claim serving run 1 and
-// assignment testing-1; look 1's task is then sent and acknowledged, and no turn starts within
+// entry 1; look 1's task is then sent and acknowledged, and no turn starts within
 // the daemon's wait for it (the wait and its take-back are driven in internal/supervise, where
 // the clock moves: TestOnlyTheTurnBoundLeavesTheTaskMarkedAsRead). An Envoy notice — a CI answer —
 // then starts a turn of the tester's own, which confirms nothing, and the tester reports the
@@ -203,9 +203,9 @@ func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t 
 	if p := c.Pending; p == nil || p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() || p.CheckLook != look {
 		t.Fatalf("the tester's delivery is %+v, want look 1's task read and unconfirmed", p)
 	}
-	if c.ServingRun() != 1 || c.ServingAssignment() != "testing-1" || c.ServingCheck() != (supervise.CheckLook{}) {
-		t.Fatalf("the tester serves run %d, assignment %q, look %+v; want run 1, testing-1 and no look: one serving, not three",
-			c.ServingRun(), c.ServingAssignment(), c.ServingCheck())
+	if c.ServingRun() != 1 || c.ServingEntry() != 1 || c.ServingCheck() != (supervise.CheckLook{}) {
+		t.Fatalf("the tester serves run %d, entry %d, look %+v; want run 1, entry 1 and no look: one serving, not three",
+			c.ServingRun(), c.ServingEntry(), c.ServingCheck())
 	}
 
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",

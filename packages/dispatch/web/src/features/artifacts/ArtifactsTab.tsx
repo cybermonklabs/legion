@@ -1,17 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { type ReactNode, useId, useMemo } from "react";
+import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
+import { SearchBox } from "../../components/SearchBox";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useCappedAddressParam, usePageAddress } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   badgePrimary,
   borderDefault,
   dangerText,
   highlightRing,
-  inputClasses,
   linkHoverText,
   linkText,
   textMutedOnSurface,
@@ -30,12 +32,9 @@ import {
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
-import {
-  ArtifactDropZone,
-  ArtifactUploadRow,
-  CLOSED_ISSUE_UPLOAD_REFUSAL,
-  useArtifactUpload,
-} from "./ArtifactUpload";
+import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
+import { CLOSED_ISSUE_DOCUMENT_REFUSAL, CreateDocument } from "./CreateDocument";
+import { CLOSED_ISSUE_REMOVE_REFUSAL, RemoveDocument, removalIsOffered } from "./DocumentWayBack";
 
 function kindIcon(kind: Artifact["kind"]): ReactNode {
   const common = {
@@ -155,10 +154,12 @@ function References({ references }: { references: IssueReferences }): ReactNode 
 function ArtifactRow({
   artifact,
   highlighted,
+  isClosed,
   issueKey,
 }: {
   artifact: Artifact;
   highlighted: boolean;
+  isClosed: boolean;
   issueKey: string;
 }): ReactNode {
   const versions = versionsNewestFirst(artifact.versions);
@@ -220,21 +221,35 @@ function ArtifactRow({
           Download version {latestVersion.number}
         </a>
       )}
+      {/* A removal is offered only where the server can take one: a document of this issue that
+          is neither its spec nor a document that plays a role, since those are refused whatever
+          state they are in (`removalIsOffered`). Every other refusal is the server's, shown on
+          the row. */}
+      {removalIsOffered(artifact) ? (
+        <RemoveDocument
+          artifact={artifact}
+          refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+        />
+      ) : null}
     </li>
   );
 }
 
-/** The issue's artifacts, with an upload that a closed issue refuses before a file is picked. */
+/** The issue's artifacts: a control that makes a document, an upload that a closed issue refuses
+ *  before a file is picked, and every artifact the issue holds. */
 export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): ReactNode {
-  const { pathname } = useLocation();
+  const { pathname } = usePageAddress();
   const route = parseIssuePath(pathname);
   const issueKey = route?.key;
   const highlightedSlug = route?.kind === "artifact" ? route.slug : undefined;
-  const [filter, setFilter] = useState("");
-  const upload = useArtifactUpload(
-    { issue: issueKey ?? "" },
-    { refusal: isClosed ? CLOSED_ISSUE_UPLOAD_REFUSAL : null }
-  );
+  // The words that narrow the list live in the address (`?q=`), so a reader who reloads, shares
+  // the tab or comes back to it finds the list narrowed the way they left it.
+  const [filter, setFilter] = useCappedAddressParam("q");
+  // One sentence covers every control of the strip: a closed issue takes neither a new document
+  // nor an upload, and both controls are described by this line.
+  const closedRefusalId = useId();
+  const closedRefusal = isClosed ? CLOSED_ISSUE_DOCUMENT_REFUSAL : null;
+  const upload = useArtifactUpload({ issue: issueKey ?? "" }, { refusal: closedRefusal });
   const artifacts = useQuery({
     enabled: issueKey !== undefined,
     queryKey: ["artifacts", issueKey],
@@ -291,21 +306,31 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
 
   return (
     <div className="space-y-3 pt-3">
-      {/* One control strip: what narrows the list on the left, what adds to it on the right. */}
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="block min-w-48 flex-1">
-          <span className="sr-only">Filter artifacts</span>
-          <input
-            aria-label="Filter artifacts"
-            className={`block min-h-11 w-full rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-            onChange={(event) => setFilter(event.target.value)}
+      {/* One control strip: what narrows the list at its head, what adds to it after. */}
+      <ControlRow
+        search={
+          <SearchBox
+            className="w-full"
+            label="Filter artifacts"
+            onChange={setFilter}
             placeholder="Filter artifacts"
-            type="search"
             value={filter}
           />
-        </label>
-        <ArtifactUploadRow upload={upload} />
-      </div>
+        }
+      >
+        <CreateDocument
+          documents={orderedArtifacts}
+          owner={{ issue: issueKey }}
+          refusal={closedRefusal}
+          refusalShownBy={closedRefusalId}
+        />
+        <ArtifactUploadRow refusalShownBy={closedRefusalId} upload={upload} />
+        {closedRefusal === null ? null : (
+          <span className={`text-xs ${textMutedOnSurface}`} id={closedRefusalId}>
+            {closedRefusal}
+          </span>
+        )}
+      </ControlRow>
       {references.data === undefined ? null : <References references={references.data} />}
       <ArtifactDropZone upload={upload}>
         {visibleArtifacts.length === 0 ? (
@@ -320,6 +345,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
               <ArtifactRow
                 artifact={artifact}
                 highlighted={artifact.slug === highlightedSlug}
+                isClosed={isClosed}
                 issueKey={issueKey}
                 key={artifact.id}
               />

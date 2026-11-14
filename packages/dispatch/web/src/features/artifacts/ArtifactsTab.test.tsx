@@ -1,12 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { api } from "../../api/client";
-import type { Artifact, IssueReferences } from "../../api/types";
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { ApiError, api } from "../../api/client";
+import type { Artifact, ArtifactUploadResponse, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
 
@@ -50,10 +51,23 @@ const artifact = {
 
 const noReferences: IssueReferences = { members: [], truncated: false };
 
+/** The tab's own address: its path, and its query, which is where its filter lives. */
+function Location() {
+  const { pathname, search } = useLocation();
+  return (
+    <>
+      <output data-testid="location">{pathname}</output>
+      <output data-testid="location-search">{search}</output>
+    </>
+  );
+}
+
 function renderTab(
   artifacts: Artifact[],
   references: IssueReferences = noReferences,
-  isClosed = false
+  isClosed = false,
+  /** The query the tab is opened at, as a reload or a shared link hands it over. */
+  search = ""
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
   const getIssueReferences = spyOn(api, "getIssueReferences").mockResolvedValue(references);
@@ -61,9 +75,12 @@ function renderTab(
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   const view = render(
-    <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "artifacts" })]}>
+    <MemoryRouter
+      initialEntries={[`${buildIssuePath({ key: "CORE-1", kind: "artifacts" })}${search}`]}
+    >
       <QueryClientProvider client={queryClient}>
         <ArtifactsTab isClosed={isClosed} />
+        <Location />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -95,20 +112,29 @@ test("renders one row per artifact with no compare controls", async () => {
   }
 });
 
-// W41. A closed issue takes no upload, and Dispatch would refuse one only after its whole body went
-// up: the tab refuses before a file is picked, with the reason on its Upload control - and on the
-// line beside it, for a reader with no pointer - and a file dropped on it is not staged. W46. The
-// hidden file input is disabled too, so no keyboard path opens a chooser whose file is ignored.
-test("a closed issue's Artifacts tab refuses an upload before a file is picked", async () => {
+// W41. A closed issue takes neither a new document nor an upload, and Dispatch would refuse an
+// upload only after its whole body went up: the tab refuses both before a file is picked, with
+// the reason on each control - and on the one line beside them, for a reader with no pointer -
+// and a file dropped on it is not staged. W46. The hidden file input is disabled too, so no
+// keyboard path opens a chooser whose file is ignored.
+test("a closed issue's Artifacts tab refuses a new document and an upload before a file is picked", async () => {
   const user = userEvent.setup();
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, true);
   const pick = spyOn(HTMLInputElement.prototype, "click");
   try {
     await screen.findByTestId("artifact-diagram-png");
     const upload = screen.getByRole("button", { name: "Upload" });
+    const create = screen.getByRole("button", { name: "New document" });
+    const refusal = "This issue is closed. Reopen it to add a document.";
     expect(upload).toHaveAttribute("aria-disabled", "true");
-    expect(upload).toHaveAttribute("title", "This issue is closed. Reopen it to upload.");
-    expect(screen.getByText("This issue is closed. Reopen it to upload.")).toBeTruthy();
+    expect(upload).toHaveAttribute("title", refusal);
+    expect(create).toHaveAttribute("aria-disabled", "true");
+    expect(create).toHaveAttribute("title", refusal);
+    const line = screen.getByText(refusal);
+    expect(upload.getAttribute("aria-describedby")).toBe(line.id);
+    expect(create.getAttribute("aria-describedby")).toBe(line.id);
+    await user.click(create);
+    expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
     await user.click(upload);
     expect(pick).not.toHaveBeenCalled();
     const file = new File(["png"], "late.png", { type: "image/png" });
@@ -123,6 +149,168 @@ test("a closed issue's Artifacts tab refuses an upload before a file is picked",
     view.unmount();
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
+  }
+});
+
+const madeDocument = {
+  ...artifact,
+  id: "artifact-design-notes",
+  kind: "doc",
+  name: "Design notes",
+  ref_key: "CORE-1/design-notes",
+  slug: "design-notes",
+  versions: artifact.versions.slice(0, 1),
+} satisfies Artifact;
+
+function madeResponse() {
+  const [version] = madeDocument.versions;
+  if (version === undefined) {
+    throw new Error("the made document fixture requires a version");
+  }
+  return { artifact: madeDocument, version };
+}
+
+// The control sends the title alone, so the new document holds nothing, and the person is taken
+// to it on the page they are already on: the issue's artifact route renders the editor.
+test("New document on an issue makes an empty document and opens it on the same page", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(madeResponse());
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() =>
+      expect(uploadArtifact).toHaveBeenCalledWith(
+        { issue: "CORE-1" },
+        { name: "Design notes" },
+        keyedAttempt
+      )
+    );
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/issues/CORE-1/artifacts/design-notes"
+    );
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// The write compares the title with each of the owner's names and slugs (`$2 in (name, slug)`),
+// so the control refuses a slug it lists too, and names the artifact that holds the title for
+// what it is: the list holds the issue's images and files beside its documents.
+test("New document on an issue refuses a title the issue already holds", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(madeResponse());
+
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("diagram-png");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "An artifact on this issue already holds that title: diagram.png."
+    );
+    expect(uploadArtifact).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// INFRA-3135. The focus follows the form: New document opens it with the focus in Title, so the
+// title is typed at once, and Cancel closes it with the focus back on New document, the control
+// that opened it, rather than dropped on the page.
+test("New document puts the focus in Title, and Cancel gives it back to New document", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// INFRA-3135. The same by the keyboard alone: Tab reaches the filter box and then New document,
+// and Enter opens the form with the focus in Title; Tab twice reaches Cancel, and Enter closes
+// the form with the focus back on New document, so the next Tab goes on to Upload rather than
+// starting again from the top of the page.
+test("New document by the keyboard: Enter puts the focus in Title, and Cancel gives it back", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.tab();
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+
+    await user.tab();
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Upload" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// A close the reader has moved away from is not the form's to undo. While Create is out they go
+// to the filter box; the write answers, the form closes and the document opens, and the focus
+// stays in the filter box rather than going back to New document.
+test("New document leaves the focus where the reader moved it while Create was out", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+  const answer = Promise.withResolvers<ArtifactUploadResponse>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(answer.promise);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    // The title goes where the opening put the focus.
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalled());
+    const filter = screen.getByRole("searchbox", { name: "Filter artifacts" });
+    await user.click(filter);
+
+    answer.resolve(madeResponse());
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/issues/CORE-1/artifacts/design-notes"
+      )
+    );
+    expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
+    expect(filter).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
   }
 });
 
@@ -285,6 +473,53 @@ test("the filter input narrows rows by name and kind", async () => {
   }
 });
 
+// The tab's filter is part of the address, so a reader who reloads, shares the tab or walks
+// back to it finds the same narrowed list rather than the whole one.
+test("the filter rides in the address: absent until set, and found again after a reload", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = {
+    ...artifact,
+    id: "artifact-notes",
+    kind: "doc",
+    name: "notes.md",
+    slug: "notes-md",
+  };
+  const typed = renderTab([artifact, notes]);
+
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    // Nothing the reader has not asked for: the address holds no `q` until one is typed.
+    expect(screen.getByTestId("location-search").textContent).toBe("");
+
+    const filter = screen.getByRole("searchbox", { name: "Filter artifacts" });
+    await user.click(filter);
+    await user.paste("notes");
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe("?q=notes"));
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+
+    await user.clear(filter);
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+  } finally {
+    typed.view.unmount();
+    typed.listArtifacts.mockRestore();
+    typed.getIssueReferences.mockRestore();
+  }
+
+  // The same address opened afresh, as a reload hands it over: the box holds those words and
+  // the list is already narrowed by them, before anybody types.
+  const reloaded = renderTab([artifact, notes], noReferences, false, "?q=notes");
+
+  try {
+    await screen.findByTestId("artifact-notes-md");
+    expect(screen.getByRole("searchbox", { name: "Filter artifacts" })).toHaveValue("notes");
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+  } finally {
+    reloaded.view.unmount();
+    reloaded.listArtifacts.mockRestore();
+    reloaded.getIssueReferences.mockRestore();
+  }
+});
+
 test("References lists closure members with chip, via, and depth, names truncation, and renders an artifact source without an issue key, collapsed by default", async () => {
   const referencedDocument: Artifact = {
     ...artifact,
@@ -370,5 +605,89 @@ test("References names the agent that owns a conversation's artifact", async () 
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
     listAgents.mockRestore();
+  }
+});
+
+// The removal asks for nothing first: Dispatch removes only a document that holds nothing, so
+// the press goes straight out and the row the person pressed on goes with it.
+test("Remove on a document's row sends the delete and the row goes", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = {
+    ...madeDocument,
+    versions: artifact.versions.slice(0, 1),
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes]);
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
+    listArtifacts.mockResolvedValue([]);
+    return Promise.resolve();
+  });
+
+  try {
+    const row = await screen.findByTestId("artifact-design-notes");
+    await user.click(within(row).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() =>
+      expect(deleteArtifact).toHaveBeenCalledWith("artifact-design-notes", keyedAttempt)
+    );
+    await waitFor(() => expect(screen.queryByTestId("artifact-design-notes")).toBeNull());
+    expect(screen.getByText("No artifacts yet.")).not.toBeNull();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// A refusal is the server's own sentence, shown on the row where the person pressed, and the
+// document stays.
+test("a refused removal shows the server's sentence on the row", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes]);
+  const refusal =
+    "Design notes is not untouched: it holds writing; a document is removed only while it holds nothing";
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
+    new ApiError(409, { code: "ARTIFACT_NOT_UNTOUCHED", error: refusal })
+  );
+
+  try {
+    const row = await screen.findByTestId("artifact-design-notes");
+    await user.click(within(row).getByRole("button", { name: "Remove" }));
+
+    expect(await within(row).findByRole("alert")).toHaveTextContent(refusal);
+    expect(screen.getByTestId("artifact-design-notes")).not.toBeNull();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// A file artifact is refused by the same test a document that holds writing is refused by, so
+// its row offers no press that is always refused; a closed issue says why before the press.
+test("a file's row offers no removal, and a closed issue refuses the document's", async () => {
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const { getIssueReferences, listArtifacts, view } = renderTab(
+    [artifact, notes],
+    noReferences,
+    true
+  );
+
+  try {
+    const picture = await screen.findByTestId("artifact-diagram-png");
+    expect(within(picture).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    const row = screen.getByTestId("artifact-design-notes");
+    const remove = within(row).getByRole("button", { name: "Remove" });
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(remove).toHaveAttribute(
+      "title",
+      "This issue is closed. Reopen it to remove this document."
+    );
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
   }
 });

@@ -242,7 +242,8 @@ func TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree(t *testing.T) 
 		if err != nil {
 			return err
 		}
-		for _, issue := range record.Waiting(issues, slots, facts) {
+		line, _ := record.Waiting(issues, slots, facts)
+		for _, issue := range line {
 			waiting = append(waiting, issue.Issue.Key)
 		}
 		for _, slot := range slots {
@@ -428,7 +429,8 @@ func (l *ancestryLine) waiting(key string) bool {
 			return err
 		}
 		facts, err := record.ReadLineFacts(context.Background(), tx, l.records, "LEGION", issues, nil)
-		waiting = slices.ContainsFunc(record.Waiting(issues, slots, facts), func(entry record.LineEntry) bool { return entry.Issue.Key == key })
+		line, _ := record.Waiting(issues, slots, facts)
+		waiting = slices.ContainsFunc(line, func(entry record.LineEntry) bool { return entry.Issue.Key == key })
 		return err
 	}); err != nil {
 		l.t.Fatalf("read the waiting line: %v", err)
