@@ -1161,6 +1161,25 @@ type Machine struct {
 	// restarts mid-compaction leaves a claim stored working, whose agent's own get_state answer
 	// then ends it (askTurnOver).
 	compacting *compacting
+	// lostCompaction is the compaction a gone verdict dropped with the process it ran over
+	// (compactionLostProcess), kept for the let-go of that process alone and cleared by letGo,
+	// nil for none. The verdict drops the compaction before the death or the displacement
+	// records what the process ended, and a relaunch the wake pacing parks lets the process go
+	// a wake's turn later with the claim still in the working the compaction took it to, so
+	// recordEnd reads this, as it reads compacting, to tell that working from a turn's
+	// (endState). Nothing else reads it: for the rest of the daemon the compaction is gone. It
+	// is memory only, as compacting is.
+	lostCompaction *compacting
+	// turnOver is the state the claim's held suspension finds it in when it runs at the end of
+	// the turn, or of the compaction, the claim is still stored working for (suspendHeldAtEnd):
+	// the state that end gives the claim back in, idle after a turn and the state the compaction
+	// took it from after a compaction with no turn under it. It is "" at every other moment.
+	// Nothing runs any more at that end, so the let-go the stop makes reads the claim in this
+	// state rather than as a turn cut off (endState, recordEnd). The claim's own state stays
+	// working through the stop, as it always has: the stop publishes the claim while the runtime
+	// stops it (stoppingProcess), and the end gives the claim its state back only once the hold's
+	// outcome is known (turnEnded, compactEnded).
+	turnOver ClaimState
 	// processGone is what the runtime's last report of the process the claim records found
 	// (reportedProcess, Claim.ProcessGone), and false until a report has found that process
 	// gone. Every report the machine judges writes it — a gone verdict sets it and a verdict
@@ -2833,11 +2852,12 @@ func (m *Machine) retire(ctx context.Context) error {
 // no stale-plugin relaunch waits for that turn either (refreshPlugin) — the process it was to
 // replace is gone — no compaction runs against it (Machine.Compact, whose end then finds the
 // claim records none and answers ErrCompactProcessGone, giving it back nothing and sending
-// nothing: ownsCompaction) — and the process the claim records, when it records one, moves into
-// previous — the claim no longer runs it (it was stopped, found dead, or left behind), and the
-// next launch of the same session waits it out. The identity of the turn that process was
-// running goes with it (turnsDelivery): a turn whose process is gone ends by a line of its own
-// rather than by turnEnded, so nothing is left to read it, and a later turn must never end
+// nothing: ownsCompaction), and none that a gone verdict dropped with it is kept for this
+// record any more (lostCompaction) — and the process the claim records, when it records one,
+// moves into previous — the claim no longer runs it (it was stopped, found dead, or left
+// behind), and the next launch of the same session waits it out. The identity of the turn that
+// process was running goes with it (turnsDelivery): a turn whose process is gone ends by a line
+// of its own rather than by turnEnded, so nothing is left to read it, and a later turn must never end
 // naming the delivery of a turn that died with its process. So does the record a busy answer
 // made of that turn (busyTurn): the question it arms has no process left to answer it, and the
 // next process is sent the task anew. What the runtime last reported of that process goes with it
@@ -2866,7 +2886,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.staleRelaunch = nil
 	m.busyTurn = false
 	m.turnsDelivery, m.cutTurnOf, m.carried = "", "", sentences{}
-	m.compacting = nil
+	m.compacting, m.lostCompaction = nil, nil
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
@@ -2948,7 +2968,8 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// The process is gone either way the verdict splits, so a compaction running over it
 		// loses it here, before anything else is decided (compactionLostProcess): the relaunch
 		// below can be one the wake pacing parks, which writes nothing of the claim and so
-		// leaves its end nothing else to read.
+		// leaves its end nothing else to read. The record of what that process's end cut off
+		// still reads the compaction, until the let-go (Machine.lostCompaction, recordEnd).
 		m.compactionLostProcess()
 		if observation.Displaced {
 			return m.displaced(ctx, observation)

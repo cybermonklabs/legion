@@ -472,7 +472,7 @@ func TestPodUpdateAnOperatorsSuspendedClaimDropsTheOlderDaemonsAskAtItsResume(t 
 		t.Fatalf("the prompt at the resume is %+v, want the daemon's own delivery of what the suspension ended", told)
 	}
 	c := h.wantRound(testRound)
-	if p := c.Pending; p != nil && !p.Relaunch() {
+	if HoldsTask(c.Pending) {
 		t.Fatalf("pending = %+v after the resume, want the older daemon's ask dropped", c.Pending)
 	}
 	if d, held := h.store.delivery(h.token); held && !d.Relaunch() {
@@ -1327,7 +1327,7 @@ func TestPodUpdateAnAskKeepsItsRoundWhenItsIdRotates(t *testing.T) {
 	if told := prompts[sent]; !relaunchTask(told.DeliveryID) {
 		t.Fatalf("the prompt at the relaunch's ready is %+v, want the daemon's own delivery of what the death ended", told)
 	}
-	if p := h.claim().Pending; p != nil && !p.Relaunch() {
+	if p := h.claim().Pending; HoldsTask(p) {
 		t.Fatalf("pending after the relaunch's ready = %+v, want the older daemon's ask dropped", p)
 	}
 	if d, held := h.store.delivery(h.token); held && !d.Relaunch() {

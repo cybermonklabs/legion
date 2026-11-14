@@ -402,15 +402,17 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 // back a completion cannot leave the 409 describing a rule the route no longer applies.
 //
 // An empty answer also says the claim holds a task at all, which is what lets the route read
-// Pending on the strength of it: every case that returns a reason covers the nil. The daemon's own
-// delivery of a relaunch's record (supervise.Delivery.Relaunch) is no task either: it carries the
-// sentence of what the relaunch ended and no work, so it is said as that rather than read as a
-// task of no run, which is an operator's own.
+// Pending on the strength of it: the first case asks supervise.HoldsTask, so every case after it
+// reads a task. A claim holds none when it holds nothing and when it holds only the daemon's own
+// delivery of a relaunch's record (supervise.Delivery.Relaunch), which carries the sentence of
+// what the relaunch ended and no work; the reason says which, so that delivery is said as what it
+// is rather than read as a task of no run, which is an operator's own.
 func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, pending *supervise.Delivery) string {
 	switch {
-	case pending == nil:
-		return fmt.Sprintf("this claim holds no task at all, and %s is on generation %d in %s", issue, current, p)
-	case pending.Relaunch():
+	case !supervise.HoldsTask(pending):
+		if pending == nil {
+			return fmt.Sprintf("this claim holds no task at all, and %s is on generation %d in %s", issue, current, p)
+		}
 		return fmt.Sprintf("this claim holds no task, only the daemon's own delivery of what its relaunch ended (%s), and %s is on generation %d in %s",
 			pending.ID, issue, current, p)
 	case pending.Generation != current:

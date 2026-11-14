@@ -1289,10 +1289,12 @@ func (r *podUpdateRig) resumeInPod(role claim.Role) {
 
 // The same round whose live claims record no process in its pod, with the pod really gone: it
 // was replaced where it stood for a failure of its own while the sweep ran. There is nothing to
-// replace it through and nothing to wait for, so the round ends there, through the one path
-// every reading of a gone pod ends a round by (endRoundOverAGonePod), and the issue is written
-// what that path writes: nothing, because every worker of this round had answered and the pod
-// took nothing unpushed with it.
+// replace it through and nothing to wait for, so the round ends there, through the path every
+// answer of the runtime that a round's pod is gone takes (endRoundOverAGonePod), and the issue is
+// written what that path writes: nothing, because every worker of this round had answered and
+// the pod took nothing unpushed with it. Claims recording the pod in the round's place are the
+// other reading of a gone pod, and they end a round through podWentWithoutItsRound or
+// endPodUpdates instead (reconcileIssuePodUpdate).
 //
 // The suspension that lets the process go here is an operator's, and the clock is past the
 // round's bound, which is the hold the bound never steps over. It holds a pod that is there, and

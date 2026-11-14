@@ -184,8 +184,8 @@ const cutoverIdleTick = 250 * time.Millisecond
 // Dispatch is liveDispatch, which records every message the daemon posts and lists every issue
 // at a sequence below the one the record stores (cutoverStoredSeq). A claim's process is
 // cutoverAgent, which says hello on the worker stream with the launch's boot token, registers and
-// says ready over the claim routes as the plugin does, and records every prompt and ends its turn
-// at once.
+// says ready over the claim routes as the plugin does, records every task it is given, and ends
+// each prompt's turn at once.
 //
 // The first boot:
 //
@@ -863,11 +863,11 @@ func (r *cutoverRig) connect(t *testing.T, issue cutoverIssue) {
 // settled waits until issue's merger has been told something and nothing more is coming for it:
 // no start of it left in the outbox, and its claim idle with no task pending. A start that would
 // give it a second task is one of those two until its prompt is sent, and the agent ends every
-// turn at once, so a task delivered after this shows as a second prompt or a pending task.
+// turn at once, so a task delivered after this shows as a second task or a pending task.
 func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	r.await(t, issue.key+"'s merger to be told its task and hold nothing more", func() bool {
-		if len(r.prompts(issue.merger)) == 0 || r.startsQueued(t, issue.key, claim.RoleMerger) != 0 {
+		if len(r.tasks(issue.merger)) == 0 || r.startsQueued(t, issue.key, claim.RoleMerger) != 0 {
 			return false
 		}
 		held := r.daemon.claim(issue.merger)
@@ -875,7 +875,7 @@ func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 	})
 }
 
-// toldOnce holds that issue's merger was given exactly one prompt over its whole life in this
+// toldOnce holds that issue's merger was given exactly one task over its whole life in this
 // test, and that it is the merging task: the resume task of the phase it holds
 // (workflow.ResumePhaseTask), read from the issue as the record holds it now.
 func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
@@ -885,25 +885,25 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 		t.Fatalf("read %s: the record does not hold it", issue.key)
 	}
 	want := workflow.ResumePhaseTask(*stands)
-	if told := r.prompts(issue.merger); len(told) != 1 || told[0] != want {
-		t.Fatalf("%s's merger was prompted %q, want once with its merging task %q", issue.key, told, want)
+	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
+		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
 	}
 }
 
-// toldTheQueuedTask holds that issue's merger was given exactly one prompt over its whole life in
+// toldTheQueuedTask holds that issue's merger was given exactly one task over its whole life in
 // this test, and that it is the task of the start the old record queued for it
 // (cutoverSlotRepairTask).
 func (r *cutoverRig) toldTheQueuedTask(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	want := cutoverSlotRepairTask(issue.key)
-	if told := r.prompts(issue.merger); len(told) != 1 || told[0] != want {
-		t.Fatalf("%s's merger was prompted %q, want once with the task of the start the old record queued for it, %q: no other start gives it a second task",
+	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
+		t.Fatalf("%s's merger was given the tasks %q, want once with the task of the start the old record queued for it, %q: no other start gives it a second task",
 			issue.key, told, want)
 	}
 }
 
-// prompts is every task token's processes were given, oldest first (cutoverAgent.told).
-func (r *cutoverRig) prompts(token claim.Token) []string {
+// tasks is every task token's processes were given, oldest first (cutoverAgent.told).
+func (r *cutoverRig) tasks(token claim.Token) []string {
 	r.mu.Lock()
 	agents := slices.Clone(r.agents[token])
 	r.mu.Unlock()
@@ -1178,17 +1178,18 @@ func cutoverMethods(calls []fake.Call) []string {
 // cutoverAgent is one launch of a claim's process on the daemon's worker stream: the shim and the
 // Oh My Pi behind it, as far as this test needs them. It says hello with the launch's boot token,
 // answers the protocol negotiation and every question about whether a turn is running, records
-// each prompt, and takes the prompt's turn to its end at once, so a task the daemon gives it is
-// over before the next one could arrive and every task it is ever given is a prompt it recorded.
-// It is the shape of daemon_test.go's shim and wake_wave_refresh_test.go's waveTurn, serving on a
-// goroutine of its own because the daemon prompts it whenever a task reaches its claim.
+// each task it is given (every prompt but the daemon's own delivery of a relaunch's record), and
+// takes each prompt's turn to its end at once, so a task the daemon gives it is over before the
+// next one could arrive and every task it is ever given is one it recorded. It is the shape of
+// daemon_test.go's shim and wake_wave_refresh_test.go's waveTurn, serving on a goroutine of its
+// own because the daemon prompts it whenever a task reaches its claim.
 type cutoverAgent struct {
 	conn  net.Conn
 	lines *bufio.Reader
-	// mu orders the serving goroutine's writes and its record of prompts against the test's reads.
-	mu      sync.Mutex
-	writer  *shimwire.Writer
-	prompts []string
+	// mu orders the serving goroutine's writes and its record of tasks against the test's reads.
+	mu     sync.Mutex
+	writer *shimwire.Writer
+	tasks  []string
 }
 
 // dialCutoverAgent connects a process to the worker stream at address and returns once the
@@ -1253,7 +1254,7 @@ func (a *cutoverAgent) serve() {
 			// relaunched onto the current plugin is given it at its ready, before any task
 			// (dispatch://INFRA-3276 R3). What this rig counts is the tasks a merger is given.
 			if !(supervise.Delivery{ID: f.DeliveryID}).Relaunch() {
-				a.prompts = append(a.prompts, f.Message)
+				a.tasks = append(a.tasks, f.Message)
 			}
 			a.mu.Unlock()
 			a.send(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
@@ -1280,5 +1281,5 @@ func (a *cutoverAgent) send(frame shimwire.Frame) {
 func (a *cutoverAgent) told() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return slices.Clone(a.prompts)
+	return slices.Clone(a.tasks)
 }

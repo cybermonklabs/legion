@@ -184,8 +184,10 @@ func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 // daemon's own delivery of a relaunch's record (Delivery.Relaunch), which is no work of the
 // claim's. It is the one statement of that rule, and every reader that asks whether a claim still
 // owes work it was given asks it: a death's charge (chargeDeath), the workflow's owed and
-// readyWorkerTask, and api's freshSession. It takes the pointer the claim holds, nil for none,
-// because those readers hold two types of claim and the delivery is the one field they share.
+// readyWorkerTask, and api's freshSession and heldTaskNotCurrent, which then tells a nil from a
+// relaunch's delivery only to choose its reason text. It takes the pointer the claim holds, nil
+// for none, because those readers hold two types of claim and the delivery is the one field they
+// share.
 func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relaunch() }
 
 // queueRelaunch gives a claim that holds no delivery at its ready a delivery of the daemon's own

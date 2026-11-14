@@ -1311,11 +1311,10 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 	}
 	m.unansweredAsks = 0
 	if streaming {
-		if m.askFirst {
-			// The agent is still in the turn an earlier daemon saw start. Its agent_end ends it
-			// (turnEnded).
-			m.askFirst = false
-		}
+		// Streaming answers askFirst's question for good: the agent is still in the turn an
+		// earlier daemon saw start, and its agent_end ends it (turnEnded). It leaves busyTurn's
+		// armed, as the doc above says.
+		m.askFirst = false
 		return nil
 	}
 	if m.awaitsResult() {
@@ -1742,8 +1741,7 @@ func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart
 	m.claim.LastTurnStart = m.deps.Clock.Now()
 	p := m.claim.Pending
 	_, awaiting := m.timers[TimerTurn]
-	outstanding := m.awaitsResult()
-	inFlight := m.send != nil || awaiting || outstanding || (m.askFirst && (p == nil || !m.asksRoot(*p)))
+	inFlight := m.send != nil || awaiting || m.awaitsResult() || (m.askFirst && (p == nil || !m.asksRoot(*p)))
 	own := p != nil && p.ConfirmedAt.IsZero() && (start.DeliveryID == p.ID || (start.DeliveryID == "" && inFlight))
 	// The write is the confirmation where this start is the pending delivery's turn, and the
 	// claim alone where it is a foreign one; the delivery is named in the start's line for the
@@ -1941,6 +1939,11 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // answer made of the turn (busyTurn): the turn it stood for is over, however its end came — its
 // agent_end, or the agent's answer to the sweep that it is in no prompt (askTurnOver).
 //
+// A suspension held for the turn runs here, now that the turn is over (holdSuspension). Its stop
+// cuts off no turn, so what the let-go records reads the claim as idle, the state this end gives
+// it (suspendHeldAtEnd): the next process is told it was in no turn, and the task the turn
+// confirmed is no task cut off in its turn (recordEnd).
+//
 // Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
 // can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
 // task one of them holds rather than adopt the working copy they share under this turn may go now.
@@ -1967,7 +1970,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	}
 	m.askFirst, m.busyTurn = false, false
 	if m.held != nil {
-		if err := m.suspendHeld(ctx); err != nil {
+		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {
 				// The stop landed and let the process go; only its write failed, and the claim is
 				// suspended in memory (suspended).

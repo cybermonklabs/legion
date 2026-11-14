@@ -245,7 +245,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// posted again too, as that same opening rather than a new one, and no limit holds that post
 	// back either (podUpdateSweep.reposts): it is in a round for the sweep's record, and nothing
 	// more is charged for it.
-	opening := open != round && !sweep.reposts(issue, round)
+	opening := open == "" && !sweep.reposts(issue, round)
 	if opening && sweep.holds(issue) {
 		return nil
 	}
@@ -674,8 +674,11 @@ func operatorHoldReason(held []supervise.Claim) string {
 // tick would open the round over the same pod again.
 //
 // So the runtime is asked about the pod itself, through the claim the sweep's snapshot still
-// records it on, and only runtime.ErrPodGone ends the round, as every reading of a gone pod ends
-// one (endRoundOverAGonePod). What the pod has drifted to says nothing here: the round is open,
+// records it on, and only runtime.ErrPodGone ends the round, through endRoundOverAGonePod, as
+// every answer of the runtime that a round's pod is gone ends one (groupDrift's podGone,
+// podlessRound). The other reading of a gone pod, claims recording the pod in its place, ends its
+// round before this is reached, through podWentWithoutItsRound or endPodUpdates
+// (reconcileIssuePodUpdate). What the pod has drifted to says nothing here: the round is open,
 // and its recorded reasons are what its ask and its notice state.
 //
 // Any other answer, a read that could not be made included, leaves the round where it stands for

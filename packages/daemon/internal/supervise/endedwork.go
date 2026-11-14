@@ -34,11 +34,15 @@ type EndedWork struct {
 	// turn are two calls about one launch, and the second finds this launch's record standing
 	// (recordEnd).
 	Generation uint64 `json:"generation"`
-	// Turn is whether a turn was running when the process was let go: the claim was working,
-	// which is a turn the stream showed begin, one an earlier daemon's process was in, or one the
-	// agent's busy answer said it was in (recordBusyTurn). TaskTurn is whether the pending task
-	// was in a turn of that process: confirmed by one, or taken back from one by the decision that
-	// let the process go (interrupted, Machine.cutTurnOf).
+	// Turn is whether a turn was running when the process was let go: the claim was working for
+	// one, which is a turn the stream showed begin, one an earlier daemon's process was in, or
+	// one the agent's busy answer said it was in (recordBusyTurn). A claim working for nothing
+	// that runs is in no turn (endState): one whose compaction has no turn under it (compactStart
+	// puts the claim in working in no turn), and one whose held suspension runs at the end of its
+	// turn or its compaction (suspendHeldAtEnd). TaskTurn is whether the pending task was in the
+	// turn cut off: confirmed by it, or taken back from it by the decision that let the process
+	// go (interrupted, Machine.cutTurnOf). A task whose turn had ended is not, so recordEnd never
+	// sets TaskTurn without Turn.
 	Turn     bool `json:"turn,omitempty"`
 	TaskTurn bool `json:"taskTurn,omitempty"`
 	// Background is whether the process's own last activity report of its launch said background
@@ -149,8 +153,8 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 //
 // It records nothing for a claim that records no process, for noEnd, and for a launch whose end
 // is recorded already (EndedWork.Generation). Otherwise it reads what it decides on: whether a
-// turn was running (the claim is working), whether the pending task was in a turn of this
-// process (confirmed, or taken back from one by this let-go's own decision: cutTurnOf), and the
+// turn was running (the claim is working for one: endState), whether the pending task was in
+// that turn (confirmed, or taken back from it by this let-go's own decision: cutTurnOf), and the
 // launch's own activity report from the store (launchActivity), read here because the machine's
 // claim holds only what it read at its own boot and because the launch that follows clears it
 // (store's putClaim). Of a process that ran a turn, a report read before that turn began
@@ -159,10 +163,20 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // "nothing runs" as this one's. It still takes that report's background work, which the report saw
 // running in this process, so the sentence of a turn cut off names that work and then says that
 // the daemon has no report of what the turn started (relaunchSentence). Nothing is written when no
-// turn was running, no delivery was in a turn and a report of the last turn says nothing runs, or
-// when no turn was running and none had run in this process, which can have started no background
-// work; a process that ran a turn and left no report of it is recorded as unreported rather than as
-// having ended nothing. A record still untold is replaced as the union of the two (joined).
+// turn was running and a report of the last turn says nothing runs, or when no turn was running
+// and none had run in this process, which can have started no background work; a process that ran
+// a turn and left no report of it is recorded as unreported rather than as having ended nothing. A
+// record still untold is replaced as the union of the two (joined).
+//
+// A claim stored working is in a turn, except where it is working for nothing that runs
+// (endState): while a compaction runs with no turn started under it, since compactStart puts the
+// claim in working in no turn; once a gone verdict has dropped such a compaction with its process
+// (compactionLostProcess), until the let-go, which a parked relaunch makes a wake's turn after the
+// death or the displacement that calls this first; and while a held suspension runs at the end of
+// the turn or the compaction the claim was working for (suspendHeldAtEnd). The let-go there cuts
+// off no turn: the record is not Turn, its task is in no turn, and whether the process ran a turn
+// is read from the state that compaction or that end gives the claim back in, ready or idle. A
+// turn Oh My Pi started under the compaction (compacting.inTurn) is a turn as any other.
 //
 // A record written here is new words, so a prompt that carried the sentence of the record it
 // replaces carried none of this one: the mark of such a prompt goes (Machine.carried), and only a
@@ -184,13 +198,18 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	if held := m.claim.EndedWork; held.Cause != "" && held.Generation == m.claim.Generation {
 		return
 	}
-	ended := EndedWork{Cause: cause, Generation: m.claim.Generation, Turn: m.claim.State == StateWorking}
-	if p := m.claim.Pending; p != nil {
+	state := m.endState()
+	ended := EndedWork{Cause: cause, Generation: m.claim.Generation, Turn: state == StateWorking}
+	// The pending task was cut off in its turn only where a turn was running. A confirmed task
+	// whose turn had ended when the process was let go — the turn whose end runs a held
+	// suspension (suspendHeldAtEnd), or one that ended before its prompt's result came — is not.
+	if p := m.claim.Pending; p != nil && ended.Turn {
 		ended.TaskTurn = !p.ConfirmedAt.IsZero() || (m.cutTurnOf != "" && p.ID == m.cutTurnOf)
 	}
 	// A claim idle or working has run a turn in this process: idle is reached only by a turn's
-	// end, and a relaunched process comes up through ready.
-	ranTurn := m.claim.State == StateWorking || m.claim.State == StateIdle
+	// end, and a relaunched process comes up through ready. A claim working for a compaction in
+	// no turn has run one where the compaction took it from idle (endState).
+	ranTurn := state == StateWorking || state == StateIdle
 	report, reported := m.launchActivity(ctx)
 	if reported && report.Background {
 		ended.Background, ended.Kinds = true, slices.Clone(report.Kinds)
@@ -203,7 +222,7 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	// idle claim in working (sendPending's askFirst branch, answerAskFirstAfterDrop). A daemon
 	// restarted under a working claim reads the one the daemon before it stored.
 	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
-	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) {
+	if !ended.Turn && !ended.Background && (ended.Reported || !ranTurn) {
 		return
 	}
 	ended.At = m.deps.Clock.Now()
@@ -215,6 +234,33 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 		ended = held.joined(ended)
 	}
 	m.claim.EndedWork, m.carried.ended = ended, false
+}
+
+// endState is the claim's state as a let-go reads it for the turn it cuts off (recordEnd): the
+// claim's own, except for a claim stored working for nothing that runs, which reads as the state
+// it is given back in. That is the state a held suspension running at the end of the turn or the
+// compaction the claim was working for finds it in (Machine.turnOver); and, for a claim working
+// for a compaction with no turn started under it, the compaction in flight or the one a gone
+// verdict dropped with its process (Machine.compacting, Machine.lostCompaction), the state that
+// compaction took the claim from, or idle once a turn ended under it (compacting.back). A turn
+// Oh My Pi started under the compaction (compacting.inTurn) is a turn, and reads working. A
+// claim no longer working — the turn of a dead connection that ended after its compaction was
+// dropped (compactionLostProcess) — reads as it stands.
+func (m *Machine) endState() ClaimState {
+	if m.claim.State != StateWorking {
+		return m.claim.State
+	}
+	if m.turnOver != "" {
+		return m.turnOver
+	}
+	run := m.compacting
+	if run == nil {
+		run = m.lostCompaction
+	}
+	if run != nil && !run.inTurn {
+		return run.back
+	}
+	return StateWorking
 }
 
 // launchActivity is the activity report the store holds for the launch the claim records now

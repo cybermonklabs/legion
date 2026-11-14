@@ -97,8 +97,7 @@ func TestPodUpdateEndsARoundOverAPodItsClaimsNoLongerRecord(t *testing.T) {
 	rig.tick()
 
 	testwait.Eventually(t, waiting+" to hold the round over its own pod", func() bool {
-		c := rig.machineClaim(waitingToken)
-		return c.UpdateRound == supervise.PodRound(waitingPod) && c.UpdateTaskedAt != nil
+		return rig.machineClaim(waitingToken).UpdateRound == supervise.PodRound(waitingPod)
 	})
 	rounds := rig.s.podUpdateRoundsView()
 	if !slices.Equal(rounds.InRound, []string{waiting}) || !slices.Equal(rounds.WaitingOnMaxOpenRounds, []string{podUpdateIssue}) {

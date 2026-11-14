@@ -833,3 +833,220 @@ func TestARelaunchRecordsTheUnionWithAnUntoldRecord(t *testing.T) {
 	h.wantEnded(EndedWork{At: at, Cause: endStalePlugin, Generation: stale, Turn: true, TaskTurn: true,
 		Background: true, Kinds: []string{"subagent", "async-job"}, Reported: true})
 }
+
+// The statements of the sentence of a let-go that say whether it cut a turn off
+// (relaunchSentence): no turn; a turn the agent was in; and the turn of the task it holds.
+const (
+	saysNoTurn   = "You were not in a turn then."
+	saysTurnCut  = "The turn you were in was interrupted."
+	saysTaskTurn = "Your previous turn on this task was interrupted."
+)
+
+// compactingIdle is an idle claim whose process's own report named a subagent running, taken for
+// a compaction its connection holds: the claim is stored working, and no turn runs
+// (compactStart). compacted carries what Machine.Compact answers once release lets Oh My Pi
+// answer.
+func compactingIdle(t *testing.T) (h *harness, release func(), compacted chan error) {
+	t.Helper()
+	h = newHarness(t)
+	h.reach(StateIdle)
+	h.reportActivity("subagent")
+	release = h.conn.HoldCompact()
+	compacted = make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+	return h, release, compacted
+}
+
+// wantRelaunchTold is the relaunched claim, which holds no task, sent the daemon's own delivery of
+// its record at its ready (queueRelaunch), whose sentence says says.
+func (h *harness) wantRelaunchTold(says string) {
+	h.t.Helper()
+	sent := len(h.prompts())
+	h.relaunched()
+	h.m.Wait()
+	told := h.wantPrompts(sent + 1)[sent]
+	if !relaunchTask(told.DeliveryID) || !strings.Contains(told.Message, says) {
+		h.t.Errorf("the relaunched claim was sent %+v, want the daemon's own delivery of its record saying %q", told, says)
+	}
+}
+
+// A death or a displacement while the claim's session is being compacted, with no turn started
+// under the compaction, cuts off no turn: compactStart put the claim in working in no turn, and the
+// gone verdict drops the compaction before the death or the displacement records the end (judge,
+// compactionLostProcess). The record reads the claim in the state the compaction took it from
+// (endState, Machine.lostCompaction), so it names the subagent the process's report saw and no
+// turn, and the relaunched process is told it was in none. Read as the working the compaction
+// left, the record would tell it that the turn it was in was interrupted.
+func TestARelaunchRecordsNoTurnForAProcessLostDuringACompaction(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		lose  func(h *harness)
+		cause string
+	}{
+		{name: "a death", lose: func(h *harness) { h.observe(runtime.Gone) },
+			cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))},
+		{name: "a displacement", lose: func(h *harness) { h.observeDisplaced(runtime.Gone) }, cause: endDisplaced},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, release, compacted := compactingIdle(t)
+			lost, at := h.generation(), h.clock.Now()
+
+			tc.lose(h)
+
+			h.wantState(StateLaunching)
+			h.wantEnded(EndedWork{At: at, Cause: tc.cause, Generation: lost,
+				Background: true, Kinds: []string{"subagent"}, Reported: true})
+			h.wantEndedLine(tc.cause)
+			release()
+			if err := <-compacted; !errors.Is(err, ErrCompactProcessGone) {
+				t.Fatalf("the compaction whose process was lost answered %v, want ErrCompactProcessGone", err)
+			}
+			h.m.Wait()
+			h.wantRelaunchTold(saysNoTurn)
+		})
+	}
+}
+
+// The control: a turn Oh My Pi started under the compaction (compacting.inTurn) is a turn as any
+// other, and the death cuts it off, so the record and the relaunched process's sentence say so.
+func TestARelaunchRecordsTheTurnStartedUnderACompaction(t *testing.T) {
+	h, release, compacted := compactingIdle(t)
+	h.must(StreamTurnStart{Claim: h.token})
+	died, at := h.generation(), h.clock.Now()
+
+	h.observe(runtime.Gone)
+
+	h.wantState(StateLaunching)
+	cause := endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))
+	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: died, Turn: true,
+		Background: true, Kinds: []string{"subagent"}, Reported: true})
+	h.wantEndedLine(cause)
+	release()
+	if err := <-compacted; !errors.Is(err, ErrCompactProcessGone) {
+		t.Fatalf("the compaction whose process died answered %v, want ErrCompactProcessGone", err)
+	}
+	h.m.Wait()
+	h.wantRelaunchTold(saysTurnCut)
+}
+
+// An operator's suspension that arrives under a compaction with no turn under it is held, and
+// its stop cuts off no turn wherever it lands: at its deadline, while the compaction still runs,
+// the let-go reads the compaction in flight (suspendAtTimeout, letGo, endState); at the
+// compaction's end, which has dropped the compaction by then, it reads the state the end gives
+// the claim back in (compactEnded, suspendHeldAtEnd). Either way the record names no turn.
+func TestARelaunchRecordsNoTurnForASuspensionDuringACompaction(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		land   func(h *harness, release func())
+		answer error
+	}{
+		{name: "at the hold's deadline", land: func(h *harness, release func()) {
+			h.advance(testStop)
+			release()
+		}, answer: ErrCompactProcessGone},
+		{name: "at the compaction's end", land: func(_ *harness, release func()) { release() }, answer: ErrCompactSuspended},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, release, compacted := compactingIdle(t)
+			held := RequestSuspend{Claim: h.token, By: SuspendedByOperator, Reason: "the operator is draining the daemon"}
+			if err := h.handle(held); !errors.Is(err, ErrSuspendHeld) {
+				t.Fatalf("the suspension answered %v, want it held for the compaction's end", err)
+			}
+			stopped := h.generation()
+
+			tc.land(h, release)
+
+			if err := <-compacted; !errors.Is(err, tc.answer) {
+				t.Fatalf("the compaction answered %v, want %v", err, tc.answer)
+			}
+			h.m.Wait()
+			h.wantState(StateSuspended)
+			cause := endSuspended(SuspendedByOperator)
+			h.wantEnded(EndedWork{At: h.clock.Now(), Cause: cause, Generation: stopped,
+				Background: true, Kinds: []string{"subagent"}, Reported: true})
+			h.wantEndedLine(cause)
+			if got := RelaunchSentence(h.claim().EndedWork); !strings.Contains(got, saysNoTurn) {
+				t.Errorf("the record is told as %q, want it to say %q", got, saysNoTurn)
+			}
+		})
+	}
+}
+
+// A death whose relaunch the wake pacing parks, over a ready claim whose session was being
+// compacted, records nothing: the process never ran a turn, reported nothing and was in none. The
+// death finds nothing to record, so the let-go at the wake's turn decides the record again, with
+// the claim still in the working the park left it in and the compaction long dropped
+// (compactionLostProcess). What it reads that working as is the dropped compaction, kept for that
+// let-go (Machine.lostCompaction): read as a turn, the wake's turn would record one the process was
+// never in.
+func TestARelaunchRecordsNoTurnAtAParkedWakesTurnAfterACompactionLostItsProcess(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	release := h.conn.HoldCompact()
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+
+	h.observe(runtime.Gone)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	release()
+	if err := <-compacted; !errors.Is(err, ErrCompactProcessGone) {
+		t.Fatalf("the compaction whose process died answered %v, want ErrCompactProcessGone", err)
+	}
+	h.m.Wait()
+	h.wantState(StateWorking)
+	h.wantNoEnded()
+
+	h.advance(waiting.At.Sub(h.clock.Now()))
+
+	h.wantState(StateLaunching)
+	h.wantNoEnded()
+}
+
+// A suspension held for a turn runs at that turn's end (turnEnded), and its stop cuts off no turn:
+// the turn is over, so the record reads the claim as the idle that end gives it
+// (suspendHeldAtEnd, endState), and the task that turn confirmed is no task cut off in its turn.
+// The resumed process is told it was in no turn. The control is the same hold landing at its
+// deadline while the turn still runs, which cuts that turn and its task off (suspendAtTimeout),
+// and the resumed process is told so in front of the task taken back from it.
+func TestARelaunchRecordsNoTurnForAHoldThatLandsAtTheTurnsEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		land func(h *harness)
+		turn bool
+		says string
+	}{
+		{name: "at the turn's end", land: func(h *harness) { h.must(StreamTurnEnd{Claim: h.token}) }, says: saysNoTurn},
+		{name: "at the hold's deadline, in the turn", land: func(h *harness) { h.advance(testStop) }, turn: true, says: saysTaskTurn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateWorking)
+			h.reportActivity("subagent")
+			held := RequestSuspend{Claim: h.token, By: SuspendedByOperator, Reason: "the operator is draining the daemon"}
+			if err := h.handle(held); !errors.Is(err, ErrSuspendHeld) {
+				t.Fatalf("the suspension answered %v, want it held for the turn's end", err)
+			}
+			stopped := h.generation()
+
+			tc.land(h)
+
+			h.wantState(StateSuspended)
+			cause := endSuspended(SuspendedByOperator)
+			h.wantEnded(EndedWork{At: h.clock.Now(), Cause: cause, Generation: stopped, Turn: tc.turn, TaskTurn: tc.turn,
+				Background: true, Kinds: []string{"subagent"}, Reported: true})
+			h.wantEndedLine(cause)
+			sent := len(h.prompts())
+			h.must(RequestResume{Claim: h.token})
+			h.reach(StateReady)
+			told := h.wantPrompts(sent + 1)[sent]
+			if !strings.Contains(told.Message, tc.says) {
+				t.Errorf("the resumed claim was sent %+v, want it to say %q", told, tc.says)
+			}
+			if !tc.turn && strings.Contains(told.Message, saysTaskTurn) {
+				t.Errorf("the resumed claim was sent %+v, want no word of a turn of its task cut off", told)
+			}
+		})
+	}
+}
