@@ -1,5 +1,5 @@
 {
-  "commands": 34,
+  "commands": 35,
   "refusals": 29,
   "runs": [
     {
@@ -1161,6 +1161,34 @@
       ]
     },
     {
+      "tool": "dispatch_priorities",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/priorities",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "1 priority.",
+        "ship-the-daemon · Ship the daemon · owner person@example.com",
+        "  6 open (backlog 1, todo 2, in_progress 3) · 2 claimed · 1 open ask · 4 closed in the last 7 days · newest event 2026-01-02T03:04:05Z",
+        "",
+        "Work under no priority (1: DSP 1):",
+        "- DSP-7 [in_progress] Rotate the broker keys · DSP · person@example.com · changed 2026-01-02T03:04:05Z",
+        "",
+        "Priority work parked (1: ship-the-daemon 1):",
+        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon (inherited) · parked 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
+      ]
+    },
+    {
       "tool": "dispatch_project",
       "call": "valid",
       "args": {
@@ -1385,6 +1413,7 @@
         "Priority: P1",
         "Labels: infra",
         "Components: none live",
+        "Advances: ship-the-daemon (own), legion-first (inherited)",
         "Route: none",
         "Repository: owner/repo (own)",
         "Progress: none",
