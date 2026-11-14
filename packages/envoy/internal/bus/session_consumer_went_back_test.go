@@ -14,9 +14,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// wentBackPath is one path that keeps or restarts a session's consumer, run on the consumer of
+// restartPath is one path that keeps or restarts a session's consumer, run on the consumer of
 // session with filters, returning the start that the restart the path ends in answered.
-type wentBackPath func(t *testing.T, consumers *SessionConsumers, session string, filters []string) SessionConsumerStart
+type restartPath func(t *testing.T, consumers *SessionConsumers, session string, filters []string) SessionConsumerStart
 
 // restartAfterAWholeLossLeftItUnreconciled makes the consumer nats-server v2.15.1 leaves
 // unreconciled when a one-copy stream lost every message (L = 0) and the consumer had delivered
@@ -29,14 +29,16 @@ type wentBackPath func(t *testing.T, consumers *SessionConsumers, session string
 // server's reconcile of that consumer writes a state that is all 0, which the consumer's file
 // store reads as state not loaded yet and writes the old state back over (ackFloor), so the
 // consumer still reports an ack floor of N, above the stream's last sequence, while the stream
-// carries the identity it had before the loss: its sequences went back (r6, RestartAtFloor).
+// carries the identity it had before the loss: its sequences went back (RestartAtFloor).
 //
 // The stream then stores K = 2 messages on the session's agent subject, at 1 and 2, which the
-// consumer as it was would never hand over: its next sequence is N + 1. path must answer the
-// consumer created again at 1, the stream's first sequence, with the server reporting that start,
-// write r6's one WARN line naming the floor N, the stream's last sequence 2, the stream's identity
-// and the start 1, and the consumer must then hand over both messages in stream order.
-func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path wentBackPath) {
+// consumer as it was would never hand over: its next sequence is N + 1, past the stream's end.
+// path must answer the consumer created again at 1, the stream's first sequence, with the server
+// reporting that start; the restart's create, asked for N + 1, clamps it there and writes the
+// clamp's one WARN line naming the start asked N + 1, the stream's last sequence 2, the stream's
+// identity and the start 1 (create); and the consumer must then hand over both messages in stream
+// order.
+func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path restartPath) {
 	t.Helper()
 	srv, uri := testnats.Start(t)
 	owner, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
@@ -119,8 +121,8 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 		t.Errorf("the restart of a consumer whose ack floor %d is above the stream's last sequence %d = %+v; want %+v, the consumer created again at the stream's first sequence", info.AckFloor.Stream, held[1], restarted, want)
 	}
 	requireConsumerStart(t, consumers, session, 1, "the stream's first sequence, where the restart created it again")
-	requireOneLine(t, logs, "WARN", wentBackLine, session, map[string]any{
-		"ack_floor":       uint64(before),
+	requireOneLine(t, logs, "WARN", clampedStartLine, session, map[string]any{
+		"asked_start":     uint64(before + 1),
 		"stream_last_seq": held[1],
 		"stream_id":       id,
 		"consumer_start":  uint64(1),
@@ -133,9 +135,9 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 
 // A restart at its floor (RestartAtFloor) of the consumer a one-copy stream's whole loss left
 // unreconciled restarts it at the stream's first sequence (restartAfterAWholeLossLeftItUnreconciled):
-// nothing it delivered awaits an ack, so it would be kept were its floor not above the stream's last
-// sequence, and r6 is decided before the keep and before the next sequence past the end that the
-// keep checks.
+// nothing it delivered awaits an ack, so it would be kept were its next sequence, the floor the
+// server reports plus one, not past the stream's end, and the create of the restart that follows
+// clamps that next sequence to the stream's first sequence.
 func TestRestartAtFloorRestartsAConsumerAWholeLossLeftUnreconciledAtTheStreamsFirstSequence(t *testing.T) {
 	restartAfterAWholeLossLeftItUnreconciled(t, "ses_went_back_restarted", func(t *testing.T, consumers *SessionConsumers, session string, filters []string) SessionConsumerStart {
 		t.Helper()

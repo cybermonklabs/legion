@@ -18,13 +18,11 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// The WARN lines of a start and of a floor past the stream's end (create, recordResumeFloorAt), and
-// of a restart at the stream's first sequence after its sequences went back (RestartAtFloor). A
+// The WARN lines of a start and of a floor past the stream's end (create, recordResumeFloorAt). A
 // production check reads them by these texts, so the tests name them whole.
 const (
 	clampedStartLine = "session consumer start past the stream's end, created at the stream's first sequence"
 	cappedFloorLine  = "session resume floor past the stream's end, recorded at the stream's last sequence"
-	wentBackLine     = "session consumer ack floor past the stream's end, the stream's sequences went back, restarted at the stream's first sequence"
 )
 
 // pastTheEnd is how far past the stream's last sequence a case puts its start: 2^20, far past any
@@ -352,12 +350,11 @@ func TestAFaultedCreateOfAClampedStartWritesNoLine(t *testing.T) {
 // which keeps a consumer with nothing awaiting an ack (keepAtFloor), and the relay's keep of a
 // consumer as the consumer list read it (KeepListed), which answers not kept so the relay runs that
 // restart (cmd/listener session_relay.go). nats-server v2.15.1 reports such a consumer's ack floor
-// as the sequence before its start, OptStartSeq - 1, above the stream's last sequence: the shape of
-// a stream whose sequences went back, which is decided before a next sequence past the end (r6
-// before r4, RestartAtFloor). So the restart creates the consumer at the stream's first sequence,
-// which create does not clamp, writes r6's one line and no clamp line, and the consumer is handed
-// every message stored on the session's agent subject below its old start, which the consumer as it
-// was skips, and then the next one stored.
+// as the sequence before its start, OptStartSeq - 1, above the stream's last sequence, so its next
+// sequence, its old start, is past the stream's end. So the restart deletes the consumer and
+// creates it again at that old start, which create clamps to the stream's first sequence, writing
+// the clamp's one line, and the consumer is handed every message stored on the session's agent
+// subject below its old start, which the consumer as it was skips, and then the next one stored.
 //
 // The consumer is created as that build created it, with the settings and filters this build gives
 // the subjects each path is passed (createAsAnEarlierBuild), so only its start can make a path
@@ -393,24 +390,21 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequen
 		return held
 	}
 	// restarted requires session's consumer, created at lastSeq + 2^20 and restarted with the
-	// stream's last sequence at lastSeq + 2, to start at the stream's first sequence, and r6's one
-	// line for it and no clamp line: the floor the server reports is lastSeq + 2^20 - 1, above the
-	// stream's last sequence.
+	// stream's last sequence at lastSeq + 2, to start at the stream's first sequence, and the
+	// clamp's one line for it: the restart asked create for lastSeq + 2^20, the sequence after
+	// the floor the server reports, lastSeq + 2^20 - 1.
 	restarted := func(t *testing.T, session string, lastSeq uint64, start SessionConsumerStart) {
 		t.Helper()
 		if want := (SessionConsumerStart{Created: true, StartSeq: first, StreamID: id, AckFloor: first - 1}); start != want {
 			t.Errorf("RestartAtFloor of a consumer created at %d, past the stream's last sequence %d = %+v; want %+v, the consumer created again at the stream's first sequence", lastSeq+pastTheEnd, lastSeq+2, start, want)
 		}
 		requireConsumerStart(t, consumers, session, first, "the stream's first sequence, where the restart created it again")
-		requireOneLine(t, logs, "WARN", wentBackLine, session, map[string]any{
-			"ack_floor":       lastSeq + pastTheEnd - 1,
+		requireOneLine(t, logs, "WARN", clampedStartLine, session, map[string]any{
+			"asked_start":     lastSeq + pastTheEnd,
 			"stream_last_seq": lastSeq + 2,
 			"stream_id":       id,
 			"consumer_start":  first,
 		})
-		if lines := sessionLines(t, logs, clampedStartLine, session); len(lines) != 0 {
-			t.Errorf("the log holds %v for the restart; want no clamp line: the stream's first sequence is not past the stream's end", lines)
-		}
 	}
 	// delivered requires session's consumer, whichever path it took, to be handed the messages
 	// stored below its old start, held, and then the next message stored on its agent subject, in

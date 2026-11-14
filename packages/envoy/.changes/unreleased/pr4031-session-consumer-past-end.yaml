@@ -21,5 +21,5 @@ body: |-
   still wait for an ack are delivered again. A consumer whose ack floor the server reports above
   the stream's last sequence, because the stream's sequences went back when a one-copy stream
   lost every message, is restarted at the stream's first sequence at the relay's next restart of
-  the session, with one WARN line, so it gets the messages now stored at those sequences. This
-  includes a consumer that an earlier build created past the end.
+  the session, through the same reset and its WARN line, so it gets the messages now stored at
+  those sequences. This includes a consumer that an earlier build created past the end.
