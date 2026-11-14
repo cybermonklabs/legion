@@ -409,8 +409,8 @@ again.
 ## `agent-decision on <KEY>` (`{kind: "agent-decision", role, agent_decision}`)
 
 Where the deployment configures the daemon's answer loop, a person's decision on an ask that an
-agent that is not running opened (their answer to the ask, or their reply that hands the ask back
-to the agent) goes once to the architect that owns the agent's issue while that architect holds
+agent that is not running opened (their answer to the ask, or their reply that leaves the ask on
+the agent's turn) goes once to the architect that owns the agent's issue while that architect holds
 its role, and to you otherwise. `agent_decision` is `{id, issue, session, asker, ref, text}`: the
 agent is the `role` of `agent_decision.issue` in `agent_decision.session`, `asker` is the person
 (`user:<login>`), `ref` is their answer (`dispatch://<KEY>/ask/<id>`) or their reply
