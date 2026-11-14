@@ -35,6 +35,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/agents/known": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Which of the sessions the repeated session parameter names (1 to 100 session ids) Dispatch holds any record of, so a page links a dispatch://agent/<session id> reference only where that conversation exists, an ended session's included: {sessions: [{session_id, title}]} in the order asked, each once, and no row for an id with no record. A record is the registry copy GET /api/v1/agents lists (whatever its age), an event the session wrote, a message targeted at it, a message or comment delivery to it, a file or image of its conversation, or an ask it follows; title is the registry copy's, null where that copy lists the session with none or does not list it. One statement answers the whole batch. A parameter other than session, no session, more than 100, or a value that is no session id is 400 INVALID_QUERY naming the parameter. It needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits; session names the sessions asked about here, never the session the request acts for. */
+    get: operations["getApiV1AgentsKnown"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/agents/{session_id}/answers": {
     parameters: {
       query?: never;
@@ -5126,6 +5143,13 @@ export interface components {
     KeepDecisionInput: {
       text_sha256: string;
     };
+    KnownSession: {
+      session_id: string;
+      title: null | string;
+    };
+    KnownSessions: {
+      sessions: components["schemas"]["KnownSession"][] | null;
+    };
     LauncherCredentialResp: {
       approved_by: string;
       credential_id: string;
@@ -6053,6 +6077,37 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Agent"][];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AgentsKnown: {
+    parameters: {
+      query?: {
+        session?: string[];
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["KnownSessions"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13404,6 +13459,8 @@ export type ItemBlock = components["schemas"]["ItemBlock"];
 export type ItemBlocks = components["schemas"]["ItemBlocks"];
 export type JsonArtifactUpload = components["schemas"]["JsonArtifactUpload"];
 export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
+export type KnownSession = components["schemas"]["KnownSession"];
+export type KnownSessions = components["schemas"]["KnownSessions"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];

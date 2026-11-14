@@ -3111,6 +3111,14 @@ Each item below names a path with its method and identity, then its purpose.
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
 
+- `/api/v1/agents/known?session=&session=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
+
+  Which of the session ids `session` names, repeated once per id (1 to 100), Dispatch holds any record of: `{sessions: [{session_id, title}]}`, in the order asked, each once, and no row for an id with none.
+  A page asks once for every `dispatch://agent/<session id>` reference that `GET /api/v1/agents` does not list, and links the reference only where the answer names the session, so an ended session's conversation links and an id no agent ever held does not.
+  A record is the listener copy `GET /api/v1/agents` lists (whatever its age), an event the session wrote, a message targeted at it, a message or comment delivery to it, a file or image of its conversation, or an ask it follows, all read in one statement; `title` is that copy's, `null` where it holds none.
+  A parameter other than `session`, no `session`, more than 100, or a value that is no session id is `400 INVALID_QUERY` naming the parameter.
+  It admits exactly the callers `GET /api/v1/agents/{session_id}/messages` admits, and its `session` names the sessions asked about, never the session the request acts for.
+
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
   What people wrote that Dispatch delivered to one session, newest first:

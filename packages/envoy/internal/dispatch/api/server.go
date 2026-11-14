@@ -1236,18 +1236,10 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // proved a session is refused a parameter naming another, 403 ACTOR_SESSION_MISMATCH, which is
 // what bearerSessionActor answers the same disagreement in a body.
 func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
-	actor, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	actor, ok := s.personCredential(w, r)
+	if !ok {
 		return model.Actor{}, false
 	}
-	if !actor.Credential.Holds(model.ScopePerson) {
-		refuseMissingScope(w, model.ScopePerson, fmt.Sprintf(
-			"this request's credential does not hold the %s scope, which this route requires", model.ScopePerson))
-		return model.Actor{}, false
-	}
-	// Past that check the credential is not nil: Credential.Holds answers false for nothing at
-	// all.
 	credential := actor.Credential
 	person := actor.ID
 	if actor.Owner != nil {
@@ -1272,6 +1264,28 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 		}
 	}
 	return model.Actor{Kind: "user", ID: model.CanonicalLogin(person), Act: act}, true
+}
+
+// personCredential answers the caller of a request whose credential holds the `person` scope and
+// refuses every other caller, as actingPerson does: these are the checks actingPerson makes of
+// the credential before it reads which session the request acts for. GET /api/v1/agents/known
+// (agents_known.go) calls it alone, because it must admit exactly the callers the conversation
+// read GET /api/v1/agents/{session_id}/messages admits through actingPerson, while its `session`
+// parameter names the sessions it is asked about rather than the one the request acts for. The
+// actor is the credential's own, not yet resolved to the person it acts for. Past it the
+// credential is not nil: Credential.Holds answers false for nothing at all.
+func (s *server) personCredential(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
+	actor, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return model.Actor{}, false
+	}
+	if !actor.Credential.Holds(model.ScopePerson) {
+		refuseMissingScope(w, model.ScopePerson, fmt.Sprintf(
+			"this request's credential does not hold the %s scope, which this route requires", model.ScopePerson))
+		return model.Actor{}, false
+	}
+	return actor, true
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the

@@ -77,6 +77,15 @@ export type MessageDeliveryMode = DeliveryCapability;
 export const MAX_BROADCAST_RECIPIENTS = 100;
 
 /**
+ * The most session ids one `GET /api/v1/agents/known` names (`session`, repeated). A page asks
+ * once for every agent reference it holds that the live registry does not list, so the bound is a
+ * page's worth with room to spare, and a page holding more asks in batches of this size. Generated
+ * into Go as `contracts.KnownSessionsMax`, which the server enforces with `400 INVALID_QUERY`, so
+ * the dashboard's batches and the server's refusal are one number.
+ */
+export const KNOWN_SESSIONS_MAX = 100;
+
+/**
  * The request header that names one write's intent: the same on every retry of that write, and
  * different for every new press. Dispatch accepts it, optionally, on every `POST` and `PATCH`
  * route (`PUT` and `DELETE` are idempotent already): a repeat with the same key and the same

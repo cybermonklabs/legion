@@ -81,11 +81,13 @@ type routeShape struct {
 //
 // One struct per route, or per set of routes reading the same keys, each field carrying the key
 // it is read from. They are declarations: the handlers keep their own reads. Two keys of the API
-// are named by no struct here. `session` is read by actingPerson (server.go) on every route that
-// resolves a person, so it belongs to the whole API rather than to any one operation and the
-// emitter adds it everywhere; the delivery facet of the same name is left out with it. `cursor`
-// on GET /api/v1/issues is read only to refuse it (400 INVALID_QUERY, issue_page.go), and naming
-// it would offer a client a parameter that cannot work. No struct here is ever a request body,
+// are left to no route's struct. `session` is read by actingPerson (server.go) on every route
+// that resolves a person, so it belongs to the whole API rather than to any one operation and the
+// emitter adds it everywhere; the delivery facet of the same name is left out with it. The one
+// route where it means neither, GET /api/v1/agents/known, declares it (knownSessionsRouteQuery),
+// and that declaration replaces the whole API's there. `cursor` on GET /api/v1/issues is read
+// only to refuse it (400 INVALID_QUERY, issue_page.go), and naming it would offer a client a
+// parameter that cannot work. No struct here is ever a request body,
 // and the emitter reads only each field's `query` and `enum` tags and the Go type it carries.
 
 // projectArtifactsQuery is GET /api/v1/projects/{key}/artifacts's query.
@@ -380,6 +382,18 @@ type sessionAnswersQuery struct {
 	Since string `query:"since"`
 	// MaxChars bounds how much of each item's text the answer carries.
 	MaxChars int `query:"max_chars"`
+}
+
+// knownSessionsRouteQuery is GET /api/v1/agents/known's query. Its one key is `session`, the key
+// the whole API reads as the session a request acts for, and it means something else here: the
+// sessions the route is asked about. So this struct declares it, and the emitter writes this
+// declaration in place of the whole API's (openapi.go, parameters). The name carries `route`
+// because knownSessionsQuery is the statement the handler runs.
+type knownSessionsRouteQuery struct {
+	// Session is one session id asked about, repeated once per id, 1 to
+	// contracts.KnownSessionsMax of them; each must be a session id by text.IsSessionID. Anything
+	// else, and any other parameter, is 400 INVALID_QUERY.
+	Session []string `query:"session"`
 }
 
 // issueAsksQuery is GET /api/v1/issues/{key}/asks's query.
@@ -698,6 +712,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
 	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},
+	"GET /api/v1/agents/known": {
+		Status: http.StatusOK, Response: knownSessions{}, Params: knownSessionsRouteQuery{},
+	},
 	"GET /api/v1/agents/{session_id}/answers": {
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},

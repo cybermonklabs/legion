@@ -31,7 +31,8 @@ import (
 
 // queryKeyExceptions are the two keys read by a handler and named by no parameters struct, each
 // deliberate. session is read by actingPerson on every route that resolves a person, so it
-// belongs to the whole API rather than to one route and openapi.go adds it to every operation.
+// belongs to the whole API rather than to one route and openapi.go adds it to every operation
+// but GET /api/v1/agents/known, whose parameters struct declares it with a meaning of its own.
 // cursor is read by parseIssuePage only to refuse it (400 INVALID_QUERY), so naming it would
 // offer a client a parameter that cannot work.
 var queryKeyExceptions = map[string]string{

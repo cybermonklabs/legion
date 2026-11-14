@@ -566,6 +566,10 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The Dismiss beside it writes the person's own dismissal marks, so it is theirs too.
 		"POST /api/v1/me/inbox/dismiss",
 		"GET /api/v1/agents/{session_id}/messages",
+		// Which sessions Dispatch holds a record of is this change's own row: it answers only
+		// what the conversation read above already tells a caller, so it admits the callers
+		// that read admits and needs its scope.
+		"GET /api/v1/agents/known",
 		"POST /api/v1/agents/{session_id}/messages",
 		"POST /api/v1/broadcasts",
 		"GET /api/v1/broadcasts",

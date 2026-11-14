@@ -1,5 +1,6 @@
 GET /api/v1 public
 GET /api/v1/agents any
+GET /api/v1/agents/known any
 GET /api/v1/agents/{session_id}/answers any
 POST /api/v1/agents/{session_id}/artifacts any
 GET /api/v1/agents/{session_id}/artifacts/{slug} any

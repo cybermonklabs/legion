@@ -24,6 +24,7 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
   ISSUE_TITLE_MAX,
+  KNOWN_SESSIONS_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
@@ -278,6 +279,11 @@ const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
+// KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
+// cannot drift apart.
+const KnownSessionsMax = ${KNOWN_SESSIONS_MAX}
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the \`dispatch search\`
