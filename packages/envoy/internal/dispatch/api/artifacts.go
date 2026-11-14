@@ -998,11 +998,13 @@ type artifactVersionText struct {
 const maxVersionNumber = math.MaxInt32
 
 // versionNumberInRange reports whether a version number the caller named is no greater than
-// maxVersionNumber. Every route that takes a version number from its caller holds it to this
-// bound before any query is made with it, with its own lower bound and its own refusal:
-// parseVersionNumber for a path or a query, and the read mark's body (putDocumentRead). The plan
-// review's body needs no check of its own, since it refuses every version above the plan's
-// latest, which is within the bound (createArtifactPlanReview).
+// maxVersionNumber. Three handlers hold the number they take to this bound before any query is
+// made with it, each with its own lower bound and its own refusal: the two of this file that read
+// it from a path or a query (parseVersionNumber), and the read mark's body (putDocumentRead). The
+// plan review's body needs no check of its own, since it refuses every version above the plan's
+// latest, which is within the bound (createArtifactPlanReview). A reference's `@v<n>` pin is held
+// to the same bound by its own checks in refs (BlockTextAt, blockPrefixCandidates), which answer
+// a version past it as one the document does not have.
 func versionNumberInRange(number int) bool {
 	return number <= maxVersionNumber
 }
@@ -1026,7 +1028,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	number, valid := parseVersionNumber(r.PathValue("number"))
 	if !valid {
-		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "version number must be positive")
+		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("version number must be from 1 to %d", maxVersionNumber))
 		return
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
@@ -1164,7 +1166,7 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 	from, fromValid := parseVersionNumber(query.Get("from"))
 	to, toValid := parseVersionNumber(query.Get("to"))
 	if !fromValid || !toValid {
-		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "from and to must be positive version numbers")
+		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("from and to must be version numbers from 1 to %d", maxVersionNumber))
 		return
 	}
 	if from >= to {
