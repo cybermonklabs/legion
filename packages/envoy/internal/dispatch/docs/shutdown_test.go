@@ -339,8 +339,11 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 // for it; drainCtx having already expired by the time this one tries to commit still leaves it to
 // resume (a documented, non-error outcome), but the worker returns in time for Shutdown itself to
 // read that back and finish cleanly rather than time out (LEGION-501).
+//
+// Serial: it holds Shutdown to a wall-clock deadline, production's ShutdownDrainBudget plus the
+// 5 s reserve, which the render's 3.4 s overrun leaves 1.6 s of; a parallel neighbour's load
+// spends that margin, and the deadline is the row's subject, so it runs with the machine to itself.
 func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
@@ -361,20 +364,18 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 			return
 		}
 		once.Do(func() { close(entered) })
-		// Finish 3.4 s past the per-room drain budget - the measured overrun - well inside the
-		// reserve the deadline above keeps past it. A plain sleep, not a context wait: a render
-		// or commit already running does not stop the instant drainCtx's deadline passes either.
+		// Finish 3.4 s past the per-room drain budget - the measured overrun - with 1.6 s of the
+		// reserve still to spare. A plain sleep, not a context wait: a render or commit already
+		// running does not stop the instant drainCtx's deadline passes either.
 		time.Sleep(ShutdownDrainBudget + 3400*time.Millisecond)
 	}
 
-	// The document service's own production deadline - ShutdownDrainBudget plus the 5 s reserve
-	// cmd/dispatch/shutdown.go's documentShutdownTimeout adds past it - and the package's own
-	// wait on top of it. That reserve is measured against the render's 3.4 s overrun alone,
-	// while the rest of Shutdown (reaching the hook, the refused commit, the worker's return)
-	// takes as long as the loaded machine takes: under load on a two-core pod Shutdown returned
-	// 13.03 s into the 14 s, and on CI job 128420803760 it ran out ("Shutdown returned document
-	// settlement unconfirmed at shutdown ... context deadline exceeded").
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), ShutdownDrainBudget+5*time.Second+roomWait(t))
+	// The document service's own production deadline: ShutdownDrainBudget plus the 5 s reserve
+	// cmd/dispatch/shutdown.go's documentShutdownTimeout adds past it. Under load on a two-core
+	// pod Shutdown returned 13.03 s into the 14 s, and on CI job 128420803760 it ran out
+	// ("Shutdown returned document settlement unconfirmed at shutdown ... context deadline
+	// exceeded"): that is the reserve proving too small, which this row exists to report.
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), ShutdownDrainBudget+5*time.Second)
 	defer cancelShutdown()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
@@ -387,7 +388,7 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 	var shutdownErr error
 	select {
 	case shutdownErr = <-shutdown:
-	case <-time.After(roomWait(t)):
+	case <-time.After(15 * time.Second):
 		t.Fatal("Shutdown did not return once the render finished")
 	}
 	if shutdownErr != nil {

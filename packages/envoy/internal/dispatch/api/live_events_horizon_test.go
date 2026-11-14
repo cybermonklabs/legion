@@ -655,7 +655,9 @@ func TestShutdownEndsAnEventsSubscriptionWaitingOnTheHorizon(t *testing.T) {
 	createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	since := eventHead(t, rig.database)
 
-	holdClusterTransactionID(t, 30*time.Second)
+	// The hold outlasts the heartbeat's wait and the close wait together, so a shutdown that held
+	// the socket until this transaction ended would close it only after closeCode gave up.
+	holdClusterTransactionID(t, 3*eventFeedWait)
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", &since)
 	awaitHeartbeat(t, client, eventFeedWait, "while the horizon is held")

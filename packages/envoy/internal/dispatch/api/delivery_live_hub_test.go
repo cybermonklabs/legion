@@ -471,9 +471,20 @@ func (c *fakeLiveConn) next(t *testing.T, within time.Duration, what string) any
 	}
 }
 
-// none fails when the conn is sent a frame within within.
+// none fails when the conn is sent a frame within within. A zero window reads the queue once
+// without waiting: time.After(0) is ready as the select starts, and a select with two ready
+// cases picks one at random, so a frame already queued would be missed about one run in two.
 func (c *fakeLiveConn) none(t *testing.T, within time.Duration, after string) {
 	t.Helper()
+	if within <= 0 {
+		select {
+		case frame := <-c.frames:
+			raw, _ := json.Marshal(frame)
+			t.Fatalf("after %s, a frame nobody should be sent: %s", after, raw)
+		default:
+		}
+		return
+	}
 	select {
 	case frame := <-c.frames:
 		raw, _ := json.Marshal(frame)

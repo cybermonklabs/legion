@@ -173,14 +173,11 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	if got, want := resolved(current), []string{"ask", "ask_block", "comment", "comment_block", "issue", "message", "message_block"}; !slices.Equal(got, want) {
 		t.Errorf("this build resolves the kinds %v; want %v", got, want)
 	}
-	loaders := nodeLoaders
 	previous := make(map[string]nodeLoader, len(previousReleaseNodeKinds))
 	for _, kind := range previousReleaseNodeKinds {
-		previous[kind] = loaders[kind]
+		previous[kind] = nodeLoaders[kind]
 	}
-	nodeLoaders = previous
-	older, err := resolveNodes(ctx, tx, false, ends)
-	nodeLoaders = loaders
+	older, err := resolveNodesWith(ctx, tx, false, ends, previous)
 	if err != nil {
 		t.Fatalf("resolve the ends as the previous release: %v", err)
 	}

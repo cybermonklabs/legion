@@ -439,6 +439,12 @@ var nodeKinds = slices.Sorted(maps.Keys(nodeLoaders))
 
 // resolveNodes loads every distinct other end by kind.
 func resolveNodes(ctx context.Context, q Queryer, byRefKey bool, rows []edgeRow) (map[[2]string]resolvedNode, error) {
+	return resolveNodesWith(ctx, q, byRefKey, rows, nodeLoaders)
+}
+
+// resolveNodesWith is resolveNodes resolving the kinds loaders holds in place of nodeLoaders, as
+// a build whose nodeLoaders is loaders would.
+func resolveNodesWith(ctx context.Context, q Queryer, byRefKey bool, rows []edgeRow, loaders map[string]nodeLoader) (map[[2]string]resolvedNode, error) {
 	byKind := make(map[string][]string)
 	seen := make(map[[2]string]struct{})
 	for _, row := range rows {
@@ -451,7 +457,7 @@ func resolveNodes(ctx context.Context, q Queryer, byRefKey bool, rows []edgeRow)
 	}
 	nodes := make(map[[2]string]resolvedNode, len(seen))
 	for kind, ids := range byKind {
-		load, known := nodeLoaders[kind]
+		load, known := loaders[kind]
 		if !known {
 			// A kind this build cannot address is a node a newer build added, read while both
 			// builds serve one graph_edges: its edges are omitted, as an edge whose other end no
