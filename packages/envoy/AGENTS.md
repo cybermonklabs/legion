@@ -5617,13 +5617,16 @@ every form refuses a sign-in in another account than the key's, naming both (`re
 GCP: loads the person's Application Default Credentials (`google.FindDefaultCredentials`:
 the file `GOOGLE_APPLICATION_CREDENTIALS` names whenever it is set, else `~/.config/gcloud/application_default_credentials.json` whatever `CLOUDSDK_CONFIG` says, else the metadata server) and calls Secret Manager itself under `cloud.google.com/go/secretmanager`, so IAM in that project decides what the person may read or write.
 A load that fails while `GOOGLE_APPLICATION_CREDENTIALS` is set names that variable and advises no sign-in, since no other file is read while it is set;
-one that fails while it is unset signs every form, a read included, in with the person's gcloud login instead (`gcloudLogin`).
+one that fails while it is unset signs every form, a read included, in with the person's gcloud login instead (`gcloudLogin`), then, only when gcloud cannot supply that login, with the raw `CLOUDSDK_AUTH_ACCESS_TOKEN` lent to the command (one stderr line names that fallback and gcloud's error, never the token).
 GCP's requireAccount is a no-op, unlike AWS's:
 every call already names `projects/<project number>/...` explicitly, so a wrong-project identity gets a real refusal from the API itself rather than silently reading another project's secrets - the hazard AWS's `ListSecrets` (which takes no project parameter) has and GCP's calls do not.
 A write runs only under a person's own Google Account sign-in (`gcpBackend.requireWriteSignIn`, reached only through `connectWriter`):
 ADC of type `authorized_user` write as they are;
-under any other ADC - a service account key file, a workload identity federation credential (a dev box's own), a workforce identity federation sign-in, or a GCE/GKE metadata-server identity (GKE Workload Identity's too), whose ADC carries no JSON at all - it signs the backend in with the person's gcloud login, redialing Secret Manager under it (`signIn`) and leaving the machine's ADC as they are, unless `GOOGLE_APPLICATION_CREDENTIALS` named them, a choice it refuses rather than overrides.
+under any other ADC - a service account key file, a workload identity federation credential (a dev box's own), a workforce identity federation sign-in, or a GCE/GKE metadata-server identity (GKE Workload Identity's too), whose ADC carries no JSON at all - it signs the backend in with the person's gcloud login, or with the lent raw token only when gcloud cannot supply that login, redialing Secret Manager under it (`signIn`) and leaving the machine's ADC as they are, unless `GOOGLE_APPLICATION_CREDENTIALS` named them, a choice it refuses rather than overrides.
 Reads under a machine's ADC run under it.
+On a write under that lent token, `gcpUserinfo` must name a `personAccount`; an empty email or service account is refused, and its lowercased email is `--owner me`.
+`create` requires its owner tag to equal that person, and every mutation of an existing secret (`set`, both retag annotation paths, `delete`, and `restore`) requires its owner tag to equal that person before writing.
+The lent-token `delete` and `restore` carry that owner read's Etag into `UpdateSecret`, so a concurrent retag refuses the update; Secret Manager's `AddSecretVersion` takes no Etag, so `set` cannot gain that race protection.
 `gcloudLogin` borrows the login through gcloud's own interface, never its credential files:
 the first `gcloud` on PATH (`exec.LookPath`) lists its logins (`gcloud auth list --format=json`);
 a person's is an account named by a plain email the broker accepts as a person owner (`personAccount`:
