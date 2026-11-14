@@ -98,90 +98,79 @@ func TestTwoQuestionsToOneConversationAreAnsweredInOrder(t *testing.T) {
 }
 
 // The questions to one conversation never overlap, and no more conversations are answered at once
-// than bounds.concurrent. Each answer is held at a barrier until bound answers are in flight
-// together, or, past the last full group, until every conversation with an answer still to start
-// has one in flight, so none can start before one ends. The loop must fill the bound for any answer
-// to end, so the most seen is the bound however the goroutines are scheduled; a loop that never
-// fills it fails at the barrier's deadline rather than passing.
+// than bounds.concurrent. Bound+1 conversations each hold a question, the first a second one too,
+// and every answer is held until the test lets them all go. The test waits for the loop to hold
+// bound answers in flight and to leave a conversation waiting for a free worker, which it does
+// before any held answer can end: a loop that runs more than the bound starts an answer over it,
+// and one that runs fewer never reaches the bound, so either fails rather than passes.
 func TestNoMoreConversationsAreAnsweredAtOnceThanTheBound(t *testing.T) {
-	const deadline = 5 * time.Second
 	for _, bound := range []int{1, 2} {
-		r := newRig(t)
-		unstarted := map[string]int{}
-		for _, session := range []string{"ses_a", "ses_b", "ses_c"} {
-			r.conversation(session, testerToken, 0)
-			r.receive(messageHandoff(session, "m-"+session, 1, "Q?"))
-			unstarted[session]++
-		}
-		r.receive(messageHandoff("ses_a", "m-a2", 1, "Q2?"))
-		unstarted["ses_a"]++
-		r.cfg.Answers.Bounds.Concurrent = bound
-		var mu sync.Mutex
-		inFlight, most := 0, 0
-		bySession := map[string]bool{}
-		// started is closed, and replaced, each time an answer starts: what a held answer waits on.
-		started := make(chan struct{})
-		released := func() bool {
-			if inFlight >= bound {
-				return true
-			}
-			for session, n := range unstarted {
-				if n > 0 && !bySession[session] {
-					return false
-				}
-			}
-			return true
-		}
-		r.answer = func(req answer.Request) (answer.Reply, error) {
-			session := req.Agent.Session
-			timeout := time.NewTimer(deadline)
-			defer timeout.Stop()
-			mu.Lock()
-			if bySession[session] {
-				t.Errorf("two answers of %s at once", session)
-			}
-			bySession[session] = true
-			unstarted[session]--
-			inFlight++
-			most = max(most, inFlight)
-			if inFlight > bound {
-				t.Errorf("bound %d: %d answers in flight at once", bound, inFlight)
-			}
-			close(started)
-			started = make(chan struct{})
-		held:
-			for !released() {
-				next := started
-				mu.Unlock()
-				select {
-				case <-next:
-					mu.Lock()
-				case <-timeout.C:
-					mu.Lock()
-					t.Errorf("bound %d: the answer of %s waited %s for %d answers in flight together, or for no other conversation able to start one; %d in flight, answers still to start %v",
-						bound, session, deadline, bound, inFlight, unstarted)
-					break held
-				}
-			}
-			inFlight--
-			bySession[session] = false
-			mu.Unlock()
-			return answered(req, "A."), nil
-		}
-		r.restart()
-		ctx, cancel := context.WithCancel(r.ctx)
-		done := make(chan struct{})
-		go func() { r.loop.Run(ctx); close(done) }()
-		testwait.Eventually(t, "every question answered", func() bool { return r.answerCount() == 4 })
-		cancel()
-		<-done
-		mu.Lock()
-		got := most
-		mu.Unlock()
-		if got != bound {
-			t.Fatalf("bound %d: at most %d answers ran at once; want %d", bound, got, bound)
-		}
+		answersAtTheBound(t, bound)
 	}
+}
+
+// answersAtTheBound is that test at one bound.
+func answersAtTheBound(t *testing.T, bound int) {
+	r := newRig(t)
+	questions := 0
+	for _, session := range []string{"ses_a", "ses_b", "ses_c"}[:bound+1] {
+		r.conversation(session, testerToken, 0)
+		r.receive(messageHandoff(session, "m-"+session, 1, "Q?"))
+		questions++
+	}
+	r.receive(messageHandoff("ses_a", "m-a2", 1, "Q2?"))
+	questions++
+	r.cfg.Answers.Bounds.Concurrent = bound
+	r.restart()
+	var mu sync.Mutex
+	inFlight, left := 0, ""
+	bySession := map[string]bool{}
+	release := make(chan struct{})
+	r.loop.leftForSlot = func(session string) {
+		mu.Lock()
+		left = session
+		mu.Unlock()
+	}
+	r.answer = func(req answer.Request) (answer.Reply, error) {
+		session := req.Agent.Session
+		mu.Lock()
+		if bySession[session] {
+			t.Errorf("two answers of %s at once", session)
+		}
+		bySession[session] = true
+		inFlight++
+		if inFlight > bound {
+			t.Errorf("bound %d: %d answers in flight at once", bound, inFlight)
+		}
+		mu.Unlock()
+		<-release
+		mu.Lock()
+		inFlight--
+		bySession[session] = false
+		mu.Unlock()
+		return answered(req, "A."), nil
+	}
+	ctx, cancel := context.WithCancel(r.ctx)
+	done := make(chan struct{})
+	go func() { r.loop.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	// Past the bound has failed already, at the answer's start; the wait ends there too.
+	atTheBound := testwait.Holds(testwait.Bounded(t, 5*time.Second, time.Second), testwait.Poll, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return inFlight > bound || inFlight == bound && left != ""
+	})
+	mu.Lock()
+	seen, waiting := inFlight, "no conversation left waiting for a slot"
+	if left != "" {
+		waiting = left + " left waiting for a slot"
+	}
+	mu.Unlock()
+	close(release)
+	if !atTheBound {
+		t.Fatalf("bound %d: %d answers in flight and %s; want %d in flight and a conversation left waiting", bound, seen, waiting, bound)
+	}
+	testwait.Eventually(t, "every question answered", func() bool { return r.answerCount() == questions })
 }
 
 // Each kind of question is answered where it was asked, in the agent's name: a message and a

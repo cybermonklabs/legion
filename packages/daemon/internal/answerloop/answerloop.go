@@ -224,6 +224,10 @@ type Loop struct {
 	// waiting is whether the last schedule left a conversation for want of a free worker.
 	waiting bool
 	workers sync.WaitGroup
+
+	// leftForSlot is a test hook, nil outside tests: schedule calls it, under mu, with the session
+	// it leaves waiting for want of a free worker.
+	leftForSlot func(session string)
 }
 
 // New is the loop over cfg.
@@ -280,6 +284,9 @@ func (l *Loop) schedule(ctx context.Context) {
 		}
 		if len(l.running) >= max(l.cfg.Answers.Bounds.Concurrent, 1) {
 			l.waiting = true
+			if l.leftForSlot != nil {
+				l.leftForSlot(q.Session)
+			}
 			return
 		}
 		l.running[q.Session] = true
