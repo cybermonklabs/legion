@@ -16,9 +16,8 @@
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/fixturegit says
-// the same of itself), and because internal/rescue/rescuetest, which builds a pod's disk, needs
-// the same scripts. It imports the guard not at all, so that the guard's own in-package tests can
-// use it: a file of package leakguard importing a package that imported leakguard would be an
+// the same of itself). It imports the guard not at all, so that the guard's own in-package tests
+// can use it: a file of package leakguard importing a package that imported leakguard would be an
 // import cycle.
 package leakguardtest
 
