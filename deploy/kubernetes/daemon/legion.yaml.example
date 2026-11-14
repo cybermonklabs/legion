@@ -342,8 +342,11 @@ runtime:
     #     floor_percent: 10            # process it was. Legion's own processes and each role's agent are never
     #     wait_seconds: 5              # ended. After a kill it waits up to wait_seconds (1 to 60) for the
     #     interval_milliseconds: 100   # reading to fall, and it reads every interval_milliseconds (50 to 5000).
-    #                                  # These are the defaults; enabled: false runs no guard, and a command that
-    #                                  # fills the limit then ends every role of the pod with the container.
+    #                                  # These are the defaults. enabled: false sends the launchers no settings,
+    #                                  # so each issue pod's guard, which runs at these defaults from the
+    #                                  # launcher's start, turns off at its first acknowledgement and ends nothing
+    #                                  # from then on, and a command that fills the limit then ends every role of
+    #                                  # the pod with the container.
     kubeconfig: ./kubeconfig           # the daemon's own identity
     context: legion-daemon
     # plugins:                         # the exact pi-legion/pi-envoy pair a stale-plugin relaunch installs

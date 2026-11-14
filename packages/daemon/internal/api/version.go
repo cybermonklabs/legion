@@ -1545,4 +1545,51 @@ package api
 // that reading and no head's for good, which is why this line is a reading and never the rule.
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
-const DaemonAPIVersion = 111
+//
+// 124: dispatch://INFRA-3557 -- the memory guard in an issue pod's launcher, which is two shapes of
+// the launcher wire. The daemon's answer to a launcher's hello carries the settings the guard runs
+// by, as one optional member of `shimwire.LauncherHelloAck` (`memoryGuard`: `actPercent`,
+// `floorPercent`, `waitSeconds` and `intervalMilliseconds`, from
+// `runtime.kubernetes.memory_guard.issue_pods`). The runtime fills it for an issue pod's launcher
+// alone (sandbox's Runtime.launcherHelloAck), and leaves it out where that block's `enabled` is
+// false. The launcher sends the daemon one `launcher_memory_kill` frame
+// (`shimwire.LauncherMemoryKill`) for each process its guard ended with SIGKILL, on the connection
+// of the role whose process it was. The daemon applies it once, under the event id
+// `memory-guard-kill:<guard>:<sequence>`, and tells that role why on its role topic as a
+// `record.RoleMessage` row (workflow's memoryGuardNote): an outbox kind earlier releases already
+// decode, so this change adds no store migration and owes no rollback statement for the note.
+//
+// The skew is safe in both directions, and this entry records why. An older launcher ignores the
+// new member, since its decoder answered `LauncherHelloAck{}` without reading any member, and it
+// sends no report. An older daemon writes no member, and the launcher reads that absence as "run no
+// guard" (memoryguard's Guard.Apply), the same absence a deployment that turned the guard off
+// sends. That daemon also closes a connection on a frame type it does not name (`ServeLauncher`'s
+// `default: return`), and the launcher then redials, so the launcher sends `launcher_memory_kill`
+// only on a connection whose acknowledgement carried settings (`internal/launcher`'s
+// manager.openMemoryReports), and drops with a line a report that waits on any other. The same
+// rule keeps the settings on the acknowledgement: the launcher's own command loop closes the
+// connection on a frame type it does not name as well, so the settings must never become a
+// daemon-to-launcher frame of their own. The image probe pairs a daemon with an image by this
+// number (`runtime/sandbox/probe.go`), as it did for the launcher frames of 39 and 48, which is
+// why a change to a launcher frame carries one.
+//
+// The `runtime.kubernetes.memory_guard` key is no part of this number. The state's settings block
+// carries it as `settings.runtime.kubernetes.memory_guard`, and the plugin parses that block loosely
+// (35 above), so a later legion.yaml key changes no strictly parsed shape and bumps nothing, as 111
+// says of `stalled_tree_notice_hours`. An earlier loader refuses the key by name, so a file that
+// sets it takes the block out before an earlier image is pinned (docs/kubernetes.md, "Rolling back
+// below the release that guards an issue pod's memory").
+//
+// Two other changes touch the same frame: dispatch://INFRA-3531, the guard of the controller's pod,
+// which fills this same member for that pod from a block of its own beside `issue_pods`, and
+// cybermonklabs/legion#3519 (dispatch://INFRA-2009), which adds `volumeTrim` beside it and a
+// `launcher_volume_report` frame. Of this change and either of those, the one that merges second
+// takes a number above the first's, every site that names the number included, and keeps every
+// member of both.
+// (This change takes 124, the lowest number above main's 111 that no open pull request declared,
+// read on 2026-11-14 in each head's own copy of this file. That is a reading and never the rule:
+// read main's own number and every open head again at the next forward merge rather than from
+// this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 124
