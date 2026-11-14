@@ -603,12 +603,14 @@ type startMarks struct {
 	// a fact new to the record, so it marks no movement of the issue (reassertion, startOrOwe). It
 	// rides on no request: started reads it to tell startOrOwe which movement the start is, and
 	// the outbox never sees it. sendOwedEntry sets it on every start it writes, which is where
-	// the rule for the sends of an owed entry stands, and the two doors that send a claim level
-	// with its entry the phase's resume task set it too, the boot's resume by rule and the silence
-	// repair (booted, repairSilence), since that resume is the same work sent again. The other
-	// three starts are news of the issue and leave it unset: a transition's start and the
-	// promotion's start of a mid-phase worker, each raising the entry it hands (enter), and the
-	// held phase's retry, which an architect's or an operator's own request brings (restart).
+	// the rule for the sends of an owed entry stands, and the three doors that send a claim level
+	// with its entry the phase's resume task set it too, the boot's resume by rule, the cutover's
+	// repair of a merger the `awaiting_merge` cutover left stopped and the silence repair
+	// (startSuspendedOwner, which booted and cutoverMergerRepair share, and repairSilence), since
+	// that resume is the same work sent again. The other three starts are news of the issue and
+	// leave it unset: a transition's start and the promotion's start of a mid-phase worker, each
+	// raising the entry it hands (enter), and the held phase's retry, which an architect's or an
+	// operator's own request brings (restart).
 	reasserts bool
 }
 
