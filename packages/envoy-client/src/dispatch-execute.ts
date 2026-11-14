@@ -28,10 +28,21 @@ export type {
   DocumentTarget,
   DocumentTargetContext,
 } from "./dispatch-commands/document-targets";
-export { readDocumentBlocks, resolveIssueDocumentId } from "./dispatch-commands/document-targets";
+export {
+  readDocumentBlocks,
+  resolveIssueDocument,
+  resolveIssueDocumentId,
+} from "./dispatch-commands/document-targets";
 export { goBlankPattern } from "./dispatch-commands/documents";
+export {
+  type OpenDecisionBlockRefusal,
+  refuseOpenDecisionBlocks,
+} from "./dispatch-commands/open-decision-blocks";
 export { dispatchRefFromUrl } from "./dispatch-commands/refs";
 export { formatOpenAsksSummary, positionText } from "./dispatch-commands/render-item";
+// The reader of a `dispatch://` reference the commands read theirs with, for a host that takes one
+// of its own: the `legion` tool's register_gate basis names its issue's document by one.
+export { parseDispatchRef } from "./dispatch-owner";
 export { checkDispatchCall, dispatchServerUrls };
 
 /** Validate and execute one native Dispatch tool against the JSON HTTP API. */

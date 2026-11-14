@@ -8,6 +8,14 @@ import {
   type LegionState,
 } from "@legion/contracts/legion-api";
 import {
+  parseDispatchRef,
+  refuseOpenDecisionBlocks,
+  resolveIssueDocument,
+  resolveIssueDocumentId,
+} from "@legion/envoy-client/dispatch-execute";
+import type { DispatchClient } from "@legion/envoy-client/dispatch-http";
+import { messageFor } from "@legion/envoy-client/errors";
+import {
   type DaemonRestartRetry,
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
@@ -73,7 +81,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  register_gate: ["issue", "artifactId", "version", "step"],
+  register_gate: ["issue", "artifactId", "version", "step", "basis", "basisVersion", "reason"],
   release_children: ["issues"],
   retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
@@ -235,15 +243,30 @@ function toolSchema(pi: PiApi): unknown {
         "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
       )
       .optional(),
+    // A basis (dispatch://INFRA-3320, R1): the ancestor's document for the same step, which the
+    // tool resolves to the id the daemon takes (`basisArtifactId`), with its version and the
+    // architect's reason.
+    basis: z
+      .string()
+      .describe(
+        "register_gate's basis: the ancestor's document for the same step, as dispatch://<KEY>/spec, dispatch://<KEY>/artifact/<slug> or its artifact id. basis, basisVersion and reason come together or not at all"
+      )
+      .optional(),
+    basisVersion: z
+      .number()
+      .describe(
+        "register_gate's basis version: the version of the basis document a person approved, or the version its open approval request asks a person to approve"
+      )
+      .optional(),
     issues: z.array(z.string()).optional(),
     to: phaseOp.to,
-    // The why of the two operations that take one, a string as the phase op's own `reason` is.
-    // Agents sent it to park_child too, whose daemon route keeps no why, so the field says where
-    // that why goes.
+    // The why of the operations that take one, a string as the phase op's own `reason` is, and
+    // register_gate's reason for its basis. Agents sent it to park_child too, whose daemon route
+    // keeps no why, so the field says where that why goes.
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
+        "close_root's, request_backward_move's and retry_or_escalate's why, and register_gate's reason for its basis; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -286,6 +309,89 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
   );
 }
 
+/** The ancestor's document a register_gate basis names: its artifact id, which the daemon takes as
+ * it is, or the issue and the document a dispatch:// reference names. */
+type BasisDocument =
+  | { readonly id: string }
+  | { readonly issue: string; readonly document: string };
+
+/** The ancestor's document `basis` names: an artifact id, or a dispatch:// reference to an issue's
+ * document, which names its issue (`dispatch://<KEY>/spec` for its primary document,
+ * `dispatch://<KEY>/artifact/<slug>` for another). A reference pinned to a version names
+ * basisVersion's, else the call contradicts itself. */
+function basisDocument(basis: string, version: number): BasisDocument {
+  if (LegionGateRegisterRequest.shape.basisArtifactId.safeParse(basis).success)
+    return { id: basis };
+  const ref = parseDispatchRef(basis);
+  const owner = ref?.owner;
+  if (ref === null || owner?.kind !== "issue" || (ref.kind !== "spec" && ref.kind !== "artifact")) {
+    throw new Error(
+      `register_gate's basis is the ancestor's document as dispatch://<KEY>/spec, dispatch://<KEY>/artifact/<slug> or its artifact id, not "${basis}"`
+    );
+  }
+  if (ref.version !== undefined && ref.version !== version) {
+    throw new Error(
+      `register_gate's basis ${basis} names version ${ref.version}, not basisVersion ${version}`
+    );
+  }
+  // The id of a `/spec` reference is `spec`, which names the issue's primary document.
+  return { issue: owner.issue, document: ref.id };
+}
+
+/** register_gate's basis as the call names it: the ancestor's document, its version and the
+ * architect's reason, which come together or not at all (the daemon's BASIS_INCOMPLETE), so a
+ * call that names some is refused before anything is read; undefined for a call that names none. */
+function registrationBasis(
+  parameters: Record<string, unknown>
+):
+  | { readonly document: BasisDocument; readonly version: number; readonly reason: string }
+  | undefined {
+  const fields = ["basis", "basisVersion", "reason"] as const;
+  const given = fields.filter((name) => parameters[name] !== undefined);
+  if (given.length === 0) return undefined;
+  if (given.length < fields.length) {
+    const missing = fields.filter((name) => !given.includes(name));
+    throw new Error(
+      `register_gate takes basis, basisVersion and reason together or not at all; this call names ${given.join(" and ")} without ${missing.join(" and ")}`
+    );
+  }
+  const version = parameters.basisVersion;
+  if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+    throw new Error("register_gate's basisVersion is a positive integer");
+  }
+  return {
+    document: basisDocument(requiredString(parameters, "register_gate", "basis"), version),
+    version,
+    reason: requiredString(parameters, "register_gate", "reason"),
+  };
+}
+
+/** `read`'s answer, a failure named as register_gate's lookup of `reference` on `issue`. */
+async function lookUpDocument<T>(
+  issue: string,
+  reference: string,
+  read: () => Promise<T>
+): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    throw new Error(
+      `register_gate could not look up document "${reference}" on ${issue} in Dispatch: ${messageFor(error)}`
+    );
+  }
+}
+
+/** register_gate's words around the open decision blocks of the root's own document, which it
+ * refuses a basis over as `dispatch request-approval` refuses an approval request
+ * (`refuseOpenDecisionBlocks`). */
+const OPEN_BLOCKS_UNDER_A_BASIS = {
+  call: "legion register_gate",
+  effect:
+    "A basis opens the step with no person's review of this document, so its open question would go unanswered, and answering one writes a new version, which this registration does not name.",
+  remedy:
+    "Do not register on a basis over an open block. Tell the human which block is open and ask them to answer it or to waive it. Once it is answered, it settles into a version on its own in about two seconds. If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason) and write their decision into the text with dispatch doc-edit. Then register the new version as skill://legion-architect/references/design-gate.md says.",
+} as const;
+
 /** The daemon's role-local workflow surface: no operation can schedule a worker. Every operation
  * that writes mints its own grant in-process and posts it with the request; nothing is written
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
@@ -312,10 +418,11 @@ export function createLegionTool(deps: {
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
-  /** The id of the document `issue` carries under `reference` (`spec`, a slug, or a filename),
-   * looked up in Dispatch as a `dispatch` command's `--artifact` is; throws naming the reference
-   * when none matches, or when it names two documents. */
-  readonly resolveDocument: (issue: string, reference: string) => Promise<string>;
+  /** The pane's Dispatch, the one its `dispatch` commands reach, or undefined where the pane has
+   * none configured. register_gate looks a document reference up there (`resolveIssueDocumentId`,
+   * as a `dispatch` command's `--artifact` is) and, for a registration on a basis, reads the root's
+   * own document for an open decision block (`refuseOpenDecisionBlocks`). */
+  readonly dispatch: () => DispatchClient | undefined;
   /** The clock `handoff_complete` and `sign_off` wait out a daemon restart on; a test's own. */
   readonly restartClock?: Pick<DaemonRestartRetry, "now" | "sleep">;
 }): RegisteredTool {
@@ -328,7 +435,7 @@ export function createLegionTool(deps: {
     onUpdateAnswered,
     handoffReport,
     branchHead,
-    resolveDocument,
+    dispatch,
     restartClock,
   } = deps;
   return {
@@ -338,14 +445,20 @@ export function createLegionTool(deps: {
     // own issue when the call names none; the shared sentence on read_release_records before
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentence on request_backward_move (an architect's names the
-    // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off and
-    // the controller's operations: the exact text tools.test.ts pins, so a change to the shared
-    // template cannot reach an Oh My Pi agent unnoticed.
+    // issue it returns from accepting), then the architect's register_gate basis, its
+    // retry_or_escalate, its sign_off and the controller's operations: the exact text
+    // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
+    // unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
+        "register_gate (issue, artifactId, version, step) may also name a basis, the ancestor's document for the same step, " +
+        "with basisVersion and your reason, all three or none: the step then opens on the ancestor's approval, or waits on " +
+        "the ancestor's open approval request, and no person is asked to approve your own document. " +
+        "Read skill://legion-architect/references/design-gate.md for when a root rests on a basis; the tool refuses one " +
+        "while your document holds an open decision block, as dispatch request-approval does. " +
         "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
@@ -507,12 +620,7 @@ export function createLegionTool(deps: {
                 `the design gate belongs to the tree root ${active.tree}; register it there`
               );
             }
-            // The daemon takes the document's id alone; `spec`, a slug or a filename, the
-            // references a `dispatch` command's --artifact accepts, is looked up first, so the
-            // architect's first call names the document however it knows it.
             const reference = requiredString(parameters, operation, "artifactId");
-            const isId = LegionGateRegisterRequest.shape.artifactId.safeParse(reference).success;
-            const artifactId = isId ? reference : await resolveDocument(issue, reference);
             // The step the document is for; a deployment that gates one step takes the
             // registration without it, and one that gates several refuses it.
             const named = LegionGateRegisterRequest.shape.step.safeParse(parameters.step);
@@ -520,9 +628,54 @@ export function createLegionTool(deps: {
               throw new Error(`register_gate's step is one of ${GATED_STEPS.join(", ")}`);
             }
             const step = named.data;
+            // A basis is checked whole before anything is read, Dispatch or the daemon.
+            const basis = registrationBasis(parameters);
+            let artifactId = reference;
+            let basisFields: { basisArtifactId?: string; basisVersion?: number; reason?: string } =
+              {};
+            if (basis === undefined) {
+              // The daemon takes the document's id alone; `spec`, a slug or a filename, the
+              // references a `dispatch` command's --artifact accepts, is looked up first, so the
+              // architect's first call names the document however it knows it.
+              if (!LegionGateRegisterRequest.shape.artifactId.safeParse(reference).success) {
+                const board = dispatch();
+                if (board === undefined) {
+                  throw new Error(
+                    `register_gate cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
+                  );
+                }
+                artifactId = await lookUpDocument(issue, reference, () =>
+                  resolveIssueDocumentId(board, issue, reference)
+                );
+              }
+            } else {
+              const board = dispatch();
+              if (board === undefined) {
+                throw new Error(
+                  `register_gate cannot register ${issue} on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open decision block`
+                );
+              }
+              // A basis opens the step with no person's review of the root's own document, so a
+              // question that document still puts to a person refuses the call here, with the
+              // test `dispatch request-approval` makes, and the daemon is asked nothing.
+              const own = await lookUpDocument(issue, reference, () =>
+                resolveIssueDocument(board, issue, reference)
+              );
+              await refuseOpenDecisionBlocks(board, own, OPEN_BLOCKS_UNDER_A_BASIS);
+              artifactId = own.artifact.id;
+              // A reference names its own issue, the ancestor's, which is where it is looked up.
+              const ancestor = basis.document;
+              const basisArtifactId =
+                "id" in ancestor
+                  ? ancestor.id
+                  : await lookUpDocument(ancestor.issue, ancestor.document, () =>
+                      resolveIssueDocumentId(board, ancestor.issue, ancestor.document)
+                    );
+              basisFields = { basisArtifactId, basisVersion: basis.version, reason: basis.reason };
+            }
             // The fact is keyed by the gate's issue, generation, step, document, version and
-            // Dispatch sequence; a repeat after the sequence moved is a re-registration the gate
-            // absorbs.
+            // Dispatch sequence, and by its basis document, version and pending state; a repeat
+            // after the sequence moved is a re-registration the gate absorbs.
             await retryWhileDaemonRestarts(
               "register_gate",
               async () =>
@@ -532,6 +685,7 @@ export function createLegionTool(deps: {
                   artifactId,
                   version,
                   ...(step === undefined ? {} : { step }),
+                  ...basisFields,
                 }),
               restart
             );

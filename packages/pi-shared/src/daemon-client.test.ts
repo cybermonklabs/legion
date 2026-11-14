@@ -396,6 +396,23 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       },
       "gate-register.json",
     ],
+    // A registration on an ancestor's basis carries the ancestor's document id, its version and
+    // the architect's reason beside the root's own document (contract 126).
+    [
+      "gateRegister",
+      "/legion/v1/gates/register",
+      {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+        version: 4,
+        step: "spec",
+        basisArtifactId: "6f4a2c8e-1b3d-4f5a-8c7e-9d0b1a2c3e4f",
+        basisVersion: 3,
+        reason: "LEGION-208's checks serve P2 of LEGION-100's approved spec.",
+      },
+      "gate-register.json",
+    ],
     [
       "waveRelease",
       "/legion/v1/waves/release",
