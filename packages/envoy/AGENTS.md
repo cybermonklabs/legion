@@ -5452,7 +5452,7 @@ broker AGENT_SECRETS_URL names (GCP Secret Manager)`;
 `request`, `status` and `self` print it as `source:`, and every denial, pending request and refusal carries it, so no answer or refusal of this CLI's is read as another secrets CLI's about the same name.
 None of these lines names the broker's host or the store's account, region or project, since an agent's output is quoted wherever it goes, a public pull request among them;
 only a broker that could not be reached is named, by its URL through `redact.URL`, so a stale address reads as one.
-Only the secret forms, which a person runs under their own cloud sign-in, name the store's account or project (`AWS Secrets Manager account
+Only the secret forms, which call the store itself, name the store's account or project (`AWS Secrets Manager account
 <id> in <region>`, `GCP Secret Manager project <number>`): `secret show` as `store:`, `secret list` one line on stderr, with `store` on each row under `--json`.
 No line names a secret's version: a grant's release carries names and values alone, and a session holds no sign-in of its own to the store.
 No output of `agent-secrets`, `agent-secrets-helper` (`internal/broker/helper`'s broker calls included) or `agent-secrets-devrelay` prints a credential the broker's URL carries:
@@ -5476,7 +5476,7 @@ The other secrets CLI a box may hold, `secrets`, is secretsd, shipped from `sjaw
 it reads its agent tier from local sops files and its human tier through the local secretsd daemon, which asks for a YubiKey touch, and it never reads this broker.
 One key name can hold different values in the two stores.
 `agent-secrets` names its store in output and every refusal; `secrets` names none today.
-`agent-secrets secret` forms are how a person manages the agent secrets themselves, in the broker's own store (AWS Secrets Manager or GCP Secret Manager) under their own cloud sign-in (below); the broker writes no secret.
+`agent-secrets secret` forms are how people and agents manage the agent secrets themselves, in the broker's own store (AWS Secrets Manager or GCP Secret Manager) under whatever cloud credential their environment gives them, which the store's IAM decides (below); the broker writes no secret.
 The broker opens no Dispatch ask anywhere and issues nothing in Dispatch;
 all it reads there is its model judge's read of one issue, at `BROKER_JUDGE_DISPATCH_URL` and with the broker's own projected ServiceAccount token: two GETs, one for the issue, which it reads for the key, title and status, and one for the whole markdown of that issue's spec document, and it writes nothing there.
 The model is shown those three fields and an extract of that markdown — the spec's Summary and Requirements sections, at most 12,000 runes (`judge.specExtract`) — and nothing else of Dispatch.
@@ -5710,44 +5710,40 @@ the catch-up available there is a whole-namespace read on every redial, and the 
 A failed notify is one WARN in `cmd/broker` and nothing else.
 The miss path (`requests/machine_state.go`) does not fan out, and `RefreshOne` itself does not notify: only this public route does.
 
-`agent-secrets secret list|show|create|set|retag|delete|restore` (`cmd/agent-secrets/secret.go`, its AWS side in `secret_aws.go`, its GCP side in `secret_gcp.go`) is the person's side of that reread.
+`agent-secrets secret list|show|create|set|retag|delete|restore` (`cmd/agent-secrets/secret.go`, its AWS side in `secret_aws.go`, its GCP side in `secret_gcp.go`) is the writer's side of that reread.
 Each form reads the broker's settings from `AGENT_SECRETS_URL`, whose `store` field (`aws-secrets-manager` or absent, `gcp-secret-manager`) chooses the backend (`openSecretBackend`), both behind one `secretBackend` interface the forms call through.
-AWS: loads the person's AWS sign-in (`--profile`, else `AWS_PROFILE`, else the SDK's default chain) pinned to the key's region, and calls Secrets Manager itself, so IAM in that account, not the broker, decides what the person may read or write; it needs no session identity.
-`GetCallerIdentity` runs before anything else:
-every form refuses a sign-in in another account than the key's, naming both (`requireAccount`, so a read never lists another account's secrets as if they were the agent secrets), and a write also refuses any ARN but `assumed-role/AWSReservedSSO_*/<session>` in that account (`requireWriteSignIn`, naming the ARN, in any AWS partition).
-`--owner me` is that session name lowercased; create and retag refuse it before writing unless it matches the broker's email rule (`policy.ValidPersonOwner`).
-GCP: loads the person's Application Default Credentials (`google.FindDefaultCredentials`:
-the file `GOOGLE_APPLICATION_CREDENTIALS` names whenever it is set, else `~/.config/gcloud/application_default_credentials.json` whatever `CLOUDSDK_CONFIG` says, else the metadata server) and calls Secret Manager itself under `cloud.google.com/go/secretmanager`, so IAM in that project decides what the person may read or write.
-A load that fails while `GOOGLE_APPLICATION_CREDENTIALS` is set names that variable and advises no sign-in, since no other file is read while it is set;
-one that fails while it is unset signs every form, a read included, in with the person's gcloud login instead (`gcloudLogin`), then, only when gcloud cannot supply that login, with the raw `CLOUDSDK_AUTH_ACCESS_TOKEN` lent to the command (one stderr line names that fallback and gcloud's error, never the token).
+Every form, a read and a write alike, runs under the cloud credential its environment gives it and refuses none for the kind of identity it is, a person's or a machine's:
+the store's own IAM decides what that credential may read and write, so the CLI checks only what IAM cannot, the account a sign-in is in.
+AWS: loads the AWS sign-in (`--profile`, else `AWS_PROFILE`, else the SDK's default chain) pinned to the key's region, and calls Secrets Manager itself; it needs no session identity.
+`GetCallerIdentity` runs before anything else (`openSession`, `requireAccount`):
+every form refuses a sign-in in another account than the key's, naming both, so a read never lists another account's secrets as if they were the agent secrets.
+GCP: signs in with `CLOUDSDK_AUTH_ACCESS_TOKEN` when it is set, which is the caller's own choice and so outranks every other source;
+else with the Application Default Credentials, of any type (`google.FindDefaultCredentials`:
+the file `GOOGLE_APPLICATION_CREDENTIALS` names whenever it is set, else `~/.config/gcloud/application_default_credentials.json` whatever `CLOUDSDK_CONFIG` says, else the metadata server);
+else, where none load and `GOOGLE_APPLICATION_CREDENTIALS` is unset, with the gcloud login (`gcloudLogin`);
+and calls Secret Manager itself under `cloud.google.com/go/secretmanager` (`newGCPBackend`).
+A load that fails while `GOOGLE_APPLICATION_CREDENTIALS` is set names that variable and advises no sign-in, since no other file is read while it is set.
 GCP's requireAccount is a no-op, unlike AWS's:
 every call already names `projects/<project number>/...` explicitly, so a wrong-project identity gets a real refusal from the API itself rather than silently reading another project's secrets - the hazard AWS's `ListSecrets` (which takes no project parameter) has and GCP's calls do not.
-A write runs only under a person's own Google Account sign-in (`gcpBackend.requireWriteSignIn`, reached only through `connectWriter`):
-ADC of type `authorized_user` write as they are;
-under any other ADC - a service account key file, a workload identity federation credential (a dev box's own), a workforce identity federation sign-in, or a GCE/GKE metadata-server identity (GKE Workload Identity's too), whose ADC carries no JSON at all - it signs the backend in with the person's gcloud login, or with the lent raw token only when gcloud cannot supply that login, redialing Secret Manager under it (`signIn`) and leaving the machine's ADC as they are, unless `GOOGLE_APPLICATION_CREDENTIALS` named them, a choice it refuses rather than overrides.
-Reads under a machine's ADC run under it.
-On a write under that lent token, `gcpUserinfo` must name a `personAccount`; an empty email or service account is refused, and its lowercased email is `--owner me`.
-`create` requires its owner tag to equal that person. A lent token may only create a new secret it owns: `set`, both retag annotation paths, `delete`, and `restore` refuse before any Secret Manager call.
-After the `create` version add, a lent token re-reads the owner and destroys the exact returned version if the owner changed or that read failed, refusing the write and naming the left version if that undo fails. Because `AddSecretVersion` takes no Etag, that version can exist momentarily between its add and the undo.
-One race is accepted, not prevented: between `CreateSecret` and the version add, a second writer whose IAM grants already reach the new secret (a project-level role does) can add its own version and change the owner. The undo then destroys this create's version, the newest, so `versions/latest` names a destroyed version while the other writer's version stays enabled, and a read of `latest` fails. The window is the time between those two calls, and entering it takes permission to add versions and update the metadata of a secret that did not exist a moment earlier. A predefined role that grants both, such as Secret Manager Admin, also grants destroying versions; a custom role can separate them, and then the race lets that writer make `latest` unreadable: an availability loss, never a read of any value.
-A person who finds `latest` naming a destroyed version runs `agent-secrets secret show NAME` to list its versions, then re-adds the value with `agent-secrets secret set NAME` under their own gcloud sign-in (a lent token refuses `set`). The owner tag is Legion's rule, not Google's access control: its person can still have IAM rights independently.
+A refusal of the store's own (`AccessDeniedException`, `PermissionDenied`) names the identity the form called the store as (`secretSession.refusedAs`, `secretBackend.identity`):
+the AWS sign-in's ARN, or on GCP the lent token, the gcloud login's account, or what the Application Default Credentials are (`adcIdentity`: their `type` and the service account they act as, or the metadata server, never a file path).
+`--owner` takes `me`, `shared` or a person's email, which create and retag lowercase and refuse before writing unless it matches the broker's email rule (`checkOwnerTier`, `policy.ValidPersonOwner`).
+`--owner me` is the one place a form asks whom the credential names (`secretSession.ownerTag`, `secretBackend.personEmail`):
+on AWS the session name of an `assumed-role/AWSReservedSSO_*/<session>` ARN, in any AWS partition, lowercased;
+on GCP the Google userinfo endpoint's `email` for the token, lowercased, which must be a person's (`personAccount`: no `.gserviceaccount.com` account).
+Where the credential names no person - a machine's role, a service account, a token minted without an email scope, which Google's userinfo endpoint answers 401 - `--owner me` is refused (exit 2) naming `--owner <email>`, before the value is read, and the same credential still reads and writes with any other `--owner`.
 `gcloudLogin` borrows the login through gcloud's own interface, never its credential files:
 the first `gcloud` on PATH (`exec.LookPath`) lists its logins (`gcloud auth list --format=json`);
-a person's is an account named by a plain email the broker accepts as a person owner (`personAccount`:
-`policy.ValidPersonOwner`), never a `.gserviceaccount.com` one or a workload or workforce identity federation login, which gcloud names by a `principal://` identifier;
-it takes the one `CLOUDSDK_CORE_ACCOUNT` names when that is one of them, else the only one, refusing none (naming `gcloud auth login`) or several (naming each, and `CLOUDSDK_CORE_ACCOUNT`).
+of every login it lists, whatever kind of account (a person's, a service account's, or a workload or workforce identity federation login's `principal://` identifier), it takes the one `CLOUDSDK_CORE_ACCOUNT` names when gcloud holds it, else the one gcloud marks active, else the only one, refusing none (naming `gcloud auth login`) or several of which none is active (naming each, and `CLOUDSDK_CORE_ACCOUNT`).
 Its tokens are `gcloudTokenArgs`, `gcloud auth print-access-token --format=value[private](token) --impersonate-service-account=
 --access-token-file= --credential-file-override= <account>`, behind `oauth2.ReuseTokenSource`, each taken to last `gcloudTokenLife` (5 minutes:
 gcloud prints no expiry, and refreshes a token within 300 s of its expiry before printing it).
 gcloud prints a command's output through its logger, whose file handler keeps a copy in `logs/` under gcloud's configuration directory, so the `private` format attribute writes the token to the console stream alone, and every gcloud run has `CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1` and `CLOUDSDK_CORE_DISABLE_PROMPTS=1`.
-The empty flags clear impersonation, an access token file and a credential file override, whichever of the environment and the configuration file sets them (a flag outranks both, and an empty value turns the property off), and `gcloudEnv` drops `gcloudIdentityOverrides` (`CLOUDSDK_AUTH_ACCESS_TOKEN`, which gcloud reads directly, and the three properties' variables);
-a write still refuses a token whose userinfo `email` is not the chosen account, compared case-insensitively.
+The empty flags clear impersonation, an access token file and a credential file override, whichever of the environment and the configuration file sets them (a flag outranks both, and an empty value turns the property off), and `gcloudEnv` drops `gcloudIdentityOverrides`, the three properties' variables.
 gcloud reads `/dev/null`, never the CLI's standard input (a secret's value), and no error carries its token.
-A refusal names what it found (`gcpCredsFound`:
-the credentials' `type` or the metadata server, never a file path) and never advises `gcloud auth application-default login`, which replaces a machine's own ADC for every program that uses it.
-`--owner me` is the Google userinfo endpoint's `email` for the sign-in the write runs under, lowercased.
-A command a form prints for running again starts with `GOOGLE_APPLICATION_CREDENTIALS=…` when that was set, and with `CLOUDSDK_CORE_ACCOUNT=…` when it chose the gcloud login (`signInPrefix`).
-`create` and `set` check the sign-in before they read the value:
+No refusal advises `gcloud auth application-default login`, which replaces a machine's own ADC for every program that uses it.
+A command a form prints for running again starts with `GOOGLE_APPLICATION_CREDENTIALS=…` when that was set, and with `CLOUDSDK_CORE_ACCOUNT=…` when it chose the gcloud login (`signInPrefix`), and never carries `CLOUDSDK_AUTH_ACCESS_TOKEN`.
+`create` and `set` refuse a sign-in in another account, and `create` resolves `--owner me`, before they read the value:
 at a terminal they read one line with echo off (`readHidden`, `secret_prompt_unix.go`), printing the label on stderr only once the reader holds the terminal with echo off, so a prompt started with `&` shows nothing over the shell's line until `fg`.
 Canonical mode is off, so no terminal line limit cuts the value.
 Enter or the terminal's end-of-file character ends it; erase, word erase and kill edit it.

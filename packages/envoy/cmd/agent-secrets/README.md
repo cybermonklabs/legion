@@ -19,20 +19,21 @@ quoted wherever an agent's output is, so none names the store's account, region 
 none names the broker's host but two: a broker that could not be reached, named by its URL so a
 stale address reads as one, and a pending secret request, whose line names the page on the broker
 where its approver decides it, the `approve_url` the broker's own answer carries. The secret
-forms below, which a person runs under their own cloud
-sign-in, name the account or project they write to. No output of `agent-secrets`,
+forms below, which call the store itself, name the account or project they read and write. No
+output of `agent-secrets`,
 `agent-secrets-helper` or `agent-secrets-devrelay` prints a credential the broker's URL carries:
 the URL prints only when it is provably a plain http(s) URL (no user info, query, fragment,
 escape or control byte), and as `(not printed: the value carries a credential or is not a plain
 http(s) URL)` otherwise. People and launchers use its other forms to log a machine in
 (`agent-secrets machine
 login`), register an agent session (`agent-secrets register --exec -- <agent>`), and inspect a
-session's grants (`agent-secrets self`). People manage the agent secrets themselves with
+session's grants (`agent-secrets self`). People and agents manage the agent secrets themselves with
 `agent-secrets secret list|show|create|set|retag|delete|restore`, which calls the broker's own
-store (AWS Secrets Manager or GCP Secret Manager) under their own cloud sign-in and then asks the
-broker to reread each secret written, so the change
+store (AWS Secrets Manager or GCP Secret Manager) under whatever cloud credential its environment
+gives it - the store's own IAM decides what that credential may do - and then asks the broker to
+reread each secret written, so the change
 is served at once; those forms need no helper and no session. From their own shell on a machine
-that runs the helper, they list and end their own machines' logins and their live grants with
+that runs the helper, people list and end their own machines' logins and their live grants with
 `agent-secrets machine list|revoke` and `agent-secrets grant list|revoke`, under that machine's
 login; a service's login is revoked on Dispatch's machine-login page. The helper refuses these
 forms to a process inside a registered session's process tree (`IN_SESSION`), so an agent's own
@@ -251,7 +252,13 @@ agent-secrets-helper sessions
 `machine list` shows your machines' logins, `grant list` the live grants of your sessions and
 those you approved, and `agent-secrets-helper sessions` the sessions this machine's helper holds.
 
-Owners manage the secrets themselves under their own cloud sign-in, with no helper:
+Owners manage the secrets themselves, with no helper, under whatever cloud credential the
+environment gives the command: on AWS, `--profile`, else `AWS_PROFILE`, else the SDK's default
+chain, in the broker's account; on Google Cloud, `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the
+Application Default Credentials, else the gcloud login. The store's IAM decides what each may
+do. `--owner me` is the email of the person that credential names, and is refused where it names
+none (a machine's role, a service account, a token without an email scope); `--owner <email>`
+names the owning person outright:
 
 ```sh
 agent-secrets secret list
