@@ -1,0 +1,114 @@
+{
+ "window": {
+  "from": "2026-10-29T00:00:00Z",
+  "to": "2026-11-12T00:00:00Z",
+  "from_event_id": 103048,
+  "to_event_id": 402993,
+  "project": "INFRA"
+ },
+ "feed": {
+  "events_read": 420325,
+  "first_event_id_in_window": 103048,
+  "last_event_id_in_window": 402993
+ },
+ "event_types_in_window": {
+  "architecture.sync_failed": 1,
+  "architecture.synced": 149,
+  "artifact.approved": 2052,
+  "artifact.changes_requested": 215,
+  "artifact.created": 7191,
+  "artifact.human_edited": 72,
+  "artifact.version": 30660,
+  "ask.answered": 1198,
+  "ask.edited": 1128,
+  "ask.follower_added": 4,
+  "ask.follower_removed": 2,
+  "ask.handed_back": 249,
+  "ask.opened": 1930,
+  "ask.resolved": 744,
+  "block.repaired": 62,
+  "child.added": 59,
+  "child.removed": 23,
+  "child.status": 20336,
+  "comment.anchor_refreshed": 171,
+  "comment.created": 22130,
+  "comment.delivery": 48,
+  "comment.edited": 2,
+  "comment.reopened": 2,
+  "comment.resolved": 35,
+  "handoff.recorded": 16568,
+  "issue.claimed": 618,
+  "issue.closed": 1536,
+  "issue.created": 2441,
+  "issue.released": 514,
+  "issue.updated": 28541,
+  "message.answered": 736,
+  "message.created": 8056,
+  "message.delivery": 84,
+  "project.updated": 1,
+  "result.recorded": 40291,
+  "settings.architecture_source.updated": 3,
+  "settings.repo_project.updated": 13,
+  "user_state.updated": 899,
+  "user_thread_state.updated": 2171
+ },
+ "reviews_in_window": {
+  "artifact.approved plan.md session": 1323,
+  "artifact.approved spec.md user": 410,
+  "artifact.approved vendor-commitment-pages.md user": 1,
+  "artifact.approved verification.md user": 318,
+  "artifact.changes_requested design.md user": 1,
+  "artifact.changes_requested spec.md user": 124,
+  "artifact.changes_requested vendor-commitment-pages.md user": 2,
+  "artifact.changes_requested verification.md user": 88
+ },
+ "results_in_window": {
+  "architect session": 18,
+  "cli session": 1,
+  "implementer session": 22333,
+  "merger session": 1,
+  "reviewer session": 328,
+  "tester session": 17610
+ },
+ "denominator_records_read": 30186,
+ "instances": 11702,
+ "by_pattern": {
+  "attributed_quote": 63,
+  "commit_sha": 5463,
+  "dispatch_reference": 10013
+ },
+ "classes": {
+  "between_an_agent_and_a_person": 138,
+  "inside_one_tree": 6301,
+  "across_sessions": 3483
+ },
+ "unclassed": {
+  "no_cited_record": 1702,
+  "cited_record_not_held": 15,
+  "cited_author_unknown": 63,
+  "other": 0
+ },
+ "issues_resolved": 2471,
+ "handoff_sample": {
+  "issues": [
+   "INFRA-1192",
+   "INFRA-1077",
+   "INFRA-714",
+   "INFRA-771",
+   "INFRA-941",
+   "INFRA-2464",
+   "INFRA-1441",
+   "INFRA-558",
+   "INFRA-956",
+   "INFRA-1519"
+  ],
+  "chosen": "the ten issues of the project with the most handoff.recorded rows inside the window, by that count then by key",
+  "denominator_handoffs_read": 3143,
+  "instances": 3006,
+  "by_pattern": {
+   "dispatch_reference": 2402,
+   "commit_sha": 2288,
+   "attributed_quote": 0
+  }
+ }
+}

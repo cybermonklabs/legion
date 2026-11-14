@@ -1,0 +1,15 @@
+$ printenv SESSION_READER_DSN_FILE; echo "exit=$?"
+exit=1
+
+$ env | grep -c "^SESSION_READER_DSN_FILE="; echo "exit=$?"
+0
+exit=1
+
+$ printenv OMP_SESSION_SQL_DSN_FILE; echo "exit=$?"
+/var/run/legion/providers/OMP_SESSION_SQL_DSN
+exit=0
+
+$ ls -1 /var/run/legion/private/g2
+DISPATCH_TOKEN
+ENVOY_TOKEN
+LEGION_BOOT_TOKEN

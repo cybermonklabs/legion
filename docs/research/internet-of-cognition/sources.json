@@ -1,0 +1,155 @@
+{
+  "comment": [
+    "Every source this reading rests on, pinned. check.sh reads this file, clones what is",
+    "missing under the directory IOC_CLONES names (default $TMPDIR/ioc-clones) and resolves",
+    "every citation from the clone at the commit below, never from a live branch and never",
+    "through gh, which in a Legion pod is scoped to this project's owners and refuses",
+    "ioc-project. A published document is read from the committed copy this file names, and",
+    "the live address is read only to report whether it still carries the sentence quoted."
+  ],
+  "clone_root_env": "IOC_CLONES",
+  "default_clone_root": "$TMPDIR/ioc-clones",
+  "repositories": [
+    {
+      "name": "mas-lab",
+      "url": "https://github.com/ioc-project/mas-lab",
+      "commit": "477441ddb82d1b07c76c36f1426d8a5be0b6194b",
+      "licence": "Apache-2.0",
+      "read": "2026-11-12"
+    },
+    {
+      "name": "scope",
+      "url": "https://github.com/ioc-project/scope",
+      "commit": "6f3e758623da6b4a3ae462813001c545bb15a9e6",
+      "licence": "Apache-2.0",
+      "read": "2026-11-12"
+    },
+    {
+      "name": "cognition-protocols",
+      "url": "https://github.com/ioc-project/cognition-protocols",
+      "commit": "e3c7bf10f676de37ac08d2fe97e7de982f74629a",
+      "licence": "Apache-2.0",
+      "read": "2026-11-12"
+    }
+  ],
+  "python_environment": {
+    "exclude_newer": "2026-11-12T07:55:56Z",
+    "requirements": "evidence/ioc-venv.in",
+    "lock": "evidence/ioc-venv.lock",
+    "comment": "The instant every package index read is held to: uv resolved the lock, the mas-lab constraints and the build constraints as the index stood then. It is the time of commit 17a8ca1d, which recorded the outputs of the model rows; env.sh installs IOC_VENV from the hashed lock with uv pip sync --require-hashes."
+  },
+  "our_repository": {
+    "name": "legion",
+    "url": "https://github.com/cybermonklabs/legion",
+    "commit": "9542c6fbbecd184ccee73523ab3defa39d6cf23a",
+    "comment": "The commit this issue's branch starts from, and the commit every our-code claim was read at."
+  },
+  "records_under_check": [
+    {
+      "ref": "dispatch://INFRA-3134/artifact/ioc-design-2026-11-12-md",
+      "label": "d",
+      "comment": "The answer already on the issue. citations.py labels its citations d-1, d-2 and so on."
+    },
+    {
+      "ref": "dispatch://INFRA-3134/comment/326a044a-db33-4779-a98e-8271e29e710f",
+      "label": "r",
+      "comment": "The reconciliation of that answer with the authors' own public account."
+    }
+  ],
+  "published": [
+    {
+      "id": "interview",
+      "address": "https://www.cognitiverevolution.ai/agents-that-think-together-cisco-s-vijoy-pandey-on-semantic-alignment-scope-accord-concord/",
+      "fetched": "2026-11-12",
+      "copy": "interview/transcript.md",
+      "comment": "The authors' own account of 2026-11-11. The copy is committed because a page served from a content system changes its bytes between any two fetches.",
+      "sha256": "78be9603cde0fd372ced573900c8f9a022a88ddefc56b408f35c94f8bdc055c7"
+    },
+    {
+      "id": "interview-page",
+      "address": "https://www.cognitiverevolution.ai/agents-that-think-together-cisco-s-vijoy-pandey-on-semantic-alignment-scope-accord-concord/",
+      "fetched": "2026-11-12",
+      "copy": "published/interview.html",
+      "comment": "The page as it was fetched, 157355 bytes. interview/transcript.md is the readable transcript taken out of it, and two rows checksum this copy.",
+      "sha256": "f4143bb7a8547cbf1dddae55e1185aa53f8b643bada10ee9212af7301c3a92c4"
+    },
+    {
+      "id": "cisco-blog-cognitive-challenges",
+      "address": "https://outshift.cisco.com/blog/ai-ml/cognitive-challenges-in-multi-agent-systems",
+      "fetched": "2026-11-12",
+      "copy": "published/cognitive-challenges-in-multi-agent-systems.html",
+      "comment": "The authors' own study, which repeats two of the measurements the interview states and gives a different source for a third.",
+      "sha256": "e9c9b7181ad62da2e0fc0973f8743e465979fedc6887b3371837a44fc1162812"
+    },
+    {
+      "id": "cisco-blog-internet-of-cognition",
+      "address": "https://outshift.cisco.com/blog/ai-ml/the-internet-of-cognition-is-here",
+      "fetched": "2026-11-12",
+      "copy": "published/the-internet-of-cognition-is-here.html",
+      "comment": "The authors' own account of the stack, which repeats the trip-planning measurement the interview states.",
+      "sha256": "ed1947c3c67ade5d98b0def04c4b8ade41ddfb654ab0cc51e3a6690db20de1c7"
+    },
+    {
+      "id": "ioc-site-licence",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/main/LICENSE",
+      "fetched": "2026-11-12",
+      "copy": "published/ioc-site-LICENSE.txt",
+      "comment": "The licence of the documentation site, read in the triage.",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "id": "pypi-mas-lab",
+      "address": "https://pypi.org/pypi/mas-lab/json",
+      "fetched": "2026-11-12",
+      "copy": "published/pypi-mas-lab.json",
+      "comment": "The index's answer for mas-lab, which holds version 0.2.0 with a wheel and an sdist. The plan recorded that mas-lab is not on PyPI, measured before this fetch, and this copy is the correction.",
+      "sha256": "6d5179f8e6a16ce467347acfe5fe1a48ce530695fa914dba90c9a2e76470bd66"
+    },
+    {
+      "id": "otel-gen-ai-registry",
+      "address": "https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/",
+      "fetched": "2026-11-12",
+      "copy": "published/otel-gen-ai-registry.html",
+      "comment": "The OpenTelemetry generative-AI attribute registry, which the judgement names as the vocabulary to emit under. The copy is committed because a claim rests on which names it holds.",
+      "sha256": "e538ea9d87b78c4623f1a7d34466f0fa03c922e935cc3ea8769e8f1f4694f0da"
+    },
+    {
+      "id": "github-api-answers",
+      "address": "https://api.github.com/repos/ioc-project/",
+      "fetched": "2026-11-12",
+      "copy": "published/github-api/",
+      "comment": "The answers GitHub's REST API gave for the five repositories of the organisation: the repository, its tags, its releases, its commit-count header and, for the two repositories with no clone, its tree. An unauthenticated address is allowed sixty requests an hour, so the triage rows read these copies rather than the API."
+    }
+  ],
+  "landed": [
+    {
+      "title": "Each review round's shortfall recorded as two grader rows",
+      "commit": "4f4c54c5e91e3d1b4c0e34f446d6f58fb5739d99",
+      "command": "(cd packages/pi-legion && bun test src/skills-guard.test.ts)",
+      "published": [
+        { "path": "skills/legion-worker/references/pr-body.md", "sentence": "each pair row reads" },
+        {
+          "path": "skills/legion-worker/references/pr-body.md",
+          "sentence": "not run (no runtime code)"
+        }
+      ],
+      "comment": "The proof check.sh --landed runs for this page. The page in judgement-md must name this commit and this command; the page's own text is never run. published lists the sentences this step added that check.sh --published reads in each file on the default branch."
+    },
+    {
+      "title": "The rule that combines the reviewer's two graders",
+      "commit": "94d7556421ca12e2e366de5c44897cfb7ec569b8",
+      "command": "grep -qF 'is answered in the review body' skills/legion-worker/references/merge-gate.md && grep -qF 'needs both halves run at the reviewed head' skills/legion-worker/references/merge-gate.md",
+      "published": [
+        {
+          "path": "skills/legion-worker/references/merge-gate.md",
+          "sentence": "is answered in the review body"
+        },
+        {
+          "path": "skills/legion-worker/references/merge-gate.md",
+          "sentence": "needs both halves run at the reviewed head"
+        }
+      ],
+      "comment": "The proof check.sh --landed runs for this page. 9d5c8220 wrote the rule, 9936020a held it against main's rewrite of merge-gate.md, and 94d75564 wrote it as it stands, that an APPROVE needs both halves run, so the page names 94d75564. The proof exits 1 against merge-gate.md of main at c95e698a9a5fe38e1673f7abcc96c6bf80cda88a, of bcc01d05cac9d7f82bc3b1df799489fed9ee64fe and of bfe1471e3b662125ed2ea103278d41bf3e5f6dd5, which are the three spellings before it. published lists the sentences this step added that check.sh --published reads in merge-gate.md on the default branch."
+    }
+  ]
+}

@@ -1,0 +1,272 @@
+### 0. the commits, and the two files of ours this evidence reads
+
+$ git -C /legion/scratch/tmp/ioc-clones/mas-lab rev-parse HEAD
+477441ddb82d1b07c76c36f1426d8a5be0b6194b
+exit=0
+
+$ git -C /legion/workspaces/cybermonklabs/legion/infra-3134 log -1 --format=%H
+bfe1471e3b662125ed2ea103278d41bf3e5f6dd5
+exit=0
+
+$ git show 9542c6f:...table.go | sha256sum; sha256sum the working tree's
+fe2ef8c14e19f5d3ebd5508aeee39847cb0e425a5026d5424c9a01636b2144ec  -
+fe2ef8c14e19f5d3ebd5508aeee39847cb0e425a5026d5424c9a01636b2144ec  /legion/workspaces/cybermonklabs/legion/infra-3134/packages/daemon/internal/workflow/table.go
+4da826f0327b4e9fb46f545d902dd19a5cfb35399e25cd3804d72d4f03ad04f3  -
+4da826f0327b4e9fb46f545d902dd19a5cfb35399e25cd3804d72d4f03ad04f3  /legion/workspaces/cybermonklabs/legion/infra-3134/packages/daemon/internal/phase/phase.go
+
+### 1. the install, from the clone at the pinned commit (mas-lab 0.2.0 is on PyPI as well)
+
+$ uv venv --allow-existing /legion/scratch/tmp/infra3134/tm-venv
+Using CPython 3.12.15
+Creating virtual environment at: /legion/scratch/tmp/infra3134/tm-venv
+Activate with: source /legion/scratch/tmp/infra3134/tm-venv/bin/activate
+exit=0
+
+$ uv pip install ./runtime ./ctl ./library-standard
+Using Python 3.12.15 environment at: /legion/scratch/tmp/infra3134/tm-venv
+Resolved 28 packages in 312ms
+   Building mas-lab-library-standard @ file:///legion/scratch/tmp/ioc-clones/mas-lab/library-standard
+   Building mas-lab-ctl @ file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl
+   Building mas-lab-runtime @ file:///legion/scratch/tmp/ioc-clones/mas-lab/runtime
+      Built mas-lab-library-standard @ file:///legion/scratch/tmp/ioc-clones/mas-lab/library-standard
+      Built mas-lab-runtime @ file:///legion/scratch/tmp/ioc-clones/mas-lab/runtime
+      Built mas-lab-ctl @ file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl
+Prepared 3 packages in 2.58s
+Uninstalled 3 packages in 8ms
+Installed 3 packages in 146ms
+ ~ mas-lab-ctl==0.2.0 (from file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl)
+ ~ mas-lab-library-standard==0.2.0 (from file:///legion/scratch/tmp/ioc-clones/mas-lab/library-standard)
+ ~ mas-lab-runtime==0.2.0 (from file:///legion/scratch/tmp/ioc-clones/mas-lab/runtime)
+exit=0
+
+$ uv pip install -e ./ctl -e ./lab/components/core
+Using Python 3.12.15 environment at: /legion/scratch/tmp/infra3134/tm-venv
+Resolved 29 packages in 49ms
+   Building mas-lab-ctl @ file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl
+   Building mas-lab-component-core @ file:///legion/scratch/tmp/ioc-clones/mas-lab/lab/components/core
+      Built mas-lab-component-core @ file:///legion/scratch/tmp/ioc-clones/mas-lab/lab/components/core
+      Built mas-lab-ctl @ file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl
+Prepared 2 packages in 1.81s
+Uninstalled 2 packages in 28ms
+Installed 2 packages in 10ms
+ ~ mas-lab-component-core==0.2.0 (from file:///legion/scratch/tmp/ioc-clones/mas-lab/lab/components/core)
+ ~ mas-lab-ctl==0.2.0 (from file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl)
+exit=0
+
+### 2. their validator over the two specifications
+
+$ /legion/scratch/tmp/infra3134/tm-venv/bin/mas-ctl validate legion-workflow.yaml legion-workflow-kind.yaml
+OK  legion-workflow.yaml  kind=agent
+OK  legion-workflow-kind.yaml  kind=workflow
+exit=0
+
+### 3. the compile-only path
+
+$ /legion/scratch/tmp/infra3134/tm-venv/bin/mas-ctl compile legion-workflow.yaml --output /legion/scratch/tmp/infra3134/tm-compiled.yaml
+Wrote /legion/scratch/tmp/infra3134/tm-compiled.yaml
+exit=0
+
+$ grep -c 'goto:' $TMPDIR/infra3134/tm-compiled.yaml
+38
+$ grep -c '^ *true:' $TMPDIR/infra3134/tm-compiled.yaml
+9
+
+### 4. their loaders, from Python
+
+$ /legion/scratch/tmp/infra3134/tm-venv/bin/python tm-load.py
+
+=== A. environment ===
+python 3.12.15
+mas-lab-runtime 0.2.0
+mas-lab-ctl 0.2.0
+mas-lab-library-standard 0.2.0
+
+=== B. the document as PyYAML reads it (YAML 1.1) ===
+apiVersion mas/v1 kind Agent
+states whose transition key loaded as the boolean True: 9
+['accepting', 'admitted', 'awaiting_merge', 'implementing', 'merging', 'planning', 'retro', 'reviewing', 'testing']
+
+=== C. their own table loader: normalize_table + validate_definition ===
+validate_definition problems: []
+
+=== D. what the table holds ===
+states: 10
+transitions: 38
+start: admitted
+end states: ['done']
+
+=== E. the vocabulary of one transition and of one state ===
+TRANSITION_KEYS: ['goto', 'set', 'when']
+RUN_KINDS: ['delegate', 'react', 'pattern', 'parallel', 'tool', 'end']
+OPERATORS: ['eq', 'ne', 'in', 'not_in', 'gt', 'gte', 'lt', 'lte', 'exists']
+STATE_KEYS[delegate]: ['agents', 'error_detail', 'input', 'instruct', 'log', 'log_body', 'log_from', 'log_reply', 'on', 'read', 'retry', 'run']
+effect key in TRANSITION_KEYS: False
+guard key in TRANSITION_KEYS: False
+trigger key in TRANSITION_KEYS: False
+
+=== F. the runtime spec loader: parse_agent_spec ===
+KernelConfig pattern_plugin_id: state_machine
+KernelConfig max_auto_steps: 200
+observability binding: None
+
+=== G. the plugin's own load of the table (_configure) ===
+with the seven agents the table names: None
+state.current after load: '' vars: {'has_open_or_merged_pr': False, 'effects': ''}
+with no agents: state_machine: ['architect', 'daemon', 'implementer', 'merger', 'planner', 'reviewer', 'tester'] are not agents this entry can delegate to ([]).
+
+=== H. a run needs a model: what is there with no key ===
+OPENAI_API_KEY set: False
+MAS_LLM_API_KEY set: False
+models the manifest names: [{'model': 'gpt-4o-mini', 'temperature': 0.0}]
+design_pattern plugins the registry holds: ['analyst', 'cot', 'cot@v1', 'deterministic_linear', 'deterministic_parallel', 'deterministic_single', 'introspection', 'introspection@v1', 'linear', 'linear@v1', 'moderated_rounds', 'plan-execute', 'plan_execute', 'plan_execute@v1', 'planner', 'react', 'react@v1', 'reflection', 'reflection@v1', 'single_pass', 'single_pass@v1', 'state_machine', 'tot', 'tot@v1', 'tree_of_thoughts', 'tree_of_thoughts@v1']
+
+=== I. the other format: kind Workflow, validated by their validator ===
+ok: True kind: workflow
+nodes: 10 edges: 38
+edge keys: ['condition', 'from', 'label', 'to']
+
+=== J. the agent manifest through their validator ===
+ok: True kind: agent
+
+=== K. the table as JSON, for the record ===
+{"states": 10, "transitions": 38}
+exit=0
+
+### 5. the run itself, with no model key
+
+$ /legion/scratch/tmp/infra3134/tm-venv/bin/mas-ctl chat legion-workflow.yaml -p run the issue --single-turn -I
+error: Live LLM configured but API key env unset: OPENAI_API_KEY (leaf openai-direct). Set the key, or replay recorded answers only with --cache-read-only (or an llm_cache fixture with raise_on_miss: true).
+exit=1
+
+### 6. what their format has no word for
+
+$ grep -rnE "effect" $IOC_CLONES/mas-lab/library-standard/src/mas/library/standard/plugins/design_patterns/state_machine.py
+exit=1
+
+$ grep -rnE "trigger" $IOC_CLONES/mas-lab/library-standard/src/mas/library/standard/plugins/design_patterns/state_machine.py
+exit=1
+
+$ grep -rnE "guard:" $IOC_CLONES/mas-lab/library-standard/src/mas/library/standard/plugins/design_patterns/state_machine.py
+exit=1
+
+$ grep -rnE "'wait'" $IOC_CLONES/mas-lab/library-standard/src/mas/library/standard/plugins/design_patterns/state_machine.py
+exit=1
+
+$ grep -rnE "eval\(" $IOC_CLONES/mas-lab/library-standard/src/mas/library/standard/plugins/design_patterns/state_machine.py
+exit=1
+
+$ grep -rnE "durable|persist" $IOC_CLONES/mas-lab/library-standard/src/mas/library/standard/plugins/design_patterns/state_machine.py
+exit=1
+
+$ grep -rnE "transaction|atomic|rollback" $IOC_CLONES/mas-lab/library-standard/src/mas/library/standard/plugins/design_patterns/state_machine.py
+exit=1
+
+$ grep -rnE "status" $IOC_CLONES/mas-lab/library-standard/src/mas/library/standard/plugins/design_patterns/state_machine.py
+exit=1
+
+$ grep -rni outbox --include=*.py $IOC_CLONES/mas-lab
+exit=1
+
+$ grep -rn 'class WorkflowSpec' --include=*.py $IOC_CLONES/mas-lab
+exit=1
+
+$ grep -rnE "\"edges\"|'edges'" --include=*.py $IOC_CLONES/mas-lab/runtime/src $IOC_CLONES/mas-lab/ctl/src
+exit=1
+
+### 7. the row count of our table, measured
+$ grep -c '^	{From: phase\.' internal/workflow/table.go
+17
+
+$ go test -overlay=/legion/scratch/tmp/infra3134/in/out/tm-overlay.json -run TestTmCountRows -v ./internal/workflow/
+=== RUN   TestTmCountRows
+    tm-count_test.go:17: rows=38 literal=17 backward=21
+--- PASS: TestTmCountRows (0.00s)
+PASS
+ok  	github.com/sjawhar/legion/daemon/internal/workflow	(cached)
+exit=0
+
+### 8. what their validator does from a plain wheel install
+
+$ uv venv --allow-existing /legion/scratch/tmp/infra3134/tm-venv-wheel
+Using CPython 3.12.15
+Creating virtual environment at: /legion/scratch/tmp/infra3134/tm-venv-wheel
+Activate with: source /legion/scratch/tmp/infra3134/tm-venv-wheel/bin/activate
+exit=0
+
+$ uv pip install ./runtime ./ctl ./library-standard
+Using Python 3.12.15 environment at: /legion/scratch/tmp/infra3134/tm-venv-wheel
+Resolved 28 packages in 48ms
+   Building mas-lab-library-standard @ file:///legion/scratch/tmp/ioc-clones/mas-lab/library-standard
+   Building mas-lab-runtime @ file:///legion/scratch/tmp/ioc-clones/mas-lab/runtime
+   Building mas-lab-ctl @ file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl
+      Built mas-lab-ctl @ file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl
+      Built mas-lab-runtime @ file:///legion/scratch/tmp/ioc-clones/mas-lab/runtime
+      Built mas-lab-library-standard @ file:///legion/scratch/tmp/ioc-clones/mas-lab/library-standard
+Prepared 3 packages in 2.39s
+Uninstalled 3 packages in 6ms
+Installed 3 packages in 117ms
+ ~ mas-lab-ctl==0.2.0 (from file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl)
+ ~ mas-lab-library-standard==0.2.0 (from file:///legion/scratch/tmp/ioc-clones/mas-lab/library-standard)
+ ~ mas-lab-runtime==0.2.0 (from file:///legion/scratch/tmp/ioc-clones/mas-lab/runtime)
+exit=0
+
+$ /legion/scratch/tmp/infra3134/tm-venv-wheel/bin/mas-ctl validate legion-workflow.yaml
+OK  legion-workflow.yaml  kind=agent
+  [warning] no schema file for kind 'agent'
+exit=0
+
+$ uv pip install -e ./ctl
+Using Python 3.12.15 environment at: /legion/scratch/tmp/infra3134/tm-venv-wheel
+Resolved 28 packages in 30ms
+   Building mas-lab-ctl @ file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl
+      Built mas-lab-ctl @ file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl
+Prepared 1 package in 945ms
+Uninstalled 1 package in 38ms
+Installed 1 package in 7ms
+ ~ mas-lab-ctl==0.2.0 (from file:///legion/scratch/tmp/ioc-clones/mas-lab/ctl)
+exit=0
+
+$ /legion/scratch/tmp/infra3134/tm-venv-wheel/bin/mas-ctl validate legion-workflow.yaml
+Traceback (most recent call last):
+  File "/legion/scratch/tmp/infra3134/tm-venv-wheel/bin/mas-ctl", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/legion/scratch/tmp/ioc-clones/mas-lab/ctl/src/mas/ctl/cli/main.py", line 63, in main
+    app()
+  File "/legion/scratch/tmp/infra3134/tm-venv-wheel/lib/python3.12/site-packages/click/core.py", line 1653, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/legion/scratch/tmp/infra3134/tm-venv-wheel/lib/python3.12/site-packages/click/core.py", line 1560, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/legion/scratch/tmp/infra3134/tm-venv-wheel/lib/python3.12/site-packages/click/core.py", line 2054, in invoke
+    return _process_result(sub_ctx.command.invoke(sub_ctx))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/legion/scratch/tmp/infra3134/tm-venv-wheel/lib/python3.12/site-packages/click/core.py", line 1414, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/legion/scratch/tmp/infra3134/tm-venv-wheel/lib/python3.12/site-packages/click/core.py", line 911, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/legion/scratch/tmp/ioc-clones/mas-lab/ctl/src/mas/ctl/cli/commands/validate.py", line 103, in validate_cmd
+    result = validate_file(path, kind=kind, strict=strict, resolve_refs=resolve_refs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/legion/scratch/tmp/ioc-clones/mas-lab/ctl/src/mas/ctl/validate/validator.py", line 424, in validate_file
+    return validate_data(
+           ^^^^^^^^^^^^^^
+  File "/legion/scratch/tmp/ioc-clones/mas-lab/ctl/src/mas/ctl/validate/validator.py", line 271, in validate_data
+    validator = jsonschema.Draft7Validator(schema, registry=lab_schema_registry())
+                                                            ^^^^^^^^^^^^^^^^^^^^^
+  File "/legion/scratch/tmp/ioc-clones/mas-lab/ctl/src/mas/ctl/validate/schemas.py", line 149, in lab_schema_registry
+    from mas.lab.schemas.validate import schema_registry_from_dir
+ModuleNotFoundError: No module named 'mas.lab'
+exit=1
+
+### 9. mas-lab on PyPI, fetched 2026-11-12 into tm-pypi-mas-lab.json
+$ curl -s https://pypi.org/pypi/mas-lab/json -o tm-pypi-mas-lab.json; sha256sum tm-pypi-mas-lab.json
+6d5179f8e6a16ce467347acfe5fe1a48ce530695fa914dba90c9a2e76470bd66  /legion/scratch/tmp/infra3134/in/out/tm-pypi-mas-lab.json
+$ python -c 'the name, the version and the files of the record'
+name: mas-lab version: 0.2.0
+summary: MAS Lab — meta-package installing the runtime, control plane, lab components, and libraries.
+releases: ['0.2.0']
+files: ['mas_lab-0.2.0-py3-none-any.whl', 'mas_lab-0.2.0.tar.gz']

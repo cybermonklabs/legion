@@ -1,0 +1,32 @@
+[
+  {
+    "name": "v0.2.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/mas-lab/zipball/refs/tags/v0.2.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/mas-lab/tarball/refs/tags/v0.2.0",
+    "commit": {
+      "sha": "02cfa4d220a54e91dc8a76e14ec4da28f9bd2dc1",
+      "url": "https://api.github.com/repos/ioc-project/mas-lab/commits/02cfa4d220a54e91dc8a76e14ec4da28f9bd2dc1"
+    },
+    "node_id": "REF_kwDOTI00y7ByZWZzL3RhZ3MvdjAuMi4w"
+  },
+  {
+    "name": "v0.1.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/mas-lab/zipball/refs/tags/v0.1.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/mas-lab/tarball/refs/tags/v0.1.0",
+    "commit": {
+      "sha": "d7c8d8759c089be7281699ebbb61da20e7cdc5e8",
+      "url": "https://api.github.com/repos/ioc-project/mas-lab/commits/d7c8d8759c089be7281699ebbb61da20e7cdc5e8"
+    },
+    "node_id": "REF_kwDOTI00y7ByZWZzL3RhZ3MvdjAuMS4w"
+  },
+  {
+    "name": "data-ioc-motivation-v1.0",
+    "zipball_url": "https://api.github.com/repos/ioc-project/mas-lab/zipball/refs/tags/data-ioc-motivation-v1.0",
+    "tarball_url": "https://api.github.com/repos/ioc-project/mas-lab/tarball/refs/tags/data-ioc-motivation-v1.0",
+    "commit": {
+      "sha": "7cb11c586bb079b54d9e69ec80e863fa9e2657a6",
+      "url": "https://api.github.com/repos/ioc-project/mas-lab/commits/7cb11c586bb079b54d9e69ec80e863fa9e2657a6"
+    },
+    "node_id": "REF_kwDOTI00y9oAInJlZnMvdGFncy9kYXRhLWlvYy1tb3RpdmF0aW9uLXYxLjA"
+  }
+]

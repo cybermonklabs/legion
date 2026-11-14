@@ -31,7 +31,16 @@ as the fingerprint decides (*The reviewer*, below, and
   of your own that the round always asks for. When you can do neither — the agent will not run
   again and its transcript holds no findings — that half of the round has no review: tell the
   architect, do not approve, and wait with a `WAITING` line naming what you wait on until it
-  answers. The CI it reads is the head's own checks: no handoff is a
+  answers.
+  On a diff that touches no runtime code, a docs-only diff among them, the `Thermo` line still
+  records the simplify pass and the defects it reported, and each of its two pair rows reads
+  `not run (no runtime code)`.
+  A `CHANGES` from either half of the pair, `thermonuclear-deep-review` or
+  `thermonuclear-code-quality`, is answered in the review body — its findings carried into
+  a `REQUEST_CHANGES`, or each one recorded with why it does not stand, and never passed
+  over in silence — and an `APPROVE` needs both halves run at the reviewed head, or the two
+  `not run` rows above.
+  The CI the reviewer reads is the head's own checks: no handoff is a
   commit, so every push to the branch is work whose head gets GitHub's workflow runs of its own.
   With `<o>/<r>`, `<n>`, `<base>` and `<headRefOid>` from
   `gh pr view <n> --json baseRefName,headRefOid`, two reads. The required set is the
@@ -73,8 +82,6 @@ as the fingerprint decides (*The reviewer*, below, and
   A check carrying `ci_check` is CI's: the one result that `dispatch results` derives from the named run decides it (`skill://legion-worker/references/ci-checks.md`). While that run has not concluded, wait for it by its name, and do not approve or request changes for that check. Wait the same way where GitHub could not be read. When no run of that name answers after the head's checks settle, tell the architect as a finding and request no changes for it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
   A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
-  On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
-  reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
   Submit **one review per round** —
   `REQUEST_CHANGES` when any correctness finding stands, otherwise `APPROVE` of the head you
   reviewed — always named by SHA — carrying every inline comment in that single

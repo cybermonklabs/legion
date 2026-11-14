@@ -1,0 +1,81 @@
+# node-model checks, recorded 2026-11-12. Repo commands run at commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a of cybermonklabs/legion.
+
+$ jq -c '{version: .version, types: [.types[].name]}' packages/envoy/internal/dispatch/pmdoc/schema/blocks.json
+{"version":3,"types":["callout","ask","requirement","plan_task","check"]}
+[exit 0]
+
+$ grep -niE 'finding|verdict|evidence|definition|glossar|vocabular' packages/envoy/internal/dispatch/pmdoc/schema/blocks.json
+[exit 1]
+
+$ grep -n 'GatedStepsKnown = ' packages/envoy/internal/dispatch/model/model.go
+268:var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepSpec}
+[exit 0]
+
+$ grep -n 'GatedStepDecisions\s*=\|GatedStepCriteria\s*=\|GatedStepSpec\s*=' packages/envoy/internal/dispatch/model/model.go
+263:	GatedStepDecisions = "decisions"
+264:	GatedStepCriteria  = "criteria"
+265:	GatedStepSpec      = "spec"
+[exit 0]
+
+$ grep -n 'Quotes\|quotes' packages/envoy/internal/contracts/generated.go
+[exit 1]
+
+# Spec reads. Both pinned reads are byte-identical to the saved copies read for this work.
+
+$ dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | sha256sum
+16df219221e8cec5ab29cf0d83aca31235d4066d8d02fefd09e92592be091fdd  -
+[exit 0]
+
+$ dispatch doc-read --issue INFRA-1253 --artifact spec --version 17 | sha256sum
+3c1eb50debe6f6ac1b8e84f1a97f48ab34c3b69be5a0934198dd3bf68545ab81  -
+[exit 0]
+
+$ grep -c '^Approval: approved v97 by sami@theorem.dev' live1098.md
+1
+[exit 0]
+
+$ grep -c '^Approval' live1253.md
+0
+[exit 1]
+
+$ grep -niE 'finding node|`finding`|finding type|a finding is' live1098.md live1253.md
+[exit 1]
+
+$ grep -oniE '\bverdict\b' live1098.md live1253.md
+live1253.md:69:verdict
+live1253.md:159:verdict
+live1253.md:195:verdict
+live1253.md:195:verdict
+live1253.md:256:verdict
+live1253.md:256:verdict
+[exit 0]
+
+$ grep -niE 'glossar|vocabular|`definition`|definition node|definition type|term node|`term`' live1098.md live1253.md
+[exit 1]
+
+$ grep -niE 'opentelemetry|otel|gen_ai|trace|metric' live1098.md live1253.md
+[exit 1]
+
+$ grep -niE 'plan query|plan approval|approves the plan|the plan is approved' live1098.md live1253.md
+[exit 1]
+
+# Absence checks re-run from the pinned reads themselves, so each is re-runnable from a fresh pod.
+
+$ dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | grep -niE 'finding node|`finding`|finding type|glossar|vocabular|definition node|term node|opentelemetry|gen_ai|plan query|plan approval'
+[exit 1]
+
+$ dispatch doc-read --issue INFRA-1253 --artifact spec --version 17 | grep -niE 'finding|glossar|vocabular|definition node|term node|opentelemetry|gen_ai|plan query|plan approval'
+[exit 1]
+
+$ dispatch read --ref dispatch://INFRA-323/artifact/defining-terms-draft-md | grep -E '^(Document|Versions|Approval)'
+Document: INFRA-323 / defining-terms-draft.md
+Versions: 2
+[exit 0]
+
+$ dispatch doc-read --issue INFRA-2918 --artifact spec | grep -c 'the target cards, the Legion measures, CI health, deploys and lead time, and the merge timeline'
+1
+[exit 0]
+
+# Note: live1098.md and live1253.md in the commands above are the outputs of the two pinned reads,
+# "dispatch doc-read --issue INFRA-1098 --artifact spec --version 97" and the same for INFRA-1253 at version 17.
+# Each absence check is repeated in pipeline form below them, so every recorded command re-runs from a fresh pod.
