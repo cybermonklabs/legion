@@ -4766,6 +4766,11 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14, the longest gap between two readings was 1082 ms against a usual 108 to 115 ms;
   the kill still came at 85.23% of the limit, below every point at which the kernel was measured to stop the sandbox (95.4% to 99.4%).
 
+- It does not bound the reads of a decision by what a process holds.
+  Each decision walks the descriptors of every process the guard may end, to find the memfds they hold, at about 12.5 µs a descriptor in a gVisor pod (measured on 2026-11-14), so a process holding 20,000 descriptors adds about 250 ms to a decision, the one after a kill included.
+  It reads each such process's `smaps` whole as well, and under gVisor `vm.max_map_count` reads 2147483647, so the kernel's mapping limit does not bound that read either.
+  What it does bound is a process's arguments: it reads and masks at most their first 4 KiB ("The lines", above).
+
 - It does not see the memory of a process whose main thread alone has exited.
   Such a process reads `Z` in its `stat` while its other threads run on and hold all of its memory, and the guard reads it as a live process ("What it ends", above).
   On Linux, though, its `exe` and its `smaps`, read through the exited main thread, answer nothing, so the guard counts it as ended or as unread and never ends it.
