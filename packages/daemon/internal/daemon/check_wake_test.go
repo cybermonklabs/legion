@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -105,7 +104,7 @@ type checkWakeRig struct {
 	github      *checkWakeGitHub
 	rt          *fake.Runtime
 	records     record.Store
-	pool        *pgxpool.Pool
+	pool        *store.Pool
 	logs        *syncBuffer
 	// built is what the daemon handed the fake runtime: the worker stream a pane's shim dials.
 	built *built

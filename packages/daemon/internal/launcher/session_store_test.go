@@ -383,7 +383,7 @@ func TestAnIssuePodsSessionURLNamesTheSocketAsTheRoleSeesIt(t *testing.T) {
 	managers, err := newManagers(Config{
 		Connect: "tcp://127.0.0.1:1", Sandbox: "legion-legion-legion-208", RolesDir: rolesDir, Roles: []string{role},
 		StopGrace: 2 * time.Second, SessionDatabase: testDatabase, SessionDialer: dialer.build,
-	})
+	}, &pidGuard{})
 	if err != nil {
 		t.Fatal(err)
 	}

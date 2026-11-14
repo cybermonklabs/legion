@@ -133,6 +133,7 @@ export function IssueTableToolbar({
   searchRef,
   table,
   trailing,
+  unclaimedFlag,
   unclaimedUnchecked,
 }: {
   /** The columns the Columns menu offers: those the project has. */
@@ -152,6 +153,9 @@ export function IssueTableToolbar({
   /** The page's own controls: the layout switch, the Columns menu for the table or Show Icebox
    *  and the lanes for the Board, then Save view and the (i) hint. */
   trailing: ReactNode;
+  /** Whether the trigger holds Unclaimed beside Needs you and Unread: the Issues tab's does, and
+   *  a table another page draws keeps the List's two flags, its Unclaimed on Claimed by. */
+  unclaimedFlag: boolean;
   /** Why the Claimed by filter cannot tell which claims have lapsed, while it is asked to. */
   unclaimedUnchecked: "refilling" | "unreachable" | undefined;
 }): ReactNode {
@@ -165,7 +169,11 @@ export function IssueTableToolbar({
   const flagged = [
     { label: "Needs you", off: () => flags.setNeedsYou(false), on: flags.needsYou },
     { label: "Unread", off: () => flags.setUnread(false), on: flags.unread },
-    { label: "Unclaimed", off: () => flags.setUnclaimed(false), on: flags.unclaimed },
+    {
+      label: "Unclaimed",
+      off: () => flags.setUnclaimed(false),
+      on: unclaimedFlag && flags.unclaimed,
+    },
   ].filter(({ on }) => on);
   // The Board draws no column header, so a label it filters by is a chip of the row.
   const labelChips = board
@@ -201,9 +209,11 @@ export function IssueTableToolbar({
   const flagsPanel = () => (
     <>
       <IssueFlagChips />
-      <Chip onClick={() => flags.setUnclaimed(!flags.unclaimed)} selected={flags.unclaimed}>
-        Unclaimed
-      </Chip>
+      {unclaimedFlag ? (
+        <Chip onClick={() => flags.setUnclaimed(!flags.unclaimed)} selected={flags.unclaimed}>
+          Unclaimed
+        </Chip>
+      ) : null}
       {extraChips.length === 0 ? null : (
         <ul
           aria-label="Other narrowings"
@@ -328,7 +338,9 @@ export function IssueTableSelection({
   unansweredEpic: string | undefined;
   startNext: (keys: readonly string[], selection?: { readonly offPage: boolean }) => void;
   moveTo: (keys: readonly string[], epic: string | null) => void;
-  newEpic: (keys: readonly string[]) => void;
+  /** How an epic is made of the selected issues; absent on a table that stands on no project,
+   *  since an epic is created in one and a cross-project selection names none. */
+  newEpic?: (keys: readonly string[]) => void;
 }): ReactNode {
   const selectedKeys = table.getSelectedRowModel().flatRows.map((row) => row.original.issue.key);
   const leafCount = table.getFilteredRowModel().rows.length;
@@ -386,12 +398,14 @@ export function IssueTableSelection({
       <Action disabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
         Take out of epic
       </Action>
-      <Action
-        disabled={busy || unansweredEpic !== undefined}
-        onClick={() => void newEpic(selectedKeys)}
-      >
-        New epic from these
-      </Action>
+      {newEpic === undefined ? null : (
+        <Action
+          disabled={busy || unansweredEpic !== undefined}
+          onClick={() => void newEpic(selectedKeys)}
+        >
+          New epic from these
+        </Action>
+      )}
       <Action disabled={busy} onClick={() => setSelection({})}>
         Clear selection
       </Action>

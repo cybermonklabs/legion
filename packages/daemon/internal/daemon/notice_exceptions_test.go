@@ -14,13 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -65,7 +64,7 @@ func architectClaimOn(t *testing.T, sup *supervisor, issue string, state supervi
 }
 
 // queuedNotices is every queued notice row, as "<kind> on <issue>" with its payload.
-func queuedNotices(t *testing.T, pool *pgxpool.Pool) []string {
+func queuedNotices(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), "select issue, payload::text from outbox where kind = 'notice' order by id")
 	if err != nil {
@@ -400,7 +399,7 @@ func confirmedAnswer(reason, holder string) error {
 }
 
 // noticeRowID is the id of the one outbox row queued so far.
-func noticeRowID(t *testing.T, pool *pgxpool.Pool) int64 {
+func noticeRowID(t *testing.T, pool *store.Pool) int64 {
 	t.Helper()
 	var id int64
 	if err := pool.QueryRow(context.Background(), "select id from outbox").Scan(&id); err != nil {

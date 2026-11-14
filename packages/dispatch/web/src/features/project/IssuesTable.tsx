@@ -17,7 +17,7 @@ import type { PagerOptions } from "../../components/Pager";
 import { QueryError } from "../../components/QueryError";
 import { useTableLayout } from "../../components/table-layout";
 import { readStore, writeStore } from "../../components/table-storage";
-import { useAddressParams, useAddressUpdate } from "../../lib/page-address";
+import { copyAddress, useAddressParams, useAddressUpdate } from "../../lib/page-address";
 import {
   borderDefault,
   dangerText,
@@ -52,8 +52,20 @@ import {
 } from "./issues-phase-hours";
 import { useIssueTableActions } from "./issues-table-actions";
 import { ViewBar } from "./issues-table-bar";
-import { useIssueTableColumns } from "./issues-table-columns";
-import { type DoneRead, useProjectIssueItems } from "./issues-table-data";
+import {
+  issueTableLayout,
+  type ListingColumnId,
+  listingColumns,
+  type ShownColumnId,
+  useIssueTableColumns,
+} from "./issues-table-columns";
+import {
+  type AdvancesListing,
+  answeredWhole,
+  type DoneRead,
+  type IssueListing,
+  useIssueTableItems,
+} from "./issues-table-data";
 import {
   ALL_ROWS,
   buildItems,
@@ -75,17 +87,20 @@ import {
   readUrl,
   tableStorageKey,
   UNCLAIMED_FACET,
+  type View,
   viewLayoutColumns,
 } from "./issues-table-model";
 import { type ExtraChip, IssueTableSelection, IssueTableToolbar } from "./issues-table-page";
 import { GroupRow, IssueRow } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
 import {
+  type BuiltInView,
   type BuiltInViewId,
   clearNarrowings,
   isViewChanged,
   narrowingsKey,
   readSavedViews,
+  type SavedView,
   type StoredViews,
   viewFor,
   viewQueryKey,
@@ -99,6 +114,13 @@ const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 /** Status offers Done before the closed issues it would count are read. */
 const DONE_UNLOADED: ReadonlyMap<string, readonly string[]> = new Map([["status", ["done"]]]);
 const NONE: readonly string[] = [];
+const NO_VIEWS: readonly BuiltInView[] = [];
+const NO_SAVED: readonly SavedView[] = [];
+/** An embedded table's own parameters that Clear filters leaves as they are (`<stateKey>.`). */
+const EMBEDDED_KEPT = ["sort", "group", "size", "page"];
+/** What else Clear filters takes off an embedded table: the flags and the chips, which belong
+ *  to the page's address rather than to one table. */
+const EMBEDDED_CLEARED = ["needs-you", "unread", "only", "onlyLabel", "exclude_tree"];
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
@@ -111,7 +133,7 @@ const ROW_CHECKBOX = 'input[type="checkbox"]';
 /** The List's own words, which the table core reads and never invents: the attributes its rows
  *  and groups carry, the link opening a row follows, what its filters count, and the keys that
  *  walk it, under the ids and labels the palette and the shortcut help have always shown. */
-const ISSUE_TABLE_NAMES: DataTableNames = {
+export const ISSUE_TABLE_NAMES: DataTableNames = {
   filterCountNoun: { one: "issue", many: "issues" },
   groupAttribute: ISSUE_GROUP_ATTRIBUTE,
   keymap: {
@@ -151,30 +173,102 @@ const BAR_COLUMN = {
   slot_use: "slot_use",
 } as const;
 
-/** Whether an address lists closed issues: its Status filter picks Done, its Stage filter picks
- *  Done, or it lifts the Status filter (`nofilter=1`). A view with no Status filter of its own
- *  (Waiting line, In flight, Slots) lists the open issues its Legion filters select. */
-function listsClosed(params: URLSearchParams, hasLegion: boolean): boolean {
-  const { filters } = readUrl(params, hasLegion);
+/** Whether a view lists closed issues: its Status filter picks Done, its Stage filter picks
+ *  Done, or the Status filter is lifted (`lifted`, `nofilter=1`). A view with no Status filter
+ *  of its own (Waiting line, In flight, Slots) lists the open issues its Legion filters select. */
+function filtersListClosed(filters: View["filters"], lifted: boolean): boolean {
   const picks = (id: string) => {
     const value = filters.find((filter) => filter.id === id)?.value;
     return Array.isArray(value) ? value.map(String) : undefined;
   };
   const status = picks("status");
   if (status !== undefined) return status.includes("done");
-  return params.get("nofilter") === "1" || (picks("stage")?.includes("done") ?? false);
+  return lifted || (picks("stage")?.includes("done") ?? false);
 }
 
-/** Which done issues an address reads: none, the window its Closed filter names, or every done
+/** Whether an address of the Issues tab lists closed issues (`filtersListClosed`). */
+function listsClosed(params: URLSearchParams, hasLegion: boolean): boolean {
+  return filtersListClosed(readUrl(params, hasLegion).filters, params.get("nofilter") === "1");
+}
+
+/** Which done issues a view reads: none, the window its Closed filter names, or every done
  *  issue where it names none. */
-function doneRead(params: URLSearchParams, hasLegion: boolean, nowMs: number): DoneRead {
-  if (!listsClosed(params, hasLegion)) return undefined;
-  const closed = readUrl(params, hasLegion).filters.find((filter) => filter.id === "closed");
+function doneRead(filters: View["filters"], lifted: boolean, nowMs: number): DoneRead {
+  if (!filtersListClosed(filters, lifted)) return undefined;
+  const closed = filters.find((filter) => filter.id === "closed");
   return (typeof closed?.value === "string" ? windowRead(closed.value, nowMs) : undefined) ?? {};
 }
 
+/** The one layout key of every table scoped to a priority: the work advancing a priority is
+ *  one table, drawn under an opened row of the priorities page and on the priority's own page,
+ *  so the columns a reader drags there are dragged once rather than once per priority. */
+const SCOPED_LAYOUT_KEY = "priority-work";
+
+/**
+ * Where the table stands. On a project's Issues tab it is the project's one list of issues, in
+ * views, in the table or the Board. Another page (the priority pages) draws it embedded, over a
+ * listing of its own: the design reaches it there in its stage bar, its palette and its Place
+ * column, and no further - no view tabs, no saved views, no Board, no Legion columns, and every
+ * parameter of its own under `stateKey`.
+ */
+type TablePlace =
+  | {
+      readonly kind: "project";
+      readonly project: string;
+      readonly hasLegion: boolean;
+      readonly settingsFailure: SettingsFailure | undefined;
+    }
+  | {
+      readonly kind: "embedded";
+      readonly listing: AdvancesListing;
+      readonly label: string;
+      readonly layout:
+        | { readonly key: string; readonly shown: readonly ShownColumnId[] }
+        | undefined;
+      readonly priorityTitles: ReadonlyMap<string, string> | undefined;
+      readonly stateKey: string;
+    };
+
+/** The Issues tab's table, or an issue table another page draws over its own listing. */
+export function IssuesTable({
+  label,
+  layout,
+  listing,
+  priorityTitles,
+  stateKey,
+}: {
+  /** What this list is called, for a reader who cannot see where it sits; by its listing when
+   *  unset: a project's issues, or the issues advancing one priority. */
+  label?: string;
+  /** The layout this table keeps, under its own key, where it is not its listing's, and the
+   *  columns it opens with shown (`issueTableLayout`). */
+  layout?: { readonly key: string; readonly shown: readonly ShownColumnId[] };
+  /** What this table lists: one project's issues, with the project's views, or the issues
+   *  advancing one priority, which belong to no project (`issues-table-data.ts`). */
+  listing: IssueListing;
+  /** Each priority's title by its id. Given, the table has the Advances column. */
+  priorityTitles?: ReadonlyMap<string, string>;
+  /** The prefix a table another page draws writes its own view under: `<stateKey>.sort` and
+   *  the rest. */
+  stateKey?: string;
+}): ReactNode {
+  if ("project" in listing) return <ProjectIssuesTable project={listing.project} />;
+  return (
+    <ViewsTable
+      place={{
+        kind: "embedded",
+        label: label ?? "Priority issues",
+        layout,
+        listing,
+        priorityTitles,
+        stateKey: stateKey ?? "issues",
+      }}
+    />
+  );
+}
+
 /** The Issues tab: the project's one list of issues, in views, in the table or the Board. */
-export function IssuesTable({ project }: { project: string }): ReactNode {
+function ProjectIssuesTable({ project }: { project: string }): ReactNode {
   const settings = useQuery(legionSettingsQuery());
   if (settings.isPending) return <LoadingSkeleton label="Loading issues" />;
   // Until a read of the Legion setting answers, the project is drawn as one with no daemon, and
@@ -189,34 +283,39 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         }
       : undefined;
   return (
-    <ViewsTable
-      hasLegion={hasLegion}
-      key={project}
-      project={project}
-      settingsFailure={settingsFailure}
-    />
+    <ViewsTable key={project} place={{ kind: "project", hasLegion, project, settingsFailure }} />
   );
 }
 
-function ViewsTable({
-  hasLegion,
-  project,
-  settingsFailure,
-}: {
-  hasLegion: boolean;
-  project: string;
-  settingsFailure: SettingsFailure | undefined;
-}): ReactNode {
+function ViewsTable({ place }: { place: TablePlace }): ReactNode {
+  const embedded = place.kind === "embedded";
+  const project = place.kind === "project" ? place.project : undefined;
+  const hasLegion = place.kind === "project" && place.hasLegion;
+  const settingsFailure = place.kind === "project" ? place.settingsFailure : undefined;
+  const listing: IssueListing =
+    place.kind === "project" ? { project: place.project } : place.listing;
+  // Whether the listing's one open read is every row it holds, so the table reads no closed
+  // issue beside it (`answeredWhole`).
+  const whole = answeredWhole(listing);
+  // A parameter of this table's own view: bare on the Issues tab, under the prefix elsewhere.
+  const ownParam = (name: string) =>
+    place.kind === "embedded" ? `${place.stateKey}.${name}` : name;
   const params = useAddressParams();
   const update = useAddressUpdate();
-  const { view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
-    useTableView(hasLegion);
+  const { view, setFilters, setGrouping, setPagination, setSearch, setSorting } = useTableView(
+    place.kind === "embedded" ? { stateKey: place.stateKey } : { hasLegion }
+  );
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  const views = viewsFor(hasLegion);
-  const builtIn = viewFor(params.get("view"), hasLegion);
+  const views = embedded ? NO_VIEWS : viewsFor(hasLegion);
+  // An embedded table draws no view: it opens as All open does, its bar by stage across its
+  // whole width.
+  const builtIn = viewFor(embedded ? null : params.get("view"), hasLegion);
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  const board = useQuery({ ...legionBoardQuery({ kind: "legion", project }), enabled: hasLegion });
+  const board = useQuery({
+    ...legionBoardQuery({ kind: "legion", project: project ?? "" }),
+    enabled: hasLegion,
+  });
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
@@ -234,11 +333,11 @@ function ViewsTable({
     readSavedViews,
     (value) => JSON.stringify(value)
   );
-  const saved = stored.projects[project] ?? [];
+  const saved = project === undefined ? NO_SAVED : (stored.projects[project] ?? NO_SAVED);
   const [chosenSaved, setChosenSaved] = useState<string>();
   const queryKey = viewQueryKey(params);
   const matchedSaved = saved.find(
-    (entry) => viewQueryKey(new URLSearchParams(entry.query)) === queryKey
+    (entry) => viewQueryKey(copyAddress(entry.query)) === queryKey
   )?.name;
   const savedName =
     chosenSaved !== undefined && saved.some((entry) => entry.name === chosenSaved)
@@ -252,18 +351,32 @@ function ViewsTable({
   const changed =
     savedView === undefined
       ? isViewChanged(params)
-      : viewQueryKey(new URLSearchParams(savedView.query)) !== queryKey;
+      : viewQueryKey(copyAddress(savedView.query)) !== queryKey;
   // The address the view opens at, and whether the reader's narrowings differ from its own: the
   // tab's mark shows any change, Clear filters only a change of what the rows are narrowed by.
+  // An embedded table is narrowed by any parameter of its own but its sort, grouping and page,
+  // by a flag, or by a chip.
   const ownAddress =
     savedView === undefined
-      ? new URLSearchParams(builtIn.id === "open" ? "" : `view=${builtIn.id}`)
-      : new URLSearchParams(savedView.query);
-  const narrowed = narrowingsKey(params) !== narrowingsKey(ownAddress);
+      ? copyAddress(builtIn.id === "open" ? "" : `view=${builtIn.id}`)
+      : copyAddress(savedView.query);
+  const narrowed =
+    place.kind === "embedded"
+      ? [...params.keys()].some(
+          (key) =>
+            (key.startsWith(`${place.stateKey}.`) &&
+              !EMBEDDED_KEPT.includes(key.slice(place.stateKey.length + 1))) ||
+            EMBEDDED_CLEARED.includes(key)
+        )
+      : narrowingsKey(params) !== narrowingsKey(ownAddress);
 
   // The layout: the address's for this load, else the one kept for the view, else today's
-  // `project.issue-view` choice (All open's, its `legion` value In flight's Board).
-  const storeKey = viewStorageKey(project, builtIn.id);
+  // `project.issue-view` choice (All open's, its `legion` value In flight's Board). An embedded
+  // table keeps its layout under its own key, as one table wherever it is drawn, and has no Board.
+  const storeKey =
+    place.kind === "embedded"
+      ? tableStorageKey(place.layout?.key ?? SCOPED_LAYOUT_KEY)
+      : viewStorageKey(place.project, builtIn.id);
   const [legacyView] = useUserPreference(
     "project.issue-view",
     (value) => value ?? "list",
@@ -277,9 +390,10 @@ function ViewsTable({
       : readStore(storeKey).layout === "table"
         ? "table"
         : undefined);
-  const urlLayout = params.get("layout");
-  const layoutChoice: ViewLayout =
-    urlLayout === "board" || urlLayout === "table"
+  const urlLayout = embedded ? null : params.get("layout");
+  const layoutChoice: ViewLayout = embedded
+    ? "table"
+    : urlLayout === "board" || urlLayout === "table"
       ? urlLayout
       : (keptLayout ??
         ((builtIn.id === "open" && legacyView === "board") ||
@@ -297,14 +411,19 @@ function ViewsTable({
       setKeptLayouts((current) => ({ ...current, [storeKey]: next }));
     }
   };
-  useKeymap("project", [
-    {
-      id: "toggle-view",
-      keys: "v",
-      label: "Switch the table and the Board",
-      run: () => setLayout(layoutChoice === "board" ? "table" : "board"),
-    },
-  ]);
+  useKeymap(
+    "project",
+    embedded
+      ? []
+      : [
+          {
+            id: "toggle-view",
+            keys: "v",
+            label: "Switch the table and the Board",
+            run: () => setLayout(layoutChoice === "board" ? "table" : "board"),
+          },
+        ]
+  );
   const [showIcebox, setShowIcebox] = useUserPreference(
     "project.board-edges",
     (value) => value === "shown",
@@ -317,27 +436,47 @@ function ViewsTable({
   );
 
   // The columns: the view's own, the address's `cols=` for this load, the board's only where
-  // the project has a Legion daemon.
+  // the project has a Legion daemon. An embedded table opens with the columns the List had
+  // before the views, and the listing columns its listing gives a use (`listingColumns`).
   const viewCols = useMemo(
-    () => (hasLegion ? builtIn.cols : builtIn.cols.filter((id) => !isBoardColumn(id))),
-    [builtIn, hasLegion]
+    () =>
+      embedded ? [] : hasLegion ? builtIn.cols : builtIn.cols.filter((id) => !isBoardColumn(id)),
+    [builtIn, embedded, hasLegion]
   );
-  const storedLayout = useTableLayout(storeKey, viewLayoutColumns(viewCols));
-  const colsParam = params.get("cols");
+  const listingColsText =
+    place.kind === "embedded"
+      ? listingColumns(place.listing, place.priorityTitles !== undefined).join(",")
+      : "";
+  const listingCols = useMemo(
+    () => (listingColsText === "" ? [] : (listingColsText.split(",") as ListingColumnId[])),
+    [listingColsText]
+  );
+  const storedLayout = useTableLayout(
+    storeKey,
+    place.kind === "embedded"
+      ? issueTableLayout(listingCols, place.layout?.shown)
+      : viewLayoutColumns(viewCols)
+  );
+  const colsParam = embedded ? null : params.get("cols");
   // Start next is offered only on the views that list Todo issues; elsewhere its column is not
-  // drawn, so the view's own columns get its width.
-  const trailingWidth = ["open", "waiting", "mine"].includes(builtIn.id) ? ACTION_WIDTH : 0;
+  // drawn, so the view's own columns get its width. An embedded table offers it as the List did.
+  const trailingWidth =
+    embedded || ["open", "waiting", "mine"].includes(builtIn.id) ? ACTION_WIDTH : 0;
   const layout = useMemo(() => {
+    const registryOrder = [
+      "select",
+      ...viewCols,
+      ...COLUMNS.map((column) => column.id).filter(
+        (id) => id !== "select" && !viewCols.includes(id)
+      ),
+    ];
+    // The listing columns sit beside the title, which is what a row of every project's issues
+    // is read by.
+    const after = registryOrder.indexOf("title") + 1;
     const kept =
       storedLayout.order.length > 0
         ? storedLayout.order
-        : [
-            "select",
-            ...viewCols,
-            ...COLUMNS.map((column) => column.id).filter(
-              (id) => id !== "select" && !viewCols.includes(id)
-            ),
-          ];
+        : [...registryOrder.slice(0, after), ...listingCols, ...registryOrder.slice(after)];
     // On a phone Select and Key are the pinned columns, and Title, which fills the rest of the
     // box, comes straight after them, so a row at rest reads its key and its title.
     const phone = storedLayout.boxWidth < 640;
@@ -420,12 +559,14 @@ function ViewsTable({
         });
       },
     };
-  }, [colsParam, hasLegion, storedLayout, trailingWidth, update, viewCols]);
+  }, [colsParam, hasLegion, listingCols, storedLayout, trailingWidth, update, viewCols]);
   const { attachAbove, boxWidth } = layout;
 
   // The reads: the open listing, the done issues the view lists, and the board.
   const nowMs = Date.now();
-  const done = doneRead(params, hasLegion, nowMs);
+  const done = whole
+    ? undefined
+    : doneRead(filters, params.get(ownParam("nofilter")) === "1", nowMs);
   const claimPicked = (filters.find((filter) => filter.id === "claim")?.value ?? []) as string[];
   const wantsFree = claimPicked.includes(UNCLAIMED_FACET);
   const registry = useAgentRegistry(wantsFree || openFilter === "claim");
@@ -439,7 +580,7 @@ function ViewsTable({
     issues,
     listingError,
     missingParents,
-  } = useProjectIssueItems(project, {
+  } = useIssueTableItems(listing, {
     done,
     registry,
     board: board.data,
@@ -495,7 +636,13 @@ function ViewsTable({
     excluded,
   ]);
 
-  const columns = useIssueTableColumns(userState.data, boxWidth < 640, recordMark);
+  const columns = useIssueTableColumns(
+    userState.data,
+    boxWidth < 640,
+    recordMark,
+    listingCols,
+    place.kind === "embedded" ? place.priorityTitles : undefined
+  );
 
   const model = useDataTable<Item>({
     rows: items,
@@ -567,7 +714,7 @@ function ViewsTable({
     finish,
     dismiss,
   } = useIssueTableActions({
-    project,
+    listing,
     issues: all,
     items: allItems,
     clearSelection: () => setSelection({}),
@@ -599,14 +746,14 @@ function ViewsTable({
   if (builtIn.id === "finished" && !finishedOpened) setFinishedOpened(true);
   const finishedWindow = windowRead("28d", nowMs) ?? {};
   const finishedRead = useQuery({
-    ...projectDoneIssuesQuery(project, finishedWindow),
-    enabled: finishedOpened,
+    ...projectDoneIssuesQuery(project ?? "", finishedWindow),
+    enabled: finishedOpened && project !== undefined,
   });
   const text = useAgentText();
   const counts = useMemo(() => {
     const result = new Map<string, number | undefined>();
     for (const entry of views) {
-      const own = readUrl(new URLSearchParams([["view", entry.id]]), hasLegion).filters;
+      const own = readUrl(copyAddress(`view=${entry.id}`), hasLegion).filters;
       if (entry.id === "finished") {
         const rows = finishedRead.data;
         result.set(
@@ -632,7 +779,7 @@ function ViewsTable({
   const savedCounts = useMemo(() => {
     const result = new Map<string, number | undefined>();
     for (const entry of saved) {
-      const query = new URLSearchParams(entry.query);
+      const query = copyAddress(entry.query);
       if (listsClosed(query, hasLegion)) {
         result.set(entry.name, entry.name === savedName ? listedRows.length : undefined);
         continue;
@@ -647,7 +794,7 @@ function ViewsTable({
     setChosenSaved(undefined);
     const next = viewFor(id, hasLegion);
     update(() => {
-      const fresh = new URLSearchParams();
+      const fresh = copyAddress();
       if (next.id !== "open") fresh.set("view", next.id);
       return fresh;
     });
@@ -656,12 +803,14 @@ function ViewsTable({
     const entry = saved.find((candidate) => candidate.name === name);
     if (entry === undefined) return;
     setChosenSaved(name);
-    update(() => new URLSearchParams(entry.query));
+    update(() => copyAddress(entry.query));
   };
-  const writeSaved = (next: readonly { name: string; query: string }[]) =>
-    setStored({ version: 1, projects: { ...stored.projects, [project]: [...next] } });
+  const writeSaved = (next: readonly { name: string; query: string }[]) => {
+    if (project !== undefined)
+      setStored({ version: 1, projects: { ...stored.projects, [project]: [...next] } });
+  };
   const saveView = (name: string) => {
-    const query = new URLSearchParams(params);
+    const query = copyAddress(params);
     query.delete("page");
     if (!query.has("cols"))
       query.set(
@@ -676,20 +825,35 @@ function ViewsTable({
     const entry = { name, query: query.toString() };
     writeSaved([...saved.filter((candidate) => candidate.name !== name), entry]);
     setChosenSaved(name);
-    update(() => new URLSearchParams(entry.query));
+    update(() => copyAddress(entry.query));
   };
   const deleteSaved = (name: string) => {
     writeSaved(saved.filter((candidate) => candidate.name !== name));
     setChosenSaved(undefined);
   };
-  // Clear filters: the narrowings back to the view's own, the sort and grouping kept.
-  const clearFilters = () => update((current) => clearNarrowings(current, ownAddress));
+  // Clear filters: the narrowings back to the view's own, the sort and grouping kept. An
+  // embedded table's own parameters go back to what it opens with, and the flags and chips go.
+  const clearFilters = () =>
+    update((current) => {
+      if (place.kind === "project") return clearNarrowings(current, ownAddress);
+      const mark = `${place.stateKey}.`;
+      for (const key of [...current.keys()])
+        if (
+          (key.startsWith(mark) && !EMBEDDED_KEPT.includes(key.slice(mark.length))) ||
+          EMBEDDED_CLEARED.includes(key) ||
+          key === `${mark}page`
+        )
+          current.delete(key);
+      return current;
+    });
 
-  // The bar: the listed rows by the view's Bar by column.
-  const barBy = builtIn.bar;
+  // The bar: the listed rows by the view's Bar by column. An embedded table counts its rows by
+  // stage across its whole width, with no Not started cut.
+  const barBy = embedded ? "stage" : builtIn.bar;
+  const notStartedNumber = !embedded && builtIn.notStartedNumber === true;
   const barColumn = barBy === undefined ? undefined : BAR_COLUMN[barBy];
   const barPicks = (() => {
-    if (barColumn === undefined || !params.has(`f.${barColumn}`)) return undefined;
+    if (barColumn === undefined || !params.has(ownParam(`f.${barColumn}`))) return undefined;
     const value = filters.find((filter) => filter.id === barColumn)?.value;
     return Array.isArray(value) ? value.map(String) : undefined;
   })();
@@ -697,8 +861,8 @@ function ViewsTable({
     if (barColumn === undefined) return;
     if (values === undefined)
       update((current) => {
-        current.delete(`f.${barColumn}`);
-        current.delete("page");
+        current.delete(ownParam(`f.${barColumn}`));
+        current.delete(ownParam("page"));
         return current;
       });
     else table.getColumn(barColumn)?.setFilterValue([...values]);
@@ -783,7 +947,7 @@ function ViewsTable({
     [allItems]
   );
 
-  const tabs = (
+  const tabs = embedded ? null : (
     <IssueViewTabs
       active={active}
       boardHeader={board.data?.header}
@@ -808,7 +972,9 @@ function ViewsTable({
   const failed = (issues.isError && issues.data === undefined) || userState.isError;
   const boardFailed = legionFiltered && board.isError;
 
-  const toolbarTrailing = (
+  const toolbarTrailing = embedded ? (
+    <ColumnsMenu columns={offeredColumns} size="compact" />
+  ) : (
     <>
       <LayoutSwitch layout={layoutChoice} onLayout={setLayout} />
       {layoutChoice === "board" ? (
@@ -837,14 +1003,18 @@ function ViewsTable({
   );
 
   return (
-    <section aria-label="Project issues" className="space-y-2 sm:pb-24" data-view={builtIn.id}>
+    <section
+      aria-label={place.kind === "embedded" ? place.label : "Project issues"}
+      className="space-y-2 sm:pb-24"
+      data-view={embedded ? undefined : builtIn.id}
+    >
       <div className="space-y-2" ref={attachAbove}>
         {tabs}
         <ViewBar
           by={barBy}
           items={loading ? [] : listedRows.map((row) => row.original)}
           narrowTo={narrowTo}
-          notStartedNumber={builtIn.notStartedNumber === true}
+          notStartedNumber={notStartedNumber}
           picked={barPicks}
         />
         <IssueTableToolbar
@@ -858,6 +1028,8 @@ function ViewsTable({
           searchRef={searchRef}
           table={table}
           trailing={toolbarTrailing}
+          // An embedded table keeps the List's two flags; Unclaimed is its Claimed by column's.
+          unclaimedFlag={!embedded}
           unclaimedUnchecked={
             wantsFree && registry.isError
               ? registry.refilling
@@ -926,7 +1098,7 @@ function ViewsTable({
             </button>
           </LandedWithoutAnswer>
         ) : null}
-        {duplicateEpic ? (
+        {duplicateEpic && newEpic ? (
           <div className={textSecondaryOnCanvas} role="alert">
             <p>{duplicateEpic.message}</p>
             <button
@@ -965,7 +1137,7 @@ function ViewsTable({
         />
       ) : loading ? (
         <LoadingSkeleton label="Loading issues" />
-      ) : layoutChoice === "board" ? (
+      ) : layoutChoice === "board" && project !== undefined ? (
         <IssueBoard
           hasLegion={hasLegion}
           lanes={lanes}
@@ -984,7 +1156,7 @@ function ViewsTable({
             empty={<span className={textMutedOnCanvas}>No issues match these filters</span>}
             filterCounts={openFacets}
             filterUnloaded={done !== undefined && !doneLoaded ? DONE_UNLOADED : undefined}
-            label="Project issues table"
+            label={`${place.kind === "embedded" ? place.label : "Project issues"} table`}
             model={model}
             onOpenFilterChange={setOpenFilter}
             openFilter={openFilter}
@@ -1020,7 +1192,7 @@ function ViewsTable({
                 grouping={grouping[0] ?? ""}
                 index={index}
                 measure={measure}
-                notStartedNumber={builtIn.notStartedNumber === true}
+                notStartedNumber={notStartedNumber}
                 onMerge={mergeEpic}
                 onRename={renameEpic}
                 onStartAll={(key) =>
@@ -1070,13 +1242,15 @@ function ViewsTable({
         />
       )}
       {naming === undefined ? null : naming.kind === "new" ? (
-        <EpicNameDialog
-          key="new-epic"
-          onCancel={cancelNaming}
-          onSubmit={(name) => void newEpic(naming.keys, name)}
-          submitLabel="Create epic"
-          title="Name the new epic"
-        />
+        newEpic === undefined ? null : (
+          <EpicNameDialog
+            key="new-epic"
+            onCancel={cancelNaming}
+            onSubmit={(name) => void newEpic(naming.keys, name)}
+            submitLabel="Create epic"
+            title="Name the new epic"
+          />
+        )
       ) : (
         <EpicNameDialog
           initial={naming.title}

@@ -40,6 +40,7 @@ export function showBanner(manifest: DemoManifest, failures: readonly string[]):
     ),
   ].join(", ");
   const invented = [...manifest.invented_summary, ...failures].join(", ");
+  const inventedPhone = [...manifest.invented_phone, ...failures].join(", ");
   const style = document.createElement("style");
   style.textContent = STYLE;
   document.head.append(style);
@@ -62,9 +63,9 @@ export function showBanner(manifest: DemoManifest, failures: readonly string[]):
   }
   const short = document.createElement("div");
   short.className = "short";
-  // The phone's two lines: the invented figures in the manifest's own words, and the read time;
-  // the real projects' names are the desktop banner's, since they would take a third line.
-  short.textContent = `Stubbed · real data of ${utc(manifest.daemon_read_at)}, times estimated · invented: ${invented}`;
+  // The phone's two lines: the invented figures in the manifest's fewer words, and the read
+  // time; the real projects' names are the desktop banner's, since they would take a third line.
+  short.textContent = `Stubbed · real data of ${utc(manifest.daemon_read_at)}, times estimated · invented: ${inventedPhone}`;
   banner.append(full, short);
   document.body.append(banner);
 }

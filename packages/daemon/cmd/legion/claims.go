@@ -97,11 +97,13 @@ func decodeAnswer(answer []byte, into any) error {
 
 // printClaim is the claim a route answered, as the one line writeClaimLine writes.
 //
-// A second line follows it when the answer says nothing restarted the claim's phase, which only
-// `retry --fresh-session` sets (api.OperatorClaim.PhaseNotRestarted): the claim is back in a new
-// session owing no task, and the workflow refused the restart that would have handed it one. The
-// claim started either way, so the line above reports it as the success it is, and without this
-// one an operator would read that success as work handed back.
+// A second line follows it when the answer says what the request did not do, which only
+// `retry --fresh-session` sets (api.OperatorClaim.PhaseNotRestarted): the claim is back in a
+// new session owing no task and the workflow refused the restart that would have handed it
+// one, or the claim was stopped and the machine refused the forget or the start that would
+// have brought it back. The line above reports the claim as it stands, which is a success in
+// the first of those and a stopped or launching claim in the second, and without this one an
+// operator would read either as work handed back.
 func printClaim(w io.Writer, answer []byte) error {
 	var c api.OperatorClaim
 	if err := decodeAnswer(answer, &c); err != nil {

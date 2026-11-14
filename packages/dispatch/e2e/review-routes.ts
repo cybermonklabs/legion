@@ -11,7 +11,7 @@
  *  `./delivery-seed`: its only imports are `@playwright/test` - its types and `expect`, which
  *  `waitForRouteSettled` asserts with - and `./two-builds-routes`'s route paths, and that
  *  module imports nothing at all. */
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, type Request } from "@playwright/test";
 
 import type { WalkRoutePath } from "./two-builds-routes";
 
@@ -24,6 +24,10 @@ export interface ReviewSeed {
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
+  /** The priority `/priorities/:id` is opened on: the one `e2e/review-seed.ts` writes, which
+   *  carries work in flight under it and work parked under it, so both pages draw rows rather
+   *  than the sentence a deployment that has written no priority draws. */
+  readonly priority: string;
   /** The `from=…&to=…` query string, without the leading "?". */
   readonly deliveryQuery: string;
 }
@@ -296,6 +300,51 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
+    layers: bothLayers,
+    name: "priorities",
+    path: () => "/priorities",
+    pattern: "/priorities",
+    // Three facts, because the page draws three tables and a heading proves none of them: the
+    // page's own heading is on the screen while the priorities read is still out, over `Loading
+    // priorities`, and both fault headings stand over their tables while each fault list's own
+    // issue listing is still out (`web/src/features/priorities/PrioritiesPage.tsx`). So each
+    // locator is a row the seed wrote - the first priority of the order, the in-flight issue
+    // that advances none, and the parked issue that advances one - and together they say the
+    // priorities table and both fault lists have their rows rather than their empty words. Each
+    // fault list is the Issues table, named by the label the page passes it with " table"
+    // after it (`features/project/IssuesTable.tsx`). The three issues are
+    // `e2e/review-seed.ts`'s, so a change to that corpus fails this row rather than a baseline.
+    ready: (page) => [
+      page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^P1 / }),
+      page
+        .getByRole("table", { exact: true, name: "Issues in flight under no priority table" })
+        .getByRole("row", { name: /Broadcast recipients keep their send order/ }),
+      page
+        .getByRole("table", { exact: true, name: "Priority issues in backlog or icebox table" })
+        .getByRole("row", { name: /Agents page freshness folds/ }),
+    ],
+  },
+  {
+    kind: "reviewed",
+    layers: bothLayers,
+    name: "priority",
+    path: (seed) => `/priorities/${seed.priority}`,
+    pattern: "/priorities/:id",
+    // The title field, which is drawn with the priority itself and not with the skeleton; the
+    // margin's first act, which arrives with the history read beside it rather than with the
+    // page; and the work table's row for the in-flight issue the seed places under this
+    // priority, which is a second read again (`advancesIssuesQuery`). A page read on the title
+    // alone would be a page whose margin and whose work are both still empty boxes.
+    ready: (page) => [
+      page.getByRole("textbox", { name: "Title" }),
+      page.getByRole("complementary", { name: "Margin" }).getByRole("listitem").first(),
+      page
+        .getByRole("table", { name: "Priority issues table" })
+        .getByRole("row", { name: /Local testing workflow for Dispatch/ }),
+    ],
+  },
+  {
+    kind: "reviewed",
     // Not shot: each row carries an unread dot when the issue's `last_seq` is above the
     // reader's own `last_read_seq` (`UnreadDot.tsx`), and opening an issue's pages marks them
     // read - which the rows before this one do, to the very issue this list names. Whether
@@ -499,12 +548,13 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  names everything its page draws only once its data is in, which is the half of this wait
  *  that is a route's own.
  *
- *  The other half is page-wide and belongs to no row: no element may be left carrying
- *  `data-markdown-pending`, the mark a body wears while the parse worker owes its formatting
- *  (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that long holds
- *  its own literal text until the answer lands, so a page read in between is a page of
- *  unformatted source, and it is cheap to rule out for every row at once rather than to argue
- *  per row about which bodies cross the threshold.
+ *  The other half is page-wide and belongs to no row, and it is two waits. No element may be
+ *  left carrying `data-markdown-pending`, the mark a body wears while the parse worker owes its
+ *  formatting (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that
+ *  long holds its own literal text until the answer lands, so a page read in between is a page
+ *  of unformatted source, and it is cheap to rule out for every row at once rather than to argue
+ *  per row about which bodies cross the threshold. And the shell's one Inbox number must have
+ *  stopped moving (`waitForInboxCountSettled` below), which every page draws and no row names.
  *
  *  Both layers wait on this, and for the same reason. The visual one would otherwise commit a
  *  baseline of a state that lasted a few hundred milliseconds and compare every later run
@@ -517,4 +567,87 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
+  await waitForInboxCountSettled(page);
+}
+
+/** How long the Inbox number has to hold one value, with nothing it is read from in flight, before
+ *  the page counts as settled. The write that moves it reaches the rail as a refetch the live
+ *  socket's event starts (`user_agent_state.updated`, `web/src/api/event-refresh.ts`), so there is
+ *  a gap after the write has answered and before the next read is sent; this window has to be
+ *  longer than that gap, which is tens of milliseconds over a local socket. */
+const INBOX_COUNT_QUIET_MS = 500;
+
+/** Whether `request` feeds the shell's one Inbox number (`web/src/features/inbox/useInboxCount.ts`)
+ *  or moves it. The reads are the asks (`GET /api/v1/inbox`) counted for the viewer
+ *  `/auth/whoami` names, the pending credential requests, and the unread total of
+ *  `GET /api/v1/me/replies`. The writes are the viewer's own read state under `/api/v1/me/`: the
+ *  broadcast page's read mark (`PUT /api/v1/me/agents/{session}/state`, `useMarkShownRepliesRead`
+ *  in `web/src/features/agents/unread.ts`) is one, and the reads under that prefix answer the
+ *  number too. */
+function feedsInboxCount(request: Request): boolean {
+  const { pathname } = new URL(request.url());
+  return (
+    pathname === "/api/v1/inbox" ||
+    pathname === "/api/v1/credential-requests" ||
+    pathname === "/auth/whoami" ||
+    pathname.startsWith("/api/v1/me/")
+  );
+}
+
+/** The rail's Inbox entry, the link whose text carries the shell's one Inbox number from the wide
+ *  layout up (`Sidebar.tsx`). Below that width the rail is not drawn and this matches nothing.
+ *  The settle wait below reads the number through it, and the visual review masks it
+ *  (e2e/visual.e2e.ts says why). */
+export function railInboxLink(page: Page): Locator {
+  return page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name: /^Inbox/ });
+}
+
+/** Waits until the shell's Inbox number has settled: none of the requests that feed it or move it
+ *  is still waiting for its answer, and the number has then held one value for
+ *  `INBOX_COUNT_QUIET_MS`. The number is drawn on every page, by the sidebar's entry from the wide
+ *  layout up and by the compact top bar's badge below it (`Sidebar.tsx`, `web/src/app.tsx`), and
+ *  it is the sum of reads that answer on their own time, so a page whose own content has settled
+ *  can still draw a count that is about to change.
+ *
+ *  Measured on the review corpus: the broadcast page marks the planner's reply read as it draws
+ *  it, and the rail's 7 becomes 6 once that write's event refetches the unread total. Three runs
+ *  of the shot rows, waiting only for the page's own content, read that row as 7 in light and 6
+ *  in dark, as 7 in both, and as 6 in both.
+ *
+ *  A stable value alone is not enough, because a value can hold for any window while the read
+ *  that will change it is in flight; an idle network alone is not enough either, because the
+ *  refetch a write causes is sent only once the socket's event arrives. So both are asked for,
+ *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
+ *  page's latest hundred, which holds every request recent enough to still be waiting. */
+async function waitForInboxCountSettled(page: Page): Promise<void> {
+  const count = wideLayout(page)
+    ? railInboxLink(page)
+    : page
+        .locator("header")
+        .first()
+        .getByText(/^Inbox( \d+)?$/);
+  let held: string | undefined;
+  let heldSince = Date.now();
+  await expect
+    .poll(
+      async () => {
+        const waiting = (await page.requests()).some(
+          (request) =>
+            feedsInboxCount(request) &&
+            request.existingResponse() === null &&
+            request.failure() === null
+        );
+        const reading = (await count.allTextContents()).join(" | ");
+        if (waiting || reading !== held) {
+          held = reading;
+          heldSince = Date.now();
+        }
+        return Date.now() - heldSince;
+      },
+      {
+        intervals: [100],
+        message: `the Inbox number did not hold one value for ${INBOX_COUNT_QUIET_MS}ms with none of its requests in flight`,
+      }
+    )
+    .toBeGreaterThanOrEqual(INBOX_COUNT_QUIET_MS);
 }

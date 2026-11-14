@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { IssueSummary } from "../../api/types";
 import {
   buildItems,
+  clearPicked,
   columnFilterSpec,
   compareGroups,
   defaultView,
@@ -12,15 +13,20 @@ import {
   matchesSearch,
   mergeMembers,
   queuedInOrder,
+  readSelection,
   readUrl,
+  selectIssues,
   startNextWrites,
   UNCLAIMED_FACET,
   writeUrl,
 } from "./issues-table-model";
+import { embeddedGrammar } from "./issues-table-view";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
     key,
+    advances: [],
+    advances_revision: 0,
     title: key,
     status: "todo",
     priority: null,
@@ -290,4 +296,79 @@ test("a blank search matches every row", () => {
   if (item === undefined) throw new Error("no item");
   expect(matchesSearch(item, "")).toBe(true);
   expect(matchesSearch(item, "   ")).toBe(true);
+});
+
+test("a narrowing names its issues in the URL, lifts the status filter, and is read back", () => {
+  const picked = selectIssues(
+    new URLSearchParams("status=todo&page=4&q=rank"),
+    ["CORE-1", "CORE-2"],
+    "Finished last week"
+  );
+  expect(picked.get("only")).toBe("CORE-1,CORE-2");
+  expect(picked.get("onlyLabel")).toBe("Finished last week");
+  // Finished work shows: the status filter goes, `nofilter=1` keeps the empty pick, and the
+  // reader lands on the first page. Every other control stays as it was.
+  expect(picked.has("status")).toBe(false);
+  expect(picked.get("nofilter")).toBe("1");
+  expect(picked.has("page")).toBe(false);
+  expect(picked.get("q")).toBe("rank");
+  const selection = readSelection(picked);
+  expect([...(selection?.keys ?? [])]).toEqual(["CORE-1", "CORE-2"]);
+  expect(selection?.label).toBe("Finished last week");
+  expect(readSelection(new URLSearchParams("only=CORE-1"))?.label).toBe("Selected issues");
+  expect(readSelection(new URLSearchParams("only="))?.keys.size).toBe(0);
+  expect(readSelection(new URLSearchParams("q=rank"))).toBeNull();
+});
+
+test("removing the chip gives the whole table back and leaves the other controls alone", () => {
+  const cleared = clearPicked(new URLSearchParams("only=CORE-1&onlyLabel=Two&q=rank&page=4"));
+  expect(cleared.has("only")).toBe(false);
+  expect(cleared.has("onlyLabel")).toBe(false);
+  expect(cleared.has("page")).toBe(false);
+  expect(cleared.get("q")).toBe("rank");
+  expect(readSelection(cleared)).toBeNull();
+});
+
+test("a write of the table keeps the narrowing the address carries", () => {
+  const address = new URLSearchParams("only=CORE-1,CORE-2&onlyLabel=Finished&nofilter=1");
+  // A control the reader moves while the table is narrowed keeps the narrowing.
+  const written = writeUrl(address, { ...readUrl(address), search: "rank" });
+  expect(written.get("only")).toBe("CORE-1,CORE-2");
+  expect(written.get("onlyLabel")).toBe("Finished");
+  expect(written.get("q")).toBe("rank");
+  expect(readSelection(written)?.label).toBe("Finished");
+});
+
+test("an embedded table's prefix holds its own controls and leaves the bare ones alone", () => {
+  const state = {
+    ...defaultView,
+    sorting: [{ id: "key", desc: true }],
+    grouping: ["epic"],
+    search: "rank",
+    page: 2,
+    pageSize: 25,
+    filters: [{ id: "labels", value: ["frontend"] }],
+  };
+  const grammar = embeddedGrammar("advances");
+  const scoped = grammar.write(new URLSearchParams("sort=-priority&q=other"), state);
+  expect(scoped.get("advances.sort")).toBe("-key");
+  expect(scoped.get("advances.group")).toBe("epic");
+  expect(scoped.get("advances.q")).toBe("rank");
+  expect(scoped.get("advances.page")).toBe("3");
+  expect(scoped.get("advances.size")).toBe("25");
+  expect(scoped.get("advances.nofilter")).toBe("1");
+  expect(scoped.get("advances.label")).toBe("frontend");
+  // It writes no view and no layout.
+  expect(scoped.has("view")).toBe(false);
+  expect(scoped.has("advances.view")).toBe(false);
+  // The page's other keys are left as they were, and the Issues tab's grammar reads none of
+  // the prefixed ones.
+  expect(scoped.get("sort")).toBe("-priority");
+  expect(scoped.get("q")).toBe("other");
+  expect(grammar.read(scoped)).toEqual(state);
+  expect(readUrl(scoped).sorting).toEqual([{ id: "priority", desc: true }]);
+  expect(readUrl(scoped).search).toBe("other");
+  expect(readUrl(scoped).filters).toEqual(defaultView.filters);
+  // An embedded table left as it opens writes nothing at all.
+  expect([...grammar.write(new URLSearchParams(), defaultView).keys()]).toEqual([]);
 });

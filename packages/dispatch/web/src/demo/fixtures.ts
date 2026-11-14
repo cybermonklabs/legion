@@ -2,7 +2,14 @@
 // stub answers from. The dev server serves them from DISPATCH_DEMO_FIXTURES under FIXTURE_PATH
 // (vite.demo.config.ts); the single-file build inlines them as `window.__DISPATCH_DEMO_FIXTURES__`,
 // so a page opened from the disk reads nothing.
-import type { IssueSummary, LegionSetting, Project, UserIssueState } from "@legion/contracts";
+import type {
+  Actor,
+  IssueSummary,
+  LegionSetting,
+  Priority,
+  Project,
+  UserIssueState,
+} from "@legion/contracts";
 import type { BoardPopulation } from "../../../e2e/views-demo/board-rules";
 
 /** Where the dev server serves each fixture file. */
@@ -34,6 +41,8 @@ export interface DemoManifest {
   derived_summary: string[];
   /** The figures no production read holds, in the banner's words. */
   invented_summary: string[];
+  /** The same figures in fewer words, one for each, which the phone's two lines hold. */
+  invented_phone: string[];
   fixtures: Record<string, FixtureRecord>;
 }
 
@@ -42,6 +51,21 @@ export interface ReaderFixture {
   login: string;
   user_state: Record<string, UserIssueState>;
   legion_settings: LegionSetting[];
+}
+
+/** When an issue was moved into backlog or icebox and who moved it. */
+export interface Moved {
+  at: string;
+  by: Actor | null;
+}
+
+/** The priorities (`priorities.json`), which production's build has none of: each priority as
+ *  `GET /api/v1/priorities` names it, each `advances` relation an issue states on one, and each
+ *  issue's move into backlog or icebox, where its events show the move. */
+export interface PrioritiesFixture {
+  priorities: Priority[];
+  relations: { issue: string; priority: string; at: string; actor: Actor }[];
+  moved: Record<string, Moved>;
 }
 
 export interface DemoFixtures {
@@ -55,6 +79,7 @@ export interface DemoFixtures {
   schema: unknown;
   /** The agent sessions Dispatch listed (`GET /api/v1/agents`). */
   agents: unknown[];
+  priorities: PrioritiesFixture;
 }
 
 /** Every fixture file the stub loads, `<name>.json` each. */
@@ -66,6 +91,7 @@ export const FIXTURE_NAMES = [
   "reader",
   "schema",
   "agents",
+  "priorities",
 ] as const;
 
 declare global {

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -83,14 +82,11 @@ const protocolVersion = 2
 // the caller's context and by the RPC timeout, whichever ends first.
 type Conn struct {
 	// seq is the order the listener registered the connection in (Sequence).
-	seq    uint64
-	claim  claim.Token
-	nc     net.Conn
-	writer *shimwire.Writer
-	// rpcTimeout is the listener's worker_rpc_timeout_seconds, read at every request rather than
-	// copied here: the daemon swaps the listener's bound when the setting changes, and a
-	// connection it already holds answers to the new one without being dropped.
-	rpcTimeout func() time.Duration
+	seq        uint64
+	claim      claim.Token
+	nc         net.Conn
+	writer     *shimwire.Writer
+	rpcTimeout time.Duration
 	log        *slog.Logger
 	events     *eventQueue
 
@@ -125,7 +121,7 @@ type ackedPrompt struct {
 	deliveryID string
 }
 
-func newConn(nc net.Conn, token claim.Token, rpcTimeout func() time.Duration, log *slog.Logger, events *eventQueue) *Conn {
+func newConn(nc net.Conn, token claim.Token, rpcTimeout time.Duration, log *slog.Logger, events *eventQueue) *Conn {
 	return &Conn{
 		claim:       token,
 		nc:          nc,
@@ -263,7 +259,7 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 	if err := frame.Validate(); err != nil {
 		return fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
-	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout())
+	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
 	if err != nil {
 		return err
 	}
@@ -295,7 +291,7 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 	if err := frame.Validate(); err != nil {
 		return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
-	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout())
+	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
 	if err != nil {
 		return runtime.WorkspaceBundle{}, err
 	}
@@ -320,36 +316,6 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 	return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeBundleWorkspace, answer.FrameType())
 }
 
-// RescueUnpushed asks the shim to check every workspace on its pod's disk for work the remote
-// lacks and push it to rescue branches (internal/rescue). The shim runs the check within
-// request.Timeout; the answer is awaited for that plus the RPC timeout. A shim built before the
-// frame forwards it to its agent, and the agent's refusal is runtime.ErrRescueUnsupported: such a
-// pod cannot be checked. A shim that answers the frame and could not run the check is a refusal.
-func (c *Conn) RescueUnpushed(ctx context.Context, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	id := rand.Text()
-	frame := shimwire.RescueUnpushed{ID: id, Branch: request.Branch,
-		WorkspaceTimeoutMs: int(request.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(request.Timeout.Milliseconds())}
-	if err := frame.Validate(); err != nil {
-		return nil, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
-	}
-	answer, err := c.request(ctx, frame, id, "", request.Timeout+c.rpcTimeout())
-	if err != nil {
-		return nil, err
-	}
-	switch answer := answer.(type) {
-	case shimwire.RescueUnpushedResult:
-		if !answer.OK {
-			return nil, &RefusedError{Claim: c.claim, Command: shimwire.TypeRescueUnpushed, Reason: answer.Error}
-		}
-		return rescue.Report(answer.Workspaces), nil
-	case shimwire.Response:
-		if !answer.Success {
-			return nil, fmt.Errorf("worker-stream: %s: %w (its agent answered: %s)", c.claim, runtime.ErrRescueUnsupported, answer.Error)
-		}
-	}
-	return nil, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeRescueUnpushed, answer.FrameType())
-}
-
 // AgentSecretsEnrollment hands the shim the broker's enrollment id for its pod; the shim writes it
 // beside the key and starts the lease renewer, and answers. Bounded by the RPC timeout: a file
 // write, not a command.
@@ -359,7 +325,7 @@ func (c *Conn) AgentSecretsEnrollment(ctx context.Context, enrollmentID string) 
 	if err := frame.Validate(); err != nil {
 		return fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
-	answer, err := c.request(ctx, frame, id, "", c.rpcTimeout())
+	answer, err := c.request(ctx, frame, id, "", c.rpcTimeout)
 	if err != nil {
 		return err
 	}
@@ -382,7 +348,7 @@ func (c *Conn) AgentSecretsEnrollment(ctx context.Context, enrollmentID string) 
 // it to OMP, whose unknown-command answer is a refusal like the shim's own.
 func (c *Conn) AgentSecretsToken(ctx context.Context) (string, error) {
 	id := rand.Text()
-	answer, err := c.request(ctx, shimwire.AgentSecretsToken{ID: id}, id, "", c.rpcTimeout())
+	answer, err := c.request(ctx, shimwire.AgentSecretsToken{ID: id}, id, "", c.rpcTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -403,7 +369,7 @@ func (c *Conn) AgentSecretsToken(ctx context.Context) (string, error) {
 // call is a request OMP answers with a response to the same command, successful, within the RPC
 // timeout.
 func (c *Conn) call(ctx context.Context, frame shimwire.Frame, id, deliveryID string) (shimwire.Response, error) {
-	return c.callWithin(ctx, frame, id, deliveryID, c.rpcTimeout())
+	return c.callWithin(ctx, frame, id, deliveryID, c.rpcTimeout)
 }
 
 // callWithin is call bounded by the request's own wait rather than the RPC timeout: the bound a
@@ -581,8 +547,6 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 		}
 	case shimwire.AdoptWorkingCopyResult:
 		c.answerShim(frame.ID, frame)
-	case shimwire.RescueUnpushedResult:
-		c.answerShim(frame.ID, frame)
 	case shimwire.AgentSecretsEnrollmentResult:
 		c.answerShim(frame.ID, frame)
 	case shimwire.AgentSecretsTokenResult:
@@ -677,11 +641,11 @@ func (c *Conn) finish() {
 // own lock, so the deadline set here is that frame's alone.
 type connWriter struct {
 	nc      net.Conn
-	timeout func() time.Duration
+	timeout time.Duration
 }
 
 func (w connWriter) Write(p []byte) (int, error) {
-	if err := w.nc.SetWriteDeadline(time.Now().Add(w.timeout())); err != nil {
+	if err := w.nc.SetWriteDeadline(time.Now().Add(w.timeout)); err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrClosed, err)
 	}
 	n, err := w.nc.Write(p)

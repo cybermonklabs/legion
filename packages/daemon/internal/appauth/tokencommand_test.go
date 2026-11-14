@@ -21,12 +21,12 @@ import (
 )
 
 // fakeBroker is a token_command that answers as `agent-secrets <NAME> [--github-owner O
-// [--github-repo R]... [--github-read-only]] -- sh -c 'printf %s "$NAME"'` does: the release of
-// every installation it holds, or of the owner LEGION_GITHUB_OWNER names alone (a non-zero exit,
-// as the broker's refusal, for an owner it holds none on), each token naming the owner and
-// whether it is read-only. A LEGION_GITHUB_REPOS naming a repository the installation does not
-// reach is refused as the broker refuses it, GitHub having answered 422 (reaches). Every run
-// appends its owner, repositories and read-only flag to calls.
+// [--github-read-only]] -- sh -c 'printf %s "$NAME"'` does: the release of every installation it
+// holds, or of the owner LEGION_GITHUB_OWNER names alone (a non-zero exit, as the broker's
+// refusal, for an owner it holds none on), each token naming the owner and whether it is
+// read-only. An owner its narrowing cannot be served for is refused as the broker refuses one
+// GitHub answered 422 (refusesNarrowing). Every run appends its owner and read-only flag to
+// calls.
 type fakeBroker struct {
 	dir     string
 	command string
@@ -45,7 +45,7 @@ func newFakeBroker(t *testing.T, owners []string, expires time.Time) fakeBroker 
 		fmt.Fprintf(&cases, "  %s) printf '{\"installations\":{%%s}}' \"%s\" ;;\n", strings.ToLower(owner), strings.ReplaceAll(entry, `"`, `\"`))
 	}
 	script := fmt.Sprintf(`#!/bin/sh
-printf '%%s|%%s|%%s\n' "$LEGION_GITHUB_OWNER" "$LEGION_GITHUB_REPOS" "$LEGION_GITHUB_READ_ONLY" >>%q
+printf '%%s|%%s\n' "$LEGION_GITHUB_OWNER" "$LEGION_GITHUB_READ_ONLY" >>%q
 mode=write
 [ -z "$LEGION_GITHUB_READ_ONLY" ] || mode=read
 [ -z "$FAKE_BROKER_FAIL" ] || { echo "broker: refused" >&2; exit 3; }
@@ -53,14 +53,8 @@ if [ -n "$FAKE_BROKER_NONE" ]; then
   [ -n "$LEGION_GITHUB_OWNER" ] || { printf '{"installations":{}}'; exit 0; }
   echo "agent-secrets: github app has no installation on $LEGION_GITHUB_OWNER" >&2; exit 1
 fi
-if [ -n "$FAKE_BROKER_REPOS" ]; then
-  for want in $LEGION_GITHUB_REPOS; do
-    reached=
-    for held in $FAKE_BROKER_REPOS; do
-      [ "$want" != "$held" ] || reached=1
-    done
-    [ -n "$reached" ] || { echo "agent-secrets: the narrowing cannot be served: github app 12345: GitHub answered HTTP 422 to the narrowed token for $LEGION_GITHUB_OWNER: likely a repository it names ($want) that the installation does not reach, such as a misspelled name; the caller fixes the narrowing" >&2; exit 1; }
-  done
+if [ -n "$FAKE_BROKER_NARROW" ] && [ "$FAKE_BROKER_NARROW" = "$LEGION_GITHUB_OWNER" ]; then
+  echo "agent-secrets: the narrowing cannot be served: github app 12345: GitHub answered HTTP 422 to the narrowed token for $LEGION_GITHUB_OWNER: the installation does not hold the permissions asked for; the caller fixes the narrowing" >&2; exit 1
 fi
 owner=$(printf %%s "$LEGION_GITHUB_OWNER" | tr A-Z a-z)
 case "$owner" in
@@ -94,12 +88,11 @@ func (b fakeBroker) uninstall(t *testing.T) {
 	t.Setenv("FAKE_BROKER_NONE", "1")
 }
 
-// reaches holds the fake broker's installations to repos: a narrowing that names a repository
-// outside them is refused as the broker refuses one GitHub answered 422, where a broker told of
-// no repositories at all serves every narrowing it is asked for.
-func (b fakeBroker) reaches(t *testing.T, repos ...string) {
+// refusesNarrowing makes the fake broker refuse owner's narrowing, as it refuses one GitHub
+// answered 422; an owner it is not told of is served every narrowing it is asked for.
+func (b fakeBroker) refusesNarrowing(t *testing.T, owner string) {
 	t.Helper()
-	t.Setenv("FAKE_BROKER_REPOS", strings.Join(repos, " "))
+	t.Setenv("FAKE_BROKER_NARROW", owner)
 }
 
 // fakeTokenGitHub answers what token mode asks of GitHub under an installation token: GraphQL's
@@ -181,15 +174,15 @@ func TestTokenModeMintsTheOwnersEntryAndRefreshes(t *testing.T) {
 	if _, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("sjawhar/legion")); err != nil {
 		t.Fatalf("cached Token: %v", err)
 	}
-	if got := broker.runs(t); len(got) != 1 || got[0] != "SJAWHAR|legion|" {
-		t.Fatalf("command runs = %q, want one for SJAWHAR over legion, write", got)
+	if got := broker.runs(t); len(got) != 1 || got[0] != "SJAWHAR|" {
+		t.Fatalf("command runs = %q, want one for SJAWHAR, write", got)
 	}
 
 	read, err := tokens.ReadToken(context.Background(), Implement, "acme", []string{"legion"})
 	if err != nil || read.Token != "ghs_acme_read" {
 		t.Fatalf("ReadToken = %+v, %v; want the read-only release's token", read, err)
 	}
-	if got := broker.runs(t); len(got) != 2 || got[1] != "acme|legion|1" {
+	if got := broker.runs(t); len(got) != 2 || got[1] != "acme|1" {
 		t.Fatalf("command runs = %q, want the read token's run with LEGION_GITHUB_READ_ONLY=1", got)
 	}
 
@@ -325,21 +318,19 @@ func TestTokenModeReadTokenForAMissingOwnerReleasesNothingWider(t *testing.T) {
 	if _, err := tokens.ReadToken(context.Background(), Implement, "stranger", []string{"legion"}); !errors.Is(err, ErrNotInstalled) {
 		t.Fatalf("ReadToken for an owner with no installation = %v, want ErrNotInstalled", err)
 	}
-	if got := broker.runs(t); len(got) != 1 || got[0] != "stranger|legion|1" {
+	if got := broker.runs(t); len(got) != 1 || got[0] != "stranger|1" {
 		t.Fatalf("command runs = %q, want the one narrowed read-only run", got)
 	}
 }
 
-// A read token narrowed to one repository that the App's installation does not reach is refused
-// by the broker as GitHub refuses it, a 422 the broker reads as the narrowing it cannot serve.
-// The read names that one repository, so the refusal is about it alone: InstalledOn answers not
-// installed, as it did before a read lease named its repositories, rather than an error that
-// would leave the mapping's check recording the repository unread and running the command again
-// on every backoff. The mint itself answers ErrNarrowingRefused, the refusal key mode gives.
-func TestTokenModeARepositoryTheInstallationDoesNotReachIsNotInstalled(t *testing.T) {
+// A repository the installation does not list is not installed, and the installation's own list
+// is the whole of that answer now: a release names no repository (INFRA-2543), so the broker
+// refuses none and InstalledOn reads GET /installation/repositories under the owner's read
+// release. Each read is a read scope of its own, keyed by the repository it reads, so the
+// command runs once for each, and each run names the owner and the read-only flag alone.
+func TestTokenModeARepositoryOutsideTheInstallationsListIsNotInstalled(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))
-	broker.reaches(t, "widgets")
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345", repos: []string{"acme/widgets"}}
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
@@ -351,57 +342,45 @@ func TestTokenModeARepositoryTheInstallationDoesNotReachIsNotInstalled(t *testin
 	if err != nil || got {
 		t.Fatalf("InstalledOn(acme/gadgets) = %v, %v; want not installed and no error", got, err)
 	}
-	want := []string{"acme|widgets|1", "acme|gadgets|1"}
+	want := []string{"acme|1", "acme|1"}
 	if runs := broker.runs(t); !slices.Equal(runs, want) {
-		t.Fatalf("command runs = %q, want %q: the refusal is the answer, not a run made again", runs, want)
-	}
-
-	lease, err := tokens.ReadToken(context.Background(), Implement, "acme", []string{"gadgets"})
-	if !errors.Is(err, ErrNarrowingRefused) || lease.Token != "" {
-		t.Fatalf("ReadToken for a repository the installation does not reach = %q, %v; want the narrowing refusal", lease.Token, err)
-	}
-	if !strings.Contains(err.Error(), "gadgets") {
-		t.Errorf("the refusal does not name the repository asked for: %v", err)
+		t.Fatalf("command runs = %q, want %q: one read-only run for each read scope, naming the owner alone", runs, want)
 	}
 }
 
-// The mapping's installation read is the one source of that answer, so it runs the command and
-// reads GitHub however recently a narrowing was refused for the same one-repository scope
+// A narrowing the broker refuses is ErrNarrowingRefused, the refusal key mode gives, and the
+// mapping's installation read is the one source of its own answer: it runs the command and reads
+// GitHub however recently a narrowing was refused for the read scope it asks under
 // (listInstallation, ForgetNarrowingRefusal). Served from the Manager's memory instead, an
-// operator who adds the repository to the App's installation and saves the mapping inside the
-// five minutes a refusal is remembered for would be told the App is not installed on it, while
-// the bundle refreshes behind the check kept that memory alive (INFRA-513).
+// operator who fixes what the broker refused and saves the mapping inside the five minutes a
+// refusal is remembered for would be told the check failed, while the bundle refreshes behind it
+// kept that memory alive (INFRA-513).
 func TestTheInstallationReadAsksPastARememberedNarrowingRefusal(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))
-	broker.reaches(t, "widgets")
+	broker.refusesNarrowing(t, "acme")
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345", repos: []string{"acme/widgets"}}
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
 
-	// A bundle's own mint of the repository the installation does not reach: the Manager
-	// remembers that scope's refusal.
-	if _, err := tokens.ReadToken(context.Background(), Implement, "acme", []string{"gadgets"}); !errors.Is(err, ErrNarrowingRefused) {
-		t.Fatalf("the read lease over a repository the installation does not reach = %v, want ErrNarrowingRefused", err)
-	}
-	if got, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/gadgets")); err != nil || got {
-		t.Fatalf("InstalledOn(acme/gadgets) = %v, %v; want not installed and no error", got, err)
+	// A bundle's own mint for the owner whose narrowing the broker cannot serve, under the one
+	// repository the mapping's read names too: the Manager remembers that scope's refusal, which
+	// is the one the read would otherwise be served.
+	if _, err := tokens.ReadToken(context.Background(), Implement, "acme", []string{"widgets"}); !errors.Is(err, ErrNarrowingRefused) {
+		t.Fatalf("the read lease the broker refuses the narrowing of = %v, want ErrNarrowingRefused", err)
 	}
 
-	// The account adds the repository to the installation, and the operator saves the mapping a
-	// minute later, well inside the window the refusal is remembered for.
-	broker.reaches(t, "widgets", "gadgets")
-	github.mu.Lock()
-	github.repos = []string{"acme/widgets", "acme/gadgets"}
-	github.mu.Unlock()
+	// The operator fixes what the broker refused and saves the mapping a minute later, well
+	// inside the window the refusal is remembered for.
+	t.Setenv("FAKE_BROKER_NARROW", "")
 	now = now.Add(time.Minute)
 
-	if got, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/gadgets")); err != nil || !got {
-		t.Fatalf("InstalledOn(acme/gadgets) once the installation reaches it = %v, %v; want installed: the read asks GitHub, never the Manager's memory of the refusal", got, err)
+	if got, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/widgets")); err != nil || !got {
+		t.Fatalf("InstalledOn(acme/widgets) once the broker serves the narrowing = %v, %v; want installed: the read asks the command, never the Manager's memory of the refusal", got, err)
 	}
-	want := []string{"acme|gadgets|1", "acme|gadgets|1", "acme|gadgets|1"}
+	want := []string{"acme|1", "acme|1"}
 	if runs := broker.runs(t); !slices.Equal(runs, want) {
-		t.Errorf("command runs = %q, want %q: the bundle's own mint, and the command run again for each installation read", runs, want)
+		t.Errorf("command runs = %q, want %q: the bundle's own mint, and the command run again for the installation read", runs, want)
 	}
 }
 
@@ -504,8 +483,8 @@ func TestTokenModeAppLoginReadsTheViewerAndChecksTheAppID(t *testing.T) {
 	if err != nil || login != "legion-reviewer[bot]" {
 		t.Fatalf("AppLogin = %q, %v; want legion-reviewer[bot]", login, err)
 	}
-	if got := broker.runs(t); len(got) != 1 || got[0] != "||" {
-		t.Fatalf("command runs = %q, want one naming neither an owner nor a repository", got)
+	if got := broker.runs(t); len(got) != 1 || got[0] != "|" {
+		t.Fatalf("command runs = %q, want one naming no owner at all", got)
 	}
 
 	other := tokenModeManager(github.serve(t), broker, &now, &stderr)
@@ -552,15 +531,16 @@ func TestTokenModeInstalledOnReadsTheInstallationsRepositories(t *testing.T) {
 	}
 }
 
-// The command sees the daemon's environment less the NATS seeds, with the three variables the
-// daemon sets replacing any it inherited; a command cut off by its context is transient.
+// The command sees the daemon's environment less the NATS seeds, with the two variables the
+// daemon sets replacing any it inherited. The daemon names an owner to the command and no
+// repository at all, since the owner's installation is the whole of a token's reach
+// (INFRA-2543). A command cut off by its context is transient.
 func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	seen := filepath.Join(dir, "env")
 	t.Setenv("NATS_NKEY_SEED", "seed-value")
 	t.Setenv(TokenCommandOwner, "inherited")
-	t.Setenv(TokenCommandRepos, "inherited")
 	t.Setenv(TokenCommandReadOnly, "inherited")
 	command := fmt.Sprintf(`env >%q; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`, seen, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
@@ -569,7 +549,6 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	}
 	env, _ := os.ReadFile(seen)
 	if strings.Contains(string(env), "seed-value") || !strings.Contains(string(env), "\nLEGION_GITHUB_OWNER=acme\n") ||
-		!strings.Contains(string(env), "\nLEGION_GITHUB_REPOS=legion nats-server\n") ||
 		!strings.Contains(string(env), "\nLEGION_GITHUB_READ_ONLY=\n") || strings.Contains(string(env), "inherited") {
 		t.Fatalf("the command's environment:\n%s", env)
 	}
@@ -580,6 +559,75 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	var transient *TransientError
 	if _, err := slow.runTokenCommand(ctx, slow.apps.Implement, mintRequest{role: Implement, owner: "acme", repos: []string{"legion"}}); !errors.As(err, &transient) {
 		t.Fatalf("a command past its deadline = %v, want a transient error", err)
+	}
+}
+
+// A token command is given the daemon's own environment but no variable of the LEGION_GITHUB_
+// namespace the daemon inherited. The daemon sets LEGION_GITHUB_OWNER and LEGION_GITHUB_READ_ONLY
+// for every run — a write mint's, a read mint's and the release of every installation AppLogin
+// reads — and those two are the only names of the namespace the command sees, so a variable of
+// it that the daemon does not set, inherited from whatever started the daemon, reaches no
+// command and narrows no release.
+func TestTokenModeACommandSeesNoLegionGitHubVariableButTheTwoItIsTold(t *testing.T) {
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))
+	seen := filepath.Join(t.TempDir(), "env")
+	// What the daemon inherited: both names it sets, and one more of their namespace that it
+	// sets not at all.
+	t.Setenv("LEGION_GITHUB_OWNER", "inherited-owner")
+	t.Setenv("LEGION_GITHUB_READ_ONLY", "inherited-flag")
+	t.Setenv("LEGION_GITHUB_INHERITED", "inherited-value")
+	// Each run writes a line that opens it and then its whole environment, and answers as the
+	// broker does.
+	const opened = "==== a run of the token command ===="
+	broker.command = fmt.Sprintf(`{ printf '%%s\n' %q; env; } >>%q; exec %q`, opened, seen, broker.command)
+	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
+	var stderr bytes.Buffer
+	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+	t.Cleanup(tokens.Close)
+
+	if _, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("acme/legion")); err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if _, err := tokens.ReadToken(context.Background(), Implement, "acme", []string{"legion"}); err != nil {
+		t.Fatalf("ReadToken: %v", err)
+	}
+	if _, err := tokens.AppLogin(context.Background(), Implement); err != nil {
+		t.Fatalf("AppLogin: %v", err)
+	}
+
+	data, err := os.ReadFile(seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs [][]string
+	for _, line := range strings.Split(string(data), "\n") {
+		switch {
+		case line == opened:
+			runs = append(runs, []string{})
+		case strings.HasPrefix(line, "LEGION_GITHUB_") && len(runs) > 0:
+			runs[len(runs)-1] = append(runs[len(runs)-1], line)
+		}
+	}
+	for i, want := range []struct {
+		run  string
+		seen []string
+	}{
+		{"the write mint's", []string{"LEGION_GITHUB_OWNER=acme", "LEGION_GITHUB_READ_ONLY="}},
+		{"the read mint's", []string{"LEGION_GITHUB_OWNER=acme", "LEGION_GITHUB_READ_ONLY=1"}},
+		{"the release of every installation's", []string{"LEGION_GITHUB_OWNER=", "LEGION_GITHUB_READ_ONLY="}},
+	} {
+		if i >= len(runs) {
+			t.Fatalf("the command ran %d times, want a run for the write mint, the read mint and AppLogin", len(runs))
+		}
+		got := runs[i]
+		slices.Sort(got)
+		if !slices.Equal(got, want.seen) {
+			t.Errorf("%s run saw %q of the LEGION_GITHUB_ namespace, want %q alone", want.run, got, want.seen)
+		}
+	}
+	if len(runs) != 3 {
+		t.Errorf("the command ran %d times, want three", len(runs))
 	}
 }
 
@@ -649,12 +697,11 @@ func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 	}
 }
 
-// The command is told which repositories the token may touch, for a write mint and for a read
-// one: a write mint names the issue's repository alone, a read mint every repository its caller
-// named, sorted and separated by single spaces, so an operator's command can pass one
-// --github-repo for each. The daemon cannot narrow what a command releases, so saying what it
-// needs is all it can do.
-func TestTokenModeTellsTheCommandWhichRepositoriesTheTokenMayTouch(t *testing.T) {
+// The command is told the owner whose installation token the daemon wants and whether it wants
+// a read-only one, and nothing else: an operator's command maps those onto --github-owner and
+// --github-read-only. It is told no repository, since the token reaches every repository the
+// installation holds (INFRA-2543).
+func TestTokenModeTellsTheCommandTheOwnerAndTheReadOnlyFlag(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
@@ -667,16 +714,17 @@ func TestTokenModeTellsTheCommandWhichRepositoriesTheTokenMayTouch(t *testing.T)
 	if _, err := tokens.ReadToken(context.Background(), Implement, "acme", []string{"nats-server", "legion"}); err != nil {
 		t.Fatalf("ReadToken: %v", err)
 	}
-	want := []string{"acme|legion|", "acme|legion nats-server|1"}
+	want := []string{"acme|", "acme|1"}
 	if got := broker.runs(t); !slices.Equal(got, want) {
 		t.Fatalf("command runs = %q, want %q", got, want)
 	}
 }
 
-// Two repository scopes of one owner are two runs: the repositories are part of the key a run is
-// shared under, so a caller that asked for one repository never gets the run narrowed to another,
-// while a caller asking for the same scope joins the run already going.
-func TestTokenModeTwoRepositoryScopesOfOneOwnerDoNotShareOneRun(t *testing.T) {
+// The read scope and the write scope of one owner are two runs: whether the daemon wants a
+// read-only release is part of the key a run is shared under, so a caller that asked for a
+// reading token never gets the run that releases a writing one, while a caller asking for the
+// same scope joins the run already going.
+func TestTokenModeTheReadAndWriteScopesOfOneOwnerDoNotShareOneRun(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	runs, gate := filepath.Join(dir, "runs"), filepath.Join(dir, "gate")
@@ -684,12 +732,12 @@ func TestTokenModeTwoRepositoryScopesOfOneOwnerDoNotShareOneRun(t *testing.T) {
 		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
 	defer tokens.Close()
-	for _, repos := range [][]string{{"alpha"}, {"beta"}, {"alpha"}} {
+	for _, read := range []bool{true, false, true} {
 		short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		_, err := tokens.runTokenCommand(short, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme", repos: repos, read: true})
+		_, err := tokens.runTokenCommand(short, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme", repos: []string{"legion"}, read: read})
 		cancel()
 		if !errors.Is(err, ErrCommandPending) {
-			t.Fatalf("the run for %q = %v, want ErrCommandPending while it goes on", repos, err)
+			t.Fatalf("the run for read=%v = %v, want ErrCommandPending while it goes on", read, err)
 		}
 	}
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
@@ -719,7 +767,7 @@ func TestTokenModeAReadOnlyReleaseDoesNotStandInForAWriteRequest(t *testing.T) {
 	if err != nil || write.Token != "ghs_acme_write" {
 		t.Fatalf("Token after a read-only release = %+v, %v; want the write release's token", write, err)
 	}
-	want := []string{"acme|legion|1", "acme|legion|"}
+	want := []string{"acme|1", "acme|"}
 	if got := broker.runs(t); !slices.Equal(got, want) {
 		t.Fatalf("command runs = %q, want %q", got, want)
 	}

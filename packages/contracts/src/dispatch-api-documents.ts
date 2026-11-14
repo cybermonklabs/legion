@@ -276,13 +276,17 @@ export const BlockRepairedEventPayloadSchema = z
 
 export type BlockRepairedEventPayload = z.output<typeof BlockRepairedEventPayloadSchema>;
 
-/** A browser-authored ask block is malformed and awaits repair. */
+/** A browser-authored block breaks a rule settlement holds it to: an ask block it cannot read,
+ *  which it marks malformed and awaits repair, or, with `block_type: "check"`, a check block whose
+ *  `ci_check` breaks one of the four rules, which settlement deletes. `reason` is the ask's reason
+ *  or the check's rule. An ask's event carries no `block_type`. */
 export const BlockInvalidEventPayloadSchema = z
   .strictObject({
     block_id: z.string(),
     version: z.number().int(),
     reason: z.string(),
     disturbed_by: ActorSchema,
+    block_type: z.literal("check").optional(),
   })
   .readonly();
 

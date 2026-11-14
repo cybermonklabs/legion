@@ -1,3 +1,4 @@
+import { copyAddress } from "../../lib/page-address";
 import { openIssueStatuses } from "./board-model";
 import { IN_FLIGHT_STAGES, SLOT_USES, STATUS_IN_FLIGHT_STAGES } from "./issues-stages";
 import type { ColumnId } from "./issues-table-model";
@@ -144,14 +145,17 @@ export function viewFor(id: string | null, hasLegion: boolean): BuiltInView {
 /** The parameters that are no part of what a view lists: they mark no view as changed. */
 const DISPLAY_KEYS = ["view", "page", "size", "cols", "layout"];
 
+/** A view's own parameters as an address. */
+const ownParams = (view: BuiltInView, hasLegion: boolean) =>
+  copyAddress(view.params(hasLegion).map(([key, value]) => [key, value] as const));
+
 /**
- * The address with its view written out: the view's own parameters, each replaced by the
- * address's value of that key where it has one. A key the address gives as one empty value
- * (`f.stage=`) takes the view's value away, and `nofilter=1` lifts the view's Status filter.
+ * `own` with `params` written over it: each of `own`'s keys replaced by the address's value of
+ * that key where it has one. A key the address gives as one empty value (`f.stage=`) takes the
+ * value of `own` away, and `nofilter=1` lifts its Status filter.
  */
-export function expandView(params: URLSearchParams, hasLegion: boolean): URLSearchParams {
-  const view = viewFor(params.get("view"), hasLegion);
-  const expanded = new URLSearchParams(view.params(hasLegion).map(([key, value]) => [key, value]));
+export function expandOver(own: URLSearchParams, params: URLSearchParams): URLSearchParams {
+  const expanded = copyAddress(own);
   if (params.get("nofilter") === "1") expanded.delete("status");
   for (const key of new Set(params.keys())) {
     if (key === "view" || key === "nofilter") continue;
@@ -163,6 +167,11 @@ export function expandView(params: URLSearchParams, hasLegion: boolean): URLSear
   return expanded;
 }
 
+/** The address with its view written out: the view's own parameters under the address's. */
+export function expandView(params: URLSearchParams, hasLegion: boolean): URLSearchParams {
+  return expandOver(ownParams(viewFor(params.get("view"), hasLegion), hasLegion), params);
+}
+
 /** Two spellings of one key's values that say the same: the sort in its order, every other key
  *  as a set. */
 function sameValues(key: string, a: readonly string[], b: readonly string[]): boolean {
@@ -170,13 +179,10 @@ function sameValues(key: string, a: readonly string[], b: readonly string[]): bo
   return a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 }
 
-/** `full`, which spells the table's whole view and names its view with `view=`, written as the
- *  difference from that view: what the view says already is left out. */
-export function compressView(full: URLSearchParams, hasLegion: boolean): URLSearchParams {
-  const view = viewFor(full.get("view"), hasLegion);
-  const own = new URLSearchParams(view.params(hasLegion).map(([key, value]) => [key, value]));
-  const next = new URLSearchParams();
-  if (view.id !== ALL_OPEN.id) next.set("view", view.id);
+/** `full`, which spells a table's whole view, written as the difference from `own`: what `own`
+ *  says already is left out, and what it says that `full` does not is taken away. */
+export function compressAgainst(own: URLSearchParams, full: URLSearchParams): URLSearchParams {
+  const next = copyAddress();
   for (const key of new Set([...full.keys(), ...own.keys()])) {
     if (key === "view") continue;
     const values = full.getAll(key);
@@ -189,6 +195,26 @@ export function compressView(full: URLSearchParams, hasLegion: boolean): URLSear
     for (const value of values) next.append(key, value);
   }
   return next;
+}
+
+/** `full`, which spells the table's whole view and names its view with `view=`, written as the
+ *  difference from that view: what the view says already is left out. */
+export function compressView(full: URLSearchParams, hasLegion: boolean): URLSearchParams {
+  const view = viewFor(full.get("view"), hasLegion);
+  const next = copyAddress();
+  if (view.id !== ALL_OPEN.id) next.set("view", view.id);
+  for (const [key, value] of compressAgainst(ownParams(view, hasLegion), full))
+    next.append(key, value);
+  return next;
+}
+
+/**
+ * What a table that draws no view opens with: All open's own parameters (the open statuses,
+ * sorted by Place), which is what the project List opened with before the views, and what a
+ * table embedded in another page still opens with. Such a table writes no `view=`.
+ */
+export function embeddedDefaults(): URLSearchParams {
+  return ownParams(ALL_OPEN, false);
 }
 
 /** A built-in view is changed when any parameter but the page, its size, the columns and the
@@ -205,7 +231,7 @@ const KEPT_BY_CLEAR = [...DISPLAY_KEYS, "sort", "group"];
  *  the same text. */
 export function narrowingsKey(params: URLSearchParams): string {
   return viewQueryKey(
-    new URLSearchParams([...params.entries()].filter(([key]) => !KEPT_BY_CLEAR.includes(key)))
+    copyAddress([...params.entries()].filter(([key]) => !KEPT_BY_CLEAR.includes(key)))
   );
 }
 
@@ -216,7 +242,7 @@ export function narrowingsKey(params: URLSearchParams): string {
  * reader left them, as main's Clear filters keeps them; the page goes back to the first.
  */
 export function clearNarrowings(params: URLSearchParams, own: URLSearchParams): URLSearchParams {
-  const next = new URLSearchParams(
+  const next = copyAddress(
     [...own.entries()].filter(([key]) => key === "view" || !KEPT_BY_CLEAR.includes(key))
   );
   for (const key of ["sort", "group", "cols", "layout", "size"])
@@ -349,5 +375,5 @@ export function viewNameProblem(name: string): string | undefined {
 export function viewQueryKey(params: URLSearchParams): string {
   const kept = [...params.entries()].filter(([key]) => key !== "page" && key !== "size");
   kept.sort(([a, x], [b, y]) => (a === b ? x.localeCompare(y) : a.localeCompare(b)));
-  return new URLSearchParams(kept).toString();
+  return copyAddress(kept).toString();
 }

@@ -182,29 +182,7 @@ func (r *repositories) same(a, b string) bool {
 	if r == nil {
 		return strings.EqualFold(a, b)
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
 	return r.renames.Same(a, b)
-}
-
-// Renames is the deployment's repository equivalence as it now stands, for a caller that
-// compares names itself (ghrepo.Under and its neighbours). A nil mapping configures none.
-func (r *repositories) Renames() ghrepo.Renames {
-	if r == nil {
-		return ghrepo.Renames{}
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.renames
-}
-
-// setRenames replaces the equivalence with the one the configuration now names: the mapping is
-// a holder of `repository_renames` (mappingHolder), so a change of that key reaches every
-// comparison this mapping makes without the mapping itself being read again from Dispatch.
-func (r *repositories) setRenames(renames ghrepo.Renames) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.renames = renames
 }
 
 // servesRepository is whether the mapping serves repo, the predicate the rename rule reads
@@ -784,7 +762,7 @@ func (w *workflowRuntime) loadMapping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	accepted, refused, gaps, err := checkMapping(ctx, w.dispatch, mappings, w.dispatchProject, w.installs, w.repositories.Renames())
+	accepted, refused, gaps, err := checkMapping(ctx, w.dispatch, mappings, w.dispatchProject, w.installs, w.repositories.renames)
 	if err != nil {
 		return err
 	}
@@ -813,7 +791,7 @@ func (w *workflowRuntime) loadMapping(ctx context.Context) error {
 // it, which is how a pair configured before the transfer stands. It changes nothing else: the
 // served set is Dispatch's mapping alone, and no rename is ever read from GitHub.
 func (w *workflowRuntime) logUnservedRenames(accepted []mappedRepository) {
-	for _, pair := range w.repositories.Renames().Pairs() {
+	for _, pair := range w.repositories.renames.Pairs() {
 		if slices.ContainsFunc(accepted, func(mapped mappedRepository) bool { return strings.EqualFold(mapped.Repo.String(), pair.To.String()) }) {
 			continue
 		}
@@ -881,19 +859,13 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 // while it was unread said nothing and recorded nothing, so the issues it left are taken from
 // Dispatch's listing once. It has
 // GitHub intake hear every repository the new mapping serves and every repository a record of the
-// project names, so a repository unmapped while an issue is recorded on it is still heard, and
-// only then publishes the new mapping: a read that fails before the subscription took publishes
-// nothing, so a repository is never served, and an issue never recorded on it, while GitHub intake
-// does not hear it, and the refresher reads it again. The webhook App check's served repositories
+// project names, so a repository unmapped while an issue is recorded on it is still heard, and it
+// does so before it publishes the new mapping, in the three steps the publication is written in
+// below: a repository is never served, and an issue never recorded on it, while GitHub intake
+// does not hear it, and a read that fails before the publication publishes nothing and is read
+// again by the refresher. The webhook App check's served repositories
 // (servedGaps, kept ones included) replace the last read's with the publication; a failed check
 // keeps nothing out and asks for no read again.
-// What it hands the consumers it works out under the mapping's own equivalence
-// (repositories.Renames), which is never older than the one their filter was built with,
-// because a `repository_renames` change rebuilds the mapping before the consumers: a read
-// landing between those two rebuilds reads the equivalence the operator has just configured
-// and hands the consumers the partner of every pair their filter either already carries or is
-// about to. workflowRuntime.connect, which registers both holders, is where that order is
-// argued and what a read under older renames would cost.
 func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	w.mappingMu.Lock()
 	defer w.mappingMu.Unlock()
@@ -903,7 +875,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	accepted, refused, gaps, err := checkMapping(ctx, w.dispatch, mappings, w.dispatchProject, w.installs, w.repositories.Renames())
+	accepted, refused, gaps, err := checkMapping(ctx, w.dispatch, mappings, w.dispatchProject, w.installs, w.repositories.renames)
 	if err != nil {
 		return err
 	}
@@ -940,11 +912,52 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	for _, mapped := range accepted {
 		served = append(served, mapped.Repo)
 	}
-	// The record snapshot, the subscription update and the publication run under the lock every
-	// fact applies under (intake.SerializeFacts), which an admission holds from resolving an
-	// issue's repository through committing its record: one that resolved a repository of the old
-	// mapping commits before the snapshot reads it, so the repository it recorded stays heard, and
-	// one that resolves after resolves against the new mapping.
+	// The subscription update is a stream call, and a stream call is made under no transaction of
+	// this pool: a missing durable consumer has it create one, which reads the same pool for the
+	// stream's stored position (storedStreamTime), so a transaction waiting on it asks the pool
+	// for a second connection while holding one, and every connection of the pool sat idle in a
+	// transaction of that shape once the stream answered slowly (INFRA-3169). Holding the fact
+	// serializer across it is worse still: a slow NATS stops every fact of the project for as
+	// long as the call takes. So the read publishes in three steps.
+	//
+	// First, GitHub intake is given a superset to hear, snapshotted in a transaction of its own
+	// that takes no serializer lock, and told of it outside any transaction. The superset is the
+	// heard set over the union of the repositories the daemon serves now and the ones this read
+	// will serve, so a repository is never served, and an issue never recorded on it, while
+	// GitHub intake does not hear it: an admission records an issue only on a repository the
+	// mapping serves, and the mapping anywhere in the window is either the old one or the new
+	// one, both of which the union covers. Hearing more than the daemon serves costs an event
+	// that reaches no issue, which is why the third step narrows it again. A failure here changes
+	// nothing, as a failed subscription update did before.
+	//
+	// It is skipped whole when this read will serve exactly the repositories the daemon already
+	// serves, which is what a refresh asked for by a mapping event that moved another project's
+	// repository, by a held admission or by an installation read's retry usually finds. With
+	// nothing added there is nothing that could be served while intake does not hear it, which is
+	// the only thing this step is for, and the superset it would publish is the set the third
+	// step publishes again: one JetStream consumer update and one read of the whole issues table,
+	// both for a mapping that did not change.
+	prepublished := !sameRepositories(w.repositories.Accepted(), served)
+	var superset []ghrepo.Repository
+	if prepublished {
+		union := append(w.repositories.Accepted(), served...)
+		if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+			var err error
+			superset, err = w.heardRepositories(ctx, tx, union)
+			return err
+		}); err != nil {
+			return err
+		}
+		if err := w.updateSubscription(ctx, superset); err != nil {
+			return err
+		}
+	}
+	// Second, the record snapshot and the publication run together under the lock every fact
+	// applies under (intake.SerializeFacts), which an admission holds from resolving an issue's
+	// repository through committing its record: one that resolved a repository of the old mapping
+	// commits before the snapshot reads it, so the repository it recorded stays heard, and one
+	// that resolves after resolves against the new mapping. The two have to be one transaction
+	// holding that lock, which is why the stream calls are on either side of it and not in it.
 	var heard []ghrepo.Repository
 	var added, removed []string
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -952,10 +965,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 			return fmt.Errorf("serialize the mapping's publication with admission: %w", err)
 		}
 		var err error
-		if heard, err = w.heardRepositories(ctx, tx, served, w.repositories.Renames()); err != nil {
-			return err
-		}
-		if err := w.nats.intake().SetRepositories(ctx, heard); err != nil {
+		if heard, err = w.heardRepositories(ctx, tx, served); err != nil {
 			return err
 		}
 		before := readFailures(w.repositories.Refused())
@@ -967,10 +977,70 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	// Third, the superset is narrowed to the snapshot's own set, again outside any transaction.
+	// Every admission that commits after the snapshot resolves against the new mapping, whose
+	// repositories the set contains, and every one that committed before it is in the snapshot,
+	// so nothing recorded is dropped from what intake hears. A failure here leaves the superset
+	// heard, which is sound — it contains the new mapping's repositories — and is reported, so
+	// the refresher reads again and narrows then.
+	//
+	// It is skipped only when the first step ran and published this very set, where narrowing
+	// would set the subscription to what it already is. Where the first step was skipped this one
+	// always runs, whatever the served set did: a record written since the last refresh names a
+	// repository of its own, so the heard set can have grown while the served set stood still.
+	if !prepublished || !slices.Equal(superset, heard) {
+		if err := w.updateSubscription(ctx, heard); err != nil {
+			return err
+		}
+	}
 	w.log.Info("legion workflow repositories changed", "added", added, "removed", removed,
 		"refused", refusalReasons(w.repositories.Refused()), "withoutWebhookApp", webhookGapReasons(w.repositories.WithoutWebhookApp()),
 		"heard", repositoryNames(heard))
 	return nil
+}
+
+// sameRepositories is whether next names exactly the repositories of current, whatever the order
+// and however often a name repeats in next. Order is not the comparison because the two lists do
+// not share one: the mapping answers its served repositories sorted by their lowercased
+// <owner>/<name> (repositories.Mapped), while the list a read of the mapping builds keeps
+// Dispatch's own order, with every repository kept on its last answer appended after it
+// (refreshMapping). Repeats are not the comparison either: two mapping entries that name one
+// repository are served as one (repositories.set), so next may hold a name current holds once
+// twice.
+//
+// ghrepo.Repository is its owner and its name, so a value is the comparison and a difference of
+// spelling is a difference. That is the safe way round for the caller: a spelling GitHub changed
+// costs it the step it would have skipped, where treating two spellings as one would skip a step
+// that had something to do.
+func sameRepositories(current, next []ghrepo.Repository) bool {
+	seen := make(map[ghrepo.Repository]bool, len(current))
+	for _, repo := range current {
+		seen[repo] = false
+	}
+	matched := 0
+	for _, repo := range next {
+		found, ok := seen[repo]
+		if !ok {
+			return false
+		}
+		if !found {
+			seen[repo] = true
+			matched++
+		}
+	}
+	return matched == len(seen)
+}
+
+// updateSubscription has GitHub intake hear repositories: the one route the runtime reaches
+// intake's SetRepositories by, so no caller escapes the stand-in a test puts in its place
+// (setRepositories, which the boot leaves nil because the daemon's own answer is the consumers
+// it opened). It is called under no transaction of the pool: the call reaches JetStream and, for
+// a durable consumer that is missing, the pool itself (INFRA-3169).
+func (w *workflowRuntime) updateSubscription(ctx context.Context, repositories []ghrepo.Repository) error {
+	if w.setRepositories != nil {
+		return w.setRepositories(ctx, repositories)
+	}
+	return w.consumers.SetRepositories(ctx, repositories)
 }
 
 // mappingChange is Dispatch's consumer's RepositoryMapping: the project's
@@ -1417,42 +1487,20 @@ func admissionBound(issue intake.DispatchIssue) bool {
 const mappingReadWait = time.Second
 
 // heardAtBoot is what GitHub intake hears when the boot opens it: the served repositories of the
-// mapping the boot read and every repository a record of the project names, with the partners the
-// configuration the boot settled pairs those with.
+// mapping the boot read and every repository a record of the project names.
 func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository, error) {
 	var heard []ghrepo.Repository
 	err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		var err error
-		heard, err = w.heardRepositories(ctx, tx, w.repositories.Accepted(), w.repositories.Renames())
+		heard, err = w.heardRepositories(ctx, tx, w.repositories.Accepted())
 		return err
 	})
 	return heard, err
 }
 
-// natsHearing is what GitHub intake is to hear once a rebuild of the NATS holder has swapped its
-// consumers in (natsHolder.rebuild): everything the consumers hear now, everything the mapping
-// serves and the project's records name, and every partner renames pairs those with. It is read
-// on the transaction the handover is serialized on, as a mapping read reads it on its own
-// (refreshMapping), so a record an admission commits is either read here or committed after the
-// swap and heard by the read that follows it.
-//
-// The renames are the mapping's own (repositories.Renames), the copy every other read of what
-// intake hears takes (heardAtBoot, refreshMapping), and they are the equivalence the holder is
-// being rebuilt for: the mapping holder is registered before this one and rebuilt before it
-// (workflowRuntime.connect), so by the time this runs the pair an operator configured has
-// reached both — and a rebuild that runs for anything else (a rotated seed read again) builds
-// from the configuration the daemon runs on, which is what the mapping holds too.
-// Everything the consumers hear now is heard again whatever the rest says, so a rebuild only
-// ever widens the GitHub durable's filter: narrowing it is the mapping read's alone, which
-// serves the mapping that narrowed it in the same hold, and a filter narrowed by anything else
-// steps the consumer past messages nothing redelivers.
-func (w *workflowRuntime) natsHearing(ctx context.Context, tx pgx.Tx) ([]ghrepo.Repository, error) {
-	return w.heardRepositories(ctx, tx, slices.Concat(w.nats.intake().Repositories(), w.repositories.Accepted()), w.repositories.Renames())
-}
-
 // heardRepositories is what GitHub intake hears: every repository of served, every repository a
-// record of the project names, as tx reads the records, and every partner renames pairs those
-// with (`repository_renames`), once each, sorted. A record is heard
+// record of the project names, as tx reads the records, and every configured rename's partner of
+// those (`repository_renames`), once each, sorted. A record is heard
 // whatever its tree's state, since a root that lingers or closed comes back, by re-admission, a
 // hand-over or an orphan's carry, on the repository it keeps, with no refresh between; a fact
 // from a repository an issue is recorded on reaches only that issue (workflow's issueForBranch
@@ -1465,7 +1513,7 @@ func (w *workflowRuntime) natsHearing(ctx context.Context, tx pgx.Tx) ([]ghrepo.
 // as its record keeps GitHub's spelling (record.Issue.GitHubRepo), and a partner, for a name
 // nothing else heard names, as the pair configures it, so a restart subscribes with no read of
 // GitHub.
-func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx, served []ghrepo.Repository, renames ghrepo.Renames) ([]ghrepo.Repository, error) {
+func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx, served []ghrepo.Repository) ([]ghrepo.Repository, error) {
 	heard := map[string]ghrepo.Repository{}
 	for _, repo := range served {
 		heard[strings.ToLower(repo.String())] = repo
@@ -1485,13 +1533,13 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx, serv
 		heard[strings.ToLower(repo.String())] = repo
 	}
 	// One pass over the configured pairs, not over everything heard: a deployment configures no
-	// pair at all nearly always, and this runs at every boot, every consumer re-open and every
-	// mapping read. A partner is added only when nothing heard already names it, so the spelling
-	// GitHub itself gave — the served repository's (nameAccepted) or a record's — always wins over
-	// the pair's, which NATS would otherwise match against no published subject at all; the pair's
-	// spelling is used only for a name nothing else names. Both sides are read before either is
-	// added, so neither addition is seen by the other's test.
-	for _, pair := range renames.Pairs() {
+	// pair at all nearly always, and this runs at every boot and consumer re-open. A partner is
+	// added only when nothing heard already names it, so the spelling GitHub itself gave — the
+	// served repository's (nameAccepted) or a record's — always wins over the pair's, which NATS
+	// would otherwise match against no published subject at all; the pair's spelling is used only
+	// for a name nothing else names. Both sides are read before either is added, so neither
+	// addition is seen by the other's test.
+	for _, pair := range w.repositories.renames.Pairs() {
 		from, to := strings.ToLower(pair.From.String()), strings.ToLower(pair.To.String())
 		_, heardFrom := heard[from]
 		_, heardTo := heard[to]

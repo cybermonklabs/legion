@@ -26,6 +26,8 @@ const { values: flags } = parseArgs({
     // A real project with no Legion daemon in the fixtures (fixtures.ts --no-daemon-project).
     "no-daemon-project": { type: "string", default: "GTM" },
     only: { type: "string" },
+    // The report's file name in --out, `report-<mode>.json` by default.
+    report: { type: "string" },
   },
 });
 if (flags.out === undefined) throw new Error("name --out <dir>");
@@ -42,11 +44,13 @@ const PHONE = { width: 390, height: 844 };
 const TIME_ZONE = "UTC";
 const LOCALE = "en-US";
 
-/** One picture: its file name, the window it is taken in, and how to reach what it shows. */
+/** One picture: its file name, the window it is taken in, how to reach what it shows, and
+ *  whether it is the whole page rather than the window. */
 interface Shot {
   name: string;
   viewport: { width: number; height: number };
   take: (page: Page) => Promise<void>;
+  fullPage?: boolean;
 }
 
 interface Report {
@@ -136,6 +140,25 @@ async function openSaveView(page: Page, name: string): Promise<void> {
   await page.getByRole("textbox", { name: "Name" }).fill(name);
 }
 
+/** `/priorities` once its three tables have drawn their rows: the priorities and the two
+ *  faults. */
+async function openPriorities(page: Page): Promise<void> {
+  await open(page, "/priorities", prioritySection(page, "In flight under no priority"));
+  await prioritySection(page, "Priority work in backlog or icebox").waitFor({ timeout: 30_000 });
+  await prioritySection(page, "Priorities").waitFor({ timeout: 30_000 });
+}
+
+/** The first priority's own page, reached by its row's link, once its issue table has drawn. */
+async function openPriority(page: Page): Promise<void> {
+  await openPriorities(page);
+  await page.locator('section[aria-label="Priorities"] a[href*="/priorities/"]').first().click();
+  await settle(page, prioritySection(page, "Work advancing this priority"));
+}
+
+/** The first row of the section the label names. */
+const prioritySection = (page: Page, label: string) =>
+  page.locator(`section[aria-label="${label}"] [data-issue-row]`).first();
+
 const beforeShots: Shot[] = [
   { name: "before-list-1440", viewport: DESKTOP, take: (page) => open(page, issuesPath) },
   {
@@ -157,6 +180,10 @@ const beforeShots: Shot[] = [
     },
   },
   { name: "before-list-390", viewport: PHONE, take: (page) => open(page, issuesPath) },
+  // The priority pages as main serves them (cybermonklabs/legion#3767), taken on a checkout of
+  // main rather than of the base above, which has none.
+  { name: "before-priorities-1440", viewport: DESKTOP, fullPage: true, take: openPriorities },
+  { name: "before-priority-page-1440", viewport: DESKTOP, fullPage: true, take: openPriority },
 ];
 
 const VIEWS = ["open", "triage", "waiting", "in-flight", "slots", "finished", "mine"];
@@ -324,6 +351,10 @@ const afterShots: Shot[] = [
       check(!page.url().includes("demo="), "the settings-failed flag leaves the address");
     },
   },
+  // The priority pages (cybermonklabs/legion#3767), whose issue tables are the design's.
+  { name: "priorities-1440", viewport: DESKTOP, fullPage: true, take: openPriorities },
+  { name: "priority-page-1440", viewport: DESKTOP, fullPage: true, take: openPriority },
+  { name: "priorities-390", viewport: PHONE, fullPage: true, take: openPriorities },
 ];
 
 /** The single file, clicked through with the network off. */
@@ -461,6 +492,34 @@ const fileShots: Shot[] = [
       );
     },
   },
+  {
+    name: "file-priorities-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await openPriorities(page);
+      const listed = await page.evaluate(async () => {
+        const body: { priorities: unknown[] } = await (await fetch("/api/v1/priorities")).json();
+        return body.priorities.length;
+      });
+      const rows = await page.locator('section[aria-label="Priorities"] [data-issue-row]').count();
+      check(
+        listed > 0 && rows === listed,
+        `the priorities page lists ${rows} priorities; the stub's answer holds ${listed}`
+      );
+    },
+  },
+  {
+    name: "file-priority-page-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await openPriority(page);
+      check(/#\/priorities\/[^/?#]+/.test(page.url()), "a press on a priority opens its own page");
+      const rows = await page
+        .locator('section[aria-label="Work advancing this priority"] [data-issue-row]')
+        .count();
+      check(rows > 0, `the priority's issue table draws ${rows} rows`);
+    },
+  },
 ];
 
 /** A drag with the pointer, in steps, as a person makes one: dnd-kit starts a drag only once the
@@ -523,7 +582,20 @@ async function takeAll(browser: Browser, shots: Shot[]): Promise<void> {
       }
       await recordFonts(cdp);
       const file = join(out, `${shot.name}.png`);
-      await page.screenshot({ path: file });
+      // A whole page: the banner, fixed to the window, would stand over the middle of it, so the
+      // page gets room at its foot and the banner stands there, under everything the page drew.
+      if (shot.fullPage === true) {
+        await page.evaluate(() => {
+          const banner = document.querySelector<HTMLElement>('[data-testid="views-demo-banner"]');
+          if (banner === null) return;
+          const room = banner.getBoundingClientRect().height + 16;
+          document.body.style.paddingBottom = `${room}px`;
+          banner.style.position = "absolute";
+          banner.style.bottom = "auto";
+          banner.style.top = `${document.documentElement.scrollHeight - room + 8}px`;
+        });
+      }
+      await page.screenshot({ path: file, fullPage: shot.fullPage === true });
       report.shots.push(file);
       console.log(`wrote ${file}`);
     } catch (error) {
@@ -547,7 +619,7 @@ try {
 } finally {
   await browser.close();
 }
-await writeFile(join(out, `report-${mode}.json`), JSON.stringify(report, null, 2));
+await writeFile(join(out, flags.report ?? `report-${mode}.json`), JSON.stringify(report, null, 2));
 console.log(
   `${report.shots.length} pictures, ${report.checks.length} checks passed, ${report.unanswered.length} unanswered requests, ${report.errors.length} errors`
 );

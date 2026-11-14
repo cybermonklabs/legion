@@ -2,20 +2,35 @@
 //
 //   DISPATCH_URL=… DISPATCH_TOKEN_FILE=… bun e2e/views-demo/fixtures.ts --out <dir> \
 //     --project <KEY> --reader <login> --daemon-url <daemon base URL> \
-//     [--no-daemon-project <KEY>]…
+//     [--no-daemon-project <KEY>]… [--priorities <file>]
 //
 // --project is the project with a Legion daemon. Each --no-daemon-project adds a real project's
 // open and done listings, with no Legion setting, so the views of a project with no daemon show.
+// --priorities names a file, kept outside the repository, of invented priorities and the real
+// issues each one is advanced by (README.md, "The priorities"): production's build has none.
 //
 // It writes into --out only, never into the repository: the reads under <out>/raw/, and beside
 // them the files the demo's stub loads (web/src/demo/fixtures.ts) and manifest.json, which names
 // for each fixture its source, when it was read, and which of its fields are real, derived or
 // invented. A second run reads only what <out>/raw/ lacks; --refresh reads everything again.
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import type { IssueSummary, LegionBoardFacts, LegionSetting, Project } from "@legion/contracts";
-import type { DemoManifest, ReaderFixture } from "../../web/src/demo/fixtures";
+import type {
+  Actor,
+  IssueSummary,
+  LegionBoardFacts,
+  LegionSetting,
+  Priority,
+  Project,
+} from "@legion/contracts";
+import type {
+  DemoManifest,
+  Moved,
+  PrioritiesFixture,
+  ReaderFixture,
+} from "../../web/src/demo/fixtures";
+import { rankBetween } from "../../web/src/demo/wire";
 import {
   type Admission,
   type BoardPopulation,
@@ -41,6 +56,7 @@ const { values: flags } = parseArgs({
     refresh: { type: "boolean", default: false },
     "no-daemon-project": { type: "string", multiple: true, default: [] },
     "reads-only": { type: "boolean", default: false },
+    priorities: { type: "string" },
   },
 });
 
@@ -113,6 +129,52 @@ const events = new Map<string, ReadEvent[]>();
 for (const [index, issue] of withEvents.entries()) {
   events.set(issue.key, await reader.events(issue.key, issue.last_seq));
   if ((index + 1) % 200 === 0) console.log(`events: ${index + 1}/${withEvents.length}`);
+}
+
+/** The invented priorities (--priorities): each one's title, owner and description, and the
+ *  real issues that state an `advances` relation on it, in its order. */
+interface PriorityInput {
+  made_at: string;
+  priorities: {
+    id?: string;
+    title: string;
+    owner: string;
+    description: string;
+    issues: string[];
+  }[];
+}
+const priorityInput: PriorityInput =
+  flags.priorities === undefined
+    ? { made_at: "", priorities: [] }
+    : JSON.parse(await readFile(flags.priorities, "utf8"));
+const listed = new Map(
+  [...open, ...done, ...noDaemonListings.flatMap((one) => [...one.open, ...one.done])].map(
+    (issue) => [issue.key, issue]
+  )
+);
+const stating = new Set(priorityInput.priorities.flatMap((priority) => priority.issues));
+for (const key of stating) {
+  if (!listed.has(key)) throw new Error(`--priorities names ${key}, which no listing holds`);
+}
+/** Whether the issue or one above it states a relation: the work under some priority. */
+function underAPriority(key: string): boolean {
+  const climbed = new Set<string>();
+  for (let at: string | null = key; at !== null && !climbed.has(at); ) {
+    if (stating.has(at)) return true;
+    climbed.add(at);
+    at = listed.get(at)?.parent ?? null;
+  }
+  return false;
+}
+const PARKED = ["backlog", "icebox"];
+// The events of the priority work standing in backlog or icebox that the reads above did not
+// take, for when each was moved there. Kept apart from `events`, which the facts are read from,
+// so the priorities move no other fixture.
+const parkedEvents = new Map<string, ReadEvent[]>();
+for (const issue of listed.values()) {
+  if (!PARKED.includes(issue.status) || events.has(issue.key) || !underAPriority(issue.key))
+    continue;
+  parkedEvents.set(issue.key, await reader.events(issue.key, issue.last_seq));
 }
 if (flags["reads-only"]) process.exit(0);
 
@@ -263,6 +325,65 @@ const legionSettings: LegionSetting[] = [
 ];
 const readerFixture: ReaderFixture = { login, user_state: {}, legion_settings: legionSettings };
 
+// The priorities: every node and relation invented from --priorities, each relation stated by the
+// reader a minute apart after its priority was written; and each move into backlog or icebox
+// that an issue's events show, as the parked fault reads it (parkedMoveLateral): the issue's
+// newest `issue.updated` event that set one of the two statuses.
+const priorityActor: Actor = { kind: "user", id: login };
+const minutesAfter = (at: string, minutes: number) =>
+  new Date(Date.parse(at) + minutes * 60_000).toISOString();
+let previousRank = "";
+const priorityNodes: Priority[] = priorityInput.priorities.map((input, index) => {
+  previousRank = rankBetween(previousRank, "");
+  return {
+    id:
+      input.id ??
+      input.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, ""),
+    title: input.title,
+    description: input.description,
+    owner: input.owner,
+    rank: previousRank,
+    state: "live",
+    made_at: minutesAfter(priorityInput.made_at, index * 15),
+    made_by: priorityActor,
+  };
+});
+const relations = priorityInput.priorities.flatMap((input, index) =>
+  input.issues.map((issue, at) => ({
+    issue,
+    priority: priorityNodes[index].id,
+    at: minutesAfter(priorityNodes[index].made_at, at + 1),
+    actor: priorityActor,
+  }))
+);
+const moved: Record<string, Moved> = {};
+let parkedUnderNoMove = 0;
+for (const issue of listed.values()) {
+  if (!PARKED.includes(issue.status)) continue;
+  const read = events.get(issue.key) ?? parkedEvents.get(issue.key);
+  const move = read
+    ?.filter(
+      (event) =>
+        event.type === "issue.updated" &&
+        (event.changed ?? []).includes("status") &&
+        PARKED.includes(event.status ?? "")
+    )
+    .at(-1);
+  if (move !== undefined) {
+    moved[issue.key] = {
+      at: move.created_at,
+      by: move.actor_kind === "" ? null : { kind: move.actor_kind, id: move.actor_id },
+    };
+  } else if (underAPriority(issue.key)) parkedUnderNoMove++;
+}
+const prioritiesFixture: PrioritiesFixture = { priorities: priorityNodes, relations, moved };
+const parkedUnder = [...listed.values()].filter(
+  (issue) => PARKED.includes(issue.status) && underAPriority(issue.key)
+).length;
+
 const doneWithin = (days: number) =>
   issues.filter(
     (issue) => issue.closed_at !== null && now - Date.parse(issue.closed_at) <= days * 86_400_000
@@ -276,12 +397,19 @@ const manifest: DemoManifest = {
   issues_read_at: issuesReadAt,
   daemon_read_at: daemonReadAt,
   derived_summary: ["time in phase", "time per phase", "work time", "rounds", "close times"],
-  // What the pages show that no production read holds, in reader.json's and population.json's
-  // words below; the facts' cursor age is invented too, and no page shows it.
+  // What the pages show that no production read holds, in reader.json's, population.json's and
+  // priorities.json's words below; the facts' cursor age is invented too, and no page shows it.
   invented_summary: [
     `${project}'s Legion setting`,
     "the signed-in reader and its empty Inbox",
     "the facts' write times",
+    ...(priorityNodes.length > 0 ? ["the priorities and their links"] : []),
+  ],
+  invented_phone: [
+    "Legion setting",
+    "reader's Inbox",
+    "facts' write times",
+    ...(priorityNodes.length > 0 ? ["priorities and their links"] : []),
   ],
   fixtures: {
     "issues.json": {
@@ -380,6 +508,26 @@ const manifest: DemoManifest = {
         "answered by the stub with no fixture: the reader's Inbox, replies and agent state, all empty; no secrets broker (the credential list answers null); no architecture source for any project; no comments and no asks on any issue (an issue's own page is outside the demo)",
       ],
     },
+    "priorities.json": {
+      source:
+        priorityNodes.length === 0
+          ? "none: production's build has no priorities, and no --priorities file was named, so the pages say no priority is live"
+          : `invented by the demo from ${basename(flags.priorities ?? "")} (production's build has no priorities); the moves into backlog or icebox from the issues' events (GET /api/v1/issues/{key}/events), production Dispatch`,
+      read_at: null,
+      real: [
+        `the ${stating.size} issues the relations name and every issue below them: real issues of issues.json, as they stood at the read`,
+      ],
+      derived: [
+        `moved: when ${Object.keys(moved).length} issues standing in backlog or icebox were moved there and by whom, the newest of their events that set that status, as the server's parked fault reads it (${parkedEvents.size} of them read for this, read times in raw/read-times.json); ${parkedUnderNoMove} of the ${parkedUnder} under a priority have no such event and show no move`,
+        "every count under a priority (in flight, waiting, in backlog or icebox, closed in 7 days, claimed, open asks) and both faults: computed by the stub (web/src/demo/priorities.ts) from issues.json as GET /api/v1/priorities counts them, so a write moves them",
+        "a priority's newest event: the newest updated_at of its work, which a comment alone would not move",
+      ],
+      invented: [
+        `every priority (${priorityNodes.length}): its id, title, owner, description, order, state, made_at and made_by (the reader)`,
+        `every advances relation (${relations.length}): which issue states it, when (a minute apart after its priority) and by whom (the reader); the issues below one inherit it`,
+        "each priority's history: the writes of its state, title, owner and description at made_at, and each relation at its time",
+      ],
+    },
   },
 };
 
@@ -390,9 +538,10 @@ await writeFile(join(out, "projects.json"), JSON.stringify(projects));
 await writeFile(join(out, "schema.json"), JSON.stringify(schema));
 await writeFile(join(out, "agents.json"), JSON.stringify(agents));
 await writeFile(join(out, "reader.json"), JSON.stringify(readerFixture, null, 2));
+await writeFile(join(out, "priorities.json"), JSON.stringify(prioritiesFixture, null, 2));
 await writeFile(join(out, "manifest.json"), JSON.stringify(manifest, null, 2));
 console.log(
-  `wrote ${issues.length} ${project} issues and ${noDaemonIssues.length} of ${noDaemon.join(", ") || "no other project"}, ${cardCount} cards, ${Object.keys(facts).length} facts rows to ${out}`
+  `wrote ${issues.length} ${project} issues and ${noDaemonIssues.length} of ${noDaemon.join(", ") || "no other project"}, ${cardCount} cards, ${Object.keys(facts).length} facts rows, ${priorityNodes.length} priorities with ${relations.length} relations to ${out}`
 );
 
 /** Whether a project's listing, read later than `at`, still holds the rows it held at `at`, the

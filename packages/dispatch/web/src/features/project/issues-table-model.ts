@@ -12,7 +12,7 @@ import type {
 import type { LayoutColumns } from "../../components/table-layout";
 import { capSearchQuery, copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
-import { issueStatuses, openIssueStatuses, statusText } from "./board-model";
+import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
 import {
   SLOT_USES,
   type StageId,
@@ -73,6 +73,13 @@ export const tableStorageKey = (project: string) => `dispatch.project-table.${pr
 export const AGES = ["Today", "This week", "This month", "Older"] as const;
 export const ALL_ROWS = Number.MAX_SAFE_INTEGER;
 export const PAGE_SIZES = [25, 50, 100, 250, ALL_ROWS];
+/** The statuses an issue is being worked in, which the priority pages count as running. */
+export const runningIssueStatuses: readonly IssueStatus[] = [
+  "in_progress",
+  "testing",
+  "needs_review",
+  "retro",
+];
 /** The Created by value that names the reader who opens the page. */
 export const ME = "@me";
 /** The Claimed by value that picks the issues nobody is working: no claim at all, or a claim
@@ -786,6 +793,48 @@ export function readUrl(params: URLSearchParams, hasLegion = false): View {
  *  carries only what the reader changed and a view left as it is carries `view=` alone. */
 export function writeUrl(params: URLSearchParams, state: View, hasLegion = false): URLSearchParams {
   return compressView(writeTableAddress(params, state), hasLegion);
+}
+
+/** What a narrowing that names itself in no other way is called. */
+const DEFAULT_SELECTION_LABEL = "Selected issues";
+
+/** The issues behind a number the reader clicked elsewhere, as the URL holds them: the keys,
+ *  and the words naming them. It is the address's own narrowing, not one table's control, so it
+ *  takes no prefix: one page shows one selection however many tables it draws. */
+export interface IssueSelection {
+  readonly keys: ReadonlySet<string>;
+  readonly label: string;
+}
+export function readSelection(params: URLSearchParams): IssueSelection | null {
+  const only = params.get("only");
+  if (only === null) return null;
+  return {
+    keys: new Set(only.split(",").filter(Boolean)),
+    label: params.get("onlyLabel") ?? DEFAULT_SELECTION_LABEL,
+  };
+}
+/** Narrows the table to these issues. They are mostly finished ones, so the Status filter is
+ *  lifted (closed issues load) and the page goes back to the first; other filters stay. */
+export function selectIssues(
+  params: URLSearchParams,
+  keys: readonly string[],
+  label: string
+): URLSearchParams {
+  const next = copyAddress(params);
+  next.set("only", keys.join(","));
+  next.set("onlyLabel", label);
+  next.delete("status");
+  next.set("nofilter", "1");
+  next.delete("page");
+  return next;
+}
+/** Drops that narrowing, leaving every other control as it is. */
+export function clearPicked(params: URLSearchParams): URLSearchParams {
+  const next = copyAddress(params);
+  next.delete("only");
+  next.delete("onlyLabel");
+  next.delete("page");
+  return next;
 }
 
 /** The selected issues that are in Legion's queue, in the order the queue holds them. */

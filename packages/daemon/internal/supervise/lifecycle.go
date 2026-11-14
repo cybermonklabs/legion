@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -23,20 +24,18 @@ import (
 // asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
 // its own event, so a request that carries no such field is paced.
 //
-// A claim in an open pod round it has not answered takes that round's ask into its free
-// delivery slot here, before the launch (takeSlotForUpdate): the process this starts is asked
-// to push its work and answer before the pod is replaced, and a resume that let the claim's own
-// next task into the slot first would leave the round waiting on a worker nothing ever asked.
-// A claim already holding a task — the ask the sweep queued for this suspension among them — is
-// given nothing more, so the operator's resume still sends what the suspension kept.
-func (m *Machine) revive(ctx context.Context, exempt bool) error {
+// admitted, where a caller gives one, runs once the admission has bound the claim and before
+// anything else of the start: it is where a caller puts what it may change only for a claim
+// that is being run again, since an admission the lifecycle refuses leaves the claim exactly as
+// it was (retry, whose failure record and budgets go there).
+func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) error {
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err
 	}
 	m.claim.TreeEpoch = bound.TreeEpoch
-	if err := m.takeSlotForUpdate(ctx, true); err != nil {
-		return err
+	if admitted != nil {
+		admitted()
 	}
 	return m.launchAfter(ctx, false, exempt)
 }
@@ -127,7 +126,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
-	m.relaunchLater(m.retryHolding(m.pluginRelaunch, relaunch))
+	m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(m.pluginRelaunch, relaunch))
 	return errors.Join(err, m.persist(ctx))
 }
 
@@ -164,7 +163,7 @@ func (m *Machine) watchAgain() {
 	switch m.claim.State {
 	case StateLaunching, StateShimConnected:
 		if !armed(TimerBoot) {
-			m.arm(TimerBoot, m.deps.timeouts().Boot, "")
+			m.arm(TimerBoot, m.deps.Timeouts.Boot, "")
 		}
 		if !armed(TimerRegistration) {
 			m.armRegistration()
@@ -175,19 +174,20 @@ func (m *Machine) watchAgain() {
 		}
 	}
 	if p := m.claim.Pending; p != nil && p.ID == m.awaitingResult && p.ConfirmedAt.IsZero() && !armed(TimerTurn) {
-		m.arm(TimerTurn, m.deps.timeouts().RPC, p.ID)
+		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	}
 }
 
 // relaunchLater leaves a claim whose process is already let go waiting launching with no process,
-// its task kept, and tries relaunch again at the probe interval (TimerRelaunch, relaunchAgain): a
-// relaunch whose lifecycle check the store did not answer (relaunchRefused), or a launch whose
-// write failed (launchAfter). Nothing else would relaunch such a claim before a restart, which
-// takes it up from what the store last holds.
-func (m *Machine) relaunchLater(relaunch func(context.Context) error) {
+// its task kept, and tries relaunch again after wait (TimerRelaunch, relaunchAgain): a relaunch
+// whose lifecycle check the store did not answer (relaunchRefused), or a launch whose write failed
+// (launchAfter), each at the probe interval, and a start the session store could not answer, at
+// its own minute (startWaitsForStore). Nothing else would relaunch such a claim before a restart,
+// which takes it up from what the store last holds.
+func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Context) error) {
 	m.claim.State = StateLaunching
 	m.relaunch = relaunch
-	m.arm(TimerRelaunch, m.deps.timeouts().Probe, "")
+	m.arm(TimerRelaunch, wait, "")
 }
 
 // relaunchAgain is the relaunch relaunchLater left waiting (TimerRelaunch). A suspension held

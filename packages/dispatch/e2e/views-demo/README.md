@@ -2,7 +2,9 @@
 
 A live demo of the Issues tab's views (dispatch://INFRA-3221): the Dispatch web app, run by Vite,
 with a stubbed back end in the browser that answers every read from fixtures built out of
-production reads. It is a prototype for a spec's approval, not part of the browser suite.
+production reads. It shows the Issues tab and the priority pages (cybermonklabs/legion#3767),
+whose issue tables are the same table. It is a prototype for a spec's approval, not part of the
+browser suite.
 
 The fixtures, the pictures and the single file are written outside the repository. Production
 data (issue titles, keys, people) never goes into a file here.
@@ -21,6 +23,11 @@ data (issue titles, keys, people) never goes into a file here.
   - `server.ts` answers every `/api/` and `/auth/` request the page makes. The listing applies
     every filter the server applies. Writes change its state, which the tab keeps in
     sessionStorage. A write goes out on the event feed as the server's event would.
+  - `priorities.ts` answers the priorities (`GET /api/v1/priorities`, with `summary=true` too,
+    one priority's history, and the two priority writes) and the listing's `advances` and
+    `moved` filters, as main's `api/priority_queries.go` and `api/issue_queries.go` read them.
+    Every count is read from the issues as the stub holds them, so a write moves them.
+  - `wire.ts` writes a time, a rank and the status order as the server writes them.
   - `live.ts` is `/ws/live`: the `legion` view gets the board, the event feed gets the stub's
     events.
   - `banner.ts` is the note at the foot of every page that names what is real, estimated and
@@ -47,7 +54,7 @@ cd packages/dispatch
 DISPATCH_URL=<Dispatch base URL> DISPATCH_TOKEN_FILE=<token file> \
   bun e2e/views-demo/fixtures.ts --out "$TMPDIR/views-demo/fixtures" \
   --project <KEY> --reader <login> --daemon-url <the project's Legion daemon base URL> \
-  --no-daemon-project <KEY>
+  --no-daemon-project <KEY> --priorities <file>
 ```
 
 `--project` is the project with a Legion daemon. `--daemon-url` reads its daemon's
@@ -58,6 +65,28 @@ keep a null `closed_at`, since their events are not read. `<out>/manifest.json` 
 fixture, its source, the UTC time it was read, and which of its fields are real, derived or
 invented. The board leaves out a card's `checks_verdict`, which
 cybermonklabs/legion#2731's newest head removes.
+
+### The priorities
+
+Production's build has no priorities, so they are invented. `--priorities` names a file, kept
+outside the repository since it names real issues, of this shape:
+
+```json
+{
+  "made_at": "<when the first priority was written, UTC>",
+  "priorities": [
+    { "title": "…", "owner": "…", "description": "…", "issues": ["<KEY>-<n>", "…"] }
+  ]
+}
+```
+
+The priorities take that order, each written 15 minutes after the one before it by the reader.
+Each issue named states an `advances` relation on its priority, a minute apart, and every issue
+below it inherits it. Every count on the priority pages follows from those issues as they stand.
+The one production read this adds is the events of the priority work standing in backlog or
+icebox, for when each was moved there. `priorities.json` holds the priorities, the relations and
+the moves, and the manifest names all three as invented or derived. Without `--priorities` the
+pages say that no priority is live.
 
 ## The fixtures as an archive
 
@@ -73,8 +102,8 @@ tar -xzf <the archive>.tar.gz -C "$TMPDIR/views-demo/fixtures"
 To make the archive again from a fixtures directory:
 
 ```sh
-tar -czf <the archive>.tar.gz -C "$TMPDIR/views-demo/fixtures" \
-  manifest.json issues.json population.json projects.json reader.json schema.json agents.json
+tar -czf <the archive>.tar.gz -C "$TMPDIR/views-demo/fixtures" manifest.json issues.json \
+  population.json projects.json reader.json schema.json agents.json priorities.json
 ```
 
 ## Run the demo
@@ -85,8 +114,8 @@ DISPATCH_DEMO_FIXTURES="$TMPDIR/views-demo/fixtures" \
   bunx vite --config vite.demo.config.ts --port 5190 --host 127.0.0.1
 ```
 
-Open `http://127.0.0.1:5190/projects/<KEY>/issues`. A request the stub cannot answer is logged
-in the console (`[views demo] no stub route answers …`) and kept in
+Open `http://127.0.0.1:5190/projects/<KEY>/issues`, or `/priorities`. A request the stub cannot
+answer is logged in the console (`[views demo] no stub route answers …`) and kept in
 `window.__dispatchDemoUnanswered`.
 
 To show a failed read of the daemon, add `demo=read-failed` to the address
@@ -109,7 +138,8 @@ With the demo running:
 ```sh
 cd packages/dispatch
 TZ=UTC bun e2e/views-demo/shots.ts --base http://127.0.0.1:5190 --out "$TMPDIR/views-demo/shots" \
-  --chromium <path to Chromium> [--before] [--no-daemon-project <KEY>]
+  --chromium <path to Chromium> [--before] [--no-daemon-project <KEY>] [--only <part>,…] \
+  [--report <file name>]
 ```
 
 Every page runs in the UTC time zone and the `en-US` language, and its clock stands at the
@@ -132,16 +162,28 @@ Without `--before` it takes the design's pictures, each named by what it shows:
 - All open, In flight and All open on the Board of the project with no Legion daemon
   (`--no-daemon-project`, GTM by default);
 - All open with the daemon's read failed (`demo=read-failed`), and with the Legion setting's
-  read failed (`demo=settings-failed`).
+  read failed (`demo=settings-failed`);
+- the whole of `/priorities` (the priorities and the two fault tables) and of the first
+  priority's own page at 1440 wide, and `/priorities` at 390. A whole-page picture draws the
+  banner at the page's foot, under everything the page drew.
 
 `--before` takes the page before the design, on a checkout of its base: the List, the Board, the
-Legion view and the phone List. A picture is taken only once its page has drawn its rows (a
-table row, a Board card or a Legion view card) or its own element; a page that does not draw
-them in 30 s fails its picture. The design's Issues page is also waited on for its view tabs
-(`[data-view-tab]`), which the page before the design has none of, so the design's pictures
-taken against that page fail at the first one. The run fails if a picture failed, the stub left
-a request unanswered, the page threw, or the phone banner took more than two lines.
-`report-<mode>.json` in the output lists all of it.
+Legion view and the phone List. The base has no priority pages, so `before-priorities-1440` and
+`before-priority-page-1440` are taken on a checkout of main with the same stub and fixtures:
+
+```sh
+TZ=UTC bun e2e/views-demo/shots.ts --before --only before-priorit --report report-before-main.json \
+  --base http://127.0.0.1:<main's demo port> --out "$TMPDIR/views-demo/shots" --chromium <path>
+```
+
+`--only` takes the pictures whose names hold one of its comma-separated parts, and `--report`
+names the report, `report-<mode>.json` by default. A picture is taken only once its page has
+drawn its rows (a table row, a Board card or a Legion view card) or its own element; a page that
+does not draw them in 30 s fails its picture. The design's Issues page is also waited on for its
+view tabs (`[data-view-tab]`), which the page before the design has none of, so the design's
+pictures taken against that page fail at the first one. The run fails if a picture failed, the
+stub left a request unanswered, the page threw, or the phone banner took more than two lines.
+The report in the output lists all of it.
 
 ## Build the single file
 
@@ -166,4 +208,6 @@ The second command opens the file with the network off and checks that:
 - a drag on the Board sets a status;
 - Save view adds a tab, and its delete takes the tab away, also after a reload;
 - the Columns menu shows a column it ticks;
-- the Closed filter's 7 days lists the done issues with Legion work closed in the last 7 days.
+- the Closed filter's 7 days lists the done issues with Legion work closed in the last 7 days;
+- the priorities page lists every priority the stub answers, and a press on one opens its own
+  page with its issue table.

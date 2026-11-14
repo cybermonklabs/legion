@@ -145,9 +145,12 @@ export function AddressRedirect({ keepQuery = false, to }: AddressRedirectProps)
 }
 
 /** A `URLSearchParams` of its own over `init`: the live one the router hands out is never
- *  mutated, so every read and write here works on a copy. */
-export function copyAddress(init?: string | URLSearchParams): URLSearchParams {
-  return new URLSearchParams(init);
+ *  mutated, so every read and write here works on a copy. `init` may also be the address's
+ *  pairs, as a page that filters or rewrites them hands them back. */
+export function copyAddress(
+  init?: string | URLSearchParams | readonly (readonly [string, string])[]
+): URLSearchParams {
+  return new URLSearchParams(init as string | URLSearchParams | string[][] | undefined);
 }
 
 /** `location` with `name` set to `value`, as a path `AddressRedirect` or a link can take: the

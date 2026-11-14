@@ -209,9 +209,9 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 //
 // That process never registers, so its claim never answers the round it was started for, and a
 // round waits for every claim of its pod with a session (daemon's blockingClaims). The round that
-// would have replaced the pod is therefore blocked by the pod it is replacing — the update task
-// itself revives a suspended claim into that pod (supervise's askForUpdate) — and only an operator
-// drain ends it, which is the outage this issue exists to end.
+// would have replaced the pod is therefore blocked by the pod it is replacing — a resume or a
+// relaunch starts a claim into that pod while the round is open — and only an operator drain ends
+// it, which is the outage this issue exists to end.
 //
 // The launch must therefore not start a role against configuration its pod cannot carry: either it
 // starts the role as the pod it is in was built (no new flag, no new overlay), or it does not

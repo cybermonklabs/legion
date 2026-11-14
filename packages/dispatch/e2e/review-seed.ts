@@ -5,8 +5,17 @@
  *  It builds on the fixtures that already exist rather than writing a second corpus:
  *  `seedWorkspace()` fills the Inbox, the Agents page, a broadcast, the answers, the projects and
  *  the issue tree, and the delivery fixtures fill `/delivery` and `/pipeline`. What it adds is
- *  the four documents the issue tabs need. */
-import { createIssueArtifact, createPlanReview, getIssue, getProjectArtifact } from "./api";
+ *  the four documents the issue tabs need, and the one priority the two priority pages are read
+ *  against: `seedWorkspace()` writes none, and both of those pages draw a sentence instead of a
+ *  row for a deployment that has written no priority. */
+import {
+  createIssueArtifact,
+  createPlanReview,
+  createPriority,
+  getIssue,
+  getProjectArtifact,
+  patchIssue,
+} from "./api";
 import { seedDeliveryFixture, seedPipelineRows, TIMELINE_FIXTURE_QUERY } from "./delivery-seed";
 import { blockId } from "./editor";
 import { sql } from "./psql";
@@ -45,6 +54,22 @@ function firstMachine(): string {
     throw new Error("seedReviewRoutes: no seeded session names a machine");
   }
   return machine;
+}
+
+/** The one priority this corpus writes. It is written as the signed-in person rather than over
+ *  the agent bearer, because the margin of `/priorities/:id` draws who wrote the priority and a
+ *  bearer would name a session there instead. Its description holds a link, so the accessibility
+ *  pass reads a link inside the rendered description a writer may open into its editor: a
+ *  control wrapping that text would put the link inside it (axe's `nested-interactive`). */
+function createReviewPriority() {
+  return createPriority({
+    description:
+      "Every reader of this deployment reaches the same corpus in one command.\n\n" +
+      "The work under it is the seeding, the sign-in and the pages both review layers read, " +
+      "from [the priorities page](/priorities).",
+    owner: "alice",
+    title: "Local testing is one command",
+  });
 }
 
 /** Seeds the review corpus into an empty database; the caller resets first. */
@@ -126,6 +151,19 @@ Each page is read once it is drawn.
     name: "decisions.md",
   });
 
+  // The priority `/priorities` lists and `/priorities/:id` opens, and the work under it. The
+  // workflow issue stands in `in_progress`, so the row counts one in flight and the priority's
+  // own page lists it; the freshness-folds issue stands in `backlog`, so it is a row of the
+  // second fault list. Every other issue of the corpus that is in flight advances none, which
+  // is what fills the first fault list. Both relations are written last, so the activity of
+  // each issue keeps the order the rows above it were seeded in, and one after the other: the
+  // priority's margin lists its history newest first by the order the store wrote it, so two
+  // writes made at once land in either order and the page differs between two runs of one tree
+  // (the 68 pixels the visual review read on `priority` in two rounds).
+  const priority = await createReviewPriority();
+  await patchIssue(issue, { advances: [priority.id] });
+  await patchIssue(workspace.issues.folds, { advances: [priority.id] });
+
   // The slug of the `Runbook` document `seedWorkspace` creates: read back rather than assumed,
   // so a rename there fails this seed instead of the page it opens.
   const runbook = await getProjectArtifact("CORE", "runbook");
@@ -138,6 +176,9 @@ Each page is read once it is drawn.
     // The machine of the first seeded session, read from the registry this seed wrote rather
     // than named again here, so a rename in e2e/workspace.ts moves this page's URL with it.
     machine: firstMachine(),
+    // The id the create answered, which is this title written as a slug: read back rather than
+    // spelled again here, so the rule that derives it stays the server's.
+    priority: priority.id,
     project: "CORE",
     projectDocumentSlug: runbook.slug,
   };

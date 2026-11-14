@@ -503,7 +503,7 @@ func TestALiveClaimStoredWithNoProcessIsRestoredAsAnUnfinishedLaunchAndRelaunche
 			}
 
 			s := &supervision{log: quietLogger(), supervisor: sup, refreshGate: supervise.NewRefreshGate(0)}
-			if refused := s.launchUnfinished(unfinished); len(refused) != 0 {
+			if refused := s.launchUnfinished(context.Background(), unfinished); len(refused) != 0 {
 				t.Fatalf("the relaunch refused %v", refused)
 			}
 

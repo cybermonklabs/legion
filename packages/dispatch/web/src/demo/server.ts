@@ -3,8 +3,15 @@
 // server would answer it, the listing's filters included. A write changes this in-memory state,
 // which the tab keeps in sessionStorage across a reload, and goes out on the event feed as the
 // server's own event would; a write that the daemon would see moves the board at its next read,
-// which `DAEMON_READ_MS` after the write stands in for.
-import type { DispatchEvent, Issue, IssueSummary, UserIssueState } from "@legion/contracts";
+// which `DAEMON_READ_MS` after the write stands in for. The priorities and the work under them
+// are answered by DemoPriorities (priorities.ts).
+import type {
+  DispatchEvent,
+  Issue,
+  IssueSummary,
+  PatchPriorityInput,
+  UserIssueState,
+} from "@legion/contracts";
 import {
   type BoardPopulation,
   computeBoard,
@@ -13,6 +20,8 @@ import {
   rankOrder,
 } from "../../../e2e/views-demo/board-rules";
 import type { DemoFixtures } from "./fixtures";
+import { DemoPriorities, type PrioritiesKept } from "./priorities";
+import { goTime, ISSUE_STATUSES, rankAt } from "./wire";
 
 /** The answer of one request: its status and its JSON body. */
 export interface DemoAnswer {
@@ -26,27 +35,15 @@ const KEPT_STATE = "dispatch-demo.state";
 /** What the board's newest read answers when the page asks for a failed read (install.ts's
  *  `demo=read-failed`): a failure the demo makes up, worded as a read's error. */
 export const DEMO_READ_ERROR = "GET /legion/v1/state: the daemon did not answer in 10 s";
-/** The listing's status order (model.IssueStatuses). */
-const STATUS_ORDER = [
-  "triage",
-  "icebox",
-  "backlog",
-  "todo",
-  "in_progress",
-  "testing",
-  "needs_review",
-  "retro",
-  "done",
-];
-const RANK_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 /** What the tab keeps across a reload: every issue a write changed, the reader's issue state,
- *  and the daemon's state as the simulated reads left it. */
+ *  the daemon's state as the simulated reads left it, and what the priority writes changed. */
 interface KeptState {
   issues: Record<string, IssueSummary>;
   userState: Record<string, UserIssueState>;
   population: BoardPopulation | null;
   eventId: number;
+  priorities?: PrioritiesKept;
 }
 
 type Listener = () => void;
@@ -66,6 +63,7 @@ export class DemoServer {
   private readonly pendingDaemon = new Map<string, { status?: string; rank?: boolean }>();
   /** Every request no route of the stub answered, for the screenshot run to read. */
   readonly unanswered: string[] = [];
+  private readonly priorities: DemoPriorities;
 
   /** `readFailed` makes the daemon's newest read a failure, with the cards the read before it
    *  left, as the board answers after a read that failed. */
@@ -91,6 +89,12 @@ export class DemoServer {
       }
       this.eventId = kept.eventId;
     }
+    this.priorities = new DemoPriorities(
+      fixtures.priorities,
+      this.issues,
+      { kind: "user", id: fixtures.reader.login },
+      kept?.priorities
+    );
   }
 
   get login(): string {
@@ -171,7 +175,7 @@ export class DemoServer {
           project: null,
         }),
     },
-    { method: "GET", pattern: /^\/api\/v1\/issues$/, answer: (_, q) => ok(this.listIssues(q)) },
+    { method: "GET", pattern: /^\/api\/v1\/issues$/, answer: (_, q) => this.listIssues(q) },
     {
       method: "GET",
       pattern: /^\/api\/v1\/issues\/([^/]+)$/,
@@ -188,6 +192,29 @@ export class DemoServer {
     // An issue's conversation, which no production read of the demo holds: none.
     { method: "GET", pattern: /^\/api\/v1\/issues\/[^/]+\/comments$/, answer: () => ok([]) },
     { method: "GET", pattern: /^\/api\/v1\/issues\/[^/]+\/asks$/, answer: () => ok([]) },
+    // The invented priorities, and the work under each read from the issues as they stand.
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/priorities$/,
+      answer: (_, q) => ok(this.priorities.list(q)),
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/priorities$/,
+      answer: (_, __, body) =>
+        this.keeping(this.priorities.create((body ?? {}) as { title?: string })),
+    },
+    {
+      method: "PATCH",
+      pattern: /^\/api\/v1\/priorities\/([^/]+)$/,
+      answer: ([id], _, body) =>
+        this.keeping(this.priorities.patch(id, (body ?? {}) as PatchPriorityInput)),
+    },
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/priorities\/([^/]+)\/history$/,
+      answer: ([id]) => this.priorities.history(id),
+    },
     { method: "GET", pattern: /^\/api\/v1\/projects$/, answer: () => ok(this.fixtures.projects) },
     {
       method: "GET",
@@ -245,6 +272,12 @@ export class DemoServer {
     { method: "POST", pattern: /^\/auth\/logout$/, answer: () => ({ status: 204, body: null }) },
   ];
 
+  /** A write's answer, once the tab has kept what the write changed. */
+  private keeping(answer: DemoAnswer): DemoAnswer {
+    this.keep();
+    return answer;
+  }
+
   private putIssueState(key: string, input: Partial<UserIssueState>): DemoAnswer {
     const held = this.userState[key] ?? { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
     const next: UserIssueState = {
@@ -265,10 +298,18 @@ export class DemoServer {
     console.warn(`[views demo] no stub route answers ${entry}`);
   }
 
-  /** `GET /api/v1/issues`, with every filter the server's listing statement applies. */
-  private listIssues(q: URLSearchParams): IssueSummary[] | object {
+  /** `GET /api/v1/issues`, with every filter the server's listing statement applies; each row
+   *  carries its `advances` entries, and under `moved=true` its move into backlog or icebox. */
+  private listIssues(q: URLSearchParams): DemoAnswer {
     const project = q.get("project")?.trim() ?? "";
-    const status = q.get("status")?.trim() ?? "";
+    // parseStatusFilter: the statuses named, blanks dropped, none meaning every status.
+    const statuses = q
+      .getAll("status")
+      .map((value) => value.trim())
+      .filter((value) => value !== "");
+    const advances = this.priorities.advancesFilter(q.getAll("advances"));
+    if (advances !== undefined && typeof advances !== "function") return advances;
+    const moved = q.get("moved") === "true";
     const parent = q.get("parent")?.trim() ?? "";
     const labels = q.getAll("label").map((label) => label.trim().toLowerCase());
     const updatedSince = q.has("updated_since") ? q.get("updated_since") : null;
@@ -284,7 +325,7 @@ export class DemoServer {
     const pinned = q.get("pinned") === "true";
     const rows = [...this.issues.values()].filter((issue) => {
       if (project !== "" && !issue.key.startsWith(`${project}-`)) return false;
-      if (status !== "" && issue.status !== status) return false;
+      if (statuses.length > 0 && !statuses.includes(issue.status)) return false;
       if (parent !== "" && issue.parent !== parent) return false;
       if (updatedSince !== null && time(issue.updated_at) < time(updatedSince)) return false;
       if (labels.length > 0) {
@@ -305,15 +346,27 @@ export class DemoServer {
         return false;
       if (routeStatus !== "" && issue.route_status !== routeStatus) return false;
       if (pinned && this.userState[issue.key]?.pinned !== true) return false;
+      if (advances !== undefined && !advances(issue.key)) return false;
       return true;
     });
     rows.sort(
-      (a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) || rankOrder(a, b)
+      (a, b) =>
+        ISSUE_STATUSES.indexOf(a.status) - ISSUE_STATUSES.indexOf(b.status) || rankOrder(a, b)
     );
-    if (!q.has("limit") && !q.has("offset")) return rows;
+    const answered = rows.map((issue) => ({
+      ...issue,
+      ...this.priorities.columnsOf(issue.key),
+      ...(moved ? this.priorities.movedOf(issue) : {}),
+    }));
+    if (!q.has("limit") && !q.has("offset")) return ok(answered);
     const limit = Number(q.get("limit") ?? 50);
     const offset = Number(q.get("offset") ?? 0);
-    return { issues: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+    return ok({
+      issues: answered.slice(offset, offset + limit),
+      total: answered.length,
+      limit,
+      offset,
+    });
   }
 
   private fullIssue(issue: IssueSummary): Issue {
@@ -328,6 +381,7 @@ export class DemoServer {
     const [project, number] = issue.key.split("-");
     return {
       ...rest,
+      ...this.priorities.columnsOf(issue.key),
       project,
       number: Number(number),
       external_links: [],
@@ -349,6 +403,7 @@ export class DemoServer {
       if (input.status === "done") next.closed_at = now;
       else if (held.status === "done") next.closed_at = null;
       if ((input.status === "done") !== (held.status === "done")) changed.push("closed_at");
+      this.priorities.statusWritten(key, input.status, now);
     }
     if (input.rank !== undefined) {
       next.rank = this.rankFor(key, input.rank);
@@ -384,18 +439,10 @@ export class DemoServer {
   private rankFor(key: string, input: { before?: string | null; after?: string | null }): string {
     const ranks = [...this.issues.values()]
       .filter((issue) => issue.key !== key && issue.key.split("-")[0] === key.split("-")[0])
-      .map((issue) => issue.rank)
-      .sort();
-    let previous = input.after ? (this.issues.get(input.after)?.rank ?? "") : "";
-    let next = input.before ? (this.issues.get(input.before)?.rank ?? "") : "";
-    if (previous !== "") {
-      next = ranks.find((rank) => rank > previous && (next === "" || rank < next)) ?? next;
-    } else if (next !== "") {
-      previous = ranks.filter((rank) => rank < next).at(-1) ?? "";
-    } else {
-      previous = ranks.at(-1) ?? "";
-    }
-    return rankBetween(previous, next);
+      .map((issue) => issue.rank);
+    const after = input.after ? (this.issues.get(input.after)?.rank ?? "") : "";
+    const before = input.before ? (this.issues.get(input.before)?.rank ?? "") : "";
+    return rankAt(ranks, after, before);
   }
 
   /** The daemon's next read after a write: a closed issue leaves its card and its slot, and a
@@ -471,6 +518,7 @@ export class DemoServer {
       userState: this.userState,
       population: this.populationMoved ? this.population : null,
       eventId: this.eventId,
+      priorities: this.priorities.kept(),
     };
     try {
       sessionStorage.setItem(KEPT_STATE, JSON.stringify(kept));
@@ -514,41 +562,6 @@ function legionNotConfigured(): DemoAnswer {
   };
 }
 
-/** A time as the server writes it (RFC 3339 with trailing fractional zeros dropped). */
-export function goTime(date: Date): string {
-  return date.toISOString().replace(/\.?0+Z$/, "Z");
-}
-
 function time(value: string | null): number {
   return value === null ? Number.NaN : Date.parse(value);
-}
-
-/** rank.Between (internal/dispatch/rank): a base62 key strictly between two others. */
-export function rankBetween(previous: string, next: string): string {
-  const digit = (char: string) => RANK_ALPHABET.indexOf(char);
-  const after = (prev: string): string => {
-    for (let i = 0; i < prev.length; i++) {
-      const d = digit(prev[i]);
-      if (d < RANK_ALPHABET.length - 1) return prev.slice(0, i) + RANK_ALPHABET[d + 1];
-    }
-    return `${prev}U`;
-  };
-  const before = (upper: string): string => {
-    if (upper === "") return "U";
-    const d = digit(upper[0]);
-    if (d > 1) return RANK_ALPHABET[Math.floor(d / 2)];
-    return RANK_ALPHABET[0] + before(upper.slice(1));
-  };
-  if (previous === "") return before(next);
-  if (next === "") return after(previous);
-  let common = 0;
-  while (common < previous.length && common < next.length && previous[common] === next[common]) {
-    common++;
-  }
-  if (common === previous.length) return previous + before(next.slice(common));
-  const low = digit(previous[common]);
-  const high = digit(next[common]);
-  if (high - low > 1)
-    return previous.slice(0, common) + RANK_ALPHABET[Math.floor((low + high) / 2)];
-  return previous.slice(0, common + 1) + after(previous.slice(common + 1));
 }

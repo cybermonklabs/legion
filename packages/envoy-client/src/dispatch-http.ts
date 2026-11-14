@@ -61,6 +61,7 @@ import type {
   MessageReplyResult,
   MyRepliesResponse,
   OpenAsksResponse,
+  Priorities,
   Project,
   RecordCheckResultInput,
   RelatedCheckInput,
@@ -1058,6 +1059,12 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "asks", "open"], undefined, { project });
   }
 
+  /** `GET /api/v1/priorities`: every live priority in rank order with the work under it, and the
+   *  two faults; `project`, repeated, counts only those projects' work. */
+  async priorities(projects: readonly string[] = []): Promise<Priorities> {
+    return this.#json("GET", ["api", "v1", "priorities"], undefined, { project: projects });
+  }
+
   /** `GET /api/v1/agents/{session_id}/answers`: what people wrote that Dispatch delivered to the
    *  session since `since` (72 hours ago when unset), newest first. With `maxChars` the server
    *  stops after the item whose text takes the running sum of text lengths past it, so the body
@@ -1281,9 +1288,11 @@ export class DispatchClient {
     );
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it.
+  /** Each check of an issue's Verification document with every result recorded against it, and
+   *  for a check CI proves the one result Dispatch derives from its check run.
    *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
-   *  hex characters, and Dispatch reads GitHub for none of it. */
+   *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
+   *  proves, at the issue's newest pull request head as on every read. */
   async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
     return this.#json(
       "GET",

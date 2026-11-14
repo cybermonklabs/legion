@@ -208,7 +208,7 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "issues" ? (
-          <IssuesTable key={route.project} project={route.project} />
+          <IssuesTable key={route.project} listing={{ project: route.project }} />
         ) : null}
       </div>
       <div
