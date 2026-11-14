@@ -27,12 +27,7 @@ import (
 func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
-	// Whole seconds, which the store keeps exactly.
-	saved := time.Now().UTC().Truncate(time.Second).Add(-30 * time.Minute)
-	rig.rt.bundle.At = saved
-	copied := copyRigBundle
-	copied.At = saved.Add(2 * time.Minute)
-	rig.bundler.answers(copied, nil)
+	rig.bundler.answers(copyRigBundle, nil)
 
 	// The release is queued, and its save runs alone: the role stops behind it have not.
 	rig.w.releaseIdlePods(ctx)
@@ -56,9 +51,7 @@ func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t 
 	// A push of the issue's branch is recorded now, with the pod's roles still live, through the
 	// workflow's push handler as the daemon wires it.
 	before := len(copyOutcomes(t, rig))
-	pushed := saved.Add(time.Minute)
-	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Clock: func() time.Time { return pushed },
-		Pushes: rig.st, PushRecorded: rig.w.copyWorkspaceAtPush}, quietLogger())
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st, PushRecorded: rig.w.copyWorkspaceAtPush}, quietLogger())
 	push := intake.Push{Repo: rig.issue.GitHubRepo, Branch: "legion/" + rig.issue.Key, Before: "c0", After: "c2"}
 	if _, err := intake.ApplyFact(ctx, rig.pool, "github", "push-webhook:c0..c2", push, engine); err != nil {
 		t.Fatalf("apply the push of c0..c2: %v", err)
@@ -77,7 +70,7 @@ func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t 
 
 	// The pod that replaces the released one restores the issue's work, and its launcher's
 	// report of the restore confirms the copy it was sent.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", saved.Add(20*time.Minute))
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil {
 		t.Fatal(err)
 	}

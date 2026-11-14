@@ -29,10 +29,11 @@ func recordedPush(t *testing.T, pool *pgxpool.Pool, issue string) (time.Time, st
 	return at, head, true
 }
 
-// pushRecordRig is an engine whose push handler records into the daemon's own store, at a clock
-// the test moves, for one issue, LEGION-208, on sjawhar/legion. asked is every issue the handler
-// asked a copy of the workspace for, in order, and committed whether the push's record could be
-// read when it asked.
+// pushRecordRig is an engine whose push handler records into the daemon's own store, for one
+// issue, LEGION-208, on sjawhar/legion, with the engine's own clock set days apart from the
+// database's: the record reads the store's clock and never the engine's. asked is every issue the
+// handler asked a copy of the workspace for, in order, and committed whether the push's record
+// could be read when it asked.
 type pushRecordRig struct {
 	pool      *pgxpool.Pool
 	clock     *checkClock
@@ -62,29 +63,43 @@ func newPushRecordRig(t *testing.T) *pushRecordRig {
 	return rig
 }
 
+// databaseClock is the database's own clock as it reads now.
+func databaseClock(t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return now
+}
+
 // A push of an issue's branch is recorded from the push fact itself, whether or not the issue has
 // a pull request: a branch is pushed before its pull request opens, and an issue with no
 // pull-request record is exactly the one a stale copy of its workspace would otherwise be sent
-// for (store.TakeWorkspaceCopyForRestore). The record is the daemon's clock when it applied the
-// push and the head the push left, and the copy the daemon takes for it is asked for only once
-// the fact has committed, so the copy can read the record it was asked for. A later push moves
-// the record; a push of a branch of the same name on another repository, and a branch that names
-// no issue, record nothing and ask for nothing.
+// for (store.TakeWorkspaceCopyForRestore). The record is the store's clock when the push fact's
+// own transaction recorded it — the clock every copy's time and every pod's first ask are read by,
+// and not the engine's — and the head the push left, and the copy the daemon takes for it is asked
+// for only once the fact has committed, so the copy can read the record it was asked for. A later
+// push moves the record; a push of a branch of the same name on another repository, and a branch
+// that names no issue, record nothing and ask for nothing.
 func TestAPushOfAnIssueWithNoPullRequestIsRecordedAndAsksForACopyOnCommit(t *testing.T) {
 	rig := newPushRecordRig(t)
 
+	before := databaseClock(t, rig.pool)
 	rig.apply("push-1", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: "c0", After: "c1"})
-	if at, head, held := recordedPush(t, rig.pool, "LEGION-208"); !held || head != "c1" || !at.Equal(rig.clock.now) {
-		t.Fatalf("the push recorded head %q at %s (held=%t), want c1 at the daemon's %s", head, at, held, rig.clock.now)
+	after := databaseClock(t, rig.pool)
+	first, head, held := recordedPush(t, rig.pool, "LEGION-208")
+	if !held || head != "c1" || first.Before(before) || first.After(after) {
+		t.Fatalf("the push recorded head %q at %s (held=%t), want c1 at the database's clock between %s and %s, not the engine's %s",
+			head, first, held, before, after, rig.clock.now)
 	}
 	if !slices.Equal(rig.asked, []string{"LEGION-208"}) || !slices.Equal(rig.committed, []bool{true}) {
 		t.Fatalf("the push asked for copies of %v, reading its own record as %v; want one copy of LEGION-208, asked after the record committed", rig.asked, rig.committed)
 	}
 
-	rig.clock.now = rig.clock.now.Add(time.Minute)
 	rig.apply("push-2", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: "c1", After: "c2"})
-	if at, head, _ := recordedPush(t, rig.pool, "LEGION-208"); head != "c2" || !at.Equal(rig.clock.now) {
-		t.Fatalf("the later push left the record at %q at %s, want c2 at %s", head, at, rig.clock.now)
+	if at, head, _ := recordedPush(t, rig.pool, "LEGION-208"); head != "c2" || !at.After(first) {
+		t.Fatalf("the later push left the record at %q at %s, want c2 after %s", head, at, first)
 	}
 
 	rig.apply("push-3", intake.Push{Repo: "someone/else", Branch: "legion/LEGION-208", Before: "x0", After: "x1"})
@@ -102,7 +117,7 @@ func TestAPushOfAnIssueWithNoPullRequestIsRecordedAndAsksForACopyOnCommit(t *tes
 // send; a copy asked for any other would discard the copy in flight as overtaken and bundle the
 // workspace again for nothing. A webhook GitHub delivers again under an event id of its own gets
 // past the fact's own dedupe, as does the per-issue read's rebuild of a push whose webhook was
-// applied, and both are applied later than the first; so are a late webhook of a push behind the
+// applied, and both are recorded later than the first; so are a late webhook of a push behind the
 // newest and the branch's deletion, neither of which moves the record either. The push after them
 // moves it, and asks for its copy.
 func TestAPushTheRecordAlreadyHoldsAsksForNoCopy(t *testing.T) {

@@ -656,7 +656,7 @@ func (t bundleDeleteRefused) DeleteWorkspaceBundle(context.Context, string) erro
 // off, so it is answered nothing and spends nothing, and the row held the issue's pod
 // (workflow.IdleHoldBundleUnrestored) rather than being replaced by another release. P's roles
 // worked and pushed for hours. Then some later pod of the issue — an eviction's, an update
-// round's replacement, a park and unpark's — asked for the bundle, was created after the save,
+// round's replacement, a park and unpark's — asked for the bundle, first asked after the save,
 // and was sent it: `jj bookmark set --allow-backwards` and `jj edit` over a workspace
 // provisioned from the branch those hours had been pushed to.
 //
@@ -694,9 +694,9 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 		t.Fatal("the cancel left its bundle behind when the store refused a delete of its own")
 	}
 
-	// The resumed roles push their work, and the daemon records the push.
-	pushed := time.Now().UTC().Add(time.Minute)
-	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Clock: func() time.Time { return pushed }, Pushes: rig.st}, quietLogger())
+	// The resumed roles push their work, and the daemon records the push, after the cancel kept
+	// the release's work as the pod's running copy.
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st}, quietLogger())
 	push := intake.Push{Repo: rig.issue.GitHubRepo, Branch: "legion/" + rig.issue.Key, Before: "c0", After: "c2"}
 	if _, err := intake.ApplyFact(ctx, rig.pool, "github", "push-webhook:c0..c2", push, engine); err != nil {
 		t.Fatalf("apply the push of c0..c2: %v", err)
@@ -706,7 +706,7 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 	// pushed in between: it is sent nothing of the work the release saved. The bundle's row is
 	// gone, and the copy the cancel kept of that work as the pod's running copy is older than the
 	// push, which refuses it (runtime.WorkspaceBundleRefusedPushed).
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour))
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-an-eviction")
 	later := restore.ReleaseBundle
 	if err != nil || later.Take != runtime.WorkspaceBundleNone || restore.Running.Take == runtime.WorkspaceBundleSend {
 		t.Fatalf("a pod created after the cancelled release's save was answered %v of %q and %v of the running copy (%v), want nothing sent",
@@ -886,10 +886,8 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhenIdle(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
-	// Whole seconds, which the store keeps exactly: it holds an instant to the microsecond.
-	released := time.Now().UTC().Truncate(time.Second).Add(-30 * time.Minute)
 	bundle := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "c1",
-		Tips: []string{"c1"}, At: released, PodUID: releasedPodUID}
+		Tips: []string{"c1"}, PodUID: releasedPodUID}
 	if err := rig.st.PutWorkspaceBundle(ctx, rig.issue.Key, 1, bundle); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
@@ -898,16 +896,19 @@ func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhen
 		t.Fatalf("holds while no pod has restored the bundle = %+v, want the one %s", holds, workflow.IdleHoldBundleUnrestored)
 	}
 
-	pushed := released.Add(10 * time.Minute)
-	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Clock: func() time.Time { return pushed }, Pushes: rig.st}, quietLogger())
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st}, quietLogger())
 	push := intake.Push{Repo: rig.issue.GitHubRepo, Branch: "legion/" + rig.issue.Key, Before: "c0", After: "c2"}
 	if _, err := intake.ApplyFact(ctx, rig.pool, "github", "push-webhook:c0..c2", push, engine); err != nil {
 		t.Fatalf("apply the push of c0..c2: %v", err)
 	}
+	var pushed time.Time
+	if err := rig.pool.QueryRow(ctx, `select pushed_at from issue_pushes where issue = $1`, rig.issue.Key).Scan(&pushed); err != nil {
+		t.Fatalf("read the push record of %s: %v", rig.issue.Key, err)
+	}
 
 	// The pod that replaces the released one is sent the bundle against the push it read, and
 	// its launcher's report of the restore moves the row out of the bundle table.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", released.Add(20*time.Minute))
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil {
 		t.Fatal(err)
 	}

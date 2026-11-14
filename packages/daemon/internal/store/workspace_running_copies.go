@@ -102,18 +102,31 @@ func (s *Store) ReleaseBundleSavedOff(ctx context.Context, issue, pod string) (b
 // Each copy the save stores takes a restore id of its own and clears the restore attempt the row
 // carried with the rest of it (runningCopyReplaced).
 //
-// A save whose content equals the stored row's moves the time alone and leaves the bytes, the size
-// and the restore id where they are. Equal means the same head, the same tips, the same bookmarks
-// and the same size, taken off the same pod. A turn that reads the workspace and writes nothing in
-// it ends with the work the copy before it already holds, and rewriting a multi-megabyte row every
-// five minutes to store the bytes again is waste, which is a design defect (AGENTS.md): the row
-// that is already there is the same copy, so the save only records that the copy is current as of
-// a later minute. Its spent attempt stays spent with the rest of it — nothing about the work has
-// changed, so the pod that was already offered it is still the pod this copy was offered to — and
-// the first copy whose content differs is a new row with a new id and an attempt of its own. The
-// pod is part of the comparison because the rest of the row is read against it: a workspace that
-// comes back unchanged on a pod that replaced the first would otherwise keep naming the pod that
-// is gone as its source, and the take would then answer the copy to the pod it was taken off.
+// The copy's time is the store's: the save takes the issue's copy lock and stamps `at` with the
+// store's clock read after it holds that lock (lockWorkspaceCopies), and the time the shim read the
+// workspace (runtime.WorkspaceBundle.At), by the clock of the node its pod runs on, is not kept.
+// Every time the restore compares is then this one clock — the copy's write, the newest push's
+// record and the asking pod's first ask (runtime.DecideWorkspaceRestore) — and no skew between a
+// node, the API server and the database can turn the choice. The write's time is later than the
+// read's, by the time the bundle took to build and carry, and a push the daemon records in that
+// window is already caught: it marks the copy in flight overtaken, and the daemon does not store
+// that copy but takes the push's own behind it (internal/daemon's runningCopies.pushed). The save's
+// two statements are one transaction under that lock, so the time either writes is the time the
+// copy became the issue's.
+//
+// A save whose content equals the stored row's moves the time alone, to the store's clock, and
+// leaves the bytes, the size and the restore id where they are. Equal means the same head, the
+// same tips, the same bookmarks and the same size, taken off the same pod. A turn that reads the
+// workspace and writes nothing in it ends with the work the copy before it already holds, and
+// rewriting a multi-megabyte row every five minutes to store the bytes again is waste, which is a
+// design defect (AGENTS.md): the row that is already there is the same copy, so the save only
+// records that the copy is current as of a later minute. Its spent attempt stays spent with the
+// rest of it — nothing about the work has changed, so the pod that was already offered it is still
+// the pod this copy was offered to — and the first copy whose content differs is a new row with a
+// new id and an attempt of its own. The pod is part of the comparison because the rest of the row
+// is read against it: a workspace that comes back unchanged on a pod that replaced the first would
+// otherwise keep naming the pod that is gone as its source, and the take would then answer the
+// copy to the pod it was taken off.
 //
 // A copy with no pod to name as its source is refused rather than stored, since the row could not
 // then tell the pod the work is on from the pod that replaces it, and so is one carrying no bytes:
@@ -140,34 +153,42 @@ func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, b run
 	if err != nil {
 		return fmt.Errorf("save the running workspace copy of %s: %w", issue, err)
 	}
-	// The unchanged workspace is answered first and without its bytes, so the common copy of a
-	// turn that changed nothing neither carries tens of megabytes to the database nor writes
-	// them again. A workspace that did change matches no row here and is written whole below,
-	// at the cost of one indexed read that touched nothing. A copy the release bundle refuses
-	// moves nothing here either, and the write below refuses it by the same condition.
-	moved, err := s.pool.Exec(ctx, `update workspace_running_copies set at = $3
-		where issue = $1 and source_pod_uid = $2 and head = $4 and size_bytes = $5
-			and tips = $6 and bookmarks = $7 and not `+releaseBundleSavedOff,
-		issue, b.PodUID, b.At, b.Head, b.Size(), tips, bookmarks)
-	if err != nil {
-		return fmt.Errorf("save the running workspace copy of %s: %w", issue, err)
-	}
-	if moved.RowsAffected() > 0 {
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
+			return err
+		}
+		// The unchanged workspace is answered first and without its bytes, so the common copy
+		// of a turn that changed nothing neither carries tens of megabytes to the database nor
+		// writes them again. A workspace that did change matches no row here and is written
+		// whole below, at the cost of one indexed read that touched nothing. A copy the release
+		// bundle refuses moves nothing here either, and the write below refuses it by the same
+		// condition.
+		moved, err := tx.Exec(ctx, `update workspace_running_copies set at = clock_timestamp()
+			where issue = $1 and source_pod_uid = $2 and head = $3 and size_bytes = $4
+				and tips = $5 and bookmarks = $6 and not `+releaseBundleSavedOff,
+			issue, b.PodUID, b.Head, b.Size(), tips, bookmarks)
+		if err != nil || moved.RowsAffected() > 0 {
+			return err
+		}
+		// The insert is a select so that it can carry the refusal's condition: a statement of
+		// values has no condition of its own, and the conflict's condition guards the update
+		// alone.
+		written, err := tx.Exec(ctx, `insert into workspace_running_copies
+				(issue, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
+			select $1, $2, $3, $4, clock_timestamp(), $5, $6, $7
+			where not `+releaseBundleSavedOff+`
+			`+runningCopyUpsert,
+			issue, b.PodUID, b.Bundle, b.Size(), b.Head, tips, bookmarks)
+		if err != nil {
+			return err
+		}
+		if written.RowsAffected() == 0 {
+			return fmt.Errorf("off pod %s: %w", b.PodUID, ErrReleaseBundleSaved)
+		}
 		return nil
-	}
-	// The insert is a select so that it can carry the refusal's condition: a statement of values
-	// has no condition of its own, and the conflict's condition guards the update alone.
-	written, err := s.pool.Exec(ctx, `insert into workspace_running_copies
-			(issue, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-		select $1, $2, $3, $4, $5, $6, $7, $8
-		where not `+releaseBundleSavedOff+`
-		`+runningCopyUpsert,
-		issue, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks)
+	})
 	if err != nil {
 		return fmt.Errorf("save the running workspace copy of %s: %w", issue, err)
-	}
-	if written.RowsAffected() == 0 {
-		return fmt.Errorf("save the running workspace copy of %s off pod %s: %w", issue, b.PodUID, ErrReleaseBundleSaved)
 	}
 	return nil
 }
@@ -176,16 +197,19 @@ func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, b run
 // copy's restore id in, with the attempt_outcome each take that spends an attempt records. The
 // restore's statements are written once for both tables and formatted with these constants and
 // nothing else, so the read the decision is made from and the write that records it are one text
-// whichever table a copy is in.
+// whichever table a copy is in. Nothing writes `refused_older`, the outcome an earlier daemon
+// recorded on a copy it refused to a pod created before the copy was taken: a copy written after
+// the asking pod's first ask is now left for the next pod with nothing recorded
+// (runtime.WorkspaceBundleLeftForNextPod), and the two tables' checks admit it for the rows an
+// earlier daemon wrote.
 const (
-	workspaceBundlesTable   = "workspace_bundles"
-	workspaceBundlesID      = "release_id"
-	runningCopiesTable      = "workspace_running_copies"
-	runningCopiesRestoreID  = "restore_id"
-	refusedPushedOutcome    = "refused_pushed"
-	supersededCopyOutcome   = "superseded"
-	sentCopyOutcome         = "sent"
-	refusedOlderCopyOutcome = "refused_older"
+	workspaceBundlesTable  = "workspace_bundles"
+	workspaceBundlesID     = "release_id"
+	runningCopiesTable     = "workspace_running_copies"
+	runningCopiesRestoreID = "restore_id"
+	refusedPushedOutcome   = "refused_pushed"
+	supersededCopyOutcome  = "superseded"
+	sentCopyOutcome        = "sent"
 )
 
 // copyOutcomes is the attempt_outcome each take that spends an attempt records, and the one place
@@ -193,7 +217,6 @@ const (
 // record an outcome this file was not written for.
 var copyOutcomes = map[runtime.WorkspaceBundleTake]string{
 	runtime.WorkspaceBundleSend:          sentCopyOutcome,
-	runtime.WorkspaceBundleRefusedOlder:  refusedOlderCopyOutcome,
 	runtime.WorkspaceBundleRefusedPushed: refusedPushedOutcome,
 	runtime.WorkspaceBundleSuperseded:    supersededCopyOutcome,
 }
@@ -211,21 +234,43 @@ var (
 )
 
 // TakeWorkspaceCopyForRestore answers what issue holds of its workspace for the pod of podUID,
-// created at podCreated, whose launcher it is about to be sent to, and records what that ask did
-// to each copy, all in one transaction: it reads the issue's release bundle, its running copy and
-// the newest push of its branch the daemon recorded, decides between them
-// (runtime.DecideWorkspaceRestore, where every rule of the choice is written: the push refuses a
-// running copy taken before it and never a release bundle), and spends the attempt of every copy
-// the decision answered anything but runtime.WorkspaceBundleNone, answering each copy's take in
-// that copy's own field (runtime.WorkspaceRestore). It is one transaction because the choice is
+// whose launcher it is about to be sent to, and records what that ask did to each copy, all in one
+// transaction: it records the pod's first ask for a restore if this is it (firstRestoreAsk), reads
+// the issue's release bundle, its running copy and the newest push of its branch the daemon
+// recorded, decides between them (runtime.DecideWorkspaceRestore, where every rule of the choice
+// is written: the push refuses a running copy written before it and never a release bundle, and a
+// copy written after the pod's first ask is left for the next pod), and spends the attempt of
+// every copy the decision answered a send, a refusal or a supersession, answering each copy's take
+// in that copy's own field (runtime.WorkspaceRestore). It is one transaction because the choice is
 // one decision: made as separate statements it could close the older copy and then fail to take
 // the newer, leaving the store half-changed and the pod given neither. A failure anywhere in it
-// leaves every row as it was.
+// leaves every row as it was, the first ask's included.
+//
+// The take holds the issue's copy lock from its first statement (lockWorkspaceCopies), so every
+// write of a copy's time either committed before the take read anything or stamps its time after
+// the take committed. The pod's first ask is recorded whatever the issue holds, and before
+// anything of the copies is read: a pod that asks while the issue holds no copy has begun its work
+// all the same, and a copy written after that ask must find it. Every pod's launcher asks at its
+// first role start (internal/runtime/sandbox's launchers.start), so a pod that existed before a
+// copy was written asked before it. The ask's time is the store's clock read under that lock, as a
+// copy's `at` is (PutRunningWorkspaceCopy, PutWorkspaceBundle), and a push's time is the store's
+// clock when its record was written (RecordIssuePush), so the decision compares one clock alone.
+//
+// One comparison of a copy's time with another clock is left, and it is on the pod's side: the
+// launcher applies no copy to a workspace whose creation record, stamped by its own node's clock,
+// is not after the copy's time (internal/launcher's restoreWorkspace, workspace.Created). It must
+// read the node's clock, since the workspace is made on the node, and nothing of it reaches the
+// store. Its gap is not seconds: the workspace it refuses is the one the copy came out of, made
+// when that pod started, a pod's whole life before the copy, and the one it accepts is a later
+// pod's, made at that pod's start, after the pod the copy came off had ended; a node clock seconds
+// off the database's moves neither across.
 //
 // Both rows are read `for update`, so a save of either copy that lands while the decision is being
 // made waits for it, and the copy the decision read is the copy whose attempt is spent. A copy is
 // read by the facts the decision reads until it is taken; a copy runs to tens of megabytes, and
-// only the one being sent is read with its body.
+// only the one being sent is read with its body. A copy left for the next pod is not written at
+// all, and is answered with its time alone, which the restore's line names beside the pod's first
+// ask.
 //
 // The copy each answer carries names its restore id as its Release (runtime.WorkspaceBundle.Release),
 // which the restore sends to the launcher and reads back out of its report: a release bundle's is
@@ -239,16 +284,20 @@ var (
 // notice tells the roles. A running copy nothing restored holds no pod: the work it holds is on the
 // disk it was taken off, so an idle release of that pod saves it again as a release bundle, and
 // the idle rule reads workspace_bundles alone (workspaceBundleUnrestored).
-func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceRestore, error) {
+func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, issue, podUID string) (runtime.WorkspaceRestore, error) {
 	if podUID == "" {
 		return runtime.WorkspaceRestore{}, fmt.Errorf("the restore attempt of the saved workspace copies of %s needs the pod it is sent to", issue)
-	}
-	if podCreated.IsZero() {
-		return runtime.WorkspaceRestore{}, fmt.Errorf("the restore attempt of the saved workspace copies of %s needs when the pod %s it is sent to was created", issue, podUID)
 	}
 	var restore runtime.WorkspaceRestore
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		restore = runtime.WorkspaceRestore{}
+		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
+			return err
+		}
+		var err error
+		if restore.FirstAsked, err = firstRestoreAsk(ctx, tx, issue, podUID); err != nil {
+			return err
+		}
 		bundle, err := heldCopy(ctx, tx, releaseBundleCopies, issue)
 		if err != nil {
 			return err
@@ -266,13 +315,19 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, issue, podUID s
 			return err
 		}
 		var bundleTake, runningTake runtime.WorkspaceBundleTake
-		bundleTake, runningTake, restore.Offered = runtime.DecideWorkspaceRestore(bundle, running, restore.Push, podUID, podCreated)
+		bundleTake, runningTake, restore.Offered = runtime.DecideWorkspaceRestore(bundle, running, restore.Push, podUID, restore.FirstAsked)
 		for _, decided := range []struct {
 			copies copyTable
+			held   runtime.WorkspaceCopyHeld
 			take   runtime.WorkspaceBundleTake
 			taken  *runtime.WorkspaceCopyTaken
-		}{{releaseBundleCopies, bundleTake, &restore.ReleaseBundle}, {runningCopyCopies, runningTake, &restore.Running}} {
-			if decided.take == runtime.WorkspaceBundleNone {
+		}{{releaseBundleCopies, bundle, bundleTake, &restore.ReleaseBundle}, {runningCopyCopies, running, runningTake, &restore.Running}} {
+			switch decided.take {
+			case runtime.WorkspaceBundleNone:
+				continue
+			case runtime.WorkspaceBundleLeftForNextPod:
+				// Nothing is written: the copy's attempt is the next pod's.
+				*decided.taken = runtime.WorkspaceCopyTaken{Take: decided.take, Bundle: runtime.WorkspaceBundle{At: decided.held.At}}
 				continue
 			}
 			if *decided.taken, err = takeCopy(ctx, tx, decided.copies, issue, podUID, decided.take); err != nil {
@@ -287,8 +342,73 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, issue, podUID s
 	return restore, nil
 }
 
+// workspaceCopyLock is the statement that takes issue $1's copy lock until its transaction ends
+// (lockWorkspaceCopies).
+const workspaceCopyLock = `select pg_advisory_xact_lock(hashtextextended('workspace-copy:' || $1, 0))`
+
+// lockWorkspaceCopies takes issue's copy lock for the rest of tx. Every write of a copy's time —
+// both statements of a running copy's save (PutRunningWorkspaceCopy), a release's save
+// (PutWorkspaceBundle), the keep of a confirmed restore (KeepRestoredRunningWorkspaceCopy,
+// KeepRestoredWorkspaceBundle) and the cancel's move of a release bundle (CancelIssueRelease) —
+// and every take (TakeWorkspaceCopyForRestore) takes it as its first act, and stamps its time
+// with clock_timestamp() read once it holds the lock, never with the transaction's now(), which
+// can be from before the wait.
+//
+// The lock is held until the transaction commits, so of a write and a take of one issue, the one
+// that holds it first has stamped its time and committed before the other stamps its own: a copy
+// written before a pod's first ask is committed before the take reads the copies, and is read and
+// offered at that ask; a copy written after it carries a later time on the one clock, and is left
+// for the next pod (runtime.DecideWorkspaceRestore). Without it a write whose statement began
+// before the ask and committed after the take had read would carry a time earlier than the ask,
+// unseen by it, and the pod's next ask would be sent that copy over the work it had done since.
+//
+// Each transaction that takes it takes it before it locks any row of either table, so the row
+// locks they then take wait in one order. A delete of a copy writes no time, and takes the rows
+// alone.
+func lockWorkspaceCopies(ctx context.Context, tx pgx.Tx, issue string) error {
+	if _, err := tx.Exec(ctx, workspaceCopyLock, issue); err != nil {
+		return fmt.Errorf("take the workspace copy lock of %s: %w", issue, err)
+	}
+	return nil
+}
+
+// maxWorkspaceRestoreAsks is how many pods' first asks each issue keeps (firstRestoreAsk). An
+// issue has one pod at a time, and two while one replaces the other, so a pod whose record goes
+// has long been gone; a pod whose record went and that asked again would be recorded anew, at that
+// ask, and could then be sent a copy written since its true first ask.
+const maxWorkspaceRestoreAsks = 16
+
+// firstRestoreAsk is when the pod of podUID first asked for a restore of issue's saved workspace
+// copies, by the store's clock, recording this ask as that first one, at clock_timestamp() under
+// the issue's copy lock, when the pod has asked before in no transaction that committed. A later
+// ask of the same pod leaves the record as it is, so the time never moves (migrations'
+// 20261114090103_workspace_restore_asks): its insert does nothing and answers no row, and the time
+// is read in a statement of its own. A first ask also drops all but the issue's newest
+// maxWorkspaceRestoreAsks records. tx holds the issue's copy lock (lockWorkspaceCopies).
+func firstRestoreAsk(ctx context.Context, tx pgx.Tx, issue, podUID string) (time.Time, error) {
+	var first time.Time
+	err := tx.QueryRow(ctx, `insert into workspace_restore_asks (issue, pod_uid, first_asked_at) values ($1, $2, clock_timestamp())
+		on conflict (issue, pod_uid) do nothing returning first_asked_at`, issue, podUID).Scan(&first)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.QueryRow(ctx, `select first_asked_at from workspace_restore_asks where issue = $1 and pod_uid = $2`,
+			issue, podUID).Scan(&first); err != nil {
+			return time.Time{}, fmt.Errorf("read when pod %s first asked for a restore: %w", podUID, err)
+		}
+		return first, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("record the first ask of pod %s for a restore: %w", podUID, err)
+	}
+	if _, err := tx.Exec(ctx, `delete from workspace_restore_asks where issue = $1 and pod_uid not in (
+		select pod_uid from workspace_restore_asks where issue = $1 order by first_asked_at desc, pod_uid desc limit $2)`,
+		issue, maxWorkspaceRestoreAsks); err != nil {
+		return time.Time{}, fmt.Errorf("bound the recorded restore asks of %s: %w", issue, err)
+	}
+	return first, nil
+}
+
 // heldCopy is what issue's copy in copies' table says of itself to the restore's decision — when
-// the shim took it, whether its one attempt is spent and the pod its work came off — and the zero
+// the store wrote it, whether its one attempt is spent and the pod its work came off — and the zero
 // value when the issue holds none, the row locked for the rest of the restore's transaction. Every
 // row names its pod: source_pod_uid is `not null` in both tables (migrations'
 // 20261103214558_workspace_bundle_pod_binding and 20261112105448_workspace_running_copies).
@@ -360,9 +480,10 @@ func deleteRunningCopy(ctx context.Context, db execer, issue string) error {
 }
 
 // KeepRestoredRunningWorkspaceCopy keeps issue's running copy of restoreID, which the launcher of
-// the pod of podUID has reported restored, as that pod's own copy of the work: in one statement
-// it names that pod as the row's source, gives the row a restore id of its own and clears its
-// attempt (runningCopyReplaced), leaving the work as it is.
+// the pod of podUID has reported restored, as that pod's own copy of the work: under the issue's
+// copy lock (lockWorkspaceCopies), in one statement, it names that pod as the row's source, gives
+// the row a restore id of its own and clears its attempt (runningCopyReplaced), leaving the work as
+// it is.
 //
 // The copy is kept rather than dropped because from the confirmation on its work is on the
 // restoring pod's disk alone, and none of the three triggers of a running copy need fire for a
@@ -376,13 +497,14 @@ func deleteRunningCopy(ctx context.Context, db execer, issue string) error {
 // transaction (PutWorkspaceBundle), and a workspace that bundles to nothing drops it
 // (DeleteRunningWorkspaceCopy).
 //
-// The kept copy is stamped with the statement's now() rather than the time the shim took it,
-// for the reason a kept release bundle is (KeepRestoredWorkspaceBundle): the row stands for the
-// restoring pod's workspace as it is once the restore is confirmed, and under the old time a push
-// recorded after it would refuse the kept copy to the next pod
+// The kept copy is stamped with the store's clock under that lock rather than the time the copy
+// was first written, for the reason a kept release bundle is (KeepRestoredWorkspaceBundle): the row
+// stands for the restoring pod's workspace as it is once the restore is confirmed, and under the
+// old time a push recorded after it would refuse the kept copy to the next pod
 // (runtime.WorkspaceBundleRefusedPushed) and lose the work again. A push recorded after the
 // confirmation takes a copy of its own off the restoring pod's live roles, so the push rule keeps
-// its meaning.
+// its meaning. The next pod is made once the restoring pod has ended, which is after the
+// confirmation, so its first ask comes after the kept copy's time and it is sent the work.
 //
 // The id says which copy, because a launcher holds its report until some connection carries it,
 // so one can reach the daemon after the issue's cadence has taken a copy of its own, and a row
@@ -405,10 +527,17 @@ func (s *Store) KeepRestoredRunningWorkspaceCopy(ctx context.Context, issue, pod
 	if podUID == "" {
 		return fmt.Errorf("the restored running workspace copy %d of %s needs the pod that restored it", restoreID, issue)
 	}
-	if _, err := s.pool.Exec(ctx, `update workspace_running_copies
-		set source_pod_uid = $3, at = now(), `+runningCopyReplaced+`
-		where issue = $1 and restore_id = $2 and attempt_pod_uid = $3 and attempt_outcome = $4`,
-		issue, restoreID, podUID, sentCopyOutcome); err != nil {
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `update workspace_running_copies
+			set source_pod_uid = $3, at = clock_timestamp(), `+runningCopyReplaced+`
+			where issue = $1 and restore_id = $2 and attempt_pod_uid = $3 and attempt_outcome = $4`,
+			issue, restoreID, podUID, sentCopyOutcome)
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("keep the restored running workspace copy %d of %s as the copy of pod %s: %w", restoreID, issue, podUID, err)
 	}
 	return nil

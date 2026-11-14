@@ -12,25 +12,35 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// RecordIssuePush records the push of issue's branch from before to after, as the daemon applied
-// it at at, in the push fact's own transaction tx (workflow's push handler). It is the record the
-// restore of a new pod reads to refuse every running copy of the issue's workspace older than the
-// issue's newest push (TakeWorkspaceCopyForRestore, runtime.DecideWorkspaceRestore), and the
-// migration that made its two tables says which record it is (20261113005308_issue_pushes).
+// RecordIssuePush records the push of issue's branch from before to after in the push fact's own
+// transaction tx (workflow's push handler), at the store's clock. It is the record the restore of a
+// new pod reads to refuse every running copy of the issue's workspace written before the issue's
+// newest push (TakeWorkspaceCopyForRestore, runtime.DecideWorkspaceRestore), and the migration
+// that made its two tables says which record it is (20261113005308_issue_pushes).
 //
-// One row per issue holds the newest push, and at cannot say which push that is. It is the
-// daemon's clock when it applied the fact, so a redelivered webhook, the per-issue read's rebuild
-// of a push whose own webhook then arrives as well, and a webhook an hour late are each applied
-// later than the push they repeat or that replaced them. The commits say it instead: the record
-// keeps every head the issue's recorded pushes replaced or left (issue_push_heads), and a push
-// that leaves the branch on one of them writes nothing, so neither the row's head nor its time
-// moves. Such a push is one the record holds already, one behind a push it holds, or one that
-// sets the branch back on a commit it held before, and none of them puts a commit on GitHub that
-// the copies taken since the row last moved lack. A push that leaves the branch on a head the
-// record has not seen keeps both of its heads and moves the row to that head at at, and only ever
-// to a later time. The all-zero sha GitHub names as a new branch's before and a deleted branch's
-// after is no commit (pushHead), so it is never kept, and a push that deletes the branch leaves
-// the row where it was: it puts nothing on GitHub that a copy could be behind.
+// The push's time is the store's, as a copy's `at` is the store's when it wrote the copy
+// (PutRunningWorkspaceCopy) and a pod's first ask the store's when it recorded the ask
+// (TakeWorkspaceCopyForRestore), so the restore compares one clock alone. It is the time the
+// statement that reads the push's heads began (statement_timestamp), read once and written for
+// both heads and the row: the database's own clock, read after the fact's transaction has waited
+// its turn under the intake's one serializer (intake.ApplyFact). It is not tx's now(), which is
+// when that transaction began, before the wait, so it can be seconds before the push is recorded,
+// and a copy written in those seconds, read before the push, would carry the later time and pass
+// the rule this record exists for.
+//
+// One row per issue holds the newest push, and its time cannot say which push that is. Every push
+// is recorded at the store's own clock, so a redelivered webhook, the per-issue read's rebuild of a
+// push whose own webhook then arrives as well, and a webhook an hour late are each recorded later
+// than the push they repeat or that replaced them. The commits say it instead: the record keeps
+// every head the issue's recorded pushes replaced or left (issue_push_heads), and a push that
+// leaves the branch on one of them writes nothing, so neither the row's head nor its time moves.
+// Such a push is one the record holds already, one behind a push it holds, or one that sets the
+// branch back on a commit it held before, and none of them puts a commit on GitHub that the copies
+// written since the row last moved lack. A push that leaves the branch on a head the record has
+// not seen keeps both of its heads and moves the row to that head at its time, and only ever to a
+// later time. The all-zero sha GitHub names as a new branch's before and a deleted branch's after
+// is no commit (pushHead), so it is never kept, and a push that deletes the branch leaves the row
+// where it was: it puts nothing on GitHub that a copy could be behind.
 //
 // What the record cannot know is the place of a push whose after it has not seen, so it takes
 // that push as the newest: nothing it holds says otherwise. A late push is such a push when the
@@ -39,32 +49,31 @@ import (
 // it as newer costs at most a refused restore, whose copy keeps its bytes for an operator, and no
 // commit on GitHub, since no restore sets the branch (runtime.RestorableBookmarks).
 //
-// An issue keeps its newest maxIssuePushHeads heads, by when the daemon first saw each, so the
+// An issue keeps its newest maxIssuePushHeads heads, by when the store first recorded each, so the
 // heads of the pushes the per-issue read can rebuild stay. Every push fact is applied under the
 // intake's one serializer (intake.SerializeFacts), so two pushes of one issue never interleave
 // between the read of the heads and the writes.
 //
 // It answers whether the push moved the row. Only a push that moved it can refuse a running copy
 // the restore would otherwise send, so it is the one push the handler asks a new copy of the
-// workspace for (workflow's recordPush): a push that moved nothing leaves every copy taken since
+// workspace for (workflow's recordPush): a push that moved nothing leaves every copy written since
 // the row last moved as good as it was, and a copy asked for it would buy one more `git bundle
 // create` in a workspace a role is working in and discard the copy in flight as overtaken.
-func (s *Store) RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, before, after string, at time.Time) (bool, error) {
+func (s *Store) RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, before, after string) (bool, error) {
 	if issue == "" {
 		return false, errors.New("a push record needs its issue")
 	}
-	if at.IsZero() {
-		return false, fmt.Errorf("the push record of %s needs when the daemon applied the push", issue)
+	// A head the record holds is a commit: the all-zero sha and an empty one are never kept, so
+	// neither is ever seen.
+	var at time.Time
+	var seen bool
+	if err := tx.QueryRow(ctx, `select statement_timestamp(),
+		exists (select 1 from issue_push_heads where issue = $1 and head = $2)`,
+		issue, after).Scan(&at, &seen); err != nil {
+		return false, fmt.Errorf("read whether the push of %s to %s is recorded: %w", issue, after, err)
 	}
-	if pushHead(after) {
-		var seen bool
-		if err := tx.QueryRow(ctx, `select exists (select 1 from issue_push_heads where issue = $1 and head = $2)`,
-			issue, after).Scan(&seen); err != nil {
-			return false, fmt.Errorf("read whether the push of %s to %s is recorded: %w", issue, after, err)
-		}
-		if seen {
-			return false, nil
-		}
+	if seen {
+		return false, nil
 	}
 	var heads []string
 	for _, head := range []string{before, after} {

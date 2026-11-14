@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -270,13 +269,14 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 
 // Pushes is the daemon's record of the newest push of each issue's branch, written in the push
 // fact's own transaction (Config.Pushes, store.Store.RecordIssuePush). It is given both heads of
-// the push, the one it replaced and the one it left, because the time it is applied at cannot
-// order two pushes: every push is applied at the daemon's now, a redelivery and a late webhook
-// included, and the record orders them by the heads it has seen instead. It answers whether the
-// push moved the record, which a redelivery, a late webhook behind the newest push and a branch's
-// deletion do not.
+// the push, the one it replaced and the one it left, and no time: the record stamps the push with
+// the store's own clock, the one every time the restore compares is read by
+// (runtime.DecideWorkspaceRestore). That time cannot order two pushes — every push is recorded at
+// the store's now, a redelivery and a late webhook included — and the record orders them by the
+// heads it has seen instead. It answers whether the push moved the record, which a redelivery, a
+// late webhook behind the newest push and a branch's deletion do not.
 type Pushes interface {
-	RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, before, after string, at time.Time) (bool, error)
+	RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, before, after string) (bool, error)
 }
 
 // push applies a push of a branch. It records the push of an issue's branch first and on its
@@ -331,8 +331,8 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 }
 
 // recordPush records a push of `legion/<KEY>` on the repository KEY is recorded on in the record
-// of that issue's branch's newest push (Config.Pushes), with both of its heads and at the daemon's
-// own clock, and asks for a copy of the issue's workspace once the fact commits
+// of that issue's branch's newest push (Config.Pushes), with both of its heads, at the store's own
+// clock, and asks for a copy of the issue's workspace once the fact commits
 // (Config.PushRecorded) when the push moved that record. The branch alone names the issue
 // (issueForBranch), so the record is made whether or not the issue has a pull request: a branch
 // is pushed before its pull request opens, and an issue with no pull-request record is the one a
@@ -355,7 +355,7 @@ func (e *Engine) recordPush(ctx context.Context, tx pgx.Tx, fact intake.Push) er
 	if err != nil || issue == nil {
 		return err
 	}
-	moved, err := e.cfg.Pushes.RecordIssuePush(ctx, tx, issue.Key, fact.Before, fact.After, e.now())
+	moved, err := e.cfg.Pushes.RecordIssuePush(ctx, tx, issue.Key, fact.Before, fact.After)
 	if err != nil {
 		return err
 	}

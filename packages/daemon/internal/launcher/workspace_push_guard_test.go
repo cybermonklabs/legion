@@ -99,8 +99,8 @@ func TestAPushedIssueBranchKeepsEveryCommitWhenItsWorkspaceIsRestoredFromACopy(t
 				held = atPush
 			}
 			before := f.remoteCommits(branch)
-			workspace, created := f.replacementPod("ws2")
-			bundleTake, runningTake, offered := runtime.DecideWorkspaceRestore(copyHeldOff(earlier, earlierReleasedPodUID), copyHeld(held), push, replacementPodUID, created)
+			workspace, firstAsked := f.replacementPod("ws2")
+			bundleTake, runningTake, offered := runtime.DecideWorkspaceRestore(copyHeldOff(earlier, earlierReleasedPodUID), copyHeld(held), push, replacementPodUID, firstAsked)
 			// The decision that keeps them: the earlier release's bundle is the older copy and is
 			// closed unsent, a running copy taken before the push is refused, and the copy taken
 			// at the push is the one sent. A wrong decision is reported and the case goes on, so it
@@ -235,8 +235,8 @@ func TestAPushedIssueBranchKeepsEveryCommitWhenItsWorkspaceIsRestoredFromACopy(t
 		}
 
 		before := f.remoteCommits(branch)
-		workspace, created := f.replacementPod("ws2")
-		bundleTake, runningTake, offered := runtime.DecideWorkspaceRestore(copyHeld(saved), runtime.WorkspaceCopyHeld{}, push, replacementPodUID, created)
+		workspace, firstAsked := f.replacementPod("ws2")
+		bundleTake, runningTake, offered := runtime.DecideWorkspaceRestore(copyHeld(saved), runtime.WorkspaceCopyHeld{}, push, replacementPodUID, firstAsked)
 		if bundleTake != runtime.WorkspaceBundleSend || runningTake != runtime.WorkspaceBundleNone || offered != runtime.WorkspaceCopyReleaseBundle {
 			t.Fatalf("the release bundle taken at %s, with the push at %s, was decided (%v, %v, %q), want it offered and sent: the time rule refuses running copies alone",
 				saved.At, push.At, bundleTake, runningTake, offered)
@@ -262,8 +262,11 @@ const (
 	earlierReleasedPodUID = "pod-an-earlier-release-took-away"
 )
 
-// copyHeld is taken as the restore's decision reads its row: taken when the shim says it was, its
-// one attempt unspent, off the pod being replaced.
+// copyHeld is taken as the restore's decision reads its row: its time the one the shim stamped it
+// with, its one attempt unspent, off the pod being replaced. The store stamps a row with its own
+// clock as it writes it, a moment after the shim reads the workspace; every time of these cases is
+// read off this one machine's clock, in the order the store would write them, so the shim's stands
+// for the store's.
 func copyHeld(taken shimwire.WorkspaceBundle) runtime.WorkspaceCopyHeld {
 	return copyHeldOff(taken, takenOffPodUID)
 }
@@ -273,16 +276,16 @@ func copyHeldOff(taken shimwire.WorkspaceBundle, pod string) runtime.WorkspaceCo
 	return runtime.WorkspaceCopyHeld{At: taken.At, Source: pod}
 }
 
-// replacementPod is the pod that replaces the one the copies came off, created now: its own clone
-// of the remote as it stands, and its workspace where provisioning puts one, a new working copy on
-// the issue's branch as GitHub holds it (internal/workspace's createWorkspace adds the workspace
-// at that commit). It answers the workspace and when the pod was created.
+// replacementPod is the pod that replaces the one the copies came off, made now: its own clone of
+// the remote as it stands, and its workspace where provisioning puts one, a new working copy on the
+// issue's branch as GitHub holds it (internal/workspace's createWorkspace adds the workspace at
+// that commit). It answers the workspace and when the pod first asked for a restore, which its
+// first role start does, once its workspace stands.
 func (f *bundleFixture) replacementPod(name string) (string, time.Time) {
 	f.t.Helper()
-	created := time.Now().UTC()
 	workspace := f.secondPod(name)
 	f.run(workspace, "jj", "new", "-R", workspace, `remote_bookmarks(exact:"legion/`+bundleIssue+`")`)
-	return workspace, created
+	return workspace, time.Now().UTC()
 }
 
 // restoreSentCopy replaces the pod with one whose issue holds taken as its running copy and no
@@ -291,8 +294,8 @@ func (f *bundleFixture) replacementPod(name string) (string, time.Time) {
 // workspace.
 func (f *bundleFixture) restoreSentCopy(taken shimwire.WorkspaceBundle, push runtime.WorkspacePush) string {
 	f.t.Helper()
-	workspace, created := f.replacementPod("ws2")
-	bundleTake, runningTake, offered := runtime.DecideWorkspaceRestore(runtime.WorkspaceCopyHeld{}, copyHeld(taken), push, replacementPodUID, created)
+	workspace, firstAsked := f.replacementPod("ws2")
+	bundleTake, runningTake, offered := runtime.DecideWorkspaceRestore(runtime.WorkspaceCopyHeld{}, copyHeld(taken), push, replacementPodUID, firstAsked)
 	if bundleTake != runtime.WorkspaceBundleNone || runningTake != runtime.WorkspaceBundleSend || offered != runtime.WorkspaceCopyRunning {
 		f.t.Fatalf("the copy taken at %s, with the push at %s, was decided (%v, %v, %q), want it offered and sent: this is a copy the time rule lets through",
 			taken.At, push.At, bundleTake, runningTake, offered)

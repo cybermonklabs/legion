@@ -26,6 +26,14 @@ import (
 // that replaces it. A save with no such pod is refused rather than stored, since the row could
 // not then tell the released pod from its replacement.
 //
+// The bundle's time is the store's: the save takes the issue's copy lock and stamps `at` with the
+// store's clock read once it holds it (lockWorkspaceCopies), and keeps none of the time the shim
+// read the workspace (runtime.WorkspaceBundle.At), by the clock of the node the released pod ran
+// on, so the restore compares the bundle with the newest push and with the asking pod's first ask
+// by one clock (runtime.DecideWorkspaceRestore). The save runs while the release's roles are idle
+// and before it stops them, so the pod that replaces the released one first asks after the save
+// and is sent the bundle.
+//
 // The issue's running copy is dropped in the save's own transaction, whatever minute took it
 // (DeleteRunningWorkspaceCopy). This bundle is the newer copy of the same workspace — it is taken
 // off the disk that copy came off, while the roles are idle and just before the release stops
@@ -49,13 +57,16 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
 	}
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			values ($1, $2, $3, $4, $5, clock_timestamp(), $6, $7, $8)
 			on conflict (issue) do update set release_id = excluded.release_id, source_pod_uid = excluded.source_pod_uid,
 				bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
 				tips = excluded.tips, bookmarks = excluded.bookmarks,
 				attempt_pod_uid = null, attempt_at = null, attempt_outcome = null`,
-			issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks); err != nil {
+			issue, release, b.PodUID, b.Bundle, b.Size(), b.Head, tips, bookmarks); err != nil {
 			return err
 		}
 		return deleteRunningCopy(ctx, tx, issue)
@@ -126,16 +137,17 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 // bundle's row is gone, so no copy is refused for having come off the pod it was saved off
 // (releaseBundleSavedOff).
 //
-// The kept copy is stamped with the confirming transaction's now() rather than the bundle's own
-// time. The row stands for the restoring pod's workspace as it is once the restore is confirmed,
-// which is when that pod's copy of the work begins. A release bundle is exempt from the push rule
-// and a running copy is not: under the bundle's time, a push the daemon recorded after the save —
-// an outside push during the release, or one after the restore — would refuse the kept copy to the
+// The kept copy is stamped with the store's clock under the issue's copy lock, which the
+// confirming transaction takes first (lockWorkspaceCopies), rather than the bundle's own time. The
+// row stands for the restoring pod's workspace as it is once the restore is confirmed, which is
+// when that pod's copy of the work begins. A release bundle is exempt from the push rule and a
+// running copy is not: under the bundle's time, a push the daemon recorded after the save — an
+// outside push during the release, or one after the restore — would refuse the kept copy to the
 // next pod (runtime.WorkspaceBundleRefusedPushed) and lose the work again. A push recorded after
 // the confirmation takes a copy of its own off the restoring pod's live roles (internal/daemon's
-// copyWorkspaceAtPush), so the rule keeps its meaning. The times compared are then the database's
-// clock against the API server's, for the pod the copy is offered to, and against the daemon's,
-// for a push.
+// copyWorkspaceAtPush), so the rule keeps its meaning. The pod after the restoring one first asks
+// once the restoring pod has ended, after the confirmation, so it is sent the kept copy; every
+// time compared there is the database's clock (runtime.DecideWorkspaceRestore).
 //
 // A running copy the issue already holds is replaced only where the bundle's work is the newer of
 // the two (runtime.NewerWorkspaceCopy), because the newer work wins. The decision that sent this
@@ -161,6 +173,9 @@ func (s *Store) KeepRestoredWorkspaceBundle(ctx context.Context, issue, podUID s
 		return fmt.Errorf("the restored workspace bundle of %s saved by release %d needs the pod that restored it", issue, release)
 	}
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
+			return err
+		}
 		var bundle runtime.WorkspaceCopyHeld
 		err := tx.QueryRow(ctx, `select at, source_pod_uid from workspace_bundles
 			where issue = $1 and release_id = $2 and attempt_pod_uid = $3 and attempt_outcome = $4 for update`,
@@ -181,11 +196,13 @@ func (s *Store) KeepRestoredWorkspaceBundle(ctx context.Context, issue, podUID s
 
 // keepReleaseBundleAsRunningCopy ends issue's release bundle of release in tx and keeps its work
 // as the issue's running copy: one statement deletes the bundle's row and writes the same work into
-// the running copy's, sourced to pod, stamped with the statement's now() — the store's clock — and
-// under a restore id of its own with no attempt spent (runningCopyUpsert). The bytes move inside
-// the database and never through the daemon. bundle is the bundle's row as the caller read it for
-// update in tx, and the running copy's row is locked after it here, which is the order the
-// restore's own take locks the two (TakeWorkspaceCopyForRestore).
+// the running copy's, sourced to pod, stamped with clock_timestamp() — the store's clock, read
+// under the issue's copy lock, which the caller took as its transaction's first act
+// (lockWorkspaceCopies) — and under a restore id of its own with no attempt spent
+// (runningCopyUpsert). The bytes move inside the database and never through the daemon. bundle is
+// the bundle's row as the caller read it for update in tx, and the running copy's row is locked
+// after it here, which is the order the restore's own take locks the two
+// (TakeWorkspaceCopyForRestore).
 //
 // A running copy the issue holds that is newer than the bundle (runtime.NewerWorkspaceCopy) stays
 // as it is, and the bundle's row goes alone: the newer work wins.
@@ -208,7 +225,7 @@ func keepReleaseBundleAsRunningCopy(ctx context.Context, tx pgx.Tx, issue string
 			delete from workspace_bundles where issue = $1 and release_id = $2
 			returning bundle, size_bytes, head, tips, bookmarks)
 		insert into workspace_running_copies (issue, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-		select $1, $3, bundle, size_bytes, now(), head, tips, bookmarks from kept
+		select $1, $3, bundle, size_bytes, clock_timestamp(), head, tips, bookmarks from kept
 		`+runningCopyUpsert, issue, release, pod)
 	return err
 }

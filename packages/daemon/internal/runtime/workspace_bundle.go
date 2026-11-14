@@ -35,7 +35,12 @@ type WorkspaceBundle struct {
 	Tips []string
 	// Bookmarks maps a local bookmark name to the commit id it pointed at.
 	Bookmarks map[string]string
-	// At is when the shim took the bundle.
+	// At is when the copy was written, by the store's clock. The shim fills it with the time it
+	// read the workspace, by the clock of the node its pod runs on, and the store keeps none of
+	// that: every write of a copy stamps the row with the store's own clock, read under a lock the
+	// restore's take holds too (store.Store.PutWorkspaceBundle,
+	// store.Store.PutRunningWorkspaceCopy), and a read fills it back in from the row. The restore
+	// compares it with times of that same clock alone (DecideWorkspaceRestore).
 	At time.Time
 	// Release is the id of the release that saved the row this bundle was read from, which the
 	// store fills on the read. The save takes that id as an argument of its own
@@ -59,9 +64,10 @@ type WorkspaceBundle struct {
 func (b WorkspaceBundle) Size() int { return len(b.Bundle) }
 
 // WorkspaceBundleTake is what one pod's ask did to one saved copy of an issue's workspace
-// (store.Store.TakeWorkspaceCopyForRestore). A copy is offered to one pod only — the first pod
-// that is not the one its work came off to ask for it — and the ask that reaches that pod closes
-// it to every later one, whether the body was sent or refused.
+// (store.Store.TakeWorkspaceCopyForRestore). A copy is offered to one pod only — the first pod to
+// ask for it that is not the one its work came off and that first asked at or after the copy was
+// written — and the ask that reaches that pod closes it to every later one, whether the body was
+// sent or refused.
 type WorkspaceBundleTake int
 
 const (
@@ -72,18 +78,16 @@ const (
 	// WorkspaceBundleSend: this pod takes the copy, and the row records the attempt as its
 	// before a byte of it leaves the daemon.
 	WorkspaceBundleSend
-	// WorkspaceBundleRefusedOlder: this pod is not the one the work came off and was not created
-	// after the copy was taken, so it is not the pod the release's teardown replaced — or it is,
-	// under a node clock that runs ahead of the API server's — and nothing is sent to it. The
-	// refusal is the copy's one attempt: no later pod is sent it either, since the roles of this
-	// pod go on working and pushing, and a copy applied over that work would `jj edit` the
-	// workspace back to the copy's head behind it. The work stays in the database for a person to
-	// recover, and a release bundle also holds the issue's pod (workflow.IdleHoldBundleUnrestored).
-	WorkspaceBundleRefusedOlder
-	// WorkspaceBundleRefusedPushed: the copy is a running copy taken before the newest push of
+	// WorkspaceBundleLeftForNextPod: the copy is the one this pod's ask is offered, and it was
+	// written after this pod first asked for a restore, so nothing is sent to this pod and nothing
+	// is recorded on the copy. This pod has been working since that first ask, and the copy would
+	// `jj edit` its workspace back over that work; the copy's one attempt stays for the next pod
+	// of the issue, whose first ask comes after the copy was written (DecideWorkspaceRestore).
+	WorkspaceBundleLeftForNextPod
+	// WorkspaceBundleRefusedPushed: the copy is a running copy written before the newest push of
 	// the issue's branch the daemon recorded, so it is sent to no pod (DecideWorkspaceRestore);
-	// a release bundle is never refused so. The refusal is the copy's one attempt and its bytes
-	// stay for an operator, as RefusedOlder's do.
+	// a release bundle is never refused so. The refusal is the copy's one attempt, and the work
+	// stays in the database for a person to recover.
 	WorkspaceBundleRefusedPushed
 	// WorkspaceBundleSuperseded: the issue's other copy is the newer one and is the copy this
 	// pod is offered, so this one is closed unsent. The pods after this one hold the
@@ -101,8 +105,8 @@ func (t WorkspaceBundleTake) String() string {
 		return "WorkspaceBundleNone"
 	case WorkspaceBundleSend:
 		return "WorkspaceBundleSend"
-	case WorkspaceBundleRefusedOlder:
-		return "WorkspaceBundleRefusedOlder"
+	case WorkspaceBundleLeftForNextPod:
+		return "WorkspaceBundleLeftForNextPod"
 	case WorkspaceBundleRefusedPushed:
 		return "WorkspaceBundleRefusedPushed"
 	case WorkspaceBundleSuperseded:
@@ -127,8 +131,9 @@ const (
 )
 
 // WorkspacePush is the newest push of an issue's branch `legion/<KEY>` the daemon has recorded
-// (store.Store.RecordIssuePush): At is the daemon's clock when it applied the push webhook, and
-// Head the commit the push left. The zero value is an issue with no push recorded.
+// (store.Store.RecordIssuePush): At is the store's clock when it recorded the push, in the push
+// fact's own transaction, and Head the commit the push left. The zero value is an issue with no
+// push recorded.
 type WorkspacePush struct {
 	At   time.Time
 	Head string
@@ -137,11 +142,11 @@ type WorkspacePush struct {
 // Recorded is whether the daemon has recorded a push of the issue's branch at all.
 func (p WorkspacePush) Recorded() bool { return !p.At.IsZero() }
 
-// WorkspaceCopyHeld is one copy as the restore's decision reads it off its row: when the shim took
-// it (WorkspaceBundle.At), whether a pod has had the copy's one attempt already, and the uid of the
-// pod its work came off (WorkspaceBundle.PodUID). Nothing else of the row enters the decision. The
-// zero value is a copy the issue does not hold, as the zero WorkspacePush is a push not recorded:
-// a shim stamps every copy it takes with the time it took it.
+// WorkspaceCopyHeld is one copy as the restore's decision reads it off its row: when the store
+// wrote it (WorkspaceBundle.At), whether a pod has had the copy's one attempt already, and the uid
+// of the pod its work came off (WorkspaceBundle.PodUID). Nothing else of the row enters the
+// decision. The zero value is a copy the issue does not hold, as the zero WorkspacePush is a push
+// not recorded: the store stamps every copy it writes with the time it wrote it.
 type WorkspaceCopyHeld struct {
 	At     time.Time
 	Spent  bool
@@ -156,10 +161,10 @@ func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 // the only one that says which work descends from which: a running copy is taken while the roles
 // work, a release bundle while they are idle, just before the release stops them, and either can
 // be the newer, since a pod can be released minutes after a copy or run for hours after a
-// cancelled release left one behind. A tie goes to the release bundle, which is taken from a
-// workspace whose roles are idle: a copy of the same second holds no more than the bundle does,
-// and restoring the bundle also lifts the hold its row puts on the issue's pod
-// (workflow.IdleHoldBundleUnrestored).
+// cancelled release left one behind. Both are the store's clock when it wrote the copy. A tie goes
+// to the release bundle, which is taken from a workspace whose roles are idle: a copy written at
+// the same instant holds no more than the bundle does, and restoring the bundle also lifts the
+// hold its row puts on the issue's pod (workflow.IdleHoldBundleUnrestored).
 //
 // Which copy is the newer is a fact of the two copies alone, so it reads nothing else of them:
 // not whether a copy's attempt is spent, not the pod its work came off, and nothing of a pod
@@ -178,13 +183,20 @@ func NewerWorkspaceCopy(bundle, running WorkspaceCopyHeld) WorkspaceCopyKind {
 
 // DecideWorkspaceRestore is the whole of the choice the restore of a new pod makes between the
 // two copies of its issue's workspace. It reads what each copy's row says of it, the newest push
-// of the issue's branch the daemon recorded, and the pod asking: its uid, podUID, and the
-// creationTimestamp the API server stamped it with, podCreated. It answers what the ask does to
-// each copy, and the kind of the copy it offers, which is the newer of the copies the issue holds,
-// or empty when it holds neither. It is a pure function so that it is one decision, read in one
-// place: the store calls it inside the transaction that holds both rows and records every take it
-// answers but WorkspaceBundleNone (store.Store.TakeWorkspaceCopyForRestore), and a test outside
-// the store drives the very same decision against real git and jj.
+// of the issue's branch the daemon recorded, and the pod asking: its uid, podUID, and when it
+// first asked for a restore, firstAsked. It answers what the ask does to each copy, and the kind
+// of the copy it offers, which is the newer of the copies the issue holds, or empty when it holds
+// neither. It is a pure function so that it is one decision, read in one place: the store calls
+// it inside the transaction that holds both rows and records every take it answers but
+// WorkspaceBundleNone and WorkspaceBundleLeftForNextPod (store.Store.TakeWorkspaceCopyForRestore),
+// and a test outside the store drives the very same decision against real git and jj.
+//
+// Every time it compares is the store's clock, so no two machines' clocks meet in it: a copy's
+// `at` is when the store wrote the copy (store.Store.PutRunningWorkspaceCopy,
+// store.Store.PutWorkspaceBundle, and the moves that keep a release bundle as a running copy), a
+// push's At when the store recorded the push in the push fact's own transaction
+// (store.Store.RecordIssuePush), and firstAsked when the store recorded this pod's first ask for a
+// restore (store.Store.TakeWorkspaceCopyForRestore).
 //
 // The newer copy (NewerWorkspaceCopy) is offered and the older superseded
 // (WorkspaceBundleSuperseded). The comparison reads every copy the issue holds, spent or not,
@@ -198,21 +210,24 @@ func NewerWorkspaceCopy(bundle, running WorkspaceCopyHeld) WorkspaceCopyKind {
 // the descendants of the work this pod is about to restore: the older copy would then be applied
 // over everything pushed in between.
 //
-// A running copy taken before the newest recorded push is refused (WorkspaceBundleRefusedPushed),
+// A running copy written before the newest recorded push is refused (WorkspaceBundleRefusedPushed),
 // the offered one or the older. No restore sets the issue's branch `legion/<KEY>`
 // (RestorableBookmarks), so not even such a copy can move the branch; this rule is the second
 // line, because the copy would still `jj edit` the workspace back onto work behind what GitHub
 // holds and set its other bookmarks there, leaving the role to bring its work forward over the
 // push. A running copy is taken while the roles work and push, so a push after it is normally the
 // roles' own push of that copy's work and more: an update round replaces a pod just after its
-// roles push. The comparison is the copy's `at`, by the clock of the node its pod ran on, against
-// the daemon's own clock when it applied the push; the daemon takes a copy of the workspace each
-// time it records a push (workflowRuntime.copyWorkspaceAtPush), so the issue's newest copy is
-// normally one taken after it. An issue with no push recorded refuses nothing by this rule, since
-// nothing newer is known to be on GitHub. The rule alone misses two copies that hold the branch
-// behind GitHub's or beside it, and in both the withheld branch is what keeps the pushed commits
-// on GitHub: a copy taken after a push from outside the pod that the workspace never fetched, and
-// a copy taken before a push the daemon has not recorded.
+// roles push. The daemon takes a copy of the workspace each time it records a push
+// (workflowRuntime.copyWorkspaceAtPush), so the issue's newest copy is normally one taken after
+// it. A copy the shim read before a push and the store wrote after it carries the later time, and
+// this rule cannot refuse it, so the daemon does not store it: a push recorded while a copy of the
+// issue is being built marks that copy overtaken, and the copy the push asks for, read after the
+// push, is taken behind it (internal/daemon's runningCopies.pushed). An issue with no push recorded
+// refuses nothing by this rule, since nothing newer is known to be on GitHub. The rule alone
+// misses two copies that hold the branch behind GitHub's or beside it, and in both the withheld
+// branch is what keeps the pushed commits on GitHub: a copy taken after a push from outside the
+// pod that the workspace never fetched, and a copy taken before a push the daemon has not
+// recorded.
 //
 // A release bundle is never refused by the push: the other rules alone offer, supersede and send
 // it. It is the pod's last copy, taken while the issue's roles were idle and just before the
@@ -243,17 +258,18 @@ func NewerWorkspaceCopy(bundle, running WorkspaceCopyHeld) WorkspaceCopyKind {
 //     working. Its workspace is the work, so it is answered nothing and the row is left as it was,
 //     with the attempt still there for the pod that replaces it.
 //
-// The offered copy, when the push does not refuse it, is sent (WorkspaceBundleSend) to a pod
-// created after it was taken, and refused to any other (WorkspaceBundleRefusedOlder), which spends
-// its attempt: such a pod has been working off its own fetch since before the copy was taken, and
-// a copy left open for the pod after it would be applied over work pushed since. The two instants
-// come from two clocks — podCreated is the creationTimestamp the Kubernetes API server stamped,
-// the copy's `at` the node's clock when the shim took it — and a creationTimestamp has one-second
-// resolution, so the copy is read to its own second and a pod created inside that second is taken
-// as the newer. A node running ahead of the API server stamps the copy in the replacement pod's
-// future and that pod is refused, which costs the restore and loses no work: the direction to
-// fail in.
-func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePush, podUID string, podCreated time.Time) (bundleTake, runningTake WorkspaceBundleTake, offered WorkspaceCopyKind) {
+// The offered copy, when the push does not refuse it, is sent (WorkspaceBundleSend) to a pod that
+// first asked for a restore at or after the copy was written, and to a pod that first asked
+// before, nothing is sent and nothing is recorded (WorkspaceBundleLeftForNextPod). Every pod's
+// launcher asks at its first role start (sandbox's launchers.start), so a pod that existed before
+// a copy was written asked before it, and has been working since. That copy is a late copy: one
+// read off the pod before this one, before that pod ended, and written after this pod's first ask.
+// Applying it here would `jj edit` this pod's workspace back over the work done since that ask, so
+// it is not sent here; and it keeps its one attempt, so the work is not lost: the next pod of the
+// issue first asks after the copy was written and is sent it, unless a newer copy of the issue has
+// replaced it by then, which is a copy this pod took of its own workspace, that workspace's own
+// newer state.
+func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePush, podUID string, firstAsked time.Time) (bundleTake, runningTake WorkspaceBundleTake, offered WorkspaceCopyKind) {
 	offered = NewerWorkspaceCopy(bundle, running)
 	take := func(kind WorkspaceCopyKind, c WorkspaceCopyHeld) WorkspaceBundleTake {
 		switch {
@@ -263,8 +279,13 @@ func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePus
 			return WorkspaceBundleRefusedPushed
 		case kind != offered:
 			return WorkspaceBundleSuperseded
-		case c.At.Truncate(time.Second).After(podCreated):
-			return WorkspaceBundleRefusedOlder
+		// Both times here are the store's clock. The offered copy is sent to a pod whose first
+		// ask for a restore is at or after the copy's time. To a pod that first asked before the
+		// copy was written, nothing is sent and nothing is recorded: that pod has been working
+		// since its first ask, so the copy is not applied over that work, and the copy keeps its
+		// one attempt for the next pod, whose first ask comes after the copy was written.
+		case c.At.After(firstAsked):
+			return WorkspaceBundleLeftForNextPod
 		}
 		return WorkspaceBundleSend
 	}
@@ -319,16 +340,19 @@ func RestorableBookmarks(issue string, bookmarks map[string]string) (restorable,
 
 // WorkspaceRestore is what one pod's ask did to the copies of its issue's workspace
 // (SavedWorkspaceBundle): what it did to the release bundle and what it did to the running copy,
-// each a take of WorkspaceBundleNone when the ask recorded nothing on it — the issue holds no such
-// copy, its attempt is spent already, or its work came off this very pod; the kind of the copy
-// the decision offered (DecideWorkspaceRestore), empty when the issue holds neither; and the push
-// the decision read. The decision sends no copy but the offered one, so the send is
-// Of(Offered) when its take is WorkspaceBundleSend, and it alone carries its body.
+// each a take of WorkspaceBundleNone when the ask had nothing to answer of it — the issue holds no
+// such copy, its attempt is spent already, or its work came off this very pod; the kind of the
+// copy the decision offered (DecideWorkspaceRestore), empty when the issue holds neither; the push
+// the decision read; and when this pod first asked for a restore, by the store's clock, which is
+// the time the decision weighed the offered copy against. The decision sends no copy but the
+// offered one, so the send is Of(Offered) when its take is WorkspaceBundleSend, and it alone
+// carries its body.
 type WorkspaceRestore struct {
 	ReleaseBundle WorkspaceCopyTaken
 	Running       WorkspaceCopyTaken
 	Offered       WorkspaceCopyKind
 	Push          WorkspacePush
+	FirstAsked    time.Time
 }
 
 // Of is what the ask did to the issue's copy of kind: ReleaseBundle or Running, and the zero take,
@@ -346,8 +370,9 @@ func (r WorkspaceRestore) Of(kind WorkspaceCopyKind) WorkspaceCopyTaken {
 
 // WorkspaceCopyTaken is what the ask did to one copy: the attempt's outcome, the row as the take
 // read it back — its body only when it is being sent, since a refusal answers the facts its log
-// line names and a copy runs to tens of megabytes — and the size the row stored. The zero value is
-// a copy the ask recorded nothing on.
+// line names and a copy runs to tens of megabytes — and the size the row stored. A copy left for
+// the next pod (WorkspaceBundleLeftForNextPod) has nothing recorded on it and answers its time
+// alone, which its log line names. The zero value is a copy the ask had nothing to answer of.
 type WorkspaceCopyTaken struct {
 	Take   WorkspaceBundleTake
 	Bundle WorkspaceBundle

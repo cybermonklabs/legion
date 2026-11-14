@@ -66,13 +66,9 @@ func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t
 			defer runs.enter()()
 			var pushed time.Time
 			pushRead <- rig.pool.QueryRow(ctx, `select pushed_at from issue_pushes where issue = $1`, rig.issue.Key).Scan(&pushed)
-			taken := atPush
-			taken.At = time.Now().UTC()
-			return taken, nil
+			return atPush, nil
 		})
-		taken := beforePush
-		taken.At = time.Now().UTC()
-		return taken, nil
+		return beforePush, nil
 	})
 	rig.turnStart(t)
 	rig.w.copyWorkingWorkspaces(ctx)
@@ -105,7 +101,7 @@ func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t
 		t.Fatalf("%d copies were built in the workspace at once, want one at a time", most)
 	}
 	if !stored.At.After(pushedAt) {
-		t.Fatalf("the stored copy was taken at %s, want it after the push recorded at %s", stored.At, pushedAt)
+		t.Fatalf("the stored copy was written at %s, want it after the push recorded at %s", stored.At, pushedAt)
 	}
 	// The row is written before its line is logged, so the stored line is waited for, as the
 	// overtaken line is, before the lines are counted.
@@ -115,7 +111,7 @@ func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t
 		t.Fatalf("the cadence stored %d copies, want only the one taken after the push: the copy read before it is not stored", len(lines))
 	}
 	// It is the copy the pod that replaces this one is sent: it is not older than the push.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", time.Now().UTC().Add(time.Hour))
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
 	if sent := restore.Running; err != nil || sent.Take != runtime.WorkspaceBundleSend || string(sent.Bundle.Bundle) != string(atPush.Bundle) {
 		t.Fatalf("the pod that replaces this one was answered %q (%v, %v), want the copy taken after the push", sent.Bundle.Bundle, sent.Take, err)
 	}
@@ -136,9 +132,7 @@ func TestAReleaseSaveWaitsForTheRunningCopyBundlerInFlightBeforeItBundles(t *tes
 		case <-ctx.Done():
 			return runtime.WorkspaceBundle{}, ctx.Err()
 		}
-		taken := copyRigBundle
-		taken.At = time.Now().UTC()
-		return taken, nil
+		return copyRigBundle, nil
 	})
 	// The turn that ended last left its copy being built.
 	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
@@ -191,15 +185,14 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBun
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	apply := rig.pushEngine(t)
-	// Whole seconds, which the store keeps exactly.
 	atPush := copyRigBundle
-	atPush.Bundle, atPush.At = []byte("PACK the workspace after the push"), time.Now().UTC().Truncate(time.Second)
+	atPush.Bundle = []byte("PACK the workspace after the push")
 	rig.bundler.answers(atPush, nil)
 	rig.rt.bundleErr = errors.New("the launcher is gone")
 	rig.rt.beforeBundle = func() {
 		// The push lands while the save holds the issue's place, and its copy is refused the
 		// place and owed behind it.
-		apply("c0", "c2", time.Now().UTC())
+		apply("c0", "c2")
 		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
 			rig.w.copies.mu.Lock()
 			defer rig.w.copies.mu.Unlock()
@@ -216,8 +209,12 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBun
 			rig.marked(t), rig.bundled(t))
 	}
 	stored := rig.awaitCopy(t, len(atPush.Bundle))
-	if !stored.At.Equal(atPush.At) {
-		t.Fatalf("the stored copy was taken at %s, want the push's copy taken at %s", stored.At, atPush.At)
+	var pushedAt time.Time
+	if err := rig.pool.QueryRow(ctx, `select pushed_at from issue_pushes where issue = $1`, rig.issue.Key).Scan(&pushedAt); err != nil {
+		t.Fatalf("read the push record of %s: %v", rig.issue.Key, err)
+	}
+	if !stored.At.After(pushedAt) {
+		t.Fatalf("the stored copy was written at %s, want the push's copy, written after the push recorded at %s", stored.At, pushedAt)
 	}
 	if asked := rig.bundler.reads(); len(asked) != 1 {
 		t.Fatalf("the cadence's bundler was asked %v, want the one copy the push owed", asked)
@@ -237,7 +234,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsRefusedWhenTheSaveStoresIts
 		// The implementer's process is recorded in the pod the bundle is being taken off, and a
 		// push lands while the save holds the issue's place: its copy is owed behind the save.
 		rig.setLocatorPod(t, releasedPodUID)
-		apply("c0", "c2", time.Now().UTC())
+		apply("c0", "c2")
 		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
 			rig.w.copies.mu.Lock()
 			defer rig.w.copies.mu.Unlock()
@@ -259,7 +256,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsRefusedWhenTheSaveStoresIts
 	if rig.copied(t) {
 		t.Fatal("the copy the push owed behind the save was stored beside the bundle")
 	}
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", time.Now().UTC().Add(time.Hour))
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend || restore.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the next pod was answered %v of the bundle and %v of a running copy (%v), want the bundle sent and no running copy held",
 			restore.ReleaseBundle.Take, restore.Running.Take, err)
@@ -305,12 +302,13 @@ func TestTheWorkspaceCopyBundlerEndsWithTheDaemonsRun(t *testing.T) {
 	}
 }
 
-// The daemon applies every push at its own clock, so a push it applies again — the per-issue
+// The store records every push at its own clock, so a push it records again — the per-issue
 // read's rebuild of a push whose webhook it already applied, under an event id of its own — and a
-// webhook that arrives after a newer push are each applied later than the push they repeat or that
-// replaced them. Neither moves the record of the issue's newest push back, in its head or its
-// time: a copy taken after the newest push holds it, and the pod that replaces this one is sent
-// that copy. Were the record's time moved on to the later application, the copy would be refused.
+// webhook that arrives after a newer push are each recorded later than the push they repeat or
+// that replaced them. Neither moves the record of the issue's newest push back, in its head or its
+// time: a copy written after the newest push and before either holds that push, and the pod that
+// replaces this one is sent that copy. Were the record's time moved on to the later record, the
+// copy would be refused.
 //
 // The pushes are driven through the workflow's push handler as the daemon wires it, with the
 // daemon's store as its record (openWorkflow), and the record is read back by the store's restore,
@@ -318,47 +316,54 @@ func TestTheWorkspaceCopyBundlerEndsWithTheDaemonsRun(t *testing.T) {
 func TestAPushAppliedAgainOrLateNeverMovesTheNewestRecordedPushBack(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
-	clock := time.Date(2026, 11, 13, 9, 30, 0, 0, time.UTC)
-	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Clock: func() time.Time { return clock }, Pushes: rig.st}, quietLogger())
-	apply := func(eventID, before, after string, at time.Time) {
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st}, quietLogger())
+	apply := func(eventID, before, after string) {
 		t.Helper()
-		clock = at
 		push := intake.Push{Repo: rig.issue.GitHubRepo, Branch: "legion/" + rig.issue.Key, Before: before, After: after}
 		if _, err := intake.ApplyFact(ctx, rig.pool, "github", eventID, push, engine); err != nil {
 			t.Fatalf("apply the push %s..%s as %s: %v", before, after, eventID, err)
 		}
 	}
-	// sent stores a running copy of the issue's workspace the cadence took at taken, and answers
-	// how the pod that replaces this one is answered it, with the push the restore read.
-	sent := func(name string, taken time.Time) (runtime.WorkspaceBundleTake, runtime.WorkspacePush) {
+	// copied stores a running copy of the issue's workspace the cadence takes now, after every
+	// push applied so far.
+	copied := func(name string) {
 		t.Helper()
-		held := runtime.WorkspaceBundle{Bundle: []byte("PACK the " + name), Head: name, Tips: []string{name}, At: taken, PodUID: releasedPodUID}
+		held := runtime.WorkspaceBundle{Bundle: []byte("PACK the " + name), Head: name, Tips: []string{name}, PodUID: releasedPodUID}
 		if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.issue.Key, held); err != nil {
 			t.Fatalf("take the %s: %v", name, err)
 		}
-		restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-the-"+name, taken.Add(time.Hour))
+	}
+	// restored answers how pod is answered the issue's running copy, with the push the restore
+	// read.
+	restored := func(pod string) (runtime.WorkspaceBundleTake, runtime.WorkspacePush) {
+		t.Helper()
+		restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, pod)
 		if err != nil {
-			t.Fatalf("restore the %s: %v", name, err)
+			t.Fatalf("restore for %s: %v", pod, err)
 		}
 		return restore.Running.Take, restore.Push
 	}
 
-	read := clock
-	webhook := read.Add(time.Minute)
-	apply("pull-request-read:c1..c2", "c1", "c2", read)
-	apply("push-webhook:c2..c3", "c2", "c3", webhook)
-
-	// The read rebuilds c2..c3 from the branch's activity after its webhook was applied.
-	apply("pull-request-read:c2..c3", "c2", "c3", webhook.Add(2*time.Minute))
-	if take, push := sent("copy after the push of c3", webhook.Add(30*time.Second)); take != runtime.WorkspaceBundleSend || push.Head != "c3" || !push.At.Equal(webhook) {
-		t.Fatalf("after c2..c3 was applied again, the copy taken after it was answered %v against the push %+v; want it sent against c3 at %s", take, push, webhook)
+	apply("pull-request-read:c1..c2", "c1", "c2")
+	apply("push-webhook:c2..c3", "c2", "c3")
+	var webhook time.Time
+	if err := rig.pool.QueryRow(ctx, `select pushed_at from issue_pushes where issue = $1`, rig.issue.Key).Scan(&webhook); err != nil {
+		t.Fatalf("read the push record of %s: %v", rig.issue.Key, err)
 	}
 
-	// c1..c2's own webhook arrives an hour on, behind c2..c3.
-	late := webhook.Add(time.Hour)
-	apply("push-webhook:c1..c2", "c1", "c2", late)
-	if take, push := sent("copy before the late webhook", late.Add(-time.Minute)); take != runtime.WorkspaceBundleSend || push.Head != "c3" || !push.At.Equal(webhook) {
-		t.Fatalf("after the late webhook of c1..c2, the copy taken after c3 was answered %v against the push %+v; want it sent against c3 at %s", take, push, webhook)
+	// The read rebuilds c2..c3 from the branch's activity after its webhook was applied, and
+	// after a copy that holds c3 was taken.
+	copied("copy after the push of c3")
+	apply("pull-request-read:c2..c3", "c2", "c3")
+	if take, push := restored("pod-after-the-rebuild"); take != runtime.WorkspaceBundleSend || push.Head != "c3" || !push.At.Equal(webhook) {
+		t.Fatalf("after c2..c3 was applied again, the copy taken before that was answered %v against the push %+v; want it sent against c3 at %s", take, push, webhook)
+	}
+
+	// c1..c2's own webhook arrives later still, behind c2..c3, after another copy that holds c3.
+	copied("copy before the late webhook")
+	apply("push-webhook:c1..c2", "c1", "c2")
+	if take, push := restored("pod-after-the-late-webhook"); take != runtime.WorkspaceBundleSend || push.Head != "c3" || !push.At.Equal(webhook) {
+		t.Fatalf("after the late webhook of c1..c2, the copy taken before it was answered %v against the push %+v; want it sent against c3 at %s", take, push, webhook)
 	}
 }
 
@@ -413,9 +418,7 @@ func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing
 			case <-ctx.Done():
 				return runtime.WorkspaceBundle{}, ctx.Err()
 			}
-			taken := copyRigBundle
-			taken.At = time.Now().UTC()
-			return taken, nil
+			return copyRigBundle, nil
 		})
 		return func() { close(release) }
 	}

@@ -59,15 +59,15 @@ const idleRigEarlierPodUID = "uid-pod-of-an-earlier-life"
 
 // idleRigEarlierBundle is the workspace bundle an earlier release of the issue's pod saved, as
 // both rigs of this rule seed it (idleWakeRig.savedBundle, idleRig.earlierReleasesBundle): the
-// same body, the same head and the same source pod, at the moment its caller gives. That moment
-// is far enough back that a pod a later start builds is newer than the save and so the pod the
-// work is sent to. The body is bytes rather than a real git bundle, since what either rig reads
-// is which pod the daemon offered the work to and not what a launcher could do with it.
-func idleRigEarlierBundle(issue string, at time.Time) runtime.WorkspaceBundle {
+// same body, the same head and the same source pod. It carries no time: the store stamps it with
+// its own clock as it writes it, so a pod a later start builds first asks after the save and is
+// the pod the work is sent to. The body is bytes rather than a real git bundle, since what either
+// rig reads is which pod the daemon offered the work to and not what a launcher could do with it.
+func idleRigEarlierBundle(issue string) runtime.WorkspaceBundle {
 	return runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work an earlier release of " + issue + " saved"),
 		Head:   "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
-		At:     at, PodUID: idleRigEarlierPodUID,
+		PodUID: idleRigEarlierPodUID,
 	}
 }
 
@@ -384,16 +384,16 @@ func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 // savedBundle seeds the workspace bundle an earlier release of the issue's pod saved and no pod
 // has restored, through the store that release saves it through (store.PutWorkspaceBundle), and
 // answers it. Its one restore attempt is unspent: the pod its work came off is a pod of an
-// earlier life of the issue (idleRigEarlierPodUID), so no pod standing now is the source, and
-// nothing starts a role in the pod being released after this, which is what would otherwise
-// spend the attempt (internal/runtime/sandbox's start).
+// earlier life of the issue (idleRigEarlierPodUID), so no pod standing now is the source, and a
+// pod standing now first asked before the save, so a role it starts after this is answered
+// nothing and spends nothing (store.TakeWorkspaceCopyForRestore).
 //
-// The bundle's own moment is ten minutes back (idleRigEarlierBundle), which is what makes the
-// pod a later start builds newer than the save and so the pod the work is sent to.
+// The store stamps the bundle with its own clock as it writes it, which is what makes the pod a
+// later start builds, whose first ask comes after the save, the pod the work is sent to.
 func (r *idleWakeRig) savedBundle(issue idleRigIssue) runtime.WorkspaceBundle {
 	r.t.Helper()
 	ctx := context.Background()
-	saved := idleRigEarlierBundle(issue.key, time.Now().UTC().Add(-10*time.Minute))
+	saved := idleRigEarlierBundle(issue.key)
 	st, err := store.Open(ctx, r.cfg.PostgresDSN)
 	if err != nil {
 		r.t.Fatalf("open the store to save the bundle of %s: %v", issue.key, err)
@@ -407,8 +407,8 @@ func (r *idleWakeRig) savedBundle(issue idleRigIssue) runtime.WorkspaceBundle {
 
 // idleRigBundleRow is the issue's saved workspace bundle as the database holds it: the release
 // that saved it, the pod its work came off, and its one restore attempt — the pod the work was
-// offered to and what that offer did (`sent`, or `refused_older` for a pod no newer than the
-// save), both empty while nothing has asked.
+// offered to and what that offer did (`sent`, the only outcome an offer to a pod records here),
+// both empty while nothing has asked.
 type idleRigBundleRow struct {
 	release    int64
 	source     string

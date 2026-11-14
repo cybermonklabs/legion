@@ -61,18 +61,9 @@ type launcherSession struct {
 	// issue is the exact issue key this launcher's pod is of, as the role Secret's annotation
 	// carried it to the hello's authentication (launcherCredential.issue): the key the release
 	// saved that workspace's bundle under. "" for a pod of no issue, the project controller's.
-	issue string
-	// podCreated is when the API server stamped this launcher's pod created
-	// (corev1.Pod's CreationTimestamp, as the resolver read it off the pod the connection was
-	// accepted for). It is what says whether this pod is the one a release's saved work is for:
-	// a pod created after the save is the pod the teardown's launch made and is sent the work,
-	// and one that is not is refused, which spends the bundle's one attempt and sends it to no
-	// pod again (store.TakeWorkspaceCopyForRestore). The pod the work was taken off is told
-	// apart by its uid and not by this, so a role relaunched in the pod being released spends
-	// nothing.
-	podCreated time.Time
-	id         string
-	podUID     string
+	issue  string
+	id     string
+	podUID string
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -94,11 +85,11 @@ func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle,
 		saved: saved, restored: restored, log: log}
 }
 
-// accept registers a launcher connection of the pod of issue, created at podCreated. The newest
-// authenticated connection for a role wins: a half-open predecessor is closed so its pending
-// requests fail instead of waiting forever.
-func (d *launchers) accept(token claim.Token, issue string, podCreated time.Time, hello shimwire.LauncherHello) *launcherSession {
-	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, id: hello.LauncherID, podUID: hello.PodUID,
+// accept registers a launcher connection of the pod of issue. The newest authenticated connection
+// for a role wins: a half-open predecessor is closed so its pending requests fail instead of
+// waiting forever.
+func (d *launchers) accept(token claim.Token, issue string, hello shimwire.LauncherHello) *launcherSession {
+	s := &launcherSession{owner: d, token: token, issue: issue, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
 		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled}
 	d.mu.Lock()
@@ -447,28 +438,24 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 // common case; a hop that outruns it costs the restore and never the start.
 const bundleRestoreBound = 2 * time.Minute
 
-// refusedOlderLine is the warning a pod that is not newer than a copy is logged with, by the
-// copy's kind. The two kinds differ in what the refusal leaves behind, which is what an operator
-// reads the line for: a release bundle no pod restored holds the issue's pod until the issue's
-// work is over, and a running copy holds nothing, its work being on the disk it was taken off.
-func refusedOlderLine(kind runtime.WorkspaceCopyKind) string {
-	if kind == runtime.WorkspaceCopyReleaseBundle {
-		return "launcher bundle: this pod was not created after the release's save, so the saved workspace bundle is refused and no pod is sent it again; the work stays in the daemon's database and holds the issue's pod"
-	}
-	return "launcher bundle: this pod was not created after the running copy was taken, so the copy is refused and no pod is sent it again; the work stays in the daemon's database and holds no pod, since the disk it was taken off still has it"
-}
+// leftForNextPodLine is the line a copy written after this pod first asked for a restore is logged
+// with (runtime.WorkspaceBundleLeftForNextPod), at Info, since nothing is lost: the copy keeps its
+// one attempt and the next pod of the issue is sent it. It names when this pod first asked and
+// when the copy was written, both by the store's clock, which is the whole of why this pod was
+// sent nothing.
+const leftForNextPodLine = "launcher bundle: the saved workspace copy was written after this pod first asked for a restore, so it is not sent to this pod, which has been working since that ask, and nothing is recorded on it: it keeps its one attempt for the next pod of the issue"
 
 // refusedPushedLine is the warning a running copy older than the issue's newest recorded push is
 // logged with (runtime.WorkspaceBundleRefusedPushed); a release bundle is never refused so. It is
 // the line an operator reads to know why a pod started on what was pushed although the daemon
 // held a copy, and what that copy would have done.
-const refusedPushedLine = "launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded, so it is refused and no pod is sent it: restoring it would put the workspace back on work behind the pushed commits, which the roles would have to bring forward over them; its bytes stay in the daemon's database"
+const refusedPushedLine = "launcher bundle: the saved workspace copy was written before the newest push of the issue's branch the daemon recorded, so it is refused and no pod is sent it: restoring it would put the workspace back on work behind the pushed commits, which the roles would have to bring forward over them; its bytes stay in the daemon's database"
 
 // supersededLine is the line the older of the issue's two copies is closed unsent with
 // (runtime.WorkspaceBundleSuperseded). It names the newer copy, the one the decision offered
 // (runtime.WorkspaceRestore.Offered), and what this pod's ask did with it, since that copy is not
 // always sent here: its attempt can be spent already, this pod can be the one its work came off,
-// and this pod can be older than it.
+// the push can refuse it, and it can have been written after this pod first asked.
 const supersededLine = "launcher bundle: the older of the issue's two saved workspace copies is closed unsent, since the newer one is the copy the issue's pods are offered and no pod may restore the older over its work; its bytes stay in the database"
 
 // withheldBranchLine is the one line a copy that holds the issue's branch `legion/<KEY>`, its
@@ -500,13 +487,15 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 // it put back is kept as this pod's own on (restoreReported).
 //
 // Which copy, if either, the pod is sent is the store's one decision, made in the transaction
-// that spends the attempts (store.TakeWorkspaceCopyForRestore, runtime.DecideWorkspaceRestore):
-// the newer copy is offered and the older closed unsent, and a running copy older than the newest
-// push of the issue's branch the daemon recorded is refused, where a release bundle never is.
-// This hop only carries out what that answer says and logs each copy it touched, so no state of
-// the store depends on this hop finishing. Whatever copy it sends goes without its own values of
-// the issue's branch and its rescue branch (bundleFrames), so no restore moves `legion/<KEY>` or
-// `legion/<KEY>-rescue` off what GitHub holds.
+// that records this pod's first ask and spends the attempts (store.TakeWorkspaceCopyForRestore,
+// runtime.DecideWorkspaceRestore): the newer copy is offered and the older closed unsent, a
+// running copy written before the newest push of the issue's branch the daemon recorded is
+// refused, where a release bundle never is, and a copy written after this pod first asked is left
+// for the next pod. Every time that decision compares is the store's clock, so this hop passes
+// nothing of the pod but its uid. This hop only carries out what that answer says and logs each
+// copy it touched, so no state of the store depends on this hop finishing. Whatever copy it sends
+// goes without its own values of the issue's branch and its rescue branch (bundleFrames), so no
+// restore moves `legion/<KEY>` or `legion/<KEY>-rescue` off what GitHub holds.
 //
 // Nothing here stops a role. A slice the launcher refuses, a body that did not arrive as it was
 // sent, a store that cannot be read and a connection that fails are each logged and left: a pod
@@ -525,19 +514,18 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 // taken off goes on starting roles — a release stops them, and a cadence copies a pod that is
 // working — and such a start reaches here too, for the very workspace the work came from. The
 // store knows that pod by the uid the copy recorded and answers it nothing, leaving the attempt
-// for the pod that replaces it. Every other pod spends the attempt the first time it asks, and a
-// pod that is not newer than the copy (launcherSession.podCreated) spends it on a refusal:
-// nothing is sent to it, and nothing is sent to the pod after it either, since its roles go on
-// working and pushing from the workspace its own fetch provisioned. That refusal, and the refusal
-// of a running copy older than a recorded push, are this hop's warnings an operator must read —
-// the work is in the database and no pod will put it back on its own.
+// for the pod that replaces it. Every other pod spends the attempt the first time it asks after
+// the copy was written. A copy written after this pod's first ask, which is this pod's first role
+// start, is not sent here and nothing is recorded on it: this pod has been working since that
+// ask, and the next pod of the issue is sent the copy. That line is Info, since no work is lost;
+// the refusal of a running copy older than a recorded push is this hop's warning an operator must
+// read — the work is in the database and no pod will put it back on its own.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return
 	}
 	// The session names the issue its pod is of, as the Secret its launcher authenticated with
-	// did, and when that pod was created, as the API server stamped it. A launcher that never
-	// arrives is the start's own error to report, not this hop's.
+	// did. A launcher that never arrives is the start's own error to report, not this hop's.
 	session, err := d.await(ctx, token, podUID)
 	if err != nil || session.issue == "" {
 		return
@@ -545,25 +533,24 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	issue := session.issue
 	restoring, cancel := context.WithTimeout(ctx, bundleRestoreBound)
 	defer cancel()
-	restore, err := d.saved(restoring, issue, podUID, session.podCreated)
+	restore, err := d.saved(restoring, issue, podUID)
 	if err != nil {
 		d.log.Warn("launcher bundle: the issue's saved workspace copies could not be taken for this pod's one restore attempt, so the pod starts on what was pushed and every copy is left as it was",
 			"issue", issue, "launcher", token, "pod", podUID, "error", err)
 		return
 	}
-	// Each copy the take recorded an attempt on is logged, and the offered one, when its take is
-	// a send, is the only one this hop goes on with: the decision sends no other. A copy the ask
-	// recorded nothing on — the issue holds none, its attempt is spent, or its work came off this
+	// Each copy the take answered anything of is logged, and the offered one, when its take is a
+	// send, is the only one this hop goes on with: the decision sends no other. A copy the ask had
+	// nothing to answer of — the issue holds none, its attempt is spent, or its work came off this
 	// very pod — is a take of WorkspaceBundleNone and logs nothing, the offered one included.
 	offered := restore.Of(restore.Offered)
 	for _, kind := range [...]runtime.WorkspaceCopyKind{runtime.WorkspaceCopyReleaseBundle, runtime.WorkspaceCopyRunning} {
 		taken := restore.Of(kind)
 		b := taken.Bundle
 		switch taken.Take {
-		case runtime.WorkspaceBundleRefusedOlder:
-			d.log.Warn(refusedOlderLine(kind), "issue", issue, "launcher", token, "pod", podUID,
-				"created", session.podCreated, "copy", kind, "taken", b.At,
-				"bytes", taken.Size, "head", b.Head, "restore", b.Release)
+		case runtime.WorkspaceBundleLeftForNextPod:
+			d.log.Info(leftForNextPodLine, "issue", issue, "launcher", token, "pod", podUID,
+				"copy", kind, "firstAsked", restore.FirstAsked, "written", b.At)
 		case runtime.WorkspaceBundleRefusedPushed:
 			d.log.Warn(refusedPushedLine, "issue", issue, "launcher", token, "pod", podUID,
 				"copy", kind, "taken", b.At, "bytes", taken.Size, "head", b.Head, "restore", b.Release,

@@ -119,7 +119,7 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 	}
 
 	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7,
-		runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", At: now, PodUID: "pod-being-released"}); err != nil {
+		runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", PodUID: "pod-being-released"}); err != nil {
 		t.Fatalf("save a bundle for %s: %v", rootIssue, err)
 	}
 	if err := st.RecordPodHold(ctx, PodHold{Project: "legion", Issue: rootIssue, Reason: "image", At: now}); err != nil {
@@ -152,10 +152,9 @@ func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
-	now := time.Now().UTC()
 
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
-		At: now, PodUID: "pod-still-running"}
+		PodUID: "pod-still-running"}
 	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, taken); err != nil {
 		t.Fatalf("take the running copy of %s: %v", rootIssue, err)
 	}
@@ -165,7 +164,7 @@ func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
 
 	// The pod that replaced the one the copy came off was sent it and its restore failed: the
 	// attempt is spent and the row stays, which is the state a hold would be read from.
-	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-that-replaced-it", now.Add(time.Minute)); err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
+	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-that-replaced-it"); err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the replacement pod was answered %v (%v), want the running copy", restore.Running.Take, err)
 	}
 	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); !row.held {

@@ -38,14 +38,11 @@ func (r *copyRig) saveRelease(t *testing.T) {
 
 // pushEngine is the workflow's push handler as the daemon wires it, with the daemon's store as
 // its record and the copy each recorded push asks for, and the call that applies one push of the
-// issue's branch from before to after at the daemon's clock at.
-func (r *copyRig) pushEngine(t *testing.T) func(before, after string, at time.Time) {
-	clock := time.Now().UTC()
-	engine := workflow.New(r.issues, workflow.Config{Project: "LEGION", Clock: func() time.Time { return clock },
-		Pushes: r.st, PushRecorded: r.w.copyWorkspaceAtPush}, quietLogger())
-	return func(before, after string, at time.Time) {
+// issue's branch from before to after, which the store records at its own clock.
+func (r *copyRig) pushEngine(t *testing.T) func(before, after string) {
+	engine := workflow.New(r.issues, workflow.Config{Project: "LEGION", Pushes: r.st, PushRecorded: r.w.copyWorkspaceAtPush}, quietLogger())
+	return func(before, after string) {
 		t.Helper()
-		clock = at
 		push := intake.Push{Repo: r.issue.GitHubRepo, Branch: "legion/" + r.issue.Key, Before: before, After: after}
 		if _, err := intake.ApplyFact(context.Background(), r.pool, "github", "push-webhook:"+before+".."+after, push, engine); err != nil {
 			t.Fatalf("apply the push of %s..%s: %v", before, after, err)
@@ -120,18 +117,13 @@ func (r *copyRig) setLocatorPod(t *testing.T, pod string) {
 func TestASecondPushAfterAnIdleReleaseStillLeavesTheNextPodItsReleaseBundle(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
-	// Whole seconds, which the store keeps exactly.
-	saved := time.Now().UTC().Truncate(time.Second).Add(-30 * time.Minute)
-	rig.rt.bundle.At = saved
-	copied := copyRigBundle
-	copied.At = saved.Add(2 * time.Minute)
-	rig.bundler.answers(copied, nil)
+	rig.bundler.answers(copyRigBundle, nil)
 	apply := rig.pushEngine(t)
 
 	rig.saveRelease(t)
 
 	// A push in the window, with the pod's roles still live.
-	apply("c0", "c2", saved.Add(time.Minute))
+	apply("c0", "c2")
 	refused := rig.awaitUnsaved(t, runningCopyReleaseBundled, 1)
 	rig.awaitQuiet(t)
 	if line := refused[0]; line["level"] != "INFO" || line["issue"] != rig.issue.Key {
@@ -152,7 +144,11 @@ func TestASecondPushAfterAnIdleReleaseStillLeavesTheNextPodItsReleaseBundle(t *t
 
 	// A second push, after the release: no role is live, and nothing is asked.
 	asked := len(rig.bundler.reads())
-	apply("c2", "c3", saved.Add(5*time.Minute))
+	apply("c2", "c3")
+	var secondPush time.Time
+	if err := rig.pool.QueryRow(ctx, `select pushed_at from issue_pushes where issue = $1`, rig.issue.Key).Scan(&secondPush); err != nil {
+		t.Fatalf("read the push record of %s: %v", rig.issue.Key, err)
+	}
 	rig.awaitUnsaved(t, runningCopyNoRole, 1)
 	rig.awaitQuiet(t)
 	if got := rig.bundler.reads(); len(got) != asked {
@@ -165,12 +161,12 @@ func TestASecondPushAfterAnIdleReleaseStillLeavesTheNextPodItsReleaseBundle(t *t
 
 	// The pod that replaces the released one is sent the bundle against the second push, and its
 	// launcher's report of the restore moves the row out of the bundle table.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", saved.Add(20*time.Minute))
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restore.Push.Head != "c3" || !restore.Push.At.Equal(saved.Add(5*time.Minute)) {
-		t.Fatalf("the restore read the push %+v, want the second push of c3", restore.Push)
+	if restore.Push.Head != "c3" || !restore.Push.At.Equal(secondPush) {
+		t.Fatalf("the restore read the push %+v, want the second push of c3 at %s", restore.Push, secondPush)
 	}
 	sent := restore.ReleaseBundle
 	if sent.Take != runtime.WorkspaceBundleSend || restore.Offered != runtime.WorkspaceCopyReleaseBundle ||
@@ -202,7 +198,7 @@ func TestNoShimIsAskedForACopyOfThePodAnIdleReleaseSavedItsBundleOff(t *testing.
 	rig.saveRelease(t)
 	rig.setLocatorPod(t, releasedPodUID)
 
-	apply("c0", "c2", time.Now().UTC())
+	apply("c0", "c2")
 	rig.awaitUnsaved(t, runningCopyReleaseBundled, 1)
 	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
 	rig.awaitUnsaved(t, runningCopyReleaseBundled, 2)
@@ -227,13 +223,13 @@ func TestNoShimIsAskedForACopyOfThePodAnIdleReleaseSavedItsBundleOff(t *testing.
 	}
 
 	// The pod that replaces the released one asks for the bundle and works on.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", time.Now().UTC().Add(time.Hour))
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the next pod was answered %+v (%v), want the release bundle sent", restore, err)
 	}
 	rig.setLocatorPod(t, "pod-that-replaces-it")
 	next := copyRigBundle
-	next.Bundle, next.At, next.PodUID = []byte("PACK the next pod's work"), time.Now().UTC(), "pod-that-replaces-it"
+	next.Bundle, next.PodUID = []byte("PACK the next pod's work"), "pod-that-replaces-it"
 	rig.bundler.answers(next, nil)
 	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
 	rig.awaitCopy(t, len(next.Bundle))

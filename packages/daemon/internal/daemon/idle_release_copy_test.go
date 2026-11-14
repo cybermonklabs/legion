@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -25,7 +24,7 @@ func (r *idleRig) copied(t *testing.T) bool {
 func (r *idleRig) copyWorkspace(t *testing.T) runtime.WorkspaceBundle {
 	t.Helper()
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
-		Tips: []string{"abc"}, At: time.Now().UTC(), PodUID: releasedPodUID}
+		Tips: []string{"abc"}, PodUID: releasedPodUID}
 	if err := r.st.PutRunningWorkspaceCopy(context.Background(), r.issue.Key, taken); err != nil {
 		t.Fatalf("take the running copy of %s: %v", r.issue.Key, err)
 	}
@@ -61,8 +60,7 @@ func TestAnIdleReleaseWithNothingUnpushedLeavesNoSavedWorkOfEitherKind(t *testin
 		t.Fatal("the release of a workspace with nothing unpushed left the running copy behind")
 	}
 	// The pod the next wake makes is sent nothing of either kind.
-	later := time.Now().UTC().Add(time.Hour)
-	if restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-the-release", later); err != nil ||
+	if restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-the-release"); err != nil ||
 		restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone || restore.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the next pod was answered %+v (%v), want nothing of either kind", restore, err)
 	}
@@ -89,7 +87,7 @@ func TestAnIdleReleaseThatSavesABundleLeavesNoRunningCopy(t *testing.T) {
 	}
 	// The pod that replaces the released one is sent the release's own bundle, and nothing of
 	// the copy that was taken before it.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", time.Now().UTC().Add(time.Hour))
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
 	saved := restore.ReleaseBundle
 	if err != nil || saved.Take != runtime.WorkspaceBundleSend || string(saved.Bundle.Bundle) != string(rig.rt.bundle.Bundle) {
 		t.Fatalf("the replacement pod was answered %q (%v, %v), want the %q the release saved", saved.Bundle.Bundle, saved.Take, err, rig.rt.bundle.Bundle)
@@ -106,7 +104,7 @@ func TestTheWorkOfAFinishedIssueLeavesNoReleaseBundleAndNoRunningCopy(t *testing
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "abc",
-		At: time.Now().UTC(), PodUID: releasedPodUID}
+		PodUID: releasedPodUID}
 	if err := rig.st.PutWorkspaceBundle(ctx, rig.issue.Key, 1, saved); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
@@ -114,7 +112,7 @@ func TestTheWorkOfAFinishedIssueLeavesNoReleaseBundleAndNoRunningCopy(t *testing
 	// stored off the pod the bundle came off once the bundle is saved (store.ErrReleaseBundleSaved).
 	if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.issue.Key, runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work of the pod that replaced it"), Head: "abc", Tips: []string{"abc"},
-		At: time.Now().UTC(), PodUID: "pod-that-replaced-it"}); err != nil {
+		PodUID: "pod-that-replaced-it"}); err != nil {
 		t.Fatalf("take the running copy of %s: %v", rig.issue.Key, err)
 	}
 
@@ -166,7 +164,7 @@ func TestAReleaseAWakeCancelsAfterItsSaveLeavesItsWorkForThePodAfterAnEndToResto
 	}
 
 	// The resumed pod's roles container restarts before any turn: its own disk holds the work.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, releasedPodUID, time.Now().UTC().Add(time.Hour))
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, releasedPodUID)
 	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone || restore.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the resumed pod was answered %v of a release bundle and %v of a running copy (%v), want nothing of either",
 			restore.ReleaseBundle.Take, restore.Running.Take, err)
@@ -174,7 +172,7 @@ func TestAReleaseAWakeCancelsAfterItsSaveLeavesItsWorkForThePodAfterAnEndToResto
 	// The cluster ends the resumed pod from outside before any turn of it, and the pod after it is
 	// sent the work the release saved.
 	const next = "pod-after-the-end"
-	restore, err = rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, next, time.Now().UTC().Add(time.Hour))
+	restore, err = rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, next)
 	sent := restore.Running
 	if err != nil || sent.Take != runtime.WorkspaceBundleSend || string(sent.Bundle.Bundle) != string(saved.Bundle) ||
 		sent.Bundle.Head != saved.Head || sent.Bundle.PodUID != releasedPodUID {
@@ -184,7 +182,7 @@ func TestAReleaseAWakeCancelsAfterItsSaveLeavesItsWorkForThePodAfterAnEndToResto
 	if err := rig.st.KeepRestoredWorkspaceCopy(ctx, rig.issue.Key, next, sent.Bundle.Release); err != nil {
 		t.Fatalf("confirm the restore: %v", err)
 	}
-	if again, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, next, time.Now().UTC().Add(time.Hour)); err != nil ||
+	if again, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, next); err != nil ||
 		again.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the pod after the end asking again was answered %v (%v), want nothing: the work is its own now", again.Running.Take, err)
 	}
@@ -205,26 +203,25 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	const issue, release, restoring, bundlePod = "LEGION-208", int64(11), "pod-that-replaced-it", "pod-sent-the-bundle"
 	restored := st.KeepRestoredWorkspaceCopy
 
-	// Whole seconds, which the store keeps exactly.
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "abc",
-		At: time.Now().UTC().Truncate(time.Second).Add(-time.Hour), PodUID: "pod-being-released"}
+		PodUID: "pod-being-released"}
 	if err := st.PutWorkspaceBundle(ctx, issue, release, saved); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
 	// The bundle is sent to a pod whose launcher holds its report until some connection carries
 	// it.
-	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, bundlePod, time.Now().UTC().Add(time.Hour)); err != nil ||
+	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, bundlePod); err != nil ||
 		restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the pod after the release was answered %v (%v), want the release bundle", restore.ReleaseBundle.Take, err)
 	}
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
-		At: saved.At.Add(time.Minute), PodUID: "pod-still-running"}
+		PodUID: "pod-still-running"}
 	if err := st.PutRunningWorkspaceCopy(ctx, issue, taken); err != nil {
 		t.Fatalf("take the running copy: %v", err)
 	}
 	// The copy's own restore id, as the slices carry it to the launcher and the report brings it
 	// back: above every id a release holds, which is what the routing reads.
-	restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, restoring, time.Now().UTC().Add(time.Hour))
+	restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, restoring)
 	sent := restore.Running.Bundle
 	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the pod that replaced the one the copy came off was answered %v (%v), want the copy", restore.Running.Take, err)
@@ -238,7 +235,7 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	if err := restored(ctx, issue, restoring, sent.Release); err != nil {
 		t.Fatalf("keep the restored running copy: %v", err)
 	}
-	if again, err := st.TakeWorkspaceCopyForRestore(ctx, issue, restoring, time.Now().UTC().Add(time.Hour)); err != nil ||
+	if again, err := st.TakeWorkspaceCopyForRestore(ctx, issue, restoring); err != nil ||
 		again.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the restoring pod asking again was answered %v of the running copy (%v), want nothing: the copy is its own", again.Running.Take, err)
 	}
@@ -255,19 +252,20 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	// was sent to, and that report moves the bundle alone: the copy is the newer work and stays as
 	// it is.
 	newer := taken
-	newer.Bundle, newer.At = []byte("PACK the work the cadence copied next"), taken.At.Add(time.Minute)
+	newer.Bundle = []byte("PACK the work the cadence copied next")
 	if err := st.PutRunningWorkspaceCopy(ctx, issue, newer); err != nil {
 		t.Fatalf("take the running copy again: %v", err)
 	}
+	stored, _ := runningCopyOf(t, st, issue)
 	if err := restored(ctx, issue, bundlePod, release); err != nil {
 		t.Fatalf("keep the restored release bundle: %v", err)
 	}
 	if _, held, err := st.WorkspaceBundleSize(ctx, issue); err != nil || held {
 		t.Fatalf("after the report of the release the store holds the bundle = %t (%v), want it gone", held, err)
 	}
-	if facts, held := runningCopyOf(t, st, issue); !held || facts.Size != newer.Size() || !facts.At.Equal(newer.At) {
-		t.Fatalf("after the report of the release the store holds the running copy %+v, want the newer copy of %d bytes taken %s kept",
-			facts, newer.Size(), newer.At)
+	if facts, held := runningCopyOf(t, st, issue); !held || facts.Size != newer.Size() || !facts.At.Equal(stored.At) {
+		t.Fatalf("after the report of the release the store holds the running copy %+v, want the newer copy of %d bytes written %s kept",
+			facts, newer.Size(), stored.At)
 	}
 
 	// A report of either kind that no row holds — a copy its issue has saved over, a release
@@ -278,7 +276,7 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	if err := restored(ctx, issue, restoring, sent.Release); err != nil {
 		t.Fatalf("a report of a running copy the issue has replaced: %v", err)
 	}
-	if facts, held := runningCopyOf(t, st, issue); !held || facts.Size != newer.Size() || !facts.At.Equal(newer.At) {
+	if facts, held := runningCopyOf(t, st, issue); !held || facts.Size != newer.Size() || !facts.At.Equal(stored.At) {
 		t.Fatalf("after the reports of rows the store holds the running copy %+v, want the newer copy as it was", facts)
 	}
 }

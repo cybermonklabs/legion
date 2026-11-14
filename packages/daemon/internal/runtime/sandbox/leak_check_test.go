@@ -247,7 +247,7 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			if pod == nil {
 				t.Fatal("the refused launch left no pod")
 			}
-			restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testTree, string(pod.UID), pod.CreationTimestamp.Time)
+			restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testTree, string(pod.UID))
 			if err != nil {
 				t.Fatal(err)
 			}

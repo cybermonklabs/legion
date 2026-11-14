@@ -12,7 +12,7 @@
 -- behind the push and set its other bookmarks there, and the roles would have to bring their work
 -- forward over the pushed commits.
 -- store.TakeWorkspaceCopyForRestore reads this row in the transaction that chooses between the
--- issue's two copies and refuses a running copy whose `at` (when the shim took it) is before
+-- issue's two copies and refuses a running copy whose `at` (when the store wrote it) is before
 -- pushed_at (runtime.DecideWorkspaceRestore). It guards running copies only, because once an idle
 -- release has saved its bundle, that bundle is the pod's last copy. The release's rows run the
 -- save first, while the pod's roles are idle, then a stop per role, then the teardown (the
@@ -26,23 +26,24 @@
 -- every push of `legion/<KEY>` on the repository the issue is recorded on, whether or not the
 -- issue has a pull request: a branch is pushed before its pull request opens, and an issue with
 -- no pull-request record is exactly the one a guard that read the pull request would have sent a
--- stale copy for. pushed_at is the daemon's clock when it applied the push, not GitHub's, since it
--- is compared with copies the daemon asked for; head is the commit the push left, which the
--- refusal's log line names as the work the copy would have rolled back.
+-- stale copy for. pushed_at is the database's clock when the push's own transaction recorded it,
+-- not GitHub's, since it is compared with the times the database stamped on the copies; head is
+-- the commit the push left, which the refusal's log line names as the work the copy would have
+-- rolled back.
 --
 -- One row per issue holds the newest of them, and pushed_at cannot say which that is: every push
--- is applied at the daemon's own now, so a redelivered webhook, the per-issue read's rebuild of a
--- push whose webhook then arrives as well, and a webhook an hour late are each applied later than
--- the push they repeat or that replaced them. issue_push_heads says it instead. It holds every
+-- is recorded at the database's own now, so a redelivered webhook, the per-issue read's rebuild of
+-- a push whose webhook then arrives as well, and a webhook an hour late are each recorded later
+-- than the push they repeat or that replaced them. issue_push_heads says it instead. It holds every
 -- commit the issue's recorded pushes replaced or left, so a push that leaves the branch on a
 -- commit it holds — one the record holds already, one behind it, or one setting the branch back
 -- on a commit it held — moves neither column; a push that leaves the branch on a commit it does
 -- not hold moves both, and pushed_at only ever later (store.Store.RecordIssuePush, which says
 -- what the record cannot know). The all-zero sha GitHub names as a new branch's before and a
 -- deleted branch's after is no commit and is never held, and a deletion moves neither column.
--- seen_at is when the daemon first saw the commit, and each issue keeps the 256 it saw last, more
--- than the commits of the hundred newest entries of the branch's activity, which is all the
--- per-issue read rebuilds pushes from.
+-- seen_at is when the database first recorded the commit, and each issue keeps the 256 it saw
+-- last, more than the commits of the hundred newest entries of the branch's activity, which is all
+-- the per-issue read rebuilds pushes from.
 --
 -- An issue the daemon has recorded no push for has no row, and nothing of it is refused by this
 -- rule, because nothing newer than its copies is known to be on GitHub. That is also what a
@@ -77,6 +78,11 @@ create table issue_push_heads (
 -- the pods after it hold that work's descendants, so the older copy is closed unsent. Both spend
 -- the copy's one attempt, as `refused_older` does. A daemon of an earlier release reads neither,
 -- since it never reads the outcome of a row whose attempt is spent.
+--
+-- Nothing writes `refused_older` any more, since 20261114090103_workspace_restore_asks: a copy
+-- written after the asking pod's first ask is sent to no ask of that pod and nothing is recorded
+-- on it (runtime.DecideWorkspaceRestore). Both checks still admit it, because a row an earlier
+-- daemon wrote can hold it.
 alter table workspace_bundles
   drop constraint workspace_bundles_attempt_outcome,
   add constraint workspace_bundles_attempt_outcome
