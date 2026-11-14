@@ -302,10 +302,10 @@ func ControllerNoticeRole(topic string) (string, bool) {
 }
 
 // NamesControllerNoticeLane reports whether any of topics is a controller notice lane
-// (ControllerNoticeRole). It is the one question a caller asks before reading a session's roles:
-// that lane is the only private stream subject whose owner ReachesPrivateStreamSubject reads them
-// for, so a topic set naming none needs no read (cmd/listener's subscribeHandler,
-// store.Registry's controllerLaneRoles).
+// (ControllerNoticeRole). It is the one question a caller asks before reading a controller role's
+// claim: that lane is the only private stream subject whose owner ReachesPrivateStreamSubject
+// reads the session's roles for, so a topic set naming none needs no claim read
+// (store.Registry's controllerLaneRoles).
 func NamesControllerNoticeLane(topics []string) bool {
 	return slices.ContainsFunc(topics, func(topic string) bool {
 		_, lane := ControllerNoticeRole(topic)
@@ -321,10 +321,11 @@ func NamesControllerNoticeLane(topics []string) bool {
 // session's own: its agent subject, and the controller notice lane of a project whose controller
 // role roles names (ControllerNoticeRole), which its holder registers because a session receives
 // what its own consumer delivers and nothing else, the lane's core subscription having gone with
-// the rest of that receive path (INFRA-771). roles is what the session holds, as the role claims
-// say (store.Registry.RolesHeldBy), so a session that lost the role loses the lane at its next
-// registration. A session id holding `*` or `>` makes a wildcard of its "own" agent subject, which
-// is no session's alone and counts too.
+// the rest of that receive path (INFRA-771). roles is what the session holds, as each controller
+// role's own claim record says (store.Registry's controllerLaneRoles, which reads the record of
+// every lane's role from the claim bucket rather than the listener's copy of the claims), so a
+// session that lost the role loses the lane at its next registration. A session id holding `*`
+// or `>` makes a wildcard of its "own" agent subject, which is no session's alone and counts too.
 func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	if !slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) }) {
 		return false
