@@ -314,7 +314,7 @@ The spec-writing and spec-rewrite scenarios measure how an agent writes a Dispat
 bun fetch-spec-sources.ts --out "$SKILL_SCENARIOS_WORK/sources" <issue key | dispatch://PROJECT/artifact/slug>
 SKILL_SCENARIOS_SUPERPOWERS=<superpowers plugin> ./rig.sh profile main <checkout>
 SKILL_SCENARIOS_SOURCE=<directory under sources/> ./rig.sh batch spec-writing 1 main
-./rig.sh judge "$SKILL_SCENARIOS_WORK"/runs/spec-writing-main-1
+./rig.sh judge "$SKILL_SCENARIOS_WORK"/archive/runs/spec-writing-main-1
 ./rig.sh score spec-writing
 ```
 
@@ -339,15 +339,38 @@ token, from an owner-only file that is removed when the judge ends. On the provi
 profile's models.yml is the block as the operator wrote it, `!cat` command included, so no key is
 copied anywhere: the container mounts the directory of the file that command reads, read-only.
 
-`rig.sh health <run dir>...` says whether each run's world could take what its agents did. It
-reads three things: the run finished (its `out.txt` ends with an `exit=` line); every completion
-the daemon stand-in refused was answered as `completion-answers.ts`'s `ANSWERS` table allows for
-the run's scenario, label and completing role; and a reviewer-text-findings world took the
-reviewer's completion at least once. It scores nothing and writes nothing: it prints
-`<run>  healthy` or `<run>  unhealthy: <reason>` for each run, then a count. It exits 0 when every
-run is healthy, 1 when one is not, and 2, printing no run, for no argument or for a path that is
-not a run of a scenario and label the table names. Start a batch only once a run of each label in
-each scenario case is healthy.
+Each run's agent runs in a mount namespace of its own (`unshare -Urm`, then a user namespace that
+maps it back to the caller's uid): there the runs directory and the archive hold only its own run,
+and `/tmp` is the run's own `<run>/tmp`, so an agent can neither list nor read another run nor
+leave a file in `/tmp` for one. When a run ends, the rig moves its directory from
+`$SKILL_SCENARIOS_WORK/runs/<run>` to `$SKILL_SCENARIOS_WORK/archive/runs/<run>`; `rig.sh score`
+reads both directories, and `rig.sh judge` and `rig.sh health` take a run in either. At
+`SKILL_SCENARIOS_PARALLEL=1` a run's exit also deletes what the run left at the top of the
+machine's `/tmp`, by the entries it recorded there when it started, and never anything that was
+there before. A run's pushes meet the push guard a Legion pod's do: where the `git` on the
+caller's PATH is Legion's leak-check wrapper, the rig passes the caller's `PUBLIC_LEAK_CHECK` into
+each run's pane and refuses to start a run when it names no readable check.
+
+`rig.sh health [--tmp-snapshot <file>] <run dir>...` says whether each run's world could take what
+its agents did, and whether the run stayed inside its own world. It reads seven things: the run
+finished (its `out.txt` ends with an `exit=` line); every completion line names a role the
+scenario boots, and every completion the daemon stand-in refused was answered as
+`completion-answers.ts`'s `ANSWERS` table allows for the run's scenario, label and that role; a
+reviewer-text-findings world took the reviewer's completion at least once; no tool result of any
+agent, and no `out*.txt`, holds a line the push guard prints when it refuses a push or cannot run;
+no `gh` call the gh stand-in refused (`calls.jsonl`) with a refusal `health.ts`'s `GH_DECLARED`
+does not declare for the scenario and the calling role (a call no route of the world answers
+never is); no tool call names a path under another run's directory; and no tool call reads a path
+another of the runs given wrote last before the read, or a `/tmp` entry that was there before the
+run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp` entries taken before the
+batch). A run's own writes outside its directory are recorded and are no verdict on it. Give a
+batch's runs in one call: given one run, `health` sees no other run's writes. It reads every
+transcript under each run's `sessions/`, every role's and every subagent's. It scores nothing and
+writes nothing: it prints `<run>  healthy` or `<run>  unhealthy: <reason>` for each run, naming
+the evidence, then how many runs each rule flags, then a count. It exits 0 when every run is
+healthy, 1 when one is not, and 2, printing no run, for no argument or for a path that is not a
+run of a scenario and label the table names. Start a batch only once a run of each label in each
+scenario case is healthy.
 
 Two tools read production Dispatch, with GET requests only, as the calling session does (its
 envoy.json, or `DISPATCH_URL` with a token): `fetch-spec-sources.ts`, which writes a source's input

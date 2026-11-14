@@ -33,6 +33,7 @@ import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/a
 // The daemon stand-in's log and the answers each run's world may give a completion, read through
 // the one module the stand-in, this score and health.ts share (completion-answers.ts).
 import {
+  answerOf,
   COMPLETE_PATH,
   DAEMON_LOG,
   daemonLines,
@@ -2088,6 +2089,31 @@ export function approval(runDir: string): {
   return { approved: true, version: requested.version, turns: turns.length };
 }
 
+/** The work directory a runs directory belongs to: <work>/runs, where rig.sh makes each run, or
+ * <work>/archive/runs, where its archive_run moves a run once it has ended. The labels' profiles
+ * and the judges' directories are the work directory's, wherever its runs are read from. judge.ts
+ * reads a run's work directory through this too. */
+export function workOfRuns(runsDir: string): string {
+  const parent = path.dirname(path.resolve(runsDir));
+  return path.basename(parent) === "archive" ? path.dirname(parent) : parent;
+}
+
+/** Every run directory of `runsDir` by its name, and, for a work directory's own runs/, every
+ * run its archive/runs/ holds: rig.sh's archive_run moves a run there once it has ended, so a
+ * batch's runs are in the archive by the time it is scored. A name in both is a run cmd_run made
+ * again after its archived one, and the one in runs/ stands. An archive read on its own is the
+ * archive alone. */
+function runsOf(runsDir: string): Map<string, string> {
+  const dirs =
+    path.basename(path.dirname(path.resolve(runsDir))) === "archive"
+      ? [runsDir]
+      : [path.join(workOfRuns(runsDir), "archive", "runs"), runsDir];
+  const runs = new Map<string, string>();
+  for (const dir of dirs)
+    for (const run of existsSync(dir) ? readdirSync(dir) : []) runs.set(run, path.join(dir, run));
+  return runs;
+}
+
 /** Every checkout a run's agent can reach: each label's, as `rig.sh profile` recorded it under
  * <work>/profiles, and the one rig.sh runs from. */
 export function checkouts(work: string): string[] {
@@ -2186,8 +2212,9 @@ const DISPATCH_COMMAND = new RegExp(
   String.raw`${AT_COMMAND}(dispatch[ \t]+([a-z][a-z-]*)${COMMAND_REST})`,
   "gm"
 );
-/** Any command at a command's place, by the same parser: its first word and the rest. */
-const SHELL_COMMAND = new RegExp(
+/** Any command at a command's place, by the same parser: its first word and the rest. health.ts
+ * reads a `bash` call's writes with it. */
+export const SHELL_COMMAND = new RegExp(
   String.raw`${AT_COMMAND}([^\s;&|\x60()<>]+)(${COMMAND_REST})`,
   "gm"
 );
@@ -2252,7 +2279,10 @@ function nativeCall(step: Step, tool: string): DispatchCall {
 /** Shell text with its lines joined where a backslash continues them, and its here-document
  * bodies taken out (a body is data for the command whose `<<` opens it), with each body and the
  * place of its `<<` in that text. */
-function withoutBodies(source: string): { code: string; bodies: { at: number; text: string }[] } {
+export function withoutBodies(source: string): {
+  code: string;
+  bodies: { at: number; text: string }[];
+} {
   const joined = source.replace(/\\\r?\n/g, " ");
   const bodies: { at: number; text: string }[] = [];
   let code = "";
@@ -4168,7 +4198,7 @@ function median(values: number[]): number {
  * which rig.sh copies for each agent another is booted after, and `<run>/out.txt`, the last
  * agent's, which the launch of that next agent starts again (worker_boot). A run that booted
  * one agent has that file alone. */
-function outputs(runDir: string): [file: string, text: string][] {
+export function outputs(runDir: string): [file: string, text: string][] {
   return readdirSync(runDir)
     .filter((file) => /^out(-.+)?\.txt$/.test(file))
     .sort()
@@ -4235,7 +4265,9 @@ function lastDaemonRequest(runDir: string): string | undefined {
  *   - a completion the daemon stand-in refused: a 4xx on `handoff/complete` in daemon.log whose
  *     answer the run's world does not allow for its label and the completing role
  *     (completion-answers.ts's `ANSWERS`, read through `refusedCompletion`, which health.ts
- *     reads too): the row names the role, the status and the code the line carries;
+ *     reads too): the row names the role, the status and the code the line carries; and a
+ *     completion line, whatever its answer, that names no role or a role the scenario boots none
+ *     of, whose completion it was being unknown (`keyOf`);
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
  * command's text) is scored, and flagged (skillReaches), as is one that names a path outside its
  * sandbox (outsideReaches). A record missing or malformed is a rig error too, thrown by the
@@ -4345,11 +4377,16 @@ function unscored(
   // run of k1 and k2 logged `handoff/complete` 400 and nothing else, the base label sending a
   // `ready` the stand-in's contract refused, and each was scored as base behaviour (review
   // 5887659447, finding 1). A 409 whose line carries no code is a log of an older stand-in,
-  // which cannot say which refusal it was, and is a rig error with the rest. health.ts reads the
-  // same refusal through the same function, so a run it calls healthy is never this rig error.
+  // which cannot say which refusal it was, and is a rig error with the rest. So is a completion
+  // line that names no role, or a role the scenario boots none of, whatever it was answered:
+  // whose completion it was is unknown, and no role is guessed for it (completion-answers.ts's
+  // `unkeyed`). health.ts reads the same refusal through the same function, so a run it calls
+  // healthy is never this rig error.
   const refused = refusedCompletion(daemonLines(runDir), scenario, label);
+  if (refused !== undefined && "unkeyed" in refused)
+    return `the daemon stand-in logged a completion no role can be read from: ${refused.unkeyed} (POST ${refused.line.path} answered ${answerOf(refused.line)}), so whose completion the run's world answered is unknown`;
   if (refused !== undefined)
-    return `the daemon stand-in refused a completion: POST ${refused.line.path} answered ${refused.line.status} ${refused.line.code ?? "with no code"} to the ${refused.role ?? "unnamed role"}, so the run went on in a world the daemon would not have served`;
+    return `the daemon stand-in refused a completion: POST ${refused.line.path} answered ${refused.line.status} ${refused.line.code ?? "with no code"} to the ${refused.role}, so the run went on in a world the daemon would not have served`;
   for (const call of calls) {
     const named: string[] = [];
     if (call.tool === "read") named.push(strings(field(call.args, "path")).join(""));
@@ -4405,7 +4442,7 @@ const SYSTEM_DIRS = [
   "/run",
 ];
 /** An absolute path in text: a `/` that starts no URL, ref (`dispatch://…/spec`) or relative path. */
-const ABSOLUTE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._@+-]+)*/g;
+export const ABSOLUTE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._@+-]+)*/g;
 /** Argument fields that carry the text a write puts in a file: a path inside that text is no access. */
 const FILE_CONTENT = new Set([
   "content",
@@ -4441,17 +4478,36 @@ interface RunCall {
   args: unknown;
   texts: [ReachKind, string][];
 }
-function runCalls(runDir: string): RunCall[] {
-  const transcripts = (dir: string): string[] =>
+/** Every transcript of the run: each agent's and each subagent's, at any depth under sessions/.
+ * health.ts reads the run's tool calls and their results through this too. */
+export function transcriptFiles(runDir: string): string[] {
+  const under = (dir: string): string[] =>
     existsSync(dir)
       ? readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
           entry.isDirectory()
-            ? transcripts(path.join(dir, entry.name))
+            ? under(path.join(dir, entry.name))
             : entry.name.endsWith(".jsonl")
               ? [path.join(dir, entry.name)]
               : []
         )
       : [];
+  return under(path.join(runDir, "sessions"));
+}
+/** Every entry of the transcript `file` that parses, in order. A line that is no JSON or no
+ * entry is passed over, as a transcript an agent was stopped in the middle of writing ends. */
+export function transcriptEntries(file: string): SessionEntry[] {
+  return lines(file).flatMap((line) => {
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      return [];
+    }
+    const parsed = SessionEntry.safeParse(entry);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+function runCalls(runDir: string): RunCall[] {
   const contentStrings = (value: unknown): string[] =>
     Array.isArray(value)
       ? value.flatMap(contentStrings)
@@ -4461,17 +4517,10 @@ function runCalls(runDir: string): RunCall[] {
           )
         : [];
   const calls: RunCall[] = [];
-  for (const file of transcripts(path.join(runDir, "sessions")))
-    for (const line of lines(file)) {
-      let entry: unknown;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const parsed = SessionEntry.safeParse(entry);
-      if (!parsed.success || parsed.data.message?.role !== "assistant") continue;
-      for (const part of parsed.data.message.content ?? []) {
+  for (const file of transcriptFiles(runDir))
+    for (const entry of transcriptEntries(file)) {
+      if (entry.message?.role !== "assistant") continue;
+      for (const part of entry.message.content ?? []) {
         if (part.type !== "toolCall") continue;
         const tool = part.name ?? "tool";
         calls.push({
@@ -4603,17 +4652,20 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   const rows: Row[] = [];
   const errors: { run: string; key: string; reason: string }[] = [];
   // Each label's checkout, as `rig.sh profile` recorded it.
-  const profiles = path.join(path.dirname(runsDir), "profiles");
+  const profiles = path.join(workOfRuns(runsDir), "profiles");
   const labels = new Map(
     (existsSync(profiles) ? readdirSync(profiles) : [])
       .filter((label) => existsSync(path.join(profiles, label, "checkout")))
       .map((label) => [label, readFileSync(path.join(profiles, label, "checkout"), "utf8").trim()])
   );
+  // Every run of the work directory, by its name: each in `runsDir`, and, for a work directory's
+  // own runs/, each archive_run moved to its archive/runs/ once it ended (`runsOf`).
+  const runs = runsOf(runsDir);
   // Every run's PR head, to tell another run's line from a wrong one (`testerProof`, which is
   // the one reader). A world.json that does not parse is its own run's rig error, below.
-  const heads = (existsSync(runsDir) ? readdirSync(runsDir) : []).flatMap((run) => {
+  const heads = [...runs.values()].flatMap((dir) => {
     try {
-      return [worldIn(path.join(runsDir, run)).head];
+      return [worldIn(dir).head];
     } catch {
       return [];
     }
@@ -4622,17 +4674,17 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   // name it. A run that records none is scored or not by unscored, below; a dispatch.json that does
   // not parse is its own run's rig error, below.
   const sharing = new Map<string, string[]>();
-  for (const run of existsSync(runsDir) ? readdirSync(runsDir) : []) {
+  for (const [run, dir] of runs) {
     let dispatch: string | undefined;
     try {
-      dispatch = dispatchOf(path.join(runsDir, run));
+      dispatch = dispatchOf(dir);
     } catch {
       continue;
     }
     if (dispatch !== undefined) sharing.set(dispatch, [...(sharing.get(dispatch) ?? []), run]);
   }
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
-  const reach = checkouts(path.dirname(runsDir));
+  const reach = checkouts(workOfRuns(runsDir));
   // Each scenario's scorer, keyed by the name its runs' directories start with. A cased
   // scenario's scorer takes the case both the run's directory and its case.txt name (CASED,
   // runCase); a scenario that takes none is handed "".
@@ -4648,13 +4700,12 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
   };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
-  for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
+  for (const [run, dir] of [...runs].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     const match = name.exec(run);
     const score = scorers[match?.[1] ?? ""];
     if (!match || !score) continue;
     const [, scenario = "", named = ""] = match;
     if (only && scenario !== only) continue;
-    const dir = path.join(runsDir, run);
     // undefined for a scenario that takes no case, null for a cased scenario's directory that
     // names none.
     const cased = CASED[scenario];
@@ -4669,7 +4720,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       // The paths the run had when it ran, which its transcripts name, never those of a copy
       // scored elsewhere (ranAt).
       const ran = ranAt(dir, session(dir));
-      const work = path.dirname(path.dirname(ran));
+      const work = workOfRuns(path.dirname(ran));
       const profile = path.join(work, "profiles", label);
       // The run's own skills: its HOME (in its directory), its label's profile and checkout.
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);

@@ -159,6 +159,16 @@ const message = JSON.stringify({ message: { body: "Plan: re-check the attachment
 const capture = { "asks.json": "[]", "events.json": seeded, "message.json": message };
 run("ask-on-message-head-1", { ...capture, "out.txt": noKey }, header);
 run("ask-on-message-head-2", { ...capture, "out.txt": "exit=0\n" }, [...header, ...turn]);
+// head-2's run, ended and moved to <work>/archive/runs as rig.sh's archive_run moves every run
+// that has ended: `score.ts runs <work>/runs` scores it there.
+run("ask-on-message-archived-1", { ...capture, "out.txt": "exit=0\n" }, [...header, ...turn]);
+stagings.push(() => {
+  mkdirSync(path.join(work, "archive", "runs"), { recursive: true });
+  renameSync(
+    path.join(runs, "ask-on-message-archived-1"),
+    path.join(work, "archive", "runs", "ask-on-message-archived-1")
+  );
+});
 
 /** An assistant turn whose one tool call is `bash` running `command`, before the handoff write. */
 const bash = (command: string, id = "call-1", timestamp = "2026-09-30T17:27:30.000Z") => ({
@@ -230,6 +240,7 @@ const accepted = (id: string, version: number) =>
       at: "2026-09-30T17:29:40.000Z",
       path: "/legion/v1/handoff/complete",
       status: 200,
+      role: "tester",
       grantId: "g-1",
       handoffId: id,
       handoffVersion: version,
@@ -3368,6 +3379,7 @@ const reviewDaemon = [
     at: "2026-09-30T17:40:00.000Z",
     path: "/legion/v1/handoff/complete",
     status: 200,
+    role: "reviewer",
     grantId: "g-1",
   },
 ];
@@ -5099,12 +5111,14 @@ const changesRequested = (commit: string, at = "2026-09-30T17:38:00.000Z") => ({
 /** The daemon stand-in's log line of a completion it refused as the workflow refuses one of a
  * phase the completing role does not run, which is the answer the implementer of this loop gets
  * in `reviewing` and either half gets in `accepting` (rig.sh's run_threads_closed), 409
- * HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts): a reading of the run, and no rig error. */
+ * HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts): a reading of the run, and no rig error. The
+ * stand-in names the role it serves on every line, and a completion's is read by it alone. */
 const refusedCompletion = {
   at: "2026-09-30T17:40:00.000Z",
   path: "/legion/v1/handoff/complete",
   status: 409,
   code: "HANDOFF_NOT_CURRENT_PHASE",
+  role: "implementer",
   grantId: "g-1",
 };
 /** The line of a completion the stand-in accepted, which is what a reviewing phase's own
@@ -5113,6 +5127,7 @@ const completed = {
   at: refusedCompletion.at,
   path: refusedCompletion.path,
   status: 200,
+  role: "reviewer",
   grantId: "g-1",
 };
 /** The backward move the architect makes and neither role does. */
@@ -6269,6 +6284,15 @@ fixRun("threads-closed-text-fixes-head-96", {
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([completed, { ...completed, status: 409 }]),
 });
+// head-101: head-1's implementer refusal, 409 HANDOFF_NOT_CURRENT_PHASE, on a line that names no
+// role. The stand-in names the role it serves on every line, and no role is guessed for a
+// completion whose line names none, so whose completion it was is unknown: a rig error, where
+// the guess read it as the implementer's and scored it.
+fixRun("threads-closed-text-fixes-head-101", {
+  "calls.jsonl": calls(closedBoth),
+  "pushes.log": pushed(fix.fixed),
+  "daemon.log": calls([{ ...refusedCompletion, role: undefined }]),
+});
 // head-98: the reviewer's second approval on the two-step route, its create naming no head and
 // sending no body, after the implementer's push. GitHub creates that review at the pull
 // request's head when the create is made, which is the head the push left, and the gh stand-in
@@ -7021,6 +7045,12 @@ test("a run whose agent got a turn and did nothing is a failure", () => {
   for (const name of ["tester-proof-head-2", "ask-on-message-head-2"]) {
     expect(out).toContain(`${name}\tpass=false\t`);
   }
+});
+
+// Catches: a score that reads <work>/runs alone, where every run of a finished batch has moved
+// to <work>/archive/runs (rig.sh's archive_run), so a batch would score no run at all.
+test("a run in the work directory's archive is scored with the rest", () => {
+  expect(out).toContain("ask-on-message-archived-1\tpass=false\tref=false\tasks=0 ");
 });
 
 test("the tester ran the CLI when the bun stand-in recorded a run of greet.ts, not when a command named it", () => {
@@ -8419,6 +8449,16 @@ test("a completion the daemon stand-in refused is a rig error, unless it is the 
     "threads-closed-text-fixes-head-96",
   ])
     expect(out).not.toContain(`${name}\tpass=`);
+});
+
+// Catches: a completion line that names no role scored as the role booted in its place: head-101
+// is head-1's implementer refusal with its role left off, which the positional guess read as the
+// implementer's, the one role HANDOFF_NOT_CURRENT_PHASE is allowed to, and scored.
+test("a completion line that names no role is a rig error, never given a role", () => {
+  expect(out).toContain(
+    "threads-closed-text-fixes-head-101\trig error: the daemon stand-in logged a completion no role can be read from: a completion line names no role (POST /legion/v1/handoff/complete answered 409 HANDOFF_NOT_CURRENT_PHASE)"
+  );
+  expect(out).not.toContain("threads-closed-text-fixes-head-101\tpass=");
 });
 
 // Catches: one exemption for a code whatever label and role it answered. The same 409

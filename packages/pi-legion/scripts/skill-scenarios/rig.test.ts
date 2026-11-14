@@ -592,6 +592,229 @@ describe("next_run", () => {
   test("1 when the label has no run of the scenario", () => {
     expect(next(freshDir("numbering-empty"), "spec-rewrite", "s1").stdout).toBe("1\n");
   });
+
+  // Catches: numbering that reads $work/runs alone. A run that ended is in the archive
+  // (archive_run), so a later batch numbered from runs/ alone would take its number, and the
+  // archive would replace it with the new run when that one ended.
+  test("counts the runs the archive holds", () => {
+    const work = freshDir("numbering-archive");
+    mkdirSync(path.join(work, "runs", "spec-writing-s1-3"), { recursive: true });
+    mkdirSync(path.join(work, "archive", "runs", "spec-writing-s1-12"), { recursive: true });
+    expect(next(work, "spec-writing", "s1").stdout).toBe("13\n");
+  });
+});
+
+// Each serial run's exit removes what the run made at the top of the machine's shared scratch,
+// by the record scratch_before took when it started, and records it for health.ts; anything that
+// was there before the run, a previous batch's file included, stays. Each row stands a directory
+// of its own in for /tmp (shared_scratch).
+describe("scratch_clean", () => {
+  function cleaned(parallel: string) {
+    const shared = freshDir("shared-scratch");
+    const R = freshDir("scratch-run");
+    writeFileSync(path.join(shared, "pre-batch.json"), "from an earlier batch\n");
+    const result = bash(
+      [
+        fn("note"),
+        fn("scratch_before"),
+        fn("scratch_clean"),
+        "R=$1 shared_scratch=($2)",
+        "scratch_before",
+        'echo run >"$2/LWEVAL-1-review.json"',
+        'mkdir "$2/a-dir" && echo run >"$2/a-dir/inside"',
+        "scratch_clean",
+      ].join("\n"),
+      [R, shared],
+      { SKILL_SCENARIOS_PARALLEL: parallel }
+    );
+    return { shared, R, result };
+  }
+
+  // Catches: a file one run leaves in /tmp still there when the next starts, and an entry from
+  // before the run deleted with the run's own.
+  test("a serial run's files leave the shared scratch, and what was there before it stays", () => {
+    const { shared, R, result } = cleaned("1");
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(readdirSync(shared)).toEqual(["pre-batch.json"]);
+    expect(
+      readFileSync(path.join(R, "scratch-created.txt"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => line.replace(/^\S+ /, ""))
+        .sort()
+    ).toEqual([path.join(shared, "LWEVAL-1-review.json"), path.join(shared, "a-dir")]);
+  });
+
+  // Catches: a cleanup at a parallelism above 1, which would delete files a concurrent run is
+  // still using and record them as this run's.
+  test("runs side by side leave the shared scratch as it is, and say so", () => {
+    const { shared, R, result } = cleaned("2");
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("only serial runs (SKILL_SCENARIOS_PARALLEL=1) clean");
+    expect(readdirSync(shared).sort()).toEqual(["LWEVAL-1-review.json", "a-dir", "pre-batch.json"]);
+    expect(existsSync(path.join(R, "scratch-created.txt"))).toBe(false);
+  });
+});
+
+// A run's exit moves its directory out of the runs directory every run of a batch is made in,
+// so a later run's agent finds no finished sibling beside its own (the 2026-11-14 agents, every
+// push refused, read the pointer files of runs that had ended).
+describe("archive_run", () => {
+  const archive = (work: string, R: string) =>
+    bash(`${fn("archive_run")}\nwork=$1 R=$2\narchive_run`, [work, R]);
+
+  // Catches: a run left in runs/ when it ends, and a rerun's archive nested inside the archived
+  // run of its name rather than replacing it, as cmd_run replaces a run in runs/.
+  test("a run that ended leaves runs/ for the archive, replacing the archived run of its name", () => {
+    const work = freshDir("archive");
+    const R = path.join(work, "runs", "threads-closed-text-fixes-head-1");
+    mkdirSync(path.join(R, "sessions"), { recursive: true });
+    writeFileSync(path.join(R, "out.txt"), "exit=0\n");
+    mkdirSync(path.join(work, "runs", "threads-closed-text-fixes-head-2"));
+    const archived = path.join(work, "archive", "runs", "threads-closed-text-fixes-head-1");
+    mkdirSync(archived, { recursive: true });
+    writeFileSync(path.join(archived, "earlier"), "");
+    expect(archive(work, R)).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(readdirSync(path.join(work, "runs"))).toEqual(["threads-closed-text-fixes-head-2"]);
+    expect(readdirSync(archived).sort()).toEqual(["out.txt", "sessions"]);
+  });
+
+  // Catches: a live read's directory, which is no run of runs/, moved with the runs.
+  test("a directory outside runs/ stays where it is", () => {
+    const work = freshDir("archive-live");
+    const R = path.join(work, "live-read", "head");
+    mkdirSync(R, { recursive: true });
+    expect(archive(work, R).code).toBe(0);
+    expect(existsSync(R)).toBe(true);
+    expect(existsSync(path.join(work, "archive"))).toBe(false);
+  });
+});
+
+// A Legion pod's `git` is a leak-check wrapper (/opt/legion/bin/git): every push runs the leak
+// guard, which finds the shared check through PUBLIC_LEAK_CHECK. A run's HOME and configuration
+// home are its own and hold no pointer file, so a pane without the variable had every push of the
+// 2026-11-14 batch refused with `LEAK CHECK SETUP ERROR`. Each row builds a run's pane with
+// base_env under a `git` of the row's own first on the caller's PATH.
+describe("push_guard", () => {
+  /** A `git` that, as Legion's wrapper does, runs a push with `-c core.hooksPath=<hooks>`. */
+  const WRAPPER =
+    '#!/bin/sh\n# a push runs with -c core.hooksPath=/opt/legion/githooks\nexec /usr/bin/git "$@"\n';
+  /** A `git` that runs the real one and nothing else. */
+  const PLAIN = '#!/bin/sh\nexec /usr/bin/git "$@"\n';
+  /** base_env for a run of its own, with `git` first on the caller's PATH and the caller's
+   * PUBLIC_LEAK_CHECK `check` (none for undefined): its status, its stderr and its pane's lines. */
+  function pane(git: string, check: string | undefined, callerPath?: string) {
+    const dir = freshDir("push-guard");
+    const bin = path.join(dir, "caller-bin");
+    mkdirSync(bin);
+    writeFileSync(path.join(bin, "git"), git, { mode: 0o755 });
+    const R = path.join(dir, "run");
+    const result = bash(
+      [
+        fn("fail"),
+        fn("push_guard"),
+        fn("base_env"),
+        "R=$1 P=$2 profile=skills-test",
+        "base_env",
+      ].join("\n"),
+      [R, profileDir()],
+      {
+        PATH: callerPath ?? `${bin}:${childEnv.PATH}`,
+        USER: "rig",
+        ...(check === undefined ? {} : { PUBLIC_LEAK_CHECK: check }),
+      }
+    );
+    const file = path.join(R, "pane.env");
+    const lines = existsSync(file) ? readFileSync(file, "utf8").split("\n") : [];
+    return { ...result, R, lines };
+  }
+  const check = () => {
+    const file = path.join(freshDir("leak-check"), "public-leak-check.sh");
+    writeFileSync(file, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    return file;
+  };
+
+  // Catches: a pane that drops the caller's PUBLIC_LEAK_CHECK, as base_env's did.
+  test("a wrapper git and a readable check: the pane names the check", () => {
+    const named = check();
+    const { code, stderr, lines } = pane(WRAPPER, named);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(lines).toContain(`PUBLIC_LEAK_CHECK=${named}`);
+  });
+
+  // Catches: a world built whose guard would refuse every push, which measures nothing.
+  test("a wrapper git and no readable check: the run is refused, naming the variable", () => {
+    for (const named of [undefined, path.join(freshDir("leak-check"), "missing.sh")]) {
+      const { code, stderr } = pane(WRAPPER, named);
+      expect(code).toBe(1);
+      expect(stderr).toContain(
+        `is a leak-check wrapper, which refuses every push whose leak check it cannot find, and PUBLIC_LEAK_CHECK names no readable check (${named ?? "unset"})`
+      );
+    }
+  });
+
+  // Catches: a rig that demands a check where no wrapper would run one, or invents a variable.
+  test("any other git and no check: nothing is added and nothing is refused", () => {
+    const { code, stderr, lines } = pane(PLAIN, undefined);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(lines.filter((line) => line.startsWith("PUBLIC_LEAK_CHECK="))).toEqual([]);
+  });
+
+  // Catches: a fix that gets the run's pushes through by getting around the guard. Under
+  // Legion's own wrappers and the caller's check, a push from the run's pane passes the guard,
+  // and the same push carrying a credential the shared check refuses is refused by it. The key
+  // is built from two parts here so this file's own push carries no such line.
+  const guard = "/opt/legion/bin/git";
+  const shared = process.env.PUBLIC_LEAK_CHECK ?? "";
+  test.skipIf(!existsSync(guard) || !existsSync("/opt/legion/bin/legion") || !existsSync(shared))(
+    "a push from a run's pane passes the guard, and one carrying a secret is refused by it",
+    () => {
+      const { code, stderr, R, lines } = pane(PLAIN, shared, `/opt/legion/bin:/usr/bin:/bin`);
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      const vars = Object.fromEntries(
+        lines
+          .filter((line) => line.includes("="))
+          .map((line) => {
+            const at = line.indexOf("=");
+            return [line.slice(0, at), line.slice(at + 1)];
+          })
+      );
+      const real = (...args: string[]) =>
+        Bun.spawnSync([
+          "/usr/bin/git",
+          "-c",
+          "user.name=A",
+          "-c",
+          "user.email=a@example.invalid",
+          ...args,
+        ]);
+      const remote = path.join(R, "remote.git");
+      const src = path.join(R, "src");
+      expect(real("init", "-q", "--bare", remote).exitCode).toBe(0);
+      expect(real("init", "-q", src).exitCode).toBe(0);
+      writeFileSync(path.join(src, "README.md"), "The widgets CLI.\n");
+      expect(real("-C", src, "add", "-A").exitCode).toBe(0);
+      expect(real("-C", src, "commit", "-qm", "init").exitCode).toBe(0);
+      const push = () => {
+        const made = Bun.spawnSync(
+          ["/bin/sh", "-c", 'git -C "$1" push "$2" HEAD:refs/heads/main', "-", src, remote],
+          {
+            env: vars,
+          }
+        );
+        return { code: made.exitCode, err: made.stderr.toString() };
+      };
+      const clean = push();
+      expect(clean).toMatchObject({ code: 0 });
+      expect(clean.err).not.toContain("LEAK CHECK SETUP ERROR");
+      writeFileSync(path.join(src, "keys.txt"), `aws ${"AKIA"}${"QZXWVUTSRQPONMLK"}\n`);
+      expect(real("-C", src, "add", "-A").exitCode).toBe(0);
+      expect(real("-C", src, "commit", "-qm", "keys").exitCode).toBe(0);
+      const secret = push();
+      expect(secret.code).not.toBe(0);
+      expect(secret.err).toContain("LEAK CHECK: refusing");
+    }
+  );
 });
 
 // Every worker run's Envoy role topics are its Legion project's and its issue's, and worker_boot
@@ -1249,40 +1472,57 @@ describe("health", () => {
 
   // Catches: a health that calls the daemon's own deliberate refusal unhealthy. threads-closed's
   // implementer, whose round stands, is refused 409 HANDOFF_NOT_CURRENT_PHASE by either label's
-  // daemon; a log written before the stand-in named the role is read by its boot, the
-  // implementer being the first rig.sh boots there.
+  // daemon.
   test("a threads-closed run whose only refusal is the implementer's not-current-phase is healthy", () => {
     const named = run("threads-closed-text-fixes-head-1", [
       [complete(409, NOT_CURRENT, "implementer")],
       [complete(200, undefined, "reviewer")],
     ]);
-    const unnamed = run("threads-closed-code-defect-base-1", [[complete(409, NOT_CURRENT)]]);
-    const { code, stdout } = health(named, unnamed);
+    const { code, stdout } = health(named);
     expect(code).toBe(0);
     expect(verdict(stdout, named)).toBe("threads-closed-text-fixes-head-1  healthy");
-    expect(verdict(stdout, unnamed)).toBe("threads-closed-code-defect-base-1  healthy");
-    expect(stdout).toEndWith("health: 0 of 2 runs unhealthy\n");
+    expect(stdout).toEndWith("health: 0 of 1 runs unhealthy\n");
+  });
+
+  // Catches: a completion line that names no role given the role of the agent booted in its
+  // place, which read this head threads-closed 409 HANDOFF_NOT_CURRENT_PHASE as the implementer's,
+  // the one role that answer is allowed to; and a line naming a role the scenario boots none of
+  // read as a role's. Whose completion either was is unknown, so each fails closed, whatever
+  // its answer.
+  test("a completion line naming no role, or a role the scenario never boots, is unhealthy", () => {
+    const unnamed = run("threads-closed-text-fixes-head-3", [[complete(409, NOT_CURRENT)]]);
+    const taken = run("threads-closed-code-defect-head-3", [[complete(200, undefined)]]);
+    const stranger = run("reviewer-text-findings-defect-base-1", [
+      [complete(200, undefined, "tester"), complete(200, undefined, "reviewer")],
+    ]);
+    const { code, stdout } = health(unnamed, taken, stranger);
+    expect(code).toBe(1);
+    expect(verdict(stdout, unnamed)).toBe(
+      "threads-closed-text-fixes-head-3  unhealthy: unkeyable completion: a completion line names no role (POST /legion/v1/handoff/complete answered 409 HANDOFF_NOT_CURRENT_PHASE), so whose completion it was is unknown"
+    );
+    expect(verdict(stdout, taken)).toContain(
+      "unhealthy: unkeyable completion: a completion line names no role (POST /legion/v1/handoff/complete answered 200)"
+    );
+    expect(verdict(stdout, stranger)).toContain(
+      "unhealthy: unkeyable completion: a completion line names the tester, a role reviewer-text-findings boots none of"
+    );
+    expect(stdout).toEndWith("health: 3 of 3 runs unhealthy\n");
   });
 
   // Catches: the same code read as allowed whatever role it answered. The head daemon refuses a
   // reviewer 409 HANDOFF_NOT_CURRENT_PHASE only once its row holds a commit, which no
   // threads-closed world gives it, so a head reviewer refused so is a world the daemon would not
-  // have served, whether its line names the role or its boot does.
+  // have served.
   test("a head threads-closed reviewer refused not-current-phase is unhealthy", () => {
     const named = run("threads-closed-text-fixes-head-2", [
       [complete(409, NOT_CURRENT, "implementer")],
       [complete(409, NOT_CURRENT, "reviewer")],
     ]);
-    const unnamed = run("threads-closed-text-fixes-head-3", [
-      [complete(409, NOT_CURRENT)],
-      [complete(409, NOT_CURRENT)],
-    ]);
-    const { code, stdout } = health(named, unnamed);
+    const { code, stdout } = health(named);
     expect(code).toBe(1);
-    for (const dir of [named, unnamed])
-      expect(verdict(stdout, dir)).toContain(
-        "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE"
-      );
+    expect(verdict(stdout, named)).toContain(
+      "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE"
+    );
   });
 
   // Catches: one exemption for every label. Main `ff2a10ef` refuses a reviewer whose round has
@@ -1407,11 +1647,392 @@ describe("health", () => {
       [healthy, path.join(freshDir("health"), "missing")],
       [healthy, freshDir("tester-proof-head")],
       [run("threads-closed-text-fixes-ablate-1", [[]])],
+      ["--tmp-snapshot", path.join(freshDir("health"), "missing"), healthy],
     ]) {
       const { code, stdout, stderr } = health(...args);
       expect([args, code, stdout]).toEqual([args, 2, ""]);
-      expect(stderr).toContain("usage: rig.sh health <run dir>...");
+      expect(stderr).toContain("usage: rig.sh health [--tmp-snapshot <file>] <run dir>...");
     }
+  });
+
+  /** The world's repository and the route that refuses, as rig.sh's fixture_write writes them:
+   * GitHub's 404 for the protection of the unprotected base, and a route that answers. */
+  const WORLD = {
+    key: "LWEVAL-1",
+    repo: "example/widgets",
+    pr: 1001,
+    branch: "legion/LWEVAL-1",
+    base: "main",
+    head: "0123456789abcdef0123",
+  };
+  const ROUTES = [
+    {
+      match: "^gh api .*/branches/main/protection",
+      stderr: "gh: Branch not protected (HTTP 404)\n",
+      exit: 1,
+    },
+    { match: "^gh pr view", stdout: { number: 1001 } },
+  ];
+  /** One tool call of an agent, made at `at`, with the text of its result. */
+  type Step = { tool: string; args: object; result?: string; at?: string };
+  /** A run named `name` as a worker batch leaves it: its pane file recording it under `ran`, the
+   * directory its transcripts' paths are written under (a run read from the archive or from a
+   * copy is read under another); the transcript `steps` under `sessions/<agent>` (the run's own
+   * for ""), its gh calls, the world's routes and repository, a reviewer completion taken, and,
+   * given `before`, the shared scratch's entries when it started (rig.sh's scratch_before). */
+  function worldRun(
+    name: string,
+    {
+      steps = [],
+      agent = "",
+      calls = [],
+      before,
+    }: { steps?: Step[]; agent?: string; calls?: object[]; before?: string[] }
+  ) {
+    const dir = run(name, [[complete(200, undefined, "reviewer")]]);
+    const ran = `/recorded/work/runs/${name}`;
+    writeFileSync(
+      path.join(dir, "pane.env"),
+      `HOME=${ran}/home\nTMPDIR=${ran}/tmp\nSKILL_SCENARIO_RUN=${ran}\nPATH=${ran}/bin:/usr/bin\n`
+    );
+    if (before !== undefined)
+      writeFileSync(path.join(dir, "scratch-before.txt"), before.map((one) => `${one}\n`).join(""));
+    const sessions = path.join(dir, "sessions", agent);
+    mkdirSync(sessions, { recursive: true });
+    const entries = [
+      { type: "session", id: "s1" },
+      ...steps.flatMap((step, index) => [
+        {
+          type: "message",
+          timestamp: step.at ?? "2026-11-14T00:00:00.000Z",
+          message: {
+            role: "assistant",
+            content: [{ type: "toolCall", id: `c${index}`, name: step.tool, arguments: step.args }],
+          },
+        },
+        ...(step.result === undefined
+          ? []
+          : [
+              {
+                type: "message",
+                message: {
+                  role: "toolResult",
+                  toolCallId: `c${index}`,
+                  toolName: step.tool,
+                  content: [{ type: "text", text: step.result }],
+                },
+              },
+            ]),
+      ]),
+    ];
+    writeFileSync(
+      path.join(sessions, "2026-11-14T00-00-00-000Z_s1.jsonl"),
+      entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")
+    );
+    writeFileSync(
+      path.join(dir, "calls.jsonl"),
+      [{ at: "2026-11-14T00:00:00.000Z", opened: "calls.jsonl" }, ...calls]
+        .map((call) => `${JSON.stringify(call)}\n`)
+        .join("")
+    );
+    writeFileSync(path.join(dir, "fixtures.json"), JSON.stringify({ routes: ROUTES }));
+    writeFileSync(path.join(dir, "world.json"), JSON.stringify(WORLD));
+    return { dir, ran };
+  }
+  /** A gh call as the gh stand-in records it. */
+  const gh = (by: string, argv: string[], exit: number, route: string | null, review?: object) => ({
+    at: "2026-11-14T00:00:01.000Z",
+    as: "gh",
+    by,
+    argv,
+    route,
+    ...(review === undefined ? {} : { review }),
+    exit,
+  });
+
+  // Catches: a rule that reads more than it means. This run stays in its own directory, HOME and
+  // TMPDIR under the path its pane file records (a `>` inside a quoted sed script, a here-document
+  // body naming another run, and prose in a file's content are no writes or reaches), was shown
+  // the leak check's source and a clean push's `LEAK CHECK:` lines, and met only the gh refusals
+  // reviewer-text-findings declares for a reviewer: the base's protection 404, and the 422 of a
+  // submit, with a `--jq` failure over an answer the world gave. Every rule passes it.
+  test("a run that stayed in its own world and met only declared refusals is healthy", () => {
+    const name = "reviewer-text-findings-text-only-head-5";
+    const ran = `/recorded/work/runs/${name}`;
+    const { dir } = worldRun(name, {
+      steps: [
+        {
+          tool: "bash",
+          args: {
+            command: `cat ${ran}/ws/README.md > ${ran}/tmp/copy && cp /etc/hostname ${ran}/ws/h 2>/dev/null && env | sed 's/=x/=<set>/'`,
+          },
+        },
+        {
+          tool: "bash",
+          args: {
+            command: `cat > ${ran}/tmp/body.md <<'EOF'\nsee /recorded/work/runs/threads-closed-text-fixes-base-1/out.txt\nEOF`,
+          },
+        },
+        {
+          tool: "write",
+          args: { path: `${ran}/tmp/LWEVAL-1-review.json`, content: "writes /tmp/x in prose" },
+        },
+        { tool: "edit", args: { input: `[${ran}/ws/docs/cli.md#5C66]\nPUT 1.=1:\n+text\n` } },
+        {
+          tool: "read",
+          args: { path: "/opt/leak-check/public-leak-check.sh" },
+          result: '26:  echo "LEAK CHECK ERROR: $*. The check could not finish (exit 2)." >&2\n',
+        },
+        {
+          tool: "bash",
+          args: { command: `jj -R ${ran}/ws git push --bookmark legion/LWEVAL-1` },
+          result: "LEAK CHECK: read 1 commit(s) in 0s\nLEAK CHECK: clean: the push\n",
+        },
+      ],
+      calls: [
+        gh(
+          "reviewer",
+          ["api", "repos/example/widgets/branches/main/protection"],
+          1,
+          ROUTES[0]?.match ?? ""
+        ),
+        gh(
+          "reviewer",
+          ["api", "-X", "POST", "repos/example/widgets/pulls/1001/reviews/6001/events"],
+          1,
+          null
+        ),
+        gh(
+          "reviewer",
+          ["pr", "view", "1001", "--json", "comments", "-q", ".comments[]"],
+          1,
+          "^gh pr view"
+        ),
+      ],
+    });
+    const { code, stdout } = health(dir);
+    expect(verdict(stdout, dir)).toBe(`${name}  healthy`);
+    for (const rule of ["push guard", "gh", "another run", "another run's write"])
+      expect(stdout).toContain(`health: ${rule}: 0 of 1 runs\n`);
+    // No write of it left its own directory: a `>` inside a quoted sed script redirects nothing.
+    expect(stdout).toContain(
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 0 of 1 runs\n"
+    );
+    expect(code).toBe(0);
+  });
+
+  // Catches: a push the guard refused, or a guard that could not start, read as a healthy run.
+  // No world of this rig plants a secret, so either is the guard refusing what a production pod
+  // lets through; the 2026-11-14 batch met the first in every base run and in five head ones.
+  test("a push-guard refusal an agent was shown is unhealthy, naming the transcript and the line", () => {
+    const setup = worldRun("threads-closed-text-fixes-head-4", {
+      agent: "reviewer",
+      steps: [
+        {
+          tool: "bash",
+          args: { command: "jj git push --bookmark legion/LWEVAL-1" },
+          result:
+            "Changes to push to origin:\ngit: LEAK CHECK SETUP ERROR: the push to origin: the shared public leak check could not be found: PUBLIC_LEAK_CHECK names none\n",
+        },
+      ],
+    }).dir;
+    const refused = worldRun("threads-closed-code-defect-base-4", {
+      steps: [
+        {
+          tool: "bash",
+          args: { command: "git push origin HEAD" },
+          result:
+            "LEAK CHECK: refusing the push to origin: the shared public leak check refused it\n  LEAK CHECK: Nothing was pushed.\n",
+        },
+      ],
+    }).dir;
+    const { code, stdout } = health(setup, refused);
+    expect(code).toBe(1);
+    expect(verdict(stdout, setup)).toBe(
+      'threads-closed-text-fixes-head-4  unhealthy: push guard: sessions/reviewer/2026-11-14T00-00-00-000Z_s1.jsonl holds the guard\'s refusal "git: LEAK CHECK SETUP ERROR: the push to origin: the shared public leak check could not be found: PUBLIC_LEAK_CHECK names none"'
+    );
+    expect(verdict(stdout, refused)).toContain(
+      "unhealthy: push guard: sessions/2026-11-14T00-00-00-000Z_s1.jsonl holds the guard's refusal \"LEAK CHECK: refusing the push to origin"
+    );
+    expect(stdout).toContain("health: push guard: 2 of 2 runs\n");
+  });
+
+  // Catches: a refusal of the gh stand-in read as healthy because it is no completion: its own
+  // fallback 404 for a call no route of the world answers, which is the world missing an answer
+  // GitHub gives (the 2026-11-14 batch's `gh api repos/<repo>`), and a production refusal met by
+  // a role the scenario does not declare it for (the base's protection 404 is the reviewer's
+  // merge-gate read, and no implementer's).
+  test("a gh refusal the scenario does not declare for the role is unhealthy", () => {
+    const unrouted = worldRun("reviewer-text-findings-defect-base-3", {
+      calls: [gh("reviewer", ["api", "repos/example/widgets", "--jq", ".default_branch"], 1, null)],
+    }).dir;
+    const role = worldRun("threads-closed-code-defect-base-2", {
+      calls: [
+        gh(
+          "implementer",
+          ["api", "repos/example/widgets/branches/main/protection"],
+          1,
+          ROUTES[0]?.match ?? ""
+        ),
+      ],
+    }).dir;
+    const { code, stdout } = health(unrouted, role);
+    expect(code).toBe(1);
+    expect(verdict(stdout, unrouted)).toBe(
+      "reviewer-text-findings-defect-base-3  unhealthy: gh refusal: calls.jsonl:2, `gh api repos/example/widgets --jq .default_branch` of the reviewer, exited 1: gh: Not Found (HTTP 404) (no route of the world answers it), which reviewer-text-findings does not declare for that role"
+    );
+    expect(verdict(stdout, role)).toContain(
+      "of the implementer, exited 1: gh: Branch not protected (HTTP 404), which threads-closed does not declare for that role"
+    );
+    expect(stdout).toContain("health: gh: 2 of 2 runs\n");
+  });
+
+  // Catches: a run that reached another run's directory measured as its own: the 2026-11-14
+  // agents, refused every push, read the pointer file of a sibling in the same runs directory,
+  // and of a run of another batch. Any agent's transcript counts, a later half's too.
+  test("a tool call naming another run's directory is unhealthy, wherever that run is", () => {
+    const sibling = worldRun("threads-closed-text-fixes-base-2", {
+      agent: "reviewer",
+      steps: [
+        {
+          tool: "read",
+          args: {
+            path: "/recorded/work/runs/threads-closed-text-fixes-head-1/state/home/.config/public-leak-check/path",
+          },
+        },
+      ],
+    }).dir;
+    const batch = worldRun("reviewer-text-findings-defect-base-4", {
+      steps: [
+        {
+          tool: "bash",
+          args: { command: "ls /elsewhere/archive/runs/reviewer-text-findings-defect-base-2/tmp" },
+        },
+      ],
+    }).dir;
+    const { code, stdout } = health(sibling, batch);
+    expect(code).toBe(1);
+    expect(verdict(stdout, sibling)).toBe(
+      "threads-closed-text-fixes-base-2  unhealthy: another run: a read call in sessions/reviewer/2026-11-14T00-00-00-000Z_s1.jsonl names /recorded/work/runs/threads-closed-text-fixes-head-1/state/home/.config/public-leak-check/path, under /recorded/work/runs/threads-closed-text-fixes-head-1"
+    );
+    expect(verdict(stdout, batch)).toContain(
+      "unhealthy: another run: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names /elsewhere/archive/runs/reviewer-text-findings-defect-base-2/tmp, under /elsewhere/archive/runs/reviewer-text-findings-defect-base-2"
+    );
+    expect(stdout).toContain("health: another run: 2 of 2 runs\n");
+  });
+
+  // Catches: a run's own write outside its directory read as a verdict on it, which voids the run
+  // that wrote a file rather than the one a file reached; a later run's read of an earlier run's
+  // write let through, here placed only in a subagent's transcript, one level under a later
+  // half's; reads judged in the order the runs were listed rather than by their times, which reads
+  // the run that read the path before anyone wrote it as contaminated; a read of an entry the
+  // shared scratch held when the run started let through; and a write that climbs out of the run
+  // read as the run's own.
+  test("a read of another run's write, or of scratch from before the run, is unhealthy; a run's own writes are not", () => {
+    const writer = worldRun("threads-closed-text-fixes-head-5", {
+      before: [],
+      steps: [
+        {
+          tool: "write",
+          args: { path: "/tmp/LWEVAL-1-review.json", content: "{}" },
+          at: "2026-11-14T01:00:00.000Z",
+        },
+        {
+          tool: "bash",
+          args: {
+            command: "gh api -X POST repos/x/pulls/1/reviews --input /tmp/LWEVAL-1-review.json",
+          },
+          at: "2026-11-14T01:01:00.000Z",
+        },
+        {
+          tool: "write",
+          args: {
+            path: "/recorded/work/runs/threads-closed-text-fixes-head-5/ws/../../../../../tmp/placeholder",
+            content: "",
+          },
+          at: "2026-11-14T01:02:00.000Z",
+        },
+      ],
+    }).dir;
+    const reader = worldRun("threads-closed-code-defect-head-5", {
+      before: ["/tmp/LWEVAL-1-review.json"],
+      agent: "reviewer/2026-11-14T02-00-00-000Z_s2",
+      steps: [
+        {
+          tool: "bash",
+          args: { command: "cat /tmp/LWEVAL-1-review.json" },
+          at: "2026-11-14T02:00:00.000Z",
+        },
+      ],
+    }).dir;
+    const earlier = worldRun("threads-closed-code-defect-head-4", {
+      before: [],
+      steps: [
+        {
+          tool: "bash",
+          args: { command: "cat /tmp/LWEVAL-1-review.json 2>/dev/null" },
+          at: "2026-11-14T00:30:00.000Z",
+        },
+      ],
+    }).dir;
+    const stale = worldRun("threads-closed-code-defect-head-3", {
+      before: ["/tmp/pre-batch.json"],
+      steps: [
+        {
+          tool: "read",
+          args: { path: "/tmp/pre-batch.json" },
+          at: "2026-11-14T03:00:00.000Z",
+        },
+      ],
+    }).dir;
+    const { code, stdout } = health(reader, writer, earlier, stale);
+    expect(code).toBe(1);
+    expect(verdict(stdout, writer)).toBe("threads-closed-text-fixes-head-5  healthy");
+    expect(verdict(stdout, earlier)).toBe("threads-closed-code-defect-head-4  healthy");
+    expect(verdict(stdout, reader)).toBe(
+      "threads-closed-code-defect-head-5  unhealthy: another run's write: a bash call in sessions/reviewer/2026-11-14T02-00-00-000Z_s2/2026-11-14T00-00-00-000Z_s1.jsonl at 2026-11-14T02:00:00.000Z reads /tmp/LWEVAL-1-review.json, which threads-closed-text-fixes-head-5 wrote at 2026-11-14T01:00:00.000Z (write in sessions/2026-11-14T00-00-00-000Z_s1.jsonl)"
+    );
+    expect(verdict(stdout, stale)).toBe(
+      "threads-closed-code-defect-head-3  unhealthy: shared scratch from before the run: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl at 2026-11-14T03:00:00.000Z reads /tmp/pre-batch.json, which no run given wrote before it and /tmp/pre-batch.json was in /tmp when the run started (scratch-before.txt)"
+    );
+    expect(stdout).toContain("health: another run's write: 2 of 4 runs\n");
+    expect(stdout).toContain(
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs\n"
+    );
+  });
+
+  // The tester's fixture of 2026-11-14 (health-fixture/): eighteen runs covering the twelve
+  // completion worlds (fields in either order, a log line that is no JSON, a role-less 409), a
+  // later run reading an earlier run's /tmp write, a read of an entry from before the batch, a run
+  // reading its own file, another run's path named only in a subagent's transcript, and a push
+  // the guard could not check; its `expected` is the tester's own verdict, run for run, and its
+  // `tmp-snapshot` the /tmp entries before the batch. Catches: a health that disagrees with that
+  // independent reading on any run of it.
+  test("the tester's fixture reads as the tester read it, run for run", () => {
+    const fixture = path.join(import.meta.dir, "health-fixture");
+    const names = readdirSync(path.join(fixture, "runs")).sort();
+    const { stdout } = health(
+      "--tmp-snapshot",
+      path.join(fixture, "tmp-snapshot"),
+      ...names.map((name) => path.join(fixture, "runs", name))
+    );
+    const expected = Object.fromEntries(
+      readFileSync(path.join(fixture, "expected"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => line.split(" ") as [string, string])
+    );
+    expect(names.map((name) => [name, verdict(stdout, path.join(fixture, "runs", name))])).toEqual(
+      names.map((name) => [
+        name,
+        expect.stringMatching(
+          expected[name] === "healthy"
+            ? new RegExp(`^${name}  healthy$`)
+            : new RegExp(`^${name}  unhealthy: `)
+        ),
+      ])
+    );
+    expect(stdout).toEndWith("health: 12 of 18 runs unhealthy\n");
   });
 });
 
@@ -3053,36 +3674,125 @@ describe("require_superpowers", () => {
 });
 
 // launch with a stand-in tmux that starts the pane's command a moment later, as a real tmux server
-// does, and a stand-in mise that prints the omp command line it was given.
+// does, and a stand-in mise that runs the agent it was given, here a script of the row's own in
+// place of omp, inside the namespace launch.sh starts it in (private_world).
 describe("launch", () => {
-  // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
-  // once, and extra omp arguments placed anywhere but after the prompt.
-  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
-    const run = freshDir("launch-run");
-    const bin = freshDir("launch-bin");
-    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
+  const standIns = `
+tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
+sleep() { command sleep 0.05; }`;
+  /** A work directory holding the run `name` under runs/, with the run's prompt and pane file,
+   * another live run and an archived one, each with a file of its own, and the label's profile;
+   * `agent` is the body of the shell script that stands in for omp. */
+  function launched(work: string, name: string, agent: string, args: string[] = []) {
+    const run = path.join(work, "runs", name);
+    const bin = path.join(work, "bin");
+    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir), { recursive: true });
     writeFileSync(path.join(run, "prompt.txt"), "The person answered your asks on LWEVAL-2.\n");
     writeFileSync(path.join(run, "pane.env"), `PATH=${bin}:${process.env.PATH ?? ""}\n`);
     writeFileSync(path.join(run, "out.txt"), "the first turn\nexit=0\n");
+    writeFileSync(path.join(run, "daemon.log"), '{"at":"t","opened":"daemon.log"}\n');
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
-    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(path.join(bin, "pin", "bin", "omp"), `#!/bin/sh\n${agent}\n`, { mode: 0o755 });
     writeFileSync(
       path.join(bin, "mise"),
-      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nshift 3\necho "$@"\n`,
+      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nshift 3\nexec "$@"\n`,
       { mode: 0o755 }
     );
-    const standIns = `
-tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
-sleep() { command sleep 0.05; }`;
+    for (const [dir, file] of [
+      [path.join(work, "runs", "threads-closed-text-fixes-head-9"), "pointer"],
+      [path.join(work, "archive", "runs", "threads-closed-text-fixes-base-1"), "pointer"],
+      [path.join(work, "profiles", "head"), "checkout"],
+    ] as const) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, file), `${dir}\n`);
+    }
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
-      [run],
+      [
+        fn("fail"),
+        fn("pinned_omp"),
+        fn("launch"),
+        assignment("private_world"),
+        standIns,
+        "R=$1 work=$2 tag=t pin=omp@pin",
+        `launch ${name} "\${@:3}"`,
+      ].join("\n"),
+      [run, work, ...args],
       { PATH: `${bin}:${childEnv.PATH}` }
     );
+    return { run, result, out: readFileSync(path.join(run, "out.txt"), "utf8") };
+  }
+
+  // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
+  // once, and extra omp arguments placed anywhere but after the prompt.
+  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
+    const work = freshDir("launch-turn");
+    const { result, out } = launched(work, "spec-writing-s1-1", 'echo "$0 $*"', ["--continue"]);
     expect(result.code).toBe(0);
-    expect(readFileSync(path.join(run, "seen"), "utf8")).toBe(
-      `${bin}/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${run}/sessions\nexit=0\n`
+    expect(out).toBe(
+      `${work}/bin/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${work}/runs/spec-writing-s1-1/sessions\nexit=0\n`
     );
+  });
+
+  // Catches: an agent that can list and read the other runs of its batch, live or archived, which
+  // the 2026-11-14 agents did for a sibling's pointer file; one that writes into the /tmp every
+  // run shares; one that runs as uid 0; and a namespace that binds the run's directory in the
+  // wrong order, which leaves the host's run directory without a file the agent wrote there.
+  test("the agent sees its own run alone and its own /tmp, as this user, and its writes land in the run", () => {
+    const work = freshDir("launch-world");
+    const marker = `rig-launch-${path.basename(work)}`;
+    const others = `${work}/runs/threads-closed-text-fixes-head-9/pointer ${work}/archive/runs/threads-closed-text-fixes-base-1/pointer`;
+    const { run, result, out } = launched(
+      work,
+      "threads-closed-text-fixes-head-1",
+      [
+        `echo "uid=$(id -u)"`,
+        `echo "runs=$(ls ${work}/runs)"`,
+        `echo "archive=$(ls -A ${work}/archive)"`,
+        `for f in ${others}; do cat "$f" >/dev/null 2>&1 && echo "read $f"; done`,
+        `echo "profile=$(cat ${work}/profiles/head/checkout)"`,
+        `echo "log=$(cat ${work}/runs/threads-closed-text-fixes-head-1/daemon.log)"`,
+        `echo scratch >/tmp/${marker}`,
+        `echo record >${work}/runs/threads-closed-text-fixes-head-1/agent-wrote`,
+      ].join("\n")
+    );
+    expect(result.code).toBe(0);
+    expect(out.split("\n")).toEqual([
+      `uid=${process.getuid?.()}`,
+      "runs=threads-closed-text-fixes-head-1",
+      "archive=",
+      `profile=${work}/profiles/head`,
+      'log={"at":"t","opened":"daemon.log"}',
+      "exit=0",
+      "",
+    ]);
+    // On the host, after the agent exited: what it wrote is in the run, its /tmp is the run's
+    // own, and the machine's /tmp and the other runs are as they were.
+    expect(readFileSync(path.join(run, "agent-wrote"), "utf8")).toBe("record\n");
+    expect(readFileSync(path.join(run, "daemon.log"), "utf8")).toBe(
+      '{"at":"t","opened":"daemon.log"}\n'
+    );
+    expect(readFileSync(path.join(run, "tmp", marker), "utf8")).toBe("scratch\n");
+    expect(existsSync(path.join("/tmp", marker))).toBe(false);
+    expect(readdirSync(path.join(work, "runs")).sort()).toEqual([
+      "threads-closed-text-fixes-head-1",
+      "threads-closed-text-fixes-head-9",
+    ]);
+  });
+
+  // Catches: a /tmp one run shares with the next: a file the first run's agent writes to /tmp is
+  // absent from the second run's.
+  test("a file one run writes to /tmp is absent in the next run", () => {
+    const work = freshDir("launch-next");
+    const marker = `rig-next-${path.basename(work)}`;
+    const first = launched(work, "threads-closed-text-fixes-head-1", `echo first >/tmp/${marker}`);
+    expect(first.result.code).toBe(0);
+    const second = launched(
+      work,
+      "threads-closed-text-fixes-head-2",
+      `cat /tmp/${marker} 2>/dev/null || echo absent`
+    );
+    expect(second.out).toBe("absent\nexit=0\n");
+    expect(existsSync(path.join("/tmp", marker))).toBe(false);
   });
 });
 

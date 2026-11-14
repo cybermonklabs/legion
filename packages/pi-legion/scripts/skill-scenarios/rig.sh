@@ -11,15 +11,25 @@
 #   rig.sh batch     <scenario> <runs> <label>...  starts the scratch services, runs 1..<runs> per
 #                                                  label (SKILL_SCENARIOS_PARALLEL at once), and
 #                                                  stops the services
-#   rig.sh score     [<scenario>]                  one row per run, then counts per label
-#   rig.sh health    <run dir>...                  whether each run's world could take what its
-#                                                  agents did, scoring nothing (health.ts): the run
-#                                                  finished, no completion was refused in a way its
-#                                                  label's daemon would not refuse it, and its world
-#                                                  took the completions it must take
-#                                                  (completion-answers.ts's ANSWERS); exits 0 when
-#                                                  every run is healthy, 1 otherwise, 2 on a usage
-#                                                  error
+#   rig.sh score     [<scenario>]                  one row per run, then counts per label: the runs
+#                                                  of <work>/runs and <work>/archive/runs
+#   rig.sh health    [--tmp-snapshot <file>] <run dir>...
+#                                                  whether each run's world could take what its
+#                                                  agents did and the run stayed in its own world,
+#                                                  scoring nothing (health.ts): the run finished;
+#                                                  every completion names its role and none was
+#                                                  refused in a way its label's daemon would not
+#                                                  refuse it, and its world took the completions it
+#                                                  must take (completion-answers.ts's ANSWERS); no
+#                                                  agent met a push-guard refusal or a gh refusal
+#                                                  its scenario does not declare; no tool call named
+#                                                  another run's directory; and none read a path
+#                                                  another of the runs given wrote, or /tmp scratch
+#                                                  from before the run (<file>: the /tmp entries
+#                                                  before the batch, for runs with no record of
+#                                                  their own). Give a batch's runs in one call;
+#                                                  exits 0 when every run is healthy, 1 otherwise,
+#                                                  2 on a usage error
 #   rig.sh judge     <run dir>...                  the judge's prompts on each spec-writing or
 #                                                  spec-rewrite run (judge.ts run), each in a fresh
 #                                                  Oh My Pi session with no Dispatch
@@ -271,19 +281,28 @@
 #     session a work directory starts carries the directory's digest in its name. The stand-ins
 #     and the panes are this script's own directory's, whichever label the run is, so score.ts
 #     reads none of them as another label's text (score.ts, RIG_DIR).
+#   - Its pushes meet the push guard a Legion pod's do: the caller's `git` and `jj` (on a pod,
+#     /opt/legion/bin's leak-check wrappers) with the caller's PUBLIC_LEAK_CHECK in its pane. A run
+#     whose `git` is such a wrapper and whose caller names no readable PUBLIC_LEAK_CHECK is
+#     refused before anything of it is built (push_guard).
 #   - A worker run gets a Legion project of its own, built from its scenario, its case, its label,
 #     its number and its batch (run_project), since the Envoy role topics it claims carry that
 #     project and every worker run is booted on one issue key.
-#   - Its agent can still read the whole filesystem, the operator's home included, and write the
-#     machine's /tmp, which nothing here cleans: a namespace sandbox needs user namespaces, which
-#     Ubuntu's AppArmor policy denies unprivileged users. score.ts does not score a run that reads
-#     a skill file outside its own label or a file of another label's checkout, or whose PR body
-#     carries another run's line (unscored, testerProof). It flags, and still scores, a run whose
-#     tool calls only name such a skill file or checkout (skillReaches), or name a path outside its
-#     work directory, its label's checkout and the system locations (outsideReaches): a flag shows
-#     the path was named, not that it was read. A path a call reaches without naming it, as a
-#     glob from `/` does, is not caught.
-#   - An exit stops what its command started (on_exit, stop_run, stop_batch).
+#   - Its agent runs in a mount namespace of its own (launch, private_world): the runs directory and
+#     the archive hold only the run's own directory, and /tmp is the run's own $R/tmp. It can still
+#     read the rest of the filesystem, the operator's home included. score.ts does not score a run
+#     that reads a skill file outside its own label or a file of another label's checkout, or whose
+#     PR body carries another run's line (unscored, testerProof). It flags, and still scores, a run
+#     whose tool calls only name such a skill file or checkout (skillReaches), or name a path
+#     outside its work directory, its label's checkout and the system locations (outsideReaches): a
+#     flag shows the path was named, not that it was read. A path a call reaches without naming it,
+#     as a glob from `/` does, is not caught. health.ts calls a run unhealthy, whatever it scored,
+#     when a tool call names another run's directory, or reads a path another run of the batch
+#     wrote or /tmp scratch from before the run: the second line behind the namespace.
+#   - An exit stops what its command started (on_exit, stop_run, stop_batch); a serial run's exit
+#     then removes what the run left at the top of the machine's /tmp (scratch_clean), and moves
+#     the run's directory to <work>/archive/runs/<run> (archive_run), out of the runs/ a later run
+#     lists.
 #
 # A spec run (run_spec) is a conversation of at most 8 turns. Turn 1 is the prompt. After each turn,
 # `seed.ts state` writes the issue's open asks (none a seed opened) and the spec's open approval
@@ -694,11 +713,40 @@ install_superpowers() {
   : >"$P/superpowers"
 }
 
+# push_guard prints the PUBLIC_LEAK_CHECK line every agent's pane carries, and refuses a world in
+# which every push would be refused. A Legion pod's `git` (/opt/legion/bin/git, the worker image's
+# packages/daemon/docker/git) runs every push with `-c core.hooksPath=/opt/legion/githooks`, whose
+# pre-push hook runs `legion leak-check pre-push`, and its `jj` pushes through that git; the guard
+# finds the shared check through PUBLIC_LEAK_CHECK, then public-leak-check.sh on PATH, then the
+# pointer file under the configuration home (packages/daemon/internal/leakguard's Resolve). A pod
+# carries PUBLIC_LEAK_CHECK (runtime/sandbox's mainEnvironment), and a run's configuration home is
+# its own ($R/home, or $R/state/home for a worker pane), which holds no pointer file. So:
+#   - PUBLIC_LEAK_CHECK set in the caller's environment: passed to the pane as it is;
+#   - the caller's `git` a leak-check wrapper (a script that sets `core.hooksPath=` for a push) and
+#     PUBLIC_LEAK_CHECK naming no readable file: the run is refused, naming the variable, since
+#     its guard would refuse every push the run made (tester v21, k1 and k2: every push of the
+#     batch refused with `LEAK CHECK SETUP ERROR`, and agents reading other runs' directories for
+#     a pointer file to get through);
+#   - any other `git`, and no PUBLIC_LEAK_CHECK: nothing is added.
+push_guard() {
+  local git_path
+  if [ -n "${PUBLIC_LEAK_CHECK:-}" ] && [ -f "$PUBLIC_LEAK_CHECK" ] && [ -r "$PUBLIC_LEAK_CHECK" ]; then
+    printf 'PUBLIC_LEAK_CHECK=%s\n' "$PUBLIC_LEAK_CHECK"
+    return 0
+  fi
+  if git_path=$(command -v git) && [ -f "$git_path" ] && [ "$(head -c 2 "$git_path")" = '#!' ] &&
+    grep -qF 'core.hooksPath=' "$git_path"; then
+    fail "the git on PATH ($git_path) is a leak-check wrapper, which refuses every push whose leak check it cannot find, and PUBLIC_LEAK_CHECK names no readable check (${PUBLIC_LEAK_CHECK:-unset}): set PUBLIC_LEAK_CHECK to the shared public-leak-check.sh, as a Legion pod's environment carries it"
+  fi
+  [ -z "${PUBLIC_LEAK_CHECK:-}" ] || printf 'PUBLIC_LEAK_CHECK=%s\n' "$PUBLIC_LEAK_CHECK"
+}
+
 # Writes the variables every agent gets to $R/pane.env: a HOME copied from the label's, the
-# label's profile, the run's stand-ins first on PATH, its own TMPDIR, and nothing else from the
-# caller's environment. A run that boots a second agent calls this again, and that agent gets a
-# HOME copied afresh from the label's, as the first one did; the HOME the agent before it wrote
-# in is kept beside its logs and its output, under $R/home-<its role> (worker_boot).
+# label's profile, the run's stand-ins first on PATH, its own TMPDIR, the push guard's check
+# (push_guard), and nothing else from the caller's environment. A run that boots a second agent
+# calls this again, and that agent gets a HOME copied afresh from the label's, as the first one
+# did; the HOME the agent before it wrote in is kept beside its logs and its output, under
+# $R/home-<its role> (worker_boot).
 base_env() {
   mkdir -p "$R/tmp"
   # Nothing is removed here: the HOME of the agent before this one is moved to home-<its role>
@@ -717,6 +765,7 @@ base_env() {
     echo "PI_NO_TITLE=1"
     echo "SKILL_SCENARIO_RUN=$R"
     echo "PATH=$R/bin:$PATH"
+    push_guard
   } >"$R/pane.env"
 }
 
@@ -748,6 +797,21 @@ EOF
   [ -f "$R/fixtures.json" ] || printf '{"routes":[]}\n' >"$R/fixtures.json"
 }
 
+# The script launch.sh runs as root of a user and mount namespace of its own (`unshare -Urm`),
+# with the run directory, the runs directory, the archive, and this user's uid and gid as its
+# arguments, then the agent's command. It binds $R onto /tmp to hold it, covers the runs directory
+# and the archive with an empty tmpfs each, makes $R's path again inside the runs tmpfs and binds
+# the held $R back onto it, binds $R/tmp onto /tmp, and starts the command in a second user
+# namespace that maps it back to this user's uid and gid. The order is the record: covering the
+# runs directory first and binding $R onto itself afterwards binds the new tmpfs's empty $R, and
+# the agent writes every file of the run there and nowhere the host can see, exit 0. /tmp holds
+# $R while the runs are covered because it is no path under either and is covered by $R/tmp in
+# turn, so the namespace leaves no directory behind. The agent keeps this user's uid because one
+# running as uid 0 meets git's ownership checks and tools behaving as root, and
+# `--map-current-user` cannot take a mount (`must be superuser to use mount`). No network
+# namespace: the stand-ins, NATS and Postgres are reached on the loopback as before.
+private_world='R=$1 runs=$2 archive=$3 uid=$4 gid=$5; shift 5; mount --bind "$R" /tmp && mount -t tmpfs tmpfs "$runs" && mount -t tmpfs tmpfs "$archive" && mkdir -p "$R" && mount --bind /tmp "$R" && mount --bind "$R/tmp" /tmp && exec unshare -U --map-user="$uid" --map-group="$gid" "$@"'
+
 # launch NAME [OMP_ARG]... runs `omp -p "$(cat $R/prompt.txt)"` and then each OMP_ARG in $R/cwd
 # under $R/pane.env, followed by $R/system-args (one --append-system-prompt argument, as shell text)
 # when it exists, as the tmux session <tag>-<name>. It waits for the session to exit or time out. A
@@ -755,6 +819,18 @@ EOF
 # until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
 # wait reads only its own exit line. The session's transcript goes to $sessions_dir, which is
 # $R/sessions for the run's own agent and a directory of its own for each later one (worker_boot).
+#
+# The agent and every process it starts run in a world of the run's own (private_world): launch.sh
+# starts them in a mount namespace where the runs directory and the archive are each an empty
+# tmpfs with the run's own $R bound back at its path, and $R/tmp is bound onto /tmp. So `ls` of
+# the runs directory shows this run alone, no other run's directory, live or archived, can be
+# read, and nothing a run writes to /tmp reaches the machine's /tmp or another run: it stays under
+# $R as the run's record. The 2026-11-14 agents read other runs' pointer files under the runs
+# directory and wrote /tmp/LWEVAL-1-review.json, a name every run's agent picks, into the /tmp
+# every run shared. The label's profile, the work directory's services and the rig's own files
+# stay visible. A run whose agent cannot start in this namespace fails as that run; there is no
+# fallback to the shared world. scratch_clean and health.ts's rules stay behind this as a second
+# line.
 launch() {
   local system='' extra='' omp
   omp=$(pinned_omp "$pin") || exit 1
@@ -762,11 +838,12 @@ launch() {
   shift
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
   [ ! -f "$R/system-args" ] || system=" $(<"$R/system-args")"
+  mkdir -p "$R/tmp" "$work/runs" "$work/archive"
   cat >"$R/launch.sh" <<EOF
 #!/usr/bin/env bash
 cd $(printf %q "$R/cwd")
 mapfile -t vars <$(printf %q "$R/pane.env")
-exec env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "${sessions_dir:-$R/sessions}") >$(printf %q "$R/out.txt") 2>&1
+exec unshare -Urm sh -c $(printf %q "$private_world") - $(printf %q "$R") $(printf %q "$work/runs") $(printf %q "$work/archive") $(id -u) $(id -g) env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "${sessions_dir:-$R/sessions}") >$(printf %q "$R/out.txt") 2>&1
 EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
@@ -820,10 +897,11 @@ stop_panes() {
 }
 
 # A run's or a live read's exit: its daemon stand-in, its own Dispatch server, its agent's session,
-# and every process that carries its SKILL_SCENARIO_RUN. The run's database stays in the batch's
-# Postgres: services_down removes the container it started, and leaves a given server, with every
-# database its runs made, to the operator. The two services are this shell's own jobs, so
-# each is waited for once it is killed: bash otherwise prints a `Killed` notice for it on stderr.
+# and every process that carries its SKILL_SCENARIO_RUN; then the run's directory goes to the
+# archive (archive_run). The run's database stays in the batch's Postgres: services_down removes
+# the container it started, and leaves a given server, with every database its runs made, to the
+# operator. The two services are this shell's own jobs, so each is waited for once it is killed:
+# bash otherwise prints a `Killed` notice for it on stderr.
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_run() {
   local pid
@@ -842,6 +920,75 @@ stop_run() {
   [ -z "$session" ] || stop_panes "$session"
   [ -z "$R" ] || stop_env_processes "$R"
   [ -z "$session" ] || tmux kill-session -t "=$session" 2>/dev/null || true
+  scratch_clean
+  archive_run
+}
+
+# The directories every run on this machine shares and an agent writes scratch files into by a
+# name of its own choosing: the machine's /tmp, where the 2026-11-14 agents, each on issue
+# LWEVAL-1, wrote /tmp/LWEVAL-1-review.json, a name the next run's agent picks too. A run's own
+# TMPDIR is inside it ($R/tmp, base_env). The caller's TMPDIR is left out on purpose: on a Legion
+# pod it is the scratch every role of the issue shares, and deleting what appeared there would
+# delete their work. One agent of that batch also wrote /legion/tmp by climbing out of its run
+# (`ws/../../../../../../tmp`); a path like that, one run in a batch reaches by accident, is
+# health.ts's to catch, not a directory to empty.
+shared_scratch=(/tmp)
+
+# scratch_before records the entries this user owns at the top of each shared_scratch directory
+# when the run starts, to $R/scratch-before.txt, so scratch_clean can tell what the run made.
+scratch_before() {
+  local dir
+  for dir in "${shared_scratch[@]}"; do
+    find "$dir" -mindepth 1 -maxdepth 1 -user "$(id -u)" -printf '%p\n' 2>/dev/null || true
+  done >"$R/scratch-before.txt"
+}
+
+# scratch_clean, at a run's end, deletes each entry this user owns at the top of a shared_scratch
+# directory that was not there when the run started (scratch_before), and records it with its
+# modification time to $R/scratch-created.txt (`<epoch seconds> <path>`, one a line), which
+# health.ts reads as a write of the run. So a file one run leaves in /tmp is gone before the next
+# run starts and no later run can read it. This holds for serial runs alone
+# (SKILL_SCENARIOS_PARALLEL=1): with runs side by side, what appeared during one run is every
+# concurrent run's too, so the cleanup would delete files a run still working depends on and
+# record another run's files as this one's, and a run could still read what a concurrent one
+# wrote before either ended. At any other parallelism this records and deletes nothing and says
+# so. Anything else this user runs on the machine during a serial run, outside the rig, loses
+# what it made at the top of /tmp the same way.
+# shellcheck disable=SC2329 # stop_run, an exit trap, runs it
+scratch_clean() {
+  [ -n "${R:-}" ] && [ -f "$R/scratch-before.txt" ] || return 0
+  if [ "${SKILL_SCENARIOS_PARALLEL:-5}" != 1 ]; then
+    note "${R##*/}: left ${shared_scratch[*]} as it is: only serial runs (SKILL_SCENARIOS_PARALLEL=1) clean what a run made there"
+    return 0
+  fi
+  local dir line entry
+  : >"$R/scratch-created.txt"
+  for dir in "${shared_scratch[@]}"; do
+    find "$dir" -mindepth 1 -maxdepth 1 -user "$(id -u)" -printf '%T@ %p\n' 2>/dev/null || true
+  done | while IFS= read -r line; do
+    entry=${line#* }
+    ! grep -qxF -- "$entry" "$R/scratch-before.txt" || continue
+    printf '%s\n' "$line" >>"$R/scratch-created.txt"
+    rm -rf -- "$entry"
+  done
+}
+
+# archive_run moves the directory of a run that has ended, and whose processes are stopped, out
+# of $work/runs, where every run of a batch is made, to $work/archive/runs/<run>, replacing an
+# earlier run of the same name there as cmd_run replaces one in $work/runs. An agent sees neither
+# directory but its own run (launch's private_world); outside that namespace the same Unix user
+# reaches both, so a run's directory keeps out of the runs/ every later run is made in, and
+# health.ts's rule against naming another run's directory, the archive's included, stays the
+# check behind them. `rig.sh score` reads the archive, and score.ts and judge.ts read an archived
+# run's work directory as this one (score.ts's `workOfRuns`). A run directory outside $work/runs
+# (a live read's) stays where it is.
+# shellcheck disable=SC2329 # stop_run, an exit trap, runs it
+archive_run() {
+  case ${R:-} in "$work/runs/"?*) ;; *) return 0 ;; esac
+  [ -d "$R" ] || return 0
+  mkdir -p "$work/archive/runs"
+  rm -rf -- "$work/archive/runs/${R##*/}"
+  mv -- "$R" "$work/archive/runs/${R##*/}"
 }
 
 # on_exit HANDLER runs HANDLER at the command's exit, INT, TERM and HUP included.
@@ -1267,10 +1414,11 @@ judge_ts() {
 }
 
 # next_run SCENARIO LABEL prints one above the highest <n> of a run directory
-# $work/runs/<SCENARIO>-<LABEL>-<n>, or 1 when there is none.
+# $work/runs/<SCENARIO>-<LABEL>-<n> or $work/archive/runs/<SCENARIO>-<LABEL>-<n> (archive_run),
+# or 1 when there is none.
 next_run() {
   local dir n highest=0
-  for dir in "$work/runs/$1-$2-"*; do
+  for dir in "$work/runs/$1-$2-"* "$work/archive/runs/$1-$2-"*; do
     [ -d "$dir" ] || continue
     n=${dir##*/"$1-$2-"}
     [[ $n =~ ^[0-9]+$ ]] || continue
@@ -2537,6 +2685,9 @@ cmd_run() {
   [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|reviewer-text-findings|threads-closed|brainstorm|askgate|spec-writing|spec-rewrite> <label> <n> <index> <start>"
   local scenario=$1 n=$3 index=$4 start=$5 name run_case project
   load_label "$2"
+  # A world whose push guard cannot find its check refuses every push, so it is refused before
+  # anything of it is built (push_guard).
+  push_guard >/dev/null
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
   [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\`"
@@ -2549,6 +2700,8 @@ cmd_run() {
   on_exit stop_run
   rm -rf "$R"
   mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs"
+  # What the shared scratch held before this run, so its exit removes what the run made there.
+  scratch_before
   # The run's own record of its case, which the scorer holds to the name above.
   [ -z "$run_case" ] || printf '%s\n' "$run_case" >"$R/case.txt"
   cp "$P/built-from" "$R/built-from"
@@ -2608,6 +2761,9 @@ cmd_batch() {
   esac
   shift 2
   for label in "$@"; do load_label "$label"; done
+  # Each run refuses a world whose push guard has no check (push_guard); the batch refuses it
+  # here, before any service starts.
+  push_guard >/dev/null
   # A spec run reads its source and the label's superpowers skills: refused here, before any
   # service starts. Its number is one above the label's highest, so no batch removes an earlier run.
   local first=1

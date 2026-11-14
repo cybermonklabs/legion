@@ -25,9 +25,11 @@ const RECORD_MISMATCH = "HANDOFF_RECORD_MISMATCH";
  * answered, with the refusal's code where the answer carried one; the role of the agent the
  * stand-in served; a completion's line names the handoff record it reported and the phase the
  * stand-in answered it on, and a backward move's the phase it asked for. The stand-in writes the
- * reason that move gave beside it, which no reader uses, so this does not name it. A log written
- * before the stand-in named the role has no `role` (`roleOf`), and one written before it named
- * the phase has no `phase`. */
+ * reason that move gave beside it, which no reader uses, so this does not name it. The stand-in
+ * writes `role` on every line; a reader keys a completion by it and by nothing else, so a
+ * completion line without one is unkeyable (`unkeyed`) and fails closed, never given the role of
+ * the agent booted in its place. A log written before the stand-in named the phase has no
+ * `phase`. */
 export const DaemonLine = z.looseObject({
   at: z.string(),
   path: z.string(),
@@ -40,33 +42,24 @@ export const DaemonLine = z.looseObject({
   phase: z.string().optional(),
 });
 export type DaemonLine = z.infer<typeof DaemonLine>;
-/** A line of the log with the agent whose stand-in wrote it: `boot` counts the stand-ins that
- * opened the log before this line, from 0. Each stand-in of a run opens the log with its own line
- * (run-records.ts's `openingLine`) when it starts, and rig.sh boots a run's agents one after the
- * other, so the n-th opening line starts the n-th agent's lines. */
-export type LoggedLine = DaemonLine & { readonly boot: number };
 
-/** Every line of `<run>/daemon.log` but the opening lines, parsed, each with the boot it belongs
- * to; no line at all for a log that is not there (score.ts's `unscored` makes a missing log a
- * rig error where the score reads one). A line that does not parse is the rig's fault. */
-export function daemonLines(runDir: string): LoggedLine[] {
+/** Every line of `<run>/daemon.log` but the opening lines, parsed; no line at all for a log that
+ * is not there (score.ts's `unscored` makes a missing log a rig error where the score reads one).
+ * A line that does not parse is the rig's fault. */
+export function daemonLines(runDir: string): DaemonLine[] {
   const file = path.join(runDir, DAEMON_LOG);
   if (!existsSync(file)) return [];
-  const records: LoggedLine[] = [];
-  let opened = 0;
+  const records: DaemonLine[] = [];
   for (const [index, line] of readFileSync(file, "utf8")
     .split("\n")
     .filter((text) => text.trim() !== "")
     .entries()) {
     const value: unknown = JSON.parse(line);
-    if (Opened.safeParse(value).success) {
-      opened += 1;
-      continue;
-    }
+    if (Opened.safeParse(value).success) continue;
     const result = DaemonLine.safeParse(value);
     if (!result.success)
       throw new Error(`${file}:${index + 1} is not a record: ${result.error.message}`);
-    records.push({ ...result.data, boot: Math.max(0, opened - 1) });
+    records.push(result.data);
   }
   return records;
 }
@@ -142,8 +135,8 @@ function allows(allowed: readonly string[], line: DaemonLine): boolean {
 }
 
 /** What one scenario's world takes, for each label and each role the scenario boots:
- *   - `boots`, the roles rig.sh boots, in the order it boots them, which is the role of each
- *     stand-in's lines in a log written before the stand-in named the role (`roleOf`);
+ *   - `boots`, the roles rig.sh boots, in the order it boots them: the roles a completion line of
+ *     the scenario's log can name. A line naming another role, or none, is unkeyable (`unkeyed`);
  *   - `answers`, for each label and role, every answer that label's daemon may give that role's
  *     completion in this world: `<status> <code>`, or `<status> <code> in <phase>` for an answer
  *     the daemon gives in that phase alone, held to the phase the stand-in's line says it
@@ -225,21 +218,29 @@ export function scenarioOf(runDir: string): string | undefined {
   return Object.keys(ANSWERS).find((scenario) => name.startsWith(`${scenario}-`));
 }
 
-/** The role whose stand-in wrote `line`: the role the line names, or, for a log written before
- * the stand-in named it, the role rig.sh booted `line.boot`-th in `scenario`. Undefined when
- * neither says. */
-export function roleOf(line: LoggedLine, scenario: string): string | undefined {
-  return line.role ?? ANSWERS[scenario]?.boots[line.boot];
+/** The role the completion line `line` was the completion of, or why it cannot be keyed to one:
+ * it names no role, or, in a scenario `ANSWERS` names, a role rig.sh boots none of there
+ * (`boots`). The role the line names is the only key: a line that names none is never given the
+ * role of the agent booted in its place, so it fails closed, where that guess read a 409
+ * HANDOFF_NOT_CURRENT_PHASE with no role as the implementer's, the one role that answer is
+ * allowed to. */
+function keyOf(
+  line: DaemonLine,
+  scenario: string
+): { readonly role: string } | { readonly unkeyed: string } {
+  if (line.role === undefined) return { unkeyed: "a completion line names no role" };
+  const boots = ANSWERS[scenario]?.boots;
+  if (boots !== undefined && !boots.includes(line.role))
+    return {
+      unkeyed: `a completion line names the ${line.role}, a role ${scenario} boots none of`,
+    };
+  return { role: line.role };
 }
 
 /** Every answer `label`'s daemon may give `role`'s completion in `scenario`'s world. A scenario
  * `ANSWERS` does not name boots one role in that role's own phase, which either daemon answers
  * 200. Throws for a label `ANSWERS` gives no entry in a scenario it names. */
-export function allowedAnswers(
-  scenario: string,
-  label: string,
-  role: string | undefined
-): readonly string[] {
+export function allowedAnswers(scenario: string, label: string, role: string): readonly string[] {
   const entry = ANSWERS[scenario];
   if (entry === undefined) return ["200"];
   const byRole = entry.answers[label];
@@ -247,21 +248,27 @@ export function allowedAnswers(
     throw new Error(
       `the ${label} label has no answers for ${scenario}'s completions (completion-answers.ts's ANSWERS)`
     );
-  return role === undefined ? [] : (byRole[role] ?? []);
+  return byRole[role] ?? [];
 }
 
-/** The first completion of the run that was refused 4xx with an answer its world's entry does not
- * allow, and the role it was the completion of. This one reader serves the scorer's
- * refused-completion rule (score.ts's `unscored`) and health's second rule (health.ts). */
+/** The first completion of the run that cannot be keyed to a role (`keyOf`), whatever it was
+ * answered, with why; or the first refused 4xx with an answer its world's entry does not allow
+ * the role it names, with that role. This one reader serves the scorer's refused-completion rule
+ * (score.ts's `unscored`) and health's second rule (health.ts). */
 export function refusedCompletion(
-  lines: readonly LoggedLine[],
+  lines: readonly DaemonLine[],
   scenario: string,
   label: string
-): { readonly line: LoggedLine; readonly role: string | undefined } | undefined {
+):
+  | { readonly line: DaemonLine; readonly unkeyed: string }
+  | { readonly line: DaemonLine; readonly role: string }
+  | undefined {
   for (const line of lines) {
-    if (line.path !== COMPLETE_PATH || line.status < 400 || line.status >= 500) continue;
-    const role = roleOf(line, scenario);
-    if (!allows(allowedAnswers(scenario, label, role), line)) return { line, role };
+    if (line.path !== COMPLETE_PATH) continue;
+    const key = keyOf(line, scenario);
+    if ("unkeyed" in key) return { line, unkeyed: key.unkeyed };
+    if (line.status < 400 || line.status >= 500) continue;
+    if (!allows(allowedAnswers(scenario, label, key.role), line)) return { line, role: key.role };
   }
   return undefined;
 }
@@ -269,7 +276,7 @@ export function refusedCompletion(
 /** The completions of the role the scenario's world must take (`takes`) that were answered with
  * an answer its entry allows; undefined for a scenario that requires none. */
 export function takenCompletions(
-  lines: readonly LoggedLine[],
+  lines: readonly DaemonLine[],
   scenario: string,
   label: string
 ): { readonly role: string; readonly count: number } | undefined {
@@ -277,8 +284,7 @@ export function takenCompletions(
   if (role === undefined) return undefined;
   const allowed = allowedAnswers(scenario, label, role);
   const count = lines.filter(
-    (line) =>
-      line.path === COMPLETE_PATH && roleOf(line, scenario) === role && allows(allowed, line)
+    (line) => line.path === COMPLETE_PATH && line.role === role && allows(allowed, line)
   ).length;
   return { role, count };
 }

@@ -16,7 +16,8 @@
 //     lists). Writes faults.json, decisions.json, findings.json, checkable.json, questions.json,
 //     numbers.json, preamble.json, proposal.json and shared-runs.json into each run directory.
 //
-// <work> is the directory that holds the run's `runs/` directory, as score.ts reads it. Seeded asks
+// <work> is the directory that holds the run's `runs/` directory, or the `archive/runs/` rig.sh
+// moves a run to once it has ended, as score.ts reads it (`workOfRuns`). Seeded asks
 // (seeded.json) never reach a judge's inputs.
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -51,6 +52,7 @@ import {
   sessionVersions,
   sharedRuns,
   specWork,
+  workOfRuns,
 } from "./score";
 import { session, sessionId } from "./transcript";
 
@@ -74,12 +76,12 @@ const rigRunner: JudgeRunner = async (profile, dir, output) => {
   return await child.exited;
 };
 
-/** The work directory of a run under <work>/runs/<run>. */
+/** The work directory of a run under <work>/runs/<run> or <work>/archive/runs/<run>. */
 function workOf(runDir: string): string {
   const runs = path.dirname(path.resolve(runDir));
   if (path.basename(runs) !== "runs")
     throw new Error(`${runDir} is not under a runs/ directory of the rig's work directory`);
-  return path.dirname(runs);
+  return workOfRuns(runs);
 }
 function read<T>(file: string, schema: z.ZodType<T>): T {
   return schema.parse(JSON.parse(readFileSync(file, "utf8")));

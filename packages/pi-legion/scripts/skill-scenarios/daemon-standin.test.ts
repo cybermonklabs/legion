@@ -367,6 +367,28 @@ test.skipIf(skip)(
   600_000
 );
 
+// Catches: a stand-in that leaves the role off a line. Health and the scorer key a completion by
+// the role its line names and by nothing else, and fail closed on a completion line that names
+// none (completion-answers.ts's `keyOf`), so every line of a run the stand-in served would read
+// as a broken world. Every line but the log's opening one names the role this stand-in serves.
+test.skipIf(skip)(
+  "every line the stand-in logs names the role it serves",
+  async () => {
+    const daemon = await standin("implementer", "reviewing");
+    try {
+      await daemon.body();
+      await daemon.complete(false);
+      await daemon.complete(true);
+      const served = daemon.logged().filter((line) => !("opened" in line));
+      expect(served.length).toBeGreaterThanOrEqual(3);
+      expect(served.filter((line) => line.role !== "implementer")).toEqual([]);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
 // Catches: a stand-in that accepts a completion naming no record for a phase that ends with
 // one. The daemon refuses it 400 HANDOFF_RECORD_REQUIRED and names the `dispatch handoff-write`
 // that cures it (packages/daemon/internal/api/handoff.go), and the skill has the worker write
