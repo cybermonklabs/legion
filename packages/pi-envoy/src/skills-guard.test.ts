@@ -163,10 +163,18 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // cannot live in another skill, because R1 and R4 name skills/dispatch/SKILL.md, which every
 // session with Dispatch reads.
 //
+// It also moves when an approved requirement puts in the skill every session loads a rule that no
+// other skill holds, and only by what that rule costs: R11 of dispatch://INFRA-2947 puts one line
+// in `dispatch` (an issue names the priority it advances), which check `c0cd78f8` of that issue
+// reads there, so it cannot live elsewhere. The line is 14 words, the shortest that carries the
+// two strings the check reads, so the three skills, 2,325 words on main, stand at 2,325 + 14 =
+// 2,339 and the bound moves from 2,326 by those 14 to 2,340, keeping the margin above it the raise
+// before set and adding none.
+//
 // dispatch://INFRA-3320's R4 put one sentence of 17 words into dispatch-writing-specs' outline: a
 // view holds no requirement block, and its `Delivers:` line names the ancestor's requirements its
 // checks serve, as skill://legion-architect/references/design-gate.md says. Two cuts pay all 17,
-// so the bound stays: the total was 2,325 before the change and is 2,325 after it.
+// so the bound stays: the change adds no word to the total it found.
 //
 // - 11: skills/dispatch-first/SKILL.md's row "write a Legion architect's own spec", deleted. The
 //   root architect's prompt sends that architect to `skill://legion-architect`, whose own
@@ -174,7 +182,7 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // - 6: skills/dispatch-writing-specs/SKILL.md's text-rules bullet: "what a reader needs" for "text
 //   a reader needs to understand, decide, build or check", which `skill://plain-words`, the
 //   bullet's own link, says.
-test("the three Dispatch skills total fewer than 2,326 words", () => {
+test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -184,7 +192,7 @@ test("the three Dispatch skills total fewer than 2,326 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_326);
+  expect(words).toBeLessThan(2_340);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {

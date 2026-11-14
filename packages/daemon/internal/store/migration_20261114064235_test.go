@@ -13,10 +13,12 @@ const basisSeedsVersion = 20261114064235
 // A pending-basis seed reads the ancestor's request a root's step waits on (record.PendingBasisSeed)
 // and a re-parent seed the new parent of a root that ran (record.ReparentSeed). The outbox refuses
 // a kind its constraint does not name, so neither row could be queued before this migration: the
-// negative control is that refusal, read before the migration. After it both rows are queued, and
-// so is every kind the constraint already named, since the migration rewrites the list whole and a
-// kind left out would stop its own effect. A kind that is none is still refused, and so is a
-// merge-lane kind, which went with the merge the daemon no longer submits.
+// negative control is that refusal, read before the migration, on a database that already carries
+// the merge-queue kinds' list (20261114031356), which this version stands above. After it both
+// rows are queued, and so is every kind the constraint already named, the two merge-queue kinds
+// among them, since the migration rewrites the list whole and a kind left out would stop its own
+// effect. A kind that is none is still refused, and so is a merge-lane kind, which went with the
+// merge the daemon no longer submits.
 func TestTheOutboxTakesTheBasisSeedKindsWith20261114064235(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -41,7 +43,7 @@ func TestTheOutboxTakesTheBasisSeedKindsWith20261114064235(t *testing.T) {
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"pending_basis_seed", "reparent_seed",
+		"merge_queue_read", "merge_queue_removal", "pending_basis_seed", "reparent_seed",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)

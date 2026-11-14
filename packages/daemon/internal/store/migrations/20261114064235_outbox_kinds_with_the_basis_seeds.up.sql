@@ -10,10 +10,18 @@
 -- marks requirement blocks and holds a person's approval of its latest version.
 --
 -- The check is one list, so the migration that sets it names every kind, as 20261106041346,
--- 20261108000545, 20261110235320 and 20261113082214 did: whichever of two open branches merges
--- last admits both their kinds. The list is 20261113082214's twenty-two kinds with
--- pending_basis_seed and reparent_seed added. It drops the constraint if it exists before adding
--- it, so it is safe on a database at either branch.
+-- 20261108000545, 20261110235320, 20261113082214 and 20261114031356 did: whichever of two open
+-- branches merges last admits both their kinds. The list is 20261114031356's twenty-four kinds,
+-- merge_queue_read and merge_queue_removal among them, with pending_basis_seed and reparent_seed
+-- added. It drops the constraint if it exists before adding it, so it is safe on a database at
+-- either branch. Its version stands above 20261114031356, and Migrate applies every unrecorded
+-- migration in version order, so this list is the last word on a fresh database and on one main
+-- migrated. No release carries this file, so no deployment's database records it. A database a
+-- build of this branch migrated before the forward merge that brought 20261114031356 in does
+-- record it and not 20261114031356, so its next upgrade applies that file after this one: a
+-- queued pending_basis_seed or reparent_seed row then stops the upgrade (SQLSTATE 23514), and
+-- with none queued the check it leaves refuses both kinds, since this file does not run again.
+-- Run this file's two statements by hand on such a database after its upgrade.
 --
 -- A daemon of an earlier release refuses neither row at the database, since this list admits
 -- them, but its strict decoder knows neither kind, so a row of either it finds pending fails its
@@ -26,4 +34,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'pending_basis_seed', 'reparent_seed'));
+  'merge_queue_read', 'merge_queue_removal', 'pending_basis_seed', 'reparent_seed'));
