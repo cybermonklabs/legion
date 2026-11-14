@@ -121,6 +121,50 @@ func TestAKeyTooLongForTheStoreIsRefusedNamingItsRow(t *testing.T) {
 	}
 }
 
+// TestACorrectedDayFoldsTheReadingsThatStand: a correction takes the reading it replaces out of
+// its day's row, and the day then folds the readings that stand (R4, R12). A weighted mean is the
+// summed numerator over the summed denominator, so after readings of 1e16 and 1 (n 1 each) and the
+// correction of 1e16 to 2, the day's mean is (2 + 1) / 2 = 1.5, whatever the corrected reading's
+// size made of the running sum.
+func TestACorrectedDayFoldsTheReadingsThatStand(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals",
+		map[string]any{"slug": "weighted", "series": []any{map[string]any{"series": "value", "agg": "weighted_mean"}}}, "weighted-register")
+	if registered.Code != http.StatusCreated {
+		t.Fatalf("register weighted: status %d, body %s", registered.Code, registered.Body.String())
+	}
+	day := time.Now().UTC().Add(-48 * time.Hour).Truncate(24 * time.Hour)
+	at := func(hour int) string { return day.Add(time.Duration(hour) * time.Hour).Format(time.RFC3339) }
+	path := "/api/v1/projects/EVL/evals/weighted/readings"
+	first := evalRequest(t, handler, http.MethodPost, path, map[string]any{"readings": []any{
+		map[string]any{"series": "value", "row_kind": "run", "row_key": "a", "value": 1e16, "n": 1, "measured_at": at(8)},
+		map[string]any{"series": "value", "row_kind": "run", "row_key": "b", "value": 1, "n": 1, "measured_at": at(9)},
+	}}, "weighted-readings")
+	if first.Code != http.StatusCreated {
+		t.Fatalf("log the readings: status %d, body %s", first.Code, first.Body.String())
+	}
+	replaced := decodeBody[evalReadingsResponse](t, first).Items[0].ID
+	correction := evalRequest(t, handler, http.MethodPost, path, map[string]any{"readings": []any{
+		map[string]any{"series": "value", "row_kind": "run", "row_key": "a", "value": 2, "n": 1, "measured_at": at(8), "replaces": replaced},
+	}}, "weighted-correction")
+	if correction.Code != http.StatusCreated {
+		t.Fatalf("correct the first reading: status %d, body %s", correction.Code, correction.Body.String())
+	}
+	window := url.Values{"from": {day.Format(time.RFC3339)}, "to": {day.Add(24 * time.Hour).Format(time.RFC3339)}}.Encode()
+	detail := evalGet[evalDetailResponse](t, handler, "/api/v1/projects/EVL/evals/weighted?"+window)
+	if len(detail.Items) == 0 || len(detail.Items[0].Series) == 0 {
+		t.Fatalf("the eval's read answers no series: %+v", detail)
+	}
+	mean := detail.Items[0].Series[0].Window["mean"]
+	if mean == nil {
+		t.Fatalf("the corrected day's weighted mean is null, want 1.5 from the standing readings 2 and 1")
+	}
+	if *mean < 1.5-1e-9 || *mean > 1.5+1e-9 {
+		t.Errorf("the corrected day's weighted mean is %v, want 1.5 from the standing readings 2 and 1", *mean)
+	}
+}
+
 // TestAReadingOutsideTheYearsAReadAnswersIsRefused: a measured_at whose UTC year is 10000
 // (9999-12-31T23:59:59-14:00, a time RFC 3339 writes) is refused, or stored and answered; a write
 // that stores the reading and answers an empty 201 leaves its caller unable to tell whether it
