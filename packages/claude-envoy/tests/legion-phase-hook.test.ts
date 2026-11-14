@@ -453,10 +453,10 @@ test("a successful handoff_complete closes the phase, and the next settle blocks
   }
 })
 
-// INFRA-484: the update task reaches Claude Code as a prompt, which opens the phase as an
-// assignment does, and `ready_for_update` closes no phase. The `Stop` of the turn the worker
-// answers in must still block nothing: a blocked `Stop` continues that same turn, so the work it
-// did would go with the pod, and the daemon would see no turn end.
+// INFRA-484: the update message reaches Claude Code while the phase is open, and
+// `ready_for_update` closes no phase. The `Stop` of the turn the worker answers in must still
+// block nothing: a blocked `Stop` continues that same turn, so the work it did would go with the
+// pod, and before the round's bound the daemon waits for every turn to end.
 test("a ready_for_update answer blocks no Stop: the answering turn ends, with the phase still open", async () => {
   const { endpoint, record, inbox, close } = await harness({
     record: recorded("open", 1),

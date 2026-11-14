@@ -133,15 +133,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// Every field of the claim record is served or withheld by a decision, and the view that
 		// serves it is built in one place (api.ClaimViewOf, api.ClaimRecordFields).
 		view := api.ClaimViewOf(current)
-		// Where the claim's update round stands, the mark of a push-check re-ask that is still
-		// on the round, and what a turn the daemon sends nothing for would do to the answer
-		// standing now. Each is a reading over several of the claim's update columns rather than
-		// one column's own value, which is why it is taken here and not in the view's build
-		// (api.UpdateStateOf, supervise.Claim.UnpromptedTurnTakesAnswerBack, which the machine
-		// reads when such a turn starts).
+		// Where the claim's update round stands. It is a reading over several of the claim's
+		// update columns rather than one column's own value, which is why it is taken here and
+		// not in the view's build (api.UpdateStateOf).
 		view.UpdateState = api.UpdateStateOf(current)
-		view.UpdateReaskedForPushCheck = current.UpdateReaskedForPushCheck
-		view.UnpromptedTurnTakesAnswerBack = current.UnpromptedTurnTakesAnswerBack()
 		if wake, waits := claimWakes[current.Token]; waits {
 			view.Wake = &wake
 		}

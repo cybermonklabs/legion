@@ -281,26 +281,14 @@ const legionClaimView = z.object({
    * open: the worker answering a round is told to act on it. */
   updateReasons: nonEmptyString.optional(),
   /** Where the claim's update round stands, read from the claim's own columns (contract 118):
-   * `none` when no round is open, `open` when a round is open and its task has not gone out,
-   * `asked` when the round asked this worker, `push-check-reask` when the round means to ask a
-   * second time because the pod's shim could not run the daemon's push check, and `answered`
-   * once the worker answered. A reader takes this rather than spelling the same reading out of
+   * `none` when no round is open, `open` when a round is open and its ask has not gone out,
+   * `asked` when the round published its ask on this worker's role topic, and `answered` once
+   * the worker answered. A reader takes this rather than spelling the same reading out of
    * `updateRound` and `updateHead`, which cannot tell a worker that answered with no head from
    * one nobody asked. A caller in a pod whose plugin declares a contract below 118 is served the
    * state with no such key at all (the daemon's `withoutClaimRoundReport`), so every reader
    * takes it as optional. */
-  updateState: z.enum(["none", "open", "asked", "push-check-reask", "answered"]).optional(),
-  /** Whether the open round has already asked this worker a second time for the daemon's push
-   * check (contract 118). The mark stands to the end of the round, so it is read beside whatever
-   * state the claim has reached and never as the state itself. Absent where it is false, and
-   * absent altogether for a caller below 118 (`withoutClaimRoundReport`). */
-  updateReaskedForPushCheck: z.boolean().optional(),
-  /** Whether a turn the daemon sends nothing for — an Envoy notice, a person's steer, a
-   * background result — would take this claim's standing answer back and leave the round
-   * waiting again (contract 118). It answers for that turn alone: the round's own task's turn is
-   * the turn the worker answers in and takes nothing back. Absent where it is false, and absent
-   * altogether for a caller below 118 (`withoutClaimRoundReport`). */
-  unpromptedTurnTakesAnswerBack: z.boolean().optional(),
+  updateState: z.enum(["none", "open", "asked", "answered"]).optional(),
   /** How many turns of this claim ended in a provider error in a row, absent for a claim whose
    * last turn ended with none. It bounds nothing — a limit here would fail every claim of a
    * project at once in a provider outage — and the project's controller is told of it once, at
@@ -1173,12 +1161,13 @@ export const LegionTurnOutcomeResponse = z.object({
 export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
 
 /** `claim.ReadyForUpdateRequest`, the body of `POST /legion/v1/claims/ready-for-update`: the
- * worker's answer to its pod's update task, which says it has pushed everything it wants kept and
- * its process may be replaced. `round` is the round the worker answers for, as the update task it
- * read named it: the daemon takes the answer only for the round its claim stands in, and refuses
- * one naming any other round with 409 and a sentence naming both. `head` is the commit the worker
- * reports as the head of `legion/<issue>@origin`, empty or absent when the branch is not there (a
- * planner before its first push); the daemon records it and verifies nothing of it. */
+ * worker's answer to its pod's update message, which says it has pushed everything it wants kept
+ * and its process may be replaced. `round` is the round the worker answers for, as the update
+ * message it read named it: the daemon takes the answer only for the round its claim stands in,
+ * and refuses one naming any other round with 409 and a sentence naming both. `head` is the
+ * commit the worker reports as the head of `legion/<issue>@origin`, empty or absent when the
+ * branch is not there (a planner before its first push); the daemon records it and verifies
+ * nothing of it. */
 export const LegionReadyForUpdateRequest = z.strictObject({
   claimToken: nonEmptyString,
   sessionId: nonEmptyString,

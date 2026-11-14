@@ -445,10 +445,10 @@ var wakeRoles = valuesFrom(wakesWaitingContract,
 	claim.RoleReviewer, claim.RoleMerger)
 
 // updateStates is every value of a claim view's `updateState`, recorded at the contract this
-// change adds the key under. The words are the five the package declares (updatestate.go), so a
+// change adds the key under. The words are the four the package declares (updatestate.go), so a
 // state renamed there is renamed here and the domain cannot spell one the daemon never writes.
 var updateStates = valuesFrom(shapedAnswersContract,
-	UpdateStateNone, UpdateStateOpen, UpdateStateAsked, UpdateStatePushCheckReask, UpdateStateAnswered)
+	UpdateStateNone, UpdateStateOpen, UpdateStateAsked, UpdateStateAnswered)
 
 // pullRequestStates is every state a recorded pull request is in. The field is older than the
 // floor (version.go's 36) and the list has not moved since.

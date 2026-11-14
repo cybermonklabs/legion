@@ -2134,7 +2134,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       // issue to another phase. Either way this session's phase is no longer open, and the
       // reminder must stop — the same two operations the Oh My Pi host closes its phase on
       // (`createLegionTool` in `packages/pi-legion/src/tools.ts`). `ready_for_update` ends no
-      // phase: it answers the pod's update task, and the worker then waits for its process to be
+      // phase: it answers the pod's update message, and the worker then waits for its process to be
       // replaced, so the `Stop` of the turn it answered in blocks nothing (`updateAnswered`,
       // `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does.
       const op = request.params.arguments?.["op"]

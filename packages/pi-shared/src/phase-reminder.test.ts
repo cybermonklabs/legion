@@ -501,11 +501,9 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
 // The wait a `ready_for_update` answer creates is `awaiting-update`, and nothing is armed in it:
 // the daemon is what wakes the worker, with the task it held behind the round, once the round
 // has replaced the pod. A timer fired in that wait would steer a real turn into the worker
-// instead, and a new turn is exactly what the daemon reads as the answer retracted
-// (`takeBackSignal`), so the sweep would ask the worker to push again, the round would
-// restart at every `waitingMs`, and the late-round notice — measured from the latest answer —
-// would never name the `ReplacePod` error or the sibling turn that will not end. The WAITING
-// reply's own wait is untouched: it is the reminder's to time out.
+// instead: its work would go with the pod, and before the round's bound a running turn holds the
+// replacement back, so a reminder every `waitingMs` would keep the round from ending early. The
+// WAITING reply's own wait is untouched: it is the reminder's to time out.
 test("the wait an update answer creates arms no reminder, where a WAITING reply still arms one", async () => {
   const { reminder, timers, sent, entries } = rig({});
 

@@ -385,13 +385,10 @@ var keysAddedAfterTheFloor = []string{
 	`"backwardMoves"`, `"claimsToRefresh"`,
 }
 
-// keysOfThisContract is the five keys this change's own contract adds, which shapedAnswersContract
-// serves down: the state's own `lowestPluginContract` and the four of each claim view's round
-// report.
-var keysOfThisContract = []string{
-	`"lowestPluginContract"`, `"updateState"`, `"updateReaskedForPushCheck"`,
-	`"unpromptedTurnTakesAnswerBack"`, `"wake"`,
-}
+// keysOfThisContract is the three keys this change's own contract adds, which
+// shapedAnswersContract serves down: the state's own `lowestPluginContract` and the two of each
+// claim view's round report.
+var keysOfThisContract = []string{`"lowestPluginContract"`, `"updateState"`, `"wake"`}
 
 // A claim that holds no process is in no pod's reckoning: suspending, failing or retiring a claim
 // ends what the machine had with its process, and the claim gives up its locator with it

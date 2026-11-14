@@ -103,10 +103,9 @@ that `read_record`, `handoff_complete` and the phase reminder read in place of t
 and that answers 404 `RECORD_NOT_FOUND` for an issue the daemon records nothing of, `GET
 /healthz` answers a typed body of `status` and `project` that the controller's boot check reads
 in place of the state, `GET /legion/v1/state` gains `lowestPluginContract`, the lowest contract
-any claim of the project records, and every claim view gains `updateState`,
-`updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`, which a caller from an
-earlier contract is served without, and `handoff_complete` reads the `ready` that a plugin below
-86 still sends, so that such a pod can end its phase: `false` is ignored, and `true` is refused
+any claim of the project records, and every claim view gains `updateState` and `wake`, which a
+caller from an earlier contract is served without, and `handoff_complete` reads the `ready` that
+a plugin below 86 still sends, so that such a pod can end its phase: `false` is ignored, and `true` is refused
 `READY_RETIRED`, since no daemon from 86 on acts on READY), after contract 111 (dispatch://INFRA-2560:
 every issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`,
 how long it has been still, which a caller below 111 is served without), after contract 104's
@@ -702,7 +701,7 @@ controller, a session with no Legion environment, or a `task` subagent), the pha
 `@legion/pi-shared/phase-stall` tracks the phase: the daemon's assignment (a user message) opens it, the tool's successful
 `handoff_complete` closes it, and its successful `ready_for_update` (`onUpdateAnswered`), which
 closes no phase, moves it to the `waiting` state a WAITING reply buys, so the turn the worker
-answered the daemon's update task in ends with no reminder continuing it: work a continuation did
+answered the daemon's update message in ends with no reminder continuing it: work a continuation did
 would go with the replaced pod, and the daemon would see no turn end.
 A person's direct message the Envoy extension sent in as the user's
 own turn is a user message too (for a `/skill:`, the host's `skill-prompt` custom message), and

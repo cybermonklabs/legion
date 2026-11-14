@@ -165,7 +165,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
       }),
       reason: requiredString("request_backward_move", "reason"),
     }),
-    // The signal carries one field of the agent's: the round its update task named, which the
+    // The signal carries one field of the agent's: the round its update message named, which the
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
     // resolves the branch head it reports.
     operation("ready_for_update", { round: requiredString("ready_for_update", "round") }),
@@ -294,9 +294,10 @@ export function legionToolDescription(host: {
     "pull request on `legion/<issue>` and none recorded " +
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
-    "ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the " +
+    "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
     "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
-    "first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The " +
+    "first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every " +
+    "role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The " +
     "daemon holds your next task until your process comes back on the new pod, in this same session. " +
     (host.after ?? "") +
     `What a later phase needs goes in your handoff; a question for another live role goes to its role topic with ${host.envoyPublish}.`
@@ -541,13 +542,13 @@ export async function executePhaseOp(
     }
     case "ready_for_update": {
       // The claim authenticates the signal, as it does `claims/ready`: no grant is minted. The
-      // round is the agent's own word, read from the update task it answers, and the daemon takes
-      // the answer for that round alone — an answer for a round its claim has left is refused
-      // naming both. The head is the plugin's to resolve, and a branch not yet on the remote is
-      // left out. A workspace whose jj cannot answer leaves it out too, and is told so: the round
-      // waits for every claim of the pod, so a worker whose lookup fails must still be able to
-      // answer. The daemon verifies no head, so the missing one costs the record a line and the
-      // round nothing.
+      // round is the agent's own word, read from the update message it answers, and the daemon
+      // takes the answer for that round alone — an answer for a round its claim has left is
+      // refused naming both. The head is the plugin's to resolve, and a branch not yet on the
+      // remote is left out. A workspace whose jj cannot answer leaves it out too, and is told so:
+      // an answer from every claim of the pod is what ends the round before its bound, so a worker
+      // whose lookup fails must still be able to answer. The daemon verifies no head, so the
+      // missing one costs the record a line and the round nothing.
       let head = "";
       let failure: string | undefined;
       try {

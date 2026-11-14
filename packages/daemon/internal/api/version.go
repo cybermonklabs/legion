@@ -1574,9 +1574,11 @@ package api
 // `RECORD_NOT_FOUND` for an issue the daemon records nothing of. `GET /healthz` answers a typed
 // body, `api.Health` with `status` and `project`, in place of one untyped key, so a caller reads
 // which project the daemon it reached serves. `api.State` gains `lowestPluginContract`, the
-// lowest contract any claim of the project records. Every claim view gains `updateState`,
-// `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`. The two contracts the
-// boot gate alone covered are now served the shape their own entry describes: a caller below 54
+// lowest contract any claim of the project records. Every claim view gains `updateState` and
+// `wake`. main's #3982 removed the push-check re-ask and the take-back, so 118 reports four
+// update states (`none`, `open`, `asked`, `answered`) and no `unpromptedTurnTakesAnswerBack`.
+// The two contracts the boot gate alone covered are now served the shape their own entry
+// describes: a caller below 54
 // is served the state with each check view's `role` left off (`withoutCheckRole`), and a caller
 // below 59 is served `pullRequest.fixAttempts` of 0 and `settings.max_fix_attempts` of 3 as
 // stand-ins. The three contracts above 73 are served their own shape here too: a caller below 75
@@ -1596,6 +1598,17 @@ package api
 // caller below 98 is served the admission block without `admission.held` (`withoutHeld`).
 // Contract 111 is one of them as well: a caller below 111 is served every issue without
 // `treeMovedAt` and `quietHours` (`withoutQuietTime`, the band of `quietTimeContract`).
+// main's #3982 replaced `settings.pod_update_retask_hours` and `settings.pod_update_notice_hours`
+// with `settings.pod_update_grace_minutes`. A caller below 118 is served the settings block
+// without `pod_update_grace_minutes` (`withoutPodUpdateGrace`, the band of
+// `podUpdateGraceContract`). It is served the two removed keys as stand-ins, with the defaults an
+// unconfigured daemon sent before #3982: 1 and 4 (`withPodUpdateHours`). The stand-ins describe
+// no behaviour of this daemon, whose update round asks no worker a second time and ends at its
+// bound. They exist only to keep the records of 46 to 111 fixed. No supported plugin reads
+// either key: measured at the commit of each of the 24 contracts from 46 to 111,
+// `legionSettings` is a loose object, and no plugin source names either key. This is the other
+// of the two reasons that allow a stand-in: `max_fix_attempts: 3` was allowed because readers
+// below 59 required the key, and these two are allowed because no reader reads them.
 // Contract 104 is served down too, by what one answer means, because 104 moved no key path. A
 // fresh session that stopped the claim and could not start it again answers a caller below 104
 // as the daemon did before 104: the refusal of the step that failed, 409 with the machine's
@@ -1663,7 +1676,7 @@ package api
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. A renumber moves `shapedAnswersContract` in shaping.go with it, and that one constant
-// alone: it is the number the five keys of this entry are served down below, it is what
+// alone: it is the number the three keys of this entry are served down below, it is what
 // answers.go gives the two answers this change adds as their arrival, and it is the last number
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason.)

@@ -70,7 +70,7 @@ const schemas: Record<string, z.ZodType> = {
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).
   "ready.json": LegionReadyRequest,
-  // `claim.ReadyForUpdateRequest`: the worker's answer to its pod's update task, saying it has
+  // `claim.ReadyForUpdateRequest`: the worker's answer to its pod's update message, saying it has
   // pushed everything it wants kept and its process may be replaced.
   "ready-for-update.json": LegionReadyForUpdateRequest,
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of

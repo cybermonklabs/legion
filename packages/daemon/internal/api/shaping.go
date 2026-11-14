@@ -233,9 +233,11 @@ func recordedContractAtOrBelow(n int) int {
 // whole body, and the two cannot part company.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
-// removed, each as a stand-in (withFixAttempts, withMaxFixAttempts). Any caller at this
-// daemon's own contract — a pod at it, the operator's `legion state`, a tmux pane — is served
-// the state as this contract writes it, neither restored nor stripped.
+// removed, each as a stand-in (withFixAttempts, withMaxFixAttempts), and a caller below
+// podUpdateGraceContract is served the two settings keys that contract removed, each as a
+// stand-in too (withPodUpdateHours). Any caller at this daemon's own contract — a pod at it, the
+// operator's `legion state`, a tmux pane — is served the state as this contract writes it,
+// neither restored nor stripped.
 //
 // It reports what it took off the body beside the body itself. The state's row fills it on the
 // one application it makes, and every other row takes nothing, the record's included: the log
@@ -336,6 +338,9 @@ func shapeState(state State, restore, strip int, took *tookOff) State {
 	}
 	if restore < fixAttemptsContract {
 		state = withMaxFixAttempts(state)
+	}
+	if restore < podUpdateGraceContract {
+		state = withPodUpdateHours(state)
 	}
 	for place, narrowing := range stateNarrowings {
 		if narrowing.state != nil && strip < narrowing.contract {
@@ -471,8 +476,8 @@ var stateNarrowings = []stateNarrowing{
 	{contract: heldContract, state: withoutHeld, dropped: "admission.held"},
 	{contract: quietTimeContract, issue: withoutQuietTime, dropped: "the issues' treeMovedAt and quietHours"},
 	{contract: shapedAnswersContract, state: withoutLowestPluginContract, issue: withoutClaimRoundReport,
-		dropped: "lowestPluginContract and the claim views' updateState, " +
-			"updateReaskedForPushCheck, unpromptedTurnTakesAnswerBack and wake"},
+		dropped: "lowestPluginContract and the claim views' updateState and wake"},
+	{contract: podUpdateGraceContract, state: withoutPodUpdateGrace, dropped: "settings.pod_update_grace_minutes"},
 }
 
 // recordShaping writes the daemon's own record of what it left out of the state it answered: one
@@ -732,18 +737,24 @@ const processReadContract = 104
 const quietTimeContract = 111
 
 // shapedAnswersContract is the daemon contract this change lands under (version.go's 118), and
-// the contract that added five keys of its own: `lowestPluginContract` on the state, the
-// lowest contract any claim of the project records, and each claim view's `updateState`,
-// `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`. A plugin before it
-// reads the state with a schema that names none of the five and refuses the whole body for one
-// of them, so a caller below this contract is served the state without them
-// (withoutLowestPluginContract, withoutClaimRoundReport).
+// the contract that added three keys of its own: `lowestPluginContract` on the state, the
+// lowest contract any claim of the project records, and each claim view's `updateState` and
+// `wake`. A plugin before it reads the state with a schema that names none of the three and
+// refuses the whole body for one of them, so a caller below this contract is served the state
+// without them (withoutLowestPluginContract, withoutClaimRoundReport).
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract these keys arrived at stays where it is. It moves only
 // with this change's own number, as the arrival contracts of this change's two new answers do
 // (answers.go's AnswerIssueRecord and AnswerHealth).
 const shapedAnswersContract = 118
+
+// podUpdateGraceContract is the daemon contract whose settings block carries
+// `pod_update_grace_minutes` in place of `pod_update_retask_hours` and `pod_update_notice_hours`
+// (main's #3982, recorded at version.go's 118). A caller below it is served the block without the
+// new key (withoutPodUpdateGrace) and with the two old keys as stand-ins (withPodUpdateHours).
+// It is shapedAnswersContract by name, so a renumber of this change moves one constant.
+const podUpdateGraceContract = shapedAnswersContract
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route.
@@ -1202,12 +1213,11 @@ func withoutLowestPluginContract(state State) (State, bool) {
 	return state, moved
 }
 
-// withoutClaimRoundReport is the issue with no claim view carrying `updateState`,
-// `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` or `wake`, the four keys
-// shapedAnswersContract added to the claim views.
+// withoutClaimRoundReport is the issue with no claim view carrying `updateState` or `wake`, the
+// two keys shapedAnswersContract added to the claim views.
 func withoutClaimRoundReport(issue Issue) (Issue, bool) {
 	return withEachClaimView(issue, func(view ClaimView) ClaimView {
-		view.UpdateState, view.UpdateReaskedForPushCheck, view.UnpromptedTurnTakesAnswerBack, view.Wake = "", false, false, nil
+		view.UpdateState, view.Wake = "", nil
 		return view
 	})
 }
@@ -1272,6 +1282,36 @@ func withFixAttempts(issue Issue) Issue {
 func withMaxFixAttempts(state State) State {
 	state.Settings.maxFixAttemptsShown = true
 	return state
+}
+
+// podUpdateRetaskHoursStandIn and podUpdateNoticeHoursStandIn are the `pod_update_retask_hours`
+// and `pod_update_notice_hours` a caller below podUpdateGraceContract is served in the settings
+// block: 1 and 4, the hours an unconfigured daemon sent before main's #3982 (its config
+// defaults, time.Hour and 4 * time.Hour). They describe no behaviour of this daemon, whose update
+// round asks no worker again and ends at its bound. No plugin from 46 to 111 reads either key,
+// so they exist only to keep the records of those contracts fixed (version.go's 118).
+const (
+	podUpdateRetaskHoursStandIn float64 = 1
+	podUpdateNoticeHoursStandIn float64 = 4
+)
+
+// withPodUpdateHours is state whose settings block carries `pod_update_retask_hours` and
+// `pod_update_notice_hours`, the two keys podUpdateGraceContract took off this route, as the
+// stand-ins a caller below that contract is served. The block is a value of the state's own, so
+// the state the source answered is left as it was.
+func withPodUpdateHours(state State) State {
+	state.Settings.podUpdateHoursShown = true
+	return state
+}
+
+// withoutPodUpdateGrace is state whose settings block leaves off `pod_update_grace_minutes`, the
+// key podUpdateGraceContract added to this route. The key is no `omitempty` field, so a flag on
+// the block leaves it off (Settings.podUpdateGraceHidden). Every state carries the key, so the
+// band reports a move on every body it sets the flag on. The block is a value of the state's own,
+// so the state the source answered is left as it was.
+func withoutPodUpdateGrace(state State) (State, bool) {
+	state.Settings.podUpdateGraceHidden = true
+	return state, true
 }
 
 // withoutStateMachineFields is the issue with no `pullRequest.mergeState`, no `pass` on any

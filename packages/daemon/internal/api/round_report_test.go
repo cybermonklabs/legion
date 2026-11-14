@@ -7,11 +7,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// roundReportKeys is the four keys shapedAnswersContract added to each claim view, as the wire
+// roundReportKeys is the two keys shapedAnswersContract added to each claim view, as the wire
 // names them.
-var roundReportKeys = []string{"updateState", "updateReaskedForPushCheck", "unpromptedTurnTakesAnswerBack", "wake"}
+var roundReportKeys = []string{"updateState", "wake"}
 
-// roundReportServed is how many claim views of a state body carry each of those four keys, and
+// roundReportServed is how many claim views of a state body carry each of those two keys, and
 // how many views the body holds: the two are read apart so a body that carries no claim view at
 // all cannot pass for one whose keys were stripped.
 func roundReportServed(t *testing.T, body []byte) (carried map[string]int, views int) {
@@ -30,12 +30,11 @@ func roundReportServed(t *testing.T, body []byte) (carried map[string]int, views
 
 // The route authenticates nobody, so it knows a plugin by the pod the request came from, and a
 // caller that states its own contract is placed by what it states. A caller below
-// shapedAnswersContract is served neither key this contract added: no `lowestPluginContract` on
-// the body, and no claim view carrying `updateState`, `updateReaskedForPushCheck`,
-// `unpromptedTurnTakesAnswerBack` or `wake`. That caller's plugin reads the state with a schema
-// that names none of the five and refuses the whole body for one of them. A caller at this
-// daemon's own contract, a pod whose claims record no contract, and a caller the daemon cannot
-// place in a pod are served both.
+// shapedAnswersContract is served neither part this contract added: no `lowestPluginContract` on
+// the body, and no claim view carrying `updateState` or `wake`. That caller's plugin reads the
+// state with a schema that names none of the three keys and refuses the whole body for one of
+// them. A caller at this daemon's own contract, a pod whose claims record no contract, and a
+// caller the daemon cannot place in a pod are served both.
 func TestTheStateRouteServesAPodItsPluginContractsRoundReport(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
 	wantCarried, wantViews := roundReportServed(t, full)
@@ -112,7 +111,7 @@ func TestTheStateServedBelowThisContractLeavesTheNextCallersStateWhole(t *testin
 	}
 }
 
-// shapedAnswersContract is at or below this daemon's own contract, which is what makes the five
+// shapedAnswersContract is at or below this daemon's own contract, which is what makes the three
 // keys of its entry reach a caller at all: a constant above DaemonAPIVersion would be keys no
 // caller is ever served. Which number it is is answers.go's `Since` of this change's two new
 // answers and version.go's own entry, each of them the constant itself, so nothing here pins it

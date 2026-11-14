@@ -307,7 +307,7 @@ func withoutAnswerKeys(t *testing.T, body []byte) []byte {
 }
 
 // servedAt is a state body with the shapes applied that a caller at contract is served beside the
-// keys a row of the table below names column by column: each claim view without the four keys
+// keys a row of the table below names column by column: each claim view without the two keys
 // shapedAnswersContract added (api's withoutClaimRoundReport) where contract is below it, and
 // what servedShape applies. It serves the table as withoutQuietKeys does: a row's baseline is the
 // full state with exactly the keys that row's own contract holds back taken out of it.
@@ -418,7 +418,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// declaration. Such a pod stands below whyAndLineFieldsContract, leakCheckCauseContract,
 		// phaseEntriesContract, heldContract, quietTimeContract and shapedAnswersContract, the
 		// six bands above it, so the issues it is served carry no answer, no entry number and no
-		// tree quiet time, its claim views no leak check's cause and none of the four keys
+		// tree quiet time, its claim views no leak check's cause and neither of the two keys
 		// contract 118 added, and its admission block no held list.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, contract: recordFieldsContract},
 		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
@@ -593,7 +593,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					}
 					// Every row that reaches here is below shapedAnswersContract, below
 					// leakCheckCauseContract and below recordFieldsContract too, so none of its
-					// callers is served the four keys contract 118 added to a claim view, the
+					// callers is served the two keys contract 118 added to a claim view, the
 					// `leakCheckCause` contract 87 added or the six the decided record added.
 					for _, key := range roundReportKeys {
 						delete(view, key)
@@ -680,13 +680,22 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 // writes and an older caller is served without. A caller below checkRoleContract is served each
 // issue's check without `role` (api's withoutCheckRole); a caller below fixAttemptsContract is
 // served `fixAttempts` of 0 on each pull request and `max_fix_attempts` of 3 in the settings
-// block (withFixAttempts, withMaxFixAttempts); and a caller below stateMachineContract is served
-// the issue without the seven keys that contract added (withoutStateMachineFields). One contract
-// decides the stand-ins, because the two sides of a caller's shaping part only below
-// ServingFloor, which is below fixAttemptsContract as every number this is called with is.
+// block (withFixAttempts, withMaxFixAttempts); a caller below podUpdateGraceContract is served the
+// settings block without `pod_update_grace_minutes` and with `pod_update_retask_hours` of 1 and
+// `pod_update_notice_hours` of 4 (withoutPodUpdateGrace, withPodUpdateHours); and a caller below
+// stateMachineContract is served the issue without the seven keys that contract added
+// (withoutStateMachineFields). One contract decides the stand-ins, because the two sides of a
+// caller's shaping part only below ServingFloor, which is below fixAttemptsContract as every
+// number this is called with is.
 func servedShape(want map[string]any, contract int) {
+	settings := want["settings"].(map[string]any)
 	if contract < fixAttemptsContract {
-		want["settings"].(map[string]any)["max_fix_attempts"] = float64(3)
+		settings["max_fix_attempts"] = float64(3)
+	}
+	if contract < podUpdateGraceContract {
+		delete(settings, "pod_update_grace_minutes")
+		settings["pod_update_retask_hours"] = float64(1)
+		settings["pod_update_notice_hours"] = float64(4)
 	}
 	for _, issue := range want["issues"].(map[string]any) {
 		issue := issue.(map[string]any)

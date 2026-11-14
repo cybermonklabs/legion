@@ -76,7 +76,6 @@
         "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
         "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
         "updateState": "asked",
-        "updateReaskedForPushCheck": true,
         "providerErrorRun": 2,
         "pendingTask": {
           "phase": "implementing",
@@ -120,7 +119,6 @@
         "updateHead": "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
         "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
         "updateState": "answered",
-        "unpromptedTurnTakesAnswerBack": true,
         "wake": {
           "kind": "launch",
           "dueAt": "2026-09-22T09:18:11Z"

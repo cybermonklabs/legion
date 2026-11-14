@@ -176,10 +176,6 @@
       {
         "value": "open",
         "since": 118
-      },
-      {
-        "value": "push-check-reask",
-        "since": 118
       }
     ]
   },
@@ -201,10 +197,6 @@
       },
       {
         "value": "open",
-        "since": 118
-      },
-      {
-        "value": "push-check-reask",
         "since": 118
       }
     ]
@@ -1146,10 +1138,6 @@
       {
         "value": "open",
         "since": 118
-      },
-      {
-        "value": "push-check-reask",
-        "since": 118
       }
     ]
   },
@@ -1171,10 +1159,6 @@
       },
       {
         "value": "open",
-        "since": 118
-      },
-      {
-        "value": "push-check-reask",
         "since": 118
       }
     ]

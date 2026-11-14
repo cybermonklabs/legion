@@ -298,7 +298,6 @@ func TestProjectNamesEachClaimsOwnWakeAndRoundState(t *testing.T) {
 		{
 			Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-3",
 			UpdateRound: round, UpdateOpenedAt: &asked, UpdateTaskedAt: &asked, UpdateSignalledAt: &answered,
-			UpdateReaskedForPushCheck: true,
 		},
 	}, Wakes: wakes, Now: projectedAt})
 	if err != nil {
@@ -329,12 +328,8 @@ func TestProjectNamesEachClaimsOwnWakeAndRoundState(t *testing.T) {
 	if answeredView.Wake != nil {
 		t.Errorf("the implementer's wake = %#v, want none: the pacing holds nothing for it", answeredView.Wake)
 	}
-	if answeredView.UpdateState != api.UpdateStateAnswered || !answeredView.UpdateReaskedForPushCheck {
-		t.Errorf("the implementer reads %q with the push-check mark %v, want %q with the mark the round still holds",
-			answeredView.UpdateState, answeredView.UpdateReaskedForPushCheck, api.UpdateStateAnswered)
-	}
-	if !answeredView.UnpromptedTurnTakesAnswerBack {
-		t.Errorf("the implementer's unpromptedTurnTakesAnswerBack = false, want true: it answered with the ready_for_update call")
+	if answeredView.UpdateState != api.UpdateStateAnswered {
+		t.Errorf("the implementer reads %q, want %q", answeredView.UpdateState, api.UpdateStateAnswered)
 	}
 }
 

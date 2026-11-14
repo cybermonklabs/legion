@@ -464,7 +464,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 						delete(view, "step")
 					}
 					// A caller below shapedAnswersContract is served no claim view carrying the
-					// four keys contract 118 added to one, which is every band of this table but
+					// two keys contract 118 added to one, which is every band of this table but
 					// the last three rows.
 					if tc.contract < shapedAnswersContract {
 						for _, key := range roundReportKeys {

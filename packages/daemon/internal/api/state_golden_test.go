@@ -337,21 +337,21 @@ func populatedState(t *testing.T) State {
 									Container: "roles", Generation: 2,
 								},
 							},
-							// The pod's update round, which every claim of that pod shares: the daemon
-							// replaces the pod only once each has answered. This one has, and reported
-							// the head it pushed. The reasons are the round's own, so every claim of
-							// the pod carries the same text: what the worker answering is told to act
-							// on.
+							// The pod's update round, which every claim of that pod shares: the round
+							// asks each role, and the daemon replaces the pod once every asked role has
+							// answered and no turn runs, or at the round's bound
+							// (pod_update_grace_minutes) whatever the roles answered, an operator's
+							// suspension excepted; the push check runs before every replacement. This
+							// one has answered, and reported the head it pushed. The reasons are the
+							// round's own, so every claim of the pod carries the same text: what the
+							// worker answering is told to act on.
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateHead:    "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
-							// The worker answered with the ready_for_update call, so a turn the
-							// daemon sends nothing for would take that answer back and the round
-							// would ask it again. Its launch onto the pod's replacement waits in
-							// the pacing meanwhile.
-							UpdateState:                   UpdateStateAnswered,
-							UnpromptedTurnTakesAnswerBack: true,
-							Wake:                          &WakeView{Kind: supervise.WakeLaunch, DueAt: time.Date(2026, 9, 22, 9, 18, 11, 0, time.UTC)},
+							// The worker answered with the ready_for_update call. Its launch onto
+							// the pod's replacement waits in the pacing meanwhile.
+							UpdateState: UpdateStateAnswered,
+							Wake:        &WakeView{Kind: supervise.WakeLaunch, DueAt: time.Date(2026, 9, 22, 9, 18, 11, 0, time.UTC)},
 						},
 						HandoffRecord: &HandoffRecordView{ID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 1},
 						Pass:          0,
@@ -380,13 +380,10 @@ func populatedState(t *testing.T) State {
 							},
 							// The same round, on the worker that has not answered it yet: no head is
 							// reported until a worker answers, and the reasons are the round's own.
-							// The round asked it a second time, because this pod's shim could not
-							// run the daemon's push check, and the mark of that second ask stands
-							// beside the state the claim has reached, which is `asked` again.
-							UpdateRound:               "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
-							UpdateReasons:             "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
-							UpdateState:               UpdateStateAsked,
-							UpdateReaskedForPushCheck: true,
+							// The round published its ask on this worker's role topic.
+							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+							UpdateState:   UpdateStateAsked,
 							// The run of the last confirmed delivery this claim retired, which is
 							// this issue's own generation: the worker is turning over the run the
 							// issue is in.
@@ -972,7 +969,7 @@ func TestStateOperatorClaimGolden(t *testing.T) {
 						Tmux:        &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
 					},
 					// No round is open over an operator's spawn either: every claim view names
-					// one of the five states, and the projection writes this one for a claim no
+					// one of the four states, and the projection writes this one for a claim no
 					// round has reached.
 					UpdateState: UpdateStateNone,
 				},
@@ -1050,8 +1047,8 @@ func TestReadyRequestGolden(t *testing.T) {
 	})
 }
 
-// The ready-for-update request is the worker's answer to its pod's update task: the claim it
-// holds, the generation it answers for, the round the task it read named — the one round the
+// The ready-for-update request is the worker's answer to its update round's ask: the claim it
+// holds, the generation it answers for, the round the ask it read named — the one round the
 // answer counts for — and the head of `legion/<issue>@origin` it reports, which the daemon
 // records and verifies nothing of.
 func TestReadyForUpdateRequestGolden(t *testing.T) {

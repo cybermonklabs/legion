@@ -62,12 +62,11 @@ type ForgetSessionRequest struct {
 }
 
 // OperatorClaim is a claim as the operator sees it: every field of the claim record the decision
-// table files in the operator column, which these routes alone carry, and all but six of the
+// table files in the operator column, which these routes alone carry, and all but five of the
 // fields it files in the agents column (ClaimRecordFields, internal/api's recordfields.go). The
-// six it leaves to the agent surfaces are `servingGeneration`, `pendingCause`,
-// `providerErrorRun`, `updateReasons`, `updateReaskedForPushCheck` and `givenEntry`, the last of
-// which an issue's own view carries and no claim's; the table's withheld column reaches no
-// surface at all,
+// five it leaves to the agent surfaces are `servingGeneration`, `pendingCause`,
+// `providerErrorRun`, `updateReasons` and `givenEntry`, the last of which an issue's own view
+// carries and no claim's; the table's withheld column reaches no surface at all,
 // the claim's two hashes among it. Two fields stand here whole where a claim view reduces them:
 // the four counts, under `budgets` and again inside `failure`, and the pending task with its
 // text, under `pending`. Three keys below are no field of the claim record and stand on the

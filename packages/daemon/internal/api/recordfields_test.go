@@ -28,12 +28,10 @@ var operatorServedUnder = map[string][]string{
 
 // operatorWithheld is every field of the agents column the operator route does not carry, which
 // is what the OperatorClaim doc states and what this test holds it to: the route is the live
-// machine's and the agent surfaces are the store's, and these six reach an agent and no
+// machine's and the agent surfaces are the store's, and these five reach an agent and no
 // operator. `GivenEntry` is among them because the surface that serves it is the issue's own
 // view (api.Issue.GivenEntry) and no claim's.
-var operatorWithheld = []string{
-	"ServingGeneration", "PendingCause", "ProviderErrorRun", "UpdateReasons", "UpdateReaskedForPushCheck", "GivenEntry",
-}
+var operatorWithheld = []string{"ServingGeneration", "PendingCause", "ProviderErrorRun", "UpdateReasons", "GivenEntry"}
 
 // wireOf is value as this wire carries it: marshalled and read back, so a view and the keys the
 // decision table names are compared in one shape rather than in two Go types.
@@ -125,9 +123,9 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
-		UpdateHead:              "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
-		UpdateToldAt:            &answeredAt,
-		UpdateAnsweredByTurnEnd: true, UpdateReaskedForPushCheck: true, UpdateLeftRound: "pod:older",
+		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+		UpdateToldAt:     &answeredAt,
+		UpdateLeftRound:  "pod:older",
 		ProviderErrorRun: 6,
 		LastTurnStart:    at.Add(-2 * time.Minute),
 		LastTurnEnd:      at.Add(-30 * time.Second),

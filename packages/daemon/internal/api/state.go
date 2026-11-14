@@ -713,25 +713,10 @@ type ClaimView struct {
 	UpdateHead    string `json:"updateHead,omitempty"`
 	UpdateReasons string `json:"updateReasons,omitempty"`
 	// UpdateState is where the round above stands on this claim, as UpdateStateOf reads the
-	// claim's own update columns: `none`, `open`, `asked`, `push-check-reask` or `answered`
-	// (contract 118). A reader takes it rather than spelling the same reading out of
-	// `updateRound` and `updateHead`, which tell a worker that answered with no head from one
-	// nobody asked.
+	// claim's own update columns: `none`, `open`, `asked` or `answered` (contract 118). A
+	// reader takes it rather than spelling the same reading out of `updateRound` and
+	// `updateHead`, which tell a worker that answered with no head from one nobody asked.
 	UpdateState UpdateState `json:"updateState,omitempty"`
-	// UpdateReaskedForPushCheck is whether the open round has already asked this claim's worker
-	// a second time, because the pod's shim could not run the daemon's push check
-	// (supervise.Claim.UpdateReaskedForPushCheck). The mark stands to the end of the round, so it
-	// is read beside whatever state the claim has reached and never as the state itself: a claim
-	// the daemon re-asked and then asked again carries it with `asked`, and one that then answers
-	// carries it with `answered`.
-	UpdateReaskedForPushCheck bool `json:"updateReaskedForPushCheck,omitempty"`
-	// UnpromptedTurnTakesAnswerBack is whether a turn the daemon sends nothing for — an Envoy
-	// notice, a person's steer, a background result — would take this claim's standing answer
-	// back and leave the round waiting again (supervise.Claim.UnpromptedTurnTakesAnswerBack,
-	// which the machine itself reads when such a turn starts). It answers for that turn alone.
-	// The round's own task's turn is the turn the worker answers in and takes nothing back, and a
-	// turn of another task the daemon sent is decided by that delivery rather than by this field.
-	UnpromptedTurnTakesAnswerBack bool `json:"unpromptedTurnTakesAnswerBack,omitempty"`
 	// LastTurnStart and LastTurnEnd are when the claim's agent last began a turn and last ended
 	// one, each absent until that happens: a claim that has worked since this release records
 	// them, and one that last ran before it records neither. They are what says whether a worker

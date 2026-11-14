@@ -1458,9 +1458,11 @@ const deploysNeverFilled = "the daemon holds no deploy since contract 54, so `se
 // the unexported flags the shaping sets are no json fields of any type and are walked by
 // nothing (walkDeclaredType names them). What they do to a body is held all the same, by the
 // records: the stand-ins PullRequestView.fixAttemptsShown and Settings.maxFixAttemptsShown put
-// `fixAttempts` and `max_fix_attempts` into the records below 59, CheckView.roleHidden takes
-// `check.role` out of the records below 54, and PhaseView.passHidden takes each worker's `pass`
-// out of the records below 86.
+// `fixAttempts` and `max_fix_attempts` into the records below 59, Settings.podUpdateHoursShown
+// puts `pod_update_retask_hours` and `pod_update_notice_hours` into the records below 118 and
+// Settings.podUpdateGraceHidden takes `pod_update_grace_minutes` out of them,
+// CheckView.roleHidden takes `check.role` out of the records below 54, and PhaseView.passHidden
+// takes each worker's `pass` out of the records below 86.
 func TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture(t *testing.T) {
 	fixtures := answerFixtures(t)
 	// paths is one key path of each field, for the message a gap reads as.

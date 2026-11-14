@@ -17021,9 +17021,7 @@
       "workers.*.claim.step.startedAt",
       "workers.*.claim.step.tool",
       "workers.*.claim.step.turnStartedAt",
-      "workers.*.claim.unpromptedTurnTakesAnswerBack",
       "workers.*.claim.updateHead",
-      "workers.*.claim.updateReaskedForPushCheck",
       "workers.*.claim.updateReasons",
       "workers.*.claim.updateRound",
       "workers.*.claim.updateState",
@@ -17087,8 +17085,7 @@
         "answered",
         "asked",
         "none",
-        "open",
-        "push-check-reask"
+        "open"
       ],
       "gatedSteps.*.status": [
         "approved",
@@ -17230,8 +17227,7 @@
         "answered",
         "asked",
         "none",
-        "open",
-        "push-check-reask"
+        "open"
       ]
     }
   },
@@ -17554,9 +17550,7 @@
       "issues.*.workers.*.claim.step.startedAt",
       "issues.*.workers.*.claim.step.tool",
       "issues.*.workers.*.claim.step.turnStartedAt",
-      "issues.*.workers.*.claim.unpromptedTurnTakesAnswerBack",
       "issues.*.workers.*.claim.updateHead",
-      "issues.*.workers.*.claim.updateReaskedForPushCheck",
       "issues.*.workers.*.claim.updateReasons",
       "issues.*.workers.*.claim.updateRound",
       "issues.*.workers.*.claim.updateState",
@@ -17652,9 +17646,8 @@
       "settings.omp_invocation",
       "settings.omp_launch_prefix",
       "settings.omp_launch_prefix.*",
+      "settings.pod_update_grace_minutes",
       "settings.pod_update_max_open_rounds",
-      "settings.pod_update_notice_hours",
-      "settings.pod_update_retask_hours",
       "settings.pod_update_rounds_per_minute",
       "settings.port",
       "settings.probe_interval_seconds",
@@ -17855,8 +17848,7 @@
         "answered",
         "asked",
         "none",
-        "open",
-        "push-check-reask"
+        "open"
       ],
       "issues.*.gatedSteps.*.status": [
         "approved",
@@ -17998,8 +17990,7 @@
         "answered",
         "asked",
         "none",
-        "open",
-        "push-check-reask"
+        "open"
       ],
       "repositories.caches.*.state": [
         "cloning",
