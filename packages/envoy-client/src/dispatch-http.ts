@@ -1291,6 +1291,24 @@ export class DispatchClient {
   }
 
   /**
+   * Records the review of the person the credential names on a document: `approved`, or
+   * `changes_requested` with its `reason`, at `version`, the version the caller read
+   * (`createArtifactReview` in packages/envoy/internal/dispatch/api/reviews.go). The body names no
+   * actor: the route records the person the credential names, and refuses a field it does not
+   * take. Dispatch refuses a credential that names no person holding `approve` (403
+   * `OAUTH_SCOPE_REQUIRED` or `SIGN_IN_REQUIRED`), and a `version` other than the one the review
+   * would record (409 `REVIEW_VERSION_MOVED`). With an approval request open the review answers
+   * it and records the verdict on every document the request named, but the answer is this
+   * document's review alone; its `ask_id` names the request it answered.
+   */
+  async reviewArtifact(
+    artifactID: string,
+    input: { state: "approved" | "changes_requested"; reason?: string; version: number }
+  ): Promise<ArtifactReview> {
+    return this.#json("POST", ["api", "v1", "artifacts", artifactID, "reviews"], input);
+  }
+
+  /**
    * Records one result of one check of an issue's Verification document, and answers it beside
    * the pull-request body line it implies. `issue` is the issue the result is recorded on; the
    * check may be one of an issue above it, and the result is recorded against that issue.
