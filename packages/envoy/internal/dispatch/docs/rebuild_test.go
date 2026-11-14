@@ -573,7 +573,9 @@ func corruptStoredHistory(t *testing.T, database *store.Store, artifactID string
 // A rebuild asks every other process whether it holds a room of the document (plan D9): task B's
 // room is resident, so a rebuild through task A, whose own server holds none, is refused as live
 // and replaces nothing, though the stored history cannot load. Before the holds query task A
-// asked only its own rooms and replaced the history under task B's.
+// asked only its own rooms and replaced the history under task B's. The refusal says what the
+// in-process refusal says: the saved version a rebuild would discard every edit after, and that
+// the caller stops and asks a person, with no other repair, such as a replacement from markdown.
 func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
@@ -590,10 +592,29 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 		t.Fatal("task A holds a room of the document, so its own check would refuse the rebuild")
 	}
 	head := storedHead(t, database, artifactID)
+	var saved int
+	if err := database.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&saved); err != nil {
+		t.Fatalf("read the latest saved version: %v", err)
+	}
 
 	_, _, err := rebuildDocument(t, taskA, artifactID, nil)
-	if !errors.Is(err, ErrDocumentLive) || !strings.Contains(err.Error(), "another server process") {
-		t.Fatalf("a rebuild through task A while task B holds the room = %v, want ErrDocumentLive naming another server process", err)
+	if !errors.Is(err, ErrDocumentLive) {
+		t.Fatalf("a rebuild through task A while task B holds the room = %v, want ErrDocumentLive", err)
+	}
+	message := err.Error()
+	for _, want := range []string{
+		"is open in another Dispatch process",
+		fmt.Sprintf("A rebuild discards every edit made after saved version %d.", saved),
+		"Stop. Ask a person whether to rebuild the document",
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the refusal %q does not say %q", message, want)
+		}
+	}
+	for _, advice := range []string{"markdown", "replace", "retry", "close its editors"} {
+		if strings.Contains(message, advice) {
+			t.Errorf("the refusal %q offers a repair a person did not decide (%q)", message, advice)
+		}
 	}
 	if after := storedHead(t, database, artifactID); after != head {
 		t.Fatalf("the refused rebuild moved the head from %d to %d", head, after)
@@ -604,7 +625,9 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 // load: both wait on the issue's row (lockArtifactOwner) until the test lets them go, so each
 // validated the old history before either replaces it. Exactly one replaces it; the other finds
 // the head moved under the document's lock (RebuildTx) and is refused as live, rather than
-// replacing the history the first had just rebuilt.
+// replacing the history the first had just rebuilt. That refusal names the saved version a
+// rebuild discards every edit after and tells the caller to stop and ask a person, rather than
+// to rebuild again.
 func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
@@ -613,6 +636,10 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 	seedServiceText(t, taskA, artifactID, "before\n")
 	corruptStoredHistory(t, database, artifactID)
 	head := storedHead(t, database, artifactID)
+	var saved int
+	if err := database.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&saved); err != nil {
+		t.Fatalf("read the latest saved version: %v", err)
+	}
 
 	ctx := context.Background()
 	gate, err := database.Pool.Begin(ctx)
@@ -651,6 +678,10 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 	}
 	if succeeded != 1 || len(refusals) != 1 || !errors.Is(refusals[0], ErrDocumentLive) || !strings.Contains(refusals[0].Error(), "changed while it was being rebuilt") {
 		t.Fatalf("two rebuilds at once: %d succeeded, refusals %v; want one success and one ErrDocumentLive for the moved head", succeeded, refusals)
+	}
+	message := refusals[0].Error()
+	if !strings.Contains(message, fmt.Sprintf("A rebuild discards every edit made after saved version %d.", saved)) || !strings.Contains(message, "Stop. Ask a person whether to rebuild the document") || strings.Contains(message, "before rebuilding") {
+		t.Errorf("the moved-head refusal %q does not name what a rebuild discards and tell the caller to stop and ask a person", message)
 	}
 	var rows int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&rows); err != nil {

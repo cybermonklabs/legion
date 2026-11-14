@@ -94,7 +94,11 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	for _, answer := range answers {
 		if answer.holds {
-			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is live in another server process; close its editors and retry two minutes later, or replace it from markdown instead", ErrDocumentLive, artifactID)
+			latest, err := savedVersionNumber(ctx, tx, artifactID)
+			if err != nil {
+				return RebuildReport{}, VersionResult{}, err
+			}
+			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is open in another Dispatch process, or its last editor left it less than two minutes ago, so Dispatch refused the rebuild. A rebuild discards every edit made after saved version %d. Stop. Ask a person whether to rebuild the document after two minutes", ErrDocumentLive, artifactID, latest)
 		}
 	}
 	// The head of the history the refusal below judges. RebuildTx replaces that history only

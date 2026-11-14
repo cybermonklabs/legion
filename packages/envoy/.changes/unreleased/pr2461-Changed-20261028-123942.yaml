@@ -7,10 +7,9 @@ body: |-
     floor on a fresh deliver subject, which redelivers a dead holder's unacknowledged messages at
     once and fences that holder off; a stopping process finishes the message in its handler and
     releases the hold. A durable carries its config's generation (`dispatch.consumer-generation`),
-    and a take-over that finds a higher one keeps the deployed config. The lease pool grows by four
-    connections, to 19, one per caller of the two intakes' holds, so `store.ConnectionsPerProcess`
-    goes from 104 to 108. A periodic
-    maintenance loop records its passes per lease and period (`duty_passes` row
+    and a take-over that finds a higher one keeps the deployed config. The lease pool
+    (`store.LeasePoolSize`) grows by four connections, from 17 to 21, one per caller of the two
+    intakes' holds, so `store.ConnectionsPerProcess` goes from 108 to 112. A periodic maintenance loop records its passes per lease and period (`duty_passes` row
     `<lease>/<period_ns>`), so two builds with different intervals for one loop each run it once
     per their own period.
 time: 2026-10-28T12:39:42.200918199Z

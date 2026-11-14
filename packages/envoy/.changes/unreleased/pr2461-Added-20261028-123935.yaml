@@ -1,6 +1,7 @@
 kind: Added
 body: |-
-    The two-build test, `go test -tags twobuild ./cmd/dispatch` (`cmd/dispatch/twobuild_test.go`),
+    The two-build test, `go test -tags twobuild ./cmd/dispatch` (the five `cmd/dispatch/twobuild_*_test.go`
+    files),
     runs a previous build and this tree on one Postgres and one NATS: each build's `dispatch` command
     against the other's server, each build's corpus documents read, edited, approved and opened on the
     other's document socket, and outbox events, GitHub messages and the stream and consumer settings

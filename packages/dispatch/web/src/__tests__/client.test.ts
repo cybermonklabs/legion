@@ -955,7 +955,7 @@ test(
         Response.json(
           {
             error:
-              "document is outside the Proof schema; replace the document from markdown to repair it",
+              "document is outside the Proof schema. A replacement from markdown discards every part of the document's current content that the markdown leaves out. A person decides whether to replace the document",
             code: "DOC_SCHEMA",
           },
           { status: 409 }

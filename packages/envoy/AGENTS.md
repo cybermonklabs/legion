@@ -741,6 +741,7 @@ The refusal names those elements as data as well as in its message (`docs.NewerC
 It carries no error: the chain that reaches `writeHandlerError` holds what each route wrapped the refusal in, the caller's own identity among it, which no log of ours writes (CodeQL `go/clear-text-logging`).
 `DOC_SCHEMA` is a tree outside the schema:
 one the document holds is a `docs.OutsideSchemaError`, which `treeOf` and `documentMarkdown` classify where they read or render a document's tree, so every route that starts from it - `GET /text`, `GET /blocks`, `POST /edits`, `POST /versions` - answers 409 with its one message, while a schema refusal of a tree a write itself produced is a 500 (`producedSchemaError`).
+Its message names the one repair, a replacement from markdown, says that it discards every part of the document's current content that the markdown leaves out, and says that a person decides (`docs.ErrDocOutsideSchema`).
 Both are taken after the refusals that name the caller's own input or a missing block, so an ask block the renderer refused stays `400 INVALID_ASK_BLOCK`.
 Anything else is `INTERNAL`, as `writeHandlerError` answers it.
 Only a request that has gone away fails, decided by that request's own context rather than the error, since a room a writer's cancelled commit failed carries that writer's `context.Canceled` in its cause.

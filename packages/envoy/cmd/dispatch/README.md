@@ -4326,7 +4326,8 @@ Each item below names a status and code, then its meaning.
   A stored tree is outside the Proof schema, such as one holding a node more than 1,000 levels below the document, a node attribute value nesting more than 100 arrays and objects, or a mark attribute value nesting more than 99;
   settlement writes no version of such a tree.
   Every route that starts from that tree answers it alike, with one message - reading its text or blocks (`/text`, `/blocks`), editing it (`POST /edits`) and naming a version (`POST /versions`) - and a schema refusal of a tree the request itself produced is a `500`.
-  Replace it by uploading markdown under the same document name;
+  The message names the repair, a replacement from markdown, says that it discards every part of the document's current content that the markdown leaves out, and says that a person decides whether to replace the document.
+  The replacement is an upload of markdown under the same document name;
   an upload preserves every open ask block, and is refused `400 INVALID_ASK_BLOCK` for an ask block that breaks the ask content rule, as a new document is.
   The document websocket admits no connection to such a room:
   it completes the upgrade and closes with code `4409` (reason `DOC_SCHEMA`, `DOCUMENT_SCHEMA_CLOSE_CODE` and `DOCUMENT_SCHEMA_CLOSE_REASON` in `packages/contracts`, generated into Go) before any sync, so a browser editor never receives a tree it would normalize and write back.
@@ -4352,18 +4353,20 @@ Each item below names a status and code, then its meaning.
 
 - `409 DOCUMENT_LIVE`
 
-  A rebuild found the document resident in this server or in another server process on the database (it asks every member, and waits 500 ms at most for the answers):
+  A rebuild found the document resident in this server or in another Dispatch process on the database (it asks every member, and waits 500 ms at most for the answers):
   open in an editor, or left by its last editor less than 90 seconds ago (a room stays resident a minute after its last peer leaves, and the sweep that evicts it runs every 30 seconds).
   Nothing was deleted.
-  The message names what each repair discards - a rebuild every edit made after saved version N, a replacement from markdown the current content - and says that a person decides.
-  A rebuild also answers this code when the document's head moved while it ran, because of another rebuild or an edit:
-  read the document again before you rebuild it.
+  The message says whether this process or another one holds the document, names the saved version N a rebuild would discard every edit after, and tells the caller to stop and ask a person whether to rebuild the document after two minutes;
+  it offers no other repair.
+  A rebuild also answers this code when the document's head moved while it ran, because of another rebuild or an edit;
+  that message too names the saved version a rebuild would discard every edit after and tells the caller to stop and ask a person.
 
 - `409 DOCUMENT_LOADS`
 
   A rebuild found that the document's durable history loads.
   Nothing was deleted.
-  The message names the latest saved version and what each repair discards - a rebuild every edit made after that version, a replacement from markdown the current content - and says that a person decides.
+  The message names the latest saved version, says that Dispatch rebuilds only a document whose stored history cannot load, and tells the caller to stop and ask a person what to do with the document;
+  it offers no repair.
 
 ## Comment errors
 

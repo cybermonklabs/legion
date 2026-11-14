@@ -11,9 +11,10 @@ body: |-
     that same JSON 404. `GET /api/v1/references?kind=` answers a kind this build does not emit with
     no edges and lists it in `unknown_kinds`, where it answered `400 INVALID_KIND`, and a rewrite of
     a body keeps its edges to node kinds this build does not know, where a build before this one
-    deletes them. `409 DOCUMENT_UNLOADABLE`, `DOCUMENT_LIVE` and `DOCUMENT_LOADS` name what a
-    rebuild and a replacement from markdown discard and say that a person decides, where they told
-    the reader to rebuild or replace the document.
+    deletes them. `409 DOCUMENT_UNLOADABLE`, `DOCUMENT_LOADS`, `DOC_SCHEMA` and `DOCUMENT_LIVE`,
+    whether this process or another one holds the document or its head moved during the rebuild,
+    name what a rebuild and a replacement from markdown discard and say that a person decides, where
+    they told the reader to rebuild or replace the document.
 time: 2026-10-28T12:39:38.814907639Z
 custom:
     Issue: pr2461

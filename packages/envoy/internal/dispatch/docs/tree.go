@@ -16,18 +16,24 @@ import (
 const fragmentName = "prosemirror"
 const marksMapName = "marks"
 
+// outsideSchemaRepair ends every refusal of a tree a document holds outside the Proof schema: what
+// its one repair, a replacement from markdown, discards, and that a person decides it.
+const outsideSchemaRepair = "A replacement from markdown discards every part of the document's current content that the markdown leaves out. A person decides whether to replace the document"
+
 var (
 	ErrInvalidMarkdown = errors.New("markdown is not a Proof document")
 	ErrDocSchema       = errors.New("document is outside the Proof schema")
 	// ErrDocOutsideSchema is the tree a document holds - not one an operation just produced -
 	// refused by the Proof schema's reader or renderer. A replacement from markdown repairs it, so
-	// every route answers it alike (OutsideSchemaError).
-	ErrDocOutsideSchema = errors.New("document is outside the Proof schema; replace the document from markdown to repair it")
+	// every route answers it alike (OutsideSchemaError), and its message names what that
+	// replacement discards.
+	ErrDocOutsideSchema = errors.New(ErrDocSchema.Error() + ". " + outsideSchemaRepair)
 	// ErrDocumentUnloadable is a document whose stored history does not decode, so nothing can read
 	// or open it. A rebuild from its latest saved version (RebuildDocument) restores it and discards
 	// every edit made after that version, so a person decides it.
 	ErrDocumentUnloadable = errors.New("the document's stored history cannot load. A rebuild from the latest saved version discards every edit made after that version. A person decides whether to rebuild the document")
-	// ErrDocumentLive is a rebuild refused because the document is resident in this server.
+	// ErrDocumentLive is a rebuild refused because the document is resident in this server or in
+	// another Dispatch process.
 	ErrDocumentLive = errors.New("document is live")
 	// ErrDocumentLoads is a rebuild refused because the document's stored history loads. A
 	// rebuild is only for a history that cannot load, so its message offers no repair and tells
@@ -48,7 +54,7 @@ var (
 type OutsideSchemaError struct{ Cause error }
 
 func (e *OutsideSchemaError) Error() string {
-	return ErrDocOutsideSchema.Error() + ": " + e.Cause.Error()
+	return ErrDocSchema.Error() + ": " + e.Cause.Error() + ". " + outsideSchemaRepair
 }
 
 // Is makes it ErrDocOutsideSchema and ErrDocSchema both: a check that a tree is outside the
