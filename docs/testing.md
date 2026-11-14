@@ -215,9 +215,10 @@ go test -timeout 20m ./internal/dispatch/api
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
 CI leaves that package out of `envoy-go`'s package list and runs it under `-race` in
-`envoy-go-race-api`, the job that runs it by itself, which gives it 27 minutes
-(`.github/workflows/ci.yaml`); `docs` runs under `-race` in `envoy-go-race-docs`, which gives it
-55. Of that package `envoy-go` keeps only the few tests the race build cannot make, by name.
+`envoy-go-race-api`, the job that runs it by itself, which gives it 28 minutes (`-timeout 28m`,
+`.github/workflows/ci.yaml`); `docs` runs under `-race` in `envoy-go-race-docs`, which gives it
+56 (`-timeout 56m`). Of those two packages `envoy-go` keeps only the few tests the race build
+cannot make, by name, in the race-impossible call of its unit step.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
@@ -281,14 +282,20 @@ A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes 
 ## A database a Go test creates
 
 A Go test that creates a Postgres database writes `create database … strategy file_copy`, as
-`packages/envoy/internal/dispatch/store/storetest` and both modules' `internal/testpg` do. Without
+`packages/envoy/internal/testpg/pgtemplate` (the harness both of envoy's stores clone their test
+databases through) and both modules' `internal/testpg` do. Without
 it, PostgreSQL 15 and later copy the source database through the write-ahead log, every page of it:
 4.4 MB of log for an empty database made from `template1`, and 6.4 MB for a clone of Dispatch's
 migrated template, which made one run of the `api` and `docs` packages write 16 GiB of log. A file
-copy writes a few hundred bytes. `storetest`'s own test fails when a clone writes more than a
-hundredth of its template's size, and each module's `internal/testpg` test
+copy writes a few hundred bytes. `pgtemplate`'s `TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate`
+fails when a clone writes more than a hundredth of its template's size, and each module's
+`internal/testpg` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
+A file copy costs checkpoints instead: Postgres forces one before the copy and one after it, and
+the drop at the end of the test forces one more, so each test's database costs three forced
+checkpoints, and what those cost depends on the server's settings ("A test Postgres's five
+settings").
 
 A test that needs the schema takes a clone of a template its package migrated once, rather than
 running the migrations itself: `packages/daemon/internal/testpg`'s `Clone` answers the clone's
@@ -297,8 +304,10 @@ test ends, and the package's
 `TestMain` is `testpg.Main("<prefix>", m.Run)`, which drops the template when the run ends and
 composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
-`packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
-schema.
+`packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same kind of fixture for
+Dispatch's schema, and `packages/envoy/internal/broker/store/storetest`'s `URL` and `Open` for the
+broker's, each a clone through `pgtemplate`, whose template no process drops (below); a broker
+package whose `TestMain` is not `storetest.Main` migrates a database of its own per test instead.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
@@ -321,9 +330,10 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 `packages/envoy/scripts/dev-postgres.sh`'s container.
 
 **The template stays, and that is the one exception to "a test drops every database it makes".**
-Both harnesses clone from one migrated template.
+Envoy's two harnesses, Dispatch's and the broker's, each clone from one migrated template per migration set, which every test process on the server shares: `pgtemplate` is the one implementation, held by both `storetest` packages and by `internal/dispatch/store`'s own tests.
 Applying 210 Dispatch migrations, each in its own committed transaction, cost about 21 s of every test process that wanted a database (measured on a two-core pod: `internal/dispatch/events` ran in 60 s building a template and 39 s cloning one already there), and a lane runs about twenty packages on the Dispatch harness and thirteen on the broker's.
-The template is named `dispatch_template_<fingerprint>` or `broker_template_<fingerprint>`, where the fingerprint digests the migration set the build embeds (`store.MigrationsFingerprint`): the first process to want it builds it under a cluster-wide advisory lock, under a `…_building_<random>` name it is renamed out of only once every migration is applied, and every process after it clones what is already there.
+The template is named `dispatch_template_<fingerprint>` or `broker_template_<fingerprint>`, where the fingerprint digests the migration set the build embeds (`store.MigrationsFingerprint`): the first process to want it builds it under an advisory lock every process takes on the server's `postgres` database, under a `…_building_<random>` name it is renamed out of only once every migration is applied, and every process after it clones what is already there.
+Postgres tags an advisory lock with the database of the session that takes it, so it is the one database, not the key alone, that makes every test process on the server queue on one lock (`pgtemplate`'s `lock`).
 
 No process drops it.
 The test processes of one run start minutes apart, so a process that dropped the template on its way out would take it from the processes still cloning it, and no process can know it is the last.
@@ -340,17 +350,20 @@ psql "$DISPATCH_TEST_DATABASE_URL" -tAc \
 
 ## A test Postgres's five settings
 
-Every CI job that runs a Postgres service starts it with the same five settings, as the server's own command line, so no step has to restart it (`jobs.<job_id>.services.<service_id>.command` in `.github/workflows/ci.yaml`):
+Every Postgres service of `.github/workflows/ci.yaml` starts with the same five settings, as the server's own command line, so no step has to restart it (`jobs.<job_id>.services.<service_id>.command`):
 
 ```sh
 postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off \
   -c max_connections=500 -c max_prepared_transactions=20
 ```
 
+The Postgres services of the other workflows (`dispatch-browser.yaml`'s `multiprocess` and `embedder` jobs, `docs-site.yaml`'s `build` and `e2e.yaml`'s `proof`) carry no `command:` and keep the image's defaults.
+
 Each of those servers is a container deleted with the job, so nothing it holds has to survive a crash:
 with `fsync`, `full_page_writes` and `synchronous_commit` off a forced checkpoint writes nothing durable, which is what makes the three forced checkpoints a test's database costs affordable (above).
-`max_connections` is 500 against the image's default of 100, which a module's package binaries at once exhaust (`FATAL: sorry, too many clients already`):
-eight binaries (`go test -p 8`), each running its tests at the runner's four cores, each test store bounded at 16 connections (`testPoolSize`, `packages/envoy/internal/dispatch/store/storetest`).
+`max_connections` is 500 against the image's default of 100, which a module's package binaries at once exhaust (`FATAL: sorry, too many clients already`).
+500 is five times that default and no bound on what a run can ask for:
+`envoy-go`'s package list runs eight binaries at once (`go test -p 8`), each running up to twelve tests at once (`-parallel 12`), and each test store's shared pool holds up to 16 connections (`testPoolSize`, `packages/envoy/internal/dispatch/store/storetest`), so those stores alone could ask for 8 × 12 × 16 = 1,536 connections at once.
 `max_prepared_transactions` is 20, against the image's default of 0, because a server that can prepare no transaction makes `TestNoPreparedTransactionHoldsAnEventIDAndTheFloorTrailsOneAnyway` (`packages/envoy/internal/dispatch/api`) skip, and a skip is a pass that proves nothing.
 
 A developer's throwaway test server is run the same way and for the same reason, its data dying with it:
@@ -364,13 +377,16 @@ That starts a PostgreSQL cluster of its own under `TMPDIR`, from this host's ser
 A `kill` of that pid and an `rm -rf` of that directory take the server and everything it held away.
 The container that same script starts with no argument is the other case and keeps its durability:
 it outlives the run and holds the local Dispatch's databases, which is why a test changes no server setting either (above).
+A test run against that container is slower than one against the throwaway server:
+each test's clone forces two checkpoints and its drop one more, every test on the server queues on its one checkpointer, and with durability on each of those checkpoints flushes every page the server changed since the last one and waits for the disk to hold it (`fsync`), where with it off a checkpoint writes nothing durable.
+That container also keeps the image's default `max_connections` of 100, which several Postgres-backed packages at once exhaust, so a command that runs more than one of them points at the throwaway server (`packages/envoy/cmd/dispatch/README.md`, "Tests").
 
 Two of this repository's learnings are about these settings, and this is what each holds today.
 
 `docs/solutions/database-issues/an-index-only-scan-test-depends-on-the-visibility-map-and-asynchronous-commit-leaves-it-empty-pr2376.md` found that a plan test asserting an `Index Only Scan` is also asserting that the table's pages are marked all-visible:
 the planner costs that scan by `relallvisible/relpages`, so a table whose visibility map is empty is read by a bitmap heap scan over the same index, and the test fails as if the index or the query were wrong.
 That half holds, and so does its first move, which is to read `select relallvisible, relpages from pg_class where relname = '<table>'` before changing the index or the query.
-Its prescription does not hold: it drew from that one failure the rule that such a test is run with `synchronous_commit = on` and that a test Postgres never takes its speed from turning off durable commit, and every job's Postgres now runs with the three off.
+Its prescription does not hold: it drew from that one failure the rule that such a test is run with `synchronous_commit = on` and that a test Postgres never takes its speed from turning off durable commit, and every Postgres service of `.github/workflows/ci.yaml` now runs with the three off.
 What replaced it is that the test states the planner input it is making a claim about rather than taking it from a vacuum:
 `packages/envoy/internal/dispatch/sessionanswers/sessionanswers_test.go` calls `pg_restore_relation_stats(…, 'relallvisible', c.relpages)` inside the transaction its two `EXPLAIN`s run in, and that transaction is rolled back when the test ends, so the harness hands the database on as it found it.
 The cause recorded there is wider than the learning's inference, too:
@@ -380,8 +396,41 @@ a page is marked all-visible only once every transaction on the whole server is 
 Its finding is that a load recipe's dependency settings are part of the recipe:
 `TestTwoAnnouncersAtOnceAnnounceAndPublishOnce` (`packages/envoy/internal/dispatch/startup/started_test.go`) races a losing pass against the winner's announcing transaction, and against a Postgres with `fsync`, `full_page_writes` and `synchronous_commit` off the pre-fix binary passed 30 of 30 runs, while the same loop against the same server with its durability on failed 17 of 30.
 What has changed is where that fast server is:
-it is every CI job's and the throwaway one above, so a reproduction loop run on the shape of server this repository tests on is a recipe that cannot reach a commit window, and a race of that kind is reproduced against a server with its durability left on.
+it is every Postgres service of `.github/workflows/ci.yaml` and the throwaway one above, so a reproduction loop run on the shape of server this repository tests on is a recipe that cannot reach a commit window, and a race of that kind is reproduced against a server with its durability left on.
 Read it the other way too: a race of that kind the lane does report is one that survived these settings.
+
+## A test that calls `t.Parallel()`
+
+A Go test of `packages/envoy` calls `t.Parallel()` first when it is independent of the tests that run beside it.
+Sharing a Postgres server does not make a test dependent: each test takes a database of its own ("A database a Go test creates").
+`go test` starts a binary's parallel top-level tests only once every serial top-level test of that binary has ended, and a parallel subtest only once its parent's function has returned, so a serial test never runs beside a parallel test of its own package.
+It still runs beside the tests of every other package binary on the same machine and the same Postgres.
+
+A test stays serial when any of these is true of it:
+
+- Its assertion is a wall-clock window or limit: an answer within a second, a quiet window of 500 ms, a give-up close to a deadline.
+  Parallel tests' load stretches the time it measures, so it would fail for the machine's load rather than for a defect.
+  It keeps its bound and stays serial: a bound widened to a give-up wait can no longer fail for the defect the test exists for.
+
+- It reads the whole process: a dump of every goroutine (`runtime.Stack(buf, true)`), a goroutine count or `runtime.ReadMemStats`, which count a parallel test's goroutines and allocations as its own.
+
+- It swaps process-wide state: an environment variable (`t.Setenv`, which panics in a test that called `t.Parallel()`), the working directory (`t.Chdir`), the default logger (`slog.SetDefault`, or the standard `log` package's output), or a package variable another test reads, such as a seam a test installs.
+
+- It holds a transaction, a row lock or an advisory lock open on purpose, or reads the event log up to its safe horizon.
+  The horizon is proven from `pg_snapshot_xmin`, the oldest transaction running anywhere on the Postgres instance (`packages/envoy/internal/dispatch/events/horizon.go`), so a lock or transaction a test holds stalls every test beside it that reads the event feed, and a test that reads the feed waits on every transaction beside it, other tests' clones and drops included.
+
+A serial test says why on the line before its `func` or at the head of its body:
+
+```go
+func TestRunSelfHealthMonitor_TerminatesAfterSustainedDisconnection(t *testing.T) {
+	// Serial: twenty probes at a 1 ms interval must end within 2 s.
+```
+
+A file that already writes `// No t.Parallel: <reason>` keeps that form; every other file writes `// Serial: <reason>`.
+The reason is the true one, named for what the test does: a test whose reason no longer holds is independent, and it calls `t.Parallel()` instead.
+A table test's rows follow the same rules one by one: a row that is independent calls `t.Parallel()` inside its `t.Run`, and a row that is not carries a `// Serial:` line of its own.
+
+Serial tests of one binary still meet every other binary's transactions, which is why CI gives `internal/dispatch/routes` and `cmd/dispatch`'s `TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument`, the two whose horizon waits other packages' transactions held past their deadlines, Postgres services of their own (the `envoy-go` job's `postgres_routes` and `postgres_shutdown` in `.github/workflows/ci.yaml`).
 
 ## A Go test that opens a NATS client
 

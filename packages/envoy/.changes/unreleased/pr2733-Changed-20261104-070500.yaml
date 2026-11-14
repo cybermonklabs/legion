@@ -9,6 +9,6 @@ body: |-
   with `store.WithMaxConns` for a harness that holds many pools in one process; the document
   service carries its own logger, cold-read timeout and task-progress retry waits as fields;
   `api.Deps.CallerRecheck` separates how often a caller is re-resolved from the socket
-  heartbeat; and the Dispatch and broker test harnesses share one migrated template across test
-  processes, each test still taking a clone of its own, where every process migrated a template
-  of its own before.
+  heartbeat; and the Dispatch and broker test harnesses each share one migrated template per
+  migration set across test processes, each test taking a clone of its own, where Dispatch's
+  migrated a template in every test process and the broker's migrated a schema for every test.

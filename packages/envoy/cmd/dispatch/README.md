@@ -575,14 +575,15 @@ It prints the `DATABASE_URL` to use for development and tests.
 Run again, it starts or reuses the same `dispatch-pg` container, which runs its pinned image:
 pgvector on PostgreSQL 18, whose `vector` extension the migrations need.
 It refuses a `dispatch-pg` on any other image or major and prints the commands that dump that container's databases and restore them into a new container on the pinned image.
-The database retains the migrated schema; tests only truncate rows they create.
+The `dispatch` database keeps its migrated schema, and a Go test never writes in it: each test clones a database of its own on the same server from a migrated template and drops it when the test ends, and the templates stay on the server (`docs/testing.md`, "A database a Go test creates").
+The test commands under Tests run against a throwaway server instead (`./scripts/dev-postgres.sh --throwaway`), which runs them faster and serves more connections at once; Tests says why.
 
 ## A large test database
 
 `go run ./cmd/dispatch-seed` fills an empty database with the data set a statement measurement is taken on:
 ten times production's row counts at `--scale 1` — 10 projects, 20,000 issues over parent chains and `blocked_by` links, 40,000 documents with 200,000 versions, 80,000 asks, 370,000 comments, 60,000 messages, 1,250,000 events beside the `ask.opened` event every ask is written with, and a vector for half the issues, documents, asks, comments and messages
 — and the same shape times the scale at any other.
-It is deterministic: one fixed base time, one fixed random seed, and a fixed block id generator (`pmdoc.SetBlockIDGenerator`), so two runs at one scale write the same rows and a reading taken before a change and one taken after it read the same data.
+It is deterministic: one fixed base time, one fixed random seed, and block ids from a counter the run itself holds, restarted for each document and handed to the one parse whose ids are stored (`seedRun.blockIDs`, `pmdoc.ParseWithBlockIDs`), so two runs at one scale write the same rows and a reading taken before a change and one taken after it read the same data.
 The text is drawn from a Zipf list of 20,000 words, so the `tsvector` columns carry real lexemes at known frequencies.
 
 ```sh
@@ -1288,7 +1289,7 @@ Vim writes its swap file beside the file it edits by default.
 What no directive embeds, such as a symlink, a `.git` or a hidden name Go's module paths refuse, never reaches the runner, so only the store's tests catch it (`pgmigrate/pgmigratetest.CheckEmbedsEveryFile` names each cause).
 Versions are applied by their number, not by file name, and the store's tests require every file on disk to be embedded (`TestEveryMigrationFileIsEmbedded`) and the identifiers to be the numbered migrations 1 to the number the series closed at (recorded once in `migrationid`), each taken once with none above it, and a real UTC instant above them (`TestMigrationSetTakesNumbersThenTimestamps`, `migrationid.Check`), both reading file names alone.
 
-A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
+A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.Locking.ExecNonTransactional`).
 The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.
 The runner owns and closes that connection and holds the session-level advisory lock on the same migration key through the build and its separate version insert, excluding transactional runners and schema-version readers too.
 Every runner takes that key by polling `pg_try_advisory_lock` as statements of its own, with nothing open between two tries, and never by a blocking call: a backend blocked on a lock keeps the snapshot its statement took, and a concurrent index build waits for every older snapshot, so a blocking wait and the build that holds the key deadlock (SQLSTATE 40P01, measured on PostgreSQL 18.6).
@@ -1300,9 +1301,9 @@ A relation of that name that is no index at all is refused by name, with its rel
 An index of another name, INVALID or not, is neither dropped nor refused.
 The broker's all-in-one-transaction runner refuses a marked file before applying any migration.
 
-Every migration's lock waits are bounded at five seconds (`pgmigrate.LockTimeout`), set after the runner's advisory lock: transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
+Every migration's lock waits are bounded by the runner's `pgmigrate.Locking`, whose zero value, the one production runs, bounds them at five seconds (`pgmigrate.LockTimeout`), set after the runner's advisory lock: transaction-local in `pgmigrate.Locking.Exec`, or session-local and restored on return in `pgmigrate.Locking.ExecNonTransactional`.
 A migration queued behind a long transaction gives up instead of holding every read and write of its table behind its request.
-The runner then rolls the transaction back or closes the owned connection, holds nothing for two seconds (`pgmigrate.LockTimeoutRetryPause`) so queued requests run, and tries again, up to three attempts (`pgmigrate.LockTimeoutAttempts`, `pgmigrate.RetryLockTimeouts`).
+The runner then rolls the transaction back or closes the owned connection, holds nothing for two seconds (`pgmigrate.LockTimeoutRetryPause`) so queued requests run, and tries again, up to three attempts (`pgmigrate.LockTimeoutAttempts`, `pgmigrate.Locking.RetryLockTimeouts`).
 A build that failed, or one still running, may leave an INVALID index of the migration's own name, which the next attempt drops and builds again; each of the drop's lock waits is bounded at the same five seconds and watched the same way, so a drop queued behind a lock is a timed-out attempt like any other.
 An attempt is several lock waits, the drop's and the build's, so three attempts bound no total: five seconds bounds each wait, not the migration.
 Each timed-out attempt is logged at WARN.
@@ -1522,7 +1523,7 @@ Nothing validates it later — every row below the migration carries no sequence
 `0120` also creates `artifact_reviews_by_artifact_event_seq` on `(artifact_id, event_seq desc nulls
 last, created_at desc, id desc)`, `docs.ReviewOrder` per document, so the newest-review reads (`docs.LatestApprovedReview`, `latestReviewBy`) take one index entry rather than sort every review of the document.
 It is a plain `create index`, not `concurrently`:
-this unmarked migration runs inside one transaction (`internal/dispatch/store/store.go`, `pgmigrate.Exec`), where `concurrently` cannot run.
+this unmarked migration runs inside one transaction (`internal/dispatch/store/store.go`, `pgmigrate.Locking.Exec`), where `concurrently` cannot run.
 The build takes no lock the migration does not already hold
 — its `alter table` statements hold `artifact_reviews`' `ACCESS EXCLUSIVE` — and holds it while it reads the table's rows, which the census bounds by its 1 GiB limit;
 the census still answers `0`, since the build refuses and rewrites no row.
@@ -1583,7 +1584,7 @@ A B-tree entry holds at most 2704 bytes, and both indexes keyed the id itself, s
 under the 32-byte key every such write is written.
 `asks_block_id_unique` still keeps `(block_artifact_id, block_id)` unique under its name, and each index keeps the first column every read of it leads with, so the earlier release writes and reads through them as before.
 Each drop holds `asks` `ACCESS EXCLUSIVE` until the migration commits, so every read and write of an ask waits while the two indexes build over its rows.
-Each rebuild is a plain `create index`, not `concurrently`, which cannot run inside this unmarked migration's transaction (`internal/dispatch/store/store.go`, `pgmigrate.Exec`).
+Each rebuild is a plain `create index`, not `concurrently`, which cannot run inside this unmarked migration's transaction (`internal/dispatch/store/store.go`, `pgmigrate.Locking.Exec`).
 How long that wait lasts under production-scale data is unmeasured: this entry claims no duration, since a run on a throwaway Postgres gives a number off other disks, another cache and no live workload, which a deployer must not plan a lock window by.
 It refuses and rewrites no row: rows the old unique index held apart differ in their id, so they differ in its SHA-256.
 Its census answers `0`.
@@ -4149,9 +4150,20 @@ Each item below names a status and code, then its meaning.
 
 ```sh
 cd packages/envoy
-export DISPATCH_TEST_DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch?sslmode=disable'
-go test -timeout 20m ./internal/dispatch/... ./cmd/dispatch/...
+./scripts/dev-postgres.sh --throwaway   # prints DATABASE_URL=postgres://postgres@127.0.0.1:55433/dispatch?sslmode=disable
+export DISPATCH_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55433/dispatch?sslmode=disable'
+go test -timeout 20m -skip '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/routes$')
+go test ./internal/dispatch/routes/
+go test -run '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' ./cmd/dispatch/
 go vet ./...
 ```
 
-`internal/dispatch/api` is the module's largest Postgres-backed package and ran close to `go test`'s default ten-minute package deadline on its own, so every command that includes it passes `-timeout 20m` (`docs/testing.md`, "Go's package deadline"). It no longer runs first or by itself: its tests run in parallel, and so do the other packages' (`docs/testing.md`, "A test that calls `t.Parallel()`").
+`internal/dispatch/api` is the module's largest Postgres-backed package and ran close to `go test`'s default ten-minute package deadline on its own, so every command that includes it passes `-timeout 20m` (`docs/testing.md`, "Go's package deadline").
+It no longer runs first or by itself: its independent tests run in parallel, as the other packages' do (`docs/testing.md`, "A test that calls `t.Parallel()`").
+
+The commands run against the throwaway server `./scripts/dev-postgres.sh --throwaway` starts, not the `dispatch-pg` container on 55432:
+that container keeps the image's default `max_connections` of 100, which several of these packages at once exhaust, and its durability, which makes every test's clone slower (`docs/testing.md`, "A test Postgres's five settings").
+`go test` runs as many package binaries at once, and as many parallel tests of each, as the machine has cores (`-p`, `-parallel`);
+on a machine of more than eight cores pass `-p 8 -parallel 12`, the shape of CI's unit call against the same 500 connections.
+The routes package and the shutdown feed test run after the rest rather than beside it, for the reason CI gives each of them a Postgres service of its own:
+their tests wait on the event log's safe horizon, which every transaction on the server holds back, other packages' clones included (`docs/testing.md`, "A test that calls `t.Parallel()`").

@@ -857,16 +857,31 @@ requires a user sets `NATS_NKEY_SEED_FILE` too.
 
 ```sh
 cd packages/envoy
-export DISPATCH_TEST_DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch?sslmode=disable'
-go test -timeout 20m ./internal/dispatch/... ./cmd/dispatch/...
+./scripts/dev-postgres.sh --throwaway   # prints DATABASE_URL=postgres://postgres@127.0.0.1:55433/dispatch?sslmode=disable
+export DISPATCH_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55433/dispatch?sslmode=disable'
+go test -timeout 20m -skip '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/routes$')
+go test ./internal/dispatch/routes/
+go test -run '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' ./cmd/dispatch/
 go vet ./...
 ```
 
 `internal/dispatch/api` is the module's largest Postgres-backed package and ran close to `go
 test`'s default ten-minute package deadline on its own, so every command that includes it passes
 `-timeout 20m` (`docs/testing.md`, "Go's package deadline").
-It no longer runs first or by itself: its tests run in parallel, and so do the other packages'
-(`docs/testing.md`, "A test that calls `t.Parallel()`").
+It no longer runs first or by itself: its independent tests run in parallel, as the other
+packages' do (`docs/testing.md`, "A test that calls `t.Parallel()`").
+
+The commands run against the throwaway server `./scripts/dev-postgres.sh --throwaway` starts, not
+the `dispatch-pg` container on 55432: that container keeps the image's default `max_connections`
+of 100, which several of these packages at once exhaust, and its durability, which makes every
+test's clone slower (`docs/testing.md`, "A test Postgres's five settings"). `go test` runs as many
+package binaries at once, and as many parallel tests of each, as the machine has cores (`-p`,
+`-parallel`); on a machine of more than eight cores pass `-p 8 -parallel 12`, the shape of CI's
+unit call against the same 500 connections. The routes package and the shutdown feed test run
+after the rest rather than beside it, for the reason CI gives each of them a Postgres service of
+its own: their tests wait on the event log's safe horizon, which every transaction on the server
+holds back, other packages' clones included (`docs/testing.md`, "A test that calls
+`t.Parallel()`").
 
 The real-process memory tests (`memory_test.go`, LEGION-481) start a Dispatch server per row and
 read its resident memory from `/proc`, so they build only under the `memory` tag and run in their

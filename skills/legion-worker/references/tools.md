@@ -604,7 +604,7 @@ something to count.
   `internal/dispatch/api`'s
   `TestIssueRanksStayOrderedPastLowercaseDigitsAndProductionShapedMoves` refuses such a database
   by its own message. The pod's own `legion-testpg` server is made with ICU `en-US`, so that
-  test runs there, as it does in CI's `envoy-go` job, whose Postgres has `en_US.utf8`.
+  test runs there, as it does in CI's `envoy-go-race-api` job, whose Postgres has `en_US.utf8`.
   `internal/dispatch/pmdoc`'s browser-parity tests need `bun install` to have run for
   `@legion/proof-editor`. In the daemon's module, never export `GOWORK=off` inside
   `$LEGION_WORKSPACE`: `packages/daemon/go.mod` replaces `github.com/sjawhar/envoy => ../envoy`,

@@ -291,7 +291,8 @@ func auditMigrationLocks(ctx context.Context, conn *pgx.Conn, migration pgmigrat
 }
 
 // schemaTables maps each ordinary or partitioned table of the schema the connection creates
-// tables in (current_schema(): public for Dispatch's tests, a schema of its own for the broker's)
+// tables in (current_schema(): public for Dispatch's tests and for the broker's, each test on a
+// database of its own)
 // to its name.
 func schemaTables(ctx context.Context, conn *pgx.Conn) (map[uint32]string, error) {
 	rows, err := conn.Query(ctx, "select oid, relname from pg_class where relnamespace = current_schema()::regnamespace and relkind in ('r', 'p')")

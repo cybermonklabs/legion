@@ -56,7 +56,8 @@ const (
 
 // rig is a live broker on a TLS test server, so the page's Secure cookies travel as they do in a
 // browser, with every route of the real route table, its approval page signing people in at an
-// oidctest provider with code flow, on a real Postgres schema of its own.
+// oidctest provider with code flow, on a real Postgres database of its own (storetest.Open's clone
+// of the broker's migrated template).
 type rig struct {
 	url     string
 	srv     *httptest.Server

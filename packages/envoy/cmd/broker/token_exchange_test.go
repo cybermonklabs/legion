@@ -230,7 +230,7 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 	})
 
 	t.Run("a lapsed token is renewed by the same standing pod token", func(t *testing.T) {
-		// Its own broker run, on a schema of its own, started with an access-token lifetime of a
+		// Its own broker run, on a database of its own, started with an access-token lifetime of a
 		// few seconds: the proof is that the first token lapses, not that the test waits.
 		renewalBroker := startBroker(t, brokerOptions{Env: exchangeEnv(t, storetest.URL(t), cluster, github, shortAccessSeconds)})
 		renewalBroker.Await(t, "token exchange")
