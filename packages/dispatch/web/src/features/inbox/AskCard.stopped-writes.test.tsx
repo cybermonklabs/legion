@@ -17,8 +17,8 @@ import {
   thread,
 } from "./ask-card-fixture";
 
-// A write the reader stopped on the card: a hand-on, an answer and a question back may each have
-// been made, so the card says what its Retry does rather than that the write failed.
+// A write the reader stopped on the card: a hand-on, an answer, a question back and a reply may
+// each have been made, so the card says what its Retry does rather than that the write failed.
 
 installAskCardApiMocks();
 
@@ -152,6 +152,38 @@ test("a clarification the reader stopped says Retry asks again under its key, no
     await stopTheLateWrite(queryClient);
     expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("your clarification", "sent", {
+        again: "Retry",
+        method: "POST",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A reply the reader stopped on an answered question may have been posted: the composer says so,
+// and that its Retry asks again under its key, rather than a failure it cannot know of.
+test("a reply the reader stopped says Retry asks again under its key", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    dropped("/api/v1/issues/CORE-1/comments")
+  );
+  const answered = answeredAsk();
+  const { queryClient, view } = renderCard(
+    <AskCard ask={answered} initialThread={thread(answered)} />
+  );
+  const card = within(view.container);
+  try {
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(card.getByRole("textbox", { name: "Reply" }));
+    await user.paste("Shipping it on Friday.");
+    await user.click(card.getByRole("button", { name: "Reply" }));
+    await stopTheLateWrite(queryClient);
+    expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("your reply", "posted", {
         again: "Retry",
         method: "POST",
         stopped: new SendStoppedError(),

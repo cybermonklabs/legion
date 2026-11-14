@@ -368,6 +368,33 @@ test("a source removal the reader stopped says Retry sends it again, not that it
   }
 });
 
+// A refresh the reader stopped may have been made: the section says so, and that its Retry asks
+// again under the refresh's key - a `POST` sends one - rather than that it failed.
+test("a source refresh the reader stopped says Retry asks again under its key", async () => {
+  const server = sourceServer([architectureSource]);
+  const sync = spyOn(api, "syncArchitectureSource").mockImplementation(dropped);
+  const page = await sourcesOf(server.list, server.put, server.remove);
+  try {
+    const refresh = await page.section.findByRole("button", {
+      name: "Refresh architecture source legion/arch for CORE",
+    });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(refresh);
+    await stopTheLateWrite(page.queryClient);
+    expect(page.section.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the refresh of the architecture source", "made", {
+        again: "Retry",
+        method: "POST",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    page.restore();
+    sync.mockRestore();
+  }
+});
+
 // A `DELETE` sends no key, so one made again after a removal that landed finds no source and is
 // answered `404 SOURCE_NOT_FOUND`: the removal done, which the section takes as it takes a
 // `204`, reading its sources again, not as a refusal.

@@ -340,6 +340,36 @@ test("a dismissal the reader stopped says it may have been made, not that it was
   }
 });
 
+// A move back to the Inbox the reader stopped may have been made as well: the rows come back to
+// the Dismissed view, and the page says so in the words of the move, not of a dismissal.
+test("a move back to the Inbox the reader stopped says it may have been made", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(
+    new NetworkError("/api/v1/me/inbox/dismiss", new TypeError("Failed to fetch"))
+  );
+  const client = seeded([]);
+  client.setQueryData(dismissedThreadsQuery().queryKey, {
+    pageParams: [undefined],
+    pages: [threadsRead([replyRow("c1"), replyRow("c9")])],
+  });
+  renderInbox(client, "/?show=dismissed");
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+    await user.click(document.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
+    await stopTheLateWrite(client);
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the move of 1 thread back to the Inbox", "made", {
+        anew: "Moving it back again sends a new write.",
+      })
+    );
+  } finally {
+    realClock();
+    client.clear();
+  }
+});
+
 // A bulk snooze the reader stopped may have been saved: the bar says so apart from any refusal,
 // and that the next pick is a press of its own, rather than "Could not snooze" in the stopped
 // write's own words, which are a composer's.
