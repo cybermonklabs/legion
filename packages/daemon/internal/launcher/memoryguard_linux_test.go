@@ -126,7 +126,7 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 	var classes map[int]memoryguard.Class
 	kills := make(chan memoryguard.Kill, 1)
 	lines := &lockedBuffer{}
-	guard, err := memoryguard.New(memoryguard.Config{
+	guard := memoryguard.New(memoryguard.Config{
 		Proc: proc, Cgroup: cgroup, Clock: newGuardClock(),
 		Classify: func(table *memoryguard.Table) map[int]memoryguard.Class {
 			answer := classifier.classify(table)
@@ -142,9 +142,6 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 		Sink: func(k memoryguard.Kill) { kills <- k },
 		Logf: func(format string, args ...any) { fmt.Fprintf(lines, format+"\n", args...) },
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

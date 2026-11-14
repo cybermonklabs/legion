@@ -187,10 +187,8 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	if err != nil {
 		return err
 	}
-	// The holder the pods' memory guards report their kills through, made here and filled once the
-	// workflow is open: the factory is built before the workflow exists, and the fact path does not
-	// (memoryGuardKills, daemon.run). It hangs off the plan by pointer, so the plan's own copy
-	// carries the one holder the factory closed over, as plan.repositories does.
+	// The memory guards' kill holder (memoryGuardKills), on the plan by pointer, so the plan's own
+	// copy carries the one holder the factory closed over, as plan.repositories does.
 	p.memoryGuardKills = &memoryGuardKills{}
 	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, o.githubAPI, p.memoryGuardKills)
 	p.clusterCheck = boot.clusterCheck
@@ -523,11 +521,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // root ("" is https://api.github.com), which the shared public leak check is read under
 // (leakCheckSource).
 //
-// kills is the holder the pods' memory guards report their kills to the workflow's fact path
-// through (memoryGuardKills): it is built with this factory, before the workflow opens, and filled
-// once it has (plan.memoryGuardKills). One that is never filled refuses every report it is given
-// with errMemoryGuardKillsUnbound, which the launcher session logs; nil is a factory with no
-// receiver at all, whose runtime logs each report it drops for that reason.
+// kills is the memory guards' kill holder (memoryGuardKills).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string, kills *memoryGuardKills) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
@@ -547,14 +541,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose
 		// launcher names a tag with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI)
-		// Each process an issue pod's memory guard ends reaches the daemon through this, and the
-		// daemon turns it into the one fact that tells the role whose process it was
-		// (memoryGuardKills.killed). The workflow is what applies that fact, and it opens after
-		// this factory is built, so the pair the apply needs is held in kills and filled when it
-		// does (plan.memoryGuardKills).
-		if kills != nil {
-			opts.MemoryGuardKilled = kills.killed
-		}
+		// Each process an issue pod's memory guard ends reaches the daemon through the kill
+		// holder (memoryGuardKills).
+		opts.MemoryGuardKilled = kills.killed
 		if apps != nil {
 			// One record per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for, so no pod is replaced for a directory

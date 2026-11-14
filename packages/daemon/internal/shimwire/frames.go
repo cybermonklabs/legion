@@ -221,9 +221,8 @@ type LauncherMemoryGuard struct {
 //
 // The defaults are one source too: they are the settings the launcher's guard runs by before any
 // acknowledgement reaches it, and the daemon's configuration defaults, so a change to one moves
-// both. The ranges and the defaults are the spec's (INFRA-3557's W2, which takes them from
-// INFRA-3531's settings); the act share's default is the one a measurement may move. Every
-// minimum is above zero because a guard cannot be armed with a zero interval or wait.
+// both. The act share's default is the one a measurement may move. Every minimum is above zero
+// because a guard cannot be armed with a zero interval or wait.
 const (
 	MemoryGuardActMin      = 50
 	MemoryGuardActMax      = 95

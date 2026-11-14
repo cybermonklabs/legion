@@ -2,7 +2,6 @@ package launcher
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -263,7 +262,7 @@ func useGuardPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 	useContainerInit(t, true)
 	rig := &guardRig{t: t, pod: pod, clock: newGuardClock(), signal: &guardSignal{proc: pod.proc}}
 	previous := newMemoryGuard
-	newMemoryGuard = func(cfg memoryguard.Config) (*memoryguard.Guard, error) {
+	newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
 		cfg.Proc, cfg.Cgroup, cfg.Clock, cfg.Signal = pod.proc, pod.cgroup, rig.clock, rig.signal
 		if classify := cfg.Classify; len(roles) > 0 {
 			cfg.Classify = func(table *memoryguard.Table) map[int]memoryguard.Class {
@@ -284,11 +283,11 @@ func useGuardPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 				rig.lines = append(rig.lines, fmt.Sprintf(format, args...))
 			}
 		}
-		guard, err := memoryguard.New(cfg)
+		guard := memoryguard.New(cfg)
 		rig.mu.Lock()
 		rig.guard = guard
 		rig.mu.Unlock()
-		return guard, err
+		return guard
 	}
 	t.Cleanup(func() { newMemoryGuard = previous })
 	return rig
@@ -366,7 +365,7 @@ func launcherExe(t *testing.T) string {
 func scanTable(t *testing.T, pod *guardPod) *memoryguard.Table {
 	t.Helper()
 	tables := make(chan *memoryguard.Table, 1)
-	guard, err := memoryguard.New(memoryguard.Config{
+	guard := memoryguard.New(memoryguard.Config{
 		Proc: pod.proc, Cgroup: pod.cgroup, Clock: newGuardClock(), Signal: &guardSignal{proc: pod.proc},
 		Classify: func(table *memoryguard.Table) map[int]memoryguard.Class {
 			select {
@@ -376,9 +375,6 @@ func scanTable(t *testing.T, pod *guardPod) *memoryguard.Table {
 			return nil
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -720,14 +716,9 @@ func TestMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSettings(t *testing.
 // reach no guard and no report is queued.
 func TestMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
 	useContainerInit(t, false)
-	built := make(chan struct{}, 1)
 	previous := newMemoryGuard
-	newMemoryGuard = func(memoryguard.Config) (*memoryguard.Guard, error) {
-		select {
-		case built <- struct{}{}:
-		default:
-		}
-		return nil, errors.New("a launcher that is not the container's first process built a guard")
+	newMemoryGuard = func(memoryguard.Config) *memoryguard.Guard {
+		panic("a launcher that is not the container's first process built a memory guard")
 	}
 	t.Cleanup(func() { newMemoryGuard = previous })
 	f := launchFleet(t, Config{StopGrace: 2 * time.Second}, "tester", "reviewer")
@@ -737,11 +728,6 @@ func TestMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
 		os.Getpid())
 	if got := guardLines(f.stderr, ""); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the launcher's memory guard lines are %q, want %q alone", got, want)
-	}
-	select {
-	case <-built:
-		t.Fatal("a launcher that is not the container's first process built a memory guard")
-	default:
 	}
 
 	log := &roleLog{stderr: &lockedBuffer{}}
@@ -925,4 +911,86 @@ func TestMemoryGuardKeepsThirtyTwoWaitingReportsAndDropsTheOldest(t *testing.T) 
 		}
 	}
 	again.noMemoryKill("after the 32 reports that waited for it, the next connection")
+}
+
+// heldConn is a connection whose first write waits until release is closed, having closed writing
+// to say it has begun; every write lands in out.
+type heldConn struct {
+	writing, release chan struct{}
+	first            sync.Once
+	out              lockedBuffer
+}
+
+func (c *heldConn) Write(p []byte) (int, error) {
+	c.first.Do(func() {
+		close(c.writing)
+		<-c.release
+	})
+	return c.out.Write(p)
+}
+
+// While the oldest of a role's 32 waiting reports is being written, a 33rd drops the next oldest
+// and never the one being written: that write goes on to succeed, so a line saying it was dropped
+// would be false. The connection carries the oldest and then the 31 newest, in order.
+func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T) {
+	const first = 900
+	report := func(sequence int) shimwire.LauncherMemoryKill {
+		return shimwire.LauncherMemoryKill{Guard: "0123456789abcdef", Sequence: uint64(sequence), PID: first + sequence - 1,
+			Command: "python3 grow.py", SizeBytes: 600 * guardMiB, ReadingBytes: 3500 * guardMiB, LimitBytes: 4096 * guardMiB, At: time.Now()}
+	}
+	stderr := &lockedBuffer{}
+	m := &manager{role: "tester", stderr: stderr}
+	for sequence := 1; sequence <= maxWaitingMemoryKills; sequence++ {
+		m.queueMemoryKill(report(sequence))
+	}
+	conn := &heldConn{writing: make(chan struct{}), release: make(chan struct{})}
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		m.openMemoryReports(shimwire.NewWriter(conn), true)
+	}()
+	bound := testwait.Bounded(t, time.Minute, time.Second)
+	select {
+	case <-conn.writing:
+	case <-time.After(bound):
+		t.Fatal("the role's sender never began to write the oldest report")
+	}
+	m.queueMemoryKill(report(maxWaitingMemoryKills + 1))
+	close(conn.release)
+	select {
+	case <-sent:
+	case <-time.After(bound):
+		t.Fatal("the role's sender never finished writing the waiting reports")
+	}
+
+	want := fmt.Sprintf("launcher: memory guard: report dropped sequence=2 pid=%d reason=%d reports already wait for a connection, the most a role keeps",
+		first+1, maxWaitingMemoryKills)
+	if got := guardLines(stderr, "report dropped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the dropped lines are %q, want %q alone", got, want)
+	}
+	wantSequences := []uint64{1}
+	for sequence := uint64(3); sequence <= maxWaitingMemoryKills+1; sequence++ {
+		wantSequences = append(wantSequences, sequence)
+	}
+	var sequences []uint64
+	for _, line := range strings.Split(strings.TrimSuffix(conn.out.String(), "\n"), "\n") {
+		frame, err := shimwire.Decode([]byte(line))
+		if err != nil {
+			t.Fatalf("the connection carries %q: %v", line, err)
+		}
+		kill, ok := frame.(shimwire.LauncherMemoryKill)
+		if !ok {
+			t.Fatalf("the connection carries %#v, want only reports", frame)
+		}
+		sequences = append(sequences, kill.Sequence)
+	}
+	if !slices.Equal(sequences, wantSequences) {
+		t.Fatalf("the connection carries the reports %v, want %v", sequences, wantSequences)
+	}
+	m.mu.Lock()
+	left := len(m.memoryKills)
+	m.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d reports still wait after every write succeeded", left)
+	}
 }

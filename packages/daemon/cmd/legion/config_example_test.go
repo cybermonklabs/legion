@@ -207,11 +207,11 @@ func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	}
 }
 
-// The example's memory_guard block, uncommented with act_percent one above the range it states, is
-// refused by the same check, which names the whole key and both ends of its range. The shipped
-// block is where an operator reads what each key takes, so a range it stated wrongly would be an
-// operator's file refused on their first check; here it is this test that fails instead. The block
-// stays commented in the file itself: its values are the defaults, which apply without it.
+// The example's memory_guard block, uncommented with act_percent at 96, one above the wire's range,
+// is refused by the same check: exit 1 and one line naming the whole key and both ends of the range,
+// which is what an operator who edits the shipped block past that range reads. It checks the
+// loader's refusal, not the range the block's own comment states. The block stays commented in the
+// file itself: its values are the defaults, which apply without it.
 func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T) {
 	config := stageShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example, memoryGuardExampleLines...)

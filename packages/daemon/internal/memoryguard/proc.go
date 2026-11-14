@@ -2,10 +2,12 @@ package memoryguard
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -103,13 +105,7 @@ func scan(proc string) (*Table, error) {
 	}
 	for _, kids := range t.children {
 		slices.SortFunc(kids, func(a, b *Process) int {
-			if a.StartTime != b.StartTime {
-				if a.StartTime < b.StartTime {
-					return -1
-				}
-				return 1
-			}
-			return a.PID - b.PID
+			return cmp.Or(cmp.Compare(a.StartTime, b.StartTime), cmp.Compare(a.PID, b.PID))
 		})
 	}
 	return t, nil
@@ -216,12 +212,8 @@ func smapsSize(data []byte) uint64 {
 	var size uint64
 	counted := false
 	for len(data) > 0 {
-		line := data
-		if i := bytes.IndexByte(data, '\n'); i >= 0 {
-			line, data = data[:i], data[i+1:]
-		} else {
-			data = nil
-		}
+		var line []byte
+		line, data, _ = bytes.Cut(data, []byte{'\n'})
 		key, rest, _ := bytes.Cut(line, []byte{' '})
 		if len(key) == 0 {
 			continue
@@ -270,12 +262,8 @@ func sharedMemoryMapping(line []byte) bool {
 // meminfoBytes is the value of key's line in a /proc/meminfo, in bytes, read in place.
 func meminfoBytes(data []byte, key string) (uint64, bool) {
 	for len(data) > 0 {
-		line := data
-		if i := bytes.IndexByte(data, '\n'); i >= 0 {
-			line, data = data[:i], data[i+1:]
-		} else {
-			data = nil
-		}
+		var line []byte
+		line, data, _ = bytes.Cut(data, []byte{'\n'})
 		if len(line) > len(key) && line[len(key)] == ':' && string(line[:len(key)]) == key {
 			return parseKB(line[len(key)+1:])
 		}
@@ -309,7 +297,7 @@ func parseCount(data []byte) (uint64, bool) {
 }
 
 // maxCount is the largest value parseUint reads.
-const maxCount = ^uint64(0)
+const maxCount = math.MaxUint64
 
 // parseUint reads the decimal digits at the start of b, and what follows them.
 func parseUint(b []byte) (n uint64, rest []byte, ok bool) {

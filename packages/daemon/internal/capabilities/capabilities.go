@@ -423,8 +423,10 @@ func redactJWT(match string) string {
 // RedactCredentials is text with every credential shape of credentialRules masked, for another
 // package that prints text a process chose: the launcher's memory guard prints a process's
 // arguments in its log and in the note to that process's role, and an argument can carry a token.
-// It is redactCredentials itself, so both hold to the one shared fixture; the caller escapes
-// control characters first, since the rules read a line with none in it.
+// It is redactCredentials itself, so both hold to the one shared fixture. The caller passes the
+// raw text and escapes its control characters after: a raw newline or tab before a token is a
+// boundary the token's rule starts at, where the letter of an escape (`\n`, `\t`) would join the
+// token and hide it from the rule.
 func RedactCredentials(text string) string { return redactCredentials(text) }
 
 // redactCredentials is text with every credentialRules match replaced, rule by rule, pass after

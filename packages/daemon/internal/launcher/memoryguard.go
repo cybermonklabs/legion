@@ -49,9 +49,6 @@ const maxWaitingMemoryKills = 32
 // because it watches every role's processes and the launcher's together. A kill of a process in a
 // role is reported to that role's manager, which sends it on that role's connection
 // (queueMemoryKill); a kill of a process in no role has the guard's own line and nothing else.
-//
-// A guard that cannot be built (its id could not be minted) is logged and the roles run without
-// one, as a pod whose test database cannot start still runs its roles.
 func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids *pidGuard) <-chan struct{} {
 	done := make(chan struct{})
 	if !containerInit() {
@@ -64,20 +61,15 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	for _, m := range managers {
 		byRole[m.role] = m
 	}
-	guard, err := newMemoryGuard(memoryguard.Config{
+	guard := newMemoryGuard(memoryguard.Config{
 		Classify: newPodClassifier(cfg.RolesDir, managers, pids).classify,
 		Sink: func(k memoryguard.Kill) {
 			if m := byRole[k.Role]; m != nil {
-				m.queueMemoryKill(k)
+				m.queueMemoryKill(k.LauncherMemoryKill)
 			}
 		},
 		Logf: managers[0].log.linef,
 	})
-	if err != nil {
-		managers[0].log.linef("launcher: memory guard: off reason=%v", err)
-		close(done)
-		return done
-	}
 	var running sync.WaitGroup
 	for _, m := range managers {
 		m.memoryGuard = guard
@@ -164,7 +156,7 @@ func newPodClassifier(rolesDir string, managers []*manager, pids *pidGuard) *pod
 	data := filepath.Join(testPGDir(rolesDir), "data")
 	paths := []string{data}
 	if resolved, err := filepath.EvalSymlinks(rolesDir); err == nil {
-		if again := filepath.Join(resolved, TestPGDirName, "data"); again != data {
+		if again := filepath.Join(testPGDir(resolved), "data"); again != data {
 			paths = append(paths, again)
 		}
 	}
@@ -230,21 +222,7 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 		}
 		protected[shim.PID] = true
 		for _, agent := range t.Children(shim.PID) {
-			protected[agent.PID] = true
-			bridge := argument(agent, 1) == claudeBridgeArgument
-			for _, p := range t.Children(agent.PID) {
-				switch {
-				case bridge:
-					protected[p.PID] = true
-					for _, server := range t.Children(p.PID) {
-						if strings.HasSuffix(argument(server, 1), claudeMCPServerSuffix) {
-							protected[server.PID] = true
-						}
-					}
-				case ompHelper(agent, p):
-					protected[p.PID] = true
-				}
-			}
+			c.protectAgent(t, agent, protected)
 		}
 	}
 
@@ -260,6 +238,27 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 		}
 	}
 	return classes
+}
+
+// protectAgent spares agent, a direct child of a role's shim, and what runs under it that is the
+// agent's own rather than its work: under a Claude Code bridge, `claude` and its MCP server; under
+// Oh My Pi, its helpers but its eval kernel.
+func (c *podClassifier) protectAgent(t *memoryguard.Table, agent *memoryguard.Process, protected map[int]bool) {
+	protected[agent.PID] = true
+	bridge := argument(agent, 1) == claudeBridgeArgument
+	for _, p := range t.Children(agent.PID) {
+		switch {
+		case bridge:
+			protected[p.PID] = true
+			for _, server := range t.Children(p.PID) {
+				if strings.HasSuffix(argument(server, 1), claudeMCPServerSuffix) {
+					protected[server.PID] = true
+				}
+			}
+		case ompHelper(agent, p):
+			protected[p.PID] = true
+		}
+	}
 }
 
 // isTestPG is whether pid, a direct child of the launcher whose executable is a postgres, runs in
@@ -315,18 +314,20 @@ func ancestorRole(t *memoryguard.Table, p *memoryguard.Process, byInit map[int]s
 // queueMemoryKill takes the guard's report of one of this role's processes it ended and wakes
 // this role's sender, which writes it once a connection can carry it (sendMemoryKills). It is the
 // guard's sink and runs on the guard's loop, so it waits on no connection: it only queues. A role
-// already holding maxWaitingMemoryKills reports drops the oldest, with a line.
-func (m *manager) queueMemoryKill(k memoryguard.Kill) {
-	report := shimwire.LauncherMemoryKill{
-		Guard: k.Guard, Sequence: k.Sequence, PID: k.PID, Command: k.Command, SizeBytes: k.SizeBytes,
-		ReadingBytes: k.ReadingBytes, CounterBytes: k.CounterBytes, LimitBytes: k.LimitBytes, At: k.At,
-	}
+// already holding maxWaitingMemoryKills reports drops the oldest, with a line, or the next oldest
+// while the oldest is being written: that write may yet succeed, and a line saying the report was
+// dropped would then be false.
+func (m *manager) queueMemoryKill(report shimwire.LauncherMemoryKill) {
 	var dropped *shimwire.LauncherMemoryKill
 	m.mu.Lock()
 	if len(m.memoryKills) == maxWaitingMemoryKills {
-		oldest := m.memoryKills[0]
+		i := 0
+		if m.memoryKills[0].Sequence == m.memorySending {
+			i = 1
+		}
+		oldest := m.memoryKills[i]
 		dropped = &oldest
-		m.memoryKills = slices.Delete(m.memoryKills, 0, 1)
+		m.memoryKills = slices.Delete(m.memoryKills, i, i+1)
 	}
 	m.memoryKills = append(m.memoryKills, report)
 	m.mu.Unlock()
@@ -372,9 +373,10 @@ func (m *manager) openMemoryReports(writer *shimwire.Writer, carried bool) {
 // time. The writer is taken under the manager's lock and written outside it, as state and
 // reportRestore write theirs, and shimwire.Writer writes each frame whole under a lock of its own,
 // so a report never interleaves with a command's answer. A report leaves the queue only once it is
-// written; a write that fails leaves it, and the rest, for the next connection. memorySend holds
-// one send at a time, so serve's send at a connection's start and the sender's never write one
-// report twice or two out of order.
+// written, and stays at the queue's head while it is being written, since queueMemoryKill never
+// drops the report memorySending names; a write that fails leaves it, and the rest, for the next
+// connection. memorySend holds one send at a time, so serve's send at a connection's start and the
+// sender's never write one report twice or two out of order.
 func (m *manager) sendMemoryKills() {
 	m.memorySend.Lock()
 	defer m.memorySend.Unlock()
@@ -396,17 +398,19 @@ func (m *manager) sendMemoryKills() {
 			return
 		}
 		report := m.memoryKills[0]
+		m.memorySending = report.Sequence
 		m.mu.Unlock()
-		if err := writer.WriteFrame(report); err != nil {
+		err := writer.WriteFrame(report)
+		m.mu.Lock()
+		m.memorySending = 0
+		if err == nil {
+			m.memoryKills = slices.Delete(m.memoryKills, 0, 1)
+		}
+		m.mu.Unlock()
+		if err != nil {
 			m.logf("launcher: memory guard: report unsent sequence=%d pid=%d reason=%v; the next connection carries it",
 				report.Sequence, report.PID, err)
 			return
 		}
-		m.mu.Lock()
-		// The report is still the oldest unless the queue dropped it while it was being written.
-		if len(m.memoryKills) > 0 && m.memoryKills[0].Sequence == report.Sequence {
-			m.memoryKills = slices.Delete(m.memoryKills, 0, 1)
-		}
-		m.mu.Unlock()
 	}
 }

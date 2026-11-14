@@ -181,7 +181,7 @@ func readLiveConfig() (liveConfig, error) {
 			return c, fmt.Errorf("%s: %w", liveSettingsEnv, err)
 		}
 		c.wire = &w
-		c.settings, _ = SettingsOf(&w)
+		c.settings = SettingsOf(w)
 	}
 	return c, nil
 }
@@ -265,9 +265,7 @@ func (r *liveRun) run() string {
 		return reason
 	}
 	if cfg.guardOn {
-		if reason := r.startGuard(); reason != "" {
-			return reason
-		}
+		r.startGuard()
 		if reason := r.measureCPU(); reason != "" {
 			return reason
 		}
@@ -377,15 +375,12 @@ func (r *liveRun) startHelpers() string {
 
 // startGuard starts the real guard, its lines printed as the test's own, its readings and kills
 // watched (guardWatch), at the settings the run asks for.
-func (r *liveRun) startGuard() string {
+func (r *liveRun) startGuard() {
 	r.watch = &guardWatch{act: r.cfg.settings.ActPercent, notify: make(chan struct{}, 1)}
-	g, err := New(Config{
+	g := New(Config{
 		Sink: r.watch.sink,
 		Logf: func(format string, args ...any) { r.out.printf("guard: %s", fmt.Sprintf(format, args...)) },
 	})
-	if err != nil {
-		return err.Error()
-	}
 	g.observe = r.watch.observe
 	if r.cfg.wire != nil {
 		g.Apply(r.cfg.wire)
@@ -401,7 +396,6 @@ func (r *liveRun) startGuard() string {
 		cancel()
 		<-done
 	})
-	return ""
 }
 
 // measureCPU runs the guard alone for the CPU window, with no scenario and no sampling, and

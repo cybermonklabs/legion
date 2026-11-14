@@ -399,7 +399,7 @@ type harness struct {
 func newHarness(t *testing.T, pod *fakePod, classify Classifier) *harness {
 	t.Helper()
 	h := &harness{t: t, pod: pod, clock: newFakeClock(), signal: &fakeSignal{}, log: &lineLog{}}
-	g, err := New(Config{
+	h.g = New(Config{
 		Proc: pod.proc, Cgroup: pod.cgroup, Classify: classify, Logf: h.log.logf,
 		Clock: h.clock, Signal: h.signal,
 		Sink: func(k Kill) {
@@ -408,10 +408,6 @@ func newHarness(t *testing.T, pod *fakePod, classify Classifier) *harness {
 			h.kills = append(h.kills, k)
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.g = g
 	return h
 }
 
@@ -617,7 +613,7 @@ func TestMemoryGuardEndsNothingWhenWhatItMayEndIsUnderTheFloor(t *testing.T) {
 	h.tick()
 	h.tick()
 	h.requireKilled()
-	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d",
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
 		3500*mib, 400*mib, 3*gib, 28*mib, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want one: %q", got, want)
@@ -727,7 +723,7 @@ func TestMemoryGuardStopsForARiseAKillDoesNotLower(t *testing.T) {
 	}
 	h.tickAfter(5 * time.Second)
 	h.requireKilled(701)
-	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d",
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
 		3692*mib, 462*mib, 3230*mib, 0, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want one: %q", got, want)
@@ -764,6 +760,113 @@ func TestMemoryGuardActsOnANewRiseOnlyAfterTheReadingFellBelowTheMark(t *testing
 	h.requireKilled(520)
 	if got := len(h.log.with("stopped")); got != 1 {
 		t.Fatalf("%d stopped lines, want the first rise's alone", got)
+	}
+}
+
+// underTheFloor is a pod at 3500 MiB, above the mark, whose processes the guard may end hold 400
+// MiB between them, under the floor: each crossing of the mark is a stop with nothing to end. Its
+// agent, pid 100, is the one protected process.
+func underTheFloor(t *testing.T) *fakePod {
+	t.Helper()
+	pod := newFakePod(t)
+	pod.add(agent(3 * gib))
+	for i := range 10 {
+		pod.add(fakeProcess{pid: 500 + i, ppid: 100, args: []string{"sleep", "600"}, anon: 40 * mib})
+	}
+	pod.setAnon(3500 * mib)
+	return pod
+}
+
+// A stop that repeats writes its line at most once a minute by the guard's clock. The reading
+// crosses the mark up and down within the minute with nothing to end: the first stop writes its
+// line and each later one is left out, and the first stop after the minute writes the line again,
+// counting the stops left out. Only a written line reads the smaps of the processes the guard may
+// not end; every crossing reads the smaps of those it may end, which decide whether it acts.
+func TestMemoryGuardWritesARepeatingStopsLineAtMostOnceAMinute(t *testing.T) {
+	h := newHarness(t, underTheFloor(t), protect("tester", 100))
+	var mu sync.Mutex
+	reads := map[int]int{}
+	h.g.smapsRead = func(pid int) {
+		mu.Lock()
+		defer mu.Unlock()
+		reads[pid]++
+	}
+	readsOf := func(pid int) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return reads[pid]
+	}
+	stopped := func(leftOut int) string {
+		return fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=%d",
+			3500*mib, 400*mib, 3*gib, 28*mib, podLimit, leftOut)
+	}
+	h.run()
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{stopped(0)}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, stopped(0))
+	}
+	if agent, endable := readsOf(100), readsOf(500); agent != 1 || endable != 1 {
+		t.Fatalf("the first stop read the agent's smaps %d times and an endable process's %d, want once each", agent, endable)
+	}
+
+	const crossings = 4
+	for i := range crossings {
+		h.pod.setAnon(3400 * mib)
+		h.tick()
+		h.pod.setAnon(3500 * mib)
+		h.tick()
+		if got := h.log.with("stopped"); len(got) != 1 {
+			t.Fatalf("after crossing %d within the minute the stopped lines are %q, want the first alone", i+1, got)
+		}
+		if agent, endable := readsOf(100), readsOf(500); agent != 1 || endable != i+2 {
+			t.Fatalf("after crossing %d the agent's smaps were read %d times and an endable process's %d, want 1 and %d",
+				i+1, agent, endable, i+2)
+		}
+	}
+	if spent := h.clock.Now().Sub(testStart); spent >= stoppedEvery {
+		t.Fatalf("the crossings took %s, not within the minute", spent)
+	}
+
+	h.pod.setAnon(3400 * mib)
+	h.tick()
+	h.pod.setAnon(3500 * mib)
+	h.tickAfter(stoppedEvery)
+	if got, want := h.log.with("stopped"), []string{stopped(0), stopped(crossings)}; !slices.Equal(got, want) {
+		t.Fatalf("after the minute the stopped lines are\n%q\nwant\n%q", got, want)
+	}
+	if agent, endable := readsOf(100), readsOf(500); agent != 2 || endable != crossings+2 {
+		t.Fatalf("after the minute the agent's smaps were read %d times and an endable process's %d, want 2 and %d",
+			agent, endable, crossings+2)
+	}
+	h.requireKilled()
+}
+
+// A stop left out of the log changes nothing the guard does: within the minute of a written
+// stopped line, after a stop it left out, a crossing at which the processes it may end hold the
+// floor ends the largest of them at once.
+func TestMemoryGuardEndsAtOnceOnACrossingWithinTheMinuteOfAStoppedLine(t *testing.T) {
+	pod := underTheFloor(t)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	pod.setAnon(3400 * mib)
+	h.tick()
+	pod.setAnon(3500 * mib)
+	h.tick()
+	if got := h.log.with("stopped"); len(got) != 1 {
+		t.Fatalf("the stopped lines are %q, want the first alone", got)
+	}
+
+	// Something the guard may end grows below the mark, and the next crossing ends it.
+	pod.setAnon(3400 * mib)
+	pod.add(fakeProcess{pid: 520, ppid: 100, args: []string{"python3", "grow.py"}, anon: 500 * mib})
+	h.tick()
+	h.requireKilled()
+	pod.setAnon(4000 * mib)
+	h.tick()
+	h.requireKilled(520)
+	if spent := h.clock.Now().Sub(testStart); spent >= stoppedEvery {
+		t.Fatalf("the crossings took %s, not within the minute", spent)
+	}
+	if got := h.log.with("stopped"); len(got) != 1 {
+		t.Fatalf("the stopped lines are %q, want the first alone", got)
 	}
 }
 
@@ -1021,23 +1124,51 @@ func TestMemoryGuardLinesCarryTheirFieldsAndAnEscapedRedactedCutCommand(t *testi
 	if k.Command != commandOf(shimwire.MemoryKillCommandBytes) || len(k.Command) > shimwire.MemoryKillCommandBytes || !utf8.ValidString(k.Command) {
 		t.Fatalf("the report's command is %q (%d bytes), want %q", k.Command, len(k.Command), commandOf(shimwire.MemoryKillCommandBytes))
 	}
-	want := Kill{Guard: h.g.ID(), Sequence: 1, PID: 900, Role: "tester", Command: k.Command, SizeBytes: 1500 * mib,
-		ReadingBytes: 3600 * mib, CounterBytes: 3900 * mib, ShmemBytes: 64 * mib, LimitBytes: podLimit, At: testStart}
+	want := Kill{LauncherMemoryKill: shimwire.LauncherMemoryKill{Guard: h.g.ID(), Sequence: 1, PID: 900, Command: k.Command,
+		SizeBytes: 1500 * mib, ReadingBytes: 3600 * mib, CounterBytes: 3900 * mib, LimitBytes: podLimit, At: testStart}, Role: "tester"}
 	if k != want {
 		t.Fatalf("the report is %+v, want %+v", k, want)
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(k.Guard) {
 		t.Fatalf("the guard id is %q, want 16 hex digits", k.Guard)
 	}
-	report := shimwire.LauncherMemoryKill{Guard: k.Guard, Sequence: k.Sequence, PID: k.PID, Command: k.Command,
-		SizeBytes: k.SizeBytes, ReadingBytes: k.ReadingBytes, CounterBytes: k.CounterBytes, LimitBytes: k.LimitBytes, At: k.At}
-	if err := report.Validate(); err != nil {
+	if err := k.LauncherMemoryKill.Validate(); err != nil {
 		t.Fatalf("the kill does not make a valid report: %v", err)
 	}
 	for _, line := range h.log.all() {
 		if strings.Contains(line, token) || strings.ContainsAny(line, "\n\x1b") {
 			t.Fatalf("a line holds the token or a control character: %q", line)
 		}
+	}
+}
+
+// A token right after a newline, a tab or a space in a process's arguments is masked in the kill's
+// line and in its report. The credential rules read the raw arguments, where each of the three is a
+// boundary a token starts at; escaped first, the `n` of `\n` or the `t` of `\t` would join the token
+// and hide it from the rules.
+func TestMemoryGuardMasksATokenAfterANewlineATabOrASpace(t *testing.T) {
+	token := "ghp_" + strings.Repeat("A1", 18)
+	for _, tc := range []struct {
+		name, script, want string
+	}{
+		{"newline", "echo hi\n" + token, `sh -c echo hi\nghp_***`},
+		{"tab", "x\t" + token, `sh -c x\tghp_***`},
+		{"space", "x " + token, `sh -c x ghp_***`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(agent(2*gib), fakeProcess{pid: 900, ppid: 100, anon: 1500 * mib, args: []string{"sh", "-c", tc.script}})
+			pod.setAnon(3600 * mib)
+			h := newHarness(t, pod, protect("tester", 100)).run()
+			h.requireKilled(900)
+			ended := h.log.with("ended")
+			if len(ended) != 1 || !strings.HasSuffix(ended[0], ` command="`+tc.want+`"`) {
+				t.Fatalf("the kill lines are %q, want one whose command is %q", ended, tc.want)
+			}
+			if k := h.killed()[0]; k.Command != tc.want {
+				t.Fatalf("the report's command is %q, want %q", k.Command, tc.want)
+			}
+		})
 	}
 }
 
@@ -1120,7 +1251,7 @@ func TestMemoryGuardDoesNotEndAProcessItCannotRead(t *testing.T) {
 	if len(unread) != 1 || !strings.HasPrefix(unread[0], "launcher: memory guard: unread pid=950 reason=read the exe: ") {
 		t.Fatalf("the unread lines are %q, want one for pid 950", unread)
 	}
-	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d",
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d left_out=0",
 		3700*mib, gib, 2*gib, 3700*mib-3*gib, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want %q", got, want)
@@ -1174,7 +1305,7 @@ func TestMemoryGuardMovesToTheNextLargestWhenAKillFails(t *testing.T) {
 	if got := h.log.with("unread"); len(got) != 0 {
 		t.Fatalf("the refused process was logged unread as well: %q", got)
 	}
-	stopped := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d",
+	stopped := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d left_out=0",
 		3800*mib, 2*gib, gib, 3800*mib-3*gib, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{stopped}) {
 		t.Fatalf("the stopped lines are %q, want %q", got, stopped)

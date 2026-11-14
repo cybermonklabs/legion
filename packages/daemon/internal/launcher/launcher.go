@@ -106,10 +106,11 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	// The guard comes before the managers: the pod's put-back of a released workspace starts its
-	// jj and git through it (newManagers), as the test database's script starts through it below.
-	guard := &pidGuard{}
-	managers, err := newManagers(cfg, guard)
+	// The pid guard comes before the managers: the pod's put-back of a released workspace starts
+	// its jj and git through it (newManagers), as the test database's script starts through it
+	// below.
+	pids := &pidGuard{}
+	managers, err := newManagers(cfg, pids)
 	if err != nil {
 		return err
 	}
@@ -122,7 +123,7 @@ func Run(ctx context.Context, cfg Config) error {
 		exits := make(chan os.Signal, 1)
 		signal.Notify(exits, syscall.SIGCHLD)
 		defer signal.Stop(exits)
-		go reapOrphans(ctx, exits, managers, guard)
+		go reapOrphans(ctx, exits, managers, pids)
 	}
 	if cfg.RolesDir == "" {
 		return managers[0].serveUntil(ctx, address)
@@ -142,13 +143,13 @@ func Run(ctx context.Context, cfg Config) error {
 	// one, as only that one runs the reaper above, and any other logs a line instead
 	// (serveMemoryGuard). Its loop is waited on with the roles below, as the test database's
 	// ticker is.
-	memory := serveMemoryGuard(ctx, cfg, managers, guard)
+	memory := serveMemoryGuard(ctx, cfg, managers, pids)
 	// The pod's own test database, before any role starts: a role that starts at once finds the
 	// server serving its DSN (serveTestPG). Its ticker is waited on with the roles below, so Run
 	// returns with nothing of the launcher's still running.
 	var testPG <-chan struct{}
 	if cfg.TestPostgres {
-		testPG = serveTestPG(ctx, cfg, managers[0].log, guard)
+		testPG = serveTestPG(ctx, cfg, managers[0].log, pids)
 	}
 	var running sync.WaitGroup
 	for _, m := range managers {
@@ -488,10 +489,12 @@ type manager struct {
 	// is the connection they go on, this role's current one from its state frame on, nil while
 	// none is up; reportsCarried is whether that connection's acknowledgement carried guard
 	// settings, without which the daemon behind it may not know the report (openMemoryReports).
-	// All three are guarded by mu.
+	// memorySending is the sequence of the oldest report while it is being written, 0 while none
+	// is, since a guard counts its kills from 1 (sendMemoryKills). All four are guarded by mu.
 	memoryKills    []shimwire.LauncherMemoryKill
 	reportWriter   *shimwire.Writer
 	reportsCarried bool
+	memorySending  uint64
 	// memoryWake tells this role's report sender a report is waiting (sendMemoryKillsUntil), and
 	// memorySend holds one send of the waiting reports at a time (sendMemoryKills).
 	memoryWake chan struct{}

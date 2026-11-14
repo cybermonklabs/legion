@@ -58,11 +58,6 @@ func TestMemoryGuardAKillIsToldToTheReportingRoleAlone(t *testing.T) {
 		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
 		"read skill://legion-worker/references/tools.md before you run it again."
 	assertRoleMessages(t, pool, "LEGION-209", []record.RoleMessage{{Role: string(token), Body: want}})
-	for _, part := range []string{"`python3 -m pytest tests/`", "812.40 MiB", "3.13 GiB", "4.00 GiB", "skill://legion-worker/references/tools.md"} {
-		if !strings.Contains(want, part) {
-			t.Fatalf("the note %q does not name %q", want, part)
-		}
-	}
 	if rows := outboxRowsOf(t, pool, "LEGION-209"); rows != 1 {
 		t.Fatalf("the outbox holds %d rows of LEGION-209, want the one role message", rows)
 	}

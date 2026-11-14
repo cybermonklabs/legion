@@ -4508,7 +4508,7 @@ After a kill the guard takes a reading each interval.
 The reading has fallen when it is below the reading at the kill by any amount, or when it is below the mark.
 When it has fallen and is still at or above the mark, the guard ends the next largest process once the killed one has exited or once the wait has passed, `wait_seconds` (5 by default).
 So a pool of forked workers, which share their parent's pages and each count them whole (`make -j`, `lake build`), is ended one worker at a time while the reading stays at the mark, rather than left for the kernel to stop the whole sandbox.
-When the wait passes and a kill has not lowered the reading at all, or when no process may be ended, the guard writes one `stopped for this rise` line and ends nothing more for that rise:
+When the wait passes and a kill has not lowered the reading at all, or when no process may be ended, the guard gives the rise up with a `stopped for this rise` line, which a stop that repeats writes at most once a minute ("The lines", below), and ends nothing more for that rise:
 it acts again only after the reading has gone below the mark.
 
 **What it protects, and why.**
@@ -4576,7 +4576,7 @@ launcher: memory guard: settings act_percent=<n> floor_percent=<n> wait=<d> inte
 launcher: memory guard: off: the daemon's acknowledgement carries no settings
 launcher: memory guard: settings refused: <why>; nothing changes
 launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> command="<command>"
-launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes>
+launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n>
 launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<role> largest_size=<bytes> largest_command="<command>"
 launcher: memory guard: off reason=<why>
 launcher: memory guard: unread pid=<pid> reason=<why>
@@ -4587,6 +4587,12 @@ launcher: memory guard: kill failed pid=<pid> reason=<why>
 `ended` comes once for each kill: `counter` is the cgroup's counter at the kill and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
 `stopped for this rise` says where the reading's memory is: in the processes the guard may end, in the protected ones and in the ones it could not read, and `unheld` is the reading less those three.
 A positive `unheld` is memory no process holds, such as the pages of a memory filesystem, and a negative one is what the sizes counted more than once, such as the pages a parent shares with the child it forked.
+A stop that repeats
+— the rise given up, the reading below the mark and back above it, the rise given up again —
+writes this line at most once a minute by the guard's clock, and leaves the stops in between out of the log:
+the next line written carries in `left_out` how many stops it left out since the line before it, and `left_out=0` when it left out none.
+The sizes of the protected and unread processes, and after a kill that freed nothing the scan they are counted from, are read only for a line written, so a reading that keeps crossing the mark does not read them at every crossing;
+the process scan and the smaps of the processes the guard may end still run at every crossing, since they decide whether it acts.
 `hour` comes once an hour from the guard's start, with the highest and lowest readings and counters of that hour, the time of the highest reading, and the largest process the guard saw, protected processes included.
 The guard measures that largest process again, in a goroutine of its own that delays no reading, each time a new high of the hour is at least 1% of the limit above the high it last measured at.
 `off reason=` turns the guard off while the launcher runs, for one of the reasons in "What it reads" above, and a launcher that is not its container's first process writes it as `off reason=the launcher is pid <n>, not the container's first process, …`.
@@ -4605,7 +4611,7 @@ The launcher writes three lines of its own about the reports below, each behind 
 For each process of a role that it ends, the guard gives a report to that role's part of the launcher, which sends it to the daemon as one `launcher_memory_kill` frame on the role's connection:
 the guard's own id, its count of kills, the pid, the command cut to 256 bytes, the process's size, the reading, the counter and the limit.
 The launcher sends a report only on a connection whose answer carried settings, since a daemon built before the guard closes a connection on a frame it does not know, and it drops a report waiting for any other connection with a line.
-While the role has no connection, up to 32 reports wait for one, and a 33rd drops the oldest with a line.
+Up to 32 reports wait while the role has no connection, and a 33rd drops the oldest with a line, or the next oldest while the oldest is being written.
 A process of no role has its `ended` line and no report.
 The daemon applies each report once, under the event id `memory-guard-kill:<guard>:<sequence>`, so a report sent twice tells the role once.
 It credits the report to the issue, the role and the pod that the connection authenticated as, and never to anything the report says.
@@ -4615,11 +4621,22 @@ It then queues one message to that role's topic, `notifications.role.<role token
 The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: `<command>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
 ```
 
-A note can be lost in two cases.
-A report the launcher wrote on a connection that the daemon then replaced can be lost, since the launcher counts a report as sent once it is written.
-And a message to a role whose session holds no topic when the outbox row runs is not delivered: the outbox finishes the row with one log line (`roleMessage`, `packages/daemon/internal/daemon/outbox.go`).
-In both cases the `ended` line stays in the container's log.
-The daemon also drops, with a warning in its own log, a report that fails the frame's own checks and one from a launcher of no issue, and it keeps the connection open after each.
+A note can be lost in each of these cases, and in each the `ended` line stays in the container's log:
+
+- The launcher dropped the report, with one of its lines above:
+  32 reports already waited, or the connection's answer carried no settings.
+
+- The launcher wrote the report on a connection that the daemon then replaced:
+  the launcher counts a report as sent once it is written, and does not send it again.
+
+- The daemon dropped the report, with a warning in its own log, and kept the connection open:
+  a report that fails the frame's own checks, one from a launcher of no issue, and a valid report it could not record, because its store write failed or the bounded time it gives each report ran out.
+  The launcher counted the report as sent once it was written, so it does not send it again.
+
+- The workflow dropped the report, with a line in the daemon's log, because the daemon records no such issue.
+
+- The role's session held no topic when the outbox row ran, so the message was not delivered:
+  the outbox finishes the row with one log line (`roleMessage`, `packages/daemon/internal/daemon/outbox.go`).
 
 **What it does not do.**
 
@@ -4630,6 +4647,7 @@ The daemon also drops, with a warning in its own log, a report that fails the fr
 - It does not act again while memory it may not end holds the pod above the mark, or after a kill that lowered the reading by nothing within the wait.
   When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing, `reason=not fallen`.
   Either way it waits for the reading to fall below the mark, a process that grows in that wait is not ended, and the kernel can still stop the sandbox in that wait.
+  A reading that keeps crossing the mark has at most one such line a minute, with the stops left out counted in `left_out`, and a crossing at which the processes it may end hold the floor is still acted on at once.
 
 - It does not stop a fill faster than its margin.
   Between the mark and the point where the kernel stops the sandbox, measured at 95.6% to 99.3% of the limit, the guard must take a reading at or above the mark and end the process.

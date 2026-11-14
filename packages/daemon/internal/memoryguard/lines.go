@@ -12,11 +12,11 @@ import (
 
 // The guard's log lines. Each starts with linePrefix and carries `key=value` fields: sizes in
 // bytes, times in RFC 3339 UTC, and a command last and quoted, so a reader takes everything from
-// `command="` to the line's last quote whatever the command holds. The plan of INFRA-3557 names
-// each line and its fields; unreadLine and refusedLine are two it asks for without naming a shape
-// (a process the guard cannot read is "logged once", and a launcher checks the daemon's settings),
-// and killFailedLine is this package's own: a kill that fails is never retried unseen at every
-// reading.
+// `command="` to the line's last quote whatever the command holds. A process the guard cannot read
+// has its unreadLine once, settings the launcher refuses their refusedLine, and a process the kill
+// failed on its killFailedLine once, so a kill that fails is never retried unseen at every
+// reading. A stop that repeats has its stoppedLine at most once in each stoppedEvery, and the line
+// written counts in left_out the stopped lines left out since the one before it (stopRise).
 const (
 	linePrefix     = "launcher: memory guard: "
 	startedLine    = linePrefix + "started act_percent=%d floor_percent=%d wait=%s interval=%s limit=%d reading=%d"
@@ -24,7 +24,7 @@ const (
 	noSettingsLine = linePrefix + "off: the daemon's acknowledgement carries no settings"
 	refusedLine    = linePrefix + "settings refused: %v; nothing changes"
 	endedLine      = linePrefix + `ended pid=%d role=%s size=%d reading=%d counter=%d shmem=%d limit=%d command="%s"`
-	stoppedLine    = linePrefix + "stopped for this rise reason=%s reading=%d endable=%d protected=%d unread=%d unheld=%d limit=%d"
+	stoppedLine    = linePrefix + "stopped for this rise reason=%s reading=%d endable=%d protected=%d unread=%d unheld=%d limit=%d left_out=%d"
 	hourLine       = linePrefix + "hour start=%s end=%s reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d" +
 		` largest_pid=%d largest_role=%s largest_size=%d largest_command="%s"`
 	offLine        = linePrefix + "off reason=%s"
@@ -58,25 +58,21 @@ func roleName(role string) string {
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 // commandText is p's arguments as one printable line with no credential in it: joined by spaces,
-// every character that does not print escaped, and passed through the credential rules a
-// capability report's detail is cleaned by, since an argument can carry a token. A process that
-// shows no arguments is named by its stat name in brackets, as ps names it. The text is whole;
-// each reader cuts it to its own bound (cut), after the redaction, so a cut never leaves part of
-// a credential that the whole would have matched.
+// passed through the credential rules a capability report's detail is cleaned by, since an
+// argument can carry a token, and then with every character that does not print escaped. The
+// rules read the raw text, where a newline or a tab before a token is a boundary the token starts
+// at; escaped first, the `n` of `\n` or the `t` of `\t` would join the token and hide it from
+// them. A process that shows no arguments is named by its stat name in brackets, as ps names it.
+// The text is whole; each reader cuts it to its own bound (cut), after the redaction, so a cut
+// never leaves part of a credential that the whole would have matched.
 func commandText(p *Process) string {
+	raw := "[" + p.Name + "]"
+	if len(p.Args) > 0 {
+		raw = strings.Join(p.Args, " ")
+	}
 	var b strings.Builder
-	if len(p.Args) == 0 {
-		b.WriteByte('[')
-		escape(&b, p.Name)
-		b.WriteByte(']')
-	}
-	for i, arg := range p.Args {
-		if i > 0 {
-			b.WriteByte(' ')
-		}
-		escape(&b, arg)
-	}
-	return capabilities.RedactCredentials(b.String())
+	escape(&b, capabilities.RedactCredentials(raw))
+	return b.String()
 }
 
 // escape writes s to b with each control character, and each other character that does not

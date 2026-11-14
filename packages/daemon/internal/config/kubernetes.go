@@ -198,9 +198,11 @@ type MemoryGuardConfig struct {
 // its hello). The guard reads the pod's anonymous memory every IntervalMilliseconds; at
 // ActPercent of the container's memory limit it ends the largest process it may end, where those
 // processes hold at least FloorPercent of the limit between them, and after a kill it waits up to
-// WaitSeconds for the reading to fall before it ends another. Enabled false runs no guard, and the
-// pod's memory is then bounded by the kernel's kill of the whole container alone, as it was
-// before this work.
+// WaitSeconds for the reading to fall before it ends another. With Enabled false the daemon hands
+// the launchers no settings: each guard runs at the defaults from its launcher's start, as it does
+// while no daemon has answered, and turns off at its launcher's first acknowledgement, after which
+// it ends nothing and the pod's memory is bounded by the kernel's kill of the whole container
+// alone.
 type MemoryGuardPodConfig struct {
 	Enabled              bool
 	ActPercent           int
@@ -810,11 +812,12 @@ func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 }
 
 // readMemoryGuardPod reads one pod kind's block of `runtime.kubernetes.memory_guard` under key:
-// each member the file sets and settled's for each it leaves out. `enabled` is read from the
-// settled default rather than from the key's presence, because the default is on: an operator
-// writing `enabled: true` back must get the guard, and a value that is no YAML boolean — `off`
-// and `yes` among them, which this loader's reader tags as strings — is refused rather than read
-// as a word nobody meant.
+// each member the file sets and settled's for each it leaves out, and settled whole for a block
+// the file leaves null (`issue_pods:` with no value), as every other block of the file reads a
+// null. `enabled` is read from the settled default rather than from the key's presence, because
+// the default is on: an operator writing `enabled: true` back must get the guard, and a value that
+// is no YAML boolean — `off` and `yes` among them, which this loader's reader tags as strings — is
+// refused rather than read as a word nobody meant.
 //
 // Each number is held to the wire's own range (shimwire.MemoryGuardActMin and its siblings), which
 // the launcher's guard checks the settings against a second time on its side of the connection: a
@@ -823,7 +826,7 @@ func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 // names the whole key and both ends of its range, as the loader's other range refusals do
 // (agent_secrets' token_expiry_seconds).
 func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConfig) (MemoryGuardPodConfig, error) {
-	if value == nil {
+	if value == nil || value.Tag == "!!null" {
 		return settled, nil
 	}
 	if value.Kind != yaml.MappingNode {

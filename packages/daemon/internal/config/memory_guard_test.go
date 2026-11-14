@@ -44,6 +44,25 @@ func TestMemoryGuardIsOnAtTheDefaultsWhenTheFileSetsNoBlock(t *testing.T) {
 	}
 }
 
+// A null issue_pods is unset, as every sibling block's null is, and loads as the defaults: in flow
+// style and in block style, written with no value or as null.
+func TestMemoryGuardANullIssuePodsIsTheDefaults(t *testing.T) {
+	for _, block := range []string{
+		"    memory_guard: {issue_pods: }\n",
+		"    memory_guard: {issue_pods: null}\n",
+		"    memory_guard:\n      issue_pods:\n",
+		"    memory_guard:\n      issue_pods: ~\n",
+	} {
+		cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+block), noEnv)
+		if err != nil {
+			t.Fatalf("LoadForValidation of %q: %v", block, err)
+		}
+		if got := cfg.Runtime.Kubernetes.MemoryGuard; got != DefaultMemoryGuard() {
+			t.Fatalf("memory_guard of %q = %+v, want the defaults %+v", block, got, DefaultMemoryGuard())
+		}
+	}
+}
+
 // Each key takes its value from the file and leaves the others at their defaults, and a file that
 // sets every key gets every one.
 func TestMemoryGuardTakesEachKeyFromTheFile(t *testing.T) {

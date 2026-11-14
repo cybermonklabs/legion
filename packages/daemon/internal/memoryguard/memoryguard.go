@@ -19,7 +19,7 @@
 // Lean build), whose shared pages no one worker's kill frees, is ended one worker at a time. When
 // the wait passes and the kill has not lowered the reading at all, or when no process may be
 // ended, the guard logs the sizes it saw and ends nothing more for that rise, until the reading
-// has gone below the mark.
+// has gone below the mark; a stop that repeats is logged at most once a minute (stopRise).
 //
 // What it may end is its caller's to say (Classifier): the launcher protects Legion's own
 // processes and the agents', and INFRA-3531's controller pod protects its own. The package
@@ -59,27 +59,23 @@ type Settings struct {
 // Defaults are the settings a guard runs by before anyone has said otherwise, the shimwire
 // defaults, which the daemon's configuration defaults are too: one change moves both.
 func Defaults() Settings {
-	return Settings{
-		ActPercent:   shimwire.MemoryGuardActDefault,
-		FloorPercent: shimwire.MemoryGuardFloorDefault,
-		Wait:         shimwire.MemoryGuardWaitDefault * time.Second,
-		Interval:     shimwire.MemoryGuardIntervalDefault * time.Millisecond,
-	}
+	return SettingsOf(shimwire.LauncherMemoryGuard{
+		ActPercent:           shimwire.MemoryGuardActDefault,
+		FloorPercent:         shimwire.MemoryGuardFloorDefault,
+		WaitSeconds:          shimwire.MemoryGuardWaitDefault,
+		IntervalMilliseconds: shimwire.MemoryGuardIntervalDefault,
+	})
 }
 
-// SettingsOf is the settings an acknowledgement's member carries, and false for an
-// acknowledgement that carries none, which is the guard off. It does not check the ranges
+// SettingsOf is the settings an acknowledgement's member carries. It does not check the ranges
 // (shimwire.LauncherMemoryGuard.Validate does, and Apply calls it).
-func SettingsOf(w *shimwire.LauncherMemoryGuard) (Settings, bool) {
-	if w == nil {
-		return Settings{}, false
-	}
+func SettingsOf(w shimwire.LauncherMemoryGuard) Settings {
 	return Settings{
 		ActPercent:   w.ActPercent,
 		FloorPercent: w.FloorPercent,
 		Wait:         time.Duration(w.WaitSeconds) * time.Second,
 		Interval:     time.Duration(w.IntervalMilliseconds) * time.Millisecond,
-	}, true
+	}
 }
 
 // Class is what a classifier says of one process: the role whose process it is, "" outside
@@ -94,23 +90,12 @@ type Class struct {
 // run at the same time. A pid absent from the map is a process the guard may end, of no role.
 type Classifier func(t *Table) map[int]Class
 
-// Kill is one process the guard ended. Guard is the guard's own id and Sequence its count of
-// kills from 1; Command is the process's command cut to shimwire.MemoryKillCommandBytes; SizeBytes
-// is the process's size, ReadingBytes the pod's AnonPages at the kill, CounterBytes the cgroup's
-// counter, ShmemBytes the pod's Shmem of /proc/meminfo (tmpfs pages and memfds, which a kill frees
-// only when no other process keeps them) and LimitBytes the container's limit.
+// Kill is one process the guard ended: the report its role is sent, whose Command is cut to
+// shimwire.MemoryKillCommandBytes, and Role, the role whose process it was, "" outside every
+// role.
 type Kill struct {
-	Guard        string
-	Sequence     uint64
-	PID          int
-	Role         string
-	Command      string
-	SizeBytes    uint64
-	ReadingBytes uint64
-	CounterBytes uint64
-	ShmemBytes   uint64
-	LimitBytes   uint64
-	At           time.Time
+	shimwire.LauncherMemoryKill
+	Role string
 }
 
 // Clock is the time a guard reads and waits on. After is called by the guard's loop alone, one
@@ -214,6 +199,11 @@ type largestScan struct {
 // counterEvery is how often the guard reads the cgroup's counter for the hourly line.
 const counterEvery = 5 * time.Second
 
+// stoppedEvery is the least time between two stopped lines: a stop that repeats, as a reading
+// that holds near the mark crosses it again and again, writes one line in each stoppedEvery and
+// counts the rest (stopRise).
+const stoppedEvery = time.Minute
+
 // noLimit is the smallest limit that is no limit at all: cgroup v1 writes an unlimited
 // container's limit as the largest page-aligned int64, and no container is given 4 EiB.
 const noLimit = 1 << 62
@@ -233,6 +223,10 @@ type Guard struct {
 	// acts on the reading. The live test (live_test.go) sets it to time the guard's decisions
 	// and falls from the guard's own readings; production leaves it nil.
 	observe func(now time.Time, reading, limit uint64)
+	// smapsRead, when set, is called with the pid of each smaps the guard's loop reads (size),
+	// before it reads it. The tests set it to count which processes a stop reads; production
+	// leaves it nil.
+	smapsRead func(pid int)
 
 	mu       sync.Mutex
 	settings Settings
@@ -251,23 +245,34 @@ type Guard struct {
 	window       window
 	counterAt    time.Time
 	unreadLogged map[int]bool
-	// killFailures are the processes the guard could not end, for as long as each lives: they
-	// count as unread from then on, so a refusal does not have the guard pick the same process at
-	// every reading while the next largest grows.
-	killFailures map[int]killFailure
+	// killFailures are the processes the guard could not end, for as long as each lives, by pid
+	// with the start time that tells each from a process that takes its pid later: they count as
+	// unread from then on, so a refusal does not have the guard pick the same process at every
+	// reading while the next largest grows.
+	killFailures map[int]uint64
+	// stoppedAt is when the guard last wrote its stopped line, by its clock, and stoppedLeftOut
+	// how many stopped lines it has left out since (stopRise).
+	stoppedAt      time.Time
+	stoppedLeftOut int
 
 	scans    sync.WaitGroup
 	scanMu   sync.Mutex
 	scanBusy bool
 	scanDone *largestScan
+	// The rest is scanLargest's own, one scan at a time, since startScan starts none while one
+	// runs: its smaps buffer, and the command text of the largest process the last scan found with
+	// the name and arguments it was made from, so a scan that finds the same process again does
+	// not redact its arguments again.
+	scanSmaps   []byte
+	scanName    string
+	scanArgs    []string
+	scanCommand string
 }
 
 // New is a guard of cfg, at the default settings and on, with an id of its own.
-func New(cfg Config) (*Guard, error) {
+func New(cfg Config) *Guard {
 	var id [8]byte
-	if _, err := rand.Read(id[:]); err != nil {
-		return nil, fmt.Errorf("mint the memory guard's id: %w", err)
-	}
+	_, _ = rand.Read(id[:])
 	proc := cmp.Or(cfg.Proc, "/proc")
 	cgroup := cmp.Or(cfg.Cgroup, "/sys/fs/cgroup/memory")
 	g := &Guard{
@@ -285,7 +290,7 @@ func New(cfg Config) (*Guard, error) {
 		limitFile:    heldFile{path: filepath.Join(cgroup, "memory.limit_in_bytes")},
 		counterFile:  heldFile{path: filepath.Join(cgroup, "memory.usage_in_bytes")},
 		unreadLogged: map[int]bool{},
-		killFailures: map[int]killFailure{},
+		killFailures: map[int]uint64{},
 	}
 	if g.logf == nil {
 		g.logf = func(string, ...any) {}
@@ -296,7 +301,7 @@ func New(cfg Config) (*Guard, error) {
 	if g.signal == nil {
 		g.signal = defaultSignal()
 	}
-	return g, nil
+	return g
 }
 
 // ID is the guard's own id, random for each guard, which every kill report carries: with the
@@ -327,7 +332,7 @@ func (g *Guard) Apply(w *shimwire.LauncherMemoryGuard) {
 		g.logf(refusedLine, err)
 		return
 	}
-	s, _ := SettingsOf(w)
+	s := SettingsOf(*w)
 	if g.on && s == g.settings {
 		return
 	}
@@ -457,7 +462,7 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 			g.endWait()
 		case passed:
 			g.endWait()
-			g.stopRise(reasonNotFallen, reading, limit, nil)
+			g.stopRise(now, reasonNotFallen, reading, limit, nil)
 			return
 		default:
 			return
@@ -486,13 +491,14 @@ func fell(atKill, reading, mark uint64) bool { return reading < atKill || readin
 // logged once and counted unread from then on (noteKillFailure), and the next reading ends the
 // next largest.
 func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
+	defer g.releaseSmaps()
 	a, err := g.assess()
 	if err != nil {
 		g.die(fmt.Sprintf("cannot list the processes in %s: %v", g.proc, err))
 		return
 	}
 	if len(a.endable) == 0 || a.endableBytes < share(limit, s.FloorPercent) {
-		g.stopRise(reasonNothingToEnd, reading, limit, &a)
+		g.stopRise(now, reasonNothingToEnd, reading, limit, &a)
 		return
 	}
 	target := a.endable[0]
@@ -518,9 +524,12 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
 	g.logf(endedLine, target.PID, roleName(target.role), target.size, reading, counter, shmem, limit, cut(command, logCommandBytes))
 	if g.sink != nil {
 		g.sink(Kill{
-			Guard: g.id, Sequence: g.sequence, PID: target.PID, Role: target.role,
-			Command: cut(command, shimwire.MemoryKillCommandBytes), SizeBytes: target.size,
-			ReadingBytes: reading, CounterBytes: counter, ShmemBytes: shmem, LimitBytes: limit, At: at,
+			LauncherMemoryKill: shimwire.LauncherMemoryKill{
+				Guard: g.id, Sequence: g.sequence, PID: target.PID,
+				Command: cut(command, shimwire.MemoryKillCommandBytes), SizeBytes: target.size,
+				ReadingBytes: reading, CounterBytes: counter, LimitBytes: limit, At: at,
+			},
+			Role: target.role,
 		})
 	}
 	g.phase = waiting
@@ -540,26 +549,24 @@ func (g *Guard) killFailed(p *Process, err error) {
 	}
 }
 
-// killFailure is a process the guard could not end: its start time, which tells it from a process
-// that takes its pid later, and why.
-type killFailure struct {
-	start uint64
-	err   error
-}
+// errKillFailed is why a process the kill failed on counts unread at each later scan; the failure
+// itself has had its line when it was noted (noteKillFailure).
+var errKillFailed = errors.New("the kill failed")
 
-// noteKillFailure logs a process the kill failed on, once, and keeps it so that every later scan
-// counts it unread for as long as it lives.
+// noteKillFailure logs a process the kill failed on, once, and keeps it by its start time, which
+// tells it from a process that takes its pid later, so that every later scan counts it unread for
+// as long as it lives.
 func (g *Guard) noteKillFailure(p *Process, err error) {
-	g.killFailures[p.PID] = killFailure{start: p.StartTime, err: err}
+	g.killFailures[p.PID] = p.StartTime
 	g.logf(killFailedLine, p.PID, err)
 }
 
 // applyKillFailures counts each process the kill failed on unread in t, and forgets each that has
 // ended or whose pid another process now has.
 func (g *Guard) applyKillFailures(t *Table) {
-	for pid, failure := range g.killFailures {
-		if p, listed := t.byPID[pid]; listed && p.StartTime == failure.start {
-			t.unread[pid] = fmt.Errorf("the kill failed: %w", failure.err)
+	for pid, start := range g.killFailures {
+		if p, listed := t.byPID[pid]; listed && p.StartTime == start {
+			t.unread[pid] = errKillFailed
 		} else {
 			delete(g.killFailures, pid)
 		}
@@ -638,8 +645,20 @@ func (g *Guard) logUnread(t *Table) {
 // which no process holds (tmpfs pages, which no kill frees) or, negative, what the processes'
 // sizes count more than once (a page a parent and its forked child share). a is the scan the
 // decision was made on, or nil to scan again.
-func (g *Guard) stopRise(reason string, reading, limit uint64, a *assessment) {
+//
+// A stop that repeats, as a reading that holds near the mark goes below it and back above it,
+// writes its line at most once in each stoppedEvery by the guard's clock: each stop in between is
+// counted and left out, and the next line written carries that count (left_out). What the line
+// alone needs is read only for a line written: the smaps of every process the guard may not end,
+// and, after a kill, the scan the line is made from. The scan a stop is decided on, with the smaps
+// of the processes the guard may end, is act's, at every rise, since it decides whether to act.
+func (g *Guard) stopRise(now time.Time, reason string, reading, limit uint64, a *assessment) {
+	defer g.releaseSmaps()
 	g.phase = stopped
+	if !g.stoppedAt.IsZero() && now.Sub(g.stoppedAt) < stoppedEvery {
+		g.stoppedLeftOut++
+		return
+	}
 	var endable, protected, unread uint64
 	if a == nil {
 		if fresh, err := g.assess(); err == nil {
@@ -674,7 +693,8 @@ func (g *Guard) stopRise(reason string, reading, limit uint64, a *assessment) {
 		}
 	}
 	unheld := int64(reading) - int64(endable+protected+unread)
-	g.logf(stoppedLine, reason, reading, endable, protected, unread, unheld, limit)
+	g.logf(stoppedLine, reason, reading, endable, protected, unread, unheld, limit, g.stoppedLeftOut)
+	g.stoppedAt, g.stoppedLeftOut = now, 0
 }
 
 // endWait lets go of the process a waiting guard holds.
@@ -782,11 +802,10 @@ func (g *Guard) scanLargest(start time.Time) {
 	found := largestScan{window: start}
 	if t, err := scan(g.proc); err == nil {
 		classes := g.classes(t)
-		var buf []byte
 		var biggest *Process
 		for _, p := range t.Processes() {
-			data, err := readAll(g.smapsPath(p.PID), buf)
-			buf = data
+			data, err := readAll(g.smapsPath(p.PID), g.scanSmaps)
+			g.scanSmaps = data
 			if err != nil {
 				continue
 			}
@@ -794,14 +813,25 @@ func (g *Guard) scanLargest(start time.Time) {
 				biggest, found.pid, found.size = p, p.PID, size
 			}
 		}
+		g.scanSmaps = keepSmaps(g.scanSmaps)
 		if biggest != nil {
 			found.role = classes[biggest.PID].Role
-			found.command = cut(commandText(biggest), logCommandBytes)
+			found.command = g.largestCommand(biggest)
 		}
 	}
 	g.scanMu.Lock()
 	g.scanDone, g.scanBusy = &found, false
 	g.scanMu.Unlock()
+}
+
+// largestCommand is p's command as the hourly line carries it, made again only when p's name or
+// arguments differ from those of the last scan's largest process, since commandText reads nothing
+// else: the same agent found the largest scan after scan is not redacted again each time.
+func (g *Guard) largestCommand(p *Process) string {
+	if g.scanCommand == "" || p.Name != g.scanName || !slices.Equal(p.Args, g.scanArgs) {
+		g.scanName, g.scanArgs, g.scanCommand = p.Name, p.Args, cut(commandText(p), logCommandBytes)
+	}
+	return g.scanCommand
 }
 
 // classes is the classifier's answer for t, or none.
@@ -814,12 +844,28 @@ func (g *Guard) classes(t *Table) map[int]Class {
 
 // size is pid's size from its smaps (smapsSize), read into the guard's own buffer.
 func (g *Guard) size(pid int) (uint64, error) {
+	if g.smapsRead != nil {
+		g.smapsRead(pid)
+	}
 	data, err := readAll(g.smapsPath(pid), g.smaps)
 	g.smaps = data
 	if err != nil {
 		return 0, err
 	}
 	return smapsSize(data), nil
+}
+
+// releaseSmaps lets go of the guard's smaps buffer once it has grown past maxHeldFile (keepSmaps).
+func (g *Guard) releaseSmaps() { g.smaps = keepSmaps(g.smaps) }
+
+// keepSmaps is buf, kept for the next read of a smaps, or nil once it has grown past maxHeldFile:
+// a process with many mappings grows the buffer to the size of its smaps, and the guard does not
+// hold that much of the pod's memory from one scan to the next.
+func keepSmaps(buf []byte) []byte {
+	if cap(buf) > maxHeldFile {
+		return nil
+	}
+	return buf
 }
 
 func (g *Guard) smapsPath(pid int) string {
