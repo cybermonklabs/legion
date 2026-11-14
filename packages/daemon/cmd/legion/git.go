@@ -90,7 +90,11 @@ func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
 		if !commit {
 			return execGit(args[1], gitArgs, env, nil, stderr)
 		}
-		return runCommit(args[1], isGitScript(args[1]), gitReader{path: args[1], globals: gitArgs[:sub]}, gitArgs[sub+1:], env, stderr)
+		route := stashThroughDescriptor
+		if isGitScript(args[1]) {
+			route = stashNone
+		}
+		return runCommit(args[1], route, gitReader{path: args[1], globals: gitArgs[:sub]}, gitArgs[sub+1:], env, stderr)
 	}
 	pick, err := gitAfter(args[1], os.Getenv("PATH"), os.Getenv(wrappedGitAt))
 	if err != nil {
@@ -112,13 +116,15 @@ func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
 		readChain.ran = append(slices.Clone(readChain.ran), helper)
 	}
 	reader := gitReader{path: helper, globals: gitArgs[:sub], env: withWrappedGitAt(os.Environ(), readChain)}
-	return runCommit(pick.run, pick.script, reader, gitArgs[sub+1:], env, stderr)
+	return runCommit(pick.run, stashOnStandardInput, reader, gitArgs[sub+1:], env, stderr)
 }
 
-// runCommit runs git at path, a script when script is true, with the commit's arguments args as
-// commitWithTrailers makes them, read with reader, whose globals are the caller's global options.
-func runCommit(path string, script bool, reader gitReader, args, env []string, stderr io.Writer) int {
-	commit, err := commitWithTrailers(reader, script, args, processEnvironment())
+// runCommit runs git at path with the commit's arguments args as commitWithTrailers makes them,
+// read with reader, whose globals are the caller's global options. route is the way a stash
+// reaches that git (stashRoute). For --after it is stashOnStandardInput, whether path is a script
+// or not. For --real it is stashThroughDescriptor, or stashNone when path is a script.
+func runCommit(path string, route stashRoute, reader gitReader, args, env []string, stderr io.Writer) int {
+	commit, err := commitWithTrailers(reader, route, args, processEnvironment())
 	if err == nil && commit.stdin != nil {
 		err = asStandardInput(commit.stdin)
 	}
@@ -173,11 +179,9 @@ func withWrappedGitAt(env []string, chain gitChain) []string {
 
 // gitPick is the git that `legion git --after` runs, and what it knows of the gits on PATH.
 type gitPick struct {
-	// run is the git it replaces itself with, script whether run is a script, and chain the loop
-	// guard's value run gets.
-	run    string
-	script bool
-	chain  gitChain
+	// run is the git it replaces itself with, and chain the loop guard's value run gets.
+	run   string
+	chain gitChain
 	// reentry is whether this run came back through a host's wrapper that an earlier run of the
 	// chain chose. Such a run adds nothing: the first run added the trailers.
 	reentry bool
@@ -225,13 +229,13 @@ func gitAfter(own, path, marker string) (gitPick, error) {
 			return gitPick{}, fmt.Errorf("no git on PATH after %s", own)
 		}
 		chain = gitChain{}
-		pick.run, pick.script = pick.after[0].Path, pick.after[0].script
+		pick.run = pick.after[0].Path
 	case chain.reentries < len(found):
 		chain.reentries++
 		if i := slices.IndexFunc(pick.after, func(c gitCandidate) bool { return !isListed(c.Found) }); i >= 0 {
-			pick.run, pick.script = pick.after[i].Path, pick.after[i].script
+			pick.run = pick.after[i].Path
 		} else {
-			pick.run = pick.helper() // The helper is no script.
+			pick.run = pick.helper()
 		}
 	}
 	if pick.run == "" {

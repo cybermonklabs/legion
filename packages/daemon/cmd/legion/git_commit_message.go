@@ -50,12 +50,13 @@ func commitCleanup(arg commitString, useEditor bool) (commitCleanupMode, bool) {
 const cutLine = "------------------------ >8 ------------------------"
 
 // commitBuild builds a commit's message as git does, to learn whether git accepts it and what
-// git's trailer step makes of it. script is whether the git that runs the commit is a script.
+// git's trailer step makes of it. route is the way a stash reaches the git that runs the commit
+// (stashRoute).
 type commitBuild struct {
-	git    gitReader
-	script bool
-	opts   commitRead
-	plan   commitPlan
+	git   gitReader
+	route stashRoute
+	opts  commitRead
+	plan  commitPlan
 }
 
 // lines is each line of want that the message lacks, when the wrapper may add those lines, and
@@ -417,14 +418,15 @@ const (
 // It reads a regular file that names no descriptor (namesADescriptor) and leaves it for git to read
 // again. git cannot read any other source twice, so readFile keeps it in a stash (stashSource) and
 // returns the stash when mayStash is true: git reads the source once. Standard input and a path
-// that names descriptor 0 go to git on descriptor 0, and any other source through the descriptor
-// that an argument names (commitStash). It declines such a source when mayStash is false: git
-// reads it twice, no argument can name a stash of it, or a stash is kept already
-// (commitBuild.prepare). It declines such a source that goes to git through an argument when the
-// git to run is a script, which may close the stash's descriptor. It declines every such source
-// when --interactive, -p or --pathspec-from-file is given, since git reads standard input for each
-// before the message. The error is a stash it could not write after it read the source, and then
-// it returns no stash.
+// that names descriptor 0 go to git on descriptor 0 on every route. Any other source goes to git
+// as b.route says (stashRoute): on descriptor 0 under --after, and through the descriptor that an
+// argument names under --real with a git that is no script. It declines a source that it would
+// keep when mayStash is false: git reads it twice, no argument can name a stash of it, or a stash
+// is kept already (commitBuild.prepare). It declines a source that is not on descriptor 0 on
+// stashNone, the route of --real with a script, which may close the stash's descriptor. It
+// declines every source that it would keep when --interactive, -p or --pathspec-from-file is
+// given, since git reads standard input for each before the message. The error is a stash it
+// could not write after it read the source, and then it returns no stash.
 func (b commitBuild) readFile(f commitFile, path string, stdin, mayStash bool) (string, commitReadStatus, *commitStash, error) {
 	onStandardInput := stdin
 	if !stdin {
@@ -442,10 +444,10 @@ func (b commitBuild) readFile(f commitFile, path string, stdin, mayStash bool) (
 		}
 		onStandardInput = zero
 	}
-	if !mayStash || !onStandardInput && b.script || b.opts.interactive || b.opts.patch || b.opts.pathspecFromFile.set {
+	if !mayStash || !onStandardInput && b.route == stashNone || b.opts.interactive || b.opts.patch || b.opts.pathspecFromFile.set {
 		return "", readDeclined, nil, nil
 	}
-	return stashSource(f, path, stdin, onStandardInput)
+	return stashSource(f, path, stdin, onStandardInput, b.route)
 }
 
 // withSignoff is text with the line -s adds, as append_signoff (sequencer.c) adds it with no

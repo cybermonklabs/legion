@@ -668,17 +668,24 @@ func TestGitWrapperRefusesAnyOtherForm(t *testing.T) {
 }
 
 // A host's git wrapper that closes every descriptor above 2 before it runs the next git, as
-// Python's subprocess, Node's spawn and sudo do, still gets a `-F -` commit's message: the pane's
-// git hands git the text it read as standard input again, and the commit carries both lines. A
-// process substitution, which git reads once, is left for git to read when the git to run is a
-// script, so its commit is git alone's: through that host both fail alike, and through a host's
-// script that keeps the descriptor both commit `msg`, with no line added.
+// Python's subprocess, Node's spawn and sudo do, still gets each message or template that the
+// pane's git kept for git: the pane's git hands it to git on descriptor 0, which every host keeps
+// open. The rows run through a host's script and through a compiled host's git (closingGitSource)
+// that close descriptors, and one row runs through a host's script that keeps them. In each row
+// but one, the commit is git alone's, and the pane's git adds both lines where git alone commits:
 //
-// A path that names descriptor 0 goes to git on descriptor 0 too, through a host's script and
-// through a compiled host's git (closingGitSource) alike. So each commit is git alone's. With
-// `-F /dev/stdin` from a regular file and from a pipe, both commit `msg`, and the pane's git adds
-// both lines. With `-t /dev/stdin` beside --amend, from a template that is HEAD's message, both
-// refuse the commit, and HEAD stays as it was.
+//   - -F - through the host's script, -F /dev/stdin from a regular file and from a pipe, and -F
+//     <a FIFO>: both commit `msg`.
+//   - -m msg -t <a FIFO> that holds another text: both commit `msg`.
+//   - -t /dev/stdin and -t <a FIFO> beside --amend, from a template that is HEAD's message: both
+//     refuse the commit, and HEAD stays as it was.
+//   - -F <(printf msg) through the host's script that keeps descriptors: both commit `msg`.
+//
+// The one row that differs from git alone on purpose is -F <(printf msg) through a host that
+// closes descriptors. The substitution's path names a descriptor above 2, and the host closes it.
+// So git alone cannot read the message (`could not read log file`) and makes no commit. The pane's
+// git read the substitution before the host ran, so it commits `msg` with both lines: each git
+// commit gets the two lines (R2).
 func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *testing.T) {
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
@@ -698,29 +705,48 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 	writeTrailerScript(t, filepath.Join(keeper, "git"), "exec '"+git+"' \"$@\"\n")
 	copyExecutable(t, goGitProgram(t, strings.Replace(closingGitSource, "REAL_GIT", strconv.Quote(git), 1)), filepath.Join(compiledCloser, "git"))
 	lines := "\nOmp-Session: closer-session\nLegion-Role: implementer\n"
+	// fifo is a command that makes the FIFO name in TMPDIR and writes text into it in the
+	// background, with printf. The writer has a time limit and holds none of the command's output,
+	// so a run where nothing opens the FIFO ends rather than waits.
+	fifo := func(name, text string) string {
+		return `mkfifo "$TMPDIR/` + name + `" && (timeout 10 sh -c 'printf "` + text + `" > "$TMPDIR/` + name + `"' >/dev/null 2>&1 &) && `
+	}
 	type row struct {
 		name, host, command, stdin string
 		// commits is whether git alone commits, and added what the pane's git adds then. refusal is
-		// a line that git alone prints when it makes no commit.
+		// a line that git alone prints when it makes no commit. The pane's git makes the same
+		// commit or refusal, except where wrapped is set.
 		commits bool
 		added   string
 		refusal string
+		// wrapped is HEAD's message after the pane's git, where the pane's git commits and git
+		// alone does not. It is "" where both behave alike.
+		wrapped string
 	}
 	rows := []row{
-		{"-F - through a host that closes descriptors", closer, "git commit -q --allow-empty -F -", "msg", true, lines, ""},
-		{"-F <(printf msg) through a host that closes descriptors", closer, "git commit -q --allow-empty -F <(printf msg)", "", false, "", "could not read log file"},
-		{"-F <(printf msg) through a host's script that keeps them", keeper, "git commit -q --allow-empty -F <(printf msg)", "", true, "", ""},
+		{"-F - through a host that closes descriptors", closer, "git commit -q --allow-empty -F -", "msg", true, lines, "", ""},
+		{"-F <(printf msg) through a host's script that keeps them", keeper, "git commit -q --allow-empty -F <(printf msg)", "", true, lines, "", ""},
 	}
 	for _, host := range []struct{ name, dir string }{{"a host's script", closer}, {"a compiled host's git", compiledCloser}} {
 		rows = append(rows,
 			row{"-F /dev/stdin from a regular file through " + host.name + " that closes descriptors", host.dir,
-				`printf msg > "$TMPDIR/msg" && git commit -q --allow-empty -F /dev/stdin < "$TMPDIR/msg"`, "", true, lines, ""},
+				`printf msg > "$TMPDIR/msg" && git commit -q --allow-empty -F /dev/stdin < "$TMPDIR/msg"`, "", true, lines, "", ""},
 			row{"-F /dev/stdin from a pipe through " + host.name + " that closes descriptors", host.dir,
-				"printf msg | git commit -q --allow-empty -F /dev/stdin", "", true, lines, ""},
+				"printf msg | git commit -q --allow-empty -F /dev/stdin", "", true, lines, "", ""},
 			row{"-t /dev/stdin beside --amend, HEAD's message, through " + host.name + " that closes descriptors", host.dir,
 				"'" + git + `' commit -q --allow-empty -m msg && printf 'msg\n' > "$TMPDIR/template" && ` +
 					`git commit -q --allow-empty --amend -t /dev/stdin < "$TMPDIR/template"`,
-				"", false, "", "Aborting commit; you did not edit the message."},
+				"", false, "", "Aborting commit; you did not edit the message.", ""},
+			row{"-F <a FIFO> through " + host.name + " that closes descriptors", host.dir,
+				fifo("message-fifo", "msg") + `git commit -q --allow-empty -F "$TMPDIR/message-fifo"`, "", true, lines, "", ""},
+			row{"-m msg -t <a FIFO> with another text through " + host.name + " that closes descriptors", host.dir,
+				fifo("template-fifo", `A template\n`) + `git commit -q --allow-empty -m msg -t "$TMPDIR/template-fifo"`, "", true, lines, "", ""},
+			row{"-t <a FIFO> beside --amend, HEAD's message, through " + host.name + " that closes descriptors", host.dir,
+				"'" + git + "' commit -q --allow-empty -m msg && " + fifo("amend-fifo", `msg\n`) +
+					`git commit -q --allow-empty --amend -t "$TMPDIR/amend-fifo"`,
+				"", false, "", "Aborting commit; you did not edit the message.", ""},
+			row{"-F <(printf msg) through " + host.name + " that closes descriptors", host.dir,
+				"git commit -q --allow-empty -F <(printf msg)", "", false, "", "could not read log file", "msg\n" + lines},
 		)
 	}
 	for _, tc := range rows {
@@ -738,13 +764,28 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 			}
 			aloneCode, aloneErr, alone := outcome(tc.host + ":" + trailerPath(git))
 			wrappedCode, wrappedErr, wrapped := outcome(trailerWrapperDir(t, legion) + ":" + tc.host + ":" + trailerPath(git))
-			if (aloneCode == 0) != tc.commits || wrappedCode != aloneCode {
-				t.Fatalf("git alone exited %d (%q) and through the pane's git %d (%q); want a commit: %v, both alike", aloneCode, aloneErr, wrappedCode, wrappedErr, tc.commits)
+			if (aloneCode == 0) != tc.commits {
+				t.Fatalf("git alone exited %d (%q); want a commit: %v", aloneCode, aloneErr, tc.commits)
 			}
-			if tc.commits && (alone != "msg\n" || wrapped != "msg\n"+tc.added) {
-				t.Fatalf("git alone committed %q and the pane's git %q, want %q and %q", alone, wrapped, "msg\n", "msg\n"+tc.added)
+			if tc.commits && alone != "msg\n" {
+				t.Fatalf("git alone committed %q, want %q", alone, "msg\n")
 			}
-			if !tc.commits && (wrapped != alone || !strings.Contains(aloneErr, tc.refusal) || !strings.Contains(wrappedErr, tc.refusal)) {
+			if !tc.commits && !strings.Contains(aloneErr, tc.refusal) {
+				t.Fatalf("git alone printed %q, want %q", aloneErr, tc.refusal)
+			}
+			if tc.wrapped != "" {
+				if wrappedCode != 0 || wrapped != tc.wrapped {
+					t.Fatalf("through the pane's git: exit %d (%q), HEAD %q; want exit 0 and %q", wrappedCode, wrappedErr, wrapped, tc.wrapped)
+				}
+				return
+			}
+			if wrappedCode != aloneCode {
+				t.Fatalf("git alone exited %d (%q) and through the pane's git %d (%q); want both alike", aloneCode, aloneErr, wrappedCode, wrappedErr)
+			}
+			if tc.commits && wrapped != "msg\n"+tc.added {
+				t.Fatalf("the pane's git committed %q, want %q", wrapped, "msg\n"+tc.added)
+			}
+			if !tc.commits && (wrapped != alone || !strings.Contains(wrappedErr, tc.refusal)) {
 				t.Fatalf("git alone left HEAD %q and printed %q, the pane's git left %q and printed %q; want the same HEAD and %q from both", alone, aloneErr, wrapped, wrappedErr, tc.refusal)
 			}
 		})

@@ -75,11 +75,11 @@ func gitTrailers(env map[string]string) []gitTrailer {
 	return lines
 }
 
-// gitCommit is the argument list that `legion git` hands git for a commit, keep, the file whose
-// descriptor that list names in place of a message or template git could no longer read, and
-// stdin, the file that is to be git's standard input in place of the one the wrapper read
-// (commitStash). keep must stay open until the exec, and stdin goes onto descriptor 0 before it
-// (asStandardInput).
+// gitCommit is the argument list that `legion git` hands git for a commit, and the stash, if any,
+// that it hands git in place of a message or template git could no longer read (commitStash).
+// keep is a stash whose own descriptor that list names: it must stay open until the exec
+// (execGit). stdin is a stash that is to be git's standard input: it goes onto descriptor 0 before
+// the exec (asStandardInput). At most one of the two is set.
 type gitCommit struct {
 	args  []string
 	keep  *os.File
@@ -87,25 +87,27 @@ type gitCommit struct {
 }
 
 // commitWithTrailers is the argument list for `git <globals> commit <args>`, read with git, the
-// helper, whose globals are the caller's global options. script is whether the git that runs the
-// commit is a script. It adds a `--trailer '<key>: <value>'` for each line of gitTrailers that the
-// message lacks, and only when it has shown that git alone would accept the message and that git's
-// trailer step would change nothing but add those lines (commitBuild.lines). It puts them after
-// every option of the caller: right before the `--` or `--end-of-options` that ends the options,
-// or at the end when no word ends them. git applies --trailer options in order, and its default
-// (trailer.ifExists addIfDifferentNeighbor) compares each with the line before it, so a line put
-// before the caller's own would change which of the caller's lines git keeps. git commit reads an
-// option after a path (parse_options with no PARSE_OPT_STOP_AT_NON_OPTION), so the end is a
-// place for an option. It sets no trailer.* configuration, so each trailer of the caller's keeps
-// git's behaviour, a repeated one too.
+// helper, whose globals are the caller's global options. route is the way a stash reaches the git
+// that runs the commit (stashRoute). It adds a `--trailer '<key>: <value>'` for each line of
+// gitTrailers that the message lacks, and only when it has shown that git alone would accept the
+// message and that git's trailer step would change nothing but add those lines
+// (commitBuild.lines). It puts them after every option of the caller: right before the `--` or
+// `--end-of-options` that ends the options, or at the end when no word ends them. git applies
+// --trailer options in order, and its default (trailer.ifExists addIfDifferentNeighbor) compares
+// each with the line before it, so a line put before the caller's own would change which of the
+// caller's lines git keeps. git commit reads an option after a path (parse_options with no
+// PARSE_OPT_STOP_AT_NON_OPTION), so the end is a place for an option. It sets no trailer.*
+// configuration, so each trailer of the caller's keeps git's behaviour, a repeated one too.
 //
 // It adds none and leaves every argument as written when no line is valid, when -h or --help is
 // among the options, when an option matches no option of git commit, when git would make no
 // commit (a dry run), when the helper's version is below 2.32 (the first git with
 // `commit --trailer`), and when it cannot show those two things. A message or template that it has
 // read and that git can no longer read goes to git as a file of its own, trailers or not
-// (commitStash). The error is a stash it could not write, and then it hands git nothing.
-func commitWithTrailers(git gitReader, script bool, args []string, env map[string]string) (gitCommit, error) {
+// (commitStash). The stash says whether that file goes onto descriptor 0 or stays open on its own
+// descriptor, and which path, if any, takes the place of the value in the argument list. The error
+// is a stash it could not write, and then it hands git nothing.
+func commitWithTrailers(git gitReader, route stashRoute, args []string, env map[string]string) (gitCommit, error) {
 	written := gitCommit{args: slices.Concat(git.globals, []string{"commit"}, args)}
 	want := gitTrailers(env)
 	if len(want) == 0 {
@@ -122,20 +124,22 @@ func commitWithTrailers(git gitReader, script bool, args []string, env map[strin
 	if !git.atLeast(2, 32) {
 		return written, nil
 	}
-	b := commitBuild{git: git, script: script, opts: opts, plan: plan}
+	b := commitBuild{git: git, route: route, opts: opts, plan: plan}
 	lines, stash, err := b.lines(want)
 	if err != nil {
 		return gitCommit{}, err
 	}
 	commit := gitCommit{args: slices.Clone(args)}
-	switch {
-	case stash == nil:
-	case stash.stdin:
-		commit.stdin = stash.file
-	default:
-		word := commit.args[stash.arg]
-		commit.args[stash.arg] = word[:stash.at] + "/dev/fd/" + strconv.Itoa(int(stash.file.Fd()))
-		commit.keep = stash.file
+	if stash != nil {
+		if stash.gitPath != "" {
+			word := commit.args[stash.arg]
+			commit.args[stash.arg] = word[:stash.at] + stash.gitPath
+		}
+		if stash.stdin {
+			commit.stdin = stash.file
+		} else {
+			commit.keep = stash.file
+		}
 	}
 	added := make([]string, 0, 2*len(lines))
 	for _, line := range lines {
@@ -145,17 +149,36 @@ func commitWithTrailers(git gitReader, script bool, args []string, env map[strin
 	return commit, nil
 }
 
+// stashRoute is the way a stash (commitStash) of a source that is not on descriptor 0 reaches the
+// git that runs the commit. runGit picks it. A source on descriptor 0 goes to git on descriptor 0
+// on every route.
+type stashRoute int
+
+const (
+	// stashOnStandardInput hands git the stash on descriptor 0, with /dev/stdin in place of the
+	// value. It is the route of `legion git --after`.
+	stashOnStandardInput stashRoute = iota
+	// stashThroughDescriptor hands git the stash on its own descriptor, with /dev/fd/<that
+	// descriptor> in place of the value. It is the route of `legion git --real` with a git that is
+	// no script.
+	stashThroughDescriptor
+	// stashNone makes no stash: the wrapper leaves the source unread for git and adds no line. It
+	// is the route of `legion git --real` with a script.
+	stashNone
+)
+
 // commitStash is a message or template that the wrapper read, that git reads once, and that git
 // can no longer read: standard input for -F -, or a -F path, or a -t path that template_untouched
 // alone reads, that is no regular file (a FIFO, a process substitution) or that names a descriptor
 // (namesADescriptor). It is in file, an unlinked regular file under TMPDIR, at offset 0
-// (stashSource).
+// (stashSource). stdin is whether file goes to git on descriptor 0. gitPath is the path that git
+// gets in place of the value at args[arg][at:], or "" when the argument stays as written.
 //
-// Standard input, and a path that names descriptor 0, go to git on descriptor 0 (stdin): the file
-// goes onto descriptor 0 before the exec (asStandardInput), and the argument stays as written:
-// `-F -` in every spelling, or the path. Descriptors 0 to 2 reach git through any host wrapper, a
-// script too. A wrapper that closes the ones above 2 (Python's subprocess, Node's spawn, sudo)
-// leaves them open.
+// Standard input, and a path that names descriptor 0, go to git on descriptor 0 on every route
+// (stashRoute): the file goes onto descriptor 0 before the exec (asStandardInput), and the
+// argument stays as written: `-F -` in every spelling, or the path. Descriptors 0 to 2 reach git
+// through any host wrapper, a script too. A wrapper that closes the ones above 2 (Python's
+// subprocess, Node's spawn, sudo) leaves them open.
 //
 // For a path that names descriptor 0, the file gives git the text that git alone reads, on Linux
 // and on macOS. The wrapper reads the path as git alone opens it. On Linux that open opens the
@@ -165,23 +188,35 @@ func commitWithTrailers(git gitReader, script bool, args []string, env map[strin
 // Linux that open opens the file again at offset 0. On macOS it shares the offset of descriptor 0,
 // now the file's offset, which is 0.
 //
-// Any other source keeps its descriptor open across the exec, and git gets /dev/fd/<that
-// descriptor> in place of the value at args[arg][at:]. The descriptor is the one the open
-// returned, the lowest free one, so it takes the place of none that the caller passed. Only a git
-// that is no script gets such a stash: a host's wrapper may close every descriptor above 2, so for
-// a script the wrapper leaves such a source unread and adds no line (commitBuild.readFile).
+// Any other source goes to git as the route says. On stashOnStandardInput, the route of
+// `legion git --after`, it goes to git on descriptor 0 too, and git gets /dev/stdin in place of
+// the value. So a host's wrapper that closes every descriptor above 2 still hands git the text.
+// git's open of /dev/stdin reads the text from its start, on Linux and on macOS, because
+// descriptor 0 holds the file, a regular file at offset 0. On Linux that open opens the file
+// again at offset 0. On macOS it shares the offset of descriptor 0, which is 0. Under --after with
+// -e, the editor that git starts gets the file as its standard input, as it gets the file of -F -.
+//
+// On stashThroughDescriptor, the route of `legion git --real` with a git that is no script, the
+// source keeps its descriptor open across the exec, and git gets /dev/fd/<that descriptor> in
+// place of the value. The descriptor is the one the open returned, the lowest free one, so it
+// takes the place of none that the caller passed. On stashNone, the route of `legion git --real`
+// with a script, the wrapper leaves such a source unread and adds no line (commitBuild.readFile):
+// a script may close every descriptor above 2 before it runs git.
 type commitStash struct {
-	file  *os.File
-	stdin bool
-	arg   int
-	at    int
+	file    *os.File
+	stdin   bool
+	gitPath string
+	arg     int
+	at      int
 }
 
 // stashSource keeps a source that git can read once in a new stash for the file option f
 // (commitStash), and answers the text it read. It reads standard input when readStdin is true,
-// and path otherwise. stdin is the stash's field of that name: whether the stash goes to git on
-// descriptor 0. It makes the file before it reads, so a source that it cannot keep is left unread
-// for git (readDeclined). A read that fails gives readFailed, as git's own read fails.
+// and path otherwise. onStandardInput is whether the source is on descriptor 0: standard input, or
+// a path that names descriptor 0. route is the way the stash of any other source reaches git
+// (stashRoute), and readFile makes no such stash on stashNone. It makes the file before it reads,
+// so a source that it cannot keep is left unread for git (readDeclined). A read that fails gives
+// readFailed, as git's own read fails.
 //
 // After it writes the text, it rewinds the file to offset 0, so git reads the text from its start
 // through the descriptor it gets. On Linux git's open of /dev/fd/<n> or /dev/stdin opens the file
@@ -189,7 +224,7 @@ type commitStash struct {
 // puts at 0. A stash that git gets through /dev/fd/<n> has its close-on-exec flag cleared, so its
 // descriptor stays open across the exec. The error is a write, a rewind or a flag change that
 // failed after the read, and then it returns no stash.
-func stashSource(f commitFile, path string, readStdin, stdin bool) (string, commitReadStatus, *commitStash, error) {
+func stashSource(f commitFile, path string, readStdin, onStandardInput bool, route stashRoute) (string, commitReadStatus, *commitStash, error) {
 	file, err := os.CreateTemp("", "legion-git-message-*")
 	if err != nil {
 		return "", readDeclined, nil, nil
@@ -216,13 +251,19 @@ func stashSource(f commitFile, path string, readStdin, stdin bool) (string, comm
 		file.Close()
 		return "", readDeclined, nil, fmt.Errorf("rewind the text kept for git: %w", err)
 	}
-	if !stdin {
+	stash := &commitStash{file: file, stdin: true, arg: f.arg, at: f.at}
+	switch {
+	case onStandardInput:
+	case route == stashOnStandardInput:
+		stash.gitPath = "/dev/stdin"
+	default: // stashThroughDescriptor: readFile makes no such stash on stashNone.
 		if _, err := unix.FcntlInt(file.Fd(), unix.F_SETFD, 0); err != nil {
 			file.Close()
 			return "", readDeclined, nil, fmt.Errorf("keep the text git can no longer read open for git: %w", err)
 		}
+		stash.stdin, stash.gitPath = false, "/dev/fd/"+strconv.Itoa(int(file.Fd()))
 	}
-	return string(read), readDone, &commitStash{file: file, stdin: stdin, arg: f.arg, at: f.at}, nil
+	return string(read), readDone, stash, nil
 }
 
 // namesADescriptor is whether path, a -F or -t value as git opens it, names a descriptor of the
@@ -264,8 +305,8 @@ func namesADescriptor(path string) (names, standardInput bool) {
 }
 
 // asStandardInput makes file, a stash that goes to git on descriptor 0 (commitStash), descriptor 0
-// of this process, so git reads it as the standard input it was. A dup onto 0 leaves the new
-// descriptor open across the exec, and file's own descriptor closes there.
+// of this process, so git reads it as its standard input. A dup onto 0 leaves the new descriptor
+// open across the exec, and file's own descriptor closes there.
 func asStandardInput(file *os.File) error {
 	if err := dupOnto(int(file.Fd()), 0); err != nil {
 		return fmt.Errorf("hand git the standard input kept for it: %w", err)
