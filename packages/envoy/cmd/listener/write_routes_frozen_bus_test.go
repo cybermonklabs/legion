@@ -55,7 +55,7 @@ func newWriteRouteRig(t *testing.T) *writeRouteRig {
 	// The session consumers connect to the server directly, not through the relay: the freeze
 	// under test is the store's, and a registration reaches the store only once it has its
 	// consumer.
-	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}), "test-machine", logging.New("test"))
+	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)}), "test-machine", logging.New("test"))
 	return &writeRouteRig{relay: relay, registry: registry, sessions: sessions, mux: mux}
 }
 

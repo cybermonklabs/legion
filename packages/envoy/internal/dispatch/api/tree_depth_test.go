@@ -61,8 +61,8 @@ func TestEveryReadServesATreeAtTheDepthBound(t *testing.T) {
 				if read.response.Code != test.status {
 					t.Fatalf("%s of a tree %d levels deep: status=%d body=%.300s, want %d", read.route, test.depth, read.response.Code, read.response.Body.String(), test.status)
 				}
-				if test.status != http.StatusOK && (!strings.Contains(read.response.Body.String(), `"code":"DOC_SCHEMA"`) || !strings.Contains(read.response.Body.String(), "replace the document from markdown to repair it")) {
-					t.Fatalf("%s of a tree %d levels deep: body=%.300s, want DOC_SCHEMA naming the repair", read.route, test.depth, read.response.Body.String())
+				if test.status != http.StatusOK && (!strings.Contains(read.response.Body.String(), `"code":"DOC_SCHEMA"`) || !strings.Contains(read.response.Body.String(), "A person decides whether to replace the document")) {
+					t.Fatalf("%s of a tree %d levels deep: body=%.300s, want DOC_SCHEMA naming the repair and that a person decides it", read.route, test.depth, read.response.Body.String())
 				}
 			}
 			if test.status != http.StatusOK {

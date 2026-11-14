@@ -68,6 +68,8 @@ RUN bun install --frozen-lockfile --ignore-scripts \
 COPY packages/contracts packages/contracts
 COPY packages/dispatch packages/dispatch
 COPY packages/proof-editor packages/proof-editor
+# The SPA compiles in the document schema manifest the server embeds (web/src/features/doc/schema.ts).
+COPY packages/envoy/internal/dispatch/pmdoc/schema/blocks.json packages/envoy/internal/dispatch/pmdoc/schema/blocks.json
 # The SPA build writes dist/THIRD_PARTY_NOTICES.txt with this (packages/dispatch/web/vite.config.ts).
 COPY scripts/third-party-notices.ts scripts/third-party-notices.ts
 # The stage ends with its working directory at /repo/packages/dispatch, which reaches nothing:

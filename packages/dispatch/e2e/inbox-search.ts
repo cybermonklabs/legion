@@ -102,7 +102,7 @@ export async function seedInbox(): Promise<Seed> {
   await createProject({ key: "LEDGER", name: "Ledger service" });
   // MIRROR names dave, a person no row of this file reads a list for: the issue the shared
   // token makes below and the project document's question both fall to him.
-  await createProject({ key: "MIRROR", name: "Mirror service" }, "dave");
+  await createProject({ key: "MIRROR", name: "Mirror service" }, { login: "dave" });
   // The owner a session's ask carries is the owner of the credential that wrote it, never a
   // field of the body, so bob's own token is what puts `bob` in that row's author.
   const bobsToken = await mintAgentToken("search-seed", "bob");

@@ -67,7 +67,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		client:    client,
 		registry:  registry,
 		sessions:  sessions,
-		consumers: setupSessionConsumers(t),
+		consumers: setupSessionConsumers(t, client),
 	})
 
 	broker := brokertokentest.NewStubBroker(t)

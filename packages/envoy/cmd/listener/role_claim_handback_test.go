@@ -41,7 +41,8 @@ type roleClaimHandBackRig struct {
 func newRoleClaimHandBackRig(t *testing.T, sessionID, role string) *roleClaimHandBackRig {
 	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)})
+	client := setupPublishTestClient(t)
+	deps := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)})
 	routes := http.NewServeMux()
 	registerV1Routes(routes, deps, "test-machine", logging.New("test"))
 	return &roleClaimHandBackRig{

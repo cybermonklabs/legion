@@ -265,6 +265,8 @@ async function createIssueWithComponents(
     env: {},
     exec: repoExec("owner/repo"),
     fetchImpl: fetchImpl as typeof fetch,
+    // An older server's no route is asked again three times before the fallback: no real wait.
+    sleep: async () => {},
   });
   return { result, requests };
 }
@@ -2336,6 +2338,8 @@ describe("executeDispatchTool", () => {
         env: {},
         exec: repoExec("owner/repo"),
         fetchImpl: fetchImpl as typeof fetch,
+        // The route no build answered is asked three more times before the message: no real wait.
+        sleep: async () => {},
       })
     ).rejects.toThrow(
       "This Dispatch (http://dispatch.test) has no answers route yet: its build is older than the answers route."
@@ -3825,7 +3829,8 @@ describe("executeDispatchTool", () => {
   });
 
   // The plugin and the server ship separately (#1522): a server older than the list route answers
-  // it with no route, and the singular read it does serve says whether the project has a model.
+  // it with no route at each of the four attempts, and the singular read it does serve says
+  // whether the project has a model.
   test.each([
     ["200 null", "older-none"],
     ["a pre-#1522 404 SOURCE_NOT_FOUND", "older-source-not-found"],
@@ -3838,7 +3843,7 @@ describe("executeDispatchTool", () => {
     expect(result.text).toBe(createdIssueLines);
     expect(requests).toEqual([
       "POST /api/v1/issues",
-      "GET /api/v1/projects/LEGION/architecture-sources",
+      ...Array.from({ length: 4 }, () => "GET /api/v1/projects/LEGION/architecture-sources"),
       "GET /api/v1/projects/LEGION/architecture-source",
     ]);
   });
@@ -3852,7 +3857,7 @@ describe("executeDispatchTool", () => {
     expect(result.text).toBe([createdIssueLines, architectureComponentsGuidance].join("\n"));
     expect(requests).toEqual([
       "POST /api/v1/issues",
-      "GET /api/v1/projects/LEGION/architecture-sources",
+      ...Array.from({ length: 4 }, () => "GET /api/v1/projects/LEGION/architecture-sources"),
       "GET /api/v1/projects/LEGION/architecture-source",
     ]);
   });
@@ -11016,6 +11021,11 @@ describe("executeDispatchTool", () => {
       exec: repoExec("owner/repo"),
       fetchImpl: fetchImpl as typeof fetch,
       writeRetry,
+      // A build without the round-trip route answers no route, which the client asks again for:
+      // while a release rolls out the next attempt can reach the build that serves it. The waits
+      // are the client's own (NO_ROUTE_RETRY_DELAYS_MS), so this row takes a sleep that returns
+      // at once rather than waiting them out.
+      sleep: async () => {},
     });
 
     expect(result.text).toContain("Uploaded notes.md as version 1");

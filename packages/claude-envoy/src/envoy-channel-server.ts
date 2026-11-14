@@ -2261,7 +2261,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
         )
         return active === null
           ? undefined
-          : new DispatchClient(active.url, active.credential, fetch, AbortSignal.timeout(ms))
+          : new DispatchClient(active.url, active.credential, fetch, {
+              signal: AbortSignal.timeout(ms),
+            })
       },
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),

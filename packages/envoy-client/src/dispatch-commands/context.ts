@@ -7,6 +7,7 @@ import type {
   IssueComponentsMode,
   IssueDetails,
   IssuePriority,
+  Sleep,
 } from "@legion/contracts";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
@@ -63,6 +64,9 @@ export interface ExecuteDispatchToolInput {
   readonly fetchImpl?: typeof fetch;
   /** How each write asks Dispatch again under its key (`DISPATCH_WRITE_RETRY` unless set). */
   readonly writeRetry?: DispatchWriteRetry;
+  /** The wait before each new attempt of a request Dispatch answered with no route
+   *  (`DispatchClient`); a test passes one that returns at once. */
+  readonly sleep?: Sleep;
   readonly exec?: ExecFn;
   /** The topics the session's Envoy subscriptions hold, or null when they cannot be read (Envoy
    *  off, or no answer from its listener); called only by a write that would name its owner as
@@ -314,6 +318,10 @@ export function sessionContext(
     linkBase: input.config.publicUrl ?? configUrl,
     hostSession: input.sessionId?.trim(),
     newClient: () =>
-      new DispatchClient(configUrl, credential, fetchImpl, input.signal, input.writeRetry),
+      new DispatchClient(configUrl, credential, fetchImpl, {
+        signal: input.signal,
+        writeRetry: input.writeRetry,
+        sleep: input.sleep,
+      }),
   };
 }

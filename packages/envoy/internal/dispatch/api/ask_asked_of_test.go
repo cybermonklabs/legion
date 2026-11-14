@@ -264,10 +264,11 @@ func TestAskAskedOf(t *testing.T) {
 		}
 	})
 
-	// Nothing but a person's own hand-on writes the field: the create routes do not take it, and
-	// an ask opens empty whatever its author sent.
-	t.Run("the create route accepts no asked_of and an ask opens with it empty", func(t *testing.T) {
-		handler, _ := newTestHandlerWithStore(t)
+	// Nothing but a person's own hand-on writes the field: the create routes declare no
+	// `asked_of`, so they ignore one a caller sends, as every route of this build ignores a
+	// member it does not declare (decodeJSON), and an ask opens empty whatever its author sent.
+	t.Run("the create route ignores an asked_of it does not declare and an ask opens with it empty", func(t *testing.T) {
+		handler, database := newTestHandlerWithStore(t)
 		issue := createInteractionIssue(t, handler, "CREATE", "An ask opens on nobody", "A spec")
 		document := createProjectDocument(t, handler, "CREATE", "Design notes", "# Design notes\n")
 
@@ -275,12 +276,25 @@ func TestAskAskedOf(t *testing.T) {
 			"/api/v1/issues/" + issue.Key + "/asks",
 			"/api/v1/artifacts/" + document.ID + "/asks",
 		} {
-			refused := sessionRequest(t, handler, http.MethodPost, target, map[string]any{
+			created := sessionRequest(t, handler, http.MethodPost, target, map[string]any{
 				"question": "Who decides?", "asked_of": "bob", "actor": sessionActor(),
 			})
-			if refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"INVALID_JSON"`) {
-				t.Fatalf("create an ask on %s naming asked_of: status=%d body=%s, want 400 INVALID_JSON",
-					target, refused.Code, refused.Body.String())
+			if created.Code != http.StatusCreated {
+				t.Fatalf("create an ask on %s naming asked_of: status=%d body=%s, want 201 with the member ignored",
+					target, created.Code, created.Body.String())
+			}
+			// The ask the route wrote, read from its own columns rather than from the answer's
+			// text: an ask that took the member would hold it here.
+			id := decodeBody[struct {
+				ID string `json:"id"`
+			}](t, created).ID
+			if id == "" {
+				t.Fatalf("create an ask on %s naming asked_of: the answer names no id: %s", target, created.Body.String())
+			}
+			askedOf, askedOfBy, askedOfAt := askedOfColumns(t, database, id)
+			if askedOf != nil || askedOfBy != nil || askedOfAt != nil {
+				t.Fatalf("the ask created on %s holds asked_of=%v asked_of_by=%v asked_of_at=%v, want all three empty",
+					target, askedOf, askedOfBy, askedOfAt)
 			}
 		}
 		opened := createIssueAsk(t, handler, issue.Key, "Which transport?")

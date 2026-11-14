@@ -976,6 +976,48 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/artifacts/{id}/_test/newer-content": {
+      "post": {
+        "description": "Test hook: append an element no build knows, so the document holds newer content.",
+        "operationId": "postApiV1ArtifactsByIdTestNewerContent",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/artifacts/{id}/_test/outside-schema": {
       "post": {
         "description": "Test hook: write a crafted tree outside the Proof schema.",
@@ -16212,6 +16254,10 @@
           "delivery": {
             "type": "string"
           },
+          "idempotency_key": {
+            "description": "refused whenever present (400 INVALID_JSON): a broadcast's idempotency key is the Idempotency-Key header and never a body member",
+            "type": "string"
+          },
           "session_ids": {
             "items": {
               "type": "string"
@@ -19712,6 +19758,12 @@
           },
           "node": {
             "$ref": "#/components/schemas/GraphNodeRead"
+          },
+          "unknown_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [

@@ -29,6 +29,11 @@ type connectionState struct {
 	actor model.Actor
 	issue issueRead
 	added bool
+	// admission is this socket's schema admission: ServeHTTP makes it with the document's
+	// documentSince and the cancel of the socket's own request context, authorize decides and
+	// records it, the answer to the socket's token reads it (authorizeSchemaVersion), a re-check
+	// revokes it (RunSchemaAdmission), and ServeHTTP forgets it once the socket has ended.
+	admission *schemaAdmission
 }
 
 type connectionContextKey struct{}
@@ -624,6 +629,9 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	switch {
 	case errors.Is(renderErr, ErrDocOutsideSchema):
 		slog.Warn("dispatch: loaded document outside Proof schema; a replacement from markdown repairs it", "room", room, "error", renderErr)
+	case errors.Is(renderErr, ErrDocNewerContent):
+		// The room loads, so a write meets the document's own refusal rather than a failed room.
+		slog.Warn("dispatch: loaded document holding an element this build cannot read; another build may serve it", "room", room, "error", renderErr)
 	case renderErr != nil:
 		return renderErr
 	default:

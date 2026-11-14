@@ -247,11 +247,11 @@ func runServerChange(t *testing.T, run serverChangeRun) {
 		}
 	})
 	s.awaitReplicated(t)
-	if bus.UsesCoreTransport(serverChangeCaptured) || bus.UsesCoreTransport(serverChangeTeam) {
+	if (&bus.Client{}).UsesCoreTransport(serverChangeCaptured) || (&bus.Client{}).UsesCoreTransport(serverChangeTeam) {
 		t.Fatalf("the stream must store the team topic %s and the captured topic %s: a session reads only what its own consumer holds",
 			serverChangeTeam, serverChangeCaptured)
 	}
-	if !bus.UsesCoreTransport(serverChangeKinds[kindRole].topic) {
+	if !(&bus.Client{}).UsesCoreTransport(serverChangeKinds[kindRole].topic) {
 		t.Fatalf("the role lane %s must take core NATS, so its sender's message reaches the stand-in only as the listener's stored forward",
 			serverChangeKinds[kindRole].topic)
 	}

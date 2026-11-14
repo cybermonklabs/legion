@@ -64,7 +64,7 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 	waitForSessions(t, sessions)
 	logger := logging.NewWithWriter("test", io.Discard)
 	delivery, err := connectSessionDelivery([]string{url},
-		inactiveThresholdFor(sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval), logger)
+		inactiveThresholdFor(sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval), client, logger)
 	if err != nil {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}

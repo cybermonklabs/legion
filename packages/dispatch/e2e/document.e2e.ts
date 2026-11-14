@@ -131,7 +131,7 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
 }, testInfo) => {
   // CORE names bob: a document has no assignee, so its question reaches the project's default
   // assignee, and bob is the reader who answers it from his own Inbox below.
-  await createProject({ key: "CORE", name: "Core" }, "bob");
+  await createProject({ key: "CORE", name: "Core" }, { login: "bob" });
   const created = await createProjectDocument("CORE", {
     content: "# Design notes\n\nComment target.\n\nSuggestion target.\n\nAsk target.\n",
     name: "Design notes",

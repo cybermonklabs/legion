@@ -124,3 +124,25 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	}
 	_ = rebound.Close()
 }
+
+// StartThen runs afterExit once the process has exited and before it closes Exited, so a test
+// that waits on Exited sees what afterExit did. afterExit sleeps before it records anything, so
+// an Exited closed before afterExit returned would show here as nothing recorded.
+func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
+	// -test.run=^$ makes this test binary run no test and exit 0.
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	var runs int
+	var exitedFirst bool
+	child := StartThen(t, "the exiting child", cmd, func() {
+		exitedFirst = cmd.ProcessState != nil
+		time.Sleep(200 * time.Millisecond)
+		runs++
+	})
+	child.WaitExit(t, "its start")
+	if runs != 1 {
+		t.Fatalf("afterExit had run %d times when Exited closed; want 1", runs)
+	}
+	if !exitedFirst {
+		t.Fatalf("afterExit ran before the process's exit was recorded (Cmd.ProcessState was nil)")
+	}
+}

@@ -664,37 +664,71 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 	t.Logf("%d runs read in %s, %d at a time, each inside its %s deadline", runs, took.Round(time.Millisecond), reconcilePartialConcurrency, deadline)
 }
 
-// TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce drives the
-// shutdown's give-up as Run does it: the intake is handling one event when its context ends, a
-// second event is already buffered in its client behind that one, and giveUp -- what Run calls
-// when its ctx is done -- drains the subscription, so the callback is handed the buffered event
-// after the context is done and after the drain has written the subscription's UNSUB. Such an
-// event must not be acknowledged: its early signal would be lost for good, since the read it
-// asks for cannot run under the cancelled context.
+// holdingJobClock is a fakeJobClock whose first timer holds the handling that armed it until the
+// row releases it. It is the one place a job event's handling can be held: deliver acknowledges
+// on receipt, reads one indexed row and arms a timer, and calls GitHub not at all.
+type holdingJobClock struct {
+	*fakeJobClock
+	// armedFirst is closed as the first handling reaches the timer it arms.
+	armedFirst chan struct{}
+	release    chan struct{}
+	first      sync.Once
+}
+
+func newHoldingJobClock() *holdingJobClock {
+	return &holdingJobClock{
+		fakeJobClock: newFakeJobClock(),
+		armedFirst:   make(chan struct{}), release: make(chan struct{}),
+	}
+}
+
+func (c *holdingJobClock) At(at time.Time, f func()) jobTimer {
+	timer := c.fakeJobClock.At(at, f)
+	holding := false
+	c.first.Do(func() { holding = true })
+	if holding {
+		close(c.armedFirst)
+		<-c.release
+	}
+	return timer
+}
+
+// TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce drives the moment
+// the shutdown leaves open: Run's context is done, so run has returned and nothing it reads
+// under that context can succeed, and the stop has not yet set the delivery's flag
+// (intakeDelivery.stopping). In that moment the keyed runner can still start a job event that
+// queued behind the one in hand. Such an event must not be acknowledged: its read would fail
+// under the cancelled context, with the ERROR "read whether a job's run is tracked", and the
+// early signal it carries would be spent on nothing.
 //
-// What the row decides is where that event goes, not which NATS call sent it there: a second
-// subscriber on the durable, the next holder, is handed it well inside jobAckWait (30 s). The
-// bound is what makes the row a proof rather than a restatement of what NATS does anyway. An
-// event the stopped intake left unanswered reaches the next holder only when that ack wait
-// expires, so this bound fails for it; the hand-back (deliver's Nak) reaches the next holder
-// rather than looping back into this callback because the drain's UNSUB is written before the
-// callback is handed anything buffered, which is deliver's reason in full.
+// What the row decides is where that event goes, not which NATS call sent it there: the next
+// holder of the durable is handed it well inside jobAckWait (30 s). The bound is what makes the
+// row a proof rather than a restatement of what NATS does anyway. An event the stopped intake
+// acknowledged reaches nobody at all, and one it left unanswered reaches the next holder only
+// when that ack wait expires, so this bound fails for both; the hand-back reaches the next
+// holder rather than this stopped delivery because the stop drains the subscription before it
+// answers anything (intakeDelivery.stop).
 func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(t *testing.T) {
+	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
+	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	if err := UpsertRun(ctx, pool, changeTestRun(501, DeliveryRunKindDeploy, started.Add(-time.Minute), started)); err != nil {
+		t.Fatalf("seed run 501: %v", err)
+	}
 	fake := newJobsFake(t)
-	clock := newFakeJobClock()
+	clock := newHoldingJobClock()
 	natsClient := intakeTestClient(t)
 	jobs := newJobIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
-	// j.ctx is Run's context: this row sets the field Run sets and cancels it where Run's caller
-	// would, so that the give-up below is the one Run makes as its ctx ends.
-	runCtx, stop := context.WithCancel(ctx)
+	// j.ctx is Run's context: this row sets the field Run sets and ends it where Run's caller
+	// would, so the moment below is the one Run leaves open rather than one the row invented.
+	runCtx, endRun := context.WithCancel(ctx)
 	jobs.ctx = runCtx
 
-	// The durable as bind leaves it, created here because Run is not what binds it. It starts at
-	// new messages (jobConsumerConfig), so a durable an earlier row left on the package's shared
-	// stream is recreated and handed this row's events alone.
+	// The durable as a take-over leaves it, created here because Run is not what binds it. It
+	// starts at new messages (jobConsumerConfig), so a durable an earlier row left on the
+	// package's shared stream is recreated and handed this row's events alone.
 	wanted := jobConsumerConfig()
 	if err := natsClient.JS().DeleteConsumer(bus.Stream, wanted.Durable); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
 		t.Fatalf("delete the job durable: %v", err)
@@ -702,79 +736,54 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	if _, err := natsClient.JS().AddConsumer(bus.Stream, &wanted); err != nil {
 		t.Fatalf("create the job durable: %v", err)
 	}
-	// The intake's own callback, held open on the first event it is handed: nats.go gives one
-	// subscription's messages to its callback one at a time, so the next event waits in the
-	// client, which is the state a stop finds and the only state in which a drain has something
-	// to hand over.
-	handling := make(chan struct{})
-	release := make(chan struct{})
-	releaseBuffered := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(releaseBuffered)
-	var held atomic.Bool
-	sub, err := subscribeDurable(natsClient, wanted, "", func(msg *natsgo.Msg) {
-		jobs.deliver(msg)
-		if held.CompareAndSwap(false, true) {
-			close(handling)
-			<-release
-		}
-	})
+	// The intake's own subscription, so each event takes the path a holder's takes: the
+	// callback routes it (receive) and the goroutine of its key handles it (deliver). Every job
+	// message keys alike (jobKey), so the event under test queues behind the one in hand.
+	sub, err := jobs.subscribe(wanted.DeliverSubject)
 	if err != nil {
 		t.Fatalf("subscribe to the job durable: %v", err)
 	}
 	t.Cleanup(func() { _, _ = natsClient.DrainSubscription(sub) })
+	jobs.mu.Lock()
+	delivery := jobs.delivering
+	jobs.mu.Unlock()
 	consumer := func() *natsgo.ConsumerInfo {
-		t.Helper()
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, wanted.Durable)
 		if err != nil {
-			t.Fatalf("read the job durable: %v", err)
+			t.Errorf("read the job durable: %v", err)
+			return &natsgo.ConsumerInfo{}
 		}
 		return info
 	}
-	pending := func() int {
-		msgs, _, err := sub.Pending()
-		if err != nil {
-			return -1
-		}
-		return msgs
+	// True once no handler of the delivery is running and none is queued: a key keeps its entry
+	// while its goroutine has anything left to handle (keyedRunner).
+	runnerIdle := func() bool {
+		delivery.keys.mu.Lock()
+		defer delivery.keys.mu.Unlock()
+		return len(delivery.keys.queued) == 0
 	}
 
-	// The event the intake is handling when the stop comes. Another repository's, which costs no
-	// GitHub call and arms no timer (TestAJobOfAnotherRepositoryIsIgnored) and which deliver
-	// acknowledges on receipt, so the one message outstanding from here on is the buffered one.
-	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.other.job.501.completed", jobPayload("acme/other", 501))
+	// The event in hand when the context ends: a tracked run's, which reaches the read it
+	// schedules, where the clock holds it.
+	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
 	select {
-	case <-handling:
+	case <-clock.armedFirst:
 	case <-time.After(20 * time.Second):
-		t.Fatalf("the first job event never reached deliver: %+v", consumer())
+		t.Fatalf("the first job event never reached the read it schedules: %+v", consumer())
 	}
 
-	// The event under test, waiting in the client behind the one in hand: nats.go counts a
-	// message as pending until the callback it was handed to returns (waitForMsgs, nats.go
-	// v1.53.1 :3696-3712), so two pending is one in hand and one buffered.
-	event := jobPayload("acme/widgets", 500)
-	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", event)
-	waitFor(t, 20*time.Second, func() bool { return pending() == 2 }, func() string {
-		return fmt.Sprintf("the client holds %d pending messages, want the job event buffered behind the one in hand: %+v", pending(), consumer())
+	// The event under test, waiting behind it on the one key.
+	event := jobPayload("acme/widgets", 501)
+	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.501.completed", event)
+	waitFor(t, 20*time.Second, func() bool { return consumer().Delivered.Consumer >= 2 }, func() string {
+		return fmt.Sprintf("the job event under test was never delivered to the intake: %+v", consumer())
 	})
 
-	// The shutdown: Run's ctx ends and Run gives the subscription up, which drains it.
-	stop()
-	jobs.giveUp(sub)
-	// The drain's UNSUB as the server reports it: the durable has no subscriber of this process's
-	// from here on, so what the callback hands back goes to the next one to bind rather than back
-	// to it. The buffered event is still the client's to hand over -- the drain lets the callback
-	// finish what it holds -- which the pending count says.
-	waitFor(t, 20*time.Second, func() bool { return !consumer().PushBound }, func() string {
-		return fmt.Sprintf("the give-up never unsubscribed the job durable: %+v", consumer())
-	})
-	if msgs := pending(); msgs != 2 {
-		t.Fatalf("the client holds %d pending messages after the give-up, want the buffered job event still waiting: %+v", msgs, consumer())
-	}
-
-	// The next holder: another process binding the durable this one gave up.
+	// The next holder: another process bound to the durable this one is about to give up. It
+	// subscribes before the stop, so what the stop hands back finds a subscriber at once.
 	nextHolder := intakeTestClient(t)
 	handedOver := make(chan *natsgo.Msg, 1)
-	next, err := subscribeDurable(nextHolder, wanted, "", func(msg *natsgo.Msg) {
+	next, err := subscribeDurable(nextHolder, wanted, wanted.DeliverSubject, func(msg *natsgo.Msg) {
 		if err := msg.Ack(); err != nil {
 			t.Errorf("acknowledge the job event handed to the next holder: %v", err)
 		}
@@ -788,13 +797,25 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	}
 	t.Cleanup(func() { _, _ = nextHolder.DrainSubscription(next) })
 
-	// The drain hands the stopped intake its buffered event, which it hands back.
-	const handOver = 5 * time.Second
+	// The moment under test: Run's context is done, and nothing has stopped the subscription.
+	endRun()
+	if delivery.stopping.Load() {
+		t.Fatal("the delivery was already stopping, so the row would measure the stop's own guard rather than the moment before it")
+	}
+	close(clock.release)
+	waitFor(t, 20*time.Second, runnerIdle, func() string {
+		return fmt.Sprintf("the job event under test was never handled: %+v", consumer())
+	})
+
+	// The stop, which hands back what the delivery held rather than what it acknowledged.
+	stopping, endStop := context.WithTimeout(context.Background(), 20*time.Second)
+	defer endStop()
 	handedAt := time.Now()
-	releaseBuffered()
+	jobs.StopDelivering(stopping)
+
+	const handOver = 5 * time.Second
 	select {
 	case msg := <-handedOver:
-		took := time.Since(handedAt)
 		var envelope contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &envelope); err != nil {
 			t.Fatalf("decode the envelope the next holder was handed: %v", err)
@@ -802,13 +823,20 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 		if envelope.Payload != event {
 			t.Fatalf("the next holder was handed payload %q, want the event the stopped intake handed back %q", envelope.Payload, event)
 		}
-		t.Logf("the next holder was handed the event %s after the stopped intake was, with jobAckWait %s", took.Round(time.Millisecond), jobAckWait)
+		t.Logf("the next holder was handed the event %s after the stopped intake was, with jobAckWait %s",
+			time.Since(handedAt).Round(time.Millisecond), jobAckWait)
 	case <-time.After(handOver):
-		t.Fatalf("the next holder was not handed the job event within %s of the stopped intake being handed it, jobAckWait being %s: %+v",
+		t.Fatalf("the next holder was not handed the job event within %s of the stopped intake handing it back, jobAckWait being %s: %+v",
 			handOver, jobAckWait, consumer())
 	}
-	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
-		t.Fatalf("an event handled after the stop: %d timers, %d jobs reads, %d token mints, want none: nothing is read under the cancelled context",
+
+	for _, record := range logs() {
+		if record["msg"] == "dispatch delivery: read whether a job's run is tracked" {
+			t.Errorf("the stopped intake read the event's run under the cancelled context: %v", record)
+		}
+	}
+	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 1 || calls != 0 || mints != 0 {
+		t.Fatalf("after the stop: %d timers armed, %d jobs reads, %d token mints; want the first event's one timer and nothing of the event handled after the stop",
 			armed, calls, mints)
 	}
 }

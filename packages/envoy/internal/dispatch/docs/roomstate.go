@@ -696,26 +696,6 @@ func (state *roomState) recordIssueLocked(read issueRead) {
 	state.closed, state.closedRead = !read.open, read.at
 }
 
-// recordedIssueClosed is whether room's state records its issue closed, and whether it records
-// the issue at all: a document with no state, or a state no read or close of the issue reached,
-// records nothing.
-func (s *Service) recordedIssueClosed(room string) (closed, recorded bool) {
-	state := s.lockExistingState(room)
-	if state == nil {
-		return false, false
-	}
-	defer s.unlockState(room, state)
-	return state.closed, !state.closedRead.IsZero()
-}
-
-// recordIssueRead records read on room's state, when the service holds one (recordIssueLocked).
-func (s *Service) recordIssueRead(room string, read issueRead) {
-	if state := s.lockExistingState(room); state != nil {
-		state.recordIssueLocked(read)
-		s.unlockState(room, state)
-	}
-}
-
 // admittedIssueRead is what room's state records of its issue while a document socket's
 // admission holds the state (holdForAdmission), and whether it does: the socket's own read, or a
 // close or reopen recorded since. A cold socket's admission triggers the room's load, which takes

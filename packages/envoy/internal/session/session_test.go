@@ -37,10 +37,11 @@ func newSessionRegistry(t *testing.T) *session.SessionRegistry {
 
 // deliverThroughEntry resolves the way the listener's core path does: the caller reads the
 // target's record (resolvedEntry) and hands it to session.Resolve, which reads no registry of its
-// own, under the core path's stream sequence of 0.
+// own, under the core path's stream sequence of 0. Every topic these rows deliver is a session's
+// agent subject, which the stream captures.
 func deliverThroughEntry(t *testing.T, sessions *session.SessionRegistry, item contracts.Envelope, interest store.Interest) error {
 	t.Helper()
-	return session.Resolve(item, interest.SessionID, resolvedEntry(t, sessions, interest.SessionID), 0)
+	return session.Resolve(item, interest.SessionID, resolvedEntry(t, sessions, interest.SessionID), 0, true)
 }
 
 func TestDeliver_NoRegistryEntry(t *testing.T) {
@@ -99,11 +100,34 @@ func TestDeliver_SkipsStoredTopics_whenSessionIsOnConsumerDelivery(t *testing.T)
 		newTestEnvelope("agent", "notifications.agent.ses_consumer", "stored message"),
 		"ses_consumer",
 		resolvedEntry(t, sessions, "ses_consumer"),
-		0,
+		0, true,
 	)
 
 	// Then
 	if storedErr != nil {
 		t.Fatalf("stored message to a consumer-delivery session: error %v; want the session's own consumer to relay it", storedErr)
+	}
+}
+
+// The capture Resolve judges is the one its caller hands it, the deployed stream's: a topic only a
+// newer build's subjects capture (notifications.x.y) is in a consumer-delivery session's own
+// consumer, so the resolution is that consumer's relay, and the same topic on a stream that does
+// not capture it is in no consumer, so nothing reaches the session on it.
+func TestResolve_JudgesTheCaptureItsCallerHandsIt(t *testing.T) {
+	sessions := newSessionRegistry(t)
+	var entry session.SessionEntry
+	if err := json.Unmarshal([]byte(`{"delivery":"consumer","epoch":"e1"}`), &entry); err != nil {
+		t.Fatalf("decode consumer-delivery session entry: %v", err)
+	}
+	if err := sessions.Put("ses_deployed", entry); err != nil {
+		t.Fatalf("register consumer-delivery session: %v", err)
+	}
+	item := newTestEnvelope("agent", "notifications.x.y", "a topic only the deployed stream captures")
+
+	if err := session.Resolve(item, "ses_deployed", resolvedEntry(t, sessions, "ses_deployed"), 0, true); err != nil {
+		t.Fatalf("captured by the deployed stream: error %v; want the session's own consumer to relay it", err)
+	}
+	if err := session.Resolve(item, "ses_deployed", resolvedEntry(t, sessions, "ses_deployed"), 0, false); !errors.Is(err, session.ErrNoSessionRecord) {
+		t.Fatalf("captured by no stream: error %v, want ErrNoSessionRecord", err)
 	}
 }

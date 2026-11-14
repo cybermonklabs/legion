@@ -98,6 +98,25 @@ type settlement struct {
 	published []model.Event
 }
 
+// skipUnreadableSettlement reports whether err stops a settlement at a document whose tree it cannot
+// read, and logs it: a tree outside the Proof schema, which a replacement from markdown repairs, or
+// an element this build does not know (ErrDocNewerContent), which a newer build wrote while two
+// builds serve one database - in the tree, or in the version a human approved, without which the
+// version write cannot tell whether his approval carries (carryApproval). The settlement writes no
+// version and records no failure, and the document stays unsettled for a later settlement - a
+// repair's, or one on a build that reads the element, which the log names.
+func skipUnreadableSettlement(room string, err error) bool {
+	switch {
+	case errors.Is(err, ErrDocNewerContent):
+		slog.Warn("dispatch: settle document holding an element this build cannot read; no version written; a build that reads the element writes it", "room", room, "error", err)
+	case errors.Is(err, ErrDocSchema):
+		slog.Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
+	default:
+		return false
+	}
+	return true
+}
+
 // settleRoomWithin settles room under parent and reports how the settlement ended (settleOutcome),
 // leaving what follows to its caller. A timer's settlement runs under no deadline; the one
 // Shutdown runs gets its drain budget. When parent ends first the settlement's database work is
@@ -361,8 +380,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	// generation.
 	first, err := s.readSettlementTree(state, st.doc, room, s.afterSettleAuthorsTake, false)
 	if err != nil {
-		if errors.Is(err, ErrDocSchema) {
-			slog.Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
+		if skipUnreadableSettlement(room, err) {
 			return settleDone, settleOutcome{}
 		}
 		return settleDone, st.stoppedShort(err)
@@ -451,8 +469,7 @@ func (st *settlement) applyStamp(ctx context.Context) (settleStep, settleOutcome
 		})
 		st.keep(slot, update)
 		if err != nil {
-			if len(st.slots) == 0 && errors.Is(err, ErrDocSchema) {
-				slog.Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
+			if len(st.slots) == 0 && skipUnreadableSettlement(room, err) {
 				return settleDone, settleOutcome{}
 			}
 			return settleDone, st.abandon(err)
@@ -656,8 +673,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		markdown, offsets, err = renderTreeWithOffsets(st.versioned)
 	}
 	if err != nil {
-		if len(st.slots) == 0 && errors.Is(err, ErrDocSchema) {
-			slog.Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
+		if len(st.slots) == 0 && skipUnreadableSettlement(room, err) {
 			return settleDone, settleOutcome{}
 		}
 		return settleDone, st.abandon(err)
@@ -719,6 +735,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			docUpdateVersion: &st.snapshotCursor,
 		})
 		if writeErr != nil {
+			// The version a human approved holds an element this build does not know: the version
+			// is left, unwritten, to a build that reads it, as a tree holding one is.
+			if len(st.slots) == 0 && errors.Is(writeErr, ErrDocNewerContent) && skipUnreadableSettlement(room, writeErr) {
+				return settleDone, settleOutcome{}
+			}
 			return settleDone, st.abandon(writeErr)
 		}
 		// The version lists the pending authors this settlement read, so its commit deletes them.
