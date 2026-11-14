@@ -5062,17 +5062,17 @@ jobs:
     # more than roomWaitMargin (30s): this looks like a misconfigured run; raise -timeout".
     #
     # The job's own bound follows the largest measured time this branch has of a green run of
-    # it, 743 s (attempt 2 of run 43120324547, job 130874347417), 12.38 minutes, plus the largest
-    # of those limits, 18 minutes, plus 6: 12.38 + 18 + 6 = 36.38, so 37. Green runs, as the test
-    # job's bound reads them: the longest red one, 773 s (run 43138709383, job 130920279111),
-    # would ask the same 37. The eight runs of 2026-11-08 whose file carried TEMPORARY profiling
+    # it, 795 s (run 43602043317, job 132468719806), 13.25 minutes, plus the largest of those
+    # limits, 18 minutes, plus 6: 13.25 + 18 + 6 = 37.25, so 38. Green runs, as the test job's
+    # bound reads them: the longest red one, 773 s (run 43138709383, job 130920279111), would
+    # ask 37. The eight runs of 2026-11-08 whose file carried TEMPORARY profiling
     # and -p sweep steps (runs 42439260413 to 42506378238, up to 1,655 s) ran work this job does
     # not, and are no reading of it. A bound is met when it is at least what the head's own pair
     # asks for, and it follows the largest reading rather than the newest, because a job of this
     # lane varies by two minutes between two attempts of one commit and does not settle inside a
     # one-minute band. The nine calls of the unit step run at the same time, so the step's own
     # worst case is the longest of them rather than their sum.
-    timeout-minutes: 37
+    timeout-minutes: 38
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
