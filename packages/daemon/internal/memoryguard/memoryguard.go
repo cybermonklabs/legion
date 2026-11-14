@@ -11,7 +11,7 @@
 // seconds for the hourly line and at each kill, and never at each interval.
 //
 // At or above the act share of the limit (the mark), the guard lists the processes it may end,
-// reads the smaps of those alone, and acts where their sizes sum to at least the floor share of
+// reads the sizes of those alone, and acts where their sizes sum to at least the floor share of
 // the limit: it sends SIGKILL to the largest through a pidfd, then takes a reading at each
 // interval. The reading has fallen when it is below the reading at the kill by any amount, or
 // below the mark (fell). Fallen and still at or above the mark, once the process has exited or
@@ -20,6 +20,17 @@
 // the wait passes and the kill has not lowered the reading at all, or when no process may be
 // ended, the guard logs the sizes it saw and ends nothing more for that rise, until the reading
 // has gone below the mark; a stop that repeats is logged at most once a minute (stopRise).
+//
+// A process's size, by which the guard ranks it, is the sum of the `Anonymous:` lines of its
+// smaps, the `Rss:` of its shared mappings of memory-backed files (a shared anonymous map, a
+// memfd, POSIX or System V shared memory), and the size of each memfd it holds open by a file
+// descriptor and has not mapped, since its end frees those pages too. A memfd that a process the
+// guard read maps counts through that mapping's `Rss` alone, and one that several of them hold by
+// a descriptor counts once, for the largest of them (smapsSize, heldMemfdBytes, addHeldMemfds).
+// The scan leaves out a zombie and a dead process, which hold no memory, and reads nothing of
+// either past its stat and status: under gVisor a zombie's exe link answers EACCES, which would
+// otherwise count it unread. A process in either state whose status counts more than one thread
+// is one whose main thread alone has exited, alive with all its memory, and is read as live.
 //
 // What it may end is its caller's to say (Classifier): the launcher protects Legion's own
 // processes and the agents', and INFRA-3531's controller pod protects its own. The package
@@ -227,6 +238,10 @@ type Guard struct {
 	// before it reads it. The tests set it to count which processes a stop reads; production
 	// leaves it nil.
 	smapsRead func(pid int)
+	// memfdLink is how the link of a descriptor that holds a memfd starts (heldMemfdBytes):
+	// memfdPrefix, as New sets it. The tests set their fake pod's own, since a fake descriptor's
+	// link must lead to a file the guard can stat.
+	memfdLink string
 
 	mu       sync.Mutex
 	settings Settings
@@ -254,16 +269,20 @@ type Guard struct {
 	// how many stopped lines it has left out since (stopRise).
 	stoppedAt      time.Time
 	stoppedLeftOut int
+	// memfds are the memfds an assessment's sizes have counted (addHeldMemfds), emptied at each
+	// assessment and kept for the next.
+	memfds map[memfdID]bool
 
 	scans    sync.WaitGroup
 	scanMu   sync.Mutex
 	scanBusy bool
 	scanDone *largestScan
 	// The rest is scanLargest's own, one scan at a time, since startScan starts none while one
-	// runs: its smaps buffer, and the command text of the largest process the last scan found with
-	// the name and arguments it was made from, so a scan that finds the same process again does
-	// not redact its arguments again.
+	// runs: its smaps buffer and the memfds its sizes have counted, and the command text of the
+	// largest process the last scan found with the name and arguments it was made from, so a scan
+	// that finds the same process again does not redact its arguments again.
 	scanSmaps   []byte
+	scanMemfds  map[memfdID]bool
 	scanName    string
 	scanArgs    []string
 	scanCommand string
@@ -291,6 +310,9 @@ func New(cfg Config) *Guard {
 		counterFile:  heldFile{path: filepath.Join(cgroup, "memory.usage_in_bytes")},
 		unreadLogged: map[int]bool{},
 		killFailures: map[int]uint64{},
+		memfdLink:    memfdPrefix,
+		memfds:       map[memfdID]bool{},
+		scanMemfds:   map[memfdID]bool{},
 	}
 	if g.logf == nil {
 		g.logf = func(string, ...any) {}
@@ -573,7 +595,8 @@ func (g *Guard) applyKillFailures(t *Table) {
 	}
 }
 
-// candidate is a process the guard may end, with its size.
+// candidate is a process with its size as the guard ranks it, and its role: in an assessment, a
+// process the guard may end.
 type candidate struct {
 	*Process
 	role string
@@ -588,9 +611,11 @@ type assessment struct {
 	endableBytes uint64
 }
 
-// assess scans the processes, asks the classifier, and reads the smaps of each process it may
+// assess scans the processes, asks the classifier, and reads the size of each process it may
 // end: one that is not protected, not the guard's own and not unread. A process whose smaps
-// cannot be read is unread too, since it cannot be ranked.
+// cannot be read is unread too, since it cannot be ranked. The processes it may end are the only
+// ones whose files it reads, so they alone are the holders and the mappers of memfds among which
+// a memfd counts once (addHeldMemfds).
 func (g *Guard) assess() (assessment, error) {
 	t, err := scan(g.proc)
 	if err != nil {
@@ -599,11 +624,12 @@ func (g *Guard) assess() (assessment, error) {
 	g.applyKillFailures(t)
 	classes := g.classes(t)
 	a := assessment{table: t}
+	clear(g.memfds)
 	for _, p := range t.Processes() {
 		if _, unread := t.unread[p.PID]; unread || p.PID == g.self || classes[p.PID].Protected {
 			continue
 		}
-		size, err := g.size(p.PID)
+		size, err := g.size(p.PID, g.memfds)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
 				t.unread[p.PID] = fmt.Errorf("read the smaps: %w", err)
@@ -611,15 +637,35 @@ func (g *Guard) assess() (assessment, error) {
 			continue
 		}
 		a.endable = append(a.endable, candidate{Process: p, role: classes[p.PID].Role, size: size})
-		a.endableBytes += size
 	}
-	// The newest first among equal sizes: of a parent and the child it forked, which read the
-	// same, the child is the one that was started for the work.
-	slices.SortFunc(a.endable, func(x, y candidate) int {
-		return cmp.Or(cmp.Compare(y.size, x.size), cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
-	})
+	addHeldMemfds(a.endable, g.proc, g.memfdLink, g.memfds)
+	for _, c := range a.endable {
+		a.endableBytes += c.size
+	}
 	g.logUnread(t)
 	return a, nil
+}
+
+// addHeldMemfds adds to the size of each process of cs, read under proc, the memfds it holds open
+// by a descriptor (heldMemfdBytes), and ranks cs largest first (rank). counted holds, on entry,
+// the memfds that the reads of cs's smaps found mapped, which count through their mappings alone.
+// cs is ranked by those smaps sizes before any descriptor is read, so the first of a memfd's
+// holders to read it, the one it counts for, is the largest of them by the size without any
+// memfd a descriptor holds, the newest among equal sizes.
+func addHeldMemfds(cs []candidate, proc, link string, counted map[memfdID]bool) {
+	rank(cs)
+	for i := range cs {
+		cs[i].size += heldMemfdBytes(filepath.Join(proc, strconv.Itoa(cs[i].PID)), link, counted)
+	}
+	rank(cs)
+}
+
+// rank sorts cs largest first, and the newest first among equal sizes: of a parent and the child
+// it forked, which read the same, the child is the one that was started for the work.
+func rank(cs []candidate) {
+	slices.SortFunc(cs, func(x, y candidate) int {
+		return cmp.Or(cmp.Compare(y.size, x.size), cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
+	})
 }
 
 // logUnread logs each unread process once for as long as its pid lives. A process the kill failed
@@ -641,10 +687,12 @@ func (g *Guard) logUnread(t *Table) {
 }
 
 // stopRise gives up on this rise with one line that says where the reading's memory is: in the
-// processes the guard may end, in the protected ones, in the ones it could not read, and the rest,
-// which no process holds (tmpfs pages, which no kill frees) or, negative, what the processes'
-// sizes count more than once (a page a parent and its forked child share). a is the scan the
-// decision was made on, or nil to scan again.
+// processes the guard may end, at their sizes; in the protected ones and in the ones it could not
+// read, at their smaps sizes alone (smapsSize), since the line does not read their descriptors;
+// and the rest, which no process holds (tmpfs pages, which no kill frees) or only a descriptor of
+// a process the guard may not end holds (a memfd it has not mapped), or, negative, what the
+// processes' sizes count more than once (a page a parent and its forked child share). a is the
+// scan the decision was made on, or nil to scan again.
 //
 // A stop that repeats, as a reading that holds near the mark goes below it and back above it,
 // writes its line at most once in each stoppedEvery by the guard's clock: each stop in between is
@@ -681,7 +729,7 @@ func (g *Guard) stopRise(now time.Time, reason string, reading, limit uint64, a 
 			if counted[pid] {
 				continue
 			}
-			size, err := g.size(pid)
+			size, err := g.size(pid, nil)
 			if err != nil {
 				continue
 			}
@@ -796,27 +844,30 @@ func (g *Guard) takeScan() {
 }
 
 // scanLargest finds the largest process of every process the pod shows, protected ones among
-// them: the hourly line says what held the memory, whatever the guard may end.
+// them: the hourly line says what held the memory, whatever the guard may end. It ranks them by
+// the sizes and in the order an assessment ranks the processes the guard may end (addHeldMemfds),
+// every process whose smaps it read being a holder and a mapper of memfds here.
 func (g *Guard) scanLargest(start time.Time) {
 	defer g.scans.Done()
 	found := largestScan{window: start}
 	if t, err := scan(g.proc); err == nil {
 		classes := g.classes(t)
-		var biggest *Process
+		clear(g.scanMemfds)
+		read := make([]candidate, 0, len(t.byPID))
 		for _, p := range t.Processes() {
 			data, err := readAll(g.smapsPath(p.PID), g.scanSmaps)
 			g.scanSmaps = data
 			if err != nil {
 				continue
 			}
-			if size := smapsSize(data); biggest == nil || size > found.size {
-				biggest, found.pid, found.size = p, p.PID, size
-			}
+			read = append(read, candidate{Process: p, role: classes[p.PID].Role, size: smapsSize(data, g.scanMemfds)})
 		}
 		g.scanSmaps = keepSmaps(g.scanSmaps)
-		if biggest != nil {
-			found.role = classes[biggest.PID].Role
-			found.command = g.largestCommand(biggest)
+		addHeldMemfds(read, g.proc, g.memfdLink, g.scanMemfds)
+		if len(read) > 0 {
+			biggest := read[0]
+			found.pid, found.role, found.size = biggest.PID, biggest.role, biggest.size
+			found.command = g.largestCommand(biggest.Process)
 		}
 	}
 	g.scanMu.Lock()
@@ -842,8 +893,9 @@ func (g *Guard) classes(t *Table) map[int]Class {
 	return g.classify(t)
 }
 
-// size is pid's size from its smaps (smapsSize), read into the guard's own buffer.
-func (g *Guard) size(pid int) (uint64, error) {
+// size is pid's smaps size (smapsSize), read into the guard's own buffer, which adds each memfd
+// pid maps shared to mapped when mapped is not nil.
+func (g *Guard) size(pid int, mapped map[memfdID]bool) (uint64, error) {
 	if g.smapsRead != nil {
 		g.smapsRead(pid)
 	}
@@ -852,7 +904,7 @@ func (g *Guard) size(pid int) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return smapsSize(data), nil
+	return smapsSize(data, mapped), nil
 }
 
 // releaseSmaps lets go of the guard's smaps buffer once it has grown past maxHeldFile (keepSmaps).

@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -32,18 +33,20 @@ const (
 
 // fakePod is a /proc and a memory cgroup directory under t.TempDir(), written the way the kernel
 // writes them: meminfo, the limit and the counter in place, since the guard holds them open and
-// reads them from their start, and each process's files whole.
+// reads them from their start, and each process's files whole. Its files directory holds the files
+// its processes' descriptors lead to, a memfd among them named the way procfs names one, with the
+// directory standing for the root.
 type fakePod struct {
-	t            *testing.T
-	proc, cgroup string
-	anon, shmem  uint64
+	t                   *testing.T
+	proc, cgroup, files string
+	anon, shmem         uint64
 }
 
 func newFakePod(t *testing.T) *fakePod {
 	t.Helper()
 	root := t.TempDir()
-	p := &fakePod{t: t, proc: filepath.Join(root, "proc"), cgroup: filepath.Join(root, "cgroup")}
-	for _, dir := range []string{p.proc, p.cgroup} {
+	p := &fakePod{t: t, proc: filepath.Join(root, "proc"), cgroup: filepath.Join(root, "cgroup"), files: filepath.Join(root, "files")}
+	for _, dir := range []string{p.proc, p.cgroup, p.files} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -85,8 +88,9 @@ func (p *fakePod) writeInPlace(path, content string) {
 
 // fakeProcess is one process of a fakePod. Its smaps holds its program's text, which adds
 // nothing to its size, a heap of anon, a shared mapping of a file on disk of file (an LMDB map),
-// a shared anonymous map of shared, a memfd of memfd, and a private mapping of a file under
-// /dev/shm whose pages read no Anonymous, which adds nothing either.
+// a shared anonymous map of shared, a memfd of memfd, a shared mapping of the pod's memfd mapped
+// with mappedRss of it resident, and a private mapping of a file under /dev/shm whose pages read
+// no Anonymous, which adds nothing either.
 type fakeProcess struct {
 	pid, ppid int
 	start     uint64
@@ -101,6 +105,17 @@ type fakeProcess struct {
 	unreadableExe bool
 	// zombie writes the process's stat in state Z: it has exited and its parent has not reaped it.
 	zombie bool
+	// fds are the files the process holds open by a descriptor, each a path under the pod's files
+	// (fakePod.memfd, fakePod.plainFile), written as fd/<n> links from descriptor 3 on.
+	fds []string
+	// unreadableFDs makes fd a plain file, whose listing fails as an fd directory's the guard
+	// may not read does.
+	unreadableFDs bool
+	mapped        *fakeMemfd
+	mappedRss     uint64
+	// threads, when above 0, writes a status whose Threads: line counts them, with the state its
+	// stat has; a process left at 0 writes no status.
+	threads int
 }
 
 func (p *fakePod) add(fps ...fakeProcess) {
@@ -148,6 +163,14 @@ func (p *fakePod) write(fp fakeProcess) {
 	}
 	p.writeWhole(filepath.Join(dir, "cmdline"), cmdline)
 	p.writeWhole(filepath.Join(dir, "smaps"), smapsOf(fp))
+	if fp.threads > 0 {
+		state := "S (sleeping)"
+		if fp.zombie {
+			state = "Z (zombie)"
+		}
+		p.writeWhole(filepath.Join(dir, "status"), fmt.Sprintf("Name:\t%s\nState:\t%s\nTgid:\t%d\nPid:\t%d\nPPid:\t%d\nThreads:\t%d\n",
+			fp.name, state, fp.pid, fp.pid, fp.ppid, fp.threads))
+	}
 	for _, link := range []struct{ name, target string }{{"exe", fp.exe}, {filepath.Join("ns", "pid"), fp.ns}} {
 		path := filepath.Join(dir, link.name)
 		_ = os.Remove(path)
@@ -158,6 +181,72 @@ func (p *fakePod) write(fp fakeProcess) {
 		if err := os.Symlink(link.target, path); err != nil {
 			p.t.Fatal(err)
 		}
+	}
+	fds := filepath.Join(dir, "fd")
+	switch {
+	case fp.unreadableFDs:
+		_ = os.RemoveAll(fds)
+		p.writeWhole(fds, "no directory of open files\n")
+	case len(fp.fds) > 0:
+		_ = os.RemoveAll(fds)
+		if err := os.MkdirAll(fds, 0o755); err != nil {
+			p.t.Fatal(err)
+		}
+		for i, target := range fp.fds {
+			if err := os.Symlink(target, filepath.Join(fds, strconv.Itoa(3+i))); err != nil {
+				p.t.Fatal(err)
+			}
+		}
+	}
+}
+
+// fakeMemfd is a memfd of a fakePod: a file under the pod's files named the way procfs names a
+// memfd, so that the link of a descriptor that holds it reads as a memfd's (fakePod.memfdLink),
+// with the device and inode by which a smaps line of its mapping names it.
+type fakeMemfd struct {
+	name, path string
+	dev, ino   uint64
+}
+
+// memfd makes a memfd of size bytes named name, a sparse file so that a large one takes no room.
+func (p *fakePod) memfd(name string, size uint64) *fakeMemfd {
+	p.t.Helper()
+	path := p.memfdPath(name)
+	p.sparseFile(path, size)
+	info, err := os.Stat(path)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	st := info.Sys().(*syscall.Stat_t)
+	return &fakeMemfd{name: name, path: path, dev: uint64(st.Dev), ino: uint64(st.Ino)}
+}
+
+// memfdPath is the path of the pod's memfd named name, whether or not it exists: procfs's
+// `/memfd:<name> (deleted)` under the pod's files.
+func (p *fakePod) memfdPath(name string) string { return p.memfdLink() + name + " (deleted)" }
+
+// memfdLink is how the link of a descriptor that holds one of the pod's memfds starts: the
+// guard's memfdPrefix under the pod's files, which stand for the root.
+func (p *fakePod) memfdLink() string { return p.files + memfdPrefix }
+
+// plainFile makes an ordinary file of size bytes named name under the pod's files, a sparse one,
+// and answers its path.
+func (p *fakePod) plainFile(name string, size uint64) string {
+	p.t.Helper()
+	path := filepath.Join(p.files, name)
+	p.sparseFile(path, size)
+	return path
+}
+
+func (p *fakePod) sparseFile(path string, size uint64) {
+	p.t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.Truncate(int64(size)); err != nil {
+		p.t.Fatal(err)
 	}
 }
 
@@ -214,6 +303,10 @@ func smapsOf(fp fakeProcess) string {
 	}
 	if fp.memfd > 0 {
 		mapping("7f3000000000-7f3100000000 rw-s 00000000 00:01 2048                       /memfd:pool (deleted)", fp.memfd, 0)
+	}
+	if fp.mapped != nil {
+		mapping(fmt.Sprintf("7f5000000000-7f5040000000 rw-s 00000000 %02x:%02x %-26d /memfd:%s (deleted)",
+			unix.Major(fp.mapped.dev), unix.Minor(fp.mapped.dev), fp.mapped.ino, fp.mapped.name), fp.mappedRss, 0)
 	}
 	mapping("7f4000000000-7f4000400000 rw-p 00000000 00:16 77                         /dev/shm/private", 4*mib, 0)
 	return b.String()
@@ -414,6 +507,8 @@ func newHarness(t *testing.T, pod *fakePod, classify Classifier) *harness {
 			h.kills = append(h.kills, k)
 		},
 	})
+	// The pod's descriptors lead to files under its files directory, which stands for the root.
+	h.g.memfdLink = pod.memfdLink()
 	return h
 }
 
@@ -605,6 +700,129 @@ func TestMemoryGuardSeesASharedAnonymousMapAndAMemfdAtTheirSize(t *testing.T) {
 	if kills[0].SizeBytes != gib || kills[1].SizeBytes != 800*mib {
 		t.Fatalf("the sizes are %d and %d, want the shared map's %d and the memfd's %d",
 			kills[0].SizeBytes, kills[1].SizeBytes, gib, 800*mib)
+	}
+}
+
+// A process that writes a memfd it never maps holds that memfd's pages by its descriptor alone:
+// its smaps shows none of them, and its end frees them all. The guard counts the memfd at its
+// size in that process's size, so it ends that process before one with more Anonymous memory, and
+// its kill line, its report and the hourly line all give that size.
+func TestMemoryGuardEndsTheHolderOfAnUnmappedMemfdAtItsSize(t *testing.T) {
+	pod := newFakePod(t)
+	pool := pod.memfd("pool", gib)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 1100, ppid: 100, args: []string{"python3", "memfd.py"}, anon: 20 * mib, fds: []string{pool.path}},
+		fakeProcess{pid: 1101, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+	)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(1100)
+	size := gib + 20*mib
+	if k := h.killed()[0]; k.SizeBytes != size {
+		t.Fatalf("the killed process's size is %d, want %d (its Anonymous and the memfd it holds)", k.SizeBytes, size)
+	}
+	if got := h.log.with(fmt.Sprintf("ended pid=1100 role=tester size=%d ", size)); len(got) != 1 {
+		t.Fatalf("the kill lines are %q, want one with size=%d", h.log.with("ended"), size)
+	}
+
+	pod.setAnon(2000 * mib)
+	h.tickAfter(time.Hour)
+	largest := fmt.Sprintf(" largest_pid=1100 largest_role=tester largest_size=%d ", size)
+	if hours := h.log.with("hour"); len(hours) != 1 || !strings.Contains(hours[0], largest) {
+		t.Fatalf("the hourly lines are %q, want one naming%s", hours, largest)
+	}
+}
+
+// A memfd that a process maps counts through that mapping's Rss alone, whichever process holds it
+// by a descriptor: a process that maps the memfd it holds counts it once, and a process that holds
+// by a descriptor alone a memfd another process maps counts nothing for it, so neither is ranked
+// above its due and the processes the guard may end sum to each memfd once.
+func TestMemoryGuardCountsAMappedMemfdThroughItsMappingAlone(t *testing.T) {
+	pod := newFakePod(t)
+	own := pod.memfd("own", gib)
+	theirs := pod.memfd("theirs", gib)
+	pod.add(
+		agent(2*gib),
+		// Its Anonymous and its own memfd once, through its mapping: 1074 MiB.
+		fakeProcess{pid: 1200, ppid: 100, args: []string{"python3", "shm.py"}, anon: 50 * mib, fds: []string{own.path}, mapped: own, mappedRss: gib},
+		// Its Anonymous alone, 100 MiB: 1203 maps the memfd it holds.
+		fakeProcess{pid: 1202, ppid: 100, args: []string{"python3", "reader.py"}, anon: 100 * mib, fds: []string{theirs.path}},
+		// Its Anonymous and what of the memfd it maps is resident: 522 MiB.
+		fakeProcess{pid: 1203, ppid: 100, args: []string{"python3", "writer.py"}, anon: 10 * mib, mapped: theirs, mappedRss: 512 * mib},
+	)
+	pod.setAnon(3800 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(1200)
+	if k := h.killed()[0]; k.SizeBytes != gib+50*mib {
+		t.Fatalf("the killed process's size is %d, want %d (its Anonymous and its memfd once)", k.SizeBytes, gib+50*mib)
+	}
+	// The kill lowers nothing, and the stop's line sums the sizes of the processes it may end.
+	h.tickAfter(5 * time.Second)
+	endable := gib + 50*mib + 100*mib + 522*mib
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+		3800*mib, endable, 2*gib, 3800*mib-endable-2*gib, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
+// A memfd that two processes hold by a descriptor, and that none maps, counts once, in the size of
+// the larger of the two by their sizes without it, however many of its descriptors hold it: the
+// larger is ended first, at its size with the memfd, and the processes the guard may end sum to
+// the memfd once.
+func TestMemoryGuardCountsAMemfdTwoProcessesHoldOnceForTheLarger(t *testing.T) {
+	pod := newFakePod(t)
+	shared := pod.memfd("shared", gib)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 1300, ppid: 100, args: []string{"python3", "parent.py"}, anon: 300 * mib, fds: []string{shared.path, shared.path}},
+		fakeProcess{pid: 1301, ppid: 1300, args: []string{"python3", "child.py"}, anon: 200 * mib, fds: []string{shared.path}},
+		fakeProcess{pid: 1302, ppid: 100, args: []string{"python3", "grow.py"}, anon: 1100 * mib},
+	)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(1300)
+	if k := h.killed()[0]; k.SizeBytes != gib+300*mib {
+		t.Fatalf("the killed process's size is %d, want %d (its Anonymous and the memfd once)", k.SizeBytes, gib+300*mib)
+	}
+	h.tickAfter(5 * time.Second)
+	endable := gib + 300*mib + 200*mib + 1100*mib
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+		3700*mib, endable, gib, 3700*mib-endable-gib, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
+// A descriptor adds to a process's size only when it holds a memfd: one that holds an ordinary
+// file adds nothing however large the file is, and a descriptor closed under the read (a memfd
+// link that stat finds nothing at) or an fd directory the guard cannot list adds nothing either,
+// and leaves its process read, ranked by its smaps, and not unread.
+func TestMemoryGuardCountsNothingForAnOrdinaryFileOrADescriptorItCannotRead(t *testing.T) {
+	pod := newFakePod(t)
+	data := pod.plainFile("data.mdb", 2*gib)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 1400, ppid: 100, args: []string{"python3", "load.py"}, anon: 100 * mib, fds: []string{data, pod.memfdPath("closed")}},
+		fakeProcess{pid: 1401, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+		fakeProcess{pid: 1402, ppid: 100, args: []string{"python3", "hidden.py"}, anon: 300 * mib, unreadableFDs: true},
+	)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(1401)
+	if k := h.killed()[0]; k.SizeBytes != 600*mib {
+		t.Fatalf("the killed process's size is %d, want %d (its Anonymous alone)", k.SizeBytes, 600*mib)
+	}
+	h.tickAfter(5 * time.Second)
+	if unread := h.log.with("unread"); len(unread) != 0 {
+		t.Fatalf("the unread lines are %q, want none", unread)
+	}
+	endable := 100*mib + 600*mib + 300*mib
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+		3700*mib, endable, gib, 3700*mib-endable-gib, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, want)
 	}
 }
 
@@ -1286,6 +1504,36 @@ func TestMemoryGuardLeavesAZombieOutWhateverItsExeLinkAnswers(t *testing.T) {
 	h.requireKilled(961)
 	if unread := h.log.with("unread"); len(unread) != 0 {
 		t.Fatalf("the guard logged %q for a zombie, which holds no memory; the log:\n%s", unread, strings.Join(h.log.all(), "\n"))
+	}
+}
+
+// A process whose main thread alone has exited (pthread_exit) while its other threads run reads
+// `Z` in its stat, its main thread's state, as a zombie does, yet it is alive and holds all of its
+// memory; its status counts the threads left. The guard reads a process in state Z whose status
+// counts more than one thread as a live one: the scan lists it, and the guard ends it as the
+// largest it may end.
+func TestMemoryGuardEndsAProcessInStateZWhoseOtherThreadsRun(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 970, ppid: 100, args: []string{"python3", "threads.py"}, anon: 1500 * mib, zombie: true, threads: 3},
+		fakeProcess{pid: 971, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+	)
+	table, err := scan(pod.proc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := table.Get(970); !ok || p.Exe != "/usr/bin/python3" {
+		t.Fatalf("the scan read pid 970 as %+v, listed %v; want it listed with its exe", p, ok)
+	}
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(970)
+	if k := h.killed()[0]; k.SizeBytes != 1500*mib {
+		t.Fatalf("the killed process's size is %d, want %d", k.SizeBytes, 1500*mib)
+	}
+	if unread := h.log.with("unread"); len(unread) != 0 {
+		t.Fatalf("the unread lines are %q, want none", unread)
 	}
 }
 

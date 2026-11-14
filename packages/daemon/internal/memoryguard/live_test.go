@@ -843,6 +843,9 @@ type liveSampler struct {
 	out   *liveLog
 	root  int
 	smaps []byte
+	// memfds are the memfds a sample's sizes have counted (addHeldMemfds), emptied at each
+	// sample.
+	memfds map[memfdID]bool
 
 	samples     int
 	last        uint64
@@ -907,41 +910,51 @@ func (s *liveSampler) highestField() string {
 }
 
 // liveProcess is one of the scenario's processes as a sample prints it: its smaps' Anonymous
-// sum, its size by the guard's own rule (smapsSize), and its VmRSS.
+// sum, its size by the guard's own rule (smapsSize and addHeldMemfds), and its VmRSS.
 type liveProcess struct {
 	pid                    int
 	anonymous, size, vmRSS uint64
 }
 
 // largest is the scenario's largest process by the guard's own rule, among its root and the
-// root's descendants by their PPid chain; pid 0 when none could be read.
+// root's descendants by their PPid chain: each one's smaps size, and the memfds it holds open by
+// a descriptor that none of them maps and no larger one of them holds, ranked as the guard ranks
+// them (addHeldMemfds), so a process that grows a memfd it never maps shows that memfd's size.
+// pid 0 when none could be read.
 func (s *liveSampler) largest() liveProcess {
-	var top liveProcess
-	for _, pid := range liveDescendants(s.root) {
-		dir := filepath.Join(liveProc, strconv.Itoa(pid))
-		data, err := readAll(filepath.Join(dir, "smaps"), s.smaps)
+	if s.memfds == nil {
+		s.memfds = map[memfdID]bool{}
+	}
+	clear(s.memfds)
+	var read []candidate
+	anonymous := map[int]uint64{}
+	for _, p := range liveDescendants(s.root) {
+		data, err := readAll(filepath.Join(liveProc, strconv.Itoa(p.PID), "smaps"), s.smaps)
 		s.smaps = data
 		if err != nil {
 			continue
 		}
-		size := smapsSize(data)
-		if top.pid != 0 && size <= top.size {
-			continue
-		}
-		top = liveProcess{pid: pid, anonymous: smapsAnonymous(data), size: size}
-		if status, err := os.ReadFile(filepath.Join(dir, "status")); err == nil {
-			top.vmRSS, _ = meminfoBytes(status, "VmRSS")
-		}
+		read = append(read, candidate{Process: p, size: smapsSize(data, s.memfds)})
+		anonymous[p.PID] = smapsAnonymous(data)
+	}
+	if len(read) == 0 {
+		return liveProcess{}
+	}
+	addHeldMemfds(read, liveProc, memfdPrefix, s.memfds)
+	top := liveProcess{pid: read[0].PID, anonymous: anonymous[read[0].PID], size: read[0].size}
+	if status, err := os.ReadFile(filepath.Join(liveProc, strconv.Itoa(top.pid), "status")); err == nil {
+		top.vmRSS, _ = meminfoBytes(status, "VmRSS")
 	}
 	return top
 }
 
-// liveDescendants is root and every process whose PPid chain leads to it, read from each
-// process's stat.
-func liveDescendants(root int) []int {
+// liveDescendants is root and every process whose PPid chain leads to it, each as its stat reads
+// (the root by its pid alone where its stat cannot be read).
+func liveDescendants(root int) []*Process {
+	procs := map[int]*Process{root: {PID: root}}
 	entries, err := os.ReadDir(liveProc)
 	if err != nil {
-		return []int{root}
+		return []*Process{procs[root]}
 	}
 	children := map[int][]int{}
 	for _, entry := range entries {
@@ -954,16 +967,18 @@ func liveDescendants(root int) []int {
 			continue
 		}
 		if p, err := parseStat(stat); err == nil {
+			p.PID = pid
+			procs[pid] = p
 			children[p.PPID] = append(children[p.PPID], pid)
 		}
 	}
 	seen := map[int]bool{root: true}
-	family := []int{root}
+	family := []*Process{procs[root]}
 	for i := 0; i < len(family); i++ {
-		for _, child := range children[family[i]] {
+		for _, child := range children[family[i].PID] {
 			if !seen[child] {
 				seen[child] = true
-				family = append(family, child)
+				family = append(family, procs[child])
 			}
 		}
 	}
@@ -971,7 +986,8 @@ func liveDescendants(root int) []int {
 }
 
 // smapsAnonymous is the sum of a smaps' Anonymous lines alone, which a sample prints beside the
-// guard's size so a reader sees what the shared mappings added.
+// guard's size so a reader sees what the shared mappings and the memfds held by a descriptor
+// added.
 func smapsAnonymous(data []byte) uint64 {
 	var sum uint64
 	for line := range bytes.Lines(data) {
