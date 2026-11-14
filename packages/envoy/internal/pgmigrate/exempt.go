@@ -403,7 +403,7 @@ func (c *classifier) defaultPartsOf(expr json.RawMessage) (parts defaultParts, o
 // the catalog, and neither the type nor its element type is a domain or the row type of a
 // relation.
 func (c *classifier) admittedType(node json.RawMessage) (t catalogType, ok bool, err error) {
-	name, ok := typeNameOf(node)
+	name, names, ok := typeNameOf(node)
 	if !ok {
 		return t, false, nil
 	}
@@ -414,12 +414,11 @@ func (c *classifier) admittedType(node json.RawMessage) (t catalogType, ok bool,
 	// one exists and admit the column, so the name alone refuses it, whatever the catalog holds.
 	// Postgres compares the folded name with strcmp, so "Serial" and pg_catalog.serial stay type
 	// names it resolves as it resolves any other. Postgres refuses a column of an array of such a
-	// name (array of serial is not implemented), so the census refuses one too, and compares the
-	// name without its []. Postgres resolves a cast's type name as it resolves any other, so the
-	// rule also refuses a cast to a type of one of these names that the checks below would admit:
-	// that only refuses more, and no default a migration ships casts to one. The six names are
-	// written as typeNameOf quotes a name of one part.
-	if slices.Contains([]string{`"smallserial"`, `"serial2"`, `"serial"`, `"serial4"`, `"bigserial"`, `"serial8"`}, strings.TrimSuffix(name, "[]")) {
+	// name (array of serial is not implemented), so the census refuses one too: the parts of
+	// serial[] are the parts of serial. Postgres resolves a cast's type name as it resolves any
+	// other, so the rule also refuses a cast to a type of one of these names that the checks below
+	// would admit: that only refuses more, and no default a migration ships casts to one.
+	if len(names) == 1 && slices.Contains([]string{"smallserial", "serial2", "serial", "serial4", "bigserial", "serial8"}, names[0].String.Sval) {
 		return t, false, nil
 	}
 	// Without the catalog no type is admitted, text included: an unqualified type name resolves
@@ -436,12 +435,12 @@ func (c *classifier) admittedType(node json.RawMessage) (t catalogType, ok bool,
 	}
 	// Every domain is refused, not only one with constraints, since that reads one field. So is
 	// the row type of a table, a view, a materialized view, a foreign table or a partitioned table
-	// (a relkind other than c). A pending DROP TABLE of that relation leaves the catalog reads on
-	// (catalogReadsOff), and after it the name can resolve to a type of a later schema of the
-	// search_path, which the census did not read. That type can be a domain with a constraint,
-	// for which Postgres rewrites the table, or a type with a volatile cast from the default,
-	// which Catalog read 3 did not read. The same drop can change what an array's element type
-	// resolves to, so the element type is held to both rules too, and an array of a domain is
+	// (a relkind other than c). A pending DROP TABLE or DROP VIEW of that relation leaves the
+	// catalog reads on (keepsReadsOn), and after it the name can resolve to a type of a later
+	// schema of the search_path, which the census did not read. That type can be a domain with a
+	// constraint, for which Postgres rewrites the table, or a type with a volatile cast from the
+	// default, which Catalog read 3 did not read. The same drop can change what an array's element
+	// type resolves to, so the element type is held to both rules too, and an array of a domain is
 	// refused as the domain is, which only refuses more. An array's element type is never an
 	// array (x[][] is x[]), so one level of element covers every array. A composite type made by
 	// CREATE TYPE … AS (relkind c), an enum, a range, a base type and an array of one of these
@@ -640,25 +639,31 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 // any is judged, since a statement anywhere in it can change what the names of all of them
 // resolve to. here says that this migration may not read the catalog, and later that no pending
 // migration after it may either, which Census keeps (catalogTrusted). The census resolves names
-// on its own connection, in the catalog as it stands before any pending migration applies, so a
-// read stops being the one the migration meets:
+// on its own connection, in the catalog as it stands before any pending migration applies. A
+// read is the one the migration meets only while no statement before it has changed what a name
+// resolves to, so the pass keeps the reads on only after a statement it knows to leave the names
+// as they are:
 //
-//   - after a SET or RESET of search_path, role or session_authorization, or a RESET ALL, in the
-//     migration: its names resolve through another path, or as another role, than the census's do
-//     (the default search_path starts with "$user"). Without LOCAL, or as RESET ALL, the setting
-//     outlives the migration: the runner applies each migration on a connection of its pool, which
-//     resets no session setting, so the next migration can take that connection with the setting
-//     on it, and every later migration loses the reads too. SET LOCAL ends with the migration's
-//     transaction;
-//   - after a statement that changes a type, a domain, a cast, a schema, an extension or a role
-//     (changesTypes): a pending migration could drop an enum and create a domain with a
-//     constraint under its name, and Postgres would then rewrite a table for a column the census
-//     admitted.
+//   - a SET or a RESET of search_path, role or session_authorization, or a RESET ALL, turns them
+//     off: the migration's names then resolve through another path, or as another role, than the
+//     census's do (the default search_path starts with "$user"). Without LOCAL, or as RESET ALL,
+//     the setting outlives the migration: the runner applies each migration on a connection of its
+//     pool, which resets no session setting, so the next migration can take that connection with
+//     the setting on it, and every later migration loses the reads too. SET LOCAL ends with the
+//     migration's transaction, so it turns off the reads of its own migration alone. A SET or a
+//     RESET of any other setting keeps them on;
+//   - every other statement keeps them on only where keepsReadsOn names it, and turns them off for
+//     its own migration and every later one where it does not. A pending migration could drop an
+//     enum and create a domain with a constraint under its name, and Postgres would then rewrite a
+//     table for a column the census admitted.
 //
-// A table's or a view's own row type is no type here, so CREATE TABLE, CREATE VIEW and DROP TABLE
-// leave the reads on: otherwise every migration after one that creates a table would lose them. A
-// DO block, a CALL, a function's body and a trigger are code the census does not read, so a type,
-// a cast or a setting such code changes is not seen.
+// The pass holds a list of the statements that leave the names as they are, not a list of the
+// statements that change them. Each review of such a list found one more statement it missed, the
+// last a rename of a table, and a statement the list misses admits a column that Postgres rewrites
+// the table for. A statement keepsReadsOn does not name costs the later migrations their catalog
+// reads, so their added columns are judged on size: a refusal, which is the safer failure. Code
+// stays a limit: the census does not read what a function's body or a trigger runs, and a SELECT
+// that calls set_config keeps the reads on.
 func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, err error) {
 	for _, s := range statements {
 		if s.node == "VariableSetStmt" {
@@ -683,103 +688,171 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 			}
 			continue
 		}
-		changes, err := c.changesTypes(s)
+		keeps, err := c.keepsReadsOn(s)
 		if err != nil {
 			return false, false, err
 		}
-		if changes {
+		if !keeps {
 			return true, true, nil
 		}
 	}
 	return here, false, nil
 }
 
-// changesTypes says whether a statement creates, alters, renames or drops a type, a domain, a
-// cast, a schema or an extension, or moves an object to another schema, or has one of those
-// effects without naming it, or changes which schema a name resolves in:
+// keepsReadsOn says whether a statement other than a SET or a RESET (catalogReadsOff) is known to
+// leave every type, function and cast name, and the schemas a role's lookup searches, as they are,
+// so that the catalog reads stay on after it. It names the statements this repository's
+// migrations write that change none of these, and answers no for any other statement and for a
+// node it cannot read:
 //
-//   - an extension's script creates types, casts and schemas the census cannot see;
-//   - a change of owner of a type, a domain or a schema, DROP OWNED, which drops every one a role
-//     owns, and REASSIGN OWNED: a new owner can take a role's USAGE on a schema away;
-//   - a GRANT or a REVOKE on a schema, a type or a domain: USAGE on a schema decides which of its
-//     names a role's lookup finds;
-//   - a GRANT or a REVOKE of a role's membership in another role (GrantRoleStmt), CREATE ROLE,
-//     whose IN ROLE, ROLE and ADMIN clauses grant memberships, ALTER ROLE, which changes them and
-//     the role's INHERIT attribute (ALTER GROUP … ADD USER and ALTER GROUP … DROP USER parse as
-//     it too), and DROP ROLE, which removes them, USER or GROUP in place of ROLE included: a role
-//     holds the USAGE on a schema that each role it inherits from holds, so each of these can
-//     change which schemas a role's lookup finds names in, as a GRANT on a schema does.
-//     ALTER ROLE … SET and ALTER DATABASE … SET parse as nodes of their own (AlterRoleSetStmt,
-//     AlterDatabaseSetStmt) and stay off this list: they name no type, domain, cast or schema, and
-//     they are no SET the migration runs;
-//   - a rename of a role (RenameStmt of OBJECT_ROLE): the default search_path starts with
-//     "$user", the name of the role a session runs as, so the rename changes which schema that
-//     entry names for a session of the role;
-//   - a drop with CASCADE, which can drop a type, a domain or a cast it does not name;
-//   - an ALTER FUNCTION, or a CREATE OR REPLACE FUNCTION, of a function that may be a cast's
-//     (castFunction): either can make the cast's function volatile.
-//
-// A statement of one of these nodes that it cannot read counts as one that does.
-func (c *classifier) changesTypes(s statement) (bool, error) {
-	typeObjects := []string{"OBJECT_TYPE", "OBJECT_DOMAIN", "OBJECT_SCHEMA"}
+//   - INSERT, UPDATE, DELETE and SELECT, a WITH included, since a WITH is a field of each, when no
+//     relation the statement writes may be a system catalog (writesCatalog): a superuser's write
+//     to pg_proc or pg_cast can make a cast's function volatile or add a cast, and the census
+//     reads the catalog as it stood before. A SELECT … INTO is not on the list (selectInto): it
+//     creates a table and fills it with the rows its query reads, as CREATE TABLE … AS does, and
+//     the list holds neither form of a table that a query fills;
+//   - LOCK TABLE, CREATE TRIGGER and CREATE INDEX, none of which makes or changes a type or a
+//     function;
+//   - CREATE TABLE and CREATE VIEW, with or without OR REPLACE. The new row type can hide a type of
+//     its name in a later schema of the search_path, which the census then reads in its place. But
+//     no cast targets the new row type, since a cast needs a CREATE CAST, which is not on the list,
+//     and a row type is no domain, so Postgres adds a column of it in the catalog alone;
+//   - ALTER TABLE of a table, and ALTER INDEX, which renames nothing (a rename is a RenameStmt),
+//     with no subcommand of CASCADE. DROP COLUMN … CASCADE and DROP CONSTRAINT … CASCADE drop
+//     objects the statement does not name, as a DROP … CASCADE does: a function with an
+//     SQL-standard body that reads the column, say, and with it a range type whose subtype_diff it
+//     is. ALTER TYPE, ALTER VIEW, ALTER MATERIALIZED VIEW, ALTER SEQUENCE and ALTER FOREIGN TABLE
+//     parse as this node too, and none of them is on the list;
+//   - RENAME COLUMN of a table, which renames an attribute of the table's row type and no type.
+//     Every other rename is off the list. A rename of a table, a view, a materialized view or a
+//     foreign table renames the relation's row type, which keeps every cast that targets it, so a
+//     later migration's type name can resolve to that row type in an earlier schema of the
+//     search_path, through a cast the census never read;
+//   - DROP INDEX, DROP TRIGGER, DROP FUNCTION, DROP TABLE and DROP VIEW, with RESTRICT. Without
+//     CASCADE, Postgres refuses to drop a function a cast calls, and a table or a view whose row
+//     type a cast or a function names. A name the dropped row type held resolved to the row type
+//     of a relation in the catalog the census reads, which admittedType refuses;
+//   - CREATE FUNCTION or CREATE PROCEDURE, in plpgsql or sql (catalogOnlyFunction), except a
+//     replace of a function that a cast may call (castFunction): the replace can make the cast's
+//     function volatile. A function in another language runs code the census does not read when it
+//     is created: a C function loads its library, which can run any code, and plperl's validator
+//     runs the body's BEGIN blocks. A new function takes no call that admittedCall admits, since
+//     admittedCall needs pg_catalog first on the search_path, and the function of the first schema
+//     wins.
+func (c *classifier) keepsReadsOn(s statement) (bool, error) {
 	switch s.node {
-	case "CreateEnumStmt", "CompositeTypeStmt", "CreateRangeStmt", "CreateDomainStmt", "CreateCastStmt",
-		"CreateSchemaStmt", "CreateExtensionStmt", "AlterEnumStmt", "AlterTypeStmt", "AlterDomainStmt",
-		"AlterExtensionStmt", "AlterExtensionContentsStmt", "DropOwnedStmt", "ReassignOwnedStmt",
-		"AlterObjectSchemaStmt", "GrantRoleStmt", "CreateRoleStmt", "AlterRoleStmt", "DropRoleStmt":
+	case "InsertStmt", "UpdateStmt", "DeleteStmt":
+		return !writesCatalog(s), nil
+	case "LockStmt", "CreateTrigStmt", "IndexStmt", "CreateStmt", "ViewStmt":
 		return true, nil
-	case "DefineStmt":
-		var define struct {
-			Kind string `json:"kind"`
-		}
-		return json.Unmarshal(s.body, &define) != nil || define.Kind == "OBJECT_TYPE", nil
+	case "SelectStmt":
+		return !selectInto(s.body) && !writesCatalog(s), nil
 	case "AlterTableStmt":
 		var alter struct {
 			Objtype string `json:"objtype"`
+			Cmds    []struct {
+				Command struct {
+					Behavior string `json:"behavior"`
+				} `json:"AlterTableCmd"`
+			} `json:"cmds"`
 		}
-		return json.Unmarshal(s.body, &alter) != nil || alter.Objtype == "OBJECT_TYPE", nil
-	case "AlterOwnerStmt":
-		var owner struct {
-			ObjectType string `json:"objectType"`
+		if json.Unmarshal(s.body, &alter) != nil || alter.Objtype != "OBJECT_TABLE" && alter.Objtype != "OBJECT_INDEX" {
+			return false, nil
 		}
-		return json.Unmarshal(s.body, &owner) != nil || slices.Contains(typeObjects, owner.ObjectType), nil
-	case "GrantStmt":
-		var grant struct {
-			Objtype string `json:"objtype"`
+		for _, item := range alter.Cmds {
+			if item.Command.Behavior == "DROP_CASCADE" {
+				return false, nil
+			}
 		}
-		return json.Unmarshal(s.body, &grant) != nil || slices.Contains(typeObjects, grant.Objtype), nil
+		return true, nil
 	case "RenameStmt":
 		var rename renameStmt
-		return json.Unmarshal(s.body, &rename) != nil ||
-			slices.Contains([]string{"OBJECT_TYPE", "OBJECT_DOMAIN", "OBJECT_DOMCONSTRAINT", "OBJECT_ATTRIBUTE", "OBJECT_SCHEMA", "OBJECT_ROLE"}, rename.RenameType), nil
+		return json.Unmarshal(s.body, &rename) == nil && rename.RenameType == "OBJECT_COLUMN" && rename.RelationType == "OBJECT_TABLE", nil
 	case "DropStmt":
 		var drop dropStmt
-		return json.Unmarshal(s.body, &drop) != nil || drop.Behavior == "DROP_CASCADE" ||
-			slices.Contains([]string{"OBJECT_TYPE", "OBJECT_DOMAIN", "OBJECT_CAST", "OBJECT_SCHEMA", "OBJECT_EXTENSION"}, drop.RemoveType), nil
-	case "AlterFunctionStmt":
-		var alter struct {
-			Func struct {
-				Objname nameList `json:"objname"`
-			} `json:"func"`
-		}
-		if json.Unmarshal(s.body, &alter) != nil {
-			return true, nil
-		}
-		return c.castFunction(alter.Func.Objname)
+		return json.Unmarshal(s.body, &drop) == nil && drop.Behavior == "DROP_RESTRICT" &&
+			slices.Contains([]string{"OBJECT_INDEX", "OBJECT_TRIGGER", "OBJECT_FUNCTION", "OBJECT_TABLE", "OBJECT_VIEW"}, drop.RemoveType), nil
 	case "CreateFunctionStmt":
+		if kind, err := c.catalogOnlyFunction(s.body); err != nil || kind == "" {
+			return false, err
+		}
 		var create struct {
 			Replace  bool     `json:"replace"`
 			Funcname nameList `json:"funcname"`
 		}
 		if json.Unmarshal(s.body, &create) != nil {
-			return true, nil
-		}
-		if !create.Replace {
 			return false, nil
 		}
-		return c.castFunction(create.Funcname)
+		if !create.Replace {
+			return true, nil
+		}
+		cast, err := c.castFunction(create.Funcname)
+		return !cast, err
 	}
 	return false, nil
+}
+
+// selectInto says whether a SelectStmt holds an INTO, which Postgres takes from the leftmost
+// SELECT of a set operation (select 1 into t union select 2) and refuses anywhere else. A node it
+// cannot read counts as one that does.
+func selectInto(body json.RawMessage) bool {
+	for {
+		var stmt struct {
+			IntoClause json.RawMessage `json:"intoClause"`
+			Larg       json.RawMessage `json:"larg"`
+		}
+		if json.Unmarshal(body, &stmt) != nil || stmt.IntoClause != nil {
+			return true
+		}
+		if stmt.Larg == nil {
+			return false
+		}
+		body = stmt.Larg
+	}
+}
+
+// writesCatalog says whether a statement may write a system catalog: whether the statement, or an
+// INSERT, an UPDATE, a DELETE or a MERGE anywhere in its tree (in a WITH, say), writes a relation
+// named in pg_catalog, or named with no schema and a name that starts with pg_, which Postgres
+// looks up in pg_catalog first. A statement it cannot read counts as one that does.
+func writesCatalog(s statement) bool {
+	var body any
+	if json.Unmarshal(s.body, &body) != nil {
+		return true
+	}
+	return writesCatalogIn(map[string]any{s.node: body})
+}
+
+// writesCatalogIn is the walk of writesCatalog over a node of the parse tree, decoded.
+func writesCatalogIn(tree any) bool {
+	switch node := tree.(type) {
+	case map[string]any:
+		for key, value := range node {
+			switch key {
+			case "InsertStmt", "UpdateStmt", "DeleteStmt", "MergeStmt":
+				write, _ := value.(map[string]any)
+				relation, ok := write["relation"].(map[string]any)
+				if !ok {
+					return true
+				}
+				schema, _ := relation["schemaname"].(string)
+				name, _ := relation["relname"].(string)
+				if schema == "pg_catalog" || schema == "" && strings.HasPrefix(name, "pg_") {
+					return true
+				}
+			}
+			if writesCatalogIn(value) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range node {
+			if writesCatalogIn(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // castFunction says whether a function of name may be a cast's function (Catalog read 5): whether
@@ -944,41 +1017,41 @@ func (n nameList) identifier() pgx.Identifier {
 	return parts
 }
 
-// typeNameOf reads a TypeName node as Catalog read 1 takes it, every part quoted and [] after an
-// array's name. ok is false where the node holds a key other than names, typemod, typmods,
-// arrayBounds and location (%TYPE and SETOF among them), or a name of other than one or two
-// parts. A type modifier does not change the type a name resolves to, and array bounds do no more
-// than make it an array: x[][] is the type x[].
-func typeNameOf(node json.RawMessage) (name string, ok bool) {
+// typeNameOf reads a TypeName node: name as Catalog read 1 takes it, every part quoted and []
+// after an array's name, and names, its parts as the parser gives them, folded or unquoted, which
+// are the same for x and x[]. ok is false where the node holds a key other than names, typemod,
+// typmods, arrayBounds and location (%TYPE and SETOF among them), or a name of other than one or
+// two parts. A type modifier does not change the type a name resolves to, and array bounds do no
+// more than make it an array: x[][] is the type x[].
+func typeNameOf(node json.RawMessage) (name string, names nameList, ok bool) {
 	fields, ok := fieldsOnly(node, "names", "typemod", "typmods", "arrayBounds", "location")
-	var names nameList
 	if !ok || json.Unmarshal(fields["names"], &names) != nil || len(names) < 1 || len(names) > 2 {
-		return "", false
+		return "", nil, false
 	}
 	name = names.identifier().Sanitize()
 	if fields["arrayBounds"] != nil {
 		name += "[]"
 	}
-	return name, true
+	return name, names, true
 }
 
 // tableSizeExemption says why migration sql is exempt from CensusTableLimit: the kinds of its
 // statements, as the report names them ("create function and create trigger"), when every one of
 // its statements is a catalogOnlyStatements kind; "" when any statement is not one of those
 // kinds, when the migration holds no statement, or when it does not parse. laterReadsOff says the
-// migration changes what a name resolves to in the catalog for the pending migrations after it
-// (catalogReadsOff), so Census gives them no catalog to read.
+// migration holds a statement that the census does not know to leave names as they are, which
+// can change what a name resolves to for the pending migrations after it (catalogReadsOff), so
+// Census gives them no catalog to read.
 //
 // catalog is the census's transaction, which the classifier reads where a form needs it: an added
 // column's type, its default's cast and function, and whether the table a created index is built
-// on is new. Its first pass also reads, for a CREATE OR REPLACE FUNCTION or an ALTER FUNCTION,
-// whether a cast calls a function of that name (castFunction), since the answer decides
-// laterReadsOff. With a nil catalog, or where the migration's own statements forbid the reads
-// (catalogReadsOff), it reads nothing to admit a form, and every added column and every created
-// index is judged on size; the other kinds need no read. An error Postgres raises for a read
-// refuses the form it is for, and any other error is returned. The census's transaction is
-// repeatable-read and read-only, so every read sees the catalog as it stands before any pending
-// migration applies.
+// on is new. Its first pass also reads, for a CREATE OR REPLACE FUNCTION, whether a cast calls a
+// function of that name (castFunction), since the answer decides laterReadsOff. With a nil
+// catalog, or where the migration's own statements forbid the reads (catalogReadsOff), it reads
+// nothing to admit a form, and every added column and every created index is judged on size; the
+// other kinds need no read. An error Postgres raises for a read refuses the form it is for, and
+// any other error is returned. The census's transaction is repeatable-read and read-only, so
+// every read sees the catalog as it stands before any pending migration applies.
 //
 // The statements are read by Postgres's own parser, libpg_query (Postgres 17's scan.l and
 // gram.y), run as WebAssembly in pure Go by github.com/wasilibs/go-pgquery, so the reading is the

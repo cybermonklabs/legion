@@ -160,11 +160,11 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 //
 // The classifier (tableSizeExemption) reads the catalog in the census's transaction where a form
 // needs it: an added column's type and default, whether the table a created index is built on is
-// new, and, for a replaced or altered function, whether a cast calls a function of its name.
-// The census reads every pending migration against the catalog as it stands before any of them
-// applies, so from the first pending migration that changes what a name resolves to there
-// (catalogReadsOff), every later one is classified with no catalog, and its added columns and
-// created indexes are judged on size (catalogTrusted).
+// new, and, for a replaced function, whether a cast calls a function of its name. The census
+// reads every pending migration against the catalog as it stands before any of them applies, so
+// from the first pending migration that holds a statement the census does not know to leave names
+// as they are (catalogReadsOff), every later one is classified with no catalog, and its added
+// columns and created indexes are judged on size (catalogTrusted).
 //
 // It returns an error only when the census itself could not be taken: a connection whose
 // search_path names no schema that exists among them, where current_schema() is null, so neither
@@ -237,8 +237,9 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		return nil, fmt.Errorf("census: read event triggers: %w", err)
 	}
 	// The catalog the classifier reads holds what every pending migration's names resolve to until
-	// one of them changes that; tableSizeExemption's laterReadsOff says it does, and from there on
-	// no migration reads the catalog. A recorded migration, which the loop skips, changes nothing.
+	// one of them holds a statement not known to leave the names as they are; tableSizeExemption's
+	// laterReadsOff says it does, and from there on no migration reads the catalog. A recorded
+	// migration, which the loop skips, changes nothing.
 	catalogTrusted := true
 	for _, migration := range migrations {
 		if recorded[migration.Version] {
@@ -532,7 +533,14 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 			}
 			return nil
 		}
-		err = nested.QueryRow(ctx, "select count(*) from "+pgx.Identifier{name}.Sanitize()).Scan(&table.Rows)
+		// The count names the table by the oid the census found it by. Postgres prints a regclass
+		// quoted, and with its schema where the search_path would not find it without one, so a
+		// table the migration names with its schema (other.things) is counted, where quoting the
+		// touched name as one identifier would name no table.
+		var relation string
+		if err = nested.QueryRow(ctx, "select $1::oid::regclass::text", oid).Scan(&relation); err == nil {
+			err = nested.QueryRow(ctx, "select count(*) from "+relation).Scan(&table.Rows)
+		}
 	}
 	// The SQLSTATE and the holders the census already read, never Postgres's message: no text a
 	// row could reach is printed. The failed read aborted the savepoint, which is rolled back

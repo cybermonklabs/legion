@@ -111,7 +111,8 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 	// A migration the census cannot parse is not exempt, and it takes the catalog reads away from
 	// every pending migration after it (laterReadsOff), since the census cannot see what it
 	// changes: a VIRTUAL generated column, which PostgreSQL 18 reads and the census's Postgres 17
-	// grammar does not, and a statement Postgres refuses. A migration it parses leaves them on.
+	// grammar does not, and a statement Postgres refuses. A migration it parses whose statements
+	// are all on the keep-on list (keepsReadsOn) leaves them on.
 	for sql, want := range map[string]bool{
 		"alter table things add column c int generated always as (1) virtual;": true,
 		"create trigger t after insert on things for each row":                 true,

@@ -2248,7 +2248,7 @@ It refuses:
     Postgres then writes only the catalog, whatever the type, and stores a non-null default as the value every existing row reads.
     The column may carry `collate`, `storage` and `compression`, since each changes only what the catalog says of the column.
     The census judges every type the statement names, the column's type and the type its default casts to, by the rules below (`admittedType`).
-    It admits an enum, a range, a composite type made with `create type … as`, and an array of one of these or of a base type.
+    It admits a base type, an enum, a range, a composite type made with `create type … as`, and an array of one of these.
 
     - The type name must have one or two parts, and the type must resolve in the database the census reads.
       The census reads the catalog before any pending migration applies, so a type or a function that an `add column` uses must ship in an earlier release than the column.
@@ -2257,12 +2257,13 @@ It refuses:
     - A type name of one part must not be one of the six serial names (`smallserial`, `serial2`, `serial`, `serial4`, `bigserial`, `serial8`), in the column or in a cast, whatever type of that name exists.
       Postgres gives a column of such a name a sequence and a `nextval` default, which rewrites the table.
       Postgres resolves the name in a cast as it resolves any other type name, so the rule refuses more casts than it must, and no default a migration ships casts to one.
+      The census also refuses an array of one of these names, in the column or in a cast.
 
     - The type must not be a domain, with constraints or without.
       Postgres rewrites the table for a domain with constraints, and the census reads only the type's kind (`typtype`) to refuse every domain.
 
     - The type must not be the row type of a table, a view or another relation.
-      A pending `drop table` does not stop the catalog reads, and after it the same name can resolve to a type in a later schema of the `search_path`, which the census did not read.
+      A pending `drop table` or `drop view` does not stop the catalog reads, and after it the same name can resolve to a type in a later schema of the `search_path`, which the census did not read.
       That type can be a domain with a constraint, or a type whose cast from the default calls a volatile function.
 
     - When the type is an array, its element type must not be a domain or the row type of a relation either.
@@ -2325,48 +2326,63 @@ It refuses:
 
   The census reads the catalog of the database it judges, in its read-only transaction, for an added column's type, for the cast and the function of its default, and for whether the table of a created index is new.
   No other kind needs a catalog read to be admitted.
-  For a `create or replace function` or an `alter function`, the census also reads whether a cast calls a function of that name, since the answer decides whether that migration and the later ones read the catalog (below).
+  For a `create or replace function`, the census also reads whether a cast calls a function of that name, since the answer decides whether that migration and the later ones read the catalog (below).
   The census reads no catalog to admit a statement of the migrations below, so it admits none of their added columns, `text` included, and none of their created indexes:
 
-  - a migration that sets or resets `search_path`, `role` or `session_authorization`, `set local` included, or runs `reset all`, or a migration that itself holds a statement of the list in the next item.
+  - a migration that sets or resets `search_path`, `role` or `session_authorization`, `set local` included, or runs `reset all`.
     Such a setting can make the migration's names resolve to other objects than the census's names do, since the default `search_path` starts with `"$user"`.
     The census compares the setting's name without regard to case, as Postgres does, so `set "Search_Path" = public` stops the reads too.
 
-  - every migration after a pending migration that does one of the things below, since the catalog that the later migration meets is then not the catalog the census reads:
+  - every migration after a pending migration that sets or resets one of these three settings for the session, without `local`, or runs `reset all`.
+    The runner applies each migration on a connection of its pool, and that connection keeps a session setting for the next migration it runs.
+    A `set local` ends with its migration's transaction, so the later migrations still read the catalog.
 
-    - creates, alters, renames or drops a type, a domain, a cast, a schema or an extension.
-      A pending migration could drop an enum and create a domain with a constraint under its name, and Postgres would then rewrite a table for a column the census admitted.
-      An extension's script creates types, casts and schemas that the census cannot see.
+  - a migration that holds a statement that is not on the list below, and every migration after it.
+    The census reads the catalog as it stands before any pending migration applies.
+    So the catalog that a later migration meets is the catalog the census reads only while each earlier statement leaves type and function names as they are.
+    The list holds the statements that this repository's migrations write and that are known to leave these names as they are:
 
-    - changes the owner of a type, a domain or a schema, or the privileges on one (`grant`, `revoke`), or runs `drop owned` or `reassign owned`.
-      `usage` on a schema decides which of its names a role's lookup finds, and `drop owned` drops every type, domain and schema that a role owns.
+    - `insert`, `update`, `delete` and `select`, with a `with` or without, but not `select … into`, which creates a table and fills it as `create table … as` does.
+      Such a statement stays on the list only when nothing in it writes a system catalog: neither the statement nor an `insert`, `update`, `delete` or `merge` in its `with` may write a table named in `pg_catalog`, or named with no schema and a name that starts with `pg_`.
+      A superuser's write to `pg_proc` or `pg_cast` can make a cast's function volatile or add a cast, and the census reads the catalog as it was before the write.
 
-    - grants or revokes membership in a role, or runs `create role`, `alter role` or `drop role` (or the same statement with `user` or `group` in place of `role`).
-      A role has the `usage` on a schema that each role it inherits from has, so these statements can change the schemas in which a role's lookup finds names.
-      `alter role … set` is not one of them: it stays among the statements the census does not see (below).
+    - `lock table`, `create trigger` and `create index`.
 
-    - renames a role.
-      The default `search_path` starts with `"$user"`, and the rename changes which schema that entry names.
+    - `create table` and `create view`, with or without `or replace`.
+      The new row type can hide a type of the same name in a later schema of the `search_path`.
+      But no cast targets the new row type, and it is not a domain, so Postgres adds a column of that type in the catalog alone.
 
-    - moves an object to another schema.
+    - `alter table` of a table, and `alter index` other than a rename, when no subcommand has `cascade`.
+      A `drop column … cascade` or a `drop constraint … cascade` can drop objects that the statement does not name.
 
-    - alters or replaces a function that a cast may call, since a volatile cast function makes Postgres rewrite the table for an added column with a default.
+    - `rename column` of a table, which renames no type.
+
+    - `drop index`, `drop trigger`, `drop function`, `drop table` and `drop view`, with `restrict`, which is the default.
+      Without `cascade`, Postgres does not drop a function that a cast calls, or a table or a view whose row type a cast or a function names.
+
+    - `create function` and `create procedure` in `plpgsql` or `sql`, except a `create or replace` of a function that a cast may call.
+      A volatile cast function makes Postgres rewrite the table for an added column with a default.
       The census matches such a function by its name, in any schema.
 
-    - drops anything with `cascade`, which can drop a type, a domain or a cast that the statement does not name.
+    - `set` and `reset` of a setting other than `search_path`, `role` and `session_authorization`.
 
-    - sets or resets `search_path`, `role` or `session_authorization` for the session, without `local`, or runs `reset all`.
-      The runner applies each migration on a connection of its pool, and that connection keeps a session setting for the next migration it runs.
-      A `set local` ends with its migration's transaction, so the later migrations still read the catalog.
+    Every other statement stops the reads, for its own migration and for every later one.
+    A `do` block, a `call`, an `alter function`, an `alter role … set` and an `alter database … set` stop them.
+    So do `create table … as`, `select … into`, `create materialized view`, a drop with `cascade` and a function in another language.
+    So does every statement that creates, alters, renames or drops a type, a domain, a cast, a schema, an extension or a role.
+    A rename of a table, a view, a materialized view or a foreign table stops the reads for every later migration, because the relation's row type keeps the casts that target it under its new name.
+    After such a rename, a later migration's type name can resolve to that row type in an earlier schema of the `search_path`, through a cast that the census did not read.
+    `create table`, `create view`, `drop table` and `drop view` do not stop the reads, because they are on the list.
+    The census lists the statements that keep the reads on, and not the statements that stop them, because a list of the statements that stop them missed one more statement at each review of it.
 
-    - does not parse in the census's Postgres 17 grammar, since the census cannot see what such a migration changes.
-      A migration can parse on the PostgreSQL 18 server and not in the census (a `virtual` generated column).
-      Such a migration is not exempt itself either.
+  - every migration after a pending migration that does not parse in the census's Postgres 17 grammar, since the census cannot see what such a migration changes.
+    A migration can parse on the PostgreSQL 18 server and not in the census (a `virtual` generated column).
+    Such a migration is not exempt itself either.
 
-    A table's or a view's own row type is not a type here, so `create table`, `create view` and `drop table` do not stop the catalog reads.
-    The census reads only the statements its parser shows.
-    So it does not see a type that a `DO` block, a `call`, a function or a trigger creates.
-    Nor does it see a setting that `set_config` in a `select` or a `DO` block changes, or one that `alter role … set` or `alter database … set` gives the pool's new connections.
+  The census reads only the statements its parser shows, and three limits stay.
+  A `select` that calls `set_config` keeps the reads on, because `select` is on the list.
+  An event trigger that a pending migration creates does not cancel the exemption of a later migration, because the census reads the event triggers once, before any pending migration applies.
+  The census does not read the code that a function or a trigger runs.
 
   A marked single non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` has a separate size exception: its scans do not hold off ordinary writes, not because the build is catalog-only.
   The census still reports its table size, skips counting rows above the limit, and checks its holders and census as usual.

@@ -24,7 +24,10 @@ import (
 // and the default of its argument lets it take a call of no argument, so a search_path that lists
 // other before pg_catalog gives it the call. vol_target_of is plpgsql because Postgres inlines a
 // volatile sql function in its place and then does not rewrite the table, so the cast would show
-// nothing.
+// nothing. The schema early holds the table foo, with a volatile assignment cast from text to its
+// row type, for the row that renames foo to mood under a search_path that lists early before
+// public; foo_of is plpgsql for the same reason, and names no type in its body, which still runs
+// after the rename.
 const catalogOnlyFixtureSQL = `
 create table schema_migrations (version bigint primary key);
 insert into schema_migrations (version) values (1);
@@ -42,6 +45,11 @@ create schema other;
 create function other.one() returns int immutable language sql as 'select 1';
 create function other.statement_timestamp(a int default 0) returns timestamptz volatile language plpgsql
   as $$ begin return clock_timestamp(); end $$;
+create schema early;
+create table early.foo (a int);
+create function early.foo_of(text) returns early.foo volatile language plpgsql
+  as $$ begin return row(length($1)); end $$;
+create cast (text as early.foo) with function early.foo_of(text) as assignment;
 create function spare_fn() returns int language sql as 'select 1';
 create table big2 (id int primary key, pad text not null) with (autovacuum_enabled = off);
 create table big (
@@ -185,16 +193,12 @@ var admittedRows = []admittedRow{
 	{"deferrable references", []string{"alter table big add column c int references big2 (id) deferrable initially deferred"}, "alter table"},
 	{"qualified type", []string{"alter table big add column c pg_catalog.int8"}, "alter table"},
 	{"quoted type", []string{`alter table big add column c "timestamptz"`}, "alter table"},
-	// A DO block is code the census does not read, so it leaves the catalog reads on (I6).
-	{"after a DO block", []string{"do $$ begin end $$", addColumn}, "alter table"},
-	// A table's own row type is no type change (I1).
+	// CREATE TABLE is on the keep-on list (keepsReadsOn): no cast targets the new row type (I1).
 	{"after a create table", []string{"create table later_tbl (id int)", addColumn}, "alter table"},
 	// SET LOCAL ends with its migration's transaction (D1).
 	{"after a set local search_path", []string{"set local search_path = public", addColumn}, "alter table"},
-	// spare_fn is no cast's function, so Catalog read 5 leaves the reads on, for a replace and for
-	// an ALTER FUNCTION alike.
+	// spare_fn is no cast's function, so Catalog read 5 leaves the reads on after a replace of it.
 	{"after a replaced function no cast calls", []string{"create or replace function spare_fn() returns int language sql as 'select 2'", addColumn}, "alter table"},
-	{"after an altered function no cast calls", []string{"alter function spare_fn() volatile", addColumn}, "alter table"},
 
 	// The review's rows. An array's element type is held to the rules of the type (admittedType),
 	// and a composite type made by CREATE TYPE … AS and an enum pass them, in a cast too.
@@ -203,6 +207,21 @@ var admittedRows = []admittedRow{
 	// Postgres searches pg_catalog alone for pg_catalog.statement_timestamp, so the fixture's
 	// other.statement_timestamp cannot take the call, and the name it shares does not refuse it.
 	{"timestamptz default pg_catalog.statement_timestamp()", []string{"alter table big add column c timestamptz default pg_catalog.statement_timestamp()"}, "alter table"},
+
+	// The keep-on list (keepsReadsOn): every statement of each first migration is on it, so the
+	// second still reads the catalog, and its added column is admitted. A column rename renames
+	// an attribute of big's row type and no type. The drops are with RESTRICT, the default.
+	{"after a rename column", []string{"alter table big rename column spare to spare2", addColumn}, "alter table"},
+	{"after insert, update, delete and select", []string{"insert into big2 (id, pad) values (0, 'x'); update big set spare = 1; delete from big2 where id = 0; with s as (select 1) select * from s;", addColumn}, "alter table"},
+	{"after create index, create view, create trigger and lock", []string{"create index big_kind2 on big (kind); create view v_1792 as select id from big; create trigger t_1792 after update on big for each row execute function big_noop(); lock table big in share mode;", addColumn}, "alter table"},
+	{"after alter index and alter table", []string{"alter index big_pad set (fillfactor = 90); alter table big alter column spare set statistics 100;", addColumn}, "alter table"},
+	{"after drops", []string{"drop trigger big_noop on big; drop function spare_fn(); drop index big_pad; drop view big_view; drop table big3;", addColumn}, "alter table"},
+	{"after a create function", []string{"create function later_fn() returns int language plpgsql as $$ begin return 1; end $$", addColumn}, "alter table"},
+	{"after a session set of another setting", []string{"set statement_timeout = '1min'", addColumn}, "alter table"},
+	// early.foo is empty, so it is below the one-byte limit and the census counts its rows. It
+	// counts them by the oid it found the table by (censusTable), so the name the migration writes
+	// with its schema is read as the table it names.
+	{"a table named with its schema", []string{paired("alter table early.foo add column b bigint;")}, "alter table"},
 }
 
 // refusedRow is one census of TestCensusStillRefusesEveryFormThatReadsOrRewritesRows: the SQL of
@@ -213,8 +232,8 @@ type refusedRow struct {
 	migrations []string
 	// first says the first migration is the one refused, not the last.
 	first bool
-	// searchPath, where it is not "", is the search_path of the census's connection for the row
-	// (censusOf), and of the premise test's for its statement.
+	// searchPath, where it is not "", is the search_path of the census's connection for the row,
+	// and of the premise test's for its statement (underSearchPath).
 	searchPath string
 }
 
@@ -238,8 +257,9 @@ var refusedRows = []refusedRow{
 	{name: "domain with a constraint", migrations: []string{"alter table big add column c positive"}},
 	{name: "domain without a constraint", migrations: []string{"alter table big add column c plain_int"}},
 	// The census reads the catalog as it stands before any pending migration applies, so a type
-	// or a function an earlier pending migration creates does not resolve. A table's row type is
-	// no type change, so the first of these rows leaves the reads on and the type is not found.
+	// or a function an earlier pending migration creates does not resolve. CREATE TABLE and
+	// CREATE FUNCTION are on the keep-on list (keepsReadsOn), so the first and the third of these
+	// rows leave the reads on and the census does not find the type or the function.
 	{name: "type of a table a pending migration creates", migrations: []string{"create table later_tbl (id int)", "alter table big add column c later_tbl"}},
 	{name: "type a pending migration creates", migrations: []string{"create type later_mood as enum ('a')", "alter table big add column c later_mood"}},
 	{name: "default function a pending migration creates", migrations: []string{"create function later_one() returns int immutable language sql as 'select 1'", "alter table big add column c int default later_one()"}},
@@ -312,10 +332,11 @@ var refusedRows = []refusedRow{
 	// The census cannot see what a migration it cannot parse changes (D2).
 	{name: "after a migration that does not parse", migrations: []string{"create tabel broken (id int)", addColumn}},
 
-	// R4's list: each first migration changes what a name resolves to, so the second reads no
-	// catalog and its added column is judged on size. The census only parses these statements and
-	// never runs them, so the role nobody_1792 need not exist. vol_target_of is the fixture's cast
-	// function, so an ALTER FUNCTION or a replace of it alters the cast.
+	// R4's list: each first migration changes what a name resolves to, and none of its statements
+	// is on the keep-on list (keepsReadsOn), so the second reads no catalog and its added column
+	// is judged on size. The census only parses these statements and never runs them, so the role
+	// nobody_1792 need not exist. vol_target_of is the fixture's cast function, so a replace of it
+	// alters the cast; an ALTER FUNCTION is off the list whatever function it alters.
 	{name: "after create cast", migrations: []string{"create cast (text as mood) with inout", addColumn}},
 	{name: "after drop cast", migrations: []string{"drop cast (int as vol_target)", addColumn}},
 	{name: "after create schema", migrations: []string{"create schema s2", addColumn}},
@@ -372,14 +393,54 @@ var refusedRows = []refusedRow{
 	// With other before pg_catalog, a function of no argument, or one whose arguments all have
 	// defaults, that a pending migration creates in other would take the call.
 	{name: "default now() under a search_path that lists other before pg_catalog", migrations: []string{"alter table big add column c timestamptz default now()"}, searchPath: "other, pg_catalog, public"},
+
+	// The rows of review round 3. A rename of a relation renames its row type, which keeps every
+	// cast that targets it. Under a search_path that lists early before public, mood names the
+	// enum public.mood until the first migration renames early.foo to mood. After it, mood names
+	// early.mood, and Postgres rewrites big through the fixture's volatile cast from text to that
+	// row type, a cast the census never read: so the rename must turn the reads off.
+	{name: "after a rename of a table to an enum's name in an earlier schema", migrations: []string{"alter table early.foo rename to mood", "alter table big add column c mood default 'a'::text"}, searchPath: "early, public"},
+	// Every rename of a relation turns the reads off as the one above does, since each renames a
+	// row type. The census only parses the first statements of the last two rows, so mv_1792 and
+	// ft_1792 need not exist.
+	{name: "after a rename of a table", migrations: []string{"alter table big3 rename to big3_renamed", addColumn}},
+	{name: "after a rename of a view", migrations: []string{"alter view big_view rename to big_view2", addColumn}},
+	{name: "after a rename of a materialized view", migrations: []string{"alter materialized view mv_1792 rename to mv_1792b", addColumn}},
+	{name: "after a rename of a foreign table", migrations: []string{"alter foreign table ft_1792 rename to ft_1792b", addColumn}},
+
+	// The keep-on list (keepsReadsOn): each first migration holds a statement that is not on it,
+	// so the second reads no catalog and its added column is judged on size, whatever the
+	// statement changes. A DO block and a CALL run code the census does not read. CREATE TYPE
+	// turns the reads off whatever type it makes, so a column of the fixture's enum mood, which
+	// the census admits alone (the row "enum column"), is judged on size after it. ALTER ROLE …
+	// SET and ALTER DATABASE … SET give a session a search_path the census does not read. CREATE
+	// TABLE … AS and SELECT … INTO fill a new table with the rows their query reads, and neither
+	// is on the list. A DROP COLUMN … CASCADE drops objects the statement does not name, and
+	// creating a C function loads its library, which can run any code. The census only parses
+	// these statements, so some_proc_1792, nobody_1792 and dispatch_1792 need not exist.
+	{name: "after a DO block", migrations: []string{"do $$ begin end $$", addColumn}},
+	{name: "after a call", migrations: []string{"call some_proc_1792()", addColumn}},
+	{name: "after create type", migrations: []string{"create type later_t as enum ('a')", "alter table big add column c mood"}},
+	{name: "after an altered function no cast calls", migrations: []string{"alter function spare_fn() volatile", addColumn}},
+	{name: "after alter role set", migrations: []string{"alter role nobody_1792 set search_path = other", addColumn}},
+	{name: "after alter database set", migrations: []string{"alter database dispatch_1792 set search_path = other", addColumn}},
+	{name: "after create table as", migrations: []string{"create table t_as_1792 as select 1 as id", addColumn}},
+	{name: "after select into", migrations: []string{"select 1 into t_into_1792", addColumn}},
+	{name: "after drop column cascade", migrations: []string{"alter table big2 drop column pad cascade", addColumn}},
+	{name: "after a function in c", migrations: []string{"create function c_fn_1792() returns int language c as 'mylib', 'f'", addColumn}},
+	// INSERT, UPDATE, DELETE and SELECT keep the reads on only when nothing in the statement writes
+	// a system catalog (writesCatalog): a superuser's write to pg_proc or pg_cast can make a cast's
+	// function volatile or add a cast. An unqualified pg_ name resolves in pg_catalog first, and a
+	// DELETE in a WITH writes as the statement does. Each statement writes no row (where false).
+	{name: "after an update of pg_proc", migrations: []string{"update pg_proc set provolatile = 'v' where false", addColumn}},
+	{name: "after an insert into pg_catalog.pg_cast", migrations: []string{"insert into pg_catalog.pg_cast select * from pg_cast where false", addColumn}},
+	{name: "after a select whose with deletes from pg_cast", migrations: []string{"with w as (delete from pg_cast where false returning 1) select count(*) from w", addColumn}},
 }
 
 // censusOf runs one census, with the table limit at one byte, of sqls as pending migrations
-// numbered from 2, after the version 1 the fixture records, and answers each one's census. Where
-// searchPath is not "", the census runs under it (underSearchPath).
-func censusOf(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPath string, sqls []string) []MigrationCensus {
+// numbered from 2, after the version 1 the fixture records, and answers each one's census.
+func censusOf(t *testing.T, ctx context.Context, conn *pgx.Conn, sqls []string) []MigrationCensus {
 	t.Helper()
-	defer underSearchPath(t, ctx, conn, searchPath)()
 	migrations := make([]Migration, len(sqls))
 	for i, sql := range sqls {
 		version := i + 2
@@ -396,21 +457,21 @@ func censusOf(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPath stri
 }
 
 // underSearchPath sets conn's search_path to searchPath for the session, where searchPath is not
-// "", and answers the function that resets it to the connection's own. A reset that fails is
-// reported and does not stop the test.
-func underSearchPath(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPath string) (reset func()) {
+// "", until the test ends, when a cleanup resets it to the connection's own. A reset that fails
+// is reported and does not stop the test.
+func underSearchPath(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPath string) {
 	t.Helper()
 	if searchPath == "" {
-		return func() {}
+		return
 	}
 	if _, err := conn.Exec(ctx, "select set_config('search_path', $1, false)", searchPath); err != nil {
 		t.Fatalf("set search_path to %s: %v", searchPath, err)
 	}
-	return func() {
-		if _, err := conn.Exec(ctx, "reset search_path"); err != nil {
+	t.Cleanup(func() {
+		if _, err := conn.Exec(context.Background(), "reset search_path"); err != nil {
 			t.Errorf("reset search_path: %v", err)
 		}
-	}
+	})
 }
 
 // Each form this repository's migrations write that PostgreSQL runs in the catalog alone is
@@ -423,16 +484,16 @@ func underSearchPath(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPa
 // census sizes shares its migration with an added bigint column of big, which is admitted alone.
 // Each row asserts that the census still sized a table above the limit for the migration, so a
 // pass means the exemption kept the refusal away, not a table the census did not find. A row of
-// two migrations shows that what the first one does (a DO block, a CREATE TABLE, a SET LOCAL, a
-// function no cast calls) leaves the catalog reads of the second one on. The census is read-only
-// and its catalog state lives inside one call, so the rows share one database and no row reaches
-// the next.
+// two migrations shows that a first migration of statements on the keep-on list (keepsReadsOn: a
+// CREATE TABLE, a SET LOCAL, a replace of a function no cast calls, a column rename and the rest)
+// leaves the catalog reads of the second one on. The census is read-only and its catalog state
+// lives inside one call, so the rows share one database and no row reaches the next.
 func TestCensusAdmitsEveryCatalogOnlyForm(t *testing.T) {
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)
 	for _, row := range admittedRows {
 		t.Run(row.name, func(t *testing.T) {
-			pending := censusOf(t, ctx, conn, "", row.migrations)
+			pending := censusOf(t, ctx, conn, row.migrations)
 			entry := pending[len(pending)-1]
 			if entry.TableSizeExemption != row.kind || len(entry.Refusals) != 0 {
 				t.Fatalf("%s: exemption %q, refusals %q; want exempt as %q and no refusal", entry.Migration.Name, entry.TableSizeExemption, entry.Refusals, row.kind)
@@ -462,18 +523,19 @@ func sizesATableAboveTheLimit(entry MigrationCensus) bool {
 // checked against, and every other subcommand, rename and statement kind the census does not
 // admit. So is an added column whose reading the census cannot trust: after the migration's own
 // SET of search_path, role or session_authorization, and after an earlier pending migration that
-// turns the catalog reads off (catalogReadsOff lists what does), because the census reads the
-// catalog as it stands before any pending migration applies. The census runs with the limit at
-// one byte, so each refused migration is refused on the size of a table it touches; a form that
-// touches no table the census sizes shares its migration with an added bigint column of big,
-// which is admitted alone, so the refusal shows that the form cost the migration its exemption. A
-// row with a searchPath runs its census under that search_path.
+// holds a statement off the keep-on list (keepsReadsOn lists what keeps the catalog reads on),
+// because the census reads the catalog as it stands before any pending migration applies. The
+// census runs with the limit at one byte, so each refused migration is refused on the size of a
+// table it touches; a form that touches no table the census sizes shares its migration with an
+// added bigint column of big, which is admitted alone, so the refusal shows that the form cost the
+// migration its exemption. A row with a searchPath runs its census under that search_path.
 func TestCensusStillRefusesEveryFormThatReadsOrRewritesRows(t *testing.T) {
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)
 	for _, row := range refusedRows {
 		t.Run(row.name, func(t *testing.T) {
-			pending := censusOf(t, ctx, conn, row.searchPath, row.migrations)
+			underSearchPath(t, ctx, conn, row.searchPath)
+			pending := censusOf(t, ctx, conn, row.migrations)
 			entry := pending[len(pending)-1]
 			if row.first {
 				entry = pending[0]
@@ -531,7 +593,7 @@ func TestCensusEventTriggerOnAnAdmittedKindCancelsItsExemption(t *testing.T) {
 					t.Errorf("drop event trigger %s: %v", trigger, err)
 				}
 			})
-			entry := censusOf(t, ctx, conn, "", []string{row.sql})[0]
+			entry := censusOf(t, ctx, conn, []string{row.sql})[0]
 			if entry.TableSizeExemption != "" || !refusalSays(entry, aboveTheLimit, "the enabled event triggers "+trigger+" run code of their own on them") {
 				t.Fatalf("exemption %q, refusals %q; want a refusal on size that names %s", entry.TableSizeExemption, entry.Refusals, trigger)
 			}
@@ -727,7 +789,7 @@ func TestEveryAdmittedFormReadsAndRewritesNoRow(t *testing.T) {
 				continue
 			}
 			t.Run(row.name, func(t *testing.T) {
-				defer underSearchPath(t, ctx, conn, row.searchPath)()
+				underSearchPath(t, ctx, conn, row.searchPath)
 				if run := runPremise(t, ctx, conn, row.migrations[0]); run.exemption != "" {
 					checkAdmitted(t, run)
 				}
