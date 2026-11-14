@@ -304,7 +304,11 @@ func wayBackBlockDifference(header, guide string) string {
 // releases read alike. The delivery read stands word for word at both commits, and at
 // e90c078559, the commit that declared contract 68. The claim read copied here names
 // c.failure_cause, c.failed_at and c.pending_cause, the columns cybermonklabs/legion#3662
-// added: migration 20261111212544 adds those three and this way back leaves them alone too.
+// added: migration 20261111212544 adds those three and this way back leaves them alone too. The
+// copy leaves out two columns both releases read, the two marks of how a claim's update answer
+// was given: the later migration 20261113110610 drops them, and the statements
+// docs/kubernetes.md gives for that drop add them back before an older image runs. This way
+// back adds, drops and strips nothing of theirs either.
 // Each read must answer a row, and the columns the recovery brought back must read as the empty
 // string their default leaves, which is the whole reason the header can say the older daemon's
 // fence compares nothing and refuses none of the completions in flight.
@@ -352,7 +356,7 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.delivered_rows,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
-	c.update_head, c.update_told_at, c.update_answered_by_turn_end, c.update_reasked_for_push_check,
+	c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,

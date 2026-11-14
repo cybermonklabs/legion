@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -403,6 +404,103 @@ func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 
 	if err := New(server.URL, dispatchToken).PostMessage(context.Background(), "LEGION-5", "Pull request checks are blocked."); err != nil {
 		t.Fatalf("post message: %v", err)
+	}
+}
+
+// The issue's artifact list is read for each one's slug, which is what a message's link names.
+func TestArtifactSlugsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues/LEGION-5/artifacts" {
+			t.Fatalf("request = %s %s, want GET /api/v1/issues/LEGION-5/artifacts", r.Method, r.URL.Path)
+		}
+		assertBearer(t, r)
+		writeJSON(t, w, []map[string]any{
+			{"id": "artifact-1", "slug": "plan-md", "name": "plan.md", "kind": "doc"},
+			{"id": "artifact-2", "slug": "rescue-pod-9d3f0c7a", "name": "rescue-pod-9d3f0c7a", "kind": "doc"},
+		})
+	}))
+	defer server.Close()
+
+	slugs, err := New(server.URL, dispatchToken).ArtifactSlugs(context.Background(), "LEGION-5")
+	if err != nil {
+		t.Fatalf("artifact slugs: %v", err)
+	}
+	if want := []string{"plan-md", "rescue-pod-9d3f0c7a"}; !reflect.DeepEqual(slugs, want) {
+		t.Fatalf("artifact slugs = %v, want %v", slugs, want)
+	}
+}
+
+// A document upload sends the name, the markdown and the daemon's actor, and no other field,
+// since Dispatch's JSON upload decoder refuses an unknown one. The slug comes from the artifact
+// Dispatch answers with. An answer that names no slug is an error, and so is Dispatch's refusal.
+func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *testing.T) {
+	const content = "# The full list\n\n```\nabc first commit\n```\n"
+	answers := []func(w http.ResponseWriter){
+		func(w http.ResponseWriter) {
+			writeJSONStatus(t, w, http.StatusCreated, map[string]any{
+				"artifact": map[string]any{"id": "artifact-3", "slug": "rescue-pod-9d3f0c7a", "name": "rescue-pod-9d3f0c7a", "kind": "doc"},
+				"version":  map[string]any{"number": 1},
+			})
+		},
+		func(w http.ResponseWriter) {
+			writeJSONStatus(t, w, http.StatusCreated, map[string]any{"version": map[string]any{"number": 1}})
+		},
+		func(w http.ResponseWriter) {
+			writeJSONStatus(t, w, http.StatusRequestEntityTooLarge, map[string]string{"code": "CAP_EXCEEDED", "error": "a markdown document is at most 1 MiB"})
+		},
+	}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/issues/LEGION-5/artifacts" {
+			t.Fatalf("request = %s %s, want POST /api/v1/issues/LEGION-5/artifacts", r.Method, r.URL.Path)
+		}
+		assertBearer(t, r)
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q, want application/json, the upload Dispatch reads as a markdown document", got)
+		}
+		var body map[string]json.RawMessage
+		decodeJSON(t, r, &body)
+		fields := make([]string, 0, len(body))
+		for field := range body {
+			fields = append(fields, field)
+		}
+		slices.Sort(fields)
+		if want := []string{"actor", "content", "name"}; !slices.Equal(fields, want) {
+			t.Fatalf("upload fields = %v, want %v: Dispatch refuses any field it does not read", fields, want)
+		}
+		var name, got string
+		if err := json.Unmarshal(body["name"], &name); err != nil || name != "rescue-pod-9d3f0c7a" {
+			t.Fatalf("upload name = %s (%v), want rescue-pod-9d3f0c7a", body["name"], err)
+		}
+		if err := json.Unmarshal(body["content"], &got); err != nil || got != content {
+			t.Fatalf("upload content = %s (%v), want %q", body["content"], err, content)
+		}
+		var actor struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		}
+		if err := json.Unmarshal(body["actor"], &actor); err != nil {
+			t.Fatalf("decode actor: %v", err)
+		}
+		if actor.Kind != "session" || actor.ID != "legion-daemon:LEGION" {
+			t.Fatalf("upload actor = %#v, want legion daemon session", actor)
+		}
+		answers[requests](w)
+		requests++
+	}))
+	defer server.Close()
+
+	client := New(server.URL, dispatchToken)
+	slug, err := client.UploadArtifact(context.Background(), "LEGION-5", "rescue-pod-9d3f0c7a", content)
+	if err != nil || slug != "rescue-pod-9d3f0c7a" {
+		t.Fatalf("upload = %q, %v; want the slug Dispatch filed the document under", slug, err)
+	}
+	if slug, err := client.UploadArtifact(context.Background(), "LEGION-5", "rescue-pod-9d3f0c7a", content); err == nil {
+		t.Fatalf("an answer with no artifact gave slug %q, want an error", slug)
+	}
+	_, err = client.UploadArtifact(context.Background(), "LEGION-5", "rescue-pod-9d3f0c7a", content)
+	if refusal, permanent := PermanentRefusal(err); !permanent || refusal.Code != "CAP_EXCEEDED" {
+		t.Fatalf("a refused upload = %v, want Dispatch's permanent CAP_EXCEEDED refusal", err)
 	}
 }
 

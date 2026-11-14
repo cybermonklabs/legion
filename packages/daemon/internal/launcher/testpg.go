@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The pod's own PostgreSQL for tests, which an issue pod's launcher serves when the deployment
@@ -224,6 +226,19 @@ func (g *pidGuard) done(pid int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	delete(g.pids, pid)
+}
+
+// starter is start and done as a workspace.Starter, for the launcher's own jj and git children
+// that run through workspace.RunCommand: the put-back of a released workspace's bundle
+// (restoreWorkspace). Its start takes the guard's lock alone, as start does.
+func (g *pidGuard) starter() workspace.Starter {
+	return func(cmd *exec.Cmd) (func(), error) {
+		pid, err := g.start(cmd)
+		if err != nil {
+			return nil, err
+		}
+		return func() { g.done(pid) }, nil
+	}
 }
 
 // held are the pids the reaper must skip. The caller holds the guard's lock for the whole pass.

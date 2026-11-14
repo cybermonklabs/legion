@@ -684,7 +684,7 @@ controller, a session with no Legion environment, or a `task` subagent), the pha
 `@legion/pi-shared/phase-stall` tracks the phase: the daemon's assignment (a user message) opens it, the tool's successful
 `handoff_complete` closes it, and its successful `ready_for_update` (`onUpdateAnswered`), which
 closes no phase, moves it to the `waiting` state a WAITING reply buys, so the turn the worker
-answered the daemon's update task in ends with no reminder continuing it: work a continuation did
+answered the daemon's update message in ends with no reminder continuing it: work a continuation did
 would go with the replaced pod, and the daemon would see no turn end.
 A person's direct message the Envoy extension sent in as the user's
 own turn is a user message too (for a `/skill:`, the host's `skill-prompt` custom message), and

@@ -70,10 +70,13 @@ var ErrTokenRefused = errors.New("runtime: the shim did not read its projected t
 // know. Nothing was checked and nothing was pushed. Every other failure of the check is not this.
 var ErrRescueUnsupported = errors.New("runtime: the pod's shim predates the push check")
 
-// RescueRequest is one push check of a pod's disk: the prefix of every rescue branch, which the
-// shim numbers from 1, the bound of one workspace's check and push, and the bound of the whole.
+// RescueRequest is one push check of a pod's disk: the pod's own prefix of rescue branches, which
+// a shim that predates the issue's one rescue branch numbers from 1; that one branch,
+// `legion/<KEY>-rescue`, which only a newer shim reads (shimwire.RescueUnpushed says why the two
+// ride apart); the bound of one workspace's check and push; and the bound of the whole.
 type RescueRequest struct {
 	Branch           string
+	Target           string
 	WorkspaceTimeout time.Duration
 	Timeout          time.Duration
 }
@@ -84,15 +87,32 @@ type WorkspaceRescue struct {
 	Dir string
 	// Status is RescueClean, RescueRescued or RescueFailed.
 	Status string
-	// Branches is each rescue branch pushed for it, with the commit it holds.
+	// Branches is each rescue branch the check reports for it, with the commit it holds: the
+	// branch this check pushed to, or one it did not push (Pushed false) whose tip already holds
+	// the workspace's own work. A shim that predates the issue's one rescue branch reports
+	// instead each branch of the request's per-pod prefix that the remote holds
+	// (RescueRequest's Branch).
 	Branches []RescuedBranch
 	// Error is why a failed check failed.
 	Error string
 }
 
-// RescuedBranch is one rescue branch a push check pushed, and the commit it holds.
+// RescuedBranch is one rescue branch a push check reports, and the commit it holds. Previous,
+// Pushed and Commits are as shimwire.RescueBranch's: a shim that predates them reports none, and
+// one that knows them reports at least one commit for every branch.
 type RescuedBranch struct {
 	Name, Commit string
+	// Previous is the branch's tip before the check's push, empty for a branch the push created.
+	Previous string
+	// Pushed is whether this check pushed the branch.
+	Pushed bool
+	// Commits is the work the branch carries.
+	Commits []RescuedCommit
+}
+
+// RescuedCommit is one commit a rescue branch carries: its id, and its first line cut at 200 bytes.
+type RescuedCommit struct {
+	ID, Subject string
 }
 
 // The statuses of a workspace's push check.
