@@ -763,6 +763,34 @@ type PullRequestClosed struct {
 
 func (PullRequestClosed) isFact() {}
 
+// PullRequestDequeued is GitHub's pull_request action `dequeued`: the pull request left the merge
+// queue, and HeadSHA is the head it left the queue at. GitHub's payload names why it left (its
+// `reason`), but the listener drops that field (packages/envoy/internal/contracts/normalize.go,
+// the pull_request payload), so the fact carries no reason.
+type PullRequestDequeued struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestDequeued) isFact() {}
+
+// MergeQueueReadDone is the outbox's merge-queue read (record.MergeQueueRead) finishing with no
+// merge: never decoded from an event. GitHub answered that pull request Number of Issue is open,
+// or closed unmerged, or, with Unread, no read of it succeeded, so the daemon does not know
+// whether GitHub merged it. Head is the head that left the merge queue (PullRequestDequeued). The
+// workflow writes the message that tells the issue's merger, while the issue still stands in
+// merging at Head (workflow's mergeQueueReadDone). A merged answer applies PullRequestMerged
+// instead, as the webhook's merge would.
+type MergeQueueReadDone struct {
+	Issue  string
+	Number int
+	Head   string
+	Unread bool
+}
+
+func (MergeQueueReadDone) isFact() {}
+
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
 // is in implementing with no open or merged pull request recorded: never decoded from an event.
@@ -826,9 +854,10 @@ type HandoffComplete struct {
 	Generation uint64
 	Summary    string
 	Verdict    string
-	// Commit is the commit the completion reports: the implementer's pushed tip for an implementing
-	// round, and the commit retro and merging stand on; none for the planner, the tester or the
-	// reviewer.
+	// Commit is the commit the completion reports: for the planner, the implementer's implementing
+	// round, the tester and the reviewer the head their handoff record names, empty where a
+	// planner's, a tester's or a reviewer's record names none; and the commit retro and merging
+	// stand on.
 	Commit string
 	// HandoffRecord and HandoffVersion name the Dispatch handoff record the completion of a phase
 	// with a handoff ends with (phase.Handoff): the route read it back from Dispatch and held it to
@@ -1103,6 +1132,17 @@ type DaemonBooted struct {
 
 func (DaemonBooted) isFact() {}
 
+// CutoverMergerRepair is the one-time boot repair of the mergers the `awaiting_merge` cutover
+// left stopped (dispatch://INFRA-3274/spec R2): an earlier build's idle release stopped the
+// merger's pod while its issue waited in `awaiting_merge`, which no role worked, so it armed no
+// backstop, and the migration that moved the issue to `merging` gave the merger no task. It is
+// never decoded from an event. The boot applies it once per Dispatch project, under a fixed
+// event id (`cutover-merger-repair:<project>`), before the consumers start, so processed_events
+// is its once-only record: a later boot's apply is a duplicate, and no handler runs.
+type CutoverMergerRepair struct{}
+
+func (CutoverMergerRepair) isFact() {}
+
 // CheckReport is the checking role's report on one look of its closed issue's production check:
 // the `legion` tool's `handoff_complete` on an issue whose check is open (api/handoff.go),
 // carrying no commit. Verdict is pass, pending or fail; Summary is what the agent saw. Look is
@@ -1309,6 +1349,16 @@ func ChildInOtherTree(key, tree, want string) *Refusal {
 // children both answer it.
 func ChildNotAdoptable(key, tree, reason string) *Refusal {
 	return &Refusal{Status: 409, Code: "CHILD_NOT_ADOPTABLE", Message: fmt.Sprintf("%s cannot join the tree of %s: %s", key, tree, reason)}
+}
+
+// NotCurrentPhase is the 409 HANDOFF_NOT_CURRENT_PHASE refusal of a completion from role, which
+// does not work p, the phase issue stands in: the code every phase worker's prompt names for a
+// completion of a phase it no longer works (prompts/go/worker-common.md). The workflow's handoff
+// answers it for such a completion it does not record (its leftItsPhase), and the completion
+// route's entry fence for one whose entry differs from the role's phases row, before the fact
+// (api's handoffComplete), so a worker reads the same words from either.
+func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
+	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
 }
 
 // Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'

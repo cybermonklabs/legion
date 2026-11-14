@@ -7,12 +7,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// readyForUpdate is the worker's answer to the update task: it has pushed everything it wants
-// kept, and the process holding its claim may now be replaced. The machine records the signal and
-// the head the worker reports (supervise.PodUpdateSignalled); the round's own sweep is what acts
-// on it, once every claim of the round has answered.
+// readyForUpdate is the worker's answer to its update round's ask: it has pushed everything it
+// wants kept, and the process holding its claim may now be replaced. The machine records the
+// signal and the head the worker reports (supervise.PodUpdateSignalled); the round's own sweep is
+// what acts on it. An answer only brings the round's end forward: the round ends early once every
+// claim it asks has answered and no turn runs, and at its bound (pod_update_grace_minutes) it ends
+// whatever the claims answered.
 //
-// `round` is required, and is the round the worker answers for, as the task it read named it: the
+// `round` is required, and is the round the worker answers for, as the ask it read named it: the
 // machine takes the answer only for the round its claim stands in, and refuses one naming any
 // other round (supervise.ErrForeignUpdateRound), which claimFailure answers 409 with the sentence
 // the agent reads. An answer with no round at all would be an answer for every round in turn,
@@ -20,8 +22,8 @@ import (
 //
 // It does not call refuseIfStaleClaim, and may not: the claims this route exists to hear from are
 // exactly the stale ones. A claim in an open update round is served on its previous contract
-// (staleClaim) so that it can finish its turn, push and signal here; refusing it would leave its
-// work unpushed and its round waiting for a signal no process could send.
+// (staleClaim) so that it can finish its turn, push and signal here; refusing it would leave the
+// round no early answer from it, and the round would wait for its bound.
 func (s *server) readyForUpdate(w http.ResponseWriter, r *http.Request) {
 	var req claim.ReadyForUpdateRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,

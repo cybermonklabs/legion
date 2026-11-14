@@ -725,12 +725,12 @@ func terminal(p *corev1.Pod) bool {
 // A pod is built whole from one image, so one container's drift is the pod's: it was launched by
 // another release of the daemon, and its agents call this daemon as that release — for a route it
 // no longer serves, a variable it no longer sets — until the pod is replaced. A launch into an
-// issue pod on another image keeps it (relaunch): such a pod is replaced by its update round, once
-// every worker in it has pushed its work and signalled (PodDrift, ReplacePod). The controller's
-// pod, which no round covers, is replaced by the next launch into it that installs nothing
-// (roundCovers), and the repository cache's own pod, which holds no worker, by its next sweep
-// (reconcileCachePod). ReconcileOrphans warns of each one it finds. A nil pod holds no drift: it
-// is replaced for being absent.
+// issue pod on another image keeps it (relaunch): such a pod is replaced by its update round,
+// once every role in it has answered the update message and no turn runs, or at the round's
+// bound (PodDrift, ReplacePod). The controller's pod, which no round covers, is replaced by the
+// next launch into it that installs nothing (roundCovers), and the repository cache's own pod,
+// which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans warns of each
+// one it finds. A nil pod holds no drift: it is replaced for being absent.
 func imageDrift(p *corev1.Pod, image string) (string, bool) {
 	if p == nil {
 		return "", false
@@ -1061,39 +1061,6 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	// the running pod the claim's locator records.
 	bundle.PodUID = loc.Sandbox.PodUID
 	return bundle, nil
-}
-
-// RescueUnpushed has the claim's shim run the push check of its issue pod's disk over the claim's
-// connection (internal/rescue): the shim runs git and jj as the role, with the role's gh files
-// answering the clone's credential helper, so no credential leaves the pod and none reaches the
-// daemon. The recorded process must still be the claim's running pod: the connection is its.
-func (r *Runtime) RescueUnpushed(ctx context.Context, k runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	if err := k.Validate(); err != nil {
-		return nil, fmt.Errorf("sandbox runtime: push check: %w", err)
-	}
-	if k.Locator == nil {
-		return nil, fmt.Errorf("push check of %s: the claim records no process to ask", k.Claim)
-	}
-	loc := *k.Locator
-	if err := r.checkLocator(loc); err != nil {
-		return nil, err
-	}
-	view, err := r.view(loc.Sandbox.Name)
-	if err != nil {
-		return nil, fmt.Errorf("push check of %s's pod: %w", loc.Claim, err)
-	}
-	if view.pod == nil || string(view.pod.UID) != loc.Sandbox.PodUID || terminal(view.pod) {
-		return nil, fmt.Errorf("push check of %s: its recorded role process %s is not in its running issue pod", loc.Claim, loc.Incarnation)
-	}
-	conn, ok := r.conns.Conn(loc.Claim)
-	if !ok {
-		return nil, fmt.Errorf("push check of %s's pod: the claim has no connection to ask over", loc.Claim)
-	}
-	report, err := conn.RescueUnpushed(ctx, request)
-	if err != nil {
-		return nil, fmt.Errorf("push check of %s's pod: %w", loc.Claim, err)
-	}
-	return report, nil
 }
 
 // ReconcileOrphans deletes the project's Sandboxes nothing owns, once older than grace. An issue

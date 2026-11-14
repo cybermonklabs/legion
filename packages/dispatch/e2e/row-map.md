@@ -311,6 +311,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/polish.e2e.ts` | opens the margin ask composer on the live document |
 | `e2e/popover-escape.e2e.ts` | the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader |
 | `e2e/prefix-links.e2e.ts` | `sql`-forged id twins and the server's short-id resolution |
+| `e2e/priorities.e2e.ts` | every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event |
 | `e2e/progress.e2e.ts` | it asserts the progress the server computes over an issue's children before it opens a page |
 | `e2e/project-default-assignee.e2e.ts` | which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload |
 | `e2e/project.e2e.ts` | the reference closure is the server's graph walk |

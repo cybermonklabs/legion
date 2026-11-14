@@ -199,12 +199,13 @@ endpoint (`phaseClosed`) once one of the two returned without throwing — the t
 record still says `open`, and only the runner's record check, which fails open when the daemon
 does not answer, stands between it and a reminder telling it to complete again.
 
-**What the update task's answer does.** The same CallTool handler tells the endpoint
+**What the update message's answer does.** The same CallTool handler tells the endpoint
 (`updateAnswered`) once the `legion` tool's `ready_for_update` returned without throwing
 (INFRA-484). It closes no phase — answering is not completing — and moves the machine to
 `awaiting-update`, the wait the daemon ends: the `Stop` of the turn the worker answered in blocks
-nothing, so that turn ends and the daemon, which replaces the pod only once every worker of it
-has answered, sees it end. A blocked `Stop` would instead continue that turn, and the work it did
+nothing, so that turn ends and the daemon sees it end. The daemon replaces the pod once every
+role in it has answered and no turn runs, or at the round's bound.
+A blocked `Stop` would instead continue that turn, and the work it did
 would go with the pod. Nothing is written into that wait and no timer is armed in it, because the
 daemon is what wakes the worker: a round, once opened, ends only by replacing its pod or because
 that pod is gone, so the process is replaced and the task the round held behind it reaches the
