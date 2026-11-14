@@ -14,11 +14,11 @@ import (
 )
 
 // The lines a session consumer's create writes of a start it moved (bus.SessionConsumers.create):
-// the WARN of a start past the stream's end it created at the sequence after the stream's last,
-// and the INFO of a caller's start it lowered to the session's resume record. A production check
-// reads them by these texts, so the tests name them whole.
+// the WARN of a start past the stream's end it created at the stream's first sequence, and the
+// INFO of a caller's start it lowered to the session's resume record. A production check reads
+// them by these texts, so the tests name them whole.
 const (
-	clampedStartLine = "session consumer start past the stream's end, created at the sequence after the stream's last"
+	clampedStartLine = "session consumer start past the stream's end, created at the stream's first sequence"
 	loweredStartLine = "session consumer created at its resume record's floor, below the start the caller asked"
 )
 
@@ -27,14 +27,14 @@ const (
 // from a restored or recreated stream with the point it held there.
 const pastTheEnd = 1 << 20
 
-// streamLastSeq is the last sequence the stream holds, as the server reports it.
-func (rig *sessionConsumerRig) streamLastSeq(t *testing.T) uint64 {
+// streamSeqs is the first and the last sequence the stream holds, as the server reports them.
+func (rig *sessionConsumerRig) streamSeqs(t *testing.T) (first, last uint64) {
 	t.Helper()
 	info, err := rig.harness.client.JS().StreamInfo(bus.Stream)
 	if err != nil {
 		t.Fatalf("read the stream's info: %v", err)
 	}
-	return info.State.LastSeq
+	return info.State.FirstSeq, info.State.LastSeq
 }
 
 // logLines is every line of the listener's log whose msg is message and whose session_id is
@@ -90,16 +90,16 @@ func (rig *sessionConsumerRig) requireOneLogLine(t *testing.T, level, message, s
 }
 
 // A registration whose resume point is past the stream's end — a point a session brings back from
-// a stream that was restored or recreated under it, or one an earlier build's consumer created past
-// the end handed it — is answered, and its consumer created, at the sequence after the stream's
-// last, so the consumer delivers what the stream stores from then on rather than skipping every
+// a stream whose sequences went back under it, or one an earlier build's consumer created past the
+// end handed it — is answered, and its consumer created, at the stream's first sequence, so the
+// consumer hands over every message the stream holds on its filters, rather than skipping every
 // message until the stream grows past that point (bus.SessionConsumers.create). The listener says
 // so in one WARN line of its own JSON log, with its machine_id, naming the session, the start the
 // registration asked for (its resume point plus one), the stream's last sequence and identity, and
 // the start the consumer was given. A registration whose resume point is inside the stream is
 // answered at the sequence after that point and writes no such line, so the line is the clamp's
 // alone.
-func TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheEndAndLogged(t *testing.T) {
+func TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheFirstSequenceAndLogged(t *testing.T) {
 	rig := newSessionConsumerRig(t)
 	const sessionID, inside = "ses_resume_past_end", "ses_resume_inside_the_stream"
 	// Another session's messages, so the stream's last sequence is past its first and a resume
@@ -107,7 +107,7 @@ func TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheEndAndLog
 	for range 5 {
 		rig.store(t, contracts.AgentSubject("ses_resume_past_end_bystander"))
 	}
-	lastSeq := rig.streamLastSeq(t)
+	first, lastSeq := rig.streamSeqs(t)
 	streamID := rig.streamID(t)
 
 	answer := rig.subscribe(t, consumerResumeRegistration(sessionID, "e", streamID, lastSeq+pastTheEnd))
@@ -115,18 +115,18 @@ func TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheEndAndLog
 	if answer.Delivery == nil || answer.Delivery.Mode != "consumer" {
 		t.Fatalf("answer %s, want delivery mode consumer", answer.raw)
 	}
-	if answer.Delivery.ConsumerStart != lastSeq+1 {
-		t.Errorf("the answer carries consumer_start %d, want %d, the sequence after the stream's last %d, not the %d the resume point asked",
-			answer.Delivery.ConsumerStart, lastSeq+1, lastSeq, lastSeq+pastTheEnd+1)
+	if answer.Delivery.ConsumerStart != first {
+		t.Errorf("the answer carries consumer_start %d, want %d, the stream's first sequence, not the %d the resume point asked past the stream's last sequence %d",
+			answer.Delivery.ConsumerStart, first, lastSeq+pastTheEnd+1, lastSeq)
 	}
-	if start := rig.startSeq(t, sessionID); start != lastSeq+1 {
-		t.Errorf("the consumer of %s starts at %d, want %d, the sequence after the stream's last %d", sessionID, start, lastSeq+1, lastSeq)
+	if start := rig.startSeq(t, sessionID); start != first {
+		t.Errorf("the consumer of %s starts at %d, want %d, the stream's first sequence", sessionID, start, first)
 	}
 	rig.requireOneLogLine(t, "WARN", clampedStartLine, sessionID, map[string]any{
 		"asked_start":     lastSeq + pastTheEnd + 1,
 		"stream_last_seq": lastSeq,
 		"stream_id":       streamID,
-		"consumer_start":  lastSeq + 1,
+		"consumer_start":  first,
 	})
 
 	// A session with no resume record, whose resume point names a message the stream holds.
@@ -144,17 +144,18 @@ func TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheEndAndLog
 	}
 }
 
-// A session whose consumer was once created at the stream's end, because its resume point was past
-// it, comes back after a deregistration with that same resume point — a client's resume point only
-// rises, and nothing it wrote since was above it — and loses nothing stored while it was away. The
-// delete of its consumer recorded the ack floor F of the messages it took and acked (the session's
-// resume record, bus.SessionResumeSubject), and the registration lowers the start its resume point
-// asks to F + 1, where without the record that start would be clamped to the stream's end again,
-// past every message stored while the session was away (bus.SessionConsumers.create). So its next
-// consumer starts at F + 1, the answer says so, and the session is handed the messages stored while
-// it was away and nothing it had acked. The listener logs the lowering in one INFO line naming the
-// session, the start the registration asked for, the record's floor and the stream's identity, and
-// the second create, which the record kept inside the stream, adds no clamp line to the first's.
+// A session whose consumer was once clamped, because its resume point was past the stream's end,
+// comes back after a deregistration with that same resume point — a client's resume point only
+// rises, and nothing it wrote since was above it — and loses nothing stored while it was away, nor
+// is handed again what it acked. The delete of its consumer recorded the ack floor F of the
+// messages it took and acked (the session's resume record, bus.SessionResumeSubject), and the
+// registration lowers the start its resume point asks to F + 1, where without the record that
+// start would be clamped again, to the stream's first sequence, and the session handed again every
+// message it acked (bus.SessionConsumers.create). So its next consumer starts at F + 1, the answer
+// says so, and the session is handed the messages stored while it was away and nothing it had
+// acked. The listener logs the lowering in one INFO line naming the session, the start the
+// registration asked for, the record's floor and the stream's identity, and the second create,
+// which the record kept inside the stream, adds no clamp line to the first's.
 func TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_resume_clamped_once"
@@ -163,13 +164,13 @@ func TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing(t *testi
 	for range 3 {
 		rig.store(t, contracts.AgentSubject("ses_resume_clamped_once_bystander"))
 	}
-	lastSeq := rig.streamLastSeq(t)
+	firstSeq, lastSeq := rig.streamSeqs(t)
 	streamID := rig.streamID(t)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 
 	first := rig.subscribe(t, consumerResumeRegistration(sessionID, "epoch-1", streamID, lastSeq+pastTheEnd))
-	if first.Delivery == nil || first.Delivery.ConsumerStart != lastSeq+1 {
-		t.Fatalf("answer %s, want consumer_start %d, the sequence after the stream's last: this case is a session whose consumer was clamped", first.raw, lastSeq+1)
+	if first.Delivery == nil || first.Delivery.ConsumerStart != firstSeq {
+		t.Fatalf("answer %s, want consumer_start %d, the stream's first sequence: this case is a session whose consumer was clamped", first.raw, firstSeq)
 	}
 
 	var taken []contracts.Envelope
@@ -193,7 +194,7 @@ func TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing(t *testi
 	again := rig.subscribe(t, consumerResumeRegistration(sessionID, "epoch-2", streamID, lastSeq+pastTheEnd))
 
 	if again.Delivery == nil || again.Delivery.ConsumerStart != floor+1 {
-		t.Errorf("answer %s, want consumer_start %d, the floor %d its resume record holds plus one, not the stream's end", again.raw, floor+1, floor)
+		t.Errorf("answer %s, want consumer_start %d, the floor %d its resume record holds plus one, not the stream's first sequence", again.raw, floor+1, floor)
 	}
 	rig.requireOneLogLine(t, "INFO", loweredStartLine, sessionID, map[string]any{
 		"asked_start":  lastSeq + pastTheEnd + 1,

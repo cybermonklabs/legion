@@ -268,8 +268,8 @@ type sessionDelivery struct {
 // created, and this is the one place every one of them comes from. main derives it from the
 // deployment's own windows (inactiveThresholdFor). The connection is handed logger's own
 // slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a
-// start they lowered to a resume record or clamped to the stream's end are this listener's JSON,
-// with its machine_id.
+// start they lowered to a resume record or clamped from past the stream's end to its first
+// sequence are this listener's JSON, with its machine_id.
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.
@@ -508,8 +508,9 @@ const (
 // first message the stream holds for the session (bus.SessionConsumers.Ensure). The start this
 // passes is a caller's start to that call, so a create lowers it to the floor the session's
 // resume record holds plus one when that is lower and that resume record names the stream's
-// identity, and clamps it to the sequence after the stream's last, so a start an earlier build or
-// a restored stream left on the session's entry past the stream's end creates no consumer past it.
+// identity, and clamps a start past the sequence after the stream's last to the stream's first
+// sequence, so a start an earlier build or a restored stream left on the session's entry past
+// the stream's end creates no consumer past it.
 //
 // A read that failed is logged rather than returned: the caller's answer does not change, and
 // the session's next registration confirms the consumer again. The line names the session, which
@@ -671,19 +672,20 @@ func versionPart(version string, i int) (int, bool) {
 // resume point's seq when that point carries a seq, 0 included (which gives sequence 1), and names
 // the stream's current identity. The consumer call lowers that start to the floor the session's
 // resume record holds plus one when that is lower and the record names the same identity, and
-// clamps it to the sequence after the stream's last: a resume point above what the session's last
-// delete recorded creates the consumer at that record, which hands the session everything stored
-// since, and one past the stream's end creates it at the stream's end (bus.SessionConsumers.Ensure).
-// The answer's consumer_start and the session entry's start are the start the consumer was created
-// at (bus.SessionConsumerStart.StartSeq), the lowered or clamped one included. A registration with
-// no resume point, or one with no seq or naming another identity, creates it at the first message
-// the stream holds on the session's own agent subject, and at the stream's end only when it holds
-// none (bus.SessionConsumers.Ensure). The filter is the topics the registration is about to store,
-// so a message published on a newly followed topic once the registration is answered is the
-// consumer's to deliver. It is a plan and not a row the bucket holds, so something judges it
-// against the bucket afterwards every time: the repair that follows the session entry of a
-// registration that is answered (confirmRegistered), and the settle of one that is not
-// (registerSession).
+// clamps a start past the sequence after the stream's last to the stream's first sequence: a
+// resume point above what the session's last delete recorded creates the consumer at that record,
+// which hands the session everything stored since, and one past the stream's end, with no record
+// to lower it, creates it at the stream's first sequence, which hands it every message the stream
+// holds on its filters (bus.SessionConsumers.Ensure). The answer's consumer_start and the session
+// entry's start are the start the consumer was created at (bus.SessionConsumerStart.StartSeq),
+// the lowered or clamped one included. A registration with no resume point, or one with no seq or
+// naming another identity, creates it at the first message the stream holds on the session's own
+// agent subject, and at the stream's end only when it holds none (bus.SessionConsumers.Ensure).
+// The filter is the topics the registration is about to store, so a message published on a newly
+// followed topic once the registration is answered is the consumer's to deliver. It is a plan and
+// not a row the bucket holds, so something judges it against the bucket afterwards every time:
+// the repair that follows the session entry of a registration that is answered
+// (confirmRegistered), and the settle of one that is not (registerSession).
 //
 // It returns the session's lock held over that filter, which the caller releases (register); a
 // refusal decided before the lock was taken returns noUnlock. A refusal decided after the call

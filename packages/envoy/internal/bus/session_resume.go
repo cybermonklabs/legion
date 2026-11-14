@@ -32,9 +32,10 @@ const SessionResumeSubjectPrefix = NotificationTopicPrefix + "envoy.resume."
 // starts at the record's floor plus one, and a caller's start above that is lowered to it. A
 // create at a pending start a restart left reads none. Without it a session that comes back with
 // no resume point of its own would start at the stream's end and lose what was published while
-// it was away, and so would one that comes back with a resume point past the stream's end, which
-// a consumer created at a clamped start leaves its client holding, since that point is clamped to
-// the stream's end again.
+// it was away; and one that comes back with a resume point past the stream's end, which a
+// consumer created at a clamped start leaves its client holding, would be clamped again, to the
+// stream's first sequence, and handed again every message the stream holds on its filters, the
+// ones it acked included.
 //
 // The record expires with the stream's own MaxAge (streamDuplicateWindow, 72 hours), which is the
 // stream's retention, so a floor older than that named a sequence the stream no longer holds.
@@ -71,7 +72,10 @@ type SessionResumeRecord struct {
 // earlier build created there holds (ackFloor reads at least the sequence before its start),
 // names no stored message, so recording the last sequence instead loses nothing, and a consumer
 // created from the record (SessionConsumers.create) starts at the sequence after it and skips
-// nothing, even once the stream has grown past the floor asked. Once the record's publish
+// nothing, even once the stream has grown past the floor asked. So a record this call writes never
+// holds a floor past the stream's end: the cap keeps the floor at or below the last sequence when
+// the record is written, and a loss that later cuts the stream below that floor removes the
+// record too, since the stream stored the record after the floor. Once the record's publish
 // succeeded, and only then, a floor this lowered is logged as a WARN line naming the session
 // (session_id), the floor asked (floor), the stream's last sequence it was recorded at
 // (stream_last_seq) and the stream's identity (stream_id). A call that fails, its stream read or

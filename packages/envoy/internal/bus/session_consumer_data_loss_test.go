@@ -32,9 +32,10 @@ import (
 // (index.db) is removed, so the restarted server rebuilds the stream from what the block still
 // holds. The test has a server of its own for that (testnats.Start), since it stops it and changes
 // its store (testnats.Server.StoreDir). The messages stored before the consumer's start are most
-// of the block, so the cut falls below that start, at most at its sequence less 3, and a restart
-// at OptStartSeq, or at L + 3 where the clamp lowers it to the sequence after the stream's last
-// (create), is past both messages stored after the loss and delivers neither.
+// of the block, so the cut falls below that start, at most at its sequence less 3. A restart at
+// OptStartSeq is then either at L + 3, past both messages stored after the loss, so it delivers
+// neither, or past the stream's end, where create clamps it to the stream's first sequence; neither
+// is the start after the floor the server reports, L + 1, which the test requires.
 func TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgain(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	owner, err := ConnectOwningStream([]string{uri}, WithReplicas(1))

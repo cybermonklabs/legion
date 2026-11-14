@@ -127,7 +127,7 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 	})
 	pull := pullSession(t, consumers, session)
 	for _, seq := range held {
-		requireNext(t, pull, seq, "a message the stream stored after the loss, below the consumer's old start; a restart after its floor, clamped to the stream's end, skips it")
+		requireNext(t, pull, seq, "a message the stream stored after the loss, below the consumer's old start; the consumer as the loss left it, its next sequence N + 1, skips it")
 	}
 }
 
