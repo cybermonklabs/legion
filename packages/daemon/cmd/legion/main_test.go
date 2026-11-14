@@ -2122,8 +2122,9 @@ func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.
 // this `legion`: the daemon it then reads serves no `assignments` and no
 // `settings.projects.<KEY>.experiments`, and every issue's draw is in its three memory fields,
 // which every daemon from contract 49 serves.
-// The memory line counts those fields where an issue carries no `assignments`, as the merge
-// base's own `memorySummary` counted them, so the line is the one that release's `legion` prints.
+// The memory line counts those fields where an issue carries no `assignments`, as `memorySummary`
+// in legion-v20.13.0 (809208573a01), a release without this change, counted them, so the line is
+// the one a `legion` without this change prints.
 // Where an issue carries `assignments` the fields are not counted a second time.
 func TestPlainStateCountsTheMemoryLineFromTheMemoryFieldsOfADaemonThatServesNoAssignments(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
