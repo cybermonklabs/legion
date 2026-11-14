@@ -1903,9 +1903,13 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}, now); err != nil {
 					return admitted, released, err
 				}
-				task, kept, err := a.engine.ParkedDecisionTask(ctx, tx, issue)
+				// The task names what was kept for the root while nobody in its tree could hear
+				// it, and each root that rests on its approval and is still in the workflow
+				// (dispatch://INFRA-3320, R8), which is how an ancestor the daemon recorded in no
+				// live tree when such a root registered learns of that root.
+				task, kept, err := a.engine.ArchitectStartTask(ctx, tx, issue)
 				if err != nil {
-					return admitted, released, fmt.Errorf("name the decisions on %s while nobody in its tree could hear them: %w", issue.Key, err)
+					return admitted, released, fmt.Errorf("name the decisions on %s while nobody in its tree could hear them, and the roots that rest on it: %w", issue.Key, err)
 				}
 				// The architect start is not one of the starts that wait for a slot: this very
 				// transaction grants the tree whatever slot it needs, and an architect starts no

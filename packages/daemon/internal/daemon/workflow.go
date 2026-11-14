@@ -771,8 +771,12 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // stay, in the order the task named them, and the text is written again from them
 // (workflow.KeptDecisionsTask), which is the wording the start that queued the task used. An issue
 // the record does not hold is kept rather than dropped: a person's decision is never lost, and
-// this answer drops one only where the record says another tree is owed it. A task left naming
-// nothing is retired rather than sent, and its delivery's write releases whatever it still held.
+// this answer drops one only where the record says another tree is owed it. The start task names
+// the roots that rest on the root's approval apart from its decisions
+// (workflow.ArchitectStartTask, dispatch://INFRA-3320 R8), so a task written again names them
+// again, as the record shows them now (workflow.RestingRootsTask), and a task left naming no
+// decision still names them. A task left naming nothing at all is retired rather than sent, and
+// its delivery's write releases whatever it still held.
 //
 // It is the machine that asks, because the machine owns the pending delivery: the hand-over that
 // moved the issue commits in a transaction of its own, with no lock on this claim, and a task
@@ -789,6 +793,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
 	var left []record.DecisionMark
+	resting := ""
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
@@ -823,6 +828,11 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			}
 			stays.Decisions = append(stays.Decisions, mark)
 		}
+		if len(stays.Decisions) != len(named.Decisions) {
+			if resting, err = workflow.RestingRootsTask(scoped, tx, w.records, c.Tree); err != nil {
+				return err
+			}
+		}
 		if len(left) == 0 {
 			return nil
 		}
@@ -838,9 +848,14 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	if len(stays.Decisions) == len(named.Decisions) {
 		return d.Task, d.Kept, nil
 	}
-	task := workflow.KeptDecisionsTask(c.Tree, stays)
+	task := workflow.ArchitectTask(workflow.KeptDecisionsTask(c.Tree, stays), resting)
 	if task == "" {
 		return "", nil, nil
+	}
+	if len(stays.Decisions) == 0 && stays.Approved == 0 {
+		// The task names the roots that rest on the root's approval and no decision: it holds no
+		// row, and so carries nothing of what the root keeps.
+		return task, nil, nil
 	}
 	kept, err := keptJSON(&stays)
 	if err != nil {

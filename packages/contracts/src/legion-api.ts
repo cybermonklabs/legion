@@ -1602,14 +1602,20 @@ export const LegionEscalateRequest = z.strictObject({
  * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). */
+ * parent, whose own head proves their merged work (dispatch://INFRA-980). Since contract 126 it
+ * is refused after that while a root whose design-gate step rests on the issue's approval is still
+ * in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, naming each), and last while a Dispatch
+ * child of the issue is open (`SIGNOFF_CHILD_OPEN`, naming each with its Dispatch status): the
+ * daemon answers the first of the three that holds (dispatch://INFRA-3320, R8). */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
 });
 
 /** `api.RootCloseRequest`, a root architect's close of its tree before the tree's first phase starts,
- * with the reason the daemon posts on the issue. */
+ * with the reason the daemon posts on the issue. It is refused with the sign-off's three codes, in
+ * the same order (`SIGNOFF_CHILD_IN_WORKFLOW`, `SIGNOFF_RESTING_ROOT_IN_WORKFLOW`,
+ * `SIGNOFF_CHILD_OPEN`). */
 export const LegionRootCloseRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

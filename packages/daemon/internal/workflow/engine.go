@@ -1264,6 +1264,105 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 // so that an architect reads one rule wherever it reads of a park.
 const parkRule = "only when a person asked for that move, or when the work is done, folded into another issue or no longer needed"
 
+// The three holds on an issue's acceptance (signOff) and on a root's close (closeRoot) after the
+// work under it, by their refusal codes, in the order the daemon answers them when more than one
+// holds (dispatch://INFRA-3320, R8).
+const (
+	signOffChildInWorkflow = "SIGNOFF_CHILD_IN_WORKFLOW"
+	signOffRestingRoot     = "SIGNOFF_RESTING_ROOT_IN_WORKFLOW"
+	signOffChildOpen       = "SIGNOFF_CHILD_OPEN"
+)
+
+// acceptanceHold is the first of the three holds that holds an issue's acceptance or its close
+// (acceptanceHeld): its refusal code, "" for none, and the issues it names, each as the refusal
+// names it.
+type acceptanceHold struct {
+	code  string
+	names string
+}
+
+// acceptanceHeld reads the three holds on issue's acceptance and on its close, in R8's order, and
+// answers the first that holds; each later one is read only when the one before it holds nothing.
+// First, an issue beneath it in its own tree that is still in the workflow (record.OpenBeneath,
+// SIGNOFF_CHILD_IN_WORKFLOW). Then a root of any tree whose design-gate step rests on its approval
+// and is still in the workflow (RestingRoots, SIGNOFF_RESTING_ROOT_IN_WORKFLOW): the checks of the
+// issues under an ancestor prove its requirements together, so it is accepted only after them. Then
+// a Dispatch child of it that is still open, one that runs as a tree of its own included
+// (openChildren, SIGNOFF_CHILD_OPEN). A root that rests on the issue's approval and is a Dispatch
+// child of it is named by the second, as it holds there first.
+func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) (acceptanceHold, error) {
+	members, err := e.treeMembers(ctx, tx, issue)
+	if err != nil {
+		return acceptanceHold{}, err
+	}
+	if open := record.OpenBeneath(issue, members); len(open) > 0 {
+		return acceptanceHold{code: signOffChildInWorkflow, names: strings.Join(open, ", ")}, nil
+	}
+	resting, err := RestingRoots(ctx, tx, e.store, issue.Key)
+	if err != nil {
+		return acceptanceHold{}, err
+	}
+	if len(resting) > 0 {
+		return acceptanceHold{code: signOffRestingRoot, names: restingNames(resting)}, nil
+	}
+	children, err := e.openChildren(ctx, tx, issue, members)
+	if err != nil || len(children) == 0 {
+		return acceptanceHold{}, err
+	}
+	return acceptanceHold{code: signOffChildOpen, names: strings.Join(children, ", ")}, nil
+}
+
+// openChildren is each Dispatch child of issue that is still open (record.ChildOpen), named with
+// the status Dispatch shows it in, in key order: what the daemon's mirror of Dispatch's issues
+// shows under issue (Store.DispatchChildren), judged with the daemon's own record of each child
+// (Store.IssuesOf), so a child that runs as a tree of its own is open while it is in the workflow
+// there, and a child filed and never released is open until it is closed or in icebox. A child
+// of issue's own tree that the daemon itself holds at admitted under an accepted ancestor
+// (record.HeldUnderAccepted) is left out, as OpenBeneath leaves it out: otherwise this hold and
+// that ancestor's merge, which waits for issue, would wait on each other for ever. members is
+// issue's tree as acceptanceHeld read it.
+func (e *Engine) openChildren(ctx context.Context, tx pgx.Tx, issue record.Issue, members []record.Issue) ([]string, error) {
+	mirrored, err := e.store.DispatchChildren(ctx, tx, e.cfg.Project, []string{issue.Key})
+	if err != nil {
+		return nil, err
+	}
+	rows := mirrored[issue.Key]
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, len(rows))
+	for i, row := range rows {
+		keys[i] = row.Key
+	}
+	recorded, err := e.store.IssuesOf(ctx, tx, e.cfg.Project, keys)
+	if err != nil {
+		return nil, err
+	}
+	records := make(map[string]record.Issue, len(recorded))
+	for _, child := range recorded {
+		records[child.Key] = child
+	}
+	tree := make(map[string]record.Issue, len(members))
+	for _, member := range members {
+		tree[member.Key] = member
+	}
+	var open []string
+	for _, row := range rows {
+		var child *record.Issue
+		if found, ok := records[row.Key]; ok {
+			child = &found
+		}
+		if !record.ChildOpen(row, child) {
+			continue
+		}
+		if child != nil && child.Tree == issue.Tree && record.HeldUnderAccepted(*child, tree) {
+			continue
+		}
+		open = append(open, fmt.Sprintf("%s (%s)", row.Key, row.Status))
+	}
+	return open, nil
+}
+
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
 // retro and starts the implementer there, told the review's handoff and the pull request as the
 // approval told it before acceptance existed. Outside accepting it changes nothing and says so.
@@ -1277,6 +1376,12 @@ const parkRule = "only when a person asked for that move, or when the work is do
 // base; under children-first a parent starts its own phases only after its children have left,
 // so by the time it is accepted there is nothing left to wait for, and the refusal is the
 // backstop for a child filed after the parent started.
+//
+// Past that, it is refused while a root whose step rests on the issue's approval is still in the
+// workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW), and then while a Dispatch child of the issue is open
+// (SIGNOFF_CHILD_OPEN), each naming what holds it, in that order (acceptanceHeld,
+// dispatch://INFRA-3320 R8): the issue's requirements are proved by the checks of the issues under
+// it together, so it is accepted after them, before the admission pass that would move it.
 func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1285,13 +1390,20 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
 	}
-	open, err := e.openBeneath(ctx, tx, *issue)
+	held, err := e.acceptanceHeld(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
-			issue.Key, strings.Join(open, ", "))), nil
+	switch held.code {
+	case signOffChildInWorkflow:
+		return refused(held.code, fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
+			issue.Key, held.names)), nil
+	case signOffRestingRoot:
+		return refused(held.code, fmt.Sprintf("%s is not accepted while these roots that rest on its approval are still in the workflow: %s. The design-gate step of each rests on an approval of %s, so %s is accepted after them. Each is a tree of its own: its own architect, or a person, moves it. Sign off again once each one is done or out of the workflow",
+			issue.Key, held.names, issue.Key, issue.Key)), nil
+	case signOffChildOpen:
+		return refused(held.code, fmt.Sprintf("%s is not accepted while these Dispatch children of it are open: %s. A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released, and sign off again. A child that runs as a tree of its own is moved by its own architect or a person. Close or icebox a child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the acceptance until they answer",
+			issue.Key, held.names)), nil
 	}
 	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -196,6 +198,15 @@ func restingPending(ask string) restingRootEvent { return "pending:" + restingRo
 // restingEnded is the end, with no opening, of a step's wait on the ancestor's request ask.
 func restingEnded(ask string) restingRootEvent { return "ended:" + restingRootEvent(ask) }
 
+// restingClosed is a resting root's close as done, and restingLeft its leave of the workflow any
+// other way: a move to backlog, icebox or triage, or admission's leave of a root it found with
+// neither a slot nor a place in the line (tellRestingLeft). Either ends the wait of the ancestor's
+// sign-off and close for that root (RestingRoots).
+const (
+	restingClosed restingRootEvent = "closed"
+	restingLeft   restingRootEvent = "left"
+)
+
 // queueRestingRoot tells the architect that owns the ancestor basis names that root's step rests
 // on, or waits on, that ancestor's approval: a resting-root notice keyed by the ancestor's issue,
 // so it reaches that architect as any notice keyed by an issue does (the outbox's
@@ -255,6 +266,162 @@ func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) 
 		}
 	}
 	return record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
+}
+
+// tellRestingLeft tells the architect of each ancestor that root rests on (R8) that root has left
+// the workflow for status (leave): closed as done (restingClosed), or out of the workflow any other
+// way (restingLeft). The ancestor's sign-off and close wait for a resting root while it is in the
+// workflow (RestingRoots), so this tells the end of that wait. A step rests on the ancestor whose
+// basis first opened it (RestsOn) and on the ancestor its basis names now, standing or pending
+// (record.DesignGate.RestsOnIssue), so one notice goes to each such ancestor, once per root,
+// generation, ancestor and event (queueRestingRoot), naming each step that rests there, the
+// version of the ancestor's document the step's basis names and the requirements the root's
+// checks serve. A step whose basis a new version of the root's own document ended keeps only the
+// ancestor it rests on, so the notice names no version and no requirement for it.
+func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
+	gates, err := e.store.GatesOf(ctx, tx, root.Key)
+	if err != nil || len(gates) == 0 {
+		return err
+	}
+	type rest struct {
+		steps []record.DesignStep
+		basis record.GateBasis
+	}
+	rests := map[string]*rest{}
+	var ancestors []string
+	for _, step := range record.DesignSteps {
+		gate, ok := gates[step]
+		if !ok {
+			continue
+		}
+		named := []string{gate.RestsOn}
+		if gate.Basis != nil {
+			named = append(named, gate.Basis.Issue)
+		}
+		for _, ancestor := range named {
+			if !gate.RestsOnIssue(ancestor) {
+				continue
+			}
+			at, ok := rests[ancestor]
+			if !ok {
+				at = &rest{basis: record.GateBasis{Issue: ancestor}}
+				rests[ancestor] = at
+				ancestors = append(ancestors, ancestor)
+			}
+			if slices.Contains(at.steps, step) {
+				continue
+			}
+			at.steps = append(at.steps, step)
+			if gate.Basis != nil && gate.Basis.Issue == ancestor {
+				if at.basis.Version == 0 {
+					at.basis.Version = gate.Basis.Version
+				}
+				at.basis.Serves = append(at.basis.Serves, gate.Basis.Serves...)
+			}
+		}
+	}
+	for _, ancestor := range ancestors {
+		at := rests[ancestor]
+		event, what := restingLeft, fmt.Sprintf("%s left the workflow: its status is %s.", root.Key, status)
+		if status == "done" {
+			event, what = restingClosed, fmt.Sprintf("%s is done.", root.Key)
+		}
+		what += fmt.Sprintf(" Its %s rests on the approval of %s. The sign-off and the close of %s no longer wait for %s.",
+			stepsPhrase(at.steps), ancestor, ancestor, root.Key)
+		if err := e.queueRestingRoot(ctx, tx, root, at.steps[0], at.basis, event, what); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RestingRoot is a root whose design-gate step rests on an ancestor's approval in its generation
+// (R8) and that is still in the workflow, as the ancestor's sign-off and close refusals, its start
+// task at its admission and its architect's catch-up name it: its key, the phase it stands in, and
+// its steps that rest on the ancestor.
+type RestingRoot struct {
+	Key   string
+	Phase phase.Phase
+	Steps []record.DesignStep
+}
+
+// RestingRoots is each root of every tree whose step rests on ancestor's approval in its
+// generation (Store.GatesRestingOn: a basis on ancestor opened the step, or the step's basis names
+// ancestor now, standing or pending, on the root's own row or on the row a hand-over carried to a
+// child) and that is still in the workflow, by the predicate the sign-off's hold on the issues
+// beneath it reads of each of them (record.InWorkflow), in key order. A root that is done, on the
+// backlog, in icebox or triage, or lingering holds nothing. Its record is read by key, whatever
+// project or tree it is in.
+func RestingRoots(ctx context.Context, tx pgx.Tx, store record.Store, ancestor string) ([]RestingRoot, error) {
+	gates, err := store.GatesRestingOn(ctx, tx, ancestor)
+	if err != nil {
+		return nil, err
+	}
+	var roots []RestingRoot
+	read, live := "", false
+	for _, gate := range gates {
+		if gate.Issue != read {
+			read = gate.Issue
+			root, err := store.Issue(ctx, tx, gate.Issue)
+			if err != nil {
+				return nil, err
+			}
+			if live = root != nil && record.InWorkflow(*root); live {
+				roots = append(roots, RestingRoot{Key: root.Key, Phase: root.Phase})
+			}
+		}
+		if live {
+			roots[len(roots)-1].Steps = append(roots[len(roots)-1].Steps, gate.Step.OrSpec())
+		}
+	}
+	return roots, nil
+}
+
+// RestingRootsTask is what the architect of ancestor is told of the roots that rest on its
+// approval and are still in the workflow (RestingRoots), "" for none: each one, and that the
+// daemon refuses the ancestor's sign-off and close while any of them is in the workflow, since
+// the checks of the issues under the ancestor prove its requirements together (R8). It is told
+// apart from the decisions a start task names (ArchitectStartTask): admission's start of the
+// ancestor carries it, and so does that task wherever it is written again (the daemon's
+// rootTask), so a task left naming no decision still names these roots.
+func RestingRootsTask(ctx context.Context, tx pgx.Tx, store record.Store, ancestor string) (string, error) {
+	roots, err := RestingRoots(ctx, tx, store, ancestor)
+	if err != nil || len(roots) == 0 {
+		return "", err
+	}
+	return fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s. "+
+		"The daemon refuses the sign-off and the close of %s while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). "+
+		"Each root's own architect, or a person, moves it.", ancestor, restingNames(roots), ancestor), nil
+}
+
+// restingClause is the clause of a catch-up's reason that names roots, the roots that rest on
+// ancestor's approval and are still in the workflow, to the architect of ancestor's tree
+// (QueueCatchUp).
+func restingClause(ancestor string, roots []RestingRoot) string {
+	return fmt.Sprintf("; resting on the approval of %s and still in the workflow: %s (the daemon refuses the sign-off and the close of %s while any of them is; each root's own architect, or a person, moves it)",
+		ancestor, restingNames(roots), ancestor)
+}
+
+// restingNames names each of roots with its steps that rest and the phase it stands in, as the
+// refusals, the start task and the catch-up name them.
+func restingNames(roots []RestingRoot) string {
+	names := make([]string, len(roots))
+	for i, root := range roots {
+		names[i] = fmt.Sprintf("%s (its %s, in %s)", root.Key, stepsPhrase(root.Steps), root.Phase)
+	}
+	return strings.Join(names, ", ")
+}
+
+// stepsPhrase names steps as a sentence does: "spec step", "criteria and spec steps".
+func stepsPhrase(steps []record.DesignStep) string {
+	names := make([]string, len(steps))
+	for i, step := range steps {
+		names[i] = string(step)
+	}
+	if len(names) == 1 {
+		return names[0] + " step"
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1] + " steps"
 }
 
 // What a step on an ancestor's approval takes after its registration (R1, R3). A step that waits,

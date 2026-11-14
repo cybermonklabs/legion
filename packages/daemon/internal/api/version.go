@@ -1579,6 +1579,11 @@ package api
 // and a step open on a basis reads `open` with no `approved`, since no person approved the
 // version its root registered. No plugin decodes the notice: it reaches the architect's session
 // as the daemon writes it, so it needs no narrowing.
+// `POST /legion/v1/signoff` and `POST /legion/v1/roots/close` answer two more refusals, after
+// `SIGNOFF_CHILD_IN_WORKFLOW` and in this order: `SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, while a root
+// whose step rests on the issue's approval is still in the workflow, and `SIGNOFF_CHILD_OPEN`,
+// while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
+// hold it; the refusal's shape is the one every refusal has.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
 // contract below 126 is served every issue without `treeRuns`, and without `gatedSteps` on an
 // issue any step of which reads either new word (api's stateFor, withoutGateBasis), as a caller

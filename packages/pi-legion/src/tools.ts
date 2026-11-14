@@ -356,8 +356,16 @@ export function createLegionTool(deps: {
         "to done, and sign off again. " +
         "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
         "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
-        "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
-        "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
+        "Past that refusal the daemon refuses it while a root whose design-gate step rests on the issue's approval is still " +
+        "in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW, naming each one): that root's own architect, or a person, " +
+        "moves it, and you sign off again once each one is done or out of the workflow. " +
+        "Last, it refuses it while a Dispatch child of the issue is open, one that runs as a tree of its own included " +
+        "(SIGNOFF_CHILD_OPEN, naming each one with its Dispatch status): run each one to done, or close or icebox one " +
+        "under the same rule, and sign off again. " +
+        "close_root is refused the same way, with the same three codes in the same order, while an issue beneath the root " +
+        "is still in the workflow, a root rests on its approval or a Dispatch child of it is open, since closing it would " +
+        "stop that work mid-turn or leave it undone: answer it the same way, park_child under the same rule included, " +
+        "and close or icebox a child that was never released. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
