@@ -324,7 +324,7 @@ RULES = {
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
     f"{ENVOY}/cmd/broker-refgen/recorder_test.go": [
-        Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/recorder_test.go:111,115 checkRefusalWrites(repo root) parses it")
+        Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/recorder_test.go:349 checkRefusalWrites(repo root) parses it")
         for d in ("internal/broker/api", "internal/broker/approval", "internal/broker/airlockproxy")],
     f"{ENVOY}/cmd/broker/main_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "cmd/broker/main_test.go:348 sslrootcert=../../docker/rds-global-bundle.pem")),
     f"{ENVOY}/cmd/broker/outage_test.go": [
@@ -988,7 +988,7 @@ GATES = [
         (f"{ENVOY}/internal/broker/helper/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:16, codes.go:15)"),
         (f"{ENVOY}/cmd/agent-secrets/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:17, codes.go:68)"),
         (f"{ENVOY}/internal/broker/approval/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:34,668)"),
-        (f"{ENVOY}/internal/broker/airlockproxy/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/recorder.go:12,68)"),
+        (f"{ENVOY}/internal/broker/airlockproxy/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/recorder.go:13,75)"),
     ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE) + biome(at_docs("Lint the docs site"))
       + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF),
 

@@ -239,8 +239,7 @@ func (p *Page) sameOrigin(r *http.Request) bool {
 
 // refuseOrigin answers a POST sameOrigin refuses, having written nothing.
 func refuseOrigin(w http.ResponseWriter) {
-	answer.FromWriter(w).NoteCode(codeOriginRefused)
-	writeMessage(w, http.StatusForbidden, say("Refused",
+	writeMessage(w, http.StatusForbidden, codeOriginRefused, say("Refused",
 		"This request did not come from the secrets broker's own page, so nothing was changed."))
 }
 
@@ -252,8 +251,7 @@ func refuseOrigin(w http.ResponseWriter) {
 // ServiceAccount token that refusal names.
 func (*Page) WriteRateLimited(w http.ResponseWriter, retryAfter int) {
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-	answer.FromWriter(w).NoteCode(codeRateLimited)
-	writeMessage(w, http.StatusTooManyRequests, say("Too many requests",
+	writeMessage(w, http.StatusTooManyRequests, codeRateLimited, say("Too many requests",
 		"Too many requests have come from this address. Try again in a moment."))
 }
 
@@ -310,9 +308,9 @@ func say(title string, lines ...string) message {
 	return message{chrome: chrome{Title: title}, Lines: lines}
 }
 
-// The code each refusal of the page answers with, which its writer notes on the answer's record
-// (answer.Recorder.NoteCode) before writeMessage writes its page: the page is HTML, so the record
-// cannot read a code from its body as it does from the API's.
+// The code each refusal of the page answers with, which writeMessage notes on the answer's record
+// (answer.Recorder.NoteCode) as it writes the page: the page is HTML, so the record cannot read a
+// code from its body as it does from the API's.
 const (
 	// A GET /approve/{record} whose id is no record id.
 	codeRecordIDInput = "RECORD_ID_INPUT"
@@ -348,12 +346,16 @@ const (
 	codeSignInAccountRefused = "SIGN_IN_ACCOUNT_REFUSED"
 )
 
-// writeMessage writes m as the page's answer with status. A refusal's page prints the answer's
+// writeMessage writes m as the page's answer with status, noting code on the answer's record
+// (answer.Recorder.NoteCode): the code of a status from 400 to 499, and empty for any other,
+// which is counted under HTTP_<status> whatever is noted. A refusal's page prints the answer's
 // id, so a person refused on it has the id the broker's own record of that refusal names; a 429
 // (WriteRateLimited) writes no such record (answer.Refused), so its page prints none.
-func writeMessage(w http.ResponseWriter, status int, m message) {
-	if answer.Refused(status, "") {
-		m.AnswerID = answer.FromWriter(w).ID()
+func writeMessage(w http.ResponseWriter, status int, code string, m message) {
+	recorder := answer.FromWriter(w)
+	recorder.NoteCode(code)
+	if answer.Refused(status, code) {
+		m.AnswerID = recorder.ID()
 	}
 	writePage(w, status, "message.html", m)
 }
@@ -361,7 +363,7 @@ func writeMessage(w http.ResponseWriter, status int, m message) {
 // writeUnavailable logs a dependency that could not answer and answers 503 saying so.
 func writeUnavailable(w http.ResponseWriter, op string, err error) {
 	slog.Error("approval page: "+op, "error", err)
-	writeMessage(w, http.StatusServiceUnavailable, say("Unavailable",
+	writeMessage(w, http.StatusServiceUnavailable, "", say("Unavailable",
 		"The secrets broker could not "+op+" just now. Try again shortly."))
 }
 
@@ -394,6 +396,6 @@ func ServeStylesheet(w http.ResponseWriter, _ *http.Request) {
 // of a sign-in that is the broker's dependency rather than the person's credential.
 func (p *Page) writeSignInUnavailable(w http.ResponseWriter, err error) {
 	slog.Error("approval sign-in: reach the provider", "issuer", p.cfg.SignIn.Issuer, "error", err)
-	writeMessage(w, http.StatusServiceUnavailable, say("Sign-in unavailable",
+	writeMessage(w, http.StatusServiceUnavailable, "", say("Sign-in unavailable",
 		"The secrets broker could not reach its sign-in provider, "+p.cfg.SignIn.Issuer+". Try again shortly."))
 }

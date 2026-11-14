@@ -120,10 +120,10 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	if !ok {
 		return
 	}
-	// Register noted this route's caller unauthenticated, since it is this handler that reads
-	// the credential, and a caller without the route's power is refused as unauthenticated, as
-	// authenticate's refusal of every other account route records it; from here on the
-	// refusals are the listed caller's.
+	// The route's adapter (accountAuthAfterRecordKind) noted this route's caller unauthenticated,
+	// since it is this handler that reads the credential, and a caller without the route's power
+	// is refused as unauthenticated, as authenticate's refusal of every other account route
+	// records it; from here on the refusals are the listed caller's.
 	if refuseWithoutPower(w, who.account, needs, r.Pattern) {
 		return
 	}

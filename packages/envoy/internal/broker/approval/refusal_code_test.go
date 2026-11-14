@@ -20,10 +20,10 @@ import (
 // TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID drives every refusal the approval page
 // writes through writeMessage, each of its sign-in's and decision's and both of its origin
 // refusals, behind the answer recorder cmd/broker installs. Each writes exactly one record under
-// answer.RefusalMessage naming the code its writer noted, since the page is HTML and the record
-// reads no code from it, and each refusal page prints the answer id its X-Broker-Answer-Id header
-// carries, so the person refused has the id that record names. A page that refuses nothing
-// prints none.
+// answer.RefusalMessage naming the code its call of writeMessage passed, since the page is HTML
+// and the record reads no code from it, and each refusal page prints the answer id its
+// X-Broker-Answer-Id header carries, so the person refused has the id that record names. A page
+// that refuses nothing prints none.
 func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
