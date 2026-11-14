@@ -421,15 +421,16 @@ What each part is for:
   ```
 
   A pane working one of them is told that key, and its jj appends a `Dispatch: <KEY>` line to
-  every commit the pane makes in its own workspace, beside the `Omp-Session:` line every pane's
-  commits carry, so a squash landing that branch carries the issue key in its message — which is
-  what a base branch that requires the key in the commit it lands reads.
+  every commit the pane makes in its own workspace, after the `Omp-Session:` and `Legion-Role:`
+  lines every pane's commits carry, so a squash landing that branch carries the issue key in its
+  message — which is what a base branch that requires the key in the commit it lands reads.
+  A `git commit` gets the session and role lines from the pane's `git`, and no issue line.
   A repository the key names must be one [Dispatch maps to the
   project](#the-projects-repositories): the mapping is what the project serves, and this key only
   selects among it, so a name the project does not serve stamps nothing and the boot log says so
   once, naming the repository and the project.
   A pane of a repository the key does not name is told no key, and its commits carry the session
-  line alone, as does a commit that pane's shell makes in any other jj repository.
+  and role lines alone, as does a commit that pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so `runtime.kubernetes.pod.env` and
   `runtime.tmux.pane_env` are refused for setting it.
   The loader refuses a name that is no `owner/name` and a repository the list names twice,

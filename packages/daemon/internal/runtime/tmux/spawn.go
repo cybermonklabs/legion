@@ -248,8 +248,9 @@ type PaneInputs struct {
 // token in the daemon's environment outranks the file — a non-empty GH_TOKEN would — then
 // LEGION_GH_OWNERS_DIR, the bundle's root, and
 // LEGION_GH_PATH, the real gh the `legion gh` wrapper first on the pane's PATH runs;
-// PI_SHELL_PREFIX, which keeps this daemon's launcher directory (its legion and gh) first in the
-// agent's bash tool; PI_CONFIG_FILES, the operator's overlays, then the role's own, then the
+// PI_SHELL_PREFIX, which keeps this daemon's launcher directory first in the agent's bash tool
+// (its legion, its gh and, where workerbin.Install writes one, its git); PI_CONFIG_FILES, the
+// operator's overlays, then the role's own, then the
 // project's memory overlays for a memory-group pane, and nothing of Legion's own, which names no
 // settings overlay at all — empty where none of the three names one), the
 // four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
@@ -260,7 +261,9 @@ type PaneInputs struct {
 // issue it serves, then the
 // spec's own variables sorted, then a `<NAME>_FILE` pointer per secret file. PATH is never among
 // them — tmux would replace it (LEGION-91) — and neither is any secret's value. No other tool path
-// is told: a pane's git and jj are whatever its PATH, the daemon's, gives.
+// is told: a pane's jj is the first jj on its PATH, the daemon's, and its git is the launcher
+// directory's git wrapper where workerbin.Install writes one, and the first git on that PATH
+// otherwise.
 //
 // A composed name is told once, which is why the operator's loop leaves it out: a second pair of
 // one name leaves the value the pane's process reads to the C library's lookup, which answers

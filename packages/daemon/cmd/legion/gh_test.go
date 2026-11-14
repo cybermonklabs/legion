@@ -1001,7 +1001,7 @@ func TestTheRuntimesGhWrappersAreOnesLegionGhAccepts(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	if err := workerbin.Install(root, "/opt/legion state/legion"); err != nil {
+	if err := workerbin.Install(root, "/opt/legion state/legion", "/usr/bin:/bin"); err != nil {
 		t.Fatal(err)
 	}
 	pane, err := os.ReadFile(filepath.Join(workerbin.LauncherDir(root), "gh"))

@@ -18,11 +18,11 @@
 // 2. For a Legion pane (`LEGION_STATE_DIR` set), write the pane's jj attribution overlay under
 //    that directory and hand on the jj config chain it layers over: `export JJ_CONFIG='<chain>'`
 //    in the same file, so every jj commit a Bash command of the session makes carries an
-//    `Omp-Session: <id>` trailer, and a `Dispatch: <KEY>` line too for a pane whose environment
-//    names an issue key, scoped to that pane's own workspace — which of the pane's variables say
-//    so, and how, is `paneAttributionOptions`
-//    (`exportJjSessionAttribution`, `@legion/pi-shared/jj-attribution`). The
-//    hook writes it, not the claim boot: that boot is the MCP server Claude Code spawns as a
+//    `Omp-Session: <id>` line, then a `Legion-Role: <role>` line for a pane whose `LEGION_ROLE`
+//    names a role, and a `Dispatch: <KEY>` line too for a pane whose environment names an issue
+//    key, scoped to that pane's own workspace — which of the pane's variables say so, and how, is
+//    `paneAttributionOptions` (`exportJjSessionAttribution`, `@legion/pi-shared/jj-attribution`).
+//    The hook writes it, not the claim boot: that boot is the MCP server Claude Code spawns as a
 //    child, and a child cannot change its parent's environment. This line replaces an earlier one
 //    rather than joining it: exactly one `export JJ_CONFIG=` stands however many times the hook
 //    runs, since a resume or a compaction of the same session id runs it again over the file it
@@ -257,8 +257,8 @@ async function openAsks(raw: unknown): Promise<void> {
     const stateDir = process.env["LEGION_STATE_DIR"]
     if (stateDir) {
       try {
-        // The pane's own key and workspace, by the rule both harnesses read those two variables
-        // by (`paneAttributionOptions`).
+        // The pane's own key, workspace and role, by the rule both harnesses read those three
+        // variables by (`paneAttributionOptions`).
         const chain = await exportJjSessionAttribution(input.session_id, stateDir, {
           ...paneAttributionOptions(process.env),
           resolveBase: () => userConfigChain(JJ_BASE_CHAIN_TIMEOUT_MS),
@@ -269,8 +269,8 @@ async function openAsks(raw: unknown): Promise<void> {
         // 2.1.311, so the file belongs to this session id alone: an `export JJ_CONFIG=` line
         // already in it was written by an earlier run of this same id — a resume or a compaction
         // — and names this same session's own overlay, still on disk and still correct. Removing
-        // it after a jj that did not answer would leave the session with neither trailer, where
-        // keeping it leaves the session the trailer it already had.
+        // it after a jj that did not answer would leave the session with no trailer, where keeping
+        // it leaves the session the trailers it already had.
         if (chain !== undefined) {
           replaceOnce(envFile, JJ_CONFIG_EXPORT, `${JJ_CONFIG_EXPORT}${singleQuoted(chain)}`)
         }

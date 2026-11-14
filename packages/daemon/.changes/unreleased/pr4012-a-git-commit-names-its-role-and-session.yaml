@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  A `git commit` that a role runs carries two trailers: `Omp-Session`, with the session id that
+  the `dispatch` command acts as, and `Legion-Role`, with the role's `LEGION_ROLE`. The new
+  command `legion git` adds them and then runs the real git. It adds a line only when its value
+  is valid, and only when git alone would accept the message and the lines change nothing else.
+  It needs git 2.32 or later.
+
+  In a pod, the image's `git` wrapper hands a commit to `legion git`. Under `runtime: tmux`, the
+  daemon and `legion controller start` write a `git` into the state directory's `bin/`, which
+  runs `legion git` and then the next `git` on `PATH`. They write none where the first `git` on
+  `PATH` is the image's wrapper `/opt/legion/bin/git`.
+
+  A release before this one leaves `<state_dir>/bin/git` in place, and that file names a `legion`
+  with no `git` command. Before you start an older daemon or an older `legion controller start`,
+  remove `<state_dir>/bin/git`.

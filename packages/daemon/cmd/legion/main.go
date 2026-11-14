@@ -113,6 +113,7 @@ var commands = map[string]commandEntry{
 	"skills-check":   {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
 	"controller":     {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
 	"git-credential": {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
+	"git":            {runGit, "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)"},
 	"gh":             {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
 	"leak-check":     {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
 }

@@ -18,7 +18,9 @@ A path you did not write in the first list:
 
 No `jj new` first: the push carries that path unless its parent has no description. This split is
 the one exception to "Never `jj describe` or `jj split` the working-copy commit you found at the
-turn's start", and the metaedit is why. Always `-m`, or your commit has no message of yours.
+turn's start", because its `-m` writes your trailers on the commit that holds your paths. The
+metaedit fills the author when the found commit has none: `jj git push` refuses a commit with no
+author. Always `-m`, or your commit has no message of yours.
 The remainder keeps that path, and the push above moves the bookmark's commit alone, so it stays
 out of the branch. Never put the bookmark on the remainder, described or not: measured, that
 pushes the other role's file. Read the first list again, then tell the architect what it held.
