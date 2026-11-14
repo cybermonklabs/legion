@@ -44,8 +44,9 @@ export type AuthScheme = "Bearer" | "DPoP";
 /**
  * A credential as one request presents it, which is how a caller holds one without knowing which
  * it is: a bearer written in an envoy.json or a variable (`bearerCredential`), or an access token
- * the secrets broker minted for this machine's own identity, with a fresh proof of this process's
- * key for each request (`brokerCredential`, src/broker-credential.ts).
+ * the secrets broker minted for a person signed in on this machine or for the machine's own
+ * identity, with a fresh proof of the token's key for each request (`brokerCredential`,
+ * src/broker-credential.ts).
  */
 export interface RequestCredential {
   readonly scheme: AuthScheme;
@@ -77,6 +78,17 @@ export interface RequestCredential {
     url: string,
     session?: string
   ): Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>;
+  /**
+   * Tells the credential that the server said the token it presented for `session` (the same
+   * argument `headers` takes, and nothing for the credential the caller was built with) is not
+   * live, so the next `headers` for that session presents a fresh one rather than the one in
+   * hand: Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE` for a broker token the broker no longer
+   * holds live, such as one a person's revoke ended before it lapsed, and a caller that is told
+   * so presents again once (`DispatchClient`'s `#send`). A broker credential has its client drop
+   * the token, so the next `headers` trades. A bearer has none: it holds no other token to
+   * present.
+   */
+  stale?(session?: string): void;
   /**
    * The secret this credential is presenting, which an excerpt of someone else's answer must
    * redact (`DispatchClient`'s `excerpt`), or "" while it holds none.

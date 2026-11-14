@@ -13,6 +13,7 @@ import {
   chooseSignIn,
   SIGNIN_CLIENT_ID_VAR,
   SIGNIN_CLIENT_SECRET_FILE_VAR,
+  type SignInRecord,
   signInFlow,
   signInSessionName,
 } from "./signins";
@@ -163,7 +164,8 @@ export function tradeSession(env: BrokerEnvironment, own = ""): string {
  * (`personDeclinesNothing`, `packages/envoy/internal/broker/oauth/exchange.go`). Every error
  * while it chooses the sign-in, reads it or builds this client is thrown: nothing here answers
  * the machine's own client while a sign-in record is on the machine, so a session never writes
- * as the machine where a person signed in to act.
+ * as the machine where a person signed in to act. Which sign-in the client trades is
+ * {@link signInTradedBy}'s answer.
  *
  * With no sign-in, it is the machine's own client. The key is this process's own and is made
  * here, once per client, so only its public half ever leaves the process, and the session is
@@ -199,11 +201,31 @@ export async function brokerTokenClient(
       `${record.person} is signed in on this machine, and this machine configures no sign-in client to renew that sign-in with: set ${SIGNIN_CLIENT_ID_VAR} and ${SIGNIN_CLIENT_SECRET_FILE_VAR}`
     );
   }
-  return new BrokerTokenClient({
+  const client = new BrokerTokenClient({
     brokerUrl,
     key: await importDpopKey(record.box_key, `${record.person}'s box key`),
     subject: personIdentity(record, flow),
     actor: machine,
     session: own.trim() || signInSessionName(record),
   });
+  SIGN_INS.set(client, { person: record.person, thumbprint: record.thumbprint });
+  return client;
+}
+
+/** The sign-in each person's client {@link brokerTokenClient} made trades, by client. */
+const SIGN_INS = new WeakMap<BrokerTokenClient, Pick<SignInRecord, "person" | "thumbprint">>();
+
+/**
+ * The sign-in `client` trades, as its person and its box key's thumbprint, where
+ * {@link brokerTokenClient} made it to trade a person's; undefined for this machine's own client
+ * and any client made elsewhere. The pair names a sign-in as the broker records one (the person
+ * and the thumbprint of the key the proof is signed with), so a caller that remembers a sign-in
+ * refused for good keys the refusal by it, as Go's `SignInAuthority.refused` does
+ * (`packages/envoy/internal/brokerclient/signinauthority.go`): only a new `agent-secrets login`,
+ * which makes a box key of its own, cures that refusal.
+ */
+export function signInTradedBy(
+  client: BrokerTokenClient
+): Pick<SignInRecord, "person" | "thumbprint"> | undefined {
+  return SIGN_INS.get(client);
 }

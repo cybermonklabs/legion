@@ -602,6 +602,26 @@ async function writeAnswer(response: Response, key: string): Promise<WriteAnswer
 }
 
 /**
+ * Dispatch's refusal of a broker token the secrets broker does not hold as live: unknown to it,
+ * lapsed, or ended by a revoke before it lapsed (`brokerTokenActor`,
+ * packages/envoy/internal/dispatch/api/broker_token.go).
+ */
+const BROKER_TOKEN_NOT_ACTIVE = "BROKER_TOKEN_NOT_ACTIVE";
+
+/**
+ * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`. Its JSON is read from a clone,
+ * so the body stays whole for whoever reads the answer.
+ */
+async function tokenNotLive(response: Response): Promise<boolean> {
+  if (response.status !== 401 || !isJson(response)) return false;
+  const body: unknown = await response
+    .clone()
+    .json()
+    .catch(() => undefined);
+  return asErrorShape(body).code === BROKER_TOKEN_NOT_ACTIVE;
+}
+
+/**
  * Why `answer` is not the page `listIssuePage` asked for, and whether asking again can change
  * that; undefined when it is one. A JSON answer that is not a page is Dispatch's own and comes back
  * the same; text (`#response` returns a body it could not read as JSON as its text) looks like a
@@ -773,12 +793,14 @@ function excerpt(text: string, token: string): string {
 /**
  * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
  * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
- * `writeRetry` paces it.
+ * `writeRetry` paces it, and where a broker token Dispatch says is no longer live is traded
+ * afresh and the request sent once more.
  *
  * `credential` is what every request presents: a bearer (`bearerCredential`, src/bearer.ts), or
- * what this machine trades its own identity for at the secrets broker, presented under the
- * `DPoP` scheme with a fresh proof of this process's key on every request. A resolved Dispatch
- * holds exactly one of them (`ActiveDispatchConfig.credential`), so no caller chooses.
+ * what the secrets broker trades this machine's identity for, or the identity of a person signed
+ * in on it, presented under the `DPoP` scheme with a fresh proof of the token's key on every
+ * request. A resolved Dispatch holds exactly one of them (`ActiveDispatchConfig.credential`), so
+ * no caller chooses.
  */
 export class DispatchClient {
   readonly #baseUrl: string;
@@ -1771,11 +1793,53 @@ export class DispatchClient {
   }
 
   /**
-   * The one request function: every call the client makes goes through here. A read, a PUT or a
-   * DELETE goes once, and `signal` aborts it beside the client's own signal. A write (POST or
-   * PATCH) carries an `Idempotency-Key`: the caller's own `callerKey`, where it has one intent
-   * across calls and processes, else one minted here for this call alone, so all its attempts are
-   * one intent to Dispatch, which runs it once and answers a
+   * The one request function: every call the client makes goes through here. It presents the
+   * credential and sends the request (`#sendPresenting`), and sends it once more where Dispatch
+   * answers that the token presented is not live (`tokenNotLive`, its
+   * `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so (`RequestCredential.stale`):
+   * the broker ended that token before it lapsed, as a person's revoke of their sign-in does. The
+   * credential is told, presents afresh, which trades at the broker again, and the request goes
+   * again, a write under the same `Idempotency-Key`. Dispatch authenticates a request before any
+   * handler runs (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go), so
+   * that 401 says it did nothing and the request is safe to send again. It is sent again once
+   * per call: a second such answer is the call's, as any other refusal is. A trade the broker
+   * refuses throws out of the second presentation, so the call fails in the broker's own words,
+   * which name `agent-secrets login` after a revoke.
+   */
+  async #send(
+    method: string,
+    url: string,
+    body?: EncodedBody,
+    accept = "application/json",
+    signal?: AbortSignal,
+    callerKey?: string
+  ): Promise<Response> {
+    // A write's key is the call's, so the request sent again after a dead token is the same
+    // intent to Dispatch as the first.
+    const key =
+      method === "POST" || method === "PATCH" ? (callerKey ?? crypto.randomUUID()) : undefined;
+    const send = async (): Promise<Response> =>
+      this.#sendPresenting(
+        await this.#credential.headers(method, url),
+        method,
+        url,
+        body,
+        accept,
+        signal,
+        key
+      );
+    const answer = await send();
+    if (this.#credential.stale === undefined || !(await tokenNotLive(answer))) return answer;
+    this.#credential.stale();
+    return await send();
+  }
+
+  /**
+   * One request presenting `first`, the credential's presentation for it. A read, a PUT or a
+   * DELETE (no `key`) goes once, and `signal` aborts it beside the client's own signal. A write
+   * (POST or PATCH) carries `key` as its `Idempotency-Key`: the caller's own, where it has one
+   * intent across calls and processes, else one minted for this call alone (`#send`), so all its
+   * attempts are one intent to Dispatch, which runs it once and answers a
    * repeat with the answer it stored, while two calls are two writes. Each attempt sends the same
    * encoded body. While an attempt gets no definitive answer (`writeAnswer`, a transport failure,
    * or `writeRetry.silenceMs` without progress, `#attempt`) the write asks again under its key,
@@ -1793,23 +1857,24 @@ export class DispatchClient {
    * say nothing, so they rely on what an answer or `/healthz` showed within
    * `KEYED_LAYER_MEMORY_MS`, and ask `/healthz` when nothing did (`#runsKeyedLayer`).
    */
-  async #send(
+  async #sendPresenting(
+    first: Readonly<Record<string, string>>,
     method: string,
     url: string,
-    body?: EncodedBody,
-    accept = "application/json",
-    signal?: AbortSignal,
-    callerKey?: string
+    body: EncodedBody | undefined,
+    accept: string,
+    signal: AbortSignal | undefined,
+    key: string | undefined
   ): Promise<Response> {
-    // The credential is presented once here, and again for each attempt the write loop makes
-    // below: a key-bound scheme signs one proof per request, so one presentation is one proof
-    // sent, never a second minted and discarded. It is asked before the loop so a credential
-    // that cannot answer throws here, out of the loop's reach, rather than being taken for a
-    // failed attempt.
+    // The credential is presented once by the caller, and again for each attempt the write loop
+    // makes below: a key-bound scheme signs one proof per request, so one presentation is one
+    // proof sent, never a second minted and discarded. The first is asked before the loop so a
+    // credential that cannot answer throws out of the loop's reach, rather than being taken for
+    // a failed attempt.
     const headers: Record<string, string> = { Accept: accept };
-    let presented = await this.#credential.headers(method, url);
+    let presented = first;
     if (body !== undefined) headers["Content-Type"] = body.type;
-    if (method !== "POST" && method !== "PATCH") {
+    if (key === undefined) {
       return this.fetchImpl(url, {
         method,
         headers: { ...headers, ...presented },
@@ -1817,7 +1882,6 @@ export class DispatchClient {
         ...(body === undefined ? {} : { body: body.content }),
       });
     }
-    const key = callerKey ?? crypto.randomUUID();
     headers[IDEMPOTENCY_KEY_HEADER] = key;
     const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
     const pause = this.writeRetry.pause ?? pauseFor;

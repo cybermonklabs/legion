@@ -1,20 +1,26 @@
 // packages/envoy-client/src/__tests__/broker-credential.test.ts
 //
-// The credential a machine makes out of its own identity: when a session uses it (only when no
-// bearer is configured at all), what it puts on a request, and that it renews mid-session with
-// nothing restarted.
+// The credential a machine makes out of the identities it holds: when a session uses it (only
+// when no bearer is configured at all), what it puts on a request, that it renews mid-session
+// with nothing restarted, and, where a person signed in on the machine, that it trades that
+// person under the right session name, remembers a sign-in refused for good, and never trades
+// the machine in its place.
 
 import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import * as path from "node:path";
+import { type SignInRecord, signInSessionName } from "@legion/broker-client/signins";
+import { SUBJECT_TOKEN_TYPE_PERSON } from "@legion/broker-client/wire";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { consumerDelivery } from "../../test/subscribe-answer";
-import { forgetBrokerClients, forgetBrokerSession } from "../broker-credential";
+import { brokerCredential, forgetBrokerClients, forgetBrokerSession } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
 import { DispatchClient } from "../dispatch-http";
 import { readEnvoyConfig } from "../envoy-config";
 import { envoySettings } from "../envoy-settings";
 import { createEnvoyClient } from "../transport";
+import { signedIn, signInPath, stubIssuer, thumbprintOf, writeSignIn } from "./sign-ins";
 
 afterEach(forgetBrokerClients);
 
@@ -489,4 +495,265 @@ test("a pool machine has a route: Dispatch and the listener are given its broker
     { nats: false }
   );
   expect(unknown.enabled).toBe(false);
+});
+
+test("stale() has the session's client drop its token, so its next headers() trades afresh", async () => {
+  // What a caller does when a server says the token it presented is not live: Dispatch's
+  // `401 BROKER_TOKEN_NOT_ACTIVE` for a token a revoke ended before it lapsed.
+  const broker = stubBroker(600);
+  const env = podEnvironment(broker.url, "http://dispatch.test");
+  const credential = brokerCredential(env, "session-one");
+  const url = "http://dispatch.test/api/v1/issues";
+
+  await credential.headers("GET", url);
+  await credential.headers("GET", url);
+  expect(broker.trades).toHaveLength(1);
+  credential.stale?.();
+  expect((await credential.headers("GET", url)).Authorization).toBe("DPoP broker-access-token-2");
+
+  // A session a call names is told apart as `headers` tells it apart: only its client drops.
+  await credential.headers("POST", url, "session-two");
+  credential.stale?.("session-two");
+  expect((await credential.headers("POST", url, "session-two")).Authorization).toBe(
+    "DPoP broker-access-token-4"
+  );
+  expect((await credential.headers("GET", url)).Authorization).toBe("DPoP broker-access-token-2");
+  expect(broker.trades.map((trade) => trade.form.get("session"))).toEqual([
+    "session-one",
+    "session-one",
+    "session-two",
+    "session-two",
+  ]);
+});
+
+const PERSON = "ada@example.com";
+const CLIENT_ID = "example-device-client";
+/** The name this machine trades its own identity under, as a daemon's environment sets it. */
+const MACHINE_SESSION = "legion-demo-controller";
+/** What the broker answers a trade proved with the box key of a sign-in its person revoked. */
+const REVOKED = `${PERSON} revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with \`agent-secrets login\`.`;
+
+/** One trade the stub broker was asked, and the thumbprint of the key its proof was signed with. */
+interface ProvedTrade {
+  readonly form: URLSearchParams;
+  readonly thumbprint: string;
+}
+
+/**
+ * A broker that mints a token good for ten minutes for every trade, numbering each, except a
+ * trade proved with a key whose thumbprint `revoked` holds, which it refuses as it refuses a
+ * sign-in its person revoked.
+ */
+function signInBroker(): { url: string; trades: ProvedTrade[]; revoked: Set<string> } {
+  const trades: ProvedTrade[] = [];
+  const revoked = new Set<string>();
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      const header = (request.headers.get("DPoP") ?? "").split(".")[0] ?? "";
+      const { jwk } = JSON.parse(Buffer.from(header, "base64url").toString("utf8"));
+      const thumbprint = thumbprintOf(jwk);
+      trades.push({ form: new URLSearchParams(await request.text()), thumbprint });
+      if (revoked.has(thumbprint)) {
+        return Response.json(
+          { error: "invalid_grant", error_description: REVOKED },
+          { status: 400 }
+        );
+      }
+      return Response.json({
+        access_token: `broker-token-${trades.length}`,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 600,
+      });
+    },
+  });
+  servers.push(server);
+  return { url: `http://127.0.0.1:${server.port}`, trades, revoked };
+}
+
+/** The issuer {@link PERSON}'s sign-in is renewed at, stopped after the test; `answer` replaces
+ *  a refresh's answer where it gives one. */
+function issuerFor(answer?: (count: number) => Response | undefined) {
+  const issuer = stubIssuer({
+    clientId: CLIENT_ID,
+    person: PERSON,
+    ...(answer === undefined ? {} : { answer }),
+  });
+  servers.push(issuer);
+  return issuer;
+}
+
+/**
+ * The environment of a pod whose sign-in directory (`signins`) holds `records`, with the sign-in
+ * client at `issuerUrl` configured and `AGENT_SECRETS_SESSION` naming the machine's own session,
+ * as a daemon's environment sets it. The pod's projected token is the actor: which kind of
+ * machine a person signs in on changes nothing this file reads.
+ */
+async function signedInPod(
+  brokerUrl: string,
+  dispatchUrl: string,
+  issuerUrl: string,
+  records: readonly SignInRecord[]
+): Promise<{ env: DispatchEnvironment; signins: string }> {
+  const signins = path.join(tempDir(), "signins");
+  for (const record of records) await writeSignIn(signins, record);
+  const secret = path.join(tempDir(), "client-secret");
+  writeFileSync(secret, "example-device-client-secret\n", { mode: 0o600 });
+  return {
+    env: {
+      ...podEnvironment(brokerUrl, dispatchUrl),
+      AGENT_SECRETS_SESSION: MACHINE_SESSION,
+      AGENT_SECRETS_SIGNIN_DIR: signins,
+      AGENT_SECRETS_SIGNIN_ISSUER: issuerUrl,
+      AGENT_SECRETS_SIGNIN_CLIENT_ID: CLIENT_ID,
+      AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE: secret,
+    },
+    signins,
+  };
+}
+
+/** A Dispatch client of `env` for a caller acting as `session`, or as none. */
+function dispatchOf(env: DispatchEnvironment, session?: string): DispatchClient {
+  const resolution = dispatchSettings(env, noFile(env), session === undefined ? {} : { session });
+  if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
+  return new DispatchClient(resolution.url, resolution.credential);
+}
+
+/** The words `call` failed with; a call that succeeds fails the test. */
+async function refusalOf(call: Promise<unknown>): Promise<string> {
+  return await call.then(
+    () => {
+      throw new Error("expected the call to be refused");
+    },
+    (error: unknown) => (error instanceof Error ? error.message : String(error))
+  );
+}
+
+test("a person's trade asks under the caller's own session, else the sign-in's name, never AGENT_SECRETS_SESSION", async () => {
+  // The machine trades under AGENT_SECRETS_SESSION, and the broker holds a name for one identity,
+  // so the person asking under it would be refused.
+  const broker = signInBroker();
+  const dispatch = stubDispatch();
+  const issuer = issuerFor();
+  const record = signedIn(PERSON, { client_id: CLIENT_ID });
+  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
+
+  await dispatchOf(env).listAllIssues({});
+  await dispatchOf(env, "ses_01a9").listAllIssues({});
+
+  expect(
+    broker.trades.map((trade) => [
+      trade.form.get("subject_token_type"),
+      trade.form.get("session"),
+      trade.thumbprint,
+    ])
+  ).toEqual([
+    [SUBJECT_TOKEN_TYPE_PERSON, signInSessionName(record), record.thumbprint],
+    [SUBJECT_TOKEN_TYPE_PERSON, "ses_01a9", record.thumbprint],
+  ]);
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
+    "DPoP broker-token-1",
+    "DPoP broker-token-2",
+  ]);
+});
+
+test("a client the factory failed to make is not kept: a store the person corrected is read with no restart", async () => {
+  const broker = signInBroker();
+  const dispatch = stubDispatch();
+  const issuer = issuerFor();
+  const ada = signedIn(PERSON, { client_id: CLIENT_ID });
+  const grace = signedIn("grace@example.com", { client_id: CLIENT_ID });
+  const { env, signins } = await signedInPod(broker.url, dispatch.url, issuer.url, [ada, grace]);
+  const client = dispatchOf(env, "ses_01a9");
+
+  expect(await refusalOf(client.listAllIssues({}))).toBe(
+    "2 people are signed in on this machine (ada@example.com, grace@example.com), so this session must say which one it acts for: set AGENT_SECRETS_PERSON to one of them"
+  );
+  expect(broker.trades).toHaveLength(0);
+
+  await rm(signInPath(signins, grace.person));
+  await client.listAllIssues({});
+  expect(broker.trades.map((trade) => trade.thumbprint)).toEqual([ada.thumbprint]);
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual(["DPoP broker-token-1"]);
+});
+
+test("a sign-in the broker refused for good fails every later call in its words, asking nothing and never trading the machine", async () => {
+  const broker = signInBroker();
+  const dispatch = stubDispatch();
+  const issuer = issuerFor();
+  const record = signedIn(PERSON, { client_id: CLIENT_ID });
+  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
+  broker.revoked.add(record.thumbprint);
+
+  const refused = await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
+  expect(refused).toBe(
+    `the secrets broker refused ${PERSON}'s sign-in on this machine: HTTP 400 invalid_grant: ${REVOKED}`
+  );
+  const asked = issuer.requests.length;
+
+  // The same session's later calls, Dispatch's and the listener's alike, are refused in the same
+  // words with no refresh at the issuer, no trade at the broker and no request to Dispatch.
+  expect(await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}))).toBe(refused);
+  const listener = envoySettings(env, noFile(env), { nats: false, session: "ses_01a9" });
+  if (!listener.enabled) throw new Error("Envoy is off");
+  expect(
+    await refusalOf(
+      Promise.resolve(listener.credential?.headers("POST", `${dispatch.url}/v1/roles/set`))
+    )
+  ).toBe(refused);
+  expect(issuer.requests).toHaveLength(asked);
+  expect(dispatch.asked).toHaveLength(0);
+  // The one trade made is the person's: the machine is never traded in the person's place.
+  expect(broker.trades.map((trade) => trade.form.get("subject_token_type"))).toEqual([
+    SUBJECT_TOKEN_TYPE_PERSON,
+  ]);
+});
+
+test("after a refusal, a new sign-in with a new box key gets a client of its own, which trades with that key", async () => {
+  const broker = signInBroker();
+  const dispatch = stubDispatch();
+  const issuer = issuerFor();
+  const record = signedIn(PERSON, { client_id: CLIENT_ID });
+  const { env, signins } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
+  broker.revoked.add(record.thumbprint);
+  const client = dispatchOf(env, "ses_01a9");
+  expect(await refusalOf(client.listAllIssues({}))).toContain("agent-secrets login");
+
+  // `agent-secrets login` again: a new box key, written over the person's record.
+  const renewed = signedIn(PERSON, { client_id: CLIENT_ID });
+  await writeSignIn(signins, renewed);
+  await client.listAllIssues({});
+
+  expect(broker.trades.map((trade) => trade.thumbprint)).toEqual([
+    record.thumbprint,
+    renewed.thumbprint,
+  ]);
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual(["DPoP broker-token-2"]);
+});
+
+test("a sign-in the issuer has ended is remembered too: no trade at the broker, and no second refresh", async () => {
+  const broker = signInBroker();
+  const dispatch = stubDispatch();
+  const issuer = issuerFor(() =>
+    Response.json(
+      { error: "invalid_grant", error_description: "Token has been expired or revoked." },
+      { status: 400 }
+    )
+  );
+  const record = signedIn(PERSON, { client_id: CLIENT_ID });
+  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
+
+  const ended = await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
+  expect(ended).toBe(
+    `${issuer.url} no longer honours ${PERSON}'s sign-in on this machine; run: agent-secrets login`
+  );
+  const refreshes = issuer.requests.filter((one) => one.path === "/token").length;
+  expect(refreshes).toBe(1);
+
+  expect(await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}))).toBe(ended);
+  expect(issuer.requests.filter((one) => one.path === "/token")).toHaveLength(refreshes);
+  expect(broker.trades).toHaveLength(0);
+  expect(dispatch.asked).toHaveLength(0);
 });
