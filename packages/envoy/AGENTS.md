@@ -5734,7 +5734,8 @@ on GCP the Google userinfo endpoint's `email` for the token, lowercased, which m
 Where the credential names no person - a machine's role, a service account, a token minted without an email scope, which Google's userinfo endpoint answers 401 - `--owner me` is refused (exit 2) naming `--owner <email>`, before the value is read, and the same credential still reads and writes with any other `--owner`.
 `gcloudLogin` borrows the login through gcloud's own interface, never its credential files:
 the first `gcloud` on PATH (`exec.LookPath`) lists its logins (`gcloud auth list --format=json`);
-of every login it lists, whatever kind of account (a person's, a service account's, or a workload or workforce identity federation login's `principal://` identifier), it takes the one `CLOUDSDK_CORE_ACCOUNT` names when gcloud holds it, else the one gcloud marks active, else the only one, refusing none (naming `gcloud auth login`) or several of which none is active (naming each, and `CLOUDSDK_CORE_ACCOUNT`).
+of every login it lists, whatever kind of account (a person's, a service account's, or a workload or workforce identity federation login's `principal://` identifier), it takes the one `CLOUDSDK_CORE_ACCOUNT` names, else the one gcloud marks active, else the only one;
+it refuses a `CLOUDSDK_CORE_ACCOUNT` that names a login gcloud does not hold (naming it and each login gcloud holds), rather than run as another login, and refuses none (naming `gcloud auth login`) and several of which none is active (naming each, and `CLOUDSDK_CORE_ACCOUNT`).
 Its tokens are `gcloudTokenArgs`, `gcloud auth print-access-token --format=value[private](token) --impersonate-service-account=
 --access-token-file= --credential-file-override= <account>`, behind `oauth2.ReuseTokenSource`, each taken to last `gcloudTokenLife` (5 minutes:
 gcloud prints no expiry, and refreshes a token within 300 s of its expiry before printing it).

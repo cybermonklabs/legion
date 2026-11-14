@@ -157,10 +157,11 @@ func personAccount(email string) bool {
 }
 
 // chooseGcloudAccount picks the login gcloud itself would use, of every login `gcloud auth list`
-// names, whatever kind of account it is: the one gcloud's own CLOUDSDK_CORE_ACCOUNT names when
-// gcloud holds it, else the one gcloud marks active (its core/account property, which
-// CLOUDSDK_CORE_ACCOUNT also sets), else the only one. It refuses none, and several of which none
-// is active, naming each.
+// names, whatever kind of account it is: the one gcloud's own CLOUDSDK_CORE_ACCOUNT names, else
+// the one gcloud marks active (its core/account property), else the only one. An account
+// CLOUDSDK_CORE_ACCOUNT names is the caller's choice, so where gcloud holds no login for it the
+// command is refused, naming it and each login gcloud holds, rather than run as another login. It
+// also refuses none, and several of which none is active, naming each.
 func chooseGcloudAccount(ctx context.Context, gcloud string) (gcloudAccount, error) {
 	out, err := runGcloud(ctx, gcloud, "auth", "list", "--format=json")
 	if err != nil {
@@ -181,7 +182,14 @@ func chooseGcloudAccount(ctx context.Context, gcloud string) (gcloudAccount, err
 			active = entry.Account
 		}
 	}
-	if named := os.Getenv("CLOUDSDK_CORE_ACCOUNT"); named != "" && slices.Contains(accounts, named) {
+	if named := os.Getenv("CLOUDSDK_CORE_ACCOUNT"); named != "" {
+		if !slices.Contains(accounts, named) {
+			held := "none"
+			if len(accounts) > 0 {
+				held = strings.Join(accounts, ", ")
+			}
+			return gcloudAccount{}, fmt.Errorf("CLOUDSDK_CORE_ACCOUNT names %s, and gcloud holds no login for it (it holds %s): sign in as %s with `gcloud auth login`, or name another login gcloud holds", named, held, named)
+		}
 		return gcloudAccount{account: named, named: true}, nil
 	}
 	switch {

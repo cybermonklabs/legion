@@ -907,8 +907,9 @@ func TestGCPSecretALentTokenOutranksEveryOtherCredential(t *testing.T) {
 // runs under the login gcloud itself would use, whatever kind of account it is - a service
 // account's, a workload or workforce identity federation login's, or a person's: the one
 // CLOUDSDK_CORE_ACCOUNT names, else the active one. Where CLOUDSDK_CORE_ACCOUNT names a login
-// gcloud does not hold, none is active, and a form is refused (exit 1), naming each login, with no
-// token lent and no Secret Manager call.
+// gcloud does not hold, a form is refused (exit 1), naming that account and each login gcloud
+// holds, with no token lent and no Secret Manager call - never run as another login, though gcloud
+// holds only one.
 func TestGCPSecretGcloudLoginIsTheOneGcloudUses(t *testing.T) {
 	several := []string{machineEmail, "ada@example.com", "grace@example.com"}
 	for _, row := range []struct {
@@ -936,25 +937,32 @@ func TestGCPSecretGcloudLoginIsTheOneGcloudUses(t *testing.T) {
 			requireRunUnder(t, fake, gcloud, row.want)
 		})
 	}
-	t.Run("a named login gcloud does not hold", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useNoADC(t)
-		gcloud := useGcloud(t, several...)
-		t.Setenv("CLOUDSDK_CORE_ACCOUNT", "linus@example.com")
-		startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
+	for _, accounts := range [][]string{{machineEmail}, several} {
+		t.Run(fmt.Sprintf("a named login gcloud does not hold, beside %d", len(accounts)), func(t *testing.T) {
+			fake := newFakeSecretManager()
+			startFakeSecretManager(t, fake)
+			useNoADC(t)
+			gcloud := useGcloud(t, accounts...)
+			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "linus@example.com")
+			startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 
-		_, stderr, code := runSecret("list")
-		if code != 1 || !strings.Contains(stderr, machineEmail) || !strings.Contains(stderr, "grace@example.com") {
-			t.Fatalf("exit %d, stderr %q; want 1 naming each login", code, stderr)
-		}
-		if _, calls := fake.calledUnder(); calls != 0 {
-			t.Fatalf("Secret Manager got %d calls, want none", calls)
-		}
-		if lent := gcloud.lent(t); len(lent) != 0 {
-			t.Fatalf("gcloud lent tokens for %v, want none", lent)
-		}
-	})
+			_, stderr, code := runSecret("list")
+			if code != 1 || !strings.Contains(stderr, "CLOUDSDK_CORE_ACCOUNT names linus@example.com") {
+				t.Fatalf("exit %d, stderr %q; want 1 naming the account CLOUDSDK_CORE_ACCOUNT names", code, stderr)
+			}
+			for _, account := range accounts {
+				if !strings.Contains(stderr, account) {
+					t.Fatalf("stderr %q does not name the login %s gcloud holds", stderr, account)
+				}
+			}
+			if _, calls := fake.calledUnder(); calls != 0 {
+				t.Fatalf("Secret Manager got %d calls, want none", calls)
+			}
+			if lent := gcloud.lent(t); len(lent) != 0 {
+				t.Fatalf("gcloud lent tokens for %v, want none", lent)
+			}
+		})
+	}
 }
 
 // TestGCPSecretGcloudRunsWithoutIdentityOverridesOrLogFiles: gcloud never runs with the variables

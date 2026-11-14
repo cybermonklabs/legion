@@ -57,8 +57,9 @@ an access token file and a credential file override cleared wherever they are se
 that login's.
 
 The login is the one gcloud itself would use: the one `CLOUDSDK_CORE_ACCOUNT` names, else the
-active one, whatever kind of account it is. A command the CLI prints for running again keeps the
-variable:
+active one, whatever kind of account it is. An account `CLOUDSDK_CORE_ACCOUNT` names that gcloud
+holds no login for is refused, never replaced by another login. A command the CLI prints for
+running again keeps the variable:
 
 ```sh
 CLOUDSDK_CORE_ACCOUNT=ada@example.com agent-secrets secret create DEMO_DEPLOY_TOKEN --owner me --tier agent
