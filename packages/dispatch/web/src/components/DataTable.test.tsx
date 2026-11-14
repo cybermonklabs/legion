@@ -229,12 +229,10 @@ function Deploys({
             <DataTableCells
               highlight={row.id === highlighted ? selectedCardBg : undefined}
               row={row}
+              // A deploy rolled back has nothing left to roll back: the button goes, and the row
+              // stays.
               trailing={
-                trailingWidth === undefined ? undefined : rolledBack.has(
-                    row.id
-                  ) ? // A deploy rolled back has nothing left to roll back: the button goes, and the
-                // row stays.
-                null : (
+                trailingWidth === undefined ? undefined : rolledBack.has(row.id) ? null : (
                   <button
                     onClick={() => setRolledBack((done) => new Set(done).add(row.id))}
                     type="button"

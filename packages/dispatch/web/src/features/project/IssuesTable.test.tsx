@@ -79,8 +79,7 @@ afterEach(() => {
 function table(
   issues: IssueSummary[],
   search = "",
-  full?: Promise<IssueSummary[]>,
-  open?: Promise<IssueSummary[]>
+  { full, open }: { full?: Promise<IssueSummary[]>; open?: Promise<IssueSummary[]> } = {}
 ) {
   const parents = [
     ...new Set(
@@ -627,7 +626,7 @@ test("a live unseen ancestor keeps the same scroll box and marks unknown ancestr
 
 test("a late Done listing applies the requested URL page instead of clamping it early", async () => {
   const done = Promise.withResolvers<IssueSummary[]>();
-  table([issue("CORE-1")], "?status=done&page=3&size=25", done.promise);
+  table([issue("CORE-1")], "?status=done&page=3&size=25", { full: done.promise });
   await screen.findByText("Loading closed issues…");
   done.resolve(
     Array.from({ length: 80 }, (_, index) => issue(`CORE-${index + 2}`, { status: "done" }))
@@ -1669,12 +1668,9 @@ test("a press in the toolbar that sends the List off to read its issues keeps th
   // Opened on the closed issues, whose listing answers. The open issues' listing is still out
   // when Clear filters goes back to them.
   const open = Promise.withResolvers<IssueSummary[]>();
-  table(
-    [issue("CORE-1"), issue("CORE-2", { status: "done" })],
-    "?status=done",
-    undefined,
-    open.promise
-  );
+  table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?status=done", {
+    open: open.promise,
+  });
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   const clear = screen.getByRole("button", { name: "Clear filters" });
   await user.click(clear);
@@ -1690,19 +1686,15 @@ test("a press in the toolbar that sends the List off to read its issues keeps th
 });
 
 // A column filter goes with the table it heads when its press sends the List off to read its
-// issues: the focus in its list, a panel of its own, goes to the control now at the filter's
-// place in the List, which is past the toolbar's last, so to the search box.
+// issues: the focus in its list, a panel of its own, goes to the toolbar's search box.
 test("a column filter press that sends the List off to read its issues leaves the focus on the toolbar", async () => {
   const user = userEvent.setup();
   // Opened on Done and Todo, whose listing answers. Unticking Done goes back to the open issues,
   // whose listing is still out.
   const open = Promise.withResolvers<IssueSummary[]>();
-  table(
-    [issue("CORE-1"), issue("CORE-2", { status: "done" })],
-    "?status=done&status=todo",
-    undefined,
-    open.promise
-  );
+  table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?status=done&status=todo", {
+    open: open.promise,
+  });
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
   expect(await screen.findByRole("combobox", { name: "Search Status" })).toHaveFocus();

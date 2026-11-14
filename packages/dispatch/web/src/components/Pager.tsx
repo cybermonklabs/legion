@@ -1,12 +1,8 @@
 import type { Table } from "@tanstack/react-table";
 import type { ReactNode, RefObject } from "react";
-import {
-  borderDefault,
-  surfaceBg,
-  surfaceMutedHoverBg,
-  textSecondaryOnCanvas,
-} from "../theme/classes";
+import { borderDefault, surfaceBg, textSecondaryOnCanvas } from "../theme/classes";
 import { CONTROL } from "./control-names";
+import { StepButton } from "./StepButton";
 
 /** Singular and plural of one of the things a pager counts. */
 export interface PagerNoun {
@@ -46,33 +42,6 @@ export interface PagerProps<TData> extends PagerOptions {
  *  page`, so the caller names its rows once rather than once per capitalisation. */
 const sentence = (word: string) => `${word.charAt(0).toLocaleUpperCase()}${word.slice(1)}`;
 
-/** One step between pages. A step there is no page for is `aria-disabled` rather than
- *  `disabled`, and its press does nothing: the press that reaches the last page, or the first,
- *  would otherwise disable the button under the reader, and the browser takes the focus off a
- *  control that disables itself, dropping a keyboard reader onto the page. */
-function PagerButton({
-  ariaDisabled,
-  children,
-  onClick,
-}: {
-  ariaDisabled: boolean;
-  children: ReactNode;
-  onClick: () => void;
-}): ReactNode {
-  return (
-    <button
-      aria-disabled={ariaDisabled || undefined}
-      className={`rounded-lg border px-3 py-1 text-sm aria-disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
-      onClick={() => {
-        if (!ariaDisabled) onClick();
-      }}
-      type="button"
-    >
-      {children}
-    </button>
-  );
-}
-
 /**
  * The one line under a table: how much of the listing it is showing, which page of it, the
  * steps between pages and how many rows a page holds. Every word it counts in is its caller's,
@@ -111,15 +80,15 @@ export function Pager<TData>({
           ? `All ${rowsOnPages} ${rowsOnPages === 1 ? row.one : row.many}`
           : `${sentence(row.many)} ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
       </span>
-      <PagerButton ariaDisabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
+      <StepButton ariaDisabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
         ‹ Previous
-      </PagerButton>
+      </StepButton>
       <span>
         Page {pageIndex + 1} of {Math.max(table.getPageCount(), 1)}
       </span>
-      <PagerButton ariaDisabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>
+      <StepButton ariaDisabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>
         Next ›
-      </PagerButton>
+      </StepButton>
       <select
         aria-label={`${sentence(row.many)} per page`}
         className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}

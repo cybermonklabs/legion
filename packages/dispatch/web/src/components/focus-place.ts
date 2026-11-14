@@ -23,10 +23,16 @@ export function focusableIn(container: Element): HTMLElement[] {
   );
 }
 
-/** `element`'s place among the controls the focus can reach in `container`, or -1. */
+/** `element`'s place among the controls the focus can reach in `container` (`focusableIn`'s
+ *  order), or -1: counted up to the element and no further. */
 function placeIn(container: Element, element: Element): number {
-  const controls: readonly Element[] = focusableIn(container);
-  return controls.indexOf(element);
+  let index = 0;
+  for (const control of container.querySelectorAll(FOCUSABLE)) {
+    if (control.closest("[hidden]") !== null) continue;
+    if (control === element) return index;
+    index += 1;
+  }
+  return -1;
 }
 
 /** Where the keyboard focus sat: the element, the container it is counted in, and its place

@@ -485,6 +485,24 @@ function chipsSeenWhole(row: Element, measure: string): boolean[] {
   });
 }
 
+/** Where a chips strip comes to rest, as its `scrollLeft`: unchanged over five frames, since a
+ *  scroll button's press scrolls it smoothly and a wheel may too. */
+function stripAtRest(strip: Locator): Promise<number> {
+  return strip.evaluate((node) => {
+    const { promise, resolve } = Promise.withResolvers<number>();
+    let last = node.scrollLeft;
+    let still = 0;
+    const frame = () => {
+      still = node.scrollLeft === last ? still + 1 : 0;
+      last = node.scrollLeft;
+      if (still >= 5) resolve(last);
+      else requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+    return promise;
+  });
+}
+
 // SLOW(>=2s): twenty-two seeded questions, the row's chips paged through at five widths.
 test("a pointer reaches and removes every chip of the Inbox's row with the row's scroll buttons, at every width", async ({
   page,
@@ -497,23 +515,6 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
   const left = row.getByRole("button", { exact: true, name: "Scroll filters left" });
   const right = row.getByRole("button", { exact: true, name: "Scroll filters right" });
   const scrollLeft = () => strip.evaluate((node) => node.scrollLeft);
-  // Where the strip comes to rest: its `scrollLeft` unchanged over five frames, since a press
-  // scrolls it smoothly and a wheel may too.
-  const settled = () =>
-    strip.evaluate(
-      (node) =>
-        new Promise<number>((resolve) => {
-          let last = node.scrollLeft;
-          let still = 0;
-          const frame = () => {
-            still = node.scrollLeft === last ? still + 1 : 0;
-            last = node.scrollLeft;
-            if (still >= 5) resolve(last);
-            else requestAnimationFrame(frame);
-          };
-          requestAnimationFrame(frame);
-        })
-    );
   // One press on Scroll filters right, waited out until the strip has moved and stopped.
   const pressRight = async (where: string) => {
     const from = await scrollLeft();
@@ -523,7 +524,7 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
         message: `${where}: a press on Scroll filters right left the strip at ${from}px`,
       })
       .not.toBe(from);
-    return settled();
+    return stripAtRest(strip);
   };
   const readings: string[] = [];
   for (const size of READING_WIDTHS) {
@@ -589,7 +590,7 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
       await strip.evaluate((node) => {
         node.scrollLeft = 0;
       });
-      await settled();
+      await stripAtRest(strip);
       const box = await strip.boundingBox();
       if (box === null) throw new Error(`${where}: the strip has no box`);
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -599,7 +600,7 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
       await expect
         .poll(scrollLeft, { message: `${where}: ${move} over the strip left it at 0px` })
         .toBeGreaterThan(0);
-      wheeled.push(Math.round(await settled()));
+      wheeled.push(Math.round(await stripAtRest(strip)));
     }
     readings.push(
       `${where}: ${atStart} of 9 chips shown whole at the start; every chip seen whole after ${stops.length} presses on Scroll filters right (strip at ${stops.join(", ")}px); Shift and the wheel moved the strip 0 to ${wheeled[0]}px, a sideways wheel 0 to ${wheeled[1]}px`
@@ -2121,9 +2122,11 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
 }) => {
   const scene = await seedSurfaces();
   // Enough issues for two of the List's pages at 25 a page.
-  for (let index = 0; index < 24; index++) {
-    await createIssue({ project: "CORE", title: `Paged row ${index}` });
-  }
+  await Promise.all(
+    Array.from({ length: 24 }, (_, index) =>
+      createIssue({ project: "CORE", title: `Paged row ${index}` })
+    )
+  );
   // Two issues in Legion's queue: the second's row offers a Start next of its own, which moves it
   // to the head at the first width, so at the second the other row offers it.
   for (const title of ["Queued first", "Queued second"]) {
@@ -2162,17 +2165,24 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
         "";
       return `"${label === "" ? focused.tagName : label}"`;
     });
-  /** Records a focus that has not landed on `wanted` within a second. Each check follows the
-   *  change it is about - the control gone, the page turned, the bar gone - and a hand-off
-   *  lands in that same commit or the frame after it, so a second is ample. */
-  const focusOn = async (where: string, press: string, wanted: Locator, name: string) => {
+  /** Records a focus that has not landed on `wanted` within a second: the element named, or
+   *  whatever a check reads off the page. Each check follows the change it is about - the
+   *  control gone, the page turned, the bar gone - and a hand-off lands in that same commit or
+   *  the frame after it, so a second is ample. */
+  const focusOn = async (
+    where: string,
+    press: string,
+    wanted: Locator | (() => Promise<boolean>),
+    name: string
+  ) => {
     if (missed.has(`${where} ${name}`)) return;
-    const landed = await expect(wanted)
-      .toBeFocused({ timeout: 1_000 })
-      .then(
-        () => true,
-        () => false
-      );
+    const landed = await (typeof wanted === "function"
+      ? expect.poll(wanted, { timeout: 1_000 }).toBe(true)
+      : expect(wanted).toBeFocused({ timeout: 1_000 })
+    ).then(
+      () => true,
+      () => false
+    );
     if (!landed) {
       missed.add(`${where} ${name}`);
       wrong.push(`${where}: after ${press} the focus is on ${await focusNow()}, not on ${name}`);
@@ -2235,20 +2245,7 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
             message: `${where}: press ${press} on Scroll filters ${side} left the strip at ${from}px`,
           })
           .not.toBe(from);
-        // Come to rest: unchanged over five frames, since a press scrolls the strip smoothly.
-        await strip.evaluate((node) => {
-          const { promise, resolve } = Promise.withResolvers<void>();
-          let last = node.scrollLeft;
-          let still = 0;
-          const frame = () => {
-            still = node.scrollLeft === last ? still + 1 : 0;
-            last = node.scrollLeft;
-            if (still >= 5) resolve();
-            else requestAnimationFrame(frame);
-          };
-          requestAnimationFrame(frame);
-          return promise;
-        });
+        await stripAtRest(strip);
         await focusOn(where, `press ${press} on Scroll filters ${side}`, chip, `"${chipName}"`);
       }
     }
@@ -2335,20 +2332,12 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     );
     rank.release();
     await expect(startNext, `${where}: Start next did not start ${queued} next`).toHaveCount(0);
-    const inRow = await expect
-      .poll(() => queuedRow.evaluate((node) => node.contains(document.activeElement)), {
-        timeout: 1_000,
-      })
-      .toBe(true)
-      .then(
-        () => true,
-        () => false
-      );
-    if (!inRow) {
-      wrong.push(
-        `${where}: after Start next started ${queued} next the focus is on ${await focusNow()}, not on that row or a control in it`
-      );
-    }
+    await focusOn(
+      where,
+      `Start next started ${queued} next`,
+      () => queuedRow.evaluate((node) => node.contains(document.activeElement)),
+      "that row or a control in it"
+    );
     await rank.stop();
 
     // The search bar's Filter panel: a pick from its Project menu and from its Status menu, and

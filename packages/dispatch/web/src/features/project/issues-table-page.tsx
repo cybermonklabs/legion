@@ -8,6 +8,7 @@ import { DisplayMenu } from "../../components/DisplayMenu";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
+import { StepButton } from "../../components/StepButton";
 import { useAddressUpdate } from "../../lib/page-address";
 import {
   borderDefault,
@@ -15,7 +16,6 @@ import {
   issueStatusScale,
   surfaceBg,
   surfaceMutedBg,
-  surfaceMutedHoverBg,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
@@ -33,36 +33,6 @@ import {
 /** The panel the row's one filter trigger opens: a column of chips, portalled over the page so
  *  opening it moves no row of the table beneath (INFRA-3135, R1). */
 const FLAGS_PANEL_CLASS = `z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col items-start gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`;
-
-/** The project List's own small button: the steps a selection is acted on by. One that cannot
- *  be pressed now is `aria-disabled` rather than `disabled`, and its press does nothing: each of
- *  these turns inert under the reader's own press (`busy` from the press on, Move once its epic
- *  is spent), and the browser takes the focus off a control that disables itself, dropping the
- *  reader onto the page with no way back to the bar, while a dialog the press opened returns the
- *  focus to an opener that can no longer take it. The Inbox's bar holds its Snooze select the
- *  same way. */
-export function Action({
-  ariaDisabled,
-  children,
-  onClick,
-}: {
-  ariaDisabled: boolean;
-  children: ReactNode;
-  onClick: () => void;
-}): ReactNode {
-  return (
-    <button
-      aria-disabled={ariaDisabled || undefined}
-      className={`rounded-lg border px-3 py-1 text-sm aria-disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
-      onClick={() => {
-        if (!ariaDisabled) onClick();
-      }}
-      type="button"
-    >
-      {children}
-    </button>
-  );
-}
 
 export function IssueTableStatus({
   table,
@@ -306,28 +276,28 @@ export function IssueTableSelection({
     // Over the list, not in it: selecting a row moves no row (INFRA-3135, R4).
     <SelectionBar count={selectedKeys.length} label="Selected issues" returnFocus={returnFocus}>
       {selectedKeys.length < leafCount ? (
-        <Action ariaDisabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
+        <StepButton ariaDisabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
           Select all {leafCount} matching
-        </Action>
+        </StepButton>
       ) : null}
       {/* A selection the reader cannot see all of — "Select all N matching" — is asked
           about first: Start next writes once per issue. */}
-      <Action
+      <StepButton
         ariaDisabled={busy}
         onClick={() =>
           startNext(selectedKeys, selectedKeys.length > table.getRowModel().rows.length)
         }
       >
         Start next
-      </Action>
+      </StepButton>
       {/* Two steps: the select stages an epic and Move commits it. A closed `<select>`
           commits on an arrow key in Chrome on Linux and Windows, and this one reparents
-          every selected issue. Held while a press is out, as `Action` is, and for its
-          reason: a pick then stages nothing, and the controlled value snaps back. */}
+          every selected issue. While a press is out it is held as a `StepButton` is, and for
+          the same reason. */}
       <select
         aria-disabled={busy || undefined}
         aria-label="Move to epic"
-        className={`rounded-lg border px-2 py-1 aria-disabled:opacity-40 ${borderDefault} ${surfaceBg}`}
+        className={`rounded-lg border px-2 py-1 refused:opacity-40 ${borderDefault} ${surfaceBg}`}
         onChange={(event) => {
           if (!busy) setEpic(event.target.value);
         }}
@@ -340,7 +310,7 @@ export function IssueTableSelection({
           </option>
         ))}
       </select>
-      <Action
+      <StepButton
         ariaDisabled={busy || epic === ""}
         onClick={() => {
           const into = epic;
@@ -349,19 +319,19 @@ export function IssueTableSelection({
         }}
       >
         Move
-      </Action>
-      <Action ariaDisabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
+      </StepButton>
+      <StepButton ariaDisabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
         Take out of epic
-      </Action>
-      <Action
+      </StepButton>
+      <StepButton
         ariaDisabled={busy || unansweredEpic !== undefined}
         onClick={() => void newEpic(selectedKeys)}
       >
         New epic from these
-      </Action>
-      <Action ariaDisabled={busy} onClick={() => setSelection({})}>
+      </StepButton>
+      <StepButton ariaDisabled={busy} onClick={() => setSelection({})}>
         Clear selection
-      </Action>
+      </StepButton>
     </SelectionBar>
   );
 }

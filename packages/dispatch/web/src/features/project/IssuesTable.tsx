@@ -177,19 +177,18 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     const key = last !== null && leaves.includes(last) ? last : leaves[0];
     return key === undefined ? searchRef.current : model.focusRow(key, ROW_CHECKBOX);
   };
-  // The List's section, which stays in every branch while the table does not: a control of the
-  // table's head - a column filter, or the list it opened in a portal of its own - that goes
-  // with the table when a press in it sends the List back to its skeleton hands the focus to the
-  // control now at its place, which is a toolbar's, else to the search box. Nothing else here is
-  // counted: the selection bar, the rows and the dialogs each hand the focus on themselves.
+  // A control of the table's head - a column filter, or the list it opened in a portal of its
+  // own - goes with the table when a press in it sends the List back to its skeleton, and the
+  // focus it held goes to the search box rather than the page's body. Only the head is counted:
+  // the selection bar, the rows and the dialogs each hand the focus on themselves. The handler
+  // sits on the List's section, which stays in every branch.
   const sectionRef = useRef<HTMLElement>(null);
   const noteFocus = useFocusPlace(
     (element) => {
       const section = sectionRef.current;
       if (section === null) return null;
       // A portal's element is counted only where a control of the head was before it.
-      if (!section.contains(element)) return section;
-      return element.closest("thead") === null ? null : section;
+      return section.contains(element) ? element.closest("thead") : section.querySelector("thead");
     },
     () => searchRef.current
   );
@@ -284,14 +283,14 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
 
   const loading = issues.isPending || userState.isPending;
   const failed = !loading && ((issues.isError && issues.data === undefined) || userState.isError);
-  const listed = !loading && !failed;
+  const loaded = !loading && !failed;
   const visibleColumns = table.getVisibleLeafColumns().length + 1;
   // A column filter's panel hangs off its header and goes with the table: it is closed then, as
   // a panel whose anchor has left the page closes (`AnchoredPanel`), so the table coming back
   // does not open it again and take the focus from wherever it went meanwhile.
   useEffect(() => {
-    if (!listed) setOpenFilter(undefined);
-  }, [listed]);
+    if (!loaded) setOpenFilter(undefined);
+  }, [loaded]);
 
   // The toolbar is drawn in every branch, at the one place in the tree, as the Board draws its
   // `controls`: a filter press that sends the List off to read issues it has not loaded - Clear
@@ -306,7 +305,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       ref={sectionRef}
     >
       <div className="space-y-3" ref={attachAbove}>
-        {listed ? (
+        {loaded ? (
           <>
             {listingError ? (
               <p className={dangerText} role="alert">
@@ -352,7 +351,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           }
         />
 
-        {listed ? (
+        {loaded ? (
           <>
             <p
               aria-live="polite"
@@ -424,7 +423,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           </button>
         </p>
       ) : null}
-      {listed ? (
+      {loaded ? (
         <>
           <DataTable
             empty="No issues match these filters."

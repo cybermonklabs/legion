@@ -62,8 +62,8 @@ export function PanelTrigger({
   const content = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
     () => content.current,
-    () => {
-      const panel = content.current?.parentElement;
+    (container) => {
+      const panel = container.parentElement;
       return panel instanceof HTMLElement ? panel : null;
     }
   );
