@@ -442,17 +442,23 @@ func (r *roleRig) claimUnder(role, holder string, entry session.SessionEntry) er
 	return nil
 }
 
-// handedNow is the forward the holder has already taken, read without waiting: a forward the
-// outbox made inside a scan is on this channel by the time that scan returned, since the holder
-// records it before it answers the receipt and the send waits for that receipt. So a scan that
-// forwarded nothing fails here at once rather than on a timeout.
+// handedNowBound is how long handedNow waits for a forward the scan has already sent. The
+// forward's send returns on the stream's acknowledgement (roleForward.forward, a request whose
+// reply is the stream's PubAck), and the holder's own subscription is handed the same message on
+// its own connection, which can arrive just after that acknowledgement on a busy machine.
+const handedNowBound = 5 * time.Second
+
+// handedNow is the forward a scan that has returned handed the holder. No listener runs in the
+// tests that read it, so nothing but the scan's own forward can reach the holder, and waiting up
+// to handedNowBound for its delivery proves no more than the scan sent it. A scan that forwarded
+// nothing fails here at the bound.
 func handedNow(t *testing.T, recv *receiver, what string) contracts.Envelope {
 	t.Helper()
 	select {
 	case forward := <-recv.arrived:
 		return forward
-	default:
-		t.Fatalf("%s: the holder had taken no forward by the time the scan returned", what)
+	case <-time.After(handedNowBound):
+		t.Fatalf("%s: the holder had taken no forward %s after the scan returned", what, handedNowBound)
 		return contracts.Envelope{}
 	}
 }
