@@ -6,8 +6,8 @@ body: |-
   pod. The push check, its `legion/<KEY>-rescue` branch and the daemon's message about a rescue
   are gone, with the shim's `rescue-unpushed` frame and the second ask a round made of a worker
   whose answer was the end of its turn. A role's own push is what keeps its work: work not pushed
-  when the pod goes is lost with the disk, and the agent does it again in the new pod. The round
-  still asks every worker to push and answer, still asks again a worker that has not answered, and
-  waits one sweep interval for the replacement. A shim of this image passes an older daemon's
-  `rescue-unpushed` frame to its agent, which refuses it, so that daemon replaces the pod on its
-  workers' answers.
+  when the pod goes is lost with the disk, a failed claim's included, and the agent does it again
+  in the new pod. The round still asks each role once over Envoy and replaces the pod when every
+  asked role has answered or at its bound, and the replacement itself waits one sweep interval. A
+  shim of this image passes an older daemon's `rescue-unpushed` frame to its agent, which refuses
+  it, so that daemon replaces the pod on its workers' answers.

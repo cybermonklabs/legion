@@ -317,11 +317,13 @@ func populatedState(t *testing.T) State {
 									Container: "roles", Generation: 2,
 								},
 							},
-							// The pod's update round, which every claim of that pod shares: the daemon
-							// replaces the pod only once each has answered. This one has, and reported
-							// the head it pushed. The reasons are the round's own, so every claim of
-							// the pod carries the same text: what the worker answering is told to act
-							// on.
+							// The pod's update round, which every claim of that pod shares: the round
+							// asks each role, and the daemon replaces the pod once every asked role has
+							// answered and no turn runs, or at the round's bound
+							// (pod_update_grace_minutes) whatever the roles answered, an operator's
+							// suspension excepted. This one has answered, and reported the head it
+							// pushed. The reasons are the round's own, so every claim of the pod
+							// carries the same text: what the worker answering is told to act on.
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateHead:    "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
@@ -985,8 +987,8 @@ func TestReadyRequestGolden(t *testing.T) {
 	})
 }
 
-// The ready-for-update request is the worker's answer to its pod's update task: the claim it
-// holds, the generation it answers for, the round the task it read named — the one round the
+// The ready-for-update request is the worker's answer to its update round's ask: the claim it
+// holds, the generation it answers for, the round the ask it read named — the one round the
 // answer counts for — and the head of `legion/<issue>@origin` it reports, which the daemon
 // records and verifies nothing of.
 func TestReadyForUpdateRequestGolden(t *testing.T) {
