@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -119,6 +120,7 @@ func TestOutboxFinishesMessageAlreadyPostedBeforeCrash(t *testing.T) {
 }
 
 type outboxDispatch struct {
+	noArtifacts
 	issue        dispatch.Issue
 	statuses     []string
 	handOvers    []string
@@ -196,6 +198,17 @@ func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps 
 }
 func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
+}
+
+// noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
+// artifacts answers none, and an upload answers the slug Dispatch files the name under, which for
+// a message's document is its name (record.MessageArtifact). Every fake of the client that no
+// test drives through a message's document embeds it.
+type noArtifacts struct{}
+
+func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
+func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
+	return name, nil
 }
 
 func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
@@ -702,6 +715,146 @@ func TestOutboxMessagePostsItsMarkerAndReturnsReadFailure(t *testing.T) {
 	client.messageReadErr = errors.New("event history unavailable")
 	if err := (&outbox{dispatch: client}).execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "event history unavailable") {
 		t.Fatalf("message read failure = %v, want event history failure", err)
+	}
+}
+
+// artifactDispatch is outboxDispatch with the issue's documents: the slugs the artifact read
+// answers (slugsErr in their place when set), each upload it took, and what an upload answers:
+// uploadErr, or the slug filedAs names, or else the name, which it then lists as Dispatch would.
+type artifactDispatch struct {
+	*outboxDispatch
+	slugs     []string
+	slugsErr  error
+	uploads   []record.MessageArtifact
+	uploadErr error
+	filedAs   string
+}
+
+func (d *artifactDispatch) ArtifactSlugs(context.Context, string) ([]string, error) {
+	return d.slugs, d.slugsErr
+}
+func (d *artifactDispatch) UploadArtifact(_ context.Context, _, name, content string) (string, error) {
+	d.uploads = append(d.uploads, record.MessageArtifact{Name: name, Content: content})
+	if d.uploadErr != nil {
+		return "", d.uploadErr
+	}
+	slug := cmp.Or(d.filedAs, name)
+	d.slugs = append(d.slugs, slug)
+	return slug, nil
+}
+
+// rescueListRow is a message row whose body links its own document, as a rescue's message does.
+func rescueListRow(t *testing.T) (record.OutboxRow, record.MessageArtifact) {
+	t.Helper()
+	document := record.MessageArtifact{Name: "rescue-pod-9d3f0c7a", Content: "```\nbranch: legion/LEGION-208-rescue\n```\n"}
+	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a", Artifact: &document}, time.Now())
+	row.ID = 61
+	return row, document
+}
+
+// A message that links a document puts it on the issue before it posts, so the link never names
+// a document that is not there. The upload is made only where the issue holds no document of
+// that name: a row whose post failed after its upload runs again and posts, with no second
+// version of the document, and a row whose document is already there uploads nothing.
+func TestAMessagePutsItsDocumentOnTheIssueOnceBeforeItPosts(t *testing.T) {
+	row, document := rescueListRow(t)
+	posted := "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a\n\n<!-- legion-outbox:61 -->"
+
+	client := &artifactDispatch{outboxDispatch: &outboxDispatch{postErr: &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}}}
+	runner := &outbox{dispatch: client, log: quietLogger()}
+	if err := runner.execute(context.Background(), row); err == nil || permanentRefusal(row, err) {
+		t.Fatalf("a post Dispatch failed = %v, want a failure the row runs again on", err)
+	}
+	if !reflect.DeepEqual(client.uploads, []record.MessageArtifact{document}) {
+		t.Fatalf("uploads = %+v, want the row's document once, before the post", client.uploads)
+	}
+	client.postErr = nil
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("the row's second run: %v", err)
+	}
+	if len(client.uploads) != 1 {
+		t.Fatalf("uploads = %d after the row ran again, want the one upload: a second would write the document a second version", len(client.uploads))
+	}
+	if want := []string{posted, posted}; !slices.Equal(client.messages, want) {
+		t.Fatalf("posts = %q, want the failed post and the one that went through, each the body and its marker alone", client.messages)
+	}
+
+	there := &artifactDispatch{outboxDispatch: &outboxDispatch{}, slugs: []string{"plan-md", document.Name}}
+	if err := (&outbox{dispatch: there, log: quietLogger()}).execute(context.Background(), row); err != nil {
+		t.Fatalf("a row whose document is already there: %v", err)
+	}
+	if len(there.uploads) != 0 || !slices.Equal(there.messages, []string{posted}) {
+		t.Fatalf("uploads %+v and posts %q, want no upload and the one post", there.uploads, there.messages)
+	}
+}
+
+// A document Dispatch refuses the same way on every run costs the message nothing: the message is
+// posted with one more sentence, which says Dispatch refused the full list and gives its status
+// and code, and the refusal is logged. The issue's message is its one word on the rescue, so it
+// always posts (dispatch://INFRA-2704).
+func TestAMessageWhoseDocumentDispatchRefusesStillPostsAndSaysSo(t *testing.T) {
+	const line = "outbox Dispatch message's document refused by Dispatch; the message is posted and says so"
+	row, _ := rescueListRow(t)
+	for _, tc := range []struct {
+		name     string
+		client   *artifactDispatch
+		uploaded int
+	}{
+		{name: "the upload refused", uploaded: 1, client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
+			uploadErr: &dispatch.Error{Status: http.StatusRequestEntityTooLarge, Code: "CAP_EXCEEDED", Message: "a markdown document is at most 1 MiB"}}},
+		{name: "the read of the issue's documents refused", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
+			slugsErr: &dispatch.Error{Status: http.StatusRequestEntityTooLarge, Code: "CAP_EXCEEDED", Message: "a markdown document is at most 1 MiB"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			runner := &outbox{dispatch: tc.client, log: slog.New(slog.NewJSONHandler(&logs, nil))}
+			if err := runner.execute(context.Background(), row); err != nil {
+				t.Fatalf("execute: %v, want the message posted", err)
+			}
+			want := "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a\n\n" +
+				"Dispatch refused the full list that this message links, with status 413 and code CAP_EXCEEDED.\n\n<!-- legion-outbox:61 -->"
+			if !slices.Equal(tc.client.messages, []string{want}) || len(tc.client.uploads) != tc.uploaded {
+				t.Fatalf("posts %q after %d uploads, want one post that says Dispatch refused the list, after %d", tc.client.messages, len(tc.client.uploads), tc.uploaded)
+			}
+			lines := loggedLines(t, logs.String(), line)
+			if len(lines) != 1 || lines[0]["artifact"] != "rescue-pod-9d3f0c7a" || lines[0]["code"] != "CAP_EXCEEDED" {
+				t.Fatalf("logged %v, want one line naming the document and Dispatch's code:\n%s", lines, logs.String())
+			}
+		})
+	}
+}
+
+// An upload that fails for any reason but a refusal, and an upload Dispatch filed under another
+// slug than the link names, fail the run: nothing is posted, and the row runs again rather than
+// being finished refused.
+func TestAMessageWhoseDocumentIsNotOnTheIssueIsLeftToRunAgain(t *testing.T) {
+	row, document := rescueListRow(t)
+	for _, tc := range []struct {
+		name   string
+		client *artifactDispatch
+		want   string
+	}{
+		{name: "Dispatch down", want: "Dispatch is down", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
+			uploadErr: &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}}},
+		{name: "no answer", want: "connection refused", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
+			uploadErr: &dispatch.TransientError{Err: errors.New("dial tcp: connection refused")}}},
+		{name: "a credential Dispatch did not take", want: "token expired", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
+			slugsErr: &dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED", Message: "token expired"}}},
+		{name: "filed under another slug", want: "filed it under rescue-pod-9d3f0c7a-2", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
+			filedAs: "rescue-pod-9d3f0c7a-2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&outbox{dispatch: tc.client, log: quietLogger()}).execute(context.Background(), row)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), document.Name) {
+				t.Fatalf("execute = %v, want a failure naming the document and %q", err, tc.want)
+			}
+			if permanentRefusal(row, err) {
+				t.Fatalf("execute = %v is finished refused, want the row run again", err)
+			}
+			if len(tc.client.messages) != 0 {
+				t.Fatalf("posts = %q, want none before the document is on the issue", tc.client.messages)
+			}
+		})
 	}
 }
 
