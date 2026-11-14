@@ -45,8 +45,6 @@ type Call struct {
 	Tree string
 	// Issue is IssuePod's issue.
 	Issue string
-	// Rescue is RescueUnpushed's request.
-	Rescue runtime.RescueRequest
 }
 
 // SpawnResult is one scripted answer to Spawn or Resume.
@@ -98,7 +96,6 @@ type Runtime struct {
 	holdReplace  func()
 	replaceNoPod bool
 	holdResume   func()
-	rescuer      func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error)
 	queue        []runtime.Observation
 	minted       int
 }
@@ -253,16 +250,6 @@ func (r *Runtime) HoldResume(hold func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.holdResume = hold
-}
-
-// RescueWith makes every later RescueUnpushed answer what rescuer answers, which a test points at
-// the real push check (internal/rescue) over repositories of its own, or at a scripted answer. nil
-// clears it: a RescueUnpushed then answers a disk with no workspace on it, which is nothing to lose.
-// The hook runs with none of the fake's own locks held.
-func (r *Runtime) RescueWith(rescuer func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error)) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.rescuer = rescuer
 }
 
 func (r *Runtime) fail(method string, err error) {
@@ -552,19 +539,6 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	}
 	delete(r.drift, k.Claim)
 	return nil
-}
-
-// RescueUnpushed records its call, with the claim it asked through and the request in Rescue, and
-// answers what RescueWith set; with none, a disk with no workspace on it.
-func (r *Runtime) RescueUnpushed(ctx context.Context, k runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	r.mu.Lock()
-	r.calls = append(r.calls, Call{Method: "RescueUnpushed", Pod: copyKnown(k), Rescue: request})
-	rescuer := r.rescuer
-	r.mu.Unlock()
-	if rescuer == nil {
-		return nil, nil
-	}
-	return rescuer(ctx, k, request)
 }
 
 // CleanupTree records its call and answers what FailCleanupTree set, nil by default.

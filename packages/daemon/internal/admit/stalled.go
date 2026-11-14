@@ -692,14 +692,15 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 // a message queued for a role is no hold of the daemon's at all: a notice queued to a suspended
 // role waits for a role nothing brings back, so an issue with one in the outbox has stopped
 // like any other, and nothing of the outbox reaches the walk. An issue in `held` is no wait
-// either — it waits for its architect, which is the tree's own work — and it holds its slot in
-// a phase already started, so it waits for nothing of the daemon's and its tree is told like
-// any other stall. An issue whose merge is still to land stands in `merging`, where the merger
-// works, and is read the same way: it holds no slot and stands in no line, past its review
-// (at_work), silences nothing, and its tree is named once every claim of the tree is
-// at rest and nothing of it has moved inside the bound. A merger at work is what keeps such a
-// tree unnamed, and that is read from the claim and never from the phase
-// (record.TreeQuiet.AtWork, which the caller asks before this walk).
+// either — it waits for its architect, which is the tree's own work — and it stands in a phase
+// already started, holding its slot when it is held from a phase up to its review and none when
+// it is held from one past it (record.KeepsSlot reads the phase it stands at, StandsAt), so it
+// waits for nothing of the daemon's and its tree is told like any other stall. An issue whose
+// merge is still to land stands in `merging`, where the merger works, and is read the same way:
+// it holds no slot and stands in no line, past its review (at_work), silences nothing, and its
+// tree is named once every claim of the tree is at rest and nothing of it has moved inside the
+// bound. A merger at work is what keeps such a tree unnamed, and that is read from the claim and
+// never from the phase (record.TreeQuiet.AtWork, which the caller asks before this walk).
 func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHolds) bool {
 	for _, issue := range members {
 		if holds.waitsByDesign(issue) {

@@ -24,8 +24,8 @@ func acceptPhase(t *testing.T, h *harness, key string, at phase.Phase) {
 }
 
 // holdFrom stands key at phase.Held, held from at: where a root whose worker died stands. Its
-// reviewed head is wherever the hold left it, so a root held from retro, merging or
-// awaiting_merge is accepted still (record.Accepted).
+// reviewed head is wherever the hold left it, so a root held from retro or merging is accepted
+// still (record.Accepted).
 func holdFrom(t *testing.T, h *harness, key string, at phase.Phase) {
 	t.Helper()
 	if _, err := h.store.Pool().Exec(context.Background(), "update issues set phase = $2, held_from = $3 where key = $1",
@@ -147,8 +147,8 @@ func TestWaveReleaseIsRefusedForAGrandchildUnderADoneParent(t *testing.T) {
 }
 
 // A6. The refusal is the daemon's own reading of its records, so the ancestor it names is the
-// one record.AcceptedAncestor finds over the tree: the nearest issue above the child in retro,
-// merging or awaiting_merge, found by walking past a parent that is already done.
+// one record.AcceptedAncestor finds over the tree: the nearest issue above the child in retro or
+// merging, found by walking past a parent that is already done.
 func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 	h, _, _ := statusHarness(t)
 	acceptPhase(t, h, statusRoot, phase.Merging)
