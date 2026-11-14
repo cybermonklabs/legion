@@ -706,6 +706,13 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA}, nil
 		}
 		return PullRequestClosed{Repo: repo, Number: number, HeadSHA: sha, UpdatedAt: updatedAt}, nil
+	case "dequeued":
+		// A removal from the merge queue is told at the head it left the queue at. One the
+		// listener sends with no head names none, so it is no fact, as a synchronize with none is no fact.
+		if sha == "" {
+			return nil, nil
+		}
+		return PullRequestDequeued{Repo: repo, Number: number, HeadSHA: sha}, nil
 	default:
 		return nil, nil
 	}

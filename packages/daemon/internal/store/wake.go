@@ -593,3 +593,16 @@ func (p *PodRecords) FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+// OpenPodBackstop is whether issue's role has a backstop armed and not yet fired
+// (pod_wake_backstops, `not fired`): the release that suspended the role with its phase open
+// armed it, and it wakes the role when it comes due unless a wake takes it first (TakePodWake
+// cancels it) or a path that takes the pod over drops it (CancelPodBackstops).
+func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error) {
+	var open bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from pod_wake_backstops
+		where project = $1 and issue = $2 and role = $3 and not fired)`, p.project, issue, string(role)).Scan(&open); err != nil {
+		return false, fmt.Errorf("read the open backstop of %s's %s: %w", issue, role, err)
+	}
+	return open, nil
+}

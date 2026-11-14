@@ -94,8 +94,8 @@ type PushRequest struct {
 // PushName is what a refusal and a setup failure of a push call the write: "the push to origin",
 // and "the push" where the caller has no remote's name. It is exported because a caller that
 // reports a failure of its own before the guard runs — `legion leak-check pre-push` reading
-// git's update lines, internal/rescue reading the remote's URL — must name the write in the same
-// words the guard would, and three copies of one sentence are three that drift apart.
+// git's update lines — must name the write in the same words the guard would, and two copies of
+// one sentence are two that drift apart.
 func PushName(remote string) string {
 	if remote == "" {
 		return "the push"

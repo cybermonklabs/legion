@@ -486,8 +486,7 @@ records you were sent in it.
 ## `update-stalled on <KEY>` (`{kind: "update-stalled", reason, update}`)
 
 The update round over the issue's pod has passed its bound, and something still holds it: an
-operator's suspension, a failed check for unpushed work, a refused pod replacement, no process in
-the pod, or two pods. Handle it as
+operator's suspension, a refused pod replacement, no process in the pod, or two pods. Handle it as
 `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
 says.
 
