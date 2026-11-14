@@ -96,7 +96,8 @@ type MigrationCensus struct {
 	ConcurrentIndex bool
 	// exemptionVoided says, for a refusal on size, why a migration whose statements alone would be
 	// exempt is not: the enabled event triggers that run on them, or the earlier pending migration
-	// that creates or alters an event trigger or does not parse. Empty otherwise.
+	// that can create or enable an event trigger that the census does not see, or that does not
+	// parse (laterExemptionsOff). Empty otherwise.
 	exemptionVoided string
 	// Count is what the migration's census answered; nil when it declares none or the census
 	// failed.
@@ -169,9 +170,9 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 // pending migration against the catalog as it stands before any of them applies, so from the
 // first pending migration that holds a statement the census does not know to leave names as they
 // are (catalogReadsOff), every later one is classified with no catalog, and its added columns and
-// created indexes are judged on size (catalogTrusted). From the first pending migration that
-// creates or alters an event trigger, or that does not parse, no later one is exempt from the
-// limit (laterExemptionsOff).
+// created indexes are judged on size (catalogTrusted). From the first pending migration that can
+// create or enable an event trigger that the census does not see, or that does not parse, no
+// later one is exempt from the limit (laterExemptionsOff).
 //
 // It returns an error only when the census itself could not be taken: a connection whose
 // search_path names no schema that exists among them, where current_schema() is null, so neither
@@ -250,10 +251,11 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	// laterReadsOff says it does, and from there on no migration reads the catalog. A recorded
 	// migration, which the loop skips, changes nothing.
 	catalogTrusted := true
-	// laterEventTrigger names the first pending migration that creates or alters an event trigger,
-	// or that does not parse, and says which (laterExemptionsOff); "" until one does. Such an event
-	// trigger can run code of its own on the statements of every later migration, as an enabled
-	// one does, so no later migration is exempt from the limit.
+	// laterEventTrigger names the first pending migration that can create or enable an event
+	// trigger that the census does not see, or that does not parse, and says why
+	// (laterExemptionsOff); "" until one does. Such an event trigger can run code of its own on
+	// the statements of every later migration, as an enabled one does, so no later migration is
+	// exempt from the limit.
 	var laterEventTrigger string
 	for _, migration := range migrations {
 		if recorded[migration.Version] {

@@ -1,6 +1,7 @@
 package pgmigrate
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -69,12 +70,13 @@ import (
 // SelectStmt: each fills a table with the rows its query reads, and neither node is here.
 //
 // An event trigger on these commands runs code of its own when they run, so Census does not apply
-// the exemption where one is enabled (ddlEventTriggers), or after a pending migration that creates
-// or alters one or that the census cannot parse (tableSizeExemption). Adding a kind is a reviewed
-// edit with the same argument for it; a kind that can scan or rewrite (an index on an existing
-// table, other alter table forms, a DO block, any DML) never belongs here. A marked concurrent
-// index has a separate size exception in Census: it scans rows without holding off ordinary
-// writes, not catalog-only work.
+// the exemption where one is enabled (ddlEventTriggers), or after a pending migration that can
+// create or enable one that the census does not see, or that the census cannot parse
+// (takesLaterExemptions, tableSizeExemption). Adding a kind is a reviewed edit with the same
+// argument for it; a kind that can scan or rewrite (an index on an existing table, other alter
+// table forms, a DO block, any DML) never belongs here. A marked concurrent index has a separate
+// size exception in Census: it scans rows without holding off ordinary writes, not catalog-only
+// work.
 var catalogOnlyStatements = map[string]func(c *classifier, node json.RawMessage) (kind string, err error){
 	"CreateFunctionStmt": (*classifier).catalogOnlyFunction,
 	"CreateTrigStmt":     always("create trigger"),
@@ -640,11 +642,14 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 // catalogReadsOff is the classifier's first pass, over every statement of the migration before
 // any is judged, since a statement anywhere in it can change what the names of all of them
 // resolve to. here says that this migration may not read the catalog, and later that no pending
-// migration after it may either, which Census keeps (catalogTrusted). The census resolves names
-// on its own connection, in the catalog as it stands before any pending migration applies. A
-// read is the one the migration meets only while no statement before it has changed what a name
-// resolves to, so the pass keeps the reads on only after a statement it knows to leave the names
-// as they are:
+// migration after it may either, which Census keeps (catalogTrusted). exemptionsOff says why no
+// pending migration after this one may be exempt from the limit, in the words of the first
+// statement that takes their exemptions (takesLaterExemptions), and "" where no statement does.
+// The pass asks that of every statement, also of the statements after the one that turns the
+// reads off. The census resolves names on its own connection, in the catalog as it stands before
+// any pending migration applies. A read is the one the migration meets only while no statement
+// before it has changed what a name resolves to, so the pass keeps the reads on only after a
+// statement it knows to leave the names as they are:
 //
 //   - a SET or a RESET keeps them on only when it names lock_timeout or statement_timeout. A SET
 //     or a RESET of any other setting, a RESET ALL, and a SET node the pass cannot read turn them
@@ -658,24 +663,27 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 //     the reads of their own migration and of every later one, because they outlive the
 //     migration: the runner applies each migration on a connection of its pool, which resets no
 //     session setting, so the next migration can take that connection with the setting on it;
-//   - every other statement keeps them on only where keepsReadsOn names it, and turns them off for
-//     its own migration and every later one where it does not. A pending migration could drop an
-//     enum and create a domain with a constraint under its name, and Postgres would then rewrite a
-//     table for a column the census admitted. After a SET LOCAL that turned off the reads of its
-//     own migration, the migration resolves names under a setting the census does not share, so
-//     keepsReadsOn then reads every relation name of a later statement as a name of pg_catalog.
+//   - every other statement keeps them on only where it takes no exemption and keepsReadsOn
+//     names it, and turns them off for its own migration and every later one where it does not. A
+//     pending migration could drop an enum and create a domain with a constraint under its name,
+//     and Postgres would then rewrite a table for a column the census admitted. After a SET LOCAL
+//     that turned off the reads of its own migration, the migration resolves names under a
+//     setting the census does not share, so keepsReadsOn then reads every relation name of a
+//     later statement as a name of pg_catalog. After any statement that turns the reads off, the
+//     census no longer resolves a name as the migration does, and takesLaterExemptions reads the
+//     names of the statements after it without the catalog (catalogRelation).
 //
 // The pass holds a list of the statements that leave the names as they are, not a list of the
 // statements that change them. A statement that a list of the second kind misses admits a column
 // that Postgres rewrites the table for. A statement that keepsReadsOn does not name costs the
 // later migrations their catalog reads, so their added columns are judged on size: a refusal,
 // which is the safer failure. The pass reads every statement that the migration's text shows,
-// whoever may run it, a superuser included. Code that no statement shows stays a limit: the
-// census does not read the code that a function body or a trigger body runs, a DO block's body
-// among them. A DO block turns the reads off, since it is not on the list, but code that it, a
-// function or a trigger runs can, for example, create an event trigger that the census does not
-// see.
-func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, err error) {
+// whoever may run it, a superuser included. A statement of a kind off the list (listedKind), a DO
+// block and a CALL among them, also takes the exemptions of every later pending migration, since
+// the census cannot see whether the code it runs creates or enables an event trigger. Code that no
+// statement shows stays a limit where a statement that keeps the reads on calls it: the census
+// does not read the code that a function body or a trigger body runs.
+func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, exemptionsOff string, err error) {
 	for _, s := range statements {
 		if s.node == "VariableSetStmt" {
 			var set struct {
@@ -684,7 +692,8 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 				IsLocal bool   `json:"is_local"`
 			}
 			if json.Unmarshal(s.body, &set) != nil || set.Kind == "VAR_RESET_ALL" {
-				return true, true, nil
+				here, later = true, true
+				continue
 			}
 			// The parser keeps the case of a quoted name (set "Lock_Timeout" = x gives
 			// Lock_Timeout), and Postgres finds a setting by its name without regard to case, so the
@@ -695,29 +704,38 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 				continue
 			}
 			// The pooled connection keeps a session setting for the next migration it runs.
-			if !set.IsLocal {
-				return true, true, nil
-			}
-			here = true
+			here, later = true, later || !set.IsLocal
+			continue
+		}
+		reason, err := c.takesLaterExemptions(s, !here)
+		if err != nil {
+			return false, false, "", err
+		}
+		if reason != "" {
+			return true, true, reason, nil
+		}
+		if later {
 			continue
 		}
 		keeps, err := c.keepsReadsOn(s, !here)
 		if err != nil {
-			return false, false, err
+			return false, false, "", err
 		}
 		if !keeps {
-			return true, true, nil
+			here, later = true, true
 		}
 	}
-	return here, false, nil
+	return here, later, "", nil
 }
 
 // keepsReadsOn says whether a statement other than a SET or a RESET is known to leave every type,
 // function and cast name, the schemas a role's lookup searches, and every setting as they are, so
 // that the catalog reads stay on after it. catalogReadsOff reads a SET or a RESET itself, and
-// keeps the reads on after one only when it names lock_timeout or statement_timeout. keepsReadsOn
-// names the statements this repository's migrations write that change none of these, and answers
-// no for any other statement and for a node it cannot read:
+// keeps the reads on after one only when it names lock_timeout or statement_timeout. The keep-on
+// list names the statements this repository's migrations write that change none of these, and a
+// statement of any other kind, or a node that cannot be read, is off it. listedKind reads the
+// kinds below from the parse node alone, and keepsReadsOn reads the catalog for the name that a
+// CREATE TABLE, a CREATE VIEW or a CREATE FUNCTION gives:
 //
 //   - INSERT, UPDATE, DELETE and SELECT, a WITH included, since a WITH is a field of each. A
 //     SELECT … INTO is not on the list (selectInto): it creates a table and fills it with the rows
@@ -768,23 +786,26 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 //     by a superuser or through such a view, can make a cast's function volatile or add a cast,
 //     and an update of pg_settings changes a setting, while the census reads the catalog as it
 //     stood before. The census does not tell a read of such a relation from a write: every
-//     statement that names one is off the list, which only refuses more. The walk finds a relation
-//     wherever the statement names it: in a FROM, a JOIN or a WITH, as the table that an INSERT,
-//     an UPDATE, a DELETE or a MERGE writes, in a LOCK, as the table of a CREATE INDEX or a CREATE
-//     TRIGGER, in a REFERENCES, a LIKE or an INHERITS, and in an SQL-standard function body;
+//     statement that names one is off the list, which only refuses more. Such a statement also
+//     takes the exemptions of every later pending migration (takesLaterExemptions). The walk
+//     finds a relation wherever the statement names it: in a FROM, a JOIN or a WITH, as the table
+//     that an INSERT, an UPDATE, a DELETE or a MERGE writes, in a LOCK, as the table of a CREATE
+//     INDEX or a CREATE TRIGGER, in a REFERENCES, a LIKE or an INHERITS, and in an SQL-standard
+//     function body;
 //   - a call of set_config, which changes a setting as a SET does, search_path among them,
 //     wherever the statement makes it: in a SELECT, in an INSERT's values, in a default or a check
 //     of a CREATE TABLE or an ALTER TABLE, and in an SQL-standard function body.
 //
-// resolves says whether the census resolves a relation's name as the migration does: it does not
-// after a SET LOCAL of the migration that turned off the migration's own reads (catalogReadsOff).
+// catalogReadsOff asks keepsReadsOn only about a statement that takes no exemption of a later
+// migration (takesLaterExemptions): its kind is on the list (listedKind), and it names no
+// relation that catalogRelation counts. keepsReadsOn reads the rest. resolves says whether the
+// census resolves a relation's name as the migration does: it does not after a SET LOCAL of the
+// migration that turned off the migration's own reads (catalogReadsOff). There, and without a
+// catalog, keepsReadsOn counts every relation name as a name of pg_catalog, since the census
+// cannot tell which relation the migration finds by it. Without a catalog the reads are off
+// already, and the answer changes nothing.
 func (c *classifier) keepsReadsOn(s statement, resolves bool) (bool, error) {
 	switch s.node {
-	case "InsertStmt", "UpdateStmt", "DeleteStmt", "LockStmt", "CreateTrigStmt", "IndexStmt":
-	case "SelectStmt":
-		if selectInto(s.body) {
-			return false, nil
-		}
 	case "CreateStmt", "ViewStmt":
 		var create struct {
 			Relation rangeVar `json:"relation"`
@@ -800,6 +821,36 @@ func (c *classifier) keepsReadsOn(s statement, resolves bool) (bool, error) {
 		if held, err := c.catalogTypeName(name); err != nil || held {
 			return false, err
 		}
+	case "CreateFunctionStmt":
+		var create struct {
+			Funcname nameList `json:"funcname"`
+		}
+		if json.Unmarshal(s.body, &create) != nil {
+			return false, nil
+		}
+		if shared, err := c.catalogOrCastFunction(create.Funcname); err != nil || shared {
+			return false, err
+		}
+	}
+	names, ok := treeNamesOf(s.body)
+	if !ok || names.setConfig {
+		return false, nil
+	}
+	return len(names.relations) == 0 || resolves && c.catalog != nil, nil
+}
+
+// listedKind says whether statement s is of a kind on the keep-on list (keepsReadsOn lists the
+// kinds), as its parse node shows with no catalog read: an INSERT, an UPDATE, a DELETE, a LOCK
+// TABLE, a CREATE TRIGGER, a CREATE INDEX, a CREATE TABLE and a CREATE VIEW, a SELECT without INTO,
+// an ALTER TABLE of a table or an index with no subcommand of CASCADE, a RENAME COLUMN of a table,
+// a DROP INDEX, DROP TRIGGER, DROP FUNCTION, DROP TABLE or DROP VIEW with RESTRICT, and a CREATE
+// FUNCTION or CREATE PROCEDURE in plpgsql or sql. A node it cannot read is off the list.
+func (c *classifier) listedKind(s statement) bool {
+	switch s.node {
+	case "InsertStmt", "UpdateStmt", "DeleteStmt", "LockStmt", "CreateTrigStmt", "IndexStmt", "CreateStmt", "ViewStmt":
+		return true
+	case "SelectStmt":
+		return !selectInto(s.body)
 	case "AlterTableStmt":
 		var alter struct {
 			Objtype string `json:"objtype"`
@@ -810,50 +861,89 @@ func (c *classifier) keepsReadsOn(s statement, resolves bool) (bool, error) {
 			} `json:"cmds"`
 		}
 		if json.Unmarshal(s.body, &alter) != nil || alter.Objtype != "OBJECT_TABLE" && alter.Objtype != "OBJECT_INDEX" {
-			return false, nil
+			return false
 		}
 		for _, item := range alter.Cmds {
 			if item.Command.Behavior == "DROP_CASCADE" {
-				return false, nil
+				return false
 			}
 		}
+		return true
 	case "RenameStmt":
 		var rename renameStmt
-		if json.Unmarshal(s.body, &rename) != nil || rename.RenameType != "OBJECT_COLUMN" || rename.RelationType != "OBJECT_TABLE" {
-			return false, nil
-		}
+		return json.Unmarshal(s.body, &rename) == nil && rename.RenameType == "OBJECT_COLUMN" && rename.RelationType == "OBJECT_TABLE"
 	case "DropStmt":
 		var drop dropStmt
-		if json.Unmarshal(s.body, &drop) != nil || drop.Behavior != "DROP_RESTRICT" ||
-			!slices.Contains([]string{"OBJECT_INDEX", "OBJECT_TRIGGER", "OBJECT_FUNCTION", "OBJECT_TABLE", "OBJECT_VIEW"}, drop.RemoveType) {
-			return false, nil
-		}
+		return json.Unmarshal(s.body, &drop) == nil && drop.Behavior == "DROP_RESTRICT" &&
+			slices.Contains([]string{"OBJECT_INDEX", "OBJECT_TRIGGER", "OBJECT_FUNCTION", "OBJECT_TABLE", "OBJECT_VIEW"}, drop.RemoveType)
 	case "CreateFunctionStmt":
-		if kind, err := c.catalogOnlyFunction(s.body); err != nil || kind == "" {
-			return false, err
-		}
-		var create struct {
-			Funcname nameList `json:"funcname"`
-		}
-		if json.Unmarshal(s.body, &create) != nil {
-			return false, nil
-		}
-		if shared, err := c.catalogOrCastFunction(create.Funcname); err != nil || shared {
-			return false, err
-		}
-	default:
-		return false, nil
+		kind, err := c.catalogOnlyFunction(s.body)
+		return err == nil && kind != ""
+	}
+	return false
+}
+
+// cannotSeeAnEventTrigger ends the words of laterExemptionsOff for a migration that holds a
+// statement whose effect on the event triggers the census cannot read, and for a migration that
+// does not parse.
+const cannotSeeAnEventTrigger = ", so the census cannot see whether it creates or alters an event trigger"
+
+// takesLaterExemptions says why statement s takes the table-size exemption and the concurrent
+// index exception from every pending migration after its own, in words that follow the
+// migration's name, and "" where it takes neither. An event trigger runs code of its own on the
+// statements of every later migration, as an enabled one does (ddlEventTriggersQuery), and that
+// code can read any table. The census reads pg_event_trigger as it stands before any pending
+// migration applies, so it does not see an event trigger that a pending statement creates or
+// enables. A statement takes the exemptions where it:
+//
+//   - creates or alters an event trigger, whatever the trigger's tags and whether it is enabled;
+//   - names a relation of pg_catalog, or a relation whose rules read one (catalogRelation),
+//     anywhere in its parse tree (treeNames), whether its kind is on the keep-on list or not. An
+//     UPDATE of pg_event_trigger enables a disabled event trigger, as ALTER EVENT TRIGGER …
+//     ENABLE does. On PostgreSQL 18.6, the census exempted a DROP COLUMN after such an UPDATE,
+//     and when the migration applied, the trigger counted every row of the table;
+//   - is of a kind off the keep-on list (listedKind). A DO block and a CALL run code that the
+//     census does not read. A CREATE EXTENSION and an ALTER EXTENSION run the extension's script,
+//     and some extensions create an event trigger when they install, as pg_graphql and Citus do.
+//     The census does not know a statement of any other kind off the list to leave every event
+//     trigger as it is.
+//
+// The words name the relation in the second case, and in the third case they name a DO block, a
+// CALL and a statement of an extension. Some statements turn the catalog reads off and take no
+// exemption. A SET or a RESET creates and enables no event trigger, and the census counts every
+// event trigger that is not disabled, whatever session_replication_role a setting gives. A
+// statement of a kind on the list that creates a table, a view or a function with a name that
+// pg_catalog holds, or that calls set_config (keepsReadsOn), creates and enables no event trigger
+// either: a function that it replaces runs only when a statement calls it. resolves says whether
+// the census resolves a relation's name as the migration does (catalogRelation).
+func (c *classifier) takesLaterExemptions(s statement, resolves bool) (string, error) {
+	switch s.node {
+	case "VariableSetStmt":
+		return "", nil
+	case "CreateEventTrigStmt", "AlterEventTrigStmt":
+		return "creates or alters an event trigger", nil
 	}
 	names, ok := treeNamesOf(s.body)
-	if !ok || names.setConfig {
-		return false, nil
-	}
 	for _, relation := range names.relations {
-		if catalog, err := c.catalogRelation(relation, resolves); err != nil || catalog {
-			return false, err
+		catalog, err := c.catalogRelation(relation, resolves)
+		if err != nil {
+			return "", err
+		}
+		if catalog {
+			return "names " + relation.sanitized() + ", which can resolve to a relation of pg_catalog or to a relation whose rules read one" + cannotSeeAnEventTrigger, nil
 		}
 	}
-	return true, nil
+	switch {
+	case s.node == "DoStmt":
+		return "runs a DO block" + cannotSeeAnEventTrigger, nil
+	case s.node == "CallStmt":
+		return "calls a procedure" + cannotSeeAnEventTrigger, nil
+	case s.node == "CreateExtensionStmt" || s.node == "AlterExtensionStmt" || s.node == "AlterExtensionContentsStmt":
+		return "creates or alters an extension" + cannotSeeAnEventTrigger, nil
+	case !ok || !c.listedKind(s):
+		return "holds a statement that is off the list of statements that keep the catalog reads on" + cannotSeeAnEventTrigger, nil
+	}
+	return "", nil
 }
 
 // selectInto says whether a SelectStmt holds an INTO, which Postgres takes from the leftmost
@@ -875,21 +965,26 @@ func selectInto(body json.RawMessage) bool {
 	}
 }
 
-// treeNames are what keepsReadsOn reads of a statement's whole parse tree: each relation name it
-// gives, once, and whether it calls set_config.
+// treeNames are what takesLaterExemptions and keepsReadsOn read of a statement's whole parse
+// tree: each relation name it gives, once, and whether it calls set_config.
 type treeNames struct {
 	relations []rangeVar
 	setConfig bool
 }
 
 // treeNamesOf reads the treeNames of a statement's parse node, ok false where the node cannot be
-// read.
+// read. walk meets the fields of a node in the random order of a Go map, so treeNamesOf sorts the
+// relation names: the refusal then names the same relation of a statement on every census
+// (takesLaterExemptions).
 func treeNamesOf(body json.RawMessage) (names treeNames, ok bool) {
 	var tree any
 	if json.Unmarshal(body, &tree) != nil {
 		return treeNames{}, false
 	}
 	names.walk(tree)
+	slices.SortFunc(names.relations, func(a, b rangeVar) int {
+		return cmp.Or(strings.Compare(a.Catalogname, b.Catalogname), strings.Compare(a.Schemaname, b.Schemaname), strings.Compare(a.Relname, b.Relname))
+	})
 	return names, true
 }
 
@@ -931,16 +1026,25 @@ func (names *treeNames) walk(tree any) {
 	}
 }
 
-// catalogRelation says whether relation, a name that a statement on the keep-on list gives, may
-// name a relation of pg_catalog or a relation whose rules read one (Catalog read 7). A name with
-// pg_catalog as its schema is one without a read. A name that resolves to no relation is not one:
-// the statement that creates it was judged itself. An error Postgres raises for the read counts
-// as yes. So does every name where resolves is false, since the census cannot tell which relation
-// the migration finds by it, and every name without a catalog: the reads are off already, and the
-// answer changes nothing.
+// catalogRelation says whether relation, a name that a statement gives, may name a relation of
+// pg_catalog or a relation whose rules read one (Catalog read 7). A name with pg_catalog as its
+// schema is one without a read. With a catalog, where the census resolves names as the migration
+// does, a name that can resolve to no relation is not one: the statement that creates it was
+// judged itself. An error Postgres raises for the read counts as yes. Without a catalog, or where
+// resolves is false, the census cannot resolve the name, so it counts a name with no schema that
+// starts with pg_. Every relation of pg_catalog has such a name, and Postgres searches pg_catalog
+// first unless the search_path lists it later. That is a limit only for a name that resolves to a
+// view, or to another relation with rules, over a relation of pg_catalog: the census cannot see
+// those rules without the catalog. A pending statement that creates such a view names the
+// relation of pg_catalog, so it is judged itself. To count every name there would take the
+// exemptions of the later migrations after every migration whose catalog reads are off
+// (takesLaterExemptions).
 func (c *classifier) catalogRelation(relation rangeVar, resolves bool) (bool, error) {
-	if relation.Schemaname == "pg_catalog" || !resolves || c.catalog == nil {
+	if relation.Schemaname == "pg_catalog" {
 		return true, nil
+	}
+	if !resolves || c.catalog == nil {
+		return relation.Schemaname == "" && strings.HasPrefix(relation.Relname, "pg_"), nil
 	}
 	var catalog bool
 	found, err := c.read(catalogRelationQuery, relation.sanitized(), &catalog)
@@ -1014,16 +1118,25 @@ const (
 	// catalogTypeNameQuery, Catalog read 6, says whether pg_catalog holds a type of the
 	// unqualified name $1.
 	catalogTypeNameQuery = `select exists (select from pg_type where typname = $1 and typnamespace = 'pg_catalog'::regnamespace)`
-	// catalogRelationQuery, Catalog read 7, says whether a relation's name resolves to a relation
-	// of pg_catalog, or to a relation whose rules (pg_rewrite) read one, through views over views
-	// to any depth: a view over pg_proc, a view of information_schema, a table with a rule. A
-	// rule's query tree (ev_action) holds each relation it reads as ":relid <oid>". pg_depend
-	// cannot serve: PostgreSQL records no dependency on a pinned object, and every relation of
-	// pg_catalog is pinned, so pg_depend holds no row for a view's read of pg_proc. A column name
-	// that holds the text ":relid <oid>" is read as a relation too, which only refuses more. A name
-	// that resolves to no relation reads false.
+	// catalogRelationQuery, Catalog read 7, says whether a relation's name can resolve to a
+	// relation of pg_catalog, or to a relation whose rules (pg_rewrite) read one, through views
+	// over views to any depth: a view over pg_proc, a view of information_schema, a table with a
+	// rule. A qualified name ($1 has more than one part, parse_ident) is the relation that
+	// to_regclass resolves it to. An unqualified name is every relation of that name in a schema
+	// that current_schemas(true) lists, pg_catalog and the temporary schema included, and not only
+	// the relation that it resolves to now. A pending DROP TABLE or DROP VIEW, which keeps the
+	// reads on, can drop the relation that a later statement's name resolves to now, and the name
+	// then resolves to a relation of the same name in a later schema. A rule's query tree
+	// (ev_action) holds each relation it reads as ":relid <oid>". pg_depend cannot serve:
+	// PostgreSQL records no dependency on a pinned object, and every relation of pg_catalog is
+	// pinned, so pg_depend holds no row for a view's read of pg_proc. A column name that holds the
+	// text ":relid <oid>" is read as a relation too, which only refuses more. A name that can
+	// resolve to no relation reads false.
 	catalogRelationQuery = `with recursive reached(oid) as (
-			select to_regclass($1)::oid
+			select to_regclass($1)::oid where cardinality(parse_ident($1)) > 1
+			union
+			select c.oid from pg_class c join pg_namespace n on n.oid = c.relnamespace
+				where cardinality(parse_ident($1)) = 1 and c.relname = (parse_ident($1))[1] and n.nspname = any(current_schemas(true))
 			union
 			select m[1]::oid from reached r join pg_rewrite w on w.ev_class = r.oid
 				cross join lateral regexp_matches(w.ev_action::text, ':relid ([0-9]+)', 'g') m
@@ -1172,10 +1285,11 @@ type classification struct {
 	// it (catalogReadsOff), so Census gives them no catalog to read.
 	laterReadsOff bool
 	// laterExemptionsOff says why no pending migration after this one may be exempt from the
-	// limit, as words that follow the migration's name; "" where nothing stops the exemptions. The
-	// migration creates or alters an event trigger, which can run code of its own on the
-	// statements of every later migration, as an enabled one does (ddlEventTriggersQuery). Or it
-	// does not parse, so the census cannot see whether it does.
+	// limit, as words that follow the migration's name; "" where nothing stops the exemptions. A
+	// statement of the migration can create or enable an event trigger that the census does not
+	// see (takesLaterExemptions), and such a trigger can run code of its own on the statements of
+	// every later migration, as an enabled one does (ddlEventTriggersQuery). Or the migration does
+	// not parse, so the census cannot see whether it creates or alters one.
 	laterExemptionsOff string
 }
 
@@ -1184,15 +1298,16 @@ type classification struct {
 //
 // catalog is the census's transaction, which the classifier reads where a form needs it: an added
 // column's type, its default's cast and function, and whether the table a created index is built
-// on is new. Its first pass also reads, for each statement on the keep-on list, whether a relation
-// it names is of pg_catalog or reads one, and whether a function, a table or a view it creates
-// has the name of a function or a type of pg_catalog, or of a cast's function (keepsReadsOn),
-// since the answers decide laterReadsOff. With a nil catalog, or where the migration's own
-// statements forbid the reads (catalogReadsOff), it reads nothing to admit a form, and every added
-// column and every created index is judged on size; the other kinds need no read. An error
-// Postgres raises for a read refuses the form it is for, and any other error is returned. The
-// census's transaction is repeatable-read and read-only, so every read sees the catalog as it
-// stands before any pending migration applies.
+// on is new. Its first pass also reads, for each statement, whether a relation it names is of
+// pg_catalog or reads one (takesLaterExemptions), and for each statement on the keep-on list,
+// whether a function, a table or a view it creates has the name of a function or a type of
+// pg_catalog, or of a cast's function (keepsReadsOn), since the answers decide laterReadsOff and
+// laterExemptionsOff. With a nil catalog, or where the migration's own statements forbid the
+// reads (catalogReadsOff), it reads nothing to admit a form, and every added column and every
+// created index is judged on size; the other kinds need no read. An error Postgres raises for a
+// read refuses the form it is for, and any other error is returned. The census's transaction is
+// repeatable-read and read-only, so every read sees the catalog as it stands before any pending
+// migration applies.
 //
 // The statements are read by Postgres's own parser, libpg_query (Postgres 17's scan.l and
 // gram.y), run as WebAssembly in pure Go by github.com/wasilibs/go-pgquery, so the reading is the
@@ -1207,21 +1322,15 @@ func tableSizeExemption(ctx context.Context, catalog pgx.Tx, sql string) (classi
 	if !ok {
 		return classification{
 			laterReadsOff:      true,
-			laterExemptionsOff: "does not parse, so the census cannot see whether it creates or alters an event trigger",
+			laterExemptionsOff: "does not parse" + cannotSeeAnEventTrigger,
 		}, nil
 	}
-	var answer classification
-	for _, s := range statements {
-		if s.node == "CreateEventTrigStmt" || s.node == "AlterEventTrigStmt" {
-			answer.laterExemptionsOff = "creates or alters an event trigger"
-		}
-	}
 	c := &classifier{ctx: ctx, catalog: catalog}
-	readsOff, laterReadsOff, err := c.catalogReadsOff(statements)
+	readsOff, laterReadsOff, laterExemptionsOff, err := c.catalogReadsOff(statements)
 	if err != nil {
 		return classification{}, err
 	}
-	answer.laterReadsOff = laterReadsOff
+	answer := classification{laterReadsOff: laterReadsOff, laterExemptionsOff: laterExemptionsOff}
 	if readsOff {
 		c.catalog = nil
 	}
@@ -1255,9 +1364,10 @@ func tableSizeExemption(ctx context.Context, catalog pgx.Tx, sql string) (classi
 // drop the exemption covers. Census reads this once for the whole database rather than per
 // migration, so such a trigger on sql_drop takes the exemption from every migration, one holding
 // no drop included: the reading that refuses, not the one that applies. An event trigger that a
-// pending migration creates or alters is not in pg_event_trigger yet, so tableSizeExemption reads
-// the statement instead (laterExemptionsOff), and that migration takes the exemption from every
-// pending migration after it, whatever the trigger's tags and whether it is enabled.
+// pending migration creates or enables is not in pg_event_trigger, or not enabled there, yet. So
+// tableSizeExemption reads the statements instead (takesLaterExemptions), and a migration whose
+// statement can create or enable one takes the exemption from every pending migration after it,
+// whatever the trigger's tags and whether it is enabled.
 const ddlEventTriggersQuery = `
 	select coalesce(string_agg(evtname, ', ' order by evtname), '')
 	from pg_event_trigger

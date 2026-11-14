@@ -28,6 +28,9 @@ import (
 // row type, for the row that renames foo to mood under a search_path that lists early before
 // public; foo_of is plpgsql for the same reason, and names no type in its body, which still runs
 // after the rename. proc_view is a view over pg_proc, for the row that writes pg_proc through it.
+// The schema late holds evt_shadow, a view over pg_event_trigger, under the name of the table
+// public.evt_shadow, for the row that drops that table under a search_path that lists public
+// before late.
 const catalogOnlyFixtureSQL = `
 create table schema_migrations (version bigint primary key);
 insert into schema_migrations (version) values (1);
@@ -67,6 +70,9 @@ create function big_noop() returns trigger language plpgsql as $$ begin return n
 create trigger big_noop after insert on big for each row execute function big_noop();
 create view big_view as select id, kind from big;
 create view proc_view as select * from pg_proc;
+create schema late;
+create view late.evt_shadow as select * from pg_event_trigger;
+create table public.evt_shadow (id int);
 `
 
 // catalogOnlyFixture is catalogOnlyFixtureSQL with rows rows in each large table. The census
@@ -498,6 +504,28 @@ var refusedRows = []refusedRow{
 	// DROP COLUMN after this UPDATE, and at apply time the trigger counted every row of the table.
 	{name: "after an update of pg_catalog.pg_event_trigger", migrations: []string{"update pg_catalog.pg_event_trigger set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
 	{name: "after an update of pg_event_trigger without its schema", migrations: []string{"update pg_event_trigger set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
+	// A pending statement of a kind off the keep-on list, and a pending statement that names a
+	// relation of pg_catalog wherever it stands, take the exemption from every later pending
+	// migration too (takesLaterExemptions), since the census cannot see whether such a statement
+	// creates or enables an event trigger. The refusal says what the statement does. A DO block and
+	// a CALL run code that the census does not read. A CREATE EXTENSION and an ALTER EXTENSION run
+	// the extension's script, which can create an event trigger, as pg_graphql's and Citus's do.
+	// CREATE TABLE … AS is of another kind off the list. SELECT … INTO is off the list too, and the
+	// census reads the relations it names all the same, so the refusal names pg_proc. The census
+	// only parses these statements, so some_proc_1792 and the extension vector need not exist.
+	{name: "after a DO block, an admitted form without a catalog read is not exempt either", migrations: []string{"do $$ begin end $$", "alter table big alter column flag drop default"}, says: "the earlier pending migration 0002_row.up.sql runs a DO block, so the census cannot see whether it creates or alters an event trigger, which can run code of its own on them"},
+	{name: "after a call, an admitted form without a catalog read is not exempt either", migrations: []string{"call some_proc_1792()", "alter table big alter column flag drop default"}, says: "the earlier pending migration 0002_row.up.sql calls a procedure, so the census cannot see whether it creates or alters an event trigger, which can run code of its own on them"},
+	{name: "after create extension, an admitted form without a catalog read is not exempt either", migrations: []string{"create extension if not exists pgcrypto", "alter table big alter column flag drop default"}, says: "the earlier pending migration 0002_row.up.sql creates or alters an extension, so the census cannot see whether it creates or alters an event trigger, which can run code of its own on them"},
+	{name: "after alter extension, an admitted form without a catalog read is not exempt either", migrations: []string{"alter extension vector update", "alter table big alter column flag drop default"}, says: "the earlier pending migration 0002_row.up.sql creates or alters an extension, so the census cannot see whether it creates or alters an event trigger, which can run code of its own on them"},
+	{name: "after create table as, an admitted form without a catalog read is not exempt either", migrations: []string{"create table t1792_ctas as select 1 as id", "alter table big alter column flag drop default"}, says: "the earlier pending migration 0002_row.up.sql holds a statement that is off the list of statements that keep the catalog reads on, so the census cannot see whether it creates or alters an event trigger, which can run code of its own on them"},
+	{name: "after a select into from pg_catalog.pg_proc, an admitted form without a catalog read is not exempt either", migrations: []string{"select oid into t1792_into from pg_catalog.pg_proc where false", "alter table big alter column flag drop default"}, says: `the earlier pending migration 0002_row.up.sql names "pg_catalog"."pg_proc", which can resolve to a relation of pg_catalog or to a relation whose rules read one, so the census cannot see whether it creates or alters an event trigger, which can run code of its own on them`},
+	// Under a search_path that lists public before late, evt_shadow names the table
+	// public.evt_shadow until the first migration drops that table. After the drop, evt_shadow names
+	// the fixture's view late.evt_shadow over pg_event_trigger, so the second migration's UPDATE can
+	// enable an event trigger. Catalog read 7 reads every relation of an unqualified name in the
+	// schemas of the search_path, the view among them, and not only the table that the name
+	// resolves to before the drop.
+	{name: "after a drop of a table that hides a view over pg_event_trigger, an update of the name", migrations: []string{"drop table public.evt_shadow", "update evt_shadow set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}, searchPath: "public, late", says: `the earlier pending migration 0003_row.up.sql names "evt_shadow", which can resolve to a relation of pg_catalog or to a relation whose rules read one, so the census cannot see whether it creates or alters an event trigger, which can run code of its own on them`},
 }
 
 // censusOf runs one census, with the table limit at one byte, of sqls as pending migrations
@@ -593,13 +621,15 @@ func sizesATableAboveTheLimit(entry MigrationCensus) bool {
 // migration that holds a statement off the keep-on list, or a statement on it that names a
 // relation of pg_catalog or calls set_config (keepsReadsOn lists what keeps the catalog reads
 // on), because the census reads the catalog as it stands before any pending migration applies.
-// After an earlier pending migration that creates or alters an event trigger, or that does not
-// parse, every form is held to the limit, one that needs no catalog read included, and the
-// refusal names that migration (row.says). The census runs with the limit at one byte, so each
-// refused migration is refused on the size of a table it touches; a form that touches no table
-// the census sizes shares its migration with an added bigint column of big, which is admitted
-// alone, so the refusal shows that the form cost the migration its exemption. A row with a
-// searchPath runs its census under that search_path.
+// After an earlier pending migration that holds a statement of a kind off the keep-on list (a DO
+// block, a CALL, a CREATE or ALTER EXTENSION and a CREATE or ALTER EVENT TRIGGER among them) or a
+// statement that names a relation of pg_catalog, or that does not parse, every form is held to
+// the limit, one that needs no catalog read included, and the refusal names that migration and
+// says why (row.says). The census runs with the limit at one byte, so each refused migration is
+// refused on the size of a table it touches; a form that touches no table the census sizes shares
+// its migration with an added bigint column of big, which is admitted alone, so the refusal shows
+// that the form cost the migration its exemption. A row with a searchPath runs its census under
+// that search_path.
 func TestCensusStillRefusesEveryFormThatReadsOrRewritesRows(t *testing.T) {
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)
