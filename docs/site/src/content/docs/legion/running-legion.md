@@ -629,9 +629,9 @@ What each part is for:
   ([Start the controller](#start-the-controller)).
 - Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long a
   closed issue's production check runs before its last look, 14 days by default,
-  decimals allowed), `pod_update_retask_hours` (1: how long an update round waits before it asks
-  a worker that has not answered again, decimals allowed), `pod_update_notice_hours` (4: how long
-  an update round runs before the controller is told it is not finishing, decimals allowed),
+  decimals allowed), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
+  update round ends and the pod is replaced, whatever the roles answered and unless an operator's
+  suspension holds the round, decimals allowed),
   `pod_update_max_open_rounds` (how many issues may hold an open pod-update round at once) and
   `pod_update_rounds_per_minute` (how many rounds one sweep opens), each a positive integer whose
   absent key is no limit at all, `stalled_tree_notice_hours` (6: how long a tree the daemon runs

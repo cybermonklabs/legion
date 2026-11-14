@@ -327,14 +327,9 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.ProductionCheckBound = v }),
 		},
 		{
-			Name: "pod_update_retask_hours", Default: "`1`", RequiredBy: "no",
-			Description: "How many hours a pod-update round waits before it asks a worker that has not answered again; decimals allowed.",
-			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.PodUpdateRetask = v }),
-		},
-		{
-			Name: "pod_update_notice_hours", Default: "`4`", RequiredBy: "no",
-			Description: "How many hours a pod-update round runs before the controller is told it is not finishing; decimals allowed.",
-			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.PodUpdateNotice = v }),
+			Name: "pod_update_grace_minutes", Default: "`30`", RequiredBy: "no",
+			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered, and an answer from every role with no turn running ends it sooner; decimals allowed.",
+			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.PodUpdateGrace = v }),
 		},
 		{
 			Name: "stalled_tree_notice_hours", Default: "`6`", RequiredBy: "no",
