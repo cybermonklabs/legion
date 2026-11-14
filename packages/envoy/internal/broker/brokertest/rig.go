@@ -190,13 +190,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// The policy's metrics as main wires them: the store-read counter before the first load,
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
 	registry := metrics.New()
-	loader := policytest.Loader(local)
-	loader.StoreReads = policy.NewStoreReads(registry)
-	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
-	if err != nil {
-		t.Fatalf("policy.NewCurrent: %v", err)
-	}
-	policy.NewUnservableSecrets(registry, cur)
+	cur := policytest.MeteredCurrent(t, local, registry)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)

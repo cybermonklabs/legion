@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -88,8 +89,20 @@ func post(t *testing.T, target string) (int, http.Header, map[string]any) {
 	return resp.StatusCode, resp.Header, body
 }
 
-// recordQuotes reports whether any field of record holds text.
-func recordQuotes(record map[string]any, text string) bool {
-	raw, _ := json.Marshal(record)
-	return strings.Contains(string(raw), text)
+// recordQuotes reports whether any string field of record holds text, at any depth: each field
+// as the record's JSON decoded it, so no escaping of the encoding can hide the text.
+func recordQuotes(record any, text string) bool {
+	switch field := record.(type) {
+	case string:
+		return strings.Contains(field, text)
+	case []any:
+		return slices.ContainsFunc(field, func(item any) bool { return recordQuotes(item, text) })
+	case map[string]any:
+		for _, value := range field {
+			if recordQuotes(value, text) {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -119,11 +119,11 @@ func TestALabelValueIsEscapedAsTheTextFormatRequires(t *testing.T) {
 	}
 }
 
-// A label value holding none of the three characters the text format escapes is written exactly
-// as it was before values were escaped, so the listener's and Dispatch's scrapes, whose label
-// values are fixed words of their own, read byte for byte as they did. One registry with each
-// kind of metric those two register, pinned whole.
-func TestAPlainLabelValueIsWrittenByteForByteAsBefore(t *testing.T) {
+// A label value holding none of the three characters the text format escapes is written as it
+// is, so the listener's and Dispatch's scrapes, whose label values are fixed words of their own,
+// read byte for byte as the text pinned here. One registry with each kind of metric those two
+// register, pinned whole.
+func TestAPlainLabelValueIsWrittenAsItIs(t *testing.T) {
 	r := New()
 	received := r.NewCounter("envoy_messages_received_total", "Total messages received")
 	received.Inc([2]string{"source", "agent"})

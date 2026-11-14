@@ -2,46 +2,16 @@ package secrets_test
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"math/big"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
-
-// unsignableAppKey is a 512-bit RSA key in PEM, made at run time from two fresh 256-bit primes:
-// x509 parses it, and crypto/rsa refuses to sign with it, since Go refuses every RSA key shorter
-// than 1024 bits (crypto/rsa's minimum key size). It is the stored key a GitHub App value can
-// hold that parses and still cannot sign. No fixture writes the key out: rsa.GenerateKey refuses
-// that size, and a key written into the source is a key the push guard refuses.
-func unsignableAppKey(t *testing.T) string {
-	t.Helper()
-	one := big.NewInt(1)
-	for {
-		p, err := rand.Prime(rand.Reader, 256)
-		if err != nil {
-			t.Fatal(err)
-		}
-		q, err := rand.Prime(rand.Reader, 256)
-		if err != nil {
-			t.Fatal(err)
-		}
-		phi := new(big.Int).Mul(new(big.Int).Sub(p, one), new(big.Int).Sub(q, one))
-		d := new(big.Int).ModInverse(big.NewInt(65537), phi)
-		if p.Cmp(q) == 0 || d == nil {
-			continue
-		}
-		key := &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: new(big.Int).Mul(p, q), E: 65537}, D: d, Primes: []*big.Int{p, q}}
-		key.Precompute()
-		return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	}
-}
 
 // leak is a word every refused value below carries where it can, beside the key material: no
 // refusal may quote it.
@@ -76,7 +46,7 @@ func refusedValues(t *testing.T) []refusedValue {
 		{"github-app", "no private_key", app(map[string]string{"app_id": "123456", "note": leak}), "GitHub App secret needs an app_id and private_key"},
 		{"github-app", "a key that does not parse", app(map[string]string{"app_id": "123456", "private_key": string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: []byte("no key")}))}), "parse GitHub App private key: not a PKCS1 or PKCS8 private key"},
 		{"github-app", "a key with no PEM block", app(map[string]string{"app_id": "123456", "private_key": leak}), "parse GitHub App private key: no PEM block found"},
-		{"github-app", "a key that cannot sign", app(map[string]string{"app_id": "123456", "private_key": unsignableAppKey(t)}), "sign GitHub App JWT: "},
+		{"github-app", "a key that cannot sign", app(map[string]string{"app_id": "123456", "private_key": policytest.UnsignableAppKey(t)}), "sign GitHub App JWT: "},
 		{"google-login", "not a JSON object", leak, "decode Google login secret: not a JSON object of its fields"},
 		{"google-login", "not an authorized_user credential", `{"type":"service_account","client_id":"client-id","client_secret":"` + leak + `","refresh_token":"refresh-not-a-secret"}`, "Google login secret must be an authorized_user credential"},
 		{"google-login", "no refresh_token", `{"type":"authorized_user","client_id":"client-id","client_secret":"` + leak + `"}`, "Google login secret must be an authorized_user credential"},
@@ -178,10 +148,10 @@ func TestParseValueRefusesAKindNoMinterReads(t *testing.T) {
 	}
 }
 
-// TestParseValueLeavesTheOtherChecksInTheirPlace: the decoder replaces only the minters' reading
-// of the value. The Azure minter's gate on the configured human-tier secret still comes first,
-// so a release it refuses is refused whatever the value holds; the GitHub minter's narrowing
-// check now comes after the value, so a bad value under a bad narrowing is the stored value's.
+// TestParseValueLeavesTheOtherChecksInTheirPlace: the decoder is each minter's one reader of the
+// value, and no more. The Azure minter's gate on the configured human-tier secret comes before it,
+// so a release that gate refuses is refused whatever the value holds; the GitHub minter's
+// narrowing check comes after it, so a bad value under a bad narrowing is the stored value's.
 func TestParseValueLeavesTheOtherChecksInTheirPlace(t *testing.T) {
 	_, err := (secrets.AzureLogin{SecretName: "AZURE_LOGIN"}).Mint(t.Context(), secrets.MintRequest{Name: "OTHER", HumanTier: true, Value: leak})
 	if got := secrets.MintErrorClass(err); got != "refused" {

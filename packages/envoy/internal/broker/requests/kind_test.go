@@ -414,10 +414,13 @@ func TestAMaxGrantLoweredBelowAGrantAndRaisedBackLeavesItEnded(t *testing.T) {
 
 // TestAFailedMintIsNamedAndReleasesNothing: a minter's refusal, such as a Google login that needs
 // a new sign-in, reaches the session as ErrMintFailed with the minter's own words, never as the
-// stored value.
+// stored value: the refresh token it holds, a canary no quoting changes, is not in the error.
 func TestAFailedMintIsNamedAndReleasesNothing(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	retag(t, machine, requestKindSecret("LAPSED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, ""))
+	const canary = "refresh-not-a-secret-canary-91b3"
+	lapsed := requestKindSecret("LAPSED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, "")
+	lapsed.Value = `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"` + canary + `"}`
+	retag(t, machine, lapsed)
 	machine.Minters = map[string]Minter{
 		policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 			return secrets.Minted{}, errors.New("Google login needs a new sign-in: invalid_grant (invalid_rapt)")
@@ -431,8 +434,8 @@ func TestAFailedMintIsNamedAndReleasesNothing(t *testing.T) {
 	if !errors.Is(err, ErrMintFailed) || !strings.Contains(err.Error(), "invalid_rapt") || release.Values != nil {
 		t.Fatalf("Values = %v, %v; want ErrMintFailed naming invalid_rapt", release.Values, err)
 	}
-	if strings.Contains(err.Error(), policytest.KindValue(policy.KindGoogleLogin)) {
-		t.Fatal("Values error leaked the stored value")
+	if strings.Contains(err.Error(), canary) {
+		t.Fatal("Values error leaked the stored refresh token")
 	}
 }
 

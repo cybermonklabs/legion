@@ -2,11 +2,6 @@ package policy_test
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"regexp"
 	"slices"
@@ -144,31 +139,12 @@ func TestUnknownKindIsRefused(t *testing.T) {
 // TestEveryKindDecodesAValueThroughParseValue: secrets.ParseValue names the kinds again, since
 // secrets cannot import this package, so every kind Kinds lists must decode a value of its own
 // through it, and a kind Kinds does not list must be refused: a kind added to one list and not
-// the other fails here rather than leaving a kind the broker serves that no decoder reads.
+// the other fails here rather than leaving a kind the broker serves that no decoder reads. The
+// values are policytest.KindValue's, which panics for a kind it holds no value of: add one there,
+// and its decoder to secrets.ParseValue.
 func TestEveryKindDecodesAValueThroughParseValue(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	app, err := json.Marshal(map[string]string{
-		"app_id":      "123456",
-		"private_key": string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	valid := map[string]string{
-		policy.KindGitHubApp:            string(app),
-		policy.KindGoogleLogin:          `{"type":"authorized_user","client_id":"client-id","client_secret":"client-not-a-secret","refresh_token":"refresh-not-a-secret"}`,
-		policy.KindGoogleServiceAccount: `{"service_account":"robot-1@acme-agent-infra.iam.gserviceaccount.com"}`,
-		policy.KindAzureLogin:           `{"tenant_id":"tenant-id","client_id":"client-id"}`,
-	}
 	for _, kind := range policy.Kinds {
-		value, ok := valid[kind]
-		if !ok {
-			t.Fatalf("policy.Kinds lists %s, which this test holds no value of: add one, and its decoder to secrets.ParseValue", kind)
-		}
-		if _, err := secrets.ParseValue(kind, value); err != nil {
+		if _, err := secrets.ParseValue(kind, policytest.KindValue(kind)); err != nil {
 			t.Errorf("secrets.ParseValue(%s) of a value its minter mints from = %v; want it decoded", kind, err)
 		}
 	}
@@ -176,8 +152,8 @@ func TestEveryKindDecodesAValueThroughParseValue(t *testing.T) {
 		if policy.ValidKind(kind) {
 			t.Fatalf("policy.ValidKind(%q) = true; this test needs a kind Kinds does not list", kind)
 		}
-		for _, value := range valid {
-			if _, err := secrets.ParseValue(kind, value); !errors.Is(err, secrets.ErrMintStoredValue) {
+		for _, valued := range policy.Kinds {
+			if _, err := secrets.ParseValue(kind, policytest.KindValue(valued)); !errors.Is(err, secrets.ErrMintStoredValue) {
 				t.Fatalf("secrets.ParseValue(%q) = %v; want a kind Kinds does not list refused", kind, err)
 			}
 		}

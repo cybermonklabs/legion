@@ -10,9 +10,9 @@ import (
 
 // refusalFixture is a tree holding the three packages checkRefusalWrites reads, each declaring
 // its registered writers and, for airlockproxy, the forwarding writes the rule leaves out, whose
-// own bodies write their status parameters. Beside them, two refusals written outside every
-// registered writer: an http.Error with a 403 in the API package, and a w.WriteHeader whose
-// status is a call refgen cannot read on the approval page.
+// own bodies write their status parameters. Beside them, three refusals written outside every
+// registered writer: in the API package, the 409 conflict passes as writeJSON's status and an
+// http.Error's 403; on the approval page, a w.WriteHeader of a status refgen cannot read.
 var refusalFixture = map[string]string{
 	apiDir + "/server.go": `package api
 
@@ -30,6 +30,8 @@ func served(w http.ResponseWriter) {
 	status := http.StatusCreated
 	writeJSON(w, status)
 }
+
+func conflict(w http.ResponseWriter) { writeJSON(w, http.StatusConflict) }
 
 func forbid(w http.ResponseWriter) {
 	http.Error(w, "forbidden", http.StatusForbidden)
@@ -59,10 +61,6 @@ type answerWriter struct{ http.ResponseWriter }
 
 func (s *Server) refuse(w http.ResponseWriter, status int) { http.Error(w, "refused", status) }
 
-func (s *Server) refuseCredential(w http.ResponseWriter) {
-	s.refuse(w, http.StatusProxyAuthRequired)
-}
-
 func (w *statusWriter) WriteHeader(status int) { w.ResponseWriter.WriteHeader(status) }
 
 func (w *answerWriter) WriteHeader(status int) { w.ResponseWriter.WriteHeader(status) }
@@ -74,10 +72,11 @@ func unreachable(w http.ResponseWriter) { fail(w, http.StatusBadGateway) }
 }
 
 // TestARefusalIsWrittenOnlyThroughARegisteredWriter drives the refusal rule over two trees: the
-// fixture, whose two refusals outside a registered writer it refuses, each with its file and
+// fixture, whose three refusals outside a registered writer it refuses, each with its file and
 // line and nothing else; and the broker's own source, as the docs build reads it, which it
-// accepts. The fixture's writers, its forwarding writes, and its writes whose status parameter
-// every caller passes as a 201 or a 502 are accepted, so the two lines are all it refuses.
+// accepts. A status parameter is followed to each call of its function: the 409 conflict passes
+// writeJSON is refused at that call, while the 201 and the 502 the other calls pass are accepted,
+// as are the fixture's writers and its forwarding writes, so the three lines are all it refuses.
 func TestARefusalIsWrittenOnlyThroughARegisteredWriter(t *testing.T) {
 	fixture := t.TempDir()
 	for name, text := range refusalFixture {
@@ -104,7 +103,8 @@ func TestARefusalIsWrittenOnlyThroughARegisteredWriter(t *testing.T) {
 		name, root string
 		want       []string // the start of each problem, in order; none for a tree accepted
 	}{
-		{"a fixture writing a 403 and an unreadable status outside a registered writer", fixture, []string{
+		{"a fixture writing a 409 through a status parameter, a 403 and an unreadable status outside a registered writer", fixture, []string{
+			at(apiDir+"/server.go", "http.StatusConflict") + "http.StatusConflict is 409, which w.WriteHeader at " + strings.TrimSuffix(at(apiDir+"/server.go", "func writeJSON"), ": ") + " writes outside a registered writer",
 			at(apiDir+"/server.go", "http.StatusForbidden") + "http.Error writes 403 outside a registered writer",
 			at(approvalDir+"/approval.go", "w.WriteHeader(statusOf(r))") + "w.WriteHeader writes statusOf(r), a status refgen cannot read as a constant",
 		}},

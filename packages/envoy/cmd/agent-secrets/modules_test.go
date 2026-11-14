@@ -1,11 +1,11 @@
 // packages/envoy/cmd/agent-secrets/modules_test.go
 //
 // The module lists of the two binaries that read a stored value: agent-secrets, which decodes a
-// value before it writes one, and the broker, which mints from it. Neither may link a module it
-// did not link before secrets.ParseValue: the decoder is the code each minter already ran, moved
-// where the client can call it, and the client already links every module the broker's secrets
-// package needs. The broker is built from here, beside the client, so that one test run holds
-// both (ci_job_reads.py names this cross-build).
+// value before it writes one, and the broker, which mints from it. Each list is every module its
+// binary links, so a module that enters either is weighed before it ships. The decoder
+// (secrets.ParseValue) is the code each minter runs and the client calls, and the client links
+// every module the broker's secrets package needs. The broker is built from here, beside the
+// client, so that one test run holds both (ci_job_reads.py names this cross-build).
 package main
 
 import (
@@ -19,10 +19,10 @@ import (
 )
 
 // agentSecretsModules is every module the agent-secrets binary links, by path without its
-// version, as debug/buildinfo reads them from the binary built at 2a6ff6c03269 (the base of
-// INFRA-2771, before secrets.ParseValue) with CGO_ENABLED=0, as the release builds it, for linux
-// (.github/go-release-targets.json) and for darwin (.github/agent-secrets-client-targets.json):
-// the two lists are the same.
+// version, as debug/buildinfo reads them from the binary built with CGO_ENABLED=0, as the
+// release builds it, for linux (.github/go-release-targets.json) and for darwin
+// (.github/agent-secrets-client-targets.json), the GOOSes the release builds the client for: the
+// two lists are the same.
 var agentSecretsModules = []string{
 	"cloud.google.com/go/auth",
 	"cloud.google.com/go/auth/oauth2adapt",
@@ -78,8 +78,8 @@ var agentSecretsModules = []string{
 	"google.golang.org/protobuf",
 }
 
-// brokerModules is every module the broker binary links, read as agentSecretsModules was, from
-// the broker built at the same commit with CGO_ENABLED=0 for linux, the one GOOS its image runs
+// brokerModules is every module the broker binary links, read as agentSecretsModules is, from
+// the broker built with CGO_ENABLED=0 for linux, the one GOOS its image runs
 // (packages/envoy/docker/Dockerfile).
 var brokerModules = []string{
 	"authelia.com/provider/oauth2",
@@ -170,10 +170,10 @@ var brokerModules = []string{
 	"google.golang.org/protobuf",
 }
 
-// TestTheAgentSecretsBinaryLinksTheModulesItLinkedBefore builds agent-secrets in this directory
+// TestTheAgentSecretsBinaryLinksItsListedModules builds agent-secrets in this directory
 // for each GOOS the release builds it for, as the release builds it, and holds the modules the
 // binary links to agentSecretsModules.
-func TestTheAgentSecretsBinaryLinksTheModulesItLinkedBefore(t *testing.T) {
+func TestTheAgentSecretsBinaryLinksItsListedModules(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		t.Run(goos, func(t *testing.T) {
 			binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Env: append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos)})
@@ -182,9 +182,9 @@ func TestTheAgentSecretsBinaryLinksTheModulesItLinkedBefore(t *testing.T) {
 	}
 }
 
-// TestTheBrokerBinaryLinksTheModulesItLinkedBefore builds the broker, ../broker, for linux as its
+// TestTheBrokerBinaryLinksItsListedModules builds the broker, ../broker, for linux as its
 // image builds it, and holds the modules the binary links to brokerModules.
-func TestTheBrokerBinaryLinksTheModulesItLinkedBefore(t *testing.T) {
+func TestTheBrokerBinaryLinksItsListedModules(t *testing.T) {
 	binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "broker", Dir: filepath.Join("..", "broker"), Target: ".", Env: append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")})
 	requireModules(t, binary, brokerModules)
 }

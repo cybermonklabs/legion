@@ -356,15 +356,16 @@ func TestAHandlerReachesTheRecorderItRunsBehind(t *testing.T) {
 	}
 }
 
-// A refusal streamed with io.Copy is held and gains its answer_id as one written with Write
-// does; a handler that flushes its refusal sends it at once, and the line still names its code
-// from what it had written. A connection a handler takes is the handler's, the answer counted as
-// the 101 an upgrade is.
+// A refusal streamed with io.Copy, from a reader that is no io.WriterTo so the copy reaches the
+// recorder's ReadFrom, is held and gains its answer_id as one written with Write does; a handler
+// that flushes its refusal sends it at once, and the line still names its code from what it had
+// written. A connection a handler takes is the handler's, the answer counted, once the handler
+// has returned, as the 101 an upgrade is.
 func TestARecordedAnswerStillStreamsFlushesAndHijacks(t *testing.T) {
 	copied := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusGone)
-		_, _ = io.Copy(w, strings.NewReader(`{"code":"GONE"}`))
+		_, _ = io.Copy(w, struct{ io.Reader }{strings.NewReader(`{"code":"GONE"}`)})
 	}))
 	w := copied.serve(httptest.NewRequest(http.MethodGet, "/", nil))
 	if want := `{"code":"GONE","answer_id":"` + w.Header().Get(answer.Header) + `"}`; w.Body.String() != want {
@@ -391,8 +392,7 @@ func TestARecordedAnswerStillStreamsFlushesAndHijacks(t *testing.T) {
 		t.Errorf("lines = %v, want one naming HTTP_403, the code of a body cut at its flush", lines)
 	}
 
-	registry := metrics.New()
-	server := httptest.NewServer(answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	hijacked := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		conn, buffered, err := http.NewResponseController(w).Hijack()
 		if err != nil {
 			t.Errorf("hijack through the recorder: %v", err)
@@ -401,7 +401,13 @@ func TestARecordedAnswerStillStreamsFlushesAndHijacks(t *testing.T) {
 		defer conn.Close()
 		_, _ = buffered.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: close\r\n\r\n")
 		_ = buffered.Flush()
-	}), answer.NewAnswers(registry)))
+	}))
+	// returned is closed once the recorder has returned, so it has counted the answer.
+	returned := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		defer close(returned)
+		hijacked.handler.ServeHTTP(w, req)
+	}))
 	defer server.Close()
 	conn, err := (&net.Dialer{}).Dial("tcp", strings.TrimPrefix(server.URL, "http://"))
 	if err != nil {
@@ -414,6 +420,10 @@ func TestARecordedAnswerStillStreamsFlushesAndHijacks(t *testing.T) {
 	status, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil || status != "HTTP/1.1 101 Switching Protocols\r\n" {
 		t.Fatalf("the hijacked connection answered %q, %v", status, err)
+	}
+	<-returned
+	if got := hijacked.count(t, `outcome="served",code="HTTP_101",caller_class="public"`); got != "1" {
+		t.Errorf("a hijacked answer counted %s served HTTP_101 answers, want 1", got)
 	}
 }
 

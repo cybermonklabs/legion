@@ -582,7 +582,7 @@ func TestThePolicyWritesAChangeOfASecretsStateNotEachLoad(t *testing.T) {
 		}
 		badOwner, going, noOwnerID, noValue, newKey := policytest.ID("BAD_OWNER_KEY"), policytest.ID("GOING_KEY"), policytest.ID("NO_OWNER_KEY"), policytest.ID("NO_VALUE_KEY"), policytest.ID("NEW_KEY")
 
-		written, version := 0, cur.Get().Version
+		gained, version := logChecker(logged), cur.Get().Version
 		for _, step := range []struct {
 			name string
 			// act is the step; nil for the first load, which NewCurrent took above.
@@ -690,10 +690,9 @@ func TestThePolicyWritesAChangeOfASecretsStateNotEachLoad(t *testing.T) {
 					t.Fatalf("%s: %v", step.name, err)
 				}
 			}
-			if got := logged.String()[written:]; got != step.lines {
+			if got := gained(); got != step.lines {
 				t.Fatalf("%s logged:\n%s\nwant:\n%s", step.name, got, step.lines)
 			}
-			written = len(logged.String())
 			slices.Sort(step.series)
 			if got, want := samplesOf(t, registry, "broker_unservable_secrets"), strings.Join(step.series, ""); got != want {
 				t.Fatalf("after %s broker_unservable_secrets reads\n%s\nwant one series for each refused secret\n%s", step.name, got, want)

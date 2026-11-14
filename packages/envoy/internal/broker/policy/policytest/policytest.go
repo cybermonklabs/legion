@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log"
+	"math/big"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 const (
@@ -107,6 +109,34 @@ var fixtureAppKey = sync.OnceValue(func() *rsa.PrivateKey {
 	return key
 })
 
+// UnsignableAppKey is a 512-bit RSA key in PEM, made at run time from two fresh 256-bit primes:
+// x509 parses it, and crypto/rsa refuses to sign with it, since Go refuses every RSA key shorter
+// than 1024 bits (crypto/rsa's minimum key size). It is the stored key a github-app value can hold
+// that parses and still cannot sign. No fixture writes the key out: rsa.GenerateKey refuses that
+// size, and a key written into the source is a key the push guard refuses.
+func UnsignableAppKey(t testing.TB) string {
+	t.Helper()
+	one := big.NewInt(1)
+	for {
+		p, err := rand.Prime(rand.Reader, 256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q, err := rand.Prime(rand.Reader, 256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		phi := new(big.Int).Mul(new(big.Int).Sub(p, one), new(big.Int).Sub(q, one))
+		d := new(big.Int).ModInverse(big.NewInt(65537), phi)
+		if p.Cmp(q) == 0 || d == nil {
+			continue
+		}
+		key := &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: new(big.Int).Mul(p, q), E: 65537}, D: d, Primes: []*big.Int{p, q}}
+		key.Precompute()
+		return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	}
+}
+
 // ListedSecret is Secret with a requesters tag naming requesters, beside a max-grant of
 // FixtureMaxGrant: the shape of a secret whose list says who may ask for it, with a cap short
 // enough that the kind and admin rules which demand one (policy.TagRules) are met as well. A test
@@ -163,7 +193,26 @@ func Loader(store *secrets.Local, services ...string) policy.Loader {
 // changes. It stops reloading when t ends.
 func Current(t testing.TB, store *secrets.Local, services ...string) *policy.Current {
 	t.Helper()
-	cur, err := policy.NewCurrent(t.Context(), Loader(store, services...), time.Hour)
+	return current(t, Loader(store, services...))
+}
+
+// MeteredCurrent is Current with the policy's two metrics on registry, as cmd/broker/main.go
+// registers them: broker_policy_store_reads_total counted from the first load on
+// (policy.NewStoreReads), and broker_unservable_secrets once that load answered
+// (policy.NewUnservableSecrets).
+func MeteredCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, services ...string) *policy.Current {
+	t.Helper()
+	loader := Loader(store, services...)
+	loader.StoreReads = policy.NewStoreReads(registry)
+	cur := current(t, loader)
+	policy.NewUnservableSecrets(registry, cur)
+	return cur
+}
+
+// current is loader's policy as NewCurrent first loads it, reloading hourly until t ends.
+func current(t testing.TB, loader policy.Loader) *policy.Current {
+	t.Helper()
+	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
 	}

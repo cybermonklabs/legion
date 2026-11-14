@@ -149,7 +149,7 @@ func refusalRecords(capture *logtest.Recorder, answerID string) []map[string]any
 // answer.RefusalMessage at WARN, naming the code, every secret name the request named, the
 // caller's class and identity, the route and the answer id, which the answer carries in its
 // X-Broker-Answer-Id header and, in a JSON body, as answer_id, and on the approval page's HTML
-// as text; a caller's X-Correlation-Id; and the refusal counted. A refusal raised in
+// as text; a caller's X-Correlation-Id; and the refusal counted once. A refusal raised in
 // authentication names caller_class unauthenticated, and so does a listed caller's lack of a
 // route's power, on the decision routes that authenticate for themselves as on every other
 // account route. A 500, a 503, a 429 of writeError and of the approval page, and the device
@@ -201,8 +201,8 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 		writer, name string
 		drive        func(t *testing.T) answered
 		status       int
-		// code is the code the record names; "" reads it from the JSON body's error member, for
-		// the OAuth library's own refusal, whose words are the library's.
+		// code is the code the record names, and the answer is counted under: for the OAuth
+		// library's own refusal, its body's error member, whose words are the library's.
 		code, route  string
 		secrets      []string
 		class        string
@@ -297,7 +297,7 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 				return send(t, http.DefaultClient, request(t, http.MethodPost, ts.URL+"/v1/oauth/token", strings.NewReader(tokenForm.Encode()),
 					map[string]string{"Content-Type": "application/x-www-form-urlencoded"}))
 			},
-			status: http.StatusBadRequest, route: "POST /v1/oauth/token",
+			status: http.StatusBadRequest, code: "invalid_grant", route: "POST /v1/oauth/token",
 			class: answer.CallerPublic, caller: oauthwire.ClientID, isJSON: true,
 		},
 		{
@@ -333,6 +333,8 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 		},
 	} {
 		t.Run(row.writer+": "+row.name, func(t *testing.T) {
+			labels := `outcome="refused",code="` + row.code + `",caller_class="` + row.class + `"`
+			before := ts.answersCounted(t, labels)
 			got := row.drive(t)
 			drove[row.writer] = true
 			id := got.id()
@@ -354,10 +356,6 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 			if row.html && !bytes.Contains(got.body, []byte("<code>"+id+"</code>")) {
 				t.Errorf("%s: the refusal page does not print its answer id %s:\n%s", row.writer, id, got.body)
 			}
-			code := row.code
-			if code == "" {
-				code, _ = body["error"].(string)
-			}
 			records := refusalRecords(capture, id)
 			if len(records) != 1 {
 				t.Fatalf("%s: the refusal wrote %d records under %q, want 1: %v", row.writer, len(records), answer.RefusalMessage, records)
@@ -368,7 +366,7 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 				secrets = []string{}
 			}
 			want := map[string]any{
-				"level": slog.LevelWarn, "status": int64(row.status), "code": code, "route": row.route,
+				"level": slog.LevelWarn, "status": int64(row.status), "code": row.code, "route": row.route,
 				"caller_class": row.class, "caller": row.caller, "secrets": secrets,
 			}
 			if row.correlation != "" {
@@ -389,8 +387,8 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 			if message, _ := body["error_description"].(string); message != "" && strings.Contains(fmt.Sprint(record), message) {
 				t.Errorf("%s: the record quotes the refusal's description %q: %v", row.writer, message, record)
 			}
-			if n := ts.answersCounted(t, `outcome="refused",code="`+code+`",caller_class="`+row.class+`"`); n < 1 {
-				t.Errorf("%s: broker_answers_total counts no refused answer coded %s of class %s", row.writer, code, row.class)
+			if after := ts.answersCounted(t, labels); after != before+1 {
+				t.Errorf("%s: broker_answers_total{%s} went from %d to %d, want one more", row.writer, labels, before, after)
 			}
 		})
 	}

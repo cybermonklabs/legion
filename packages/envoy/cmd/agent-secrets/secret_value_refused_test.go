@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/smithy-go"
-
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
@@ -22,9 +20,9 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes is the case decision 8 of
-// INFRA-2771 backs: a person who may retag a secret and may not read its value retags a stored
-// secret holding a value with no app_id to github-app. The retag cannot check the value (its
+// TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes is the case the broker's
+// own value check is for: a person who may retag a secret and may not read its value retags a
+// stored secret holding a value with no app_id to github-app. The retag cannot check the value (its
 // GetSecretValue is refused AccessDeniedException), so it writes the tags and says on stderr that
 // the value was not checked. The broker (brokertest's, over the same secrets.Local, reading with
 // its own access) reads and decodes the value at the reread the retag asks for, before any mint,
@@ -62,7 +60,8 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	local.Put(policytest.Secret("APP_KEY", rig.Operator, policy.TierAgent, noAppID))
 	// The person's own sign-in reads through valueReads, which refuses every GetSecretValue as
 	// IAM refuses a role that holds no read; the broker reads local itself.
-	signedIn := &valueReads{Local: local, refuse: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "User: " + adaSignIn + " is not authorized to perform: secretsmanager:GetSecretValue"}}
+	signedIn := &valueReads{Local: local}
+	awsKindStore{signedIn}.refuseValueReads(true)
 	useAWS(t, signedIn, testAccount, adaSignIn)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 
@@ -154,7 +153,7 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	}
 
 	// A value that decodes: the next reread serves the secret again.
-	useStdin(t, kindValue(t, policy.KindGitHubApp))
+	useStdin(t, policytest.KindValue(policy.KindGitHubApp))
 	stdout, stderr, code = runSecret("set", "APP_KEY")
 	if code != 0 || !strings.Contains(stdout, "broker: serving APP_KEY") {
 		t.Fatalf("set of a value the decoder reads: exit %d, stdout %q, stderr %q; want 0 with the secret served", code, stdout, stderr)

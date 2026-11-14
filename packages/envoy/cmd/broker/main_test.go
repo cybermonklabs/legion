@@ -843,16 +843,12 @@ func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
 	}
 	line(log, policy.RefusedMessage, "ERROR", map[string]any{"name": "example/agent-secrets/untagged-key", "reason": "owner-tag-malformed", "owner": "", "first_load": true})
 
-	refused, err := http.Post("http://"+addr+"/v1/secrets/bad%20name/reread", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST /v1/secrets/bad%%20name/reread: %v", err)
-	}
-	refused.Body.Close()
-	if refused.StatusCode != http.StatusBadRequest {
-		t.Fatalf("POST /v1/secrets/bad%%20name/reread = %d; want 400", refused.StatusCode)
+	status, header, _ := post(t, "http://"+addr+"/v1/secrets/bad%20name/reread")
+	if status != http.StatusBadRequest {
+		t.Fatalf("POST /v1/secrets/bad%%20name/reread = %d; want 400", status)
 	}
 	line(broker.Await(t, answer.RefusalMessage), answer.RefusalMessage, "WARNING", map[string]any{
-		"answer_id": refused.Header.Get(answer.Header), "code": "SECRET_NAME_INVALID", "secrets": []any{"bad name"}, "caller_class": answer.CallerPublic,
+		"answer_id": header.Get(answer.Header), "code": "SECRET_NAME_INVALID", "secrets": []any{"bad name"}, "caller_class": answer.CallerPublic,
 	})
 }
 
@@ -878,13 +874,8 @@ func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
 	if reads[`read="list"`] < 1 {
 		t.Fatalf("after its boot the broker counts %v store reads; want its boot's whole-namespace loads as read=\"list\"", reads)
 	}
-	reread, err := http.Post("http://"+broker.Addr+"/v1/secrets/SERVICE_KEY/reread", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST /v1/secrets/SERVICE_KEY/reread: %v", err)
-	}
-	reread.Body.Close()
-	if reread.StatusCode != http.StatusOK {
-		t.Fatalf("POST /v1/secrets/SERVICE_KEY/reread = %d; want 200", reread.StatusCode)
+	if status, _, _ := post(t, "http://"+broker.Addr+"/v1/secrets/SERVICE_KEY/reread"); status != http.StatusOK {
+		t.Fatalf("POST /v1/secrets/SERVICE_KEY/reread = %d; want 200", status)
 	}
 	after := scrapeMetric(t, metricsAddr, "broker_policy_store_reads_total")
 	if after[`read="describe"`] != reads[`read="describe"`]+1 || after[`read="list"`] != reads[`read="list"`] {

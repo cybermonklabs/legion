@@ -2,18 +2,12 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"maps"
-	"math/big"
 	"slices"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
@@ -36,7 +30,7 @@ func TestSecretKindAndMaxGrantOnAWS(t *testing.T) {
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
-	useStdin(t, kindValue(t, policy.KindGitHubApp))
+	useStdin(t, policytest.KindValue(policy.KindGitHubApp))
 
 	stdout, stderr, code := runSecret("create", "APP_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGitHubApp, "--github-owners", "Acme-Org", "--requesters", "ada@example.com", "--max-grant", "1h")
 	if code != 0 {
@@ -77,7 +71,7 @@ func TestSecretKindAndMaxGrantOnAWS(t *testing.T) {
 	}
 
 	for _, kind := range []string{policy.KindGoogleLogin, policy.KindGitHubApp, policy.KindAzureLogin} {
-		if _, err := local.PutSecretValue(context.Background(), &secretsmanager.PutSecretValueInput{SecretId: aws.String(policytest.ID("APP_KEY")), SecretString: aws.String(kindValue(t, kind))}); err != nil {
+		if _, err := local.PutSecretValue(context.Background(), &secretsmanager.PutSecretValueInput{SecretId: aws.String(policytest.ID("APP_KEY")), SecretString: aws.String(policytest.KindValue(kind))}); err != nil {
 			t.Fatal(err)
 		}
 		_, stderr, code = runSecret("retag", "APP_KEY", "--kind", kind)
@@ -110,7 +104,7 @@ func TestSecretKindAndMaxGrantOnGCP(t *testing.T) {
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	settings := gcpTestSettings()
 	startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-	useStdin(t, kindValue(t, policy.KindGoogleLogin))
+	useStdin(t, policytest.KindValue(policy.KindGoogleLogin))
 
 	_, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGoogleLogin, "--max-grant", "30m")
 	if code != 0 {
@@ -136,7 +130,10 @@ func TestSecretKindAndMaxGrantOnGCP(t *testing.T) {
 		t.Fatalf("list: exit %d stdout %q stderr %q; want kind and max-grant", code, stdout, stderr)
 	}
 	for _, kind := range policy.Kinds {
-		gcpKindStore{fake}.addValue(t, "LOGIN_KEY", kindValue(t, kind))
+		// The kind's value as a new version, added as a writer other than this client adds one.
+		if _, err := fake.AddSecretVersion(context.Background(), &secretmanagerpb.AddSecretVersionRequest{Parent: id, Payload: &secretmanagerpb.SecretPayload{Data: []byte(policytest.KindValue(kind))}}); err != nil {
+			t.Fatal(err)
+		}
 		args := []string{"retag", "LOGIN_KEY", "--kind", kind}
 		if policy.KindNeedsGitHubOwners(kind) {
 			args = append(args, "--github-owners", "Ada  acme-org")
@@ -344,7 +341,7 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 	}
 	t.Run("aws", func(t *testing.T) {
 		// PLAIN_KEY holds an App's value, which the retag to github-app below decodes.
-		local := secrets.NewLocal(policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, kindValue(t, policy.KindGitHubApp)), kindTaggedSecret(t, "APP_KEY"))
+		local := secrets.NewLocal(policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, policytest.KindValue(policy.KindGitHubApp)), kindTaggedSecret(t, "APP_KEY"))
 		startSecretBroker(t, servedBy(local))
 		writes := &countingTagWrites{Local: local}
 		useAWS(t, writes, testAccount, adaSignIn)
@@ -378,7 +375,7 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 			value string
 		}{
 			{[]string{"create", "PLAIN_KEY", "--owner", "me", "--tier", "agent"}, "stored-value"},
-			{[]string{"create", "APP_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGitHubApp, "--github-owners", "acme-org ada"}, kindValue(t, policy.KindGitHubApp)},
+			{[]string{"create", "APP_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGitHubApp, "--github-owners", "acme-org ada"}, policytest.KindValue(policy.KindGitHubApp)},
 		} {
 			useStdin(t, create.value)
 			if _, stderr, code := runSecret(create.args...); code != 0 {
@@ -419,7 +416,7 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 // --requesters none removes it.
 func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testing.T) {
 	// LISTED_KEY holds a service account, which the retag to that kind below decodes.
-	listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, kindValue(t, policy.KindGoogleServiceAccount))
+	listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, policytest.KindValue(policy.KindGoogleServiceAccount))
 	listed.Tags[policy.TagRequesters] = "ada@example.com"
 	listed.Tags[policy.TagMaxGrant] = "1h"
 	local := secrets.NewLocal(listed)
@@ -503,7 +500,7 @@ func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T
 	if tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada widgets-org" {
 		t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada widgets-org")
 	}
-	useStdin(t, kindValue(t, policy.KindGitHubApp))
+	useStdin(t, policytest.KindValue(policy.KindGitHubApp))
 	if _, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGitHubApp, "--github-owners", "ada acme-org"); code != 0 {
 		t.Fatalf("create with two owners: exit %d stderr %q", code, stderr)
 	}
@@ -584,7 +581,7 @@ func (c *countingTagWrites) UntagResource(ctx context.Context, in *secretsmanage
 // kindTaggedSecret is a github-app secret name holding an App's value, with a max grant of an hour.
 func kindTaggedSecret(t *testing.T, name string) secrets.LocalSecret {
 	t.Helper()
-	secret := policytest.KindSecret(name, "ada@example.com", policy.TierAgent, policy.KindGitHubApp, kindValue(t, policy.KindGitHubApp))
+	secret := policytest.KindSecret(name, "ada@example.com", policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp))
 	secret.Tags[policy.TagMaxGrant] = "1h"
 	return secret
 }
@@ -694,7 +691,7 @@ func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
 		useGCPIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-		useStdin(t, kindValue(t, policy.KindGoogleLogin))
+		useStdin(t, policytest.KindValue(policy.KindGoogleLogin))
 		if _, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGoogleLogin); code != 0 {
 			t.Fatalf("create: exit %d, stderr %q", code, stderr)
 		}
@@ -817,28 +814,15 @@ func TestTagRefusalRefusesAReasonNoArmNames(t *testing.T) {
 	}
 }
 
-// googleLoginValue, googleServiceAccountValue and azureLoginValue are each a value its kind's
-// minter mints from; kindValue answers them, and a github-app value signed by kindAppKey. The
-// google-login fields say not-a-secret, which is what the push guard's credential rule reads a
-// fixture's value by.
-const (
-	googleLoginValue          = `{"type":"authorized_user","client_id":"client-id","client_secret":"client-not-a-secret","refresh_token":"refresh-not-a-secret"}`
-	googleServiceAccountValue = `{"service_account":"robot-1@acme-agent-infra.iam.gserviceaccount.com"}`
-	azureLoginValue           = `{"tenant_id":"tenant-id","client_id":"client-id"}`
-)
-
-// kindAppKey is the one GitHub App key these tests store: generating a 2048-bit key costs more
-// than a test of the secret forms does.
-var kindAppKey = sync.OnceValues(func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.Reader, 2048) })
-
-// appKeyPEM is kindAppKey as a github-app value's private_key holds it.
+// appKeyPEM is the private key policytest.KindValue's github-app value holds, in PEM: the one
+// GitHub App key these tests store.
 func appKeyPEM(t *testing.T) string {
 	t.Helper()
-	key, err := kindAppKey()
-	if err != nil {
+	var fields map[string]string
+	if err := json.Unmarshal([]byte(policytest.KindValue(policy.KindGitHubApp)), &fields); err != nil {
 		t.Fatal(err)
 	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	return fields["private_key"]
 }
 
 // appValue is a github-app value holding fields and nothing else.
@@ -849,51 +833,6 @@ func appValue(t *testing.T, fields map[string]string) string {
 		t.Fatal(err)
 	}
 	return string(encoded)
-}
-
-// kindValue is a value kind's minter mints from.
-func kindValue(t *testing.T, kind string) string {
-	t.Helper()
-	switch kind {
-	case policy.KindGitHubApp:
-		return appValue(t, map[string]string{"app_id": "123456", "private_key": appKeyPEM(t)})
-	case policy.KindGoogleLogin:
-		return googleLoginValue
-	case policy.KindGoogleServiceAccount:
-		return googleServiceAccountValue
-	case policy.KindAzureLogin:
-		return azureLoginValue
-	}
-	t.Fatalf("no value of kind %q", kind)
-	return ""
-}
-
-// unsignableAppKey is a 512-bit RSA key in PEM, made at run time from two fresh 256-bit primes:
-// x509 parses it, and crypto/rsa refuses to sign with it, as Go refuses every RSA key shorter
-// than 1024 bits. It is the stored key a github-app value can hold that parses and still cannot
-// sign. No fixture writes the key out: rsa.GenerateKey refuses that size, and a key written into
-// the source is a key the push guard refuses.
-func unsignableAppKey(t *testing.T) string {
-	t.Helper()
-	one := big.NewInt(1)
-	for {
-		p, err := rand.Prime(rand.Reader, 256)
-		if err != nil {
-			t.Fatal(err)
-		}
-		q, err := rand.Prime(rand.Reader, 256)
-		if err != nil {
-			t.Fatal(err)
-		}
-		phi := new(big.Int).Mul(new(big.Int).Sub(p, one), new(big.Int).Sub(q, one))
-		d := new(big.Int).ModInverse(big.NewInt(65537), phi)
-		if p.Cmp(q) == 0 || d == nil {
-			continue
-		}
-		key := &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: new(big.Int).Mul(p, q), E: 65537}, D: d, Primes: []*big.Int{p, q}}
-		key.Precompute()
-		return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	}
 }
 
 // unparsableAppKey is a PEM block of the private key's type whose bytes are no key at all.
@@ -920,7 +859,7 @@ func refusedKindValues(t *testing.T) []refusedKindValue {
 		{policy.KindGitHubApp, "an app_id that is not digits", appValue(t, map[string]string{"app_id": "12" + leak, "private_key": key})},
 		{policy.KindGitHubApp, "no private_key", appValue(t, map[string]string{"app_id": "123456", "note": leak})},
 		{policy.KindGitHubApp, "a key that does not parse", appValue(t, map[string]string{"app_id": "123456", "private_key": unparsableAppKey()})},
-		{policy.KindGitHubApp, "a key that cannot sign", appValue(t, map[string]string{"app_id": "123456", "private_key": unsignableAppKey(t)})},
+		{policy.KindGitHubApp, "a key that cannot sign", appValue(t, map[string]string{"app_id": "123456", "private_key": policytest.UnsignableAppKey(t)})},
 		{policy.KindGoogleLogin, "not a JSON object", leak},
 		{policy.KindGoogleLogin, "not an authorized_user credential", `{"type":"service_account","client_id":"client-id","client_secret":"` + leak + `","refresh_token":"refresh-not-a-secret"}`},
 		{policy.KindGoogleLogin, "no refresh_token", `{"type":"authorized_user","client_id":"client-id","client_secret":"` + leak + `"}`},
@@ -1080,21 +1019,6 @@ func (s gcpKindStore) put(t *testing.T, name string, tags map[string]string, val
 	}
 }
 
-// addValue adds a version holding value to the secret name, as a writer other than this client
-// adds one.
-func (s gcpKindStore) addValue(t *testing.T, name, value string) {
-	t.Helper()
-	id := s.id(t, name)
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	entry, ok := s.fake.secrets[id]
-	if !ok {
-		t.Fatalf("Secret Manager holds no %s", id)
-	}
-	entry.versions = append(entry.versions, &secretmanagerpb.SecretVersion{Name: id + "/versions/" + strconv.Itoa(len(entry.versions)+1), State: secretmanagerpb.SecretVersion_ENABLED})
-	entry.payloads = append(entry.payloads, []byte(value))
-}
-
 func (s gcpKindStore) has(t *testing.T, name string) bool {
 	id := s.id(t, name)
 	s.fake.mu.Lock()
@@ -1153,7 +1077,7 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 		for _, row := range refusedKindValues(t) {
 			t.Run(row.kind+"/"+row.name, func(t *testing.T) {
 				says := mintRefusal(t, row.kind, row.value)
-				store.put(t, "HELD_KEY", policytest.KindSecret("HELD_KEY", "ada@example.com", policy.TierAgent, row.kind, "").Tags, kindValue(t, row.kind))
+				store.put(t, "HELD_KEY", policytest.KindSecret("HELD_KEY", "ada@example.com", policy.TierAgent, row.kind, "").Tags, policytest.KindValue(row.kind))
 				plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "").Tags
 				store.put(t, "PLAIN_KEY", plain, row.value)
 				for _, form := range []struct {
@@ -1163,7 +1087,7 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 					wrote func() bool
 				}{
 					{append([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return store.has(t, "NEW_KEY") }},
-					{[]string{"set", "HELD_KEY"}, func() bool { return store.value(t, "HELD_KEY") != kindValue(t, row.kind) }},
+					{[]string{"set", "HELD_KEY"}, func() bool { return store.value(t, "HELD_KEY") != policytest.KindValue(row.kind) }},
 					{append([]string{"retag", "PLAIN_KEY", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return !maps.Equal(store.tags(t, "PLAIN_KEY"), plain) }},
 				} {
 					asked, _ := broker.recorded()

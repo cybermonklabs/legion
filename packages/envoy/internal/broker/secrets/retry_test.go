@@ -172,37 +172,48 @@ func mintGitHub(ctx context.Context, t *testing.T, up *scripted, retry *secrets.
 
 // TestMintCallRetriesA503TwiceAndMintsAtTheThird: a token call GitHub answers 503 twice and then
 // 201 mints at its third attempt. With the draw at the top of its range the two waits are their
-// ceilings, 2 s and then 4 s, so the ceilings grow; with the real draw each wait falls under its
-// ceiling, the two add up to no more than the mint's 10 s, and two runs wait differently. Each
-// attempt is counted by kind, outcome and number.
+// ceilings, 2 s and then 4 s, so the ceilings grow; after a first 503 that asks 9 s, the second
+// wait's ceiling is the 1 s left of the mint's 10 s. With the real draw each wait falls under its
+// ceiling, and two runs wait differently. Each attempt is counted by kind, outcome and number.
 func TestMintCallRetriesA503TwiceAndMintsAtTheThird(t *testing.T) {
-	var ceilings []time.Duration
-	retry, clock, registry := testRetry(func(ceiling time.Duration) time.Duration {
-		ceilings = append(ceilings, ceiling)
-		return ceiling
-	})
-	up := newScripted(t, installed, answered(http.StatusServiceUnavailable, nil), answered(http.StatusServiceUnavailable, nil), tokenMinted)
-	minted, err := mintGitHub(t.Context(), t, up, retry, nil)
-	if err != nil || !strings.Contains(minted.Value, "token-7") {
-		t.Fatalf("Mint after 503, 503, 201 = %q, %v; want acme's token", minted.Value, err)
-	}
-	if calls := len(up.tokenRequests()); calls != 3 {
-		t.Fatalf("the mint made %d token requests; want 3", calls)
-	}
-	want := []time.Duration{2 * time.Second, 4 * time.Second}
-	if waits := clock.slept(); !slices.Equal(waits, want) || !slices.Equal(ceilings, want) {
-		t.Fatalf("with the draw at the top the mint waited %v under ceilings %v; want %v for both", waits, ceilings, want)
-	}
-	samples := attemptSamples(registry)
-	for _, sample := range []string{
-		`broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="1"} 1`,
-		`broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="1"} 1`,
-		`broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="2"} 1`,
-		`broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="3"} 1`,
+	for _, tc := range []struct {
+		name  string
+		first reply
+		// waits are the waits the mint waits, and ceilings the ceilings it draws a jitter under.
+		waits, ceilings []time.Duration
+	}{
+		{"two 503s naming no wait", answered(http.StatusServiceUnavailable, nil), []time.Duration{2 * time.Second, 4 * time.Second}, []time.Duration{2 * time.Second, 4 * time.Second}},
+		{"a 503 asking 9 s, then one naming no wait", answered(http.StatusServiceUnavailable, http.Header{"Retry-After": {"9"}}), []time.Duration{9 * time.Second, time.Second}, []time.Duration{time.Second}},
 	} {
-		if !strings.Contains(samples, sample+"\n") {
-			t.Errorf("the attempts counter holds\n%s\nwant the sample %s", samples, sample)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			var ceilings []time.Duration
+			retry, clock, registry := testRetry(func(ceiling time.Duration) time.Duration {
+				ceilings = append(ceilings, ceiling)
+				return ceiling
+			})
+			up := newScripted(t, installed, tc.first, answered(http.StatusServiceUnavailable, nil), tokenMinted)
+			minted, err := mintGitHub(t.Context(), t, up, retry, nil)
+			if err != nil || !strings.Contains(minted.Value, "token-7") {
+				t.Fatalf("Mint after 503, 503, 201 = %q, %v; want acme's token", minted.Value, err)
+			}
+			if calls := len(up.tokenRequests()); calls != 3 {
+				t.Fatalf("the mint made %d token requests; want 3", calls)
+			}
+			if waits := clock.slept(); !slices.Equal(waits, tc.waits) || !slices.Equal(ceilings, tc.ceilings) {
+				t.Fatalf("with the draw at the top the mint waited %v under ceilings %v; want %v under %v", waits, ceilings, tc.waits, tc.ceilings)
+			}
+			samples := attemptSamples(registry)
+			for _, sample := range []string{
+				`broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="1"} 1`,
+				`broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="1"} 1`,
+				`broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="2"} 1`,
+				`broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="3"} 1`,
+			} {
+				if !strings.Contains(samples, sample+"\n") {
+					t.Errorf("the attempts counter holds\n%s\nwant the sample %s", samples, sample)
+				}
+			}
+		})
 	}
 
 	var runs [2][]time.Duration
@@ -213,8 +224,8 @@ func TestMintCallRetriesA503TwiceAndMintsAtTheThird(t *testing.T) {
 			t.Fatalf("run %d: Mint after 503, 503, 201: %v", run, err)
 		}
 		waits := clock.slept()
-		if len(waits) != 2 || waits[0] > 2*time.Second || waits[1] > 4*time.Second || waits[0]+waits[1] > 10*time.Second {
-			t.Fatalf("run %d with the real draw waited %v; want two waits under 2 s and 4 s adding up to 10 s or less", run, waits)
+		if len(waits) != 2 || waits[0] > 2*time.Second || waits[1] > 4*time.Second {
+			t.Fatalf("run %d with the real draw waited %v; want two waits, under 2 s and under 4 s", run, waits)
 		}
 		runs[run] = waits
 	}
