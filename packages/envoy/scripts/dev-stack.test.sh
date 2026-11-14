@@ -720,14 +720,16 @@ printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DS
 # --binaries calls no go at all, puts a copy of each in its own bin directory, and runs those.
 # Every check a built run passes, (a) to (c), holds for it, and so does the stop of (e).
 prebuilt="${temporary_dir}/prebuilt"
+# One list of the seven packages; the binary names the copy check reads come from it.
+prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
-  ./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener \
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd
+  "${prebuilt_packages[@]}"
 go_calls_prebuilt="${temporary_dir}/go-calls-prebuilt"
 DEV_STACK_TEST_GO_CALL_FILE="$go_calls_prebuilt" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --binaries "$prebuilt"
 assert_instance_ready 'the --binaries run' "$log1" "$psql_calls1" "$curl_calls1"
 [[ ! -s "$go_calls_prebuilt" ]] || fail "the --binaries run called go: $(cat "$go_calls_prebuilt")"
-for binary in broker dev-oidc-issuer dispatch listener natsd agent-secrets agent-secrets-helper; do
+for binary in "${prebuilt_packages[@]##*/}"; do
   [[ -f "${work_dir}/bin/${binary}" && -x "${work_dir}/bin/${binary}" ]] ||
     fail "the --binaries run put no executable $binary in its own bin directory"
   cmp -s "${prebuilt}/${binary}" "${work_dir}/bin/${binary}" ||

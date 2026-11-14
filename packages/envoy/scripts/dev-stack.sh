@@ -201,11 +201,20 @@ fi
 POSTGRES_SERVER="${BASH_REMATCH[1]}"
 POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 
+# --- The packages of the binaries this stack runs, the one list of them: go build names each
+# binary for its package's last path element, so the build's arguments and the names --binaries
+# checks and copies all come from here. The header and the usage name them for a reader. ---
+STACK_PACKAGES=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
+STACK_BINARIES=()
+for stack_package in "${STACK_PACKAGES[@]}"; do
+  STACK_BINARIES+=("${stack_package##*/}")
+done
+
 # --- The prebuilt binaries --binaries names, checked here for the reason the URL is: a directory
 # short of one leaves nothing behind, since nothing is created or started before this. Every one
 # of the seven is required, each an executable file, and the refusal names every file that is
 # not, rather than the first, so one look at it says what the build left out. ---
-STACK_BINARIES=(broker dev-oidc-issuer dispatch listener natsd agent-secrets agent-secrets-helper)
 if [ -n "$BINARIES_OPTION" ]; then
   unusable=()
   for binary in "${STACK_BINARIES[@]}"; do
@@ -438,12 +447,10 @@ if [ -n "$BINARIES_OPTION" ]; then
     cp "$BINARIES_OPTION/$binary" "$BIN_DIR/$binary"
   done
 else
-  echo "dev-stack: building broker, dev-oidc-issuer, dispatch, listener, natsd, agent-secrets and agent-secrets-helper..." >&2
+  echo "dev-stack: building ${STACK_BINARIES[*]}..." >&2
   (
     cd "$ENVOY_DIR"
-    GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" \
-      ./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener \
-      ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd
+    GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" "${STACK_PACKAGES[@]}"
   )
 fi
 

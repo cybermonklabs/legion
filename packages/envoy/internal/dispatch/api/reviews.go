@@ -387,16 +387,24 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The version this review records for the document: the one the open request names for it,
-	// else the latest settled version. A caller that names the version it read is refused here
-	// when that is not it, before the request is answered or anything is written, so no review
-	// records in a person's name a version of this document that person did not name. With a
-	// request open, every other document the request names is reviewed at the version the
-	// request names for it, which the caller does not name and this check does not compare.
-	recorded := version
+	// Without a request open, the header reviews this document at its latest settled version;
+	// with one, it answers that request, so it reviews every document the request named, each at
+	// the version the request named, and the request is answered once for both.
+	reviewed := []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}
 	if open != nil {
-		if named := open.Approval.Document(artifact.ID); named != nil {
-			recorded = named.Version
+		reviewed = open.Approval.Documents
+	}
+	// The version this review records for the document is reviewed's entry for it: the one the
+	// open request names for it (OpenApprovalAsk finds only a request that names it), else the
+	// latest settled version. A caller that names the version it read is refused here when that
+	// is not it, before the request is answered or anything is written, so no review records in a
+	// person's name a version of this document that person did not name. With a request open,
+	// every other document the request names is reviewed at the version the request names for
+	// it, which the caller does not name and this check does not compare.
+	var recorded int
+	for _, document := range reviewed {
+		if document.ArtifactID == artifact.ID {
+			recorded = document.Version
 		}
 	}
 	if input.Version != nil && *input.Version != recorded {
@@ -407,10 +415,6 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 	}
 	events := []model.Event{}
 	var askID *string
-	// Without a request open, the header reviews this document at its latest settled version;
-	// with one, it answers that request, so it reviews every document the request named, each at
-	// the version the request named, and the request is answered once for both.
-	reviewed := []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}
 	if open != nil {
 		selected := docs.ApprovalOptionApprove
 		if state == "changes_requested" {
@@ -423,7 +427,6 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 		}
 		events = append(events, answeredEvents...)
 		askID = &answered.ID
-		reviewed = open.Approval.Documents
 	}
 	reviews, reviewEvents, err := s.writeApprovalReviews(r.Context(), tx, artifact, reviewed, state, actor, reason, askID)
 	if err != nil {
