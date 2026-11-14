@@ -147,9 +147,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
   "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
   "and reports it with `commit`, the head that record's body names " +
-  "(`head`, the 40-character lower-case commit the work it reports was done against); the implementer's must be the commit its " +
-  "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
-  "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, an implement record naming no head, an " +
+  "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
+  "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record report the commit the workspace stands on. It " +
+  "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
   "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
   "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
   "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
@@ -1243,6 +1243,108 @@ test("a completion once the issue moved on posts the role's own newest record of
       },
     ]);
   }
+});
+
+// The issue's workspace is one checkout every role of the issue shares, so once the issue has
+// moved on, the commit it stands on is often a sibling role's: here the tester's, which the
+// branch at origin does not carry. The implementer's late completion is of implementing, the phase
+// it left, and posts its implement record and the head it names, reading nothing of the workspace,
+// for the daemon to answer.
+test("an implementer whose issue is in testing posts its implement record, though @- is the tester's unpushed commit", async () => {
+  const completed: string[] = [];
+  const reads: string[] = [];
+  const asked: string[] = [];
+  const workspace = paneJj(STANDING, false);
+  const { calls, daemon } = recordingDaemon({ state: stateAt("testing") });
+  const result = await createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
+    onUpdateAnswered: () => undefined,
+    handoffReport: (phase, role) =>
+      findHandoffReport({
+        phase,
+        role,
+        env: paneEnv,
+        jj: (args, cwd) => {
+          asked.push(args.join(" "));
+          return workspace(args, cwd);
+        },
+        latestHandoff: paneDispatch(reads),
+      }),
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("implementer"),
+  }).execute("", { op: "handoff_complete", summary: "Done." }, undefined, undefined, context());
+  expect(result.isError).toBeUndefined();
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    {
+      grantId: "grant-208",
+      summary: "Done.",
+      verdict: "",
+      commit: TIP,
+      handoffId: RECORD.id,
+      handoffVersion: RECORD.version,
+    },
+  ]);
+  expect(reads).toEqual(["LEGION-208 implement"]);
+  expect(asked).toEqual([]);
+  expect(completed).toEqual(["ses_208"]);
+});
+
+// A tester whose issue was held before it wrote its test record completes testing, the phase it
+// left, with no record to name: the tool posts the commit the workspace stands on rather than
+// tell it to write a record, and the daemon's answer, refusing a completion while no role works
+// the issue's phase, reaches the agent.
+test("a tester with no record on a held issue posts @-, and the daemon's answer reaches the agent", async () => {
+  const reads: string[] = [];
+  const refusal = Object.assign(
+    new Error(
+      "POST /legion/v1/handoff/complete failed with 409 HANDOFF_NOT_CURRENT_PHASE: the tester does not run phase held of LEGION-208; this completion changed nothing"
+    ),
+    { code: "HANDOFF_NOT_CURRENT_PHASE" }
+  );
+  const { calls, daemon } = recordingDaemon({
+    state: stateAt("held"),
+    answers: { handoffComplete: refusal },
+  });
+  const result = await createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: (phase, role) =>
+      findHandoffReport({
+        phase,
+        role,
+        env: paneEnv,
+        jj: paneJj(),
+        latestHandoff: paneDispatch(reads, async () => {
+          throw new DispatchServiceError("HANDOFF_NOT_FOUND", 404, "no test handoff");
+        }),
+      }),
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("tester"),
+  }).execute(
+    "",
+    { op: "handoff_complete", summary: "Tests pass.", verdict: "pass" },
+    undefined,
+    undefined,
+    context()
+  );
+  expect(reads).toEqual(["LEGION-208 test"]);
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    { grantId: "grant-208", summary: "Tests pass.", verdict: "pass", commit: STANDING },
+  ]);
+  expect(result).toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: expect.stringContaining("409 HANDOFF_NOT_CURRENT_PHASE") }],
+  });
 });
 
 /** LEGION-208 closed by its merge, with its production check open on its second look: `role` is

@@ -3,6 +3,8 @@ import { writeFileSync } from "node:fs";
 import { lstat, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { LEGION_PHASES, type LegionPhase } from "@legion/contracts/legion-api";
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { fakeLatestHandoff } from "@legion/envoy-client/test/fake-dispatch";
@@ -16,7 +18,9 @@ import {
 import {
   findHandoffReport,
   findPushedBranchHead,
+  type HandoffReport,
   type JjRunner,
+  type LatestHandoff,
   paneLatestHandoff,
   pathJj,
 } from "./handoff-record";
@@ -174,31 +178,272 @@ test("a tester whose issue moved on to reviewing reports its own newest test rec
   expect(calls).toEqual([]);
 });
 
-test("the implementer reports its implement round until the issue stands past retro, and @- with no record once it does", async () => {
-  // Before retro the implementer left implementing, whose record and pushed @- it reports as its
-  // round would; at merging it left retro, which writes no record.
-  for (const phase of ["testing", "reviewing", "accepting"] as const) {
-    const { jj, calls } = fakeJj();
-    const { latestHandoff, reads } = recordingDispatch(PUSHED_RECORD);
-    await expect(
-      findHandoffReport({ phase, role: "implementer", env, jj, latestHandoff })
-    ).resolves.toEqual({ commit: STANDING, handoffId: RECORD.id, handoffVersion: RECORD.version });
-    expect(reads).toEqual(["LEGION-208 implement"]);
-    expect(calls).toEqual([
-      ["log", "-r", "@-", "--no-graph", "-T", "commit_id"],
-      ["log", "-r", `${REMOTE} & ${STANDING}::`, "--no-graph", "-T", "commit_id"],
-    ]);
-  }
-  const { jj, calls } = fakeJj();
-  const { latestHandoff, reads } = recordingDispatch(PUSHED_RECORD);
-  await expect(
-    findHandoffReport({ phase: "merging", role: "implementer", env, jj, latestHandoff })
-  ).resolves.toEqual({ commit: STANDING });
-  expect(reads).toEqual([]);
-  expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
+/** The commit the issue's one shared workspace stands on once the issue has moved on: a sibling
+ * role's (the tester commits there), which `legion/LEGION-208@origin` does not carry and no
+ * record of another role names. */
+const SIBLING = "c0de".repeat(10);
+
+type HandoffWord = "plan" | "implement" | "test" | "review";
+
+/** The newest record of every file-backed phase's word, each naming a head that is not `SIBLING`. */
+const RECORDS: Readonly<Record<HandoffWord, { id: string; version: number; head: string }>> = {
+  plan: { id: "plan-record", version: 1, head: "a1".repeat(20) },
+  implement: { id: "implement-record", version: 4, head: "b2".repeat(20) },
+  test: { id: "test-record", version: 2, head: "c3".repeat(20) },
+  review: { id: "review-record", version: 3, head: "d4".repeat(20) },
+};
+
+/** What a completion sends beside its summary: the newest record of a phase's word (its id, its
+ * version and the head its body names), `@-` (the commit the workspace stands on, and no record),
+ * or nothing at all, thrown with words that say why (a part of them). */
+type Sends = { readonly record: HandoffWord } | "@-" | { readonly thrown: string };
+
+/** What the completion reads of the shared workspace: nothing, `@-` alone, or `@-` and then
+ * whether `legion/<issue>@origin` carries it, the implementer's workspace check. */
+type WorkspaceReads = "nothing" | "@-" | "@- and origin";
+
+/** What the daemon answers the completion sent, from a finished role (the table's doc comment). */
+type DaemonAnswer =
+  | "200"
+  | "409 HANDOFF_NOT_CURRENT_PHASE"
+  | "409 ACCEPTANCE_IS_SIGN_OFF"
+  | "409 CHECK_LOOK_NOT_SERVED"
+  | "404 ISSUE_NOT_FOUND"
+  | "no request";
+
+interface CompletionRow {
+  readonly sends: Sends;
+  readonly reads: WorkspaceReads;
+  readonly daemon: DaemonAnswer;
+}
+
+const row = (sends: Sends, reads: WorkspaceReads, daemon: DaemonAnswer): CompletionRow => ({
+  sends,
+  reads,
+  daemon,
 });
 
-test("no record, or a Dispatch that does not answer, is refused naming what to do", async () => {
+/** The part of the push refusal the implementer's round meets in implementing, where its workspace
+ * stands on a commit `legion/LEGION-208@origin` does not carry. */
+const PUSH_IT = "is not on legion/LEGION-208@origin: push it";
+
+/**
+ * Every role's completion while the issue stands in each phase it can stand in, with the shared
+ * workspace standing on `SIBLING` and Dispatch holding a record of every file-backed word.
+ *
+ * `sends` and `reads` are what `findHandoffReport` does, and the test holds it to them. `daemon`
+ * documents the contract and is not asserted here: what the daemon answers that completion from a
+ * finished role, one whose completion of the phase it is of was already taken, read from
+ * `packages/daemon/internal`. `phase.Of(role, at)` is the phase a completion is of
+ * (`completedPhase` mirrors it). Where it is `at`, the role works the issue's phase
+ * (`phase.RoleFor(at)`), and the engine takes a completion naming a new record, or for retro and
+ * merging a commit: 200. Otherwise workflow's `leftItsPhase` records a left phase's completion
+ * only while the role's phases row holds no completion of it and some role works the issue's
+ * phase, so a finished role's is answered `409 HANDOFF_NOT_CURRENT_PHASE`, and so is every one
+ * while no role works the issue's phase (admitted, awaiting_person, held, and integrating, which
+ * the Go daemon has no phase for). Three answers come first: the completion route answers any
+ * completion of a done issue from a session working no look `409 CHECK_LOOK_NOT_SERVED` (the
+ * `legion` tool never asks this module there), one of an issue it does not record (`unrecorded`)
+ * `404 ISSUE_NOT_FOUND`, and the engine answers every architect's `409 ACCEPTANCE_IS_SIGN_OFF`,
+ * since the architect accepts with sign_off. A row that sends nothing makes no request.
+ */
+const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, CompletionRow>>>> = {
+  planner: {
+    admitted: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    awaiting_person: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    planning: row({ record: "plan" }, "nothing", "200"),
+    implementing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    testing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    reviewing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    accepting: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    retro: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    merging: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    integrating: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    done: row({ record: "plan" }, "nothing", "409 CHECK_LOOK_NOT_SERVED"),
+    held: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    unrecorded: row({ record: "plan" }, "nothing", "404 ISSUE_NOT_FOUND"),
+  },
+  implementer: {
+    admitted: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    awaiting_person: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    planning: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    implementing: row({ thrown: PUSH_IT }, "@- and origin", "no request"),
+    testing: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    reviewing: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    accepting: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    retro: row("@-", "@-", "200"),
+    merging: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    integrating: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    done: row({ record: "implement" }, "nothing", "409 CHECK_LOOK_NOT_SERVED"),
+    held: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    unrecorded: row({ record: "implement" }, "nothing", "404 ISSUE_NOT_FOUND"),
+  },
+  tester: {
+    admitted: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    awaiting_person: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    planning: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    implementing: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    testing: row({ record: "test" }, "nothing", "200"),
+    reviewing: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    accepting: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    retro: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    merging: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    integrating: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    done: row({ record: "test" }, "nothing", "409 CHECK_LOOK_NOT_SERVED"),
+    held: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    unrecorded: row({ record: "test" }, "nothing", "404 ISSUE_NOT_FOUND"),
+  },
+  reviewer: {
+    admitted: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    awaiting_person: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    planning: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    implementing: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    testing: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    reviewing: row({ record: "review" }, "nothing", "200"),
+    accepting: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    retro: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    merging: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    integrating: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    done: row({ record: "review" }, "nothing", "409 CHECK_LOOK_NOT_SERVED"),
+    held: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    unrecorded: row({ record: "review" }, "nothing", "404 ISSUE_NOT_FOUND"),
+  },
+  merger: {
+    admitted: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    awaiting_person: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    planning: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    implementing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    testing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    reviewing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    accepting: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    retro: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    merging: row("@-", "@-", "200"),
+    integrating: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    done: row("@-", "@-", "409 CHECK_LOOK_NOT_SERVED"),
+    held: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    unrecorded: row("@-", "@-", "404 ISSUE_NOT_FOUND"),
+  },
+  architect: {
+    admitted: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    awaiting_person: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    planning: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    implementing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    testing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    reviewing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    accepting: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    retro: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    merging: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    integrating: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    done: row("@-", "@-", "409 CHECK_LOOK_NOT_SERVED"),
+    held: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    unrecorded: row("@-", "@-", "404 ISSUE_NOT_FOUND"),
+  },
+};
+
+/** The role that works each phase, as the daemon's `phase.RoleFor` answers; a phase absent here is
+ * one no role works. */
+const WORKER: Readonly<Partial<Record<LegionPhase, LegionRole>>> = {
+  planning: "planner",
+  implementing: "implementer",
+  testing: "tester",
+  reviewing: "reviewer",
+  accepting: "architect",
+  retro: "implementer",
+  merging: "merger",
+};
+
+/** The shared workspace once the issue has moved on: it stands on `SIBLING`, which
+ * `legion/LEGION-208@origin` does not carry. `asked` names each read, `@-` or `origin`. */
+function siblingWorkspace(): { jj: JjRunner; asked: string[] } {
+  const asked: string[] = [];
+  const jj: JjRunner = async (args, cwd) => {
+    expect(cwd).toBe(env.LEGION_WORKSPACE);
+    if (args[2] === "@-") {
+      asked.push("@-");
+      return SIBLING;
+    }
+    if (args[2] === `${REMOTE} & ${SIBLING}::`) {
+      asked.push("origin");
+      return "";
+    }
+    throw new Error(`unexpected jj ${args.join(" ")}`);
+  };
+  return { jj, asked };
+}
+
+/** A Dispatch holding `RECORDS`, recording each read. */
+function everyRecord(): { latestHandoff: LatestHandoff; reads: string[] } {
+  const reads: string[] = [];
+  const latestHandoff: LatestHandoff = async (issue, word) => {
+    reads.push(`${issue} ${word}`);
+    const { id, version, head } = RECORDS[word as HandoffWord];
+    return { id, version, body: body(head) };
+  };
+  return { latestHandoff, reads };
+}
+
+/** A report as one line: the record it names and its commit, or the commit alone. */
+function sentLine(report: HandoffReport): string {
+  return report.handoffId === undefined
+    ? `commit ${report.commit}`
+    : `record ${report.handoffId} version ${report.handoffVersion}, commit ${report.commit}`;
+}
+
+test("every role in every phase: a phase the issue has left runs no workspace check, and reads its head from its record", async () => {
+  const wrong: string[] = [];
+  let rows = 0;
+  for (const role of LEGION_ROLES) {
+    for (const phase of LEGION_PHASES) {
+      rows += 1;
+      const want = COMPLETIONS[role][phase];
+      const { sends } = want;
+      const at = `the ${role} at ${phase}`;
+      // The rule the rows hold, read off the table: a role whose phase the issue has left runs no
+      // workspace check, and never takes `@-` for the head of a record. A left phase with a
+      // record reports that record and reads nothing of the workspace; `@-` is sent for a left
+      // phase only where that phase writes no record (the merger's merging, the implementer's
+      // retro), as it is wherever such a phase's completion is sent.
+      if (WORKER[phase] !== role) {
+        if (want.reads === "@- and origin") wrong.push(`${at} runs the workspace check`);
+        if (typeof sends === "object" && "record" in sends && want.reads !== "nothing") {
+          wrong.push(`${at} sends its ${sends.record} record and reads ${want.reads}`);
+        }
+      }
+      const { jj, asked } = siblingWorkspace();
+      const dispatch = everyRecord();
+      const sent = await findHandoffReport({
+        phase,
+        role,
+        env,
+        jj,
+        latestHandoff: dispatch.latestHandoff,
+      }).then(sentLine, (error: Error) => `nothing: ${error.message}`);
+      const reads = asked.length === 0 ? "nothing" : asked.join(" and ");
+      let wanted: string;
+      let right: boolean;
+      if (sends === "@-") {
+        wanted = sentLine({ commit: SIBLING });
+        right = sent === wanted && dispatch.reads.length === 0;
+      } else if ("record" in sends) {
+        const { id, version, head } = RECORDS[sends.record];
+        wanted = sentLine({ commit: head, handoffId: id, handoffVersion: version });
+        right = sent === wanted && dispatch.reads.join() === `LEGION-208 ${sends.record}`;
+      } else {
+        wanted = `nothing: …${sends.thrown}…`;
+        right = sent.startsWith("nothing: ") && sent.includes(sends.thrown);
+      }
+      if (!right || reads !== want.reads) {
+        wrong.push(
+          `${at} sent ${sent}, reading ${reads} of the workspace and [${dispatch.reads.join(", ")}] of Dispatch; want ${wanted}, reading ${want.reads}`
+        );
+      }
+    }
+  }
+  expect(rows).toBe(LEGION_ROLES.length * LEGION_PHASES.length);
+  expect(wrong).toEqual([]);
+});
+
+test("no record of the phase the role works, or a Dispatch that does not answer, is refused naming what to do", async () => {
   const refusals: ReadonlyArray<readonly [() => Promise<never>, string]> = [
     [
       async () => {
@@ -225,6 +470,38 @@ test("no record, or a Dispatch that does not answer, is refused naming what to d
     await expect(
       findHandoffReport({ phase: "testing", role: "tester", env, jj, latestHandoff })
     ).rejects.toThrow(new Error(message));
+  }
+  // A phase the role left is refused the same way when Dispatch does not answer, or refuses the
+  // read: only a record Dispatch says is not there is the daemon's to answer (the test below).
+  for (const [answer, message] of refusals.slice(1)) {
+    const { jj, calls } = fakeJj();
+    const { latestHandoff } = fakeLatestHandoff(answer);
+    await expect(
+      findHandoffReport({ phase: "held", role: "tester", env, jj, latestHandoff })
+    ).rejects.toThrow(new Error(message));
+    expect(calls).toEqual([]);
+  }
+});
+
+test("a phase the role left with no record reports @- and no record, for the daemon to answer", async () => {
+  // A role on a held or an admitted issue can meet one: the daemon answers such a completion
+  // HANDOFF_NOT_CURRENT_PHASE, or HANDOFF_RECORD_REQUIRED where it would record it, so the tool
+  // does not tell the worker to write a record first. Only `@-` is read, and never the branch.
+  for (const [phase, role, word] of [
+    ["held", "tester", "test"],
+    ["admitted", "planner", "plan"],
+    ["testing", "implementer", "implement"],
+    ["implementing", "reviewer", "review"],
+  ] as const) {
+    const { jj, calls } = fakeJj(false);
+    const { latestHandoff, reads } = fakeLatestHandoff(async () => {
+      throw new DispatchServiceError("HANDOFF_NOT_FOUND", 404, `no handoff for ${word}`);
+    });
+    await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+      commit: STANDING,
+    });
+    expect(reads).toEqual([`LEGION-208 ${word}`]);
+    expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
   }
 });
 
@@ -284,6 +561,20 @@ test("an implementer whose record names no readable head is refused naming what 
     );
     // Nothing of the workspace is read: the record is what has to change.
     expect(calls).toEqual([]);
+  }
+});
+
+test("an implementer whose left implement record names no readable head sends it with @-, unchecked", async () => {
+  // A record written before records carried `head`: the daemon requires an implementer's commit,
+  // so the completion goes with `@-`, the commit main sent there, and the daemon answers it as main
+  // did. `@-` is read and never held to the branch, since it is often a sibling role's commit.
+  for (const text of [body(), "not json at all"]) {
+    const { jj, calls } = fakeJj(false);
+    const { latestHandoff } = recordingDispatch({ ...RECORD, body: text });
+    await expect(
+      findHandoffReport({ phase: "testing", role: "implementer", env, jj, latestHandoff })
+    ).resolves.toEqual({ commit: STANDING, handoffId: RECORD.id, handoffVersion: RECORD.version });
+    expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
   }
 });
 

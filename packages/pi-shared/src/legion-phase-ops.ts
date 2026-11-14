@@ -268,9 +268,9 @@ export function legionToolDescription(host: {
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
     "and reports it with `commit`, the head that record's body names " +
-    "(`head`, the 40-character lower-case commit the work it reports was done against); the implementer's must be the commit its " +
-    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
-    "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, an implement record naming no head, an " +
+    "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
+    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record report the commit the workspace stands on. It " +
+    "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
     "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
     "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
@@ -300,10 +300,11 @@ export interface PhaseOpRuntime {
   readonly claim: ClaimCapability;
   /** What a completion by `role` reports beside its summary while the issue stands at `phase`
    * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
-   * phase the role works or, once the issue has moved on, of the phase it left. Throws naming the
-   * remedy when that phase has no handoff record, Dispatch does not answer, the implementer's
-   * record names no head, the commit its workspace stands on is not pushed, or its record's head
-   * is not that pushed commit. */
+   * phase the role works or, once the issue has moved on, of the phase it left, or `@-` where
+   * that left phase has none. Throws naming the remedy when the phase the role works has no
+   * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
+   * implementer's record names no head, the commit its workspace stands on is not pushed, or its
+   * record's head is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
