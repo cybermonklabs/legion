@@ -442,9 +442,11 @@ type PhaseRow struct {
 	Issue string
 	Role  claim.Role
 	Claim claim.Token
-	// HandoffCommit is the commit the role's completion of its current phase reported: the
-	// implementer's pushed tip for an implementing round, and the commit retro and merging stand
-	// on. The planner, the tester and the reviewer report none; they name a handoff record instead.
+	// HandoffCommit is the commit the role's completion of its current phase reported: for the
+	// planner, the implementer's implementing round, the tester and the reviewer the head their
+	// handoff record names, the commit their work was done against, which they report beside that
+	// record and which the implementer's plugin holds to be its pushed @- on
+	// legion/<issue>@origin; and the commit retro and merging stand on.
 	HandoffCommit string
 	// Pass counts the moves the issue has made back into an earlier phase, each of which opens one
 	// more run of the implementing, testing and reviewing stretch. It tells one pass through a
@@ -537,6 +539,27 @@ type PhaseRow struct {
 	// what tells how long a role has been owed the work its entry names, for a reader weighing a
 	// difference that has stood. Zero on a row no entry has been raised on.
 	EntryRaisedAt time.Time
+	// EntryMovedBack is whether the start that raised that entry was a move back to an earlier
+	// phase, written beside the three fields above in the same transaction from the move the
+	// transition already reads for its pass (workflow's transition, start and enter). True on
+	// every row a daemon upgraded in place found, a row no entry has been raised on among them:
+	// no row before the column said which move raised its entry, and true refuses a behind
+	// completion as the release before did (store migration
+	// 20261113090512_phase_entry_moved_back.up.sql), until the role's next entry writes what its
+	// own move was. A row PutPhase writes reads what it was given: false on one this release
+	// inserted before raising any entry on it, and after the promotion's start of a mid-phase
+	// worker, which moves no phase back.
+	//
+	// One rule of the daemon reads it and no other: the completion route's entry fence, which
+	// takes a completion of an earlier entry when the commit it names is the head the record
+	// holds, and refuses it however the heads read when the entry standing now was raised by a
+	// move back (api/handoff.go). Such an entry asks for the phase's work to be done again, which
+	// is what the earlier entry's verdict must not stand in for, and the heads cannot say so: the
+	// move back that sends work back at a head that did not move leaves the two heads equal. The
+	// counts beside it cannot say so either — Pass rises on every move back and a phase is never
+	// re-entered without one, so a fence on the count would refuse the case the route exists to
+	// take.
+	EntryMovedBack bool
 }
 
 // Completed says whether the role completed its current phase: its completion reported a commit
@@ -1973,6 +1996,17 @@ func (i Issue) Standing() pods.Standing {
 // orphan. And work already under way is never stopped and never re-checked, so a candidate that
 // carries a run waits on nothing, whatever its links say (blockers.Exempt).
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
+
+// PhaseHolds says whether a task queued for phase queuedFor on run generation is still the work
+// of issue, the record of the issue its claim works: the issue is in that phase and, for a task
+// of a run (generation above 0), on that run. An issue the record does not hold (nil) holds every
+// task, since only a claim the workflow never made has none. It is the one definition of that
+// question: the daemon answers supervise's Deps.PhaseHolds with it (daemon's
+// workflowRuntime.phaseHolds, which says why each half is compared), and a test that wires the
+// answer itself calls it too, so the rule it exercises is the one production runs.
+func PhaseHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
+	return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation))
+}
 
 // ParentOf is an observed parent key as a record holds it: nil for none. Dispatch says "no parent"
 // with an empty string, and the record says it with a nil pointer.

@@ -3,8 +3,8 @@
 // a round trip per key in it, per deregistration. At the fleet's role count that ran out the
 // route's own budget (sendRequestBudget, 3.5 s), so DELETE /v1/interests/<session_id> answered the
 // bus-unavailable 503 writeStoreError gives store work that did not answer, naming the read of
-// some other session's claim. The sweep now reads the roles the session holds from the role claim
-// view, which makes no bucket call.
+// some other session's claim. The release now takes the roles the session holds from its interest
+// record and from the role claim view, which makes no bucket call.
 //
 // internal/store's role_claim_sweep_test.go proves that on the store's own surface. These two
 // cases prove it where the 503 was measured: the route. They drive both real callers of
@@ -14,10 +14,11 @@
 // 5,000 claims held by other sessions, through the listener's own mux.
 //
 // Each case's session holds two of its own claims, one per way a deregistration can find a claim:
-// the role its interest record names, which POST /v1/roles/set leaves there and the pass over the
-// record releases (releaseRoleClaims), and a role the record does not name, which only the claim
-// view can name (releaseAllRoleClaims) - the path this change rewrote. A case written with the
-// record's role alone would pass with no view sweep at all.
+// the role its interest record names, which POST /v1/roles/set leaves there and the deregistration
+// finds among the record's role topics, and a role the record does not name, which only the claim
+// view can name - the path this change rewrote. Both are released by one release of the two
+// sources' roles together (releaseAllRoleClaims). A case written with the record's role alone
+// would pass with no view sweep at all.
 //
 // A third case drives the DELETE over a role bucket of about 20,000 claims with the role claim
 // view held where it cannot be served, which is the state a listener warming up, or one whose
@@ -392,12 +393,13 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 // than one still filling.
 //
 // The call counts: one Get and one Delete on the role the session's interest record names, which
-// the pass over that record releases before the sweep (releaseRoleClaims); one Delete and no Get
-// on the role the record does not name, which only a read of the bucket can find and whose claim
-// and revision the scan carries; and no call of either kind on the claims other sessions hold,
-// which is also what says those claims are still theirs. Two deletes in all is the whole of what
-// this deregistration sent the bucket past its scan. A read per key put back sends a Get of its
-// own for every claim the scan delivered, which this case counts and refuses.
+// the deregistration releases from that record before it falls back to the scan
+// (releaseAllRoleClaims); one Delete and no Get on the role the record does not name, which only a
+// read of the bucket can find and whose claim and revision the scan carries; and no call of either
+// kind on the claims other sessions hold, which is also what says those claims are still theirs.
+// Two deletes in all is the whole of what this deregistration sent the bucket past its scan. A
+// read per key put back sends a Get of its own for every claim the scan delivered, which this case
+// counts and refuses.
 //
 // The fixture is seeded once for the whole function, as the one above is. The seeding runs
 // through the registry's own role bucket handle before the counting one is installed, so no

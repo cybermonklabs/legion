@@ -101,8 +101,9 @@ func (w *Watcher) Following() bool {
 // and keeps the watcher's subscription open through the outage, so the watcher does not end and
 // nothing else would say its copy stopped following the bucket: the listener calls this from the
 // bus's disconnect hook (bus.Client.AddDisconnectHook). The copy stops following, its stale episode
-// begins unless one is under way, and a read under way completes nothing. The reconnect hook's
-// Rewatch then reads the bucket again, and that read's completion follows it once more.
+// begins unless one is under way, a read under way completes nothing, and the scheduled read is
+// disarmed. The reconnect hook's Rewatch then reads the bucket again, and that read's completion
+// follows it once more and arms the next scheduled read.
 func (w *Watcher) Disconnected() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -111,6 +112,9 @@ func (w *Watcher) Disconnected() {
 	}
 	w.disconnects++
 	w.stopFollowing()
+	// The reconnect hook's Rewatch reads the bucket once the connection is back, and a scheduled
+	// read fired during the outage would only fail, and be armed again, until it is.
+	w.clearScheduledArm()
 }
 
 // NeedsRead reports whether the copy does not follow its bucket and no read is under way to make

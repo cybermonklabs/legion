@@ -2,10 +2,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
+import { advancesIssuesParams } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
 import { plainWrite, useWrites } from "../writes/write-store";
+import { type IssueListing, listingName } from "./issues-table-data";
 import {
   buildItems,
   type Item,
@@ -58,12 +60,12 @@ interface ResumableAction {
 }
 
 export function useIssueTableActions({
-  project,
+  listing,
   issues,
   items,
   clearSelection,
 }: {
-  project: string;
+  listing: IssueListing;
   issues: readonly IssueSummary[];
   items: readonly Item[];
   clearSelection: () => void;
@@ -77,9 +79,20 @@ export function useIssueTableActions({
   const [unansweredEpic, setUnansweredEpic] = useState<string>();
   const [naming, setNaming] = useState<EpicNaming>();
   const [confirming, setConfirming] = useState<Confirmation>();
-  const recovery = useTableRecovery(project, (text) =>
+  // The project a write of this table may name, which a scoped table has none of: the epic
+  // actions are withheld rather than sent against a listing that belongs to no project.
+  const project = "project" in listing ? listing.project : undefined;
+  // What an interrupted action is recorded under, which is the set it was started on: one
+  // priority's work table resumes its own action and not the table of the priority beside it.
+  const recoveryKey = listingName(listing);
+  const recovery = useTableRecovery(recoveryKey, (text) =>
     setNotice({ kind: text.startsWith("Changes not saved") ? "error" : "success", text })
   );
+  /** Every issue of this table's listing, read afresh: what an action checks itself against. */
+  const listAll = () =>
+    "project" in listing
+      ? api.listIssues({ project: listing.project })
+      : api.listIssues(advancesIssuesParams(listing));
 
   const request = <T>(value: WriteRequest<T>, label: string, issue: string, key: string) => {
     const answer = writes.run({
@@ -265,7 +278,7 @@ export function useIssueTableActions({
     runQueued(queued);
   };
   const newEpic = async (keys: readonly string[], chosenTitle?: string, force = false) => {
-    if (unansweredEpic || !canBegin()) return;
+    if (project === undefined || unansweredEpic || !canBegin()) return;
     const open = openSelected(keys);
     const skipped = skippedClosed(keys.length - open.length);
     if (!open.length) {
@@ -291,7 +304,7 @@ export function useIssueTableActions({
       async () => {
         const creation = writes.run({
           kind: tableEpicWrite,
-          detail: project,
+          detail: recoveryKey,
           key,
           label: `Create epic “${title}”`,
           presentation: "indicator",
@@ -387,7 +400,7 @@ export function useIssueTableActions({
   const mergeEpic = (from: string, into: string) => {
     if (!canBegin()) return;
     return perform(`Merged “${titleOf(from)}” into “${titleOf(into)}”.`, async () => {
-      const descendants = await api.listIssues({ project });
+      const descendants = await listAll();
       const members = mergeMembers(descendants, from);
       const record = recovery.begin({ kind: "merge", keys: members, source: from, target: into });
       try {
@@ -459,7 +472,7 @@ export function useIssueTableActions({
           record.id
         );
         if (!recovery.active(record.id)) return;
-        const remaining = mergeMembers(await api.listIssues({ project }), record.source ?? "");
+        const remaining = mergeMembers(await listAll(), record.source ?? "");
         if (remaining.length)
           throw new Error(
             `The source epic ${record.source} remains open: ${remaining.join(", ")} still need to move.`
@@ -476,7 +489,7 @@ export function useIssueTableActions({
       if (!recovery.active(interrupted.id)) return undefined;
       const record = recovery.current.current;
       if (!record) return undefined;
-      const current = await api.listIssues({ project });
+      const current = await listAll();
       if (!recovery.active(record.id)) return undefined;
       await kinds[record.kind].resume(record, current);
       if (!recovery.active(record.id)) return undefined;
@@ -512,8 +525,10 @@ export function useIssueTableActions({
     dismiss: recovery.dismiss,
     moveTo,
     startNext,
-    newEpic,
     renameEpic,
-    mergeEpic: askMerge,
+    // An epic belongs to a project, so a table that stands on none offers neither action: the
+    // controls draw nothing where they are given nothing.
+    newEpic: project === undefined ? undefined : newEpic,
+    mergeEpic: project === undefined ? undefined : askMerge,
   };
 }

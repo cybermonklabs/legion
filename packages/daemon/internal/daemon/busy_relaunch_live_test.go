@@ -1240,7 +1240,7 @@ func (s *scriptedStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if rule != nil && rule.call != nil {
-		streamAnthropicToolCall(w, s.name, id, rule.call.name, rule.call.input)
+		streamAnthropicToolUse(w, s.name, id, rule.call.name, rule.call.input)
 		return
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
@@ -1422,37 +1422,6 @@ func contentText(content json.RawMessage) (string, bool) {
 		text.WriteString("\n")
 	}
 	return text.String(), prompted
-}
-
-// streamAnthropicToolCall answers one Anthropic Messages request with a single `tool_use` block,
-// in the events the plugins' own pane harness writes for one (packages/pi-shared/test/
-// omp-harness.ts, messageStream): the block opened with an empty input, the input as one
-// `input_json_delta`, and a `tool_use` stop.
-func streamAnthropicToolCall(w http.ResponseWriter, provider, id, name string, input map[string]any) {
-	arguments, err := json.Marshal(input)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
-	event := func(name, data string) {
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data)
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-	event("message_start", fmt.Sprintf(`{"type":"message_start","message":{"id":%q,"type":"message","role":"assistant",`+
-		`"model":%q,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1000,"output_tokens":1}}}`,
-		"msg_"+id, provider+standinModelID))
-	event("content_block_start", fmt.Sprintf(
-		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":%q,"name":%q,"input":{}}}`, id, name))
-	event("content_block_delta", fmt.Sprintf(
-		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":%q}}`, arguments))
-	event("content_block_stop", `{"type":"content_block_stop","index":0}`)
-	event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":16}}`)
-	event("message_stop", `{"type":"message_stop"}`)
 }
 
 // ---- the Hindsight stand-in --------------------------------------------------------------------------
