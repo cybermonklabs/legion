@@ -201,7 +201,7 @@ func feedConfigRefusal(config string) string {
 	return ""
 }
 
-// fileKind names a file's kind as foreignFeed reports it.
+// fileKind names a file's kind as foreignFeed and readGitdir report it.
 func fileKind(mode fs.FileMode) string {
 	switch {
 	case mode&fs.ModeSymlink != 0:
@@ -210,6 +210,12 @@ func fileKind(mode fs.FileMode) string {
 		return "directory"
 	case mode.IsRegular():
 		return "file"
+	case mode&fs.ModeNamedPipe != 0:
+		return "fifo"
+	case mode&fs.ModeSocket != 0:
+		return "socket"
+	case mode&fs.ModeDevice != 0:
+		return "device"
 	}
 	return "special file"
 }

@@ -59,7 +59,7 @@ type TaskValue struct {
 // as PodUpdateContract does, and internal/api's own test pins the two to one number
 // (TestTaskTakeContractIsTheContractThatIntroducedTheTake): a merge that renumbers this change
 // moves both together.
-const TaskTakeContract = 106
+const TaskTakeContract = 120
 
 // The origins of a task: the source that queued it (Delivery.Origin). A request names its own
 // (RequestDeliver.Origin); one that names none is read as originOf says.

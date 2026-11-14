@@ -21,8 +21,9 @@ Mark each requirement of the spec as a `requirement` block, and write the issue'
 document (`verification.md`) with it, uploading each version after the first with `--force`: one
 `check` block per thing that must be proved, each with
 `serves` naming the requirements it serves, its `surface`, its `run`, its `when` and its
-`negative_control`. The human approves both documents in one request (step 4 below), and every
-later role reads the checks: the implementer and the tester record a result against each, and the
+`negative_control`, or `ci_check` in place of its `run` (below). The human approves both
+documents in one request (step 4 below), and every later role reads the checks: the implementer
+and the tester record a result against each check with no `ci_check`, and the
 reviewer approves only once a pass stands for every `before_merge` check at the head, which is the
 check's own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a
 pass recorded under an older wording of the check or a retracted one.
@@ -33,6 +34,27 @@ sources are the words a person wrote in it, and its `Filed for` line with what t
 answer, Slack message or direct message of a `Filed for <person> at their request:` line, or the
 evidence of a controller's `Filed for Legion from <role> on <issue>:` line
 ([The `Filed for` line](skill://legion-controller/references/finding-asks.md#the-filed-for-line)).
+
+## A check CI proves
+
+A check carrying `ci_check` is CI's: `ci_check` names the GitHub check run that proves the check
+at the head, and the check takes no `run`. Its `when` is `before_merge`, and it names its
+`negative_control`. No role runs it or records a result for it. `dispatch results` derives its
+one result from the named run (`skill://legion-worker/references/ci-checks.md`). Where a CI job
+that runs on an ordinary pull request already makes a check's proof, write that check as
+`ci_check` rather than as a command. Write such a check by three rules:
+
+1. Name the check run of the job that runs the proof, never a roll-up run that stands for other
+   jobs. A roll-up run can pass at a head where the job of the check did not run.
+2. Name no job that the repository holds back from an ordinary pull request. Such a job gives no
+   pass at any head the reviewer reads, so its proof stays a check with a `run`.
+3. Write in `negative_control` the case inside that job that fails when the property breaks. A
+   job's conclusion is not the property: a step with `continue-on-error` keeps its job green,
+   and a test deleted from a suite takes its failure with it.
+
+On cybermonklabs/legion: `ci-ok` passes when the jobs it did not select were skipped
+(`.github/scripts/ci-ok.sh`), so never name `ci-ok`. Eight slow suites and the full browser lane
+run only in the merge queue or under `full-ci`.
 
 ## Show the surface before you ask
 
@@ -262,8 +284,9 @@ approval or changes request delivers your next task, and so does a newer spec ve
 Dispatch shows the request back on your turn. While the root waits on a question instead, the
 human's approval or changes request of the spec answers that wait too, and the task says how the
 spec stands. Your resume takes no slot, whether or not the gate opened, because the root holds
-one all along: an issue keeps its admission slot from the moment the daemon starts it
-until it is done or leaves the workflow. The answered root stands in
+one all along: an issue holds one of the cap's slots from the moment the daemon starts it until
+its work is past its review — `accepting`, `retro` and `merging` hold none — or
+until it is done or Dispatch takes it out of the workflow. The answered root stands in
 the admission line until the pass that resumes it, and nothing is sent to you about that wait:
 your record's `waitingLine` gives the live place in the line and the line's length, and beside
 them the line's own fields — `part` and `kind`, `partPlace` of `partLength` inside that part,

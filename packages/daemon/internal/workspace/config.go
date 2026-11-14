@@ -305,20 +305,27 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// A command that reaches a remote over https can have git spawn git-remote-https, a helper
 	// holding the same stdout/stderr pipes: exec.CommandContext alone only kills the direct child
 	// when bounded expires, and that helper, now reparented, can keep the pipe open forever,
-	// leaving Wait (and so Run) never returning. procgroup.Configure's Setpgid plus Cancel signals
-	// the whole process group instead, killing the helper too; after that, Wait normally returns
-	// an ordinary *exec.ExitError for the signaled process.
+	// leaving Wait (and so Run) never returning. procgroup.Configure's Setpgid plus Cancel stops
+	// the whole process group instead, helper and all: SIGTERM to the group, a grace in which a
+	// git that handles it removes the lock files it holds, then SIGKILL to whatever of the group
+	// outlived the grace. After that, Wait normally returns an ordinary *exec.ExitError for the
+	// signaled process.
 	killed := procgroup.Configure(child)
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
 	err = child.Run()
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
-	if runErr := procgroup.Err(err); runErr != nil {
+	// TimedOut is read before the run's own error is propagated, not after: exec reports a command
+	// whose Cancel succeeded and which then exited cleanly as the context's error (watchCtx), and
+	// procgroup.Err passes context.DeadlineExceeded through, so a git that handles its SIGTERM,
+	// removes its lock and exits 0 inside the grace would otherwise be reported as a command that
+	// could not be run rather than as the timeout it is.
+	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
+	if runErr := procgroup.Err(err); runErr != nil && !result.TimedOut {
 		return result, runErr
 	}
 	result.ExitCode = child.ProcessState.ExitCode()
-	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
 	return result, nil
 }
 
@@ -529,9 +536,16 @@ func sharedRepository(jjDir, clone string) (string, error) {
 // itself unless it is a regular file, else the path that file holds, appended to `.jj` unless it
 // is absolute. It is never cleaned: jj canonicalizes it physically, each symlink resolved before a
 // `..` after it, and filepath.Join would cancel `link/..` before anything resolved `link`, naming
-// a different directory than the one jj opens. A `.jj/repo` that is neither a directory nor a
-// regular file (a FIFO, a socket, a device) is refused before anything reads it: reading a FIFO
-// blocks, and nothing here runs under the command's deadline.
+// a different directory than the one jj opens.
+//
+// The pointer file is read through readGitdir, the bounded read of a pointer file a role can
+// write, with no link followed and no wait: a tree agent can write it, and this read runs under
+// whatever the runner's caller holds — the tmux daemon's outbox provisions with the repository's
+// store lock held, which every later provision of the repository waits on. A `.jj/repo` that is
+// neither a directory nor a regular file (a FIFO, a socket, a device), even one swapped in after
+// the stat that tells a directory from a file, is refused rather than waited on, one larger than
+// any path jj writes (4096 bytes) is refused rather than read whole into memory, and a symlink to
+// a regular file, which jj never writes there, is refused rather than followed.
 func workspaceRepository(jjDir string) (string, error) {
 	repo := filepath.Join(jjDir, "repo")
 	info, err := os.Stat(repo)
@@ -541,17 +555,14 @@ func workspaceRepository(jjDir string) (string, error) {
 	if info.IsDir() {
 		return repo, nil
 	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is neither a directory nor a regular file (mode %s)", repo, info.Mode().Type())
-	}
-	pointer, err := os.ReadFile(repo)
+	pointer, err := readGitdir(repo)
 	if err != nil {
 		return "", err
 	}
-	if target := string(pointer); filepath.IsAbs(target) {
-		return target, nil
+	if filepath.IsAbs(pointer) {
+		return pointer, nil
 	}
-	return jjDir + string(filepath.Separator) + string(pointer), nil
+	return jjDir + string(filepath.Separator) + pointer, nil
 }
 
 // describeEntry says what a path that should be a directory is instead.
@@ -876,6 +887,19 @@ func configureRepositoryCredential(ctx context.Context, run Runner, cloneDir, cr
 		}
 	}
 	return nil
+}
+
+// configureCloneReads sets core.warnAmbiguousRefs to false in the shared clone's own
+// configuration, which every workspace of the clone reads too (a git worktree reads its clone's
+// config). With the warning on, git looks up each revision argument as a ref name, to warn when
+// a ref of the same name exists. A leak check's `git rev-list` with about 4,970 `^<sha>`
+// arguments spent 13 s of a measured 78 s on those lookups. The setting turns only the warning
+// off: git resolves every revision the same way. The feed does not take it: Fetch checks the
+// feed's configuration key by key (feedConfigKeys), so an extra key there would be refused.
+func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error {
+	argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "core.warnAmbiguousRefs", "false"}
+	_, err := RunChecked(ctx, run, argv, nil, cloneDir)
+	return err
 }
 
 // removeRepositoryIdentity ports workspace.ts's removeRepoScopedIdentity. A per-repository

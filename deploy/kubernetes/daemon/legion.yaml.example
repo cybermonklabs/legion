@@ -274,6 +274,25 @@ github_apps:
 #                                      # start ending healthy turns. The issue's architect is told
 #                                      # what the record held, and a tree architect's own stall
 #                                      # reaches the controller too.
+# stalled_tree_notice_hours: 6         # how long a tree this daemon runs may be quiet before the
+#                                      # project's controller is told about it once: a tree is quiet
+#                                      # while no issue of it moves — no Dispatch event of the issue,
+#                                      # no GitHub event of its pull request, no phase change, no
+#                                      # handoff, no start, no completion — and no agent of it steps,
+#                                      # so a turn that runs for a day keeps its tree moving. A tree
+#                                      # with a role at work is never told, and neither is one
+#                                      # whose every quiet issue waits by design — a root awaiting a
+#                                      # person, an issue a blocked-by link holds, an issue held for
+#                                      # its open children, or one that needs an admission slot and
+#                                      # holds none — while the project's line can still move: some
+#                                      # issue of the project holds a slot and waits by no such
+#                                      # rule, or some claim of the project is at work. Where that
+#                                      # line cannot move, the controller is told about every tree
+#                                      # of the project, however its members wait. 6 by
+#                                      # default, a decimal number of hours. No value turns the
+#                                      # notice off; a deployment that wants fewer notices raises
+#                                      # the number, to 596 at most, and 0, a negative number and a
+#                                      # value that is not a number are each refused at load by name.
 # Under runtime: tmux — the daemon and every pane on one host, as one Unix user — the runtime block
 # is instead (docs/deployment.md, "The runtime.tmux block"):
 # runtime:

@@ -348,8 +348,9 @@ person closed the question), `turn` (a session handed it back to the agent's tur
 (Dispatch's settlement), and `approved` also when the spec's gate stands open with nobody's
 approval on a deployment that gates no step, or when the last gated step was taken out of
 `gates.design` while the root waited on it. The root is in `admission.active` throughout, since an
-issue keeps its admission slot from the moment the daemon starts it
-until it is done or leaves the workflow;
+issue holds one of the cap's slots from the moment the daemon starts it until its work is past its
+review — `accepting`, `retro` and `merging` hold none — or until it is done or
+Dispatch takes it out of the workflow;
 once it is answered it stands in `admission.waiting` too,
 among the issues whose work came back, oldest first, until the pass that resumes it. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
@@ -550,9 +551,9 @@ listing alone. What follows the colon says where to look:
 - `the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra`, or `the daemon
   could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
   configuration, and the implement App's installation on theorem-labs.
-- `GitHub refused to narrow the daemon's implement App token to theorem-labs/agent-infra alone, …`:
-  the implement App's installation must reach theorem-labs/agent-infra. The daemon asks for no
-  wider token in its place.
+- `GitHub refused the daemon's implement App the reading permissions on theorem-labs, …`: what the
+  account grants the implement App's installation on theorem-labs. The read lease needs contents,
+  pull requests and metadata read. The daemon asks for no wider token in its place.
 - `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
   tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
   in that repository and holds its `leak-check` directory.
@@ -649,32 +650,57 @@ suspended, failed or retired claim naming what starts it again: `--fresh-session
 role, and the daemon's controller keeper for the project's own controller claim, which only
 `--claim` can name and which `--fresh-session` refuses in every state, a keeper whose resume an
 operator's own suspension holds.
-It also refuses a claim the daemon records as working, which may be in a turn, a claim a
-suspension is held over, a claim whose launch is in flight, a claim whose agent has registered
-and is not ready yet, which `--fresh-session` reaches, a claim left working under a relaunch the
-wake pacing parked, a claim left working over a process the daemon's last report of it found
-gone, and a claim whose role runs on Claude Code, which has no Oh My Pi session.
+It also refuses a claim a suspension is held over, a claim whose launch is in flight, a claim
+whose agent has registered and is not ready yet, which `--fresh-session` reaches, a claim left
+working under a relaunch the wake pacing parked, and a claim whose role runs on Claude Code,
+which has no Oh My Pi session.
+For a claim the daemon records as working it reads that claim's process at the runtime, at the
+moment of the request, rather than the daemon's memory of an older report, which a daemon restart
+forgets, and that read records what it finds as the sweep's report of the process would: where
+it finds the process running and clears a death charge, it writes the claim as the daemon holds
+it, as that report's write does, and it stops, suspends, forgets, takes back and starts nothing.
+A process that read finds running is refused
+`CLAIM_IN_A_TURN`, because a compaction would abort the turn that may be the one ending the run
+of refusals. A claim whose session is being compacted takes that code too. A claim whose process
+the runtime would not answer for, and a claim that records no process to read, are refused
+`CLAIM_UNSETTLED` instead, each left exactly as the request found it, since nobody read whether
+a turn of it runs. A claim stored working that no process stands behind is refused
+`CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again, because this command has
+no agent to ask; for the project's own controller claim, which `--fresh-session` refuses and
+whose keeper does nothing while it is stored working, it names
+`legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`.
 A compaction Oh My Pi refused or skipped — a session too small, one already compacted — is
 printed with its reason, and whatever task the claim owed has gone again all the same.
 
 `legion claims retry --claim <token> --fresh-session` is the recovery for a claim the compaction
-left refused: it forgets the session that claim recorded and starts the claim
+left refused, and for a claim stored working that no process stands behind, which the compaction
+refuses by name: it forgets the session that claim recorded and starts the claim
 in a new session with its phase's task, so no `legion claims forget-session` comes before it. It
-reaches a claim whose agent is registered, ready or idle as well as one that is suspended,
-failed or retired, with no suspension held over it, so it is what starts a claim the
-compaction could not reach, and a new session loses everything the old one held. It
+reaches a claim whose agent is registered, ready or idle, one that is suspended,
+failed or retired, and one stored working that the same read of its process finds nothing behind,
+which is the dead role a project's controller has no other way back from, with no suspension held
+over it, so it is what starts a claim the compaction could not reach, and a new session loses
+everything the old one held. It suspends the claim where the request arrives, a live agent and
+the claim no process stands behind alike, and that last claim comes back with the task its dead
+turn held: the suspension takes that task back, and the start sends it again. It
 forgets that session before it starts the phase, because the start runs the moment the restart
 commits and would otherwise resume the very session you are dropping. A retry the daemon then
 refuses has forgotten the session all the same: the claim keeps its state and its task, the
 daemon's log names the session it dropped, and the same command works once the refusal's cause
-is gone. What a refusal does on its own, before any of this, is in the paragraphs above and in
+is gone. A forget or a start the daemon refuses after this command stopped the claim is answered
+200 instead, with that refusal and the claim's state printed under the claim's line: a suspended
+claim is started by running the same command again, and a claim the refusal left in another
+state, such as `launching` with its launch tried again at the probe interval, starts by itself.
+What a refusal does on its own, before any of this, is in the paragraphs above and in
 [Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged).
 When the workflow refused that phase's restart — a lingering tree, whose members stay where they
 stood, is the usual cause — the command prints a second line under the claim's own, saying the
 claim is back in a new session owing no task and why nothing restarted its phase, and the
 controller's `fresh_session` answers that same sentence as `phaseNotRestarted` rather than an
 empty answer: the claim is running with no work, so clear what the line names and run the
-command again to hand the claim its phase's task.
+command again to hand the claim its phase's task. `phaseNotRestarted` carries that sentence or
+the one about the forget or the start that was refused after the claim was stopped, and never
+both.
 
 When a failed architect's session was lost with its volume, clear the stopped claim's matching
 record before retrying:
@@ -1024,8 +1050,8 @@ On such a daemon, an update round or a message wake can take the author of the c
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
   reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
-  issue that only waits keeps both its slot and its pod,
-  so keep the pods a deployment's open trees run within what the pool's limits
+  issue keeps its pod past its slot — through its acceptance, its retro and its merge, on to its
+  own close — so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
   deleted with it, so a replacement brings a disk of its own. The image probe pod,

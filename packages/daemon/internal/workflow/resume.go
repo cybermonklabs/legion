@@ -164,7 +164,11 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		}
 		// A claim that finished its last task in the session it holds is resumed with no task;
 		// any other is given the phase's resume task, at entry 0: that start hands the role the
-		// work it is already on rather than a new entry, so it moves no phases row either.
+		// work it is already on rather than a new entry, so it moves no phases row either. Both
+		// are re-assertions, as the send of an owed entry above is (sendOwedEntry): the boot is
+		// the daemon coming back, no fact of the issue, and what it sends is what the record
+		// already owes the role, so neither marks a movement — the taskless row is enqueued
+		// directly, which marks none, and the resume task's start says so (startMarks.reasserts).
 		if finishedInItsSession(*held) {
 			if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
 				Generation: issue.Generation, Phase: issue.Phase, RuleResume: true}); err != nil {
@@ -176,7 +180,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 			continue
 		}
 		if err := e.started(ctx, tx, issue, role, ResumePhaseTask(issue), supervise.OriginResume, 0,
-			startMarks{resumeTask: true, ruleResume: true}); err != nil {
+			startMarks{resumeTask: true, ruleResume: true, reasserts: true}); err != nil {
 			return intake.Result{}, err
 		}
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", role,

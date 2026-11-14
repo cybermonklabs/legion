@@ -710,6 +710,18 @@ const legionIssue = z.object({
    * takes both as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
+  /** When the daemon last saw anything of this issue's tree move, and how long that tree has
+   * been still at this read, in hours (contract 111). The pair is the tree's and not the issue's,
+   * so every issue of one tree carries the same two values — an issue past its own review, which
+   * holds no admission slot, and a done child recorded under a live tree among them. Both are
+   * absent together for an issue whose tree is not live and for an issue the workflow does not
+   * record, and a daemon before contract 111 writes neither at all, which is why a reader takes
+   * them as optional. A tree the record shows no movement for is measured from the zero time,
+   * where the daemon's duration saturates, so `quietHours` reads 2562047.788 — 292 years, the
+   * largest span it holds. That is "this tree has never moved", not a fault to refuse the body
+   * over, which is why the bound here is `nonnegative` and no ceiling. */
+  treeMovedAt: timestamp.optional(),
+  quietHours: z.number().nonnegative().optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */
@@ -751,7 +763,8 @@ const legionBlockedIssue = z.object({
 
 /**
  * `record.HeldReason` — the eleven words of `admission.held`, in `record.HeldReasons`' order.
- * `at_work` names no issue today; `record.HeldAtWork` says why.
+ * `at_work` names an issue past its review, which keeps no admission slot; `record.HeldAtWork`
+ * says which issues read it.
  */
 export const LEGION_HELD_REASONS = [
   "tree_closed",
@@ -787,16 +800,17 @@ const legionHeldIssue = z.object({
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
  * `active` is every issue holding a slot and `waiting` the admission line, children as much as
- * roots, so one tree with three started children holds three slots. An issue takes its slot when
- * the daemon starts it and keeps it until it is done or leaves the workflow, so `active` carries
- * an issue waiting on a person, one in `accepting`, one `held`, a merger at work in `merging`,
- * one in `merging` whose start a closed design gate holds, and a merged root standing in
- * `merging` while the rest of its tree runs, while an issue whose phase has left the workflow —
- * `done`, or a status Dispatch took it out of the workflow with — is in neither list. An issue
- * holding a slot is in `waiting` as well while its work comes back to it, an answered root until
- * the pass that resumes it. `trees` is the root of every live tree, sorted, which a reader needs
- * because a running tree may hold no slot at all — the controller reads it where it read
- * `active` as the running
+ * roots, so one tree with three started children holds three slots. An issue holds one of the
+ * cap's slots from the moment the daemon starts it until its work is past its review —
+ * `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out
+ * of the workflow, so `active` carries an issue at work, one `held` and one waiting on a
+ * person, while an issue past its review — a merger at work in `merging`, one in `merging`
+ * whose start a closed design gate holds, a merged root standing in `merging` while the rest
+ * of its tree runs — and one whose phase has left the workflow, `done` or a status Dispatch
+ * took it out of the workflow with, are in neither list. An issue holding a slot is
+ * in `waiting` as well while its work comes back to it, an answered root until the pass that
+ * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a running
+ * tree may hold no slot at all — the controller reads it where it read `active` as the running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose
@@ -1015,7 +1029,7 @@ const legionTaskValue = z.object({
  * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
  * `task` and `finished` are what `POST /legion/v1/claims/task` answers (`LegionTaskResponse`),
  * read once the registration is recorded, so the worker holds its claim's value before its ready
- * (contract 106). */
+ * (contract 120). */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
@@ -1078,7 +1092,7 @@ const legionProviderError = z.strictObject({
  * provider said about a refusal, and a clean turn carries none. `task` is the number of the take
  * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
  * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
- * the wait before its value is written again (contract 106). */
+ * the wait before its value is written again (contract 120). */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
@@ -1160,14 +1174,14 @@ const taskValueFields = {
 };
 
 /** `claim.TaskRequest`, the body of `POST /legion/v1/claims/task`: a worker reading its claim's
- * value, at a new epoch of its relay or when it gains its role again (contract 106). */
+ * value, at a new epoch of its relay or when it gains its role again (contract 120). */
 export const LegionTaskRequest = eitherCaller({ generation: z.number().int().positive() });
 
 export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 106). */
+ * finished, 0 for none (contract 120). */
 export const LegionTaskResponse = z.object({
   task: legionTaskValue.nullable(),
   finished: z.number().int().nonnegative(),
@@ -1176,7 +1190,7 @@ export const LegionTaskResponse = z.object({
 export type LegionTask = z.output<typeof LegionTaskResponse>;
 
 /** `claim.TaskSeenRequest`, the body of `POST /legion/v1/claims/task-seen`, answered 204: the
- * worker reporting the value it was handed, whether or not its host is idle (contract 106). */
+ * worker reporting the value it was handed, whether or not its host is idle (contract 120). */
 export const LegionTaskSeenRequest = eitherCaller(taskValueFields);
 
 export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
@@ -1185,7 +1199,7 @@ export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
  * host is idle, to take the task its value names. A take with no answer — a refused, reset or
  * closed connection, a DNS failure, no answer in 5 minutes, or a 502, 503 or 504 that names no
  * `code` — is sent again unchanged, and a take of a number already accepted whose turn has not
- * started is answered the same text again (contract 106). */
+ * started is answered the same text again (contract 120). */
 export const LegionTakeRequest = eitherCaller(taskValueFields);
 
 export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
@@ -1197,7 +1211,7 @@ export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
  * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
  * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `adoption`), since a worker acts
  * on none of them by name and a hold a later daemon adds must not refuse the answer (contract
- * 106). */
+ * 120). */
 export const LegionTakeResponse = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
   z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),
@@ -1384,7 +1398,7 @@ export const LegionErrorResponse = z.object({
 });
 
 /** `api.DeliveryView` — the claim's pending task; `confirmedAt` is when the task was recorded as
- * taken (an accepted take), absent until it is. No prompt is acknowledged since contract 106, so
+ * taken (an accepted take), absent until it is. No prompt is acknowledged since contract 120, so
  * the view carries no `deliveredAt`. `phase` is the issue phase the task was queued for, which is
  * what says whether it is still the work to do; a task of no phase — an operator's own, an
  * architect's — carries none. */
@@ -1429,11 +1443,13 @@ export const LegionOperatorClaimResponse = z.object({
   sessionFile: z.string(),
   forgottenSession: nonEmptyString.optional(),
   forgottenSessionFile: nonEmptyString.optional(),
-  /** Why nothing restarted the claim's phase, on a `retry` that asked for a fresh session
-   * (`{"freshSession":true}`) and nowhere else: the claim is back in a new session owing no
-   * task, and the workflow refused the restart that would have handed it one. The claim started
-   * either way, which is why the refusal rides a successful answer; absent when the phase was
-   * restarted, and when no restart was due. */
+  /** What the request did to the claim that the claim itself does not record, on a `retry` that
+   * asked for a fresh session (`{"freshSession":true}`) and nowhere else: the claim is back in a
+   * new session owing no task and the workflow refused the restart that would have handed it
+   * one, or the request stopped the claim and a step that would have brought it back — the
+   * forget of its session, or its start — was refused, and the sentence names the state that
+   * left the claim in. Either rides a successful answer, because the request changed the claim;
+   * absent when the claim came back and nothing else is to be said. */
   phaseNotRestarted: nonEmptyString.optional(),
   locator: legionLocator.optional(),
   budgets: z.object({

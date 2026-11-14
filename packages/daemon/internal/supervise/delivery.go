@@ -906,7 +906,9 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 }
 
 // ordinaryEnd is interrupted's outOfMemory at a call site that ends the turn of a process still
-// running — one replaced mid-turn, or one a held suspension's deadline stops — where nothing
-// ended the pod's container, so the end was not the pod running out of memory. A death and a
-// displacement pass the observation's own OutOfMemory instead.
+// running — one replaced mid-turn, for a stale address, a stale plugin, a stalled turn or a paced
+// launch whose turn has come, or one a held suspension's deadline stops — where nothing ended the
+// pod's container, so the end was not the pod running out of memory. A death and a displacement
+// pass the observation's own OutOfMemory instead, and the suspension that lands over a process a
+// report found gone passes what that report recorded (suspendOverADeadProcess, goneOutOfMemory).
 const ordinaryEnd = false

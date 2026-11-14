@@ -64,12 +64,36 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     stop timeout over; a deadline the daemon names is a time, so it holds as named.
 //   - It is the one thing that lets a row end in suspended without naming that state (Handle).
 //
+// One claim stored working is not held for here: the one no process stands behind, whose last
+// report of the process it records found it gone and whose relaunch never ran (processGone,
+// Claim.ProcessGone, which states the two windows that leave one). A hold protects a turn and a
+// process, and that claim has neither — the turn the dead process was running ended with it, and
+// there is nothing left to cut off — so its suspension is decided where it arrives, exactly as
+// the suspension of a claim whose paced wake waits over no process is (holdSuspendUntilReady).
+// Held instead, it would wait for a turn that will never end: an operator's stop timeout long,
+// and for ever for a daemon's suspension that names no deadline, over a claim nothing will
+// relaunch. That is the one path out of this row that ends in suspended by naming it, which is
+// why the row names StateSuspended among its destinations (Handle, table.go).
+//
 // It answers ErrSuspendHeld, except to a suspension that may not be held
 // (RequestSuspend.NeverHold), which it refuses before it records anything.
-func holdSuspension(m *Machine, _ context.Context, ev Event) error {
+func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
+	}
+	// Read before the refusal below and before anything is recorded, because this claim is the
+	// one the recovery that posts a suspension it will not have held reaches (api's
+	// suspendForFreshSession): refused here, the claim it is asked over would stand working over
+	// its dead process with no door left. A claim recording no process at all is left to that
+	// refusal: nothing was read of a process it does not have, and no process means no stop to
+	// make. A launch waiting its paced turn owns the process it waits over (launchWaits), and a
+	// compaction in flight is a claim whose session Oh My Pi is writing a summary of, which the
+	// compaction's own end gives back (compactEnded): neither is this row's to end.
+	if m.claim.Locator != nil && m.processGone && !m.launchWaits() && m.compacting == nil {
+		m.log.Info("supervise: a suspension reached a claim stored working over a process the daemon found gone; deciding it here",
+			"reason", request.Reason, "by", request.By, "incarnation", m.claim.Locator.Incarnation)
+		return m.suspendOverADeadProcess(ctx, request)
 	}
 	// The flag and the deadline are the asker's own: suspendRequest hands a daemon's request under
 	// the operator's hold the operator's source, which must not give it the operator's stop timeout
@@ -308,13 +332,67 @@ func (m *Machine) dropHeld() {
 // endHeld is the claim's process found dead, or alive holding an address a process launched now is
 // not handed (repoint), while a suspension is held. Nothing is left to hold the suspension for, so
 // the claim is suspended rather than relaunched, and nothing is charged: died asks before it charges
-// anything. A runtime that cannot stop the process is logged and recorded (stopUnconfirmed) and the
-// claim is suspended all the same, as a failed claim is (fail): the claim runs nothing either way,
-// and a process the runtime would not stop goes on holding what it runs on, which is the owner of
-// a stalled worker's to hear (the daemon's stallBackstopRecord).
+// anything. The stop and the suspension are the two steps every claim with nothing left to run
+// takes, written once (letProcessGoFor).
 func (m *Machine) endHeld(ctx context.Context) error {
 	request := *m.held
 	m.dropHeld()
+	return m.letProcessGoFor(ctx, request)
+}
+
+// suspendOverADeadProcess runs the suspension of a claim stored working that no process stands
+// behind: the daemon's last report of the process it records found it gone, and the relaunch that
+// would have replaced it never ran (holdSuspension, which states when this path is taken). It is
+// what a death with a suspension already held does (died, endHeld), for a suspension that
+// arrives after the death rather than before it.
+//
+// The task of the dead turn goes back to waiting first, unconfirmed and under its own number,
+// exactly as a death in a turn takes it back (interrupted): the turn ran, the worker took the
+// task, and no process finished it. Its next accepted take carries the note of a pod that ran out
+// of memory where the report that found the process gone said so (goneOutOfMemory), and the
+// claim records that report's account of the death (goneCause, Claim.LastDeathCause), as died
+// records the death it judges, so the task is taken again saying why the process died. A
+// take-back the store will not write stops everything — nothing is stopped, nothing is sent and
+// the claim is left as it stands, its last death's cause put back, as died leaves it — so the
+// caller's next request takes it back then, rather than this leaving a suspended claim holding a
+// task settle would retire as a finished turn.
+//
+// The clean stop of the dead process's Envoy session is sent once that write has landed, and
+// before the process is let go (sessionGone, letProcessGoFor). Sent before the write, a write
+// the store refused would leave the stop sent for a claim this suspension then left standing
+// as it was. The report that found the process gone may be no death died judged: where the
+// recovery's own read is the first to find it (ReadProcess) — after a restart, or before any
+// sweep has reported it — this is the one place the stop is sent, and without it the listener
+// would keep the dead session's role and issue claims while the fresh session forgets that
+// session's id. Where died did judge the death, the stop goes again for a registration already
+// ended, which tells the listener nothing new.
+//
+// Nothing is charged, as endHeld charges nothing. Where died judged the death it was charged
+// there, or found to have nothing to charge (Claim.DeathCharged). Where the read is the first to
+// find it no judgement ran, and that death is charged nothing at all: the suspension is an
+// operator's or a controller's explicit act of recovery, and charging it would walk the claim
+// toward the deaths limit for a death the daemon is being asked to recover from. A suspension is
+// no launch failure of its own either.
+func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
+	cause := m.claim.LastDeathCause
+	m.claim.LastDeathCause = m.goneCause
+	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
+		m.claim.LastDeathCause = cause
+		return err
+	}
+	m.sessionGone()
+	return m.letProcessGoFor(ctx, request)
+}
+
+// letProcessGoFor asks the runtime to let the claim's process go and suspends the claim for
+// request, whether or not that stop landed. It is written once because two paths take exactly
+// these two steps: a process found dead or at a stale address while a suspension is held
+// (endHeld), and a suspension that arrives over a process the daemon has already found gone
+// (suspendOverADeadProcess). A runtime that cannot stop the process is logged and recorded
+// (stopUnconfirmed) and the claim is suspended all the same, as a failed claim is (fail): the
+// claim runs nothing either way, and a process the runtime would not stop goes on holding what it
+// runs on, which is the owner of a stalled worker's to hear (the daemon's stallBackstopRecord).
+func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend) error {
 	incarnation := m.claim.Locator.Incarnation
 	if err := m.endProcess(ctx); err != nil {
 		m.stopUnconfirmed = true

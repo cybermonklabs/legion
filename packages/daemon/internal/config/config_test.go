@@ -239,6 +239,7 @@ func defaultsFor(port int) Config {
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateRetask:      time.Hour,
 		PodUpdateNotice:      4 * time.Hour,
+		StalledTreeNotice:    6 * time.Hour,
 		WorkerSilence:        30 * time.Minute,
 		WorkerBackground:     4 * time.Hour,
 		ReviewRoundCap:       3,

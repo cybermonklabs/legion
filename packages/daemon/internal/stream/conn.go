@@ -258,13 +258,15 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 }
 
 // RescueUnpushed asks the shim to check every workspace on its pod's disk for work the remote
-// lacks and push it to rescue branches (internal/rescue). The shim runs the check within
-// request.Timeout; the answer is awaited for that plus the RPC timeout. A shim built before the
-// frame forwards it to its agent, and the agent's refusal is runtime.ErrRescueUnsupported: such a
-// pod cannot be checked. A shim that answers the frame and could not run the check is a refusal.
+// lacks and push it to rescue branches (internal/rescue). The frame carries both of the request's
+// branches, the pod's own prefix and the issue's one branch (shimwire.RescueUnpushed says which
+// shim reads which). The shim runs the check within request.Timeout; the answer is awaited for
+// that plus the RPC timeout. A shim built before the frame forwards it to its agent, and the
+// agent's refusal is runtime.ErrRescueUnsupported: such a pod cannot be checked. A shim that
+// answers the frame and could not run the check is a refusal.
 func (c *Conn) RescueUnpushed(ctx context.Context, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
 	id := rand.Text()
-	frame := shimwire.RescueUnpushed{ID: id, Branch: request.Branch,
+	frame := shimwire.RescueUnpushed{ID: id, Branch: request.Branch, Target: request.Target,
 		WorkspaceTimeoutMs: int(request.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(request.Timeout.Milliseconds())}
 	if err := frame.Validate(); err != nil {
 		return nil, fmt.Errorf("worker-stream: %s: %w", c.claim, err)

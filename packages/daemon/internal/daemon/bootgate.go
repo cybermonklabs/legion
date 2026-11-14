@@ -928,7 +928,14 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	if job.interrupted(cmd.ProcessState) {
 		return ran{}, errors.New("the probe was interrupted at the terminal")
 	}
-	if runErr := procgroup.Err(err); runErr != nil {
+	// The budget's kill is read before the run's own error is propagated: the attempt's end stops
+	// the group with SIGTERM before its SIGKILL (procgroup.Configure), and exec reports a command
+	// whose Cancel succeeded and which then exited cleanly as the context's error (watchCtx),
+	// which procgroup.Err passes through. A probe that handles its SIGTERM and leaves inside the
+	// grace is the budget killing it, judged below like any other budget kill, not a probe that
+	// could not be run.
+	timedOut := killed()
+	if runErr := procgroup.Err(err); runErr != nil && !timedOut {
 		return ran{}, runErr
 	}
 	tail := strings.TrimSpace(stderr.String())
@@ -941,7 +948,7 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 		stdout:   stdout.String(),
 		output:   stderr.String() + "\n" + stdout.String(),
 		tail:     tail,
-		timedOut: killed(),
+		timedOut: timedOut,
 		elapsed:  time.Since(started),
 	}, nil
 }
