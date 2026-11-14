@@ -4509,6 +4509,7 @@ The guard acts only when the processes it may end hold at least `floor_percent` 
 It then holds the largest through a pidfd, reads that process's start time again, and sends `SIGKILL` only when the start time is the one the scan read, so a pid that another process took after the scan is never signalled.
 Of two processes of the same size it ends the newer, since of a parent and the child it forked, the child is the one started for the work.
 A process whose `stat`, `exe`, `ns/pid` or `smaps` the guard cannot read is not ended, is counted apart, and is logged once.
+When such a read fails, the guard reads the process's `stat` again first: a process that has ended meanwhile (gone, its pid taken by another, or now an exited zombie) is left out with no line, since under gVisor a read of a process that has just exited answers `EACCES` rather than `ENOENT`.
 A kill that fails, for a reason other than the end of the process, is logged once, that process counts as unread for as long as it lives, and the next reading ends the next largest.
 
 **After a kill: the rise rule.**
