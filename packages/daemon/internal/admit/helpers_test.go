@@ -113,31 +113,27 @@ func newAdmissionForProject(t *testing.T, project string, cap int, steps []recor
 }
 
 // architectStart is the task admission queues with the start of a root architect
-// (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: the
-// root as it stands now, the design gate rows it holds, the run its architect claim last served,
-// and what its tree is owed where a person decided something on it while nobody in
-// the tree could hear them. A test about what admission writes names the task through this
-// helper, under the gate steps its own admission runs; which shape each root gets, and the whole
-// text of each shape, are pinned in internal/workflow (TestTheArchitectTaskOfEachShape,
-// TestTheArchitectTaskShapeRule) and the delivery to a launched architect in internal/daemon
+// (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: what
+// workflow.ArchitectStartOf reads of the root as it stands now — whether a hand-over carried it in,
+// the design gate rows it holds and the run its architect claim last served — under the gate
+// steps its own admission runs, and what its tree is owed where a person decided something on it
+// while nobody in the tree could hear them (decided). A test about what admission writes names the
+// task through this helper; which shape each root gets, and the whole text of each shape, are
+// pinned in internal/workflow (TestTheArchitectTaskOfEachShape, TestTheArchitectTaskShapeRule)
+// and the delivery to a launched architect in internal/daemon
 // (TestAFreshAdmissionGivesItsArchitectItsStartTask).
 func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key, decided string) string {
 	t.Helper()
 	root := issue(t, pool, key)
-	start := workflow.ArchitectStart{Root: root, Gate: record.TreeGate{Steps: admission.engine.GatedSteps()}, Decided: decided}
+	var start workflow.ArchitectStart
 	inTx(t, pool, func(tx pgx.Tx) {
-		records := record.NewStore()
-		rows, err := records.GatesOf(context.Background(), tx, key)
+		var err error
+		start, err = workflow.ArchitectStartOf(context.Background(), tx, record.NewStore(), admission.engine.GatedSteps(), root)
 		if err != nil {
-			t.Fatalf("read the design gate of %s: %v", key, err)
+			t.Fatalf("read what the architect task of %s is derived from: %v", key, err)
 		}
-		start.Gate.Rows = rows
-		served, err := records.ArchitectServed(context.Background(), tx, root.Tree)
-		if err != nil {
-			t.Fatalf("read the run the architect claim of %s last served: %v", root.Tree, err)
-		}
-		start.Served = served
 	})
+	start.Decided = decided
 	return workflow.ArchitectStartTask(start)
 }
 

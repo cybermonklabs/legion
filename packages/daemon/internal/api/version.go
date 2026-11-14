@@ -1609,8 +1609,10 @@ package api
 // reading that holds for its architect at that read, as `record.ArchitectStallArm`'s values —
 // `took-nothing` (the task of its entry was queued to its claim more than ten minutes ago and no
 // turn confirmed it), `claim-unreachable` (the claim is failed or retired, the root is not waiting
-// on a person, and no start of the root's run that has not yet run against the claim was queued in
-// the last ten minutes, or no architect claim stands, no start of one was queued in the last ten
+// on a person, and no start of the root's run is the daemon's next move for it: a start the outbox
+// is running is, and so is a start queued in the last ten minutes unless it has already run
+// against the claim and left it failed or retired, after which the outbox only runs it again on
+// its backoff; or no architect claim stands, no start of one was queued in the last ten
 // minutes, and the work of its entry has waited the same ten minutes) and `slow-before-gate` (it
 // stands at `admitted` with no
 // design-gate step registered 90 minutes after the later of its admission and its architect's

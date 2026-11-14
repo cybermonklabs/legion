@@ -2823,9 +2823,10 @@ type roleRunIdentity struct {
 
 // RoleRuns reads the queued supervise rows and the claims of keys in two bounded queries. The
 // outbox query reads the selected issues' supervise rows by the outbox_issue index with each
-// payload's role and generation as text, and decodes only the rows of keys' roles and
-// generations. A row of another role is never decoded, so one that does not decode fails only a
-// read of its own role's run, as RoleRun's did.
+// payload's role and generation as text and each row's age in the store's own clock
+// (QueuedSupervise.Age), and decodes only the rows of keys' roles and generations. A row of
+// another role is never decoded, so one that does not decode fails only a read of its own role's
+// run, as RoleRun's did.
 //
 // The rows are read first and the claims second, and that order is what makes the two answers
 // safe to judge together under a READ COMMITTED transaction, which every fact handler's is
@@ -2865,7 +2866,8 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		}
 	}
 
-	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', '')
+	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', ''),
+		now() - created_at
 		from outbox where kind = $1 and issue = any($2) order by id`, string(OutboxKindSupervise), issues)
 	if err != nil {
 		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
@@ -2874,8 +2876,9 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		var row OutboxRow
 		var kind, role, generation string
 		var payload []byte
+		var age time.Duration
 		if err := rows.Scan(&row.ID, &kind, &row.Issue, &payload, &row.Attempts, &row.NextAt, &row.LastError,
-			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation); err != nil {
+			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation, &age); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 		}
@@ -2896,7 +2899,8 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 			return nil, fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
 		}
 		run := runs[token]
-		run.Queued = append(run.Queued, QueuedSupervise{ID: row.ID, Request: request, QueuedAt: row.CreatedAt})
+		run.Queued = append(run.Queued, QueuedSupervise{ID: row.ID, Request: request, Attempts: row.Attempts,
+			Running: row.LeaseToken != "", Age: age})
 		runs[token] = run
 	}
 	if err := rows.Err(); err != nil {

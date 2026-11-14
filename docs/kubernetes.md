@@ -2294,8 +2294,9 @@ The daemon wakes the project's controller with `architect-stalled on <KEY>` (`sk
 
 - the architect took nothing: the task of its entry was queued to its claim more than ten minutes ago, and no turn confirmed it.
 
-- the architect's claim cannot be reached: the claim is failed or retired, the root is not waiting on a person, and no start of the root's run that has not yet run against the claim was queued in the last ten minutes, or no architect claim stands, no start of one was queued in the last ten minutes, and the work of the entry has waited the same ten minutes.
-  A start that has run and left the claim failed, which the outbox runs again on its backoff while every launch fails, holds no wake back, and neither does one that has stood owed past the ten minutes without running.
+- the architect's claim cannot be reached: the claim is failed or retired, the root is not waiting on a person, and no start of the root's run is the daemon's next move for it, or no architect claim stands, no start of one was queued in the last ten minutes, and the work of the entry has waited the same ten minutes.
+  A start the outbox is running is that next move, and so is a start queued in the last ten minutes unless it has already run against the claim and left it failed or retired.
+  A start that has run and left the claim failed or retired, which the outbox runs again on its backoff while every launch fails, holds no wake back, and neither does one that has stood owed past the ten minutes without running.
   A root waiting on a person raises none for a failed or retired claim, because the person's answer resumes its architect with a start of its own.
 
 - the root is slow before its gate: it still stands at `admitted` with no design-gate step registered 90 minutes after its admission or its architect's last raised entry, whichever is later.
@@ -2364,7 +2365,7 @@ The outbox `delete` drops the `architect-stalled` wakes this release wrote and h
 A sent wake leaves no row, so these are the only ones standing, and the earlier release cannot send them:
 it refuses a controller notice of a kind it does not know (`record.DecodeOutboxPayload`, `unknown controller notice kind`), and its runner retries such a row on its backoff for ever.
 After the roll-forward no wake of the first or the third arm comes again for a root whose run has started, since the upgrade marks both arms for every such root it settles;
-a wake of the second arm comes again on the first pass for a root whose claim is still failed or retired with no start of its run queued in the last ten minutes that has not yet run against it.
+a wake of the second arm comes again on the first pass for a root whose claim is still failed or retired with no start of its run that is the daemon's next move for it: none queued in the last ten minutes, or only one that has already run against the claim and left it failed or retired.
 The `drop table` and the last `delete` go together.
 The earlier release reads no such table, and the delete makes the store report that release's own version again.
 The drop is owed to the roll-forward, which cannot create the table again while it stands.

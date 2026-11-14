@@ -82,6 +82,76 @@ func ArchitectStartPending(run record.RoleRun) (string, bool) {
 	return owed(run)
 }
 
+// ArchitectRelaunch is what the queued starts of a root's run say of its architect's claim
+// (ArchitectRelaunchOf).
+type ArchitectRelaunch int
+
+const (
+	// RelaunchNone says that no start of the run is the daemon's next move for the claim, and that
+	// none is failing.
+	RelaunchNone ArchitectRelaunch = iota
+	// RelaunchFailing says that a start of the run has run against the claim and a run of it ended
+	// without success, and that no start is the daemon's next move.
+	RelaunchFailing
+	// RelaunchNext says that a start of the run is the daemon's next move for the claim.
+	RelaunchNext
+)
+
+// ArchitectRelaunchOf says whether a start queued for root's architect is the daemon's next move
+// for its claim, which is what the second arm of admit's architect-stalled reading asks before it
+// wakes the controller for a failed or a retired claim, or for a root with no claim. A start of
+// the run is one startActs counts for the architect, whose start names no phase: one above the
+// newest stop that still acts (actingStop).
+//
+// A start a lane holds (record.QueuedSupervise.Running) is the next move, whatever else the record
+// says of it: the outbox is running it now, or runs it again once the lease of a lane that died
+// lapses. The outbox writes LastStartRow when a run begins (internal/daemon's outbox, supervise's
+// Machine.StartedBy) and only then relaunches the claim, so for that moment the record shows the
+// claim still failed or retired beside the start that is relaunching it, and the start's Attempts
+// may be above zero from an earlier run that waited.
+//
+// A start no lane holds is failing when its id is at or below the claim's LastStartRow, which says
+// it has run against the claim, and its Attempts are above zero, which says a run of it ended
+// without success and left it queued, a failure or a wait (record.QueuedSupervise.Attempts). The
+// outbox only runs it again on its backoff, so a failing start is never the next move, however
+// recently it was queued. Any other start is the next move while it was queued at most
+// StrandedReleaseWake ago (record.QueuedSupervise.Age, in the store's own clock); one queued
+// earlier is neither the next move nor failing. That is why the floor is the acting stop alone and
+// not the later of it and LastStartRow: a start at or below LastStartRow can still be the next
+// move. A next move wins over a failing start, so RelaunchFailing means that no start is the next
+// move.
+//
+// Stranded reads the same claim through StartFor, which counts every start above the acting stop
+// whatever its age, its lease and its attempts, and the two readings answer different questions.
+// Stranded asks whether nothing will start the claim again, and a failing start will, since the
+// outbox runs it again on its backoff, so Stranded leaves such a claim out. The arm asks whether a
+// start can still cure the claim, and a start that has run against it and left it as it was cannot
+// (the architect's reading of R7 at dispatch://INFRA-2614).
+func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunch {
+	stop := actingStop(run, root)
+	var lastStart int64
+	if run.Claim != nil {
+		lastStart = run.Claim.LastStartRow
+	}
+	relaunch := RelaunchNone
+	for _, queued := range run.Queued {
+		if !startActs(queued, stop, "") {
+			continue
+		}
+		if queued.Running {
+			return RelaunchNext
+		}
+		if queued.ID <= lastStart && queued.Attempts > 0 {
+			relaunch = RelaunchFailing
+			continue
+		}
+		if queued.Age <= StrandedReleaseWake {
+			return RelaunchNext
+		}
+	}
+	return relaunch
+}
+
 // SendArchitectStart writes the start of root's architect again, for the entry its phases row
 // already names (row): the start StartArchitect writes, enqueued directly rather than through
 // StartOrOwe, so it waits for no admission slot and marks no movement (the root holds the row the

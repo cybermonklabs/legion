@@ -120,42 +120,22 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
 }
 
-// queuedStartActs is whether a queued start for current with an id above stop, the newest stop
-// that still acts (actingStop), will reach the claim. StartFor and SilentPhaseWorker both read
-// it, so they answer that term alike.
+// queuedStartActs is whether a queued start of run acts on the claim (startActs). StartFor and
+// SilentPhaseWorker both read it, so they answer that term alike.
 func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop {
+		if startActs(queued, stop, current) {
 			return true
 		}
 	}
 	return false
 }
 
-// RelaunchQueued is whether a start queued for run's claim is the daemon's next move for it at
-// now: a start StartFor would count (for current, above the newest stop that still acts) that has
-// not yet run against the claim (its id above the claim's LastStartRow) and was queued less than
-// StrandedReleaseWake before now (record.QueuedSupervise.QueuedAt, which a row the outbox runs
-// again in place keeps). A start that has run against the claim and left it as it is, which the
-// outbox runs again on its backoff while every launch fails, is no next move, and neither is one
-// that has stood owed past that bound without running: R7's second arm names a failure no further
-// send cures, and its bound is that one (dispatch://INFRA-2614, R7). A queued moment after now,
-// which only a clock behind the store's can give, counts as within the bound.
-func RelaunchQueued(run record.RoleRun, root record.Issue, current phase.Phase, now time.Time) bool {
-	stop := actingStop(run, root)
-	var lastStart int64
-	if run.Claim != nil {
-		lastStart = run.Claim.LastStartRow
-	}
-	for _, queued := range run.Queued {
-		if queued.Request.Op != "start" || queued.Request.Phase != current || queued.ID <= stop || queued.ID <= lastStart {
-			continue
-		}
-		if !PastBound(queued.QueuedAt, StrandedReleaseWake, now) {
-			return true
-		}
-	}
-	return false
+// startActs is whether queued is a start for current with an id above stop, the newest stop that
+// still acts (actingStop), which is a start that will reach the claim. queuedStartActs and
+// ArchitectRelaunchOf both read it, so they count the same starts.
+func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) bool {
+	return queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop
 }
 
 // PastBound is whether at is more than bound before now. A zero at is no recorded moment, and a

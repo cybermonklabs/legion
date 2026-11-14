@@ -45,8 +45,9 @@
 -- cannot hold for any of these roots at the upgrade. Its mark keeps that arm quiet for the rest of
 -- the run instead: a task a later raise of the same run queues, such as the resume of a root a
 -- person answered, wakes nobody if its architect does not take it. The second arm is marked for
--- none of them: it reports a claim that is failed or retired with no start of its run queued in
--- the last ten minutes that has not yet run against it, which the record states plainly and no
+-- none of them: it reports a claim that is failed or retired with no start of its run that is the
+-- daemon's next move for it (none queued in the last ten minutes, or only one that has already
+-- run against the claim and left it failed or retired), which the record states plainly and no
 -- send of the sweep cures, so a filled claim
 -- that fails or that an operator retires wakes the controller as any other claim does.
 --
@@ -139,8 +140,9 @@
 -- first or the third arm is not raised again for a root whose run has started: the fill marks
 -- both arms for every such root, as it does at a first upgrade. A wake of the second arm is: the
 -- fill marks that arm for no root, so the first pass wakes the controller again for a root whose
--- claim is still failed or retired then, with no start of its run queued in the last ten minutes
--- that has not yet run against it.
+-- claim is still failed or retired then, with no start of its run that is the daemon's next move
+-- for it (none queued in the last ten minutes, or only one that has already run against the claim
+-- and failed).
 --
 -- The drop of the table and the delete of 20261113181500's row are that migration's way back, and
 -- its header says why they go together. The roll-forward makes the marks' table again, empty,

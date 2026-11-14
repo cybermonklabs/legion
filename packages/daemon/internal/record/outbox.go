@@ -681,11 +681,12 @@ const (
 //     writes no second start while that task stands (workflow.ArchitectStartPending), so the
 //     wake is the one thing left.
 //   - ArchitectClaimUnreachable: the architect's claim is failed or retired, the root is not
-//     waiting on a person, and no start of the root's run that has not yet run against the
-//     claim was queued less than that bound ago (workflow.RelaunchQueued: a start that keeps
-//     failing to launch the claim, or one that stood owed past the bound, cures nothing), or the
-//     root has no architect claim at all, no start of one was queued less than that bound ago,
-//     and the work of its entry has stood that same bound.
+//     waiting on a person, and no start of the root's run is the daemon's next move for it
+//     (workflow.ArchitectRelaunchOf): a start the outbox is running is, and so is a start queued
+//     less than that bound ago unless it has already run against the claim and left it failed or
+//     retired, after which the outbox only runs it again on its backoff. Or the root has no
+//     architect claim at all, no start of one was queued less than that bound ago, and the work
+//     of its entry has stood that same bound.
 //   - ArchitectSlowBeforeGate: the root stands at phase.Admitted with no design-gate step
 //     registered 90 minutes after it was admitted, or after its architect's entry was last
 //     raised, whichever is later.

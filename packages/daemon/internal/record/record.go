@@ -1900,13 +1900,31 @@ type RoleRun struct {
 }
 
 // QueuedSupervise is one queued supervise row: its id, which orders it against the others and
-// against the newest start run on the claim, its request, and when it was queued (the outbox
-// row's created_at, which a row the outbox runs again in place keeps, where next_at moves with
-// every backoff).
+// against the newest start run on the claim, its request, how many of its runs ended without
+// success, whether a lane holds it, and how long ago it was queued.
+//
+// Attempts is the row's attempts. The outbox adds one each time a run of the row ends without
+// success and leaves the row queued for its backoff, a failure or a wait alike (wait.ErrWaiting:
+// internal/daemon's outbox settle, then Store.RetryOutbox), and a run that succeeds deletes the
+// row.
+//
+// Running is whether a lane holds the row's lease (lease_token): the outbox is running it now, or
+// the lane that ran it died and the row runs again once the lease lapses. Store.RetryOutbox clears
+// the lease, and a finished row is deleted, so a row no lane holds is between runs.
+//
+// Age is now(), the start of the reading transaction, less created_at, both in the store's own
+// clock. A row a transaction that began later wrote reads a negative age, which is inside any
+// bound. It is read from created_at because a row the outbox runs again in place keeps it, where
+// next_at moves with every backoff. It is read in the store's clock because created_at is the
+// database's now() at the start of the transaction that wrote the row, and subtracting it from
+// the daemon's clock would read the skew between the two clocks as age (the same reason
+// Notice.PacedFrom gives).
 type QueuedSupervise struct {
 	ID       int64
 	Request  SuperviseRequest
-	QueuedAt time.Time
+	Attempts int
+	Running  bool
+	Age      time.Duration
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it

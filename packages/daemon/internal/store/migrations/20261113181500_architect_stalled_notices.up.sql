@@ -54,8 +54,9 @@
 -- table on a table left standing. Migrate makes the table again, empty, and the architect
 -- upgrade, re-armed by the same block, marks it again for every root whose run has started then:
 -- the first and the third arm, so the marks of the second arm are the ones the drop loses, and a
--- root whose claim is still failed or retired at the roll-forward, with no start of its run
--- queued in the last ten minutes that has not yet run against it, wakes the controller once more.
+-- root whose claim is still failed or retired at the roll-forward, with no start of its run that
+-- is the daemon's next move for it (none queued in the last ten minutes, or only one that has
+-- already run against the claim and left it failed or retired), wakes the controller once more.
 create table architect_stalled_notices (
     issue text not null references issues (key) on delete cascade,
     tree text not null,
