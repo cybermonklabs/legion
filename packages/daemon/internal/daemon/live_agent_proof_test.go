@@ -1,22 +1,28 @@
 //go:build e2e
 
-// What the two live proofs that drive real Oh My Pi panes share below the daemon: the constants
-// both read off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
+// What the four live proofs that drive real Oh My Pi panes share below the daemon: the constants
+// each reads off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
 // pane and of the daemon's own log, the database, the `legion` binary, the plugins and the pane
 // listener a run builds before the daemon boots, the model stand-in each pane talks to, the
 // provider answers those stand-ins write, the overlay writers that point a pane at one, and the
-// log handler those reads of the daemon's own decisions go through. The two are
-// provider_error_retry_live_test.go, the driver of scripts/e2e/provider-error-retry.sh, and
-// claim_compaction_live_test.go, the driver of scripts/e2e/claim-compaction.sh. What belongs to
-// one proof stays in that proof's own file: its issues and their seed, its steps, its stand-ins'
-// handlers, and the Oh My Pi profile and operator overlay its panes run under.
+// log handler those reads of the daemon's own decisions go through. The four are
+// provider_error_retry_live_test.go, the driver of scripts/e2e/provider-error-retry.sh,
+// claim_compaction_live_test.go, the driver of scripts/e2e/claim-compaction.sh,
+// role_prompt_rule_live_test.go, the driver of scripts/e2e/role-prompt-rule.sh, and
+// late_completion_live_test.go, the driver of scripts/e2e/late-completion.sh. What belongs to
+// one proof stays in that proof's own file: its issues and their seed, its steps, and the Oh My
+// Pi profile and operator overlay its panes run under.
 //
-// A stand-in's handler is its own proof's, because the two differ in what decides an answer: the
-// retry proof's three answer by the provider name each is given in the run's models.yml, and the
-// compaction proof's four answer by what the step before them set, a turn's request apart from a
-// compaction's summary request. What they hold in common is here: the HTTP server, the bodies
-// they were sent, and the three answers both of them write — the overloaded status, a refused
-// request, and the Messages stream of a turn that ends.
+// A stand-in's handler belongs to the proof that decides an answer with it. Three have one: the
+// retry proof's three stand-ins answer by the provider name each is given in the run's
+// models.yml, the compaction proof's four answer by what the step before them set, a turn's
+// request apart from a compaction's summary request, and the late-completion proof's two answer
+// the turn a step armed with a call of the `legion` tool and that tool's result with a WAITING
+// line. The prompt-rule proof decides nothing by an answer and writes no handler of its own: its
+// two stand-ins are the compaction proof's paneStandin at its default, which answers every turn
+// alike. What every proof holds in common is here: the HTTP server, the bodies they were sent,
+// and the answers they write — the overloaded status, a refused request, and the Messages stream
+// of one block, the text of a turn that ends or the tool call the late-completion proof makes.
 package daemon
 
 import (
@@ -27,7 +33,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,11 +49,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
-// ---- the constants both proofs read --------------------------------------------------------------
+// ---- the constants every proof reads -------------------------------------------------------------
 
-// liveOmpPathEnv names the Oh My Pi every pane of either proof runs. It is the pod's own build,
+// liveOmpPathEnv names the Oh My Pi every pane of every such proof runs. It is the pod's own build,
 // which is the fleet's pin rather than this branch's fetch, so a proof prints which build it
 // ran. Unset, the driver skips rather than guess one, as each proof's script refuses to start
 // without it.
@@ -74,9 +80,10 @@ var ladderDelays = []time.Duration{30 * time.Second, time.Minute, 2 * time.Minut
 // liveAgentProof is what a live proof that drives real Oh My Pi panes holds beyond liveProof, and
 // the reads such a proof makes: the runtime that started each pane, the daemon's own log as a
 // step reads it back, and the `legion` binary this checkout built, which is both the panes' shim
-// and the operator's command line. providerErrorLive and claimCompactionLive
-// (claim_compaction_live_test.go) are both one, so the two proofs read a claim, wait for a pane
-// and run `legion claims` the same way.
+// and the operator's command line. providerErrorLive, claimCompactionLive
+// (claim_compaction_live_test.go), rolePromptRuleLive (role_prompt_rule_live_test.go) and
+// lateCompletionLive (late_completion_live_test.go) are each one, so the four proofs read a
+// claim, wait for a pane and run `legion claims` the same way.
 type liveAgentProof struct {
 	liveProof
 	rt     *localRuntime
@@ -212,18 +219,28 @@ func indentOutput(text string) string {
 // public` (SQLSTATE 42501). The database is dropped at the end of the run; that role also cannot
 // terminate another backend, so a drop a connection outlives is reported and not a failure, and the
 // database goes with the pod.
+//
+// The URL of that database is testdb.DatabaseURL's, made before the connection and the create,
+// so a DSN whose rewrite names another server is refused and the run leaves no database behind
+// either. Two frames hold this run to the server its caller named, and that helper's comment and
+// the comment above require_loopback_dsn in scripts/e2e/lib/loopback-dsn.sh are where the two
+// are written.
 func takeOwnDatabase(t *testing.T) {
 	t.Helper()
 	named := os.Getenv("LEGION_TEST_PG_DSN")
 	if named == "" {
 		return // newLiveProof's own testDSN skips the test, naming the variable.
 	}
+	database := "legion_live_proof_" + strings.ToLower(randomSuffix(t))
+	own, err := testdb.DatabaseURL(named, database)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
 	ctx := context.Background()
 	server, err := pgx.Connect(ctx, named)
 	if err != nil {
 		t.Fatalf("connect the PostgreSQL LEGION_TEST_PG_DSN names: %v", err)
 	}
-	database := "legion_live_proof_" + strings.ToLower(randomSuffix(t))
 	if _, err := server.Exec(ctx, "create database "+database+" strategy file_copy"); err != nil {
 		server.Close(ctx)
 		t.Fatalf("make this run's own database %s: %v", database, err)
@@ -231,12 +248,7 @@ func takeOwnDatabase(t *testing.T) {
 	if err := server.Close(ctx); err != nil {
 		t.Fatalf("close the connection the database was made on: %v", err)
 	}
-	own, err := url.Parse(named)
-	if err != nil {
-		t.Fatalf("read LEGION_TEST_PG_DSN as a URL: %v", err)
-	}
-	own.Path = "/" + database
-	t.Setenv("LEGION_TEST_PG_DSN", own.String())
+	t.Setenv("LEGION_TEST_PG_DSN", own)
 	fmt.Printf("   this run migrates into its own database %s on the server LEGION_TEST_PG_DSN names\n", database)
 	t.Cleanup(func() {
 		drop, err := pgx.Connect(context.Background(), named)
@@ -353,7 +365,8 @@ func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 // calls — the fixture's noticeListener, which the daemon itself publishes its notices to, serves
 // the publish route alone and 404s the rest. It answers as the plugins' own pane harness does
 // (packages/pi-shared/test/omp-harness.ts, runLegionPane's stand-in): the session, a machine and
-// no topics, for every path.
+// no topics, for every path, and on `/v1/interests/subscribe` the consumer delivery too
+// (paneListenerDelivery), which the plugin refuses a registration without.
 //
 // Nothing the proof reads comes from here. What an architect or the controller is told is read
 // from the daemon's own listener, which is the fixture's and another server.
@@ -373,16 +386,38 @@ func newPaneListener(t *testing.T) string {
 		if dir == "" {
 			dir = "/"
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		answer := map[string]any{
 			"session_id": sent.SessionID,
 			"machine_id": "live-agent-proof",
 			"dir":        dir,
 			"topics":     []string{},
-		})
+		}
+		if req.URL.Path == "/v1/interests/subscribe" {
+			answer["delivery"] = paneListenerDelivery(sent.SessionID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(server.Close)
 	return server.URL
+}
+
+// paneListenerDelivery is the `delivery` the pane listener answers a registration with: the
+// session's own relay subject, as every stand-in listener of the plugins builds it
+// (packages/envoy-client/test/subscribe-answer.ts, consumerDelivery, with omp-harness.ts's
+// stream id). Since the core receive path was removed (#2603), the plugin refuses a registration
+// answered without one (packages/envoy-client/src/transport.ts, parseSubscribeAnswer), and the
+// claim boot that registration belongs to exits the pane before its claim is ready. The mode and
+// the subject's prefix are the idle rig's constants (idle_rig_agent_test.go), which say whose
+// they are. Nothing is published to the subject: what the proof reads comes from the daemon's own
+// listener.
+func paneListenerDelivery(sessionID string) map[string]any {
+	return map[string]any{
+		"mode":      idleRigDeliveryConsumer,
+		"subject":   idleRigDeliverSubjectPrefix + sessionID,
+		"stream_id": "standin-stream",
+		"gap":       false,
+	}
 }
 
 // ---- the model stand-ins -------------------------------------------------------------------------
@@ -489,6 +524,17 @@ func anthropicRefusal(message string) string {
 // events the plugins' own pane harness scripts (packages/pi-shared/test/omp-harness.ts:383-448,
 // `messageStream`).
 func streamAnthropicText(w http.ResponseWriter, provider, text string) {
+	streamAnthropicBlock(w, provider, "end_turn", `{"type":"text","text":""}`,
+		fmt.Sprintf(`{"type":"text_delta","text":%q}`, text))
+}
+
+// streamAnthropicBlock answers one Anthropic Messages request with one content block, which opens
+// as block and is written whole by the one delta after it, and a message that stops for stop, as
+// that harness's `messageStream` writes either kind of block: a text block ends the turn
+// (streamAnthropicText), and a tool_use block stops for tool_use, which has the host run the tool
+// and send its result in the next request (late_completion_live_test.go's
+// streamAnthropicToolUse).
+func streamAnthropicBlock(w http.ResponseWriter, provider, stop, block, delta string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
@@ -501,11 +547,10 @@ func streamAnthropicText(w http.ResponseWriter, provider, text string) {
 	event("message_start", fmt.Sprintf(`{"type":"message_start","message":{"id":"answered","type":"message","role":"assistant",`+
 		`"model":%q,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1000,"output_tokens":1}}}`,
 		provider+standinModelID))
-	event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
-	event("content_block_delta", fmt.Sprintf(
-		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%q}}`, text))
+	event("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":0,"content_block":%s}`, block))
+	event("content_block_delta", fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":%s}`, delta))
 	event("content_block_stop", `{"type":"content_block_stop","index":0}`)
-	event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":16}}`)
+	event("message_delta", fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":%q,"stop_sequence":null},"usage":{"output_tokens":16}}`, stop))
 	event("message_stop", `{"type":"message_stop"}`)
 }
 

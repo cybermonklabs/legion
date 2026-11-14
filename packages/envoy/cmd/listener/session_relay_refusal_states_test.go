@@ -44,10 +44,11 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 		},
 		{
 			// An entry lapses while its interest stays for at least ten minutes
-			// (store.InterestReapGrace plus store.InterestRefreshAge) and its consumer for three
-			// days (bus.SessionConsumerInactiveThreshold), so the fan-out judges a message for a
-			// session it cannot resolve. A refusal whose resolution failed names a delivery that
-			// was never made, and records nothing.
+			// (store.InterestReapGrace plus store.InterestRefreshAge) and its consumer until
+			// the deregistration or the sweep deletes it (sessionDelivery.deleteConsumer,
+			// session_consumer_sweep.go), so the fan-out judges a message for a session it
+			// cannot resolve. A refusal whose resolution failed names a delivery that was never
+			// made, and records nothing.
 			name: "a session whose entry has lapsed and that registers again",
 			beforeTheRefusal: func(t *testing.T, rig *relayRig, sessionID string) {
 				t.Helper()
@@ -58,16 +59,18 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 			registersAgain: true,
 		},
 		{
-			// The entry a heartbeat tick whose consumer call failed transiently writes: self
-			// subscribed, no delivery, the consumer still on the server
-			// (sessionDelivery.refused, claim_wiring.go's sessionEntryFromSubscribe). The
+			// The entry an earlier build left for a session on the core path, which no
+			// registration writes at this head since one the listener can give no consumer is
+			// refused before anything is stored: self subscribed, no delivery, the consumer
+			// still on the server (claim_wiring.go's sessionEntryFromSubscribe, which leaves the
+			// delivery fields empty for a session whose consumer the listener does not hold). The
 			// fan-out resolves this session and would deliver to it itself, so it records the
 			// attempt together with the exception it publishes.
-			name: "a session whose entry a consumer-error tick wrote on the core path",
+			name: "a session whose entry the previous build left on the core path",
 			beforeTheRefusal: func(t *testing.T, rig *relayRig, sessionID string) {
 				t.Helper()
 				if err := rig.harness.sessions.Put(sessionID, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
-					t.Fatalf("put the entry of %s on the core path: %v", sessionID, err)
+					t.Fatalf("write the entry the previous build left for %s on the core path: %v", sessionID, err)
 				}
 			},
 			registersAgain: true,

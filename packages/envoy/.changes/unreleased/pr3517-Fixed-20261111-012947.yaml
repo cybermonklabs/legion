@@ -1,0 +1,5 @@
+kind: Fixed
+body: An Envoy message now carries the title of its sender when the session bucket holds a registration with a title that the listener's own cache does not hold yet. The stamp keeps its one-second read window, so a send on a bus that does not answer keeps the rest of its budget for the publish.
+time: 2026-11-11T01:29:47.674134848Z
+custom:
+    Issue: pr3517

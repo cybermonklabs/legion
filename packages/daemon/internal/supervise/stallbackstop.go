@@ -73,15 +73,16 @@ type StallBackstopStop struct {
 // one thing that decides it is the record, never a guess of the daemon's.
 //
 // A claim that already holds a wake is decided nothing at all, exactly as refreshPlugin decides
-// nothing over one: that wake is a launch or a task of this same claim waiting its turn in the
-// pacing, and a replacement raised over it would take a second token and replace the wake with
-// a launch that does what the parked one was already going to do. A relaunch parked on the
+// nothing over one: that wake is a launch of this same claim waiting its turn in the pacing,
+// and a replacement raised over it would take a second token and replace the wake with a
+// launch that does what the parked one was already going to do. A relaunch parked on the
 // pacing leaves the claim working, so without this guard every sweep of a wave would raise
 // another. Nothing is lost by returning, and nothing is owed to this request: the wake standing
 // over the claim is what decides the turn — its own turn replaces the stalled process, unless a
 // suspension already waiting or the tree's close ends the claim there instead (wakeNow, letGo) —
-// and the claim a plugin task's round leaves working is swept again at the next tick,
-// since this pass posts over every claim still in a turn past its bound.
+// and a claim that turn leaves working — a relaunch its own lifecycle recheck refused, which
+// keeps the process it found — is swept again at the next tick, since this pass posts over
+// every claim still in a turn past its bound.
 //
 // What it does when it does act is exactly what a daemon-made replacement does (replaceProcess):
 // the turn in flight is interrupted, so the task it was serving goes back to waiting and the

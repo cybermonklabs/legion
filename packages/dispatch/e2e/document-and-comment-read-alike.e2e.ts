@@ -1,8 +1,6 @@
-import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, getIssueArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The server's reader (the Go reader behind every document) and the browser's engine (the one
@@ -23,10 +21,6 @@ const agentSession = {
 const footnoteDefinition = 'dl[data-type="footnote_definition"]';
 /** The inline HTML node, the only node the Proof schema holds a tag in. */
 const inlineHtml = 'span[data-type="html"]';
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The project, an issue whose spec is `spec` (when given) and one comment of `body` (when
  *  given), written by an agent as a person's collaborator writes them. */
@@ -101,7 +95,8 @@ async function refusalOf(write: Promise<unknown>): Promise<{ code?: string; erro
 const definitionUnderline = "Text[^g].\n\n[^g]: other\n|-|-|\n    ===\n";
 const underlinedHeading = ["other |-|-|"];
 
-test("a footnote definition over a delimiter-like line and an indented underline draws one heading in the spec editor and in a comment", async ({
+// @pr: The one row of the read-alike family on the lane: the spec editor and a comment must draw the same markdown the same way.
+test("a footnote definition over a delimiter-like line and an indented underline draws one heading in the spec editor and in a comment @pr", async ({
   browser,
 }) => {
   const { commentId, key } = await seed({

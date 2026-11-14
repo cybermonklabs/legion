@@ -132,8 +132,8 @@ func TestCheckImageRendersEveryRowWhenEveryImageRowIsPresent(t *testing.T) {
 		if state.Status != want {
 			t.Errorf("%s: status %q, want %q", state.Name, state.Status, want)
 		}
-		if row.Site == SiteWithheld && !strings.HasPrefix(state.Detail, row.Ruling+": ") {
-			t.Errorf("%s: detail %q, want the ruling %s first", state.Name, state.Detail, row.Ruling)
+		if row.Site == SiteWithheld && !strings.HasPrefix(state.Detail, row.Citation+": ") {
+			t.Errorf("%s: detail %q, want the citation %s first", state.Name, state.Detail, row.Citation)
 		}
 		if row.Site == SiteLive && state.Detail != "a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: "+row.Summary {
 			t.Errorf("%s: detail %q, want it to say a claimed session reports the row while it runs, then the summary", state.Name, state.Detail)

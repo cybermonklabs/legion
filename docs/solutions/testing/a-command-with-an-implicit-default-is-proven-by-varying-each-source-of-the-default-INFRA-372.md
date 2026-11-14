@@ -33,7 +33,7 @@ default is chosen.
   while each source you can set names that other namespace (`POD_NAMESPACE=<other>`). Only the
   last run separates "the flag-less form is right" from "the flag-less form happens to be right in
   this pod".
-- **Write the mechanism the varied runs show, not the one a ruling or message states.** A
+- **Write the mechanism the varied runs show, not the one a decision or message states.** A
   mechanism handed to you is a claim, as INFRA-69's last bullet says of a path. Here it was wrong,
   though its conclusion was right.
 - **Say which source you read and did not run.** A fallback you could not trigger (a mounted file
@@ -41,7 +41,7 @@ default is chosen.
 
 ## Evidence
 
-The ruling that widened INFRA-372 said the section's three `kubectl auth can-i` gate commands, run
+The decision that widened INFRA-372 said the section's three `kubectl auth can-i` gate commands, run
 without `-n`, "ask about the pod's own namespace". Measured on 2026-10-25 from a role container in
 the `legion` namespace, with `POD_NAMESPACE` unset:
 

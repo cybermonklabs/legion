@@ -205,7 +205,7 @@ const server = Bun.serve({
         return Response.json({ state: "revoked", tokens_ended: 1 });
       }
     }
-    // Only the typed code selects a machine login (ruling 13), so this answers that login's
+    // Only the typed code selects a machine login (decision 13), so this answers that login's
     // record whole, decided or not, as internal/broker/api/handlers_ui_machinelogin.go does.
     if (request.method === "POST" && url.pathname === "/v1/machine-logins/lookup") {
       const { code } = (await request.json()) as { code?: string };

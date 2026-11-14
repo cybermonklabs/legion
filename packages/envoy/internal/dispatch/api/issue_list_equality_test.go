@@ -13,11 +13,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// mainIssueComponentsLateral and the laterals and statements below it are main's own SQL, held
-// here letter for letter as the oracle of every comparison in this file. They are copies of the
-// text this change replaced, not text built from the package's constants: a statement built
-// from those would move with them, and the two sides would agree however the resolution rule
-// changed. parentDepthCap is written as the 32 main spliced into them for the same reason.
+// The laterals and resolution rules below freeze main's SQL rather than reading the package's
+// constants: building the oracle from those would make both sides agree however the rule changed.
+// The listing projection independently includes the creator, the creation time and the closing
+// time now required by the summary contract; the inherited joins, filters and ordering stay
+// unchanged.
+// parentDepthCap is written as the 32 main spliced into them for the same reason.
 const mainIssueComponentsLateral = `
 	left join lateral (
 		with recursive chain as (
@@ -85,13 +86,13 @@ const mainIssueStatusCase = `case i.status
 const mainIssueSummaryHead = `
 	select i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
-	       i.assignee, i.route, i.updated_at, i.last_seq,
+	       i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
 	       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 	       i.claimed_by, i.claimed_at,
 	       count(a.id) filter (where i.closed_at is null),
 	       i.tasks_done, i.tasks_total, progress.children_done, progress.children_total,
 	       comp.owner_key, comp.mode, comp.reason, comp.ids, comp.unknown,
-	       i.repo, repo.resolved, repo.too_deep
+	       i.repo, repo.resolved, repo.too_deep, i.closed_at
 	from issues i`
 
 const mainIssueSummaryTail = `
@@ -159,7 +160,8 @@ const mainProjectList = `
 // The listing's four statements answer, row for row, what main's one statement answered over the
 // same rows: the unpaged read whole, and the paged read the slice of it the caller asked for,
 // with the count beside it. The paged read carries two columns of its own ahead of the issue's,
-// which is what those rows are compared without.
+// which is what those rows are compared without. Main's statement has no closed window, so the
+// listing's are passed none.
 func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 	fixture := newIssueListFixture(t)
 	filters := []any{"LIST", "", "", nil, []string{}, false, []int16{}, false}
@@ -175,15 +177,23 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 		{name: "the pinned listing", oracle: mainListPinnedIssuesQuery, paged: listPinnedIssuesPageQuery, unpaged: listPinnedIssuesQuery, pinnedBy: "alice"},
 	} {
 		t.Run(listing.name, func(t *testing.T) {
-			arguments := slices.Clone(filters)
+			// Main's statement carries the eight filters it had, where the listing carries six
+			// more behind them — the closed window's two, the `advances` keys' three and the
+			// move read's gate — named here as the request that asks for none of them: the rows
+			// the two read are then the same rows. Main's status filter is one value and the
+			// listing's a list, so the request naming no status passes each its own empty one.
+			oracleArguments := slices.Clone(filters)
+			arguments := append(slices.Clone(filters), nil, nil, []string{}, false, false, false)
+			arguments[1] = []string{}
 			if listing.pinnedBy != "" {
+				oracleArguments = append(oracleArguments, listing.pinnedBy)
 				arguments = append(arguments, listing.pinnedBy)
 			}
-			want := issueListRows(t, fixture.database, listing.oracle, arguments)
+			want := issueListRows(t, fixture.database, listing.oracle, oracleArguments, false)
 			if len(want) < 4 {
 				t.Fatalf("%s answered %d rows, too few for the comparison to decide anything", listing.name, len(want))
 			}
-			if got := issueListRows(t, fixture.database, listing.unpaged, arguments); !slices.Equal(got, want) {
+			if got := issueListRows(t, fixture.database, listing.unpaged, arguments, true); !slices.Equal(got, want) {
 				t.Fatalf("%s unpaged answered\n%v\nwant main's rows\n%v", listing.name, got, want)
 			}
 			for _, page := range []struct{ limit, offset int }{{2, 0}, {2, 2}, {3, 1}, {len(want), 0}, {2, len(want)}, {2, len(want) + 40}} {
@@ -452,8 +462,11 @@ func issueFactText(t *testing.T, value any) string {
 }
 
 // issueListRows runs one unpaged listing statement and returns its rows as text, one string per
-// row, which is how two statements' answers are compared here.
-func issueListRows(t *testing.T, database *store.Store, statement string, arguments []any) []string {
+// row, which is how two statements' answers are compared here. `advances` says whether the
+// statement carries this change's three `advances` columns and the two of the move, which main's
+// does not: the listing's are dropped so that the comparison runs over the columns both
+// statements answer.
+func issueListRows(t *testing.T, database *store.Store, statement string, arguments []any, advances bool) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), statement, arguments...)
 	if err != nil {
@@ -466,12 +479,39 @@ func issueListRows(t *testing.T, database *store.Store, statement string, argume
 		if err != nil {
 			t.Fatalf("read a listed row: %v", err)
 		}
+		if advances {
+			values = issueRowWithoutAdvances(t, values)
+		}
 		read = append(read, fmt.Sprint(values...))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the listing: %v", err)
 	}
 	return read
+}
+
+// advancesColumnsAt is where the three `advances` columns stand in a listing row
+// (issueSummaryColumns): behind the seven the issue's own table answers and the blockers, and
+// ahead of the two cells of the move, which stand ahead of the assignee.
+const advancesColumnsAt = 8
+
+// issueRowWithoutAdvances is a listing row as main's statement answered it: main carried no
+// `advances` and no move, so the five columns this change added are not its to answer and the
+// comparison runs over the columns both statements carry. They are read instead by
+// TestAdvancesInheritance and TestTheListingAnswersTheFaultLists, which this comparison's fixture
+// cannot reach: no issue of it states a relation, and no request here asks for the move, which
+// this function requires, so a row carrying either would be a fixture or a request that outgrew
+// the oracle rather than a silent pass.
+func issueRowWithoutAdvances(t *testing.T, values []any) []any {
+	t.Helper()
+	own, revision, inherited := values[advancesColumnsAt], values[advancesColumnsAt+1], values[advancesColumnsAt+2]
+	if empty := fmt.Sprint(own, " ", revision, " ", inherited); empty != "[] 0 []" {
+		t.Fatalf("a listed row of this fixture answered the advances columns %s, want the empty relation", empty)
+	}
+	if movedAt, movedBy := values[advancesColumnsAt+3], values[advancesColumnsAt+4]; movedAt != nil || movedBy != nil {
+		t.Fatalf("a listed row of a request that asked for no move answered it moved at %v by %v, want neither", movedAt, movedBy)
+	}
+	return slices.Concat(values[:advancesColumnsAt], values[advancesColumnsAt+5:])
 }
 
 // issueListPage runs a paged listing statement and returns the rows of its page and the count it
@@ -495,7 +535,7 @@ func issueListPage(t *testing.T, database *store.Store, statement string, argume
 		if !values[1].(bool) {
 			continue
 		}
-		read = append(read, fmt.Sprint(values[2:]...))
+		read = append(read, fmt.Sprint(issueRowWithoutAdvances(t, values[2:])...))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the paged listing: %v", err)

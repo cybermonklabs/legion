@@ -1,0 +1,10 @@
+-- The migration marks the documents whose windows do not stand for the blocks the index holds,
+-- in the column 20261108070000 of the same release adds. It refuses no row and rewrites no
+-- value any reader had before it: the column is new, this release alone reads it, and the rows
+-- it marks are work owed rather than a rewrite, as 0143's seed is. It cannot count those rows
+-- here, since the census is taken before any migration of the release applies and the column
+-- does not exist yet. The lock it takes is ROW EXCLUSIVE on document_block_versions, which the
+-- census reports with its row count and size, and the lock each updated row's foreign key puts
+-- on artifacts, which the census reports as reached through a foreign key: the update changes
+-- no key column, so no row of artifacts is read or rewritten.
+select 0

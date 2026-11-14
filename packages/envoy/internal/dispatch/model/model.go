@@ -267,6 +267,140 @@ const (
 
 var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepSpec}
 
+// Priority is one thing the whole deployment is working towards: a node that belongs to no
+// project, which work in any project advances (internal/dispatch/prioritystore). Rank is the
+// fractional order key the priorities are drawn in, written as the issue board's rank is, and
+// State is `live` or `gone` — a delete writes `gone` and removes no row, so a reader of a
+// priority somebody deleted is told that rather than told nothing. MadeAt and MadeBy stay as
+// the first write left them however often the priority is written again.
+type Priority struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Owner       string    `json:"owner"`
+	Rank        string    `json:"rank"`
+	State       string    `json:"state"`
+	MadeAt      time.Time `json:"made_at"`
+	MadeBy      Actor     `json:"made_by"`
+}
+
+// PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history
+// answers it: one tuple of the log the priority is the projection of
+// (internal/dispatch/prioritystore). Field is what was stated — `title`, `description`, `owner`,
+// `rank`, `state` and `visibility` are the attributes, `advances` the one relation — and the act
+// carries Value or Issue by which of the two it is: an attribute write carries the value it
+// wrote in Value and no Issue, and an `advances` act carries the issue at the other end in Issue
+// and no Value.
+//
+// Asserted is false on an act that ended what an earlier one stated, which is how a retracted
+// `advances` reads; an attribute write asserts, because the log holds no retraction of one.
+// Actor is who stated it and At is when, so the margin names every act's writer and moment.
+type PriorityAct struct {
+	Field    string    `json:"field"`
+	Value    string    `json:"value"`
+	Issue    string    `json:"issue"`
+	Asserted bool      `json:"asserted"`
+	Actor    Actor     `json:"actor"`
+	At       time.Time `json:"at"`
+}
+
+// Priorities is the body GET /api/v1/priorities answers: every live priority, in rank order,
+// each with the work under it, and the two fault lists. It is an object rather than a bare array
+// because the counts of the work under each priority and the two fault lists — work in flight
+// under no priority, and priority work parked in `backlog` or `icebox` — are answered by this
+// same route, under keys of their own, and a bare array would have no room for them.
+//
+// Empty carries the sentence the page draws when the store holds no live priority at all: the
+// answer is then 200 with an empty list rather than an error, since a deployment that has
+// written no priority yet is not a failed read. It is absent as soon as one priority is live,
+// however the two faults read.
+//
+// `?summary=true` answers the two fault counts alone: Priorities is then empty, and each fault
+// carries its Count with no list beside it, which is what the navigation rail reads.
+type Priorities struct {
+	Priorities          []PriorityRow       `json:"priorities"`
+	WorkUnderNoPriority WorkUnderNoPriority `json:"work_under_no_priority"`
+	PriorityWorkParked  PriorityWorkParked  `json:"priority_work_parked"`
+	Empty               string              `json:"empty,omitempty"`
+}
+
+// PriorityRow is one priority as the priorities page draws it: the priority itself and the work
+// that advances it, which is counted over the issues of the projects the request named, or over
+// every project when it named none.
+type PriorityRow struct {
+	Priority
+	Work PriorityWork `json:"work"`
+}
+
+// PriorityWork is the work that advances one priority, by the issue's own relation or by one an
+// issue above it states. ByStatus counts the open issues in each lifecycle status, every status
+// of IssueStatuses present and 0 where none stands there, so a reader adds the columns it draws
+// — in flight is `in_progress`, `testing`, `needs_review` and `retro`, waiting is `todo` and
+// `triage`, parked is `backlog` and `icebox` — and no grouping is fixed by the server.
+//
+// Claimed is how many of those open issues a session holds now, OpenAsks the open asks on them,
+// and ClosedLast7Days the issues that advance the priority and closed within the last seven days,
+// which is work finished rather than work standing.
+//
+// NewestEventAt is the newest event on any issue that advances the priority, `max(created_at)`
+// over their events: a comment moves it although it writes no issue row, which `issues.updated_at`
+// would not. It is null for a priority no issue advances.
+type PriorityWork struct {
+	ByStatus        map[string]int `json:"by_status"`
+	Claimed         int            `json:"claimed"`
+	OpenAsks        int            `json:"open_asks"`
+	ClosedLast7Days int            `json:"closed_last_7_days"`
+	NewestEventAt   *time.Time     `json:"newest_event_at"`
+}
+
+// WorkUnderNoPriority is the first fault: an open issue in `in_progress`, `testing`,
+// `needs_review` or `retro` that advances no live priority, by its own relation or by one above
+// it. Count is every such issue; ByProject counts them by project, holding only the projects with
+// one; Issues carries the newest 50 by the time each issue last changed. A priority whose state is
+// `gone` is no priority, so the work under it is counted here.
+type WorkUnderNoPriority struct {
+	Count     int             `json:"count"`
+	ByProject map[string]int  `json:"by_project"`
+	Issues    []PriorityIssue `json:"issues"`
+}
+
+// PriorityWorkParked is the second fault: an issue that advances a live priority and stands in
+// `backlog` or `icebox`. Count is every such issue; ByPriority counts them by priority id, an
+// issue advancing two priorities counted under each, so the counts may add to more than Count;
+// Issues carries the 50 moved there most recently.
+type PriorityWorkParked struct {
+	Count      int             `json:"count"`
+	ByPriority map[string]int  `json:"by_priority"`
+	Issues     []PriorityIssue `json:"issues"`
+}
+
+// PriorityIssue is one row of either fault list: the issue, its project, its status, who holds it
+// and when it last changed, which is how long it has stood as it is.
+//
+// Advances are the live priorities the issue advances, its own relations and the inherited ones,
+// as the entries every issue read and listing row answers (IssueAdvance): one per priority, in
+// id order, each saying whether the issue states it or inherits it from an issue above it. It is
+// empty on a row of the first fault, which is the list of the work that advances none.
+//
+// MovedAt and MovedBy are the second fault's two cells: when the issue was moved into `backlog`
+// or `icebox` and who moved it, read from the newest `issue.updated` event whose `changed` names
+// `status` and whose status is one of those two. Both are null on a row of the first fault, and
+// on an issue whose events do not reach back to the move — that issue stays in the list, since
+// the fault is the work standing there and not the record of how it arrived. No reason is
+// answered: a status change records none (dispatch://INFRA-2934).
+type PriorityIssue struct {
+	Key       string         `json:"key"`
+	Title     string         `json:"title"`
+	Project   string         `json:"project"`
+	Status    string         `json:"status"`
+	Assignee  *string        `json:"assignee"`
+	Claim     *IssueClaim    `json:"claim"`
+	ChangedAt time.Time      `json:"changed_at"`
+	Advances  []IssueAdvance `json:"advances"`
+	MovedAt   *time.Time     `json:"moved_at"`
+	MovedBy   *Actor         `json:"moved_by"`
+}
+
 // RepoProject assigns an external repository to a native Dispatch project. Default marks the one
 // mapping of the project an issue with no repository of its own, and none on its parent chain,
 // resolves to; at most one mapping of a project is its default. RenamedTo is the full
@@ -377,23 +511,40 @@ type IssueProgress struct {
 	Children *ProgressCount `json:"children"`
 }
 
+// IssueAdvance is one `advances` relation of an issue as a read answers it: the priority the
+// work advances, and whether the issue states the relation itself or inherits it from an issue
+// above it. Every read answers entries rather than bare ids, because the two cannot be told
+// apart by an id alone and only an own relation is a write's to retract. A write carries the
+// other shape, a bare list of priority ids, which states the issue's own relations and nothing
+// else (internal/dispatch/api/issue_advances.go).
+type IssueAdvance struct {
+	ID        string `json:"id"`
+	Inherited bool   `json:"inherited"`
+}
+
 // Issue is the complete native issue record.
 type Issue struct {
-	Key           string          `json:"key"`
-	Project       string          `json:"project"`
-	Number        int             `json:"number"`
-	Title         string          `json:"title"`
-	Status        string          `json:"status"`
-	Priority      *int            `json:"priority"`
-	Rank          string          `json:"rank"`
-	Labels        []string        `json:"labels"`
-	Parent        *string         `json:"parent"`
-	BlockedBy     []string        `json:"blocked_by"`
-	Assignee      *string         `json:"assignee"`
-	Claim         *IssueClaim     `json:"claim"`
-	Components    IssueComponents `json:"components"`
-	ExternalLinks []ExternalLink  `json:"external_links"`
-	Route         *string         `json:"route"`
+	Key       string   `json:"key"`
+	Project   string   `json:"project"`
+	Number    int      `json:"number"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	Priority  *int     `json:"priority"`
+	Rank      string   `json:"rank"`
+	Labels    []string `json:"labels"`
+	Parent    *string  `json:"parent"`
+	BlockedBy []string `json:"blocked_by"`
+	// Advances is the priorities this issue advances, its own relations and the ones it
+	// inherits, and AdvancesRevision the seq of the newest tuple the store holds for its own
+	// `advances` relations, 0 when it holds none. A whole-set write carries the revision the
+	// read it is answering returned.
+	Advances         []IssueAdvance  `json:"advances"`
+	AdvancesRevision int64           `json:"advances_revision"`
+	Assignee         *string         `json:"assignee"`
+	Claim            *IssueClaim     `json:"claim"`
+	Components       IssueComponents `json:"components"`
+	ExternalLinks    []ExternalLink  `json:"external_links"`
+	Route            *string         `json:"route"`
 	// Repo is the issue's own repository, owner/name, a mapping of its project; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
@@ -480,14 +631,25 @@ type IssueClaimLiveness struct {
 
 // IssueSummary is the lightweight issue listing representation.
 type IssueSummary struct {
-	Key        string          `json:"key"`
-	Title      string          `json:"title"`
-	Status     string          `json:"status"`
-	Priority   *int            `json:"priority"`
-	Rank       string          `json:"rank"`
-	Labels     []string        `json:"labels"`
-	Parent     *string         `json:"parent"`
-	BlockedBy  []string        `json:"blocked_by"`
+	Key       string   `json:"key"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	Priority  *int     `json:"priority"`
+	Rank      string   `json:"rank"`
+	Labels    []string `json:"labels"`
+	Parent    *string  `json:"parent"`
+	BlockedBy []string `json:"blocked_by"`
+	// Advances and AdvancesRevision are Issue's: every listing row answers the same entries and
+	// the same revision the issue's own read answers.
+	Advances         []IssueAdvance `json:"advances"`
+	AdvancesRevision int64          `json:"advances_revision"`
+	// MovedAt and MovedBy are PriorityIssue's two cells of the move into `backlog` or `icebox`,
+	// by the same reading, and the listing answers them only under `?moved=true`: a listing
+	// without the key carries neither on any row and pays for no read of them. With it, a row
+	// standing in neither status, or whose events do not reach back to the move, carries neither
+	// as well, since a field the marshaller leaves out when empty is never null.
+	MovedAt    *time.Time      `json:"moved_at,omitempty"`
+	MovedBy    *Actor          `json:"moved_by,omitempty"`
 	Assignee   *string         `json:"assignee"`
 	Claim      *IssueClaim     `json:"claim"`
 	Components IssueComponents `json:"components"`
@@ -496,7 +658,10 @@ type IssueSummary struct {
 	Repo         *string `json:"repo"`
 	ResolvedRepo *string `json:"resolved_repo"`
 	IssueRouteReach
+	CreatedBy         *Actor        `json:"created_by"`
+	CreatedAt         time.Time     `json:"created_at"`
 	UpdatedAt         time.Time     `json:"updated_at"`
+	ClosedAt          *time.Time    `json:"closed_at"`
 	LastSeq           int           `json:"last_seq"`
 	PrimaryArtifactID string        `json:"primary_artifact_id"`
 	OpenAsks          int           `json:"open_asks"`
@@ -550,9 +715,20 @@ type SearchIssue struct {
 type SearchAsk struct {
 	// State is "open", "answered" or "resolved": it is the asks row's own state, which
 	// asks_state_check holds to those three (migration 0007_ask_resolution).
-	State      string         `json:"state" enum:"open,answered,resolved"`
-	Answer     *AskAnswer     `json:"answer,omitempty"`
-	Resolution *AskResolution `json:"resolution,omitempty"`
+	State      string             `json:"state" enum:"open,answered,resolved"`
+	Answer     *AskAnswerWithTree `json:"answer,omitempty"`
+	Resolution *AskResolution     `json:"resolution,omitempty"`
+}
+
+// AskAnswerWithTree is an answer a read gives with the tree of its text. It is the read's own
+// shape rather than a field on AskAnswer itself: the answer is an event payload's shape, and no
+// payload gains a tree field. A search hit's ask and a person's answer history both answer with
+// it.
+type AskAnswerWithTree struct {
+	AskAnswer
+	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
+	// `Dispatch-Trees: 1`.
+	TextTree DisplayTree `json:"text_tree,omitempty"`
 }
 
 // SearchResult is one ranked Dispatch search hit.
@@ -572,11 +748,37 @@ type SearchResult struct {
 	// which matched the item's whole text rather than one of its windows.
 	BlockID *string `json:"block_id,omitempty"`
 	Snippet string  `json:"snippet"`
-	Rank    float64 `json:"rank"`
-	Href    string  `json:"href"`
+	// SnippetTree is the ProseMirror tree the snippet is shown as, with the match marked
+	// (pmdoc.DisplaySnippetJSON): present only for a caller that sent `Dispatch-Trees: 1`.
+	SnippetTree DisplayTree `json:"snippet_tree,omitempty"`
+	Rank        float64     `json:"rank"`
+	Href        string      `json:"href"`
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`
+}
+
+// SearchQueryReading is how GET /api/v1/search read the words it was given: Operators names the
+// operator forms the query was read as using (contracts.SearchOperatorPhrase,
+// SearchOperatorOr, SearchOperatorExclude), empty for a query that wrote none, and Broadened is
+// whether the answer came from the fallback search over the query's rarest words, which runs for
+// a query the words as typed match nothing at all for (api.runSearch, api.searchRarestWords). A
+// caller showing a person what was done with their words reads it rather than parsing them
+// again. Mirrors contracts' SearchQueryReading.
+type SearchQueryReading struct {
+	Operators []string `json:"operators"`
+	Broadened bool     `json:"broadened"`
+}
+
+// SearchFilters is what one search narrowed every leg of itself by: the project, the issue
+// status a row belongs to, who wrote the item it names, and the time the item was last written
+// (RFC 3339). Each is absent when the request named it not at all. Mirrors contracts'
+// SearchFilters.
+type SearchFilters struct {
+	Project      string `json:"project,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Author       string `json:"author,omitempty"`
+	UpdatedSince string `json:"updated_since,omitempty"`
 }
 
 // SearchResponse is one page of the fused search result list.
@@ -595,6 +797,11 @@ type SearchResponse struct {
 	// embedder configured, the query's own embedding timed out, or the model service answered an
 	// error) - and is empty when meaning search ran normally.
 	Degraded string `json:"degraded,omitempty"`
+	// Query is how the words were read and Filters what the search narrowed every leg by: the
+	// route answers both on every path, so a caller never has to guess which of its chips the
+	// search applied (api.searchQueryReading, api.searchAppliedFilters).
+	Query   SearchQueryReading `json:"query"`
+	Filters SearchFilters      `json:"filters"`
 }
 
 // SearchCoverage is how much of what meaning search covers has a current vector from the
@@ -602,12 +809,16 @@ type SearchResponse struct {
 // identity (embed.Embedder.Identity), Place ("bedrock", "azure", or "dev" for the local
 // harness's own embedder, which no deployment runs) and Model are read from it; all three are
 // null when no embedder is configured, and then nothing is current.
+//
+// Kinds and Total cover what the index holds; NotIndexed names what it does not, so a reader
+// can tell a kind that is covered and complete from one nothing indexes at all.
 type SearchCoverage struct {
-	Identity *string              `json:"identity"`
-	Place    *string              `json:"place"`
-	Model    *string              `json:"model"`
-	Total    SearchCoverageCounts `json:"total"`
-	Kinds    SearchCoverageKinds  `json:"kinds"`
+	Identity   *string                    `json:"identity"`
+	Place      *string                    `json:"place"`
+	Model      *string                    `json:"model"`
+	Total      SearchCoverageCounts       `json:"total"`
+	Kinds      SearchCoverageKinds        `json:"kinds"`
+	NotIndexed []SearchCoverageNotIndexed `json:"not_indexed"`
 }
 
 // SearchCoverageKinds is SearchCoverage's counts for each kind meaning search ranks: the issue,
@@ -620,6 +831,18 @@ type SearchCoverageKinds struct {
 	CommentBlock  SearchCoverageCounts `json:"comment_block"`
 	MessageBlock  SearchCoverageCounts `json:"message_block"`
 	AskPart       SearchCoverageCounts `json:"ask_part"`
+}
+
+// SearchCoverageNotIndexed is one kind of node neither search leg holds a row of: Kind names it
+// and Items is how many of it the database holds, counted from the table that holds it. It is a
+// list of its own rather than a kind of SearchCoverageKinds on purpose: a kind with no row of
+// its own would read there as items 0, current 0, lacking 0, which is what a covered kind with
+// nothing left to embed reads as, and the two mean opposite things. A row here carries no
+// current, lacking or failed, because none of those is defined for a kind nothing indexes, and
+// its Items is in no total: Total sums the covered kinds alone.
+type SearchCoverageNotIndexed struct {
+	Kind  string `json:"kind"`
+	Items int64  `json:"items"`
 }
 
 // SearchCoverageCounts splits Items, the searchable items of a kind (or of all of them), into
@@ -662,26 +885,23 @@ type DuplicateCandidate struct {
 	Href        string `json:"href"`
 }
 
-// WriteSuggestion is one item the related-item check judges like what was just filed:
-// a search hit over the same project. Ask is where an ask item stands (its latest answer, who gave
-// it, when and the options chosen; or its resolution; or open). AnsweredBy and AnsweredAt repeat
-// the answer's user and time on the ask Suggestions.Decision names, for clients built before Ask.
+// WriteSuggestion is one item the related-item check judges like what was just filed: a search
+// hit of the asking project in Suggestions.Related, and of another project in
+// Suggestions.OtherProjects. Ask is where an ask item stands (its latest answer, who gave
+// it, when and the options chosen; or its resolution; or open).
 type WriteSuggestion struct {
-	Kind       string          `json:"kind"`
-	Owner      SearchOwner     `json:"owner"`
-	Artifact   *SearchArtifact `json:"artifact,omitempty"`
-	ID         string          `json:"id"`
-	Snippet    string          `json:"snippet"`
-	Href       string          `json:"href"`
-	Ask        *SearchAsk      `json:"ask,omitempty"`
-	AnsweredBy string          `json:"answered_by,omitempty"`
-	AnsweredAt *time.Time      `json:"answered_at,omitempty"`
+	Kind     string          `json:"kind"`
+	Owner    SearchOwner     `json:"owner"`
+	Artifact *SearchArtifact `json:"artifact,omitempty"`
+	ID       string          `json:"id"`
+	Snippet  string          `json:"snippet"`
+	Href     string          `json:"href"`
+	Ask      *SearchAsk      `json:"ask,omitempty"`
 }
 
 // Suggestions is the related-item check's result on a newly created issue or ask: the
-// three items most like it (Related, one per owner) and, when an answered ask already settles the
-// same question, that decision (Decision). The check never refuses the write; it waits at most
-// five seconds, and says what it did.
+// three items most like it (Related, one per owner). The check never refuses the write; it waits
+// at most five seconds, and says what it did.
 //
 // Outcome is "found" (Related holds at least one item), "none" (it searched and found nothing) or
 // "not_made" (it did not search to the end). Search is how it searched, "meaning_and_keywords" or
@@ -696,13 +916,19 @@ type WriteSuggestion struct {
 // why, exactly when the near-copy check before the create did not answer, so a filer knows the
 // create went in unchecked; it is absent on every other write, which runs no such check.
 // Related is always an array, never null.
+//
+// OtherProjects rides beside Related, never inside it: a write that asks a person a question -
+// an ask create, a new decision block, and `dispatch related` - also carries the answered
+// questions of the other projects that stand closest to it in meaning. Each item is one such
+// answered question, and its Owner.Project names the project that holds it. Every other write
+// leaves it empty.
 type Suggestions struct {
 	Outcome         string               `json:"outcome"`
 	Search          string               `json:"search,omitempty"`
 	SearchNote      string               `json:"search_note,omitempty"`
 	SearchQuery     string               `json:"search_query,omitempty"`
 	Related         []WriteSuggestion    `json:"related"`
-	Decision        *WriteSuggestion     `json:"decision,omitempty"`
+	OtherProjects   []WriteSuggestion    `json:"other_projects,omitempty"`
 	Missing         string               `json:"missing,omitempty"`
 	TitleMatches    []DuplicateCandidate `json:"title_matches,omitempty"`
 	LikelyDuplicate *DuplicateCandidate  `json:"likely_duplicate,omitempty"`
@@ -719,20 +945,28 @@ type Suggestions struct {
 // searched by meaning and keywords). Each map holds only the values seen, and is {} for none.
 // Completed is the checks that searched to the end (found or none, whatever the search mode),
 // SkippedForTime those not made because the search ran out of time (reason timeout).
+//
+// OtherProjectOffers is how many writes of the same window offered an answered question of
+// another project: one per write, whatever number of questions it offered. It is read from
+// write_suggestions, the table that records each item a check offered, under the same window,
+// project and source-kind filters; every other count here is read from related_checks, which
+// holds no key of that table. Only an ask create records such a row (api.persistSuggestions), so
+// the count is zero under any other source kind.
 type RelatedChecksReport struct {
-	Project        *string            `json:"project"`
-	SourceKind     *string            `json:"source_kind"`
-	From           *time.Time         `json:"from"`
-	To             *time.Time         `json:"to"`
-	Total          int                `json:"total"`
-	BySourceKind   map[string]int     `json:"by_source_kind"`
-	ByOutcome      map[string]int     `json:"by_outcome"`
-	BySearch       map[string]int     `json:"by_search"`
-	ByReason       map[string]int     `json:"by_reason"`
-	Completed      int                `json:"completed"`
-	SkippedForTime int                `json:"skipped_for_time"`
-	KeywordMS      RelatedCheckTiming `json:"keyword_ms"`
-	TotalMS        RelatedCheckTiming `json:"total_ms"`
+	Project            *string            `json:"project"`
+	SourceKind         *string            `json:"source_kind"`
+	From               *time.Time         `json:"from"`
+	To                 *time.Time         `json:"to"`
+	Total              int                `json:"total"`
+	BySourceKind       map[string]int     `json:"by_source_kind"`
+	ByOutcome          map[string]int     `json:"by_outcome"`
+	BySearch           map[string]int     `json:"by_search"`
+	ByReason           map[string]int     `json:"by_reason"`
+	Completed          int                `json:"completed"`
+	SkippedForTime     int                `json:"skipped_for_time"`
+	OtherProjectOffers int                `json:"other_project_offers"`
+	KeywordMS          RelatedCheckTiming `json:"keyword_ms"`
+	TotalMS            RelatedCheckTiming `json:"total_ms"`
 }
 
 // RelatedCheckTiming summarizes one of related_checks' millisecond columns over the checks that
@@ -972,22 +1206,106 @@ type ArtifactReviewEventPayload struct {
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
 }
 
-// CurrencyCurrent, CurrencyOlder and CurrencyUnknown are whether a recorded result still speaks
-// for the work as it stands: CurrencyCurrent at the commit the work stands at and the words the
-// result proved, CurrencyOlder at an earlier commit or against words that have changed since,
-// and CurrencyUnknown when Dispatch cannot read the repository the check's issue resolves to.
+// CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
+// results are compared with: the one commit a reader named in `at`, the head of a pull request
+// Dispatch holds for the check's issue, and a branch of the check's issue's repository.
 const (
-	CurrencyCurrent = "current"
-	CurrencyOlder   = "older"
-	CurrencyUnknown = "unknown"
+	CheckBasisNamed       = "named"
+	CheckBasisPullRequest = "pull_request"
+	CheckBasisBranch      = "branch"
 )
+
+// BasisLearnedReadAt and BasisLearnedUpdatedAt say which time a basis learned from a pull
+// request carries: BasisLearnedReadAt is pull_request_heads.checked_at, when Dispatch last read
+// the pull request from GitHub, and BasisLearnedUpdatedAt is event_at, the pull request's own
+// update time as its newest webhook event carried it. The later of the two is the one shown, so
+// a head a webhook moved after the last complete read prints GitHub's own time and never an
+// older read time.
+const (
+	BasisLearnedReadAt    = "read_at"
+	BasisLearnedUpdatedAt = "updated_at"
+)
+
+// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable and ReasonReadFailed are why a check
+// names nothing to compare its results with (CheckBlock.ComparedNothing), and why a result's
+// commit cannot be placed (ResultCommitStands.Reason). The three are kept apart because each
+// is a different thing for a reader to do: there is no pull request and no branch to compare
+// with, the App cannot read the repository, or a read Dispatch makes did not answer.
+const (
+	ReasonNoPullRequestOrBranch = "no_pull_request_or_branch"
+	ReasonRepositoryUnreadable  = "repository_unreadable"
+	ReasonReadFailed            = "read_failed"
+)
+
+// CommitAtBasis, CommitOtherCommit and CommitUnknown are where one result's commit stands: at
+// one of the commits the check named, at another commit, or not known with the reason.
+const (
+	CommitAtBasis     = "at_basis"
+	CommitOtherCommit = "other_commit"
+	CommitUnknown     = "unknown"
+)
+
+// PassStandsYes, PassStandsNo and PassStandsUnknown answer the gate's question for one check:
+// whether a pass of it stands at what the check compared its results with.
+const (
+	PassStandsYes     = "yes"
+	PassStandsNo      = "no"
+	PassStandsUnknown = "unknown"
+)
+
+// CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
+// `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
+// of the pull request whose head the commit is.
+type CheckBasis struct {
+	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
+	Commit      string          `json:"commit,omitempty"`
+	Branch      string          `json:"branch,omitempty"`
+	PullRequest *int            `json:"pull_request,omitempty"`
+	LearnedAt   *BasisLearnedAt `json:"learned_at,omitempty"`
+}
+
+// BasisLearnedAt is when Dispatch last learned a pull request's head and which time that is
+// (BasisLearnedReadAt, BasisLearnedUpdatedAt). A basis Dispatch learned neither way carries
+// none.
+type BasisLearnedAt struct {
+	At   time.Time `json:"at"`
+	Kind string    `json:"kind" enum:"read_at,updated_at"`
+}
+
+// CheckPassStands is the one line that answers the gate's question for a check: whether a pass
+// of it stands at what it compared its results with, against the check's words now, and from
+// which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
+// moved does not stand, and a retracted result counts for nothing.
+type CheckPassStands struct {
+	Answer string   `json:"answer" enum:"yes,no,unknown"`
+	Roles  []string `json:"roles,omitempty"`
+}
+
+// ResultCommitStands is where one result's commit stands against what its check compared with:
+// CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
+// (ReasonRepositoryUnreadable, ReasonReadFailed). It says nothing about the check's words,
+// which CheckResult.CheckWordsMoved answers on its own.
+type ResultCommitStands struct {
+	Answer string      `json:"answer" enum:"at_basis,other_commit,unknown"`
+	Basis  *CheckBasis `json:"basis,omitempty"`
+	Reason string      `json:"reason,omitempty" enum:"repository_unreadable,read_failed"`
+}
+
+// CheckResultRetracted is the retraction one result carries on a read of the results
+// (check_result_retractions): why the result is wrong, who said so and when. The result itself
+// is neither updated nor deleted, so a reader sees both records.
+type CheckResultRetracted struct {
+	Reason    string    `json:"reason"`
+	Actor     Actor     `json:"actor"`
+	CreatedAt time.Time `json:"created_at"`
+}
 
 // CheckResult is one result recorded against a `check` block of an issue's Verification
 // document (check_results). IssueKey is the issue it was recorded on, which may be a descendant
 // of CheckIssueKey, the issue whose Verification document holds the check. CheckVersion and
 // CheckSHA256 are the block's changed_version and text_sha256 when the result was recorded, so
-// a read can tell a result whose check has been reworded since. Currency is computed when the
-// results are read and is empty on the record's own answer.
+// a read can tell a result whose check has been reworded since. CommitStands, CheckWordsMoved
+// and Retracted are read when the results are read and are absent from the record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
@@ -1011,12 +1329,36 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
-	Currency        string    `json:"currency,omitempty"`
+	// CommitStands is where this result's commit stands against what its check compared with,
+	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
+	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
+	// result at the compared commit under an older wording is both, and one word for both
+	// would hide which.
+	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
+	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
+	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`
+}
+
+// CheckResultRetraction is the record that says one stored result is wrong
+// (check_result_retractions). It names the result and keeps the reason and the actor. The
+// result itself is neither updated nor deleted, so a reader sees both records. One result
+// takes one retraction, which the table's key holds.
+type CheckResultRetraction struct {
+	ResultID  string    `json:"result_id"`
+	Reason    string    `json:"reason"`
+	Session   string    `json:"session"`
+	Actor     Actor     `json:"actor"`
+	CreatedAt time.Time `json:"created_at"`
+	EventSeq  *int64    `json:"event_seq,omitempty"`
 }
 
 // CheckBlock is one `check` block of a Verification document as a result read shows it: where it
 // lives, its attributes, the version its words last changed in and their digest, and every
-// result recorded against it from any issue, newest first.
+// result recorded against it from any issue, newest first. CICheck is the block's `ci_check` as
+// stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
+// where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
+// `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
+// one result is the one derived from that run.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -1027,9 +1369,39 @@ type CheckBlock struct {
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
+	CICheck         string        `json:"ci_check,omitempty"`
+	CI              *CheckCI      `json:"ci,omitempty"`
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
+	// ComparedWith is every commit and branch this check's results are compared with, in the
+	// order they are asked about, and ComparedNothing is why there are none where it is empty
+	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed).
+	ComparedWith    []CheckBasis    `json:"compared_with"`
+	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
+	PassStands      CheckPassStands `json:"pass_stands"`
+}
+
+// CIStatePass, CIStateFail, CIStateNoResult and CIStateUnread are what the read of a check CI
+// proves answered (CheckCI.State): the named run passed, it failed, nothing the read found proves
+// the check either way, or GitHub could not be read. Only a pass and a fail carry a result.
+const (
+	CIStatePass     = "pass"
+	CIStateFail     = "fail"
+	CIStateNoResult = "no_result"
+	CIStateUnread   = "unread"
+)
+
+// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at the newest
+// pull request head of the check's issue: the run's name, the state of the check, the case that
+// decided it (a conclusion GitHub wrote, or one of the cases of no conclusion), one sentence
+// naming that case, and the line the pull-request body carries for the check.
+type CheckCI struct {
+	Run    string `json:"run"`
+	State  string `json:"state" enum:"pass,fail,no_result,unread"`
+	Case   string `json:"case"`
+	Detail string `json:"detail"`
+	Line   string `json:"line"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec
@@ -1073,6 +1445,19 @@ type CheckResultEventPayload struct {
 	Verdict         string `json:"verdict"`
 	Role            string `json:"role"`
 	CommitSHA       string `json:"commit_sha"`
+}
+
+// CheckResultRetractedEventPayload is the payload of result.retracted, appended on the check's
+// issue as result.recorded is: the retracted result, the issue it was recorded on (Issue, which
+// is the check's issue only when the result was recorded there), the check it claimed to prove,
+// and why it is wrong.
+type CheckResultRetractedEventPayload struct {
+	ResultID     string `json:"result_id"`
+	Issue        string `json:"issue"`
+	CheckIssue   string `json:"check_issue"`
+	CheckBlockID string `json:"check_block_id"`
+	CommitSHA    string `json:"commit_sha"`
+	Reason       string `json:"reason"`
 }
 
 // ArtifactHumanEditedEventPayload is the payload of artifact.human_edited, which Dispatch appends
@@ -1267,11 +1652,27 @@ type Ask struct {
 	// snapshot from when the request opened. nil for questions, and for an approval ask whose
 	// document has since been deleted.
 	ApprovalArtifact *AskAnchorArtifact `json:"approval_artifact,omitempty"`
+	// AskedOf is the person this ask waits on: the canonical login of somebody who has signed in
+	// to Dispatch. It is empty until a person hands the ask on, and an empty field means the ask
+	// waits on the assignee of its issue, or on its project's default assignee while the issue
+	// holds nobody, which is where every ask starts.
+	AskedOf *string `json:"asked_of"`
+	// AskedOfBy is the person who last handed the ask on and AskedOfAt when they did; both are
+	// empty until somebody first hands the ask on. A hand-on to the assignee of the ask's own
+	// issue empties AskedOf and still writes both, so the ask card can say who gave it back.
+	AskedOfBy *string    `json:"asked_of_by"`
+	AskedOfAt *time.Time `json:"asked_of_at"`
 	// WaitingOn is whose reply an open ask needs next: a moved approval request stays with its
 	// agent while RequestedVersion is below Version, and a hand-back returns it to the human until
 	// a reply newer than the one it answered decides it. Set on ask reads only (inbox rows, ask lists,
 	// the ask detail), never on the ask.* event payloads; empty for answered and resolved asks.
 	WaitingOn string `json:"waiting_on,omitempty"`
+	// WaitingOnPerson is the person an ask waits on, in three steps: AskedOf once somebody has
+	// handed the ask on, then the assignee of its issue, then the default assignee of its
+	// project (api.askedOfPersonExpression), which every project names, so every ask names a
+	// person. Set on ask reads only (inbox rows, ask lists, the ask detail), never on the ask.*
+	// event payloads.
+	WaitingOnPerson string `json:"waiting_on_person,omitempty"`
 }
 
 // AskAnchorArtifact is the document containing an ask's quoted anchor.
@@ -1532,12 +1933,16 @@ type BlockRepairedEventPayload struct {
 	DisturbedBy Actor  `json:"disturbed_by"`
 }
 
-// BlockInvalidEventPayload records an ask block that browser editing left malformed.
+// BlockInvalidEventPayload records a block that browser editing left breaking a rule: an ask block
+// settlement cannot read, which it marks `invalid`, or, with BlockType "check", a check block whose
+// ci_check breaks one of the four rules, which it deletes. Reason is the ask's reason or the rule.
+// BlockType is absent for an ask.
 type BlockInvalidEventPayload struct {
 	BlockID     string `json:"block_id"`
 	Version     int    `json:"version"`
 	Reason      string `json:"reason"`
 	DisturbedBy Actor  `json:"disturbed_by"`
+	BlockType   string `json:"block_type,omitempty"`
 }
 
 // AskOption is an answer choice. ID is the id of the block this option is stored as - the part
@@ -1609,22 +2014,28 @@ type OpenAskDocument struct {
 type MyAnswerReply struct {
 	ID   string `json:"id"`
 	Body string `json:"body"`
+	// BodyTree is the ProseMirror tree Body is shown as, present only for a caller that sent
+	// `Dispatch-Trees: 1`.
+	BodyTree DisplayTree `json:"body_tree,omitempty"`
 }
 
 // MyAnswerRow is one answer or reply written by the caller, newest first.
 type MyAnswerRow struct {
-	Kind     string         `json:"kind"`
-	At       time.Time      `json:"at"`
-	AskID    string         `json:"ask_id"`
-	Ref      string         `json:"ref"`
-	Question string         `json:"question"`
-	AskKind  string         `json:"ask_kind"`
-	AskState string         `json:"ask_state"`
-	EditedAt *string        `json:"edited_at"`
-	Owner    OpenAskOwner   `json:"owner"`
-	Answer   *AskAnswer     `json:"answer,omitempty"`
-	Current  bool           `json:"current"`
-	Reply    *MyAnswerReply `json:"reply,omitempty"`
+	Kind     string    `json:"kind"`
+	At       time.Time `json:"at"`
+	AskID    string    `json:"ask_id"`
+	Ref      string    `json:"ref"`
+	Question string    `json:"question"`
+	// QuestionTree is the ProseMirror tree Question is shown as, present only for a caller that
+	// sent `Dispatch-Trees: 1`.
+	QuestionTree DisplayTree        `json:"question_tree,omitempty"`
+	AskKind      string             `json:"ask_kind"`
+	AskState     string             `json:"ask_state"`
+	EditedAt     *string            `json:"edited_at"`
+	Owner        OpenAskOwner       `json:"owner"`
+	Answer       *AskAnswerWithTree `json:"answer,omitempty"`
+	Current      bool               `json:"current"`
+	Reply        *MyAnswerReply     `json:"reply,omitempty"`
 }
 
 // MyAnswersResponse is a page of the caller's answers and ask replies.
@@ -1717,17 +2128,22 @@ type MyRepliesResponse struct {
 	NextCursor string       `json:"next_cursor,omitzero"`
 }
 
-// SessionAnswer kinds: an ask's current answer (its ID is the ask's), a comment, or a message.
+// SessionAnswer kinds: an ask's current answer (its ID is the ask's), a comment, a message, or a
+// person's decline of an ask (its ID is the ask's too). A decline is a kind of its own because the
+// person chose nothing: a reader that drew it as an answer would draw an empty list of chosen
+// options under a question nobody answered.
 const (
-	SessionAnswerKindAnswer  = "answer"
-	SessionAnswerKindComment = "comment"
-	SessionAnswerKindMessage = "message"
+	SessionAnswerKindAnswer   = "answer"
+	SessionAnswerKindComment  = "comment"
+	SessionAnswerKindMessage  = "message"
+	SessionAnswerKindDeclined = "declined"
 )
 
 // SessionAnswer relations: what an item is to the session Dispatch delivered it to, spelled as
 // SESSION_ANSWER_RELATIONS in packages/contracts/src/dispatch-api.ts spells them.
 const (
 	SessionAnswerRelationAnsweredYourAsk        = "answered_your_ask"
+	SessionAnswerRelationDeclinedYourAsk        = "declined_your_ask"
 	SessionAnswerRelationRepliedOnYourAsk       = "replied_on_your_ask"
 	SessionAnswerRelationRepliedInCommentThread = "replied_in_a_comment_thread"
 	SessionAnswerRelationCommentedOnDocument    = "commented_on_a_document"
@@ -1746,25 +2162,29 @@ type SessionAnswerAsk struct {
 
 // SessionAnswer is one thing a person wrote that Dispatch delivered to a session, on
 // GET /api/v1/agents/{session_id}/answers: an ask's current answer, a comment at its current
-// body, or a message, each (Kind, ID) once. Author is always a user. Text is the person's words in
-// full ("" for an answer that chose options only). Selected and Replaced are an answer's, each
-// omitted when empty or false; EditedAt is an edited comment's; Ask is set on an answer and on a
-// reply in an ask's thread. Owner and Ref are nil for a direct message, which is on no issue and
-// has no dispatch:// address; Href is then /agents/<session>/live.
+// body, a message, or a person's decline of an ask, each (Kind, ID) once. Author is always a
+// user. Text is the person's own words in full ("" for an answer that chose options only, and for
+// a decline the person wrote no note with). DispatchWords is set on a decline alone: the words
+// Dispatch wrote for the asking agent (DeclineDispatchWords), kept apart from the person's note so
+// no reader has to cut one out of the other. Selected and Replaced are an answer's, each omitted
+// when empty or false; EditedAt is an edited comment's; Ask is set on an answer, on a decline and
+// on a reply in an ask's thread. Owner and Ref are nil for a direct message, which is on no issue
+// and has no dispatch:// address; Href is then /agents/<session>/live.
 type SessionAnswer struct {
-	Kind     string            `json:"kind"`
-	Relation string            `json:"relation"`
-	ID       string            `json:"id"`
-	At       time.Time         `json:"at"`
-	EditedAt *time.Time        `json:"edited_at,omitempty"`
-	Author   Actor             `json:"author"`
-	Text     string            `json:"text"`
-	Selected []string          `json:"selected,omitempty"`
-	Replaced bool              `json:"replaced,omitempty"`
-	Ask      *SessionAnswerAsk `json:"ask,omitempty"`
-	Owner    *OpenAskOwner     `json:"owner"`
-	Ref      *string           `json:"ref"`
-	Href     string            `json:"href"`
+	Kind          string            `json:"kind"`
+	Relation      string            `json:"relation"`
+	ID            string            `json:"id"`
+	At            time.Time         `json:"at"`
+	EditedAt      *time.Time        `json:"edited_at,omitempty"`
+	Author        Actor             `json:"author"`
+	Text          string            `json:"text"`
+	DispatchWords string            `json:"dispatch_words,omitempty"`
+	Selected      []string          `json:"selected,omitempty"`
+	Replaced      bool              `json:"replaced,omitempty"`
+	Ask           *SessionAnswerAsk `json:"ask,omitempty"`
+	Owner         *OpenAskOwner     `json:"owner"`
+	Ref           *string           `json:"ref"`
+	Href          string            `json:"href"`
 }
 
 // SessionAnswersResponse is what people wrote to one session since Since, newest first by At,
@@ -1776,13 +2196,31 @@ type SessionAnswersResponse struct {
 	Items     []SessionAnswer `json:"items"`
 }
 
-// AskResolution records why a question no longer needs a human answer.
+// AskResolution records why a question no longer needs a human answer. Reason holds the
+// person's own note alone and DispatchWords the words Dispatch writes beside it, so no reader
+// has to cut one out of the other.
 type AskResolution struct {
-	Kind   string    `json:"kind"`
-	Reason string    `json:"reason"`
-	Actor  Actor     `json:"actor"`
-	At     time.Time `json:"at"`
+	Kind          string    `json:"kind"`
+	Reason        string    `json:"reason"`
+	DispatchWords string    `json:"dispatch_words,omitempty"`
+	Actor         Actor     `json:"actor"`
+	At            time.Time `json:"at"`
 }
+
+// AskResolutionDeclined is the AskResolution kind a person's decline of an ask records, and the
+// one kind that carries DeclineDispatchWords, which docs.WriteAskResolution writes under it. It
+// is a constant of this package because the four places that write or read it sit in three
+// packages - the write of every resolution (docs), the decline route and the reminder of an
+// issue's declined asks (api), and the list of what people wrote to a session
+// (sessionanswers) - and api imports the other two, so neither can import api.
+const AskResolutionDeclined = "declined"
+
+// DeclineDispatchWords is what Dispatch writes beside a person's note when they decline to
+// answer: the four sentences the asking agent reads to decide what to do next.
+const DeclineDispatchWords = "The person chose not to answer this question. " +
+	"Decide the next step without an answer. " +
+	"Do not ask this question again unless the facts change. " +
+	"Write in your work what you assumed."
 
 // Comment is a collaboration comment, optionally with an edit suggestion. A comment
 // replies to at most one of another comment (ReplyTo) or an ask (AskID). Comment
@@ -2424,6 +2862,27 @@ type UserAgentStateEventPayload struct {
 	SessionID string `json:"session_id"`
 }
 
+// PriorityEventPayload is `priority.updated`: one write of one priority committed, through
+// POST /api/v1/priorities or PATCH or DELETE /api/v1/priorities/{id} (api/priorities.go). It
+// names the priority and which of the three writes it was, and carries nothing else: a reader
+// refetches its priorities reads on every write, and on a delete also the work under that
+// priority, the work under none and every issue read or listing whose rows advance it
+// (packages/dispatch/web/src/api/event-refresh.ts). It names no owner, since a priority belongs
+// to no project, so the outbox publishes it nowhere and it never notifies (events.Quiet).
+type PriorityEventPayload struct {
+	ID string `json:"id"`
+	// Change is PriorityCreated, PriorityChanged or PriorityDeleted.
+	Change string `json:"change"`
+}
+
+// The Change of a PriorityEventPayload: a create, a PATCH of its attributes or its place in the
+// order, and a delete, which writes the state gone.
+const (
+	PriorityCreated = "created"
+	PriorityChanged = "updated"
+	PriorityDeleted = "deleted"
+)
+
 // UserThreadStateEventPayload is `user_thread_state.updated`: one viewer's read of the Inbox's
 // threads moved. It names the viewer so their other open tabs and devices drop the row, and the
 // thread when one thread was marked (PUT /api/v1/me/threads/{id}/read); a mark-all
@@ -2678,10 +3137,14 @@ type DecisionLink struct {
 // sum of Text, which a Keep carries back to say which text it agreed with. WaitingReview is an
 // agent's decision, not replaced, whose text nobody has kept as it stands.
 type Decision struct {
-	BlockID        string         `json:"block_id"`
-	Heading        string         `json:"heading"`
-	Ref            string         `json:"ref"`
-	Text           string         `json:"text"`
+	BlockID string `json:"block_id"`
+	Heading string `json:"heading"`
+	Ref     string `json:"ref"`
+	Text    string `json:"text"`
+	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
+	// `Dispatch-Trees: 1`. A view that lays the decision out paragraph by paragraph takes those
+	// paragraphs from this tree's own top-level blocks, so no reader splits the markdown again.
+	TextTree       DisplayTree    `json:"text_tree,omitempty"`
 	TextSHA256     string         `json:"text_sha256"`
 	Kind           string         `json:"kind"`
 	Unsure         bool           `json:"unsure"`
@@ -2714,6 +3177,12 @@ type Event struct {
 	Notify     bool      `json:"notify"`
 	CreatedAt  time.Time `json:"created_at"`
 	Payload    any       `json:"payload"`
+	// Trees is the ProseMirror tree of every stored text the payload carries, keyed by that
+	// text's path in the envelope ("payload.body", "payload.options.0.label"). It rides beside
+	// the payload rather than in it so each payload keeps the type its readers know, and it is
+	// filled only for a caller that sent `Dispatch-Trees: 1` and on every /ws/live event frame,
+	// where a browser can set no header.
+	Trees map[string]json.RawMessage `json:"trees,omitempty"`
 }
 
 // EditPrecondition asks Dispatch to apply document operations only against the
@@ -2779,6 +3248,30 @@ var IssueStatuses = []string{
 	"retro",
 	"done",
 }
+
+// IssueStatusesInFlight is the four statuses work is running in, and IssueStatusesParked the two
+// an issue stands parked in. They are groupings of IssueStatuses, named here because the reading
+// of the priorities is written against both of them in two places — the route's two fault lists
+// (api/priority_queries.go) and the seeded corpus's own report of those faults
+// (cmd/dispatch-seed) — and one list each is better than a copy per reader. The counts a
+// priority answers are per status and never per grouping, so nothing but a fault is fixed by
+// them (model.PriorityWork).
+var (
+	IssueStatusesInFlight = []string{"in_progress", "testing", "needs_review", "retro"}
+	IssueStatusesParked   = []string{"icebox", "backlog"}
+)
+
+// IssueStatusesOutOfWorkflow is every status of that lifecycle a Legion deployment runs nothing
+// in: an issue holding one is parked, closed, or not yet decided on, and the deployment's
+// workflow neither starts a phase for it nor refuses a READY on its behalf. Only `todo`, which
+// admits, and the four the workflow itself writes are left out.
+//
+// The daemon holds its own copy of this rule (packages/daemon/internal/record/project.go,
+// OutOfWorkflow): the two are separate values in separate Go modules that have to be changed
+// together, not one shared list, as the `legion` label already is (api/issue_parent.go). It is
+// named here because a write's advice reads it, to say whether a design gate recorded on an
+// issue holds any READY back (api.supersededApprovalGates).
+var IssueStatusesOutOfWorkflow = []string{IssueStatusTriage, "icebox", "backlog", "done"}
 
 var issueStatusSet = func() map[string]struct{} {
 	statuses := make(map[string]struct{}, len(IssueStatuses))

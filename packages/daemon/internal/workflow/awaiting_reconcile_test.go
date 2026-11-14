@@ -254,7 +254,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 4},
 			want: []string{"A person requested changes to your primary document on LEGION-208 at version 4: \"say more\"",
-				"revise the primary document as they ask", "Your primary document is not approved at version 4", "Hand each one back", "returns the slot"},
+				"revise the primary document as they ask", "Your primary document is not approved at version 4", "Hand each one back", "starts your next wait"},
 			not: []string{DesignApprovedWake},
 		},
 		{
@@ -346,7 +346,7 @@ func TestTheResumeTaskOfAGateWait(t *testing.T) {
 			waiting: record.Awaiting{GateVersion: 5, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByVersion, AnsweredDetail: "version 5"},
 			asks:    []record.RootAsk{{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: "artifact-208", Open: true, WaitingOn: "agent", Seq: 9}},
 			want: []string{"A newer version of your primary document on LEGION-208, version 5, handed the approval request back to you",
-				"Waiting on you: ask ask-approval", "register that version with register_gate", "or answer in the request's thread", "returns the slot"},
+				"Waiting on you: ask ask-approval", "register that version with register_gate", "or answer in the request's thread", "starts your next wait"},
 		},
 		{
 			name:    "a person's answer of a question, the request still with the person",

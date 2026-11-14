@@ -64,6 +64,74 @@ the hand-back after its answer responds to that turn. A round with more arrivals
 plus one is flagged. `scripts/e2e/lib/design-gate-approval-requests.jq` reads the same arrivals
 for the stage 4b proof.
 
+## Display read census
+
+`display-read-census.ts` reads every stored text of a Dispatch deployment through its API and
+asks, text by text, whether Go's display read (`pmdoc.ReadForDisplay`) says what the browser's own
+engine says. It is the measurement INFRA-635 rests on, and the recipe is INFRA-172's
+(`docs/solutions/envoy/a-change-to-how-dispatch-reads-stored-markdown-censuses-every-stored-version-and-rewrites-the-hits-before-the-merge-INFRA-172.md`).
+
+```bash
+bun scripts/dispatch/display-read-census.ts --fetch-only   # hours: read production
+bun scripts/dispatch/display-read-census.ts --no-fetch      # minutes: class what was read
+bun scripts/dispatch/display-read-census.ts --no-fetch --json
+```
+
+It reads comments, the messages on issues, each ask's question, option labels and descriptions,
+answer text and resolution reason, each document's approval reason, each architecture component's
+prose, and every version of every document. Dispatch is resolved as for the ask census, with
+`sessionDispatchSettings`, so it reads with the session's own agent token.
+
+Three rules of the recipe are in the script and not negotiable: a version is read with
+`GET /api/v1/artifacts/{id}/versions/{n}`, never `/text`, which renders the live tree again; each
+project's issues come from one unpaged `GET /api/v1/issues?project=`, because offset paging
+repeats and skips issues while others write; and a network failure or a 5xx is retried. It sends
+**at most five requests a second**, eight in flight, so a pass over a deployment of some three
+thousand issues takes between one and a half and two hours.
+
+The corpus is written under `$TMPDIR` (`--work`, `--corpus`) and **is never committed**: it is
+production's prose. It doubles as the resume file. Each unit of work - one list, one version - is
+appended as one JSONL line as it lands, and a pass started again skips every unit already in it,
+so an outage an hour in costs the hour and not the pass. INFRA-172's first pass lost 689 requests
+to an outage and was discarded.
+
+Both readings come from the readers themselves, through the pmdoc differential's harnesses
+(`packages/envoy/internal/dispatch/pmdoc/gen/differential.ts` and that package's
+`TestDifferentialDump`): a document version is held to the editing engine in `DisplayVersion`, and
+every other stored text to the read-only engine in `DisplayLatest`, which is the pairing the
+differential's own cross-reader gates use. Trees are compared with their block ids ignored.
+
+Classing is the long half of a run - hours over a hundred thousand texts on two cores, where
+reading them takes one - so it is done once. Every text classed is appended to `verdicts.jsonl`
+in the work directory, each run reads only the texts no run has classed, and the readings of each
+such batch stay in a `batch-<time>/` directory of their own. A pass over a corpus that grew by a
+quarter therefore costs a quarter of the classing. Delete `verdicts.jsonl` to class them all
+again, which is what a change to either reader, or to the classes, calls for; the batch
+directories hold the readings and can be deleted whenever the disk is wanted back.
+
+Each text falls in one class, defined in the script's opening comment: **the two agree**, **format
+differs** (one visible text, two trees), **the browser lost text** (the browser's visible text is
+Go's with characters deleted), **Go loses text** (the other way round, which must never happen),
+**the text differs both ways**, **the browser cannot read it** (the engine threw) and **Go cannot
+read it**. A *group* is where the text is stored. The report gives every class, its split by
+group, every group's total, the requests the pass made and how long it took.
+
+`--check-no-stored-text FILE...` is the guard that keeps production's words out of the repository.
+It refuses a file that holds, run together with its whitespace collapsed, the first 64 characters
+of any paragraph of any text the census read, and names the text it came from; it exits 1 on a hit
+and 0 on none. It reads the corpus and nothing else, so it needs a pass to have been run.
+
+`__tests__/display-read-census.test.ts` holds the classing to
+`__fixtures__/display-read-census.json`: ten texts written for the purpose, eight of them with the
+trees this repository's own two readers made of them, and the two pairs no text produced written
+by hand, plus the stored texts and files the guard is tested on.
+
+The fixture is generated, not written by hand: `/legion/scratch/tmp/drc-probe/fixture.ts` on the
+pod that ran the census holds the texts and calls `classifyCorpus` and `classifyBatch`, then
+writes the JSON; `bun fixture.ts` followed by `bunx biome check --write scripts/dispatch` gives
+back the committed file byte for byte. It stays scratch and out of the tree; its whole input is
+the fixture's own `markdown` and `why` fields, so it can be written again from them.
+
 ## Comment delivery
 
 `comment-delivery/report.ts` answers which comments people wrote in Dispatch reached no agent
@@ -400,3 +468,80 @@ the issue's own row because its key and title are the only text Dispatch indexes
 (`migrations/0088_issues_title_lexemes.up.sql`), and each query shares no lexeme with them. Each
 query does share lexemes with its issue's spec, so a hit on a document the issue owns would be a
 keyword match, not meaning search.
+
+## Moved approval request check
+
+`moved-approval-production-check.ts` is a production check of the report a document version
+write carries when it takes an open approval request back from the person it was waiting on
+(`moved_approval_request`), and anyone can run it again. It proves, on the running build, that
+such a write names that request in its own answer: the ask the request stands on, the issue it
+was opened in, and every document it names with the version it asks about beside the version
+that document stands at now. It also proves the other half: a write of a document no open
+request names carries no report at all.
+
+```bash
+bun scripts/dispatch/moved-approval-production-check.ts --project ACME
+```
+
+`--project` is required and takes one project key. **The check writes in production**, in the
+project that key names: it makes a scratch issue of its own with a spec, uploads
+`verification.md` and `notes.md` to it, requests approval of the spec with its Verification
+document, writes the versions that move that request, and closes the scratch issue in a
+`finally`, with a reason naming INFRA-3096, so a step that fails leaves no open approval request
+in production. It touches no issue it did not itself create: an answer that is not the 201 of an
+issue of the named project stops the run before a request is opened. Dispatch is resolved as for
+the census above (`sessionDispatchSettings` over the envoy.json `command` reads, `DISPATCH_URL`
+and `DISPATCH_TOKEN_FILE` or `DISPATCH_TOKEN` first). With Dispatch off it prints
+`unavailable: config` and exits 2; it never prints the resolution's notices, which name files.
+
+The steps print one line each, in this order:
+
+- **Build**, always: `GET /healthz`, sent no token, read on 200 and on 503. It prints
+  `build commit=<sha|null> schema=<n|null> ok=<true|false>`. This is no assertion of its own,
+  since whether that commit carries a given merge is decided outside the script, with
+  `gh api repos/cybermonklabs/legion/compare/<merge>...<commit> --jq .status` (`ahead` or
+  `identical`). An unreadable `/healthz` makes the run unavailable.
+- **Scratch**: the issue and its three documents, `scratch issue=<KEY>
+  documents=spec.md,verification.md,notes.md pass`.
+- **Request**: `POST /api/v1/artifacts/{id}/approval-requests` with `include_verification`,
+  `request ask=<uuid> include-verification=yes pass`.
+- **Moved**, an assertion: `POST /api/v1/artifacts/{id}/edits` writes a new version of
+  `verification.md`, and its own answer must carry the report. It prints
+  `moved ask=<uuid|other> issue=<KEY|other> documents=<name>:<requested>/<version>,… pass|fail`:
+  the ask id when it is the one the request opened, the issue key when it is the scratch issue's
+  and no project stands beside it, and each document the report names with the version the
+  request asks about and the version that document stands at now. It passes when all three hold
+  and the entry for `verification.md` carries the version the request asks about beside the
+  version this write stored. An answer with no report prints `moved report=none fail`.
+- **Observed**: the same edit again, run through the pod's own `dispatch doc-edit` (`dispatch` on
+  `PATH`, resolving Dispatch from this process's environment), `observed cli-line=yes|no
+  exit=<status|none>`. This is an observation and no assertion, because a pod prints the line
+  only once the `@sjawhar/pi-envoy` pin of the worker image carries this change. `exit=none` says
+  the command could not be run at all.
+- **Control**, an assertion: the same edit on `notes.md`, the document of that issue no open
+  approval request names, whose answer must carry no report:
+  `control document=notes.md report=none|present pass|fail`.
+- **Close**, an assertion, in a `finally`: the closing reason as a message, then the close
+  itself, which is sent whatever that message did, since the close is what withdraws the
+  request: `close issue=<KEY> status=done|other pass|fail`. A reason that could not be posted
+  is not reported, and costs the issue its closing words alone.
+
+A step that could not be carried out prints `<step> unavailable: <category>`
+(`auth|refused|transport|malformed|not-found`) instead of its verdict and is never a pass; the
+close, the one step that names a value before `unavailable:`, prints
+`close issue=<KEY> unavailable: <category>`. A failed scratch or request stops the steps after
+it, and the close still runs for an issue the run made.
+
+The last two lines are `result pass|fail|unavailable exit=<code>` and the count of the
+assertions, `all 3 assertions passed` or `assertions passed <n> of 3`, so a reader can tell a
+whole run from a cut one. Exit 0: every assertion passed. Exit 1: an assertion failed and no step
+was unavailable. Exit 2: a step was unavailable, or a usage error.
+
+Output is allowlisted on stdout and stderr alike: the issue key the run made (checked against
+the key pattern and the project the flag named), the names of the documents it uploaded, version
+numbers, the ask id of the request it opened (checked as a uuid), a verdict word, a fixed failure
+category and the build commit. Anything the server answers that is none of these is printed as
+`other`, so a key, a name or an id of someone else's issue never appears. The script never prints
+a URL, the token, a response body, an exception's text, an issue title, or the output of the
+`dispatch` command it runs, of which only the exit status and whether the line appeared leave the
+run. This repository is public, and such a line carries private hosts and names.

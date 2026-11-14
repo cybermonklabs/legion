@@ -155,8 +155,26 @@ describe("formatZodIssues", () => {
   });
 
   test("passes a cross-field refine message through verbatim and falls back to flag: message", () => {
-    expect(problemsFor("dispatch_artifact", { issue: "DSP-42", name: "n" })).toEqual([
-      "Exactly one of path or content is required.",
+    expect(
+      problemsFor("dispatch_artifact", {
+        issue: "DSP-42",
+        name: "n",
+        path: "n.md",
+        content: "# N\n",
+      })
+    ).toEqual([
+      "Give at most one of path and content. A call with neither makes an empty document under " +
+        "the name, which a person or an agent writes in afterwards with dispatch doc-edit.",
+    ]);
+    // A call with neither makes an empty document, and its name is a document's name, so the
+    // Markdown-name rule refuses rows.jsonl here as it refuses it for inline content.
+    expect(problemsFor("dispatch_artifact", { issue: "DSP-42", name: "rows.jsonl" })).toEqual([
+      "a document holds Markdown, which rewrites other text " +
+        "(a JSONL file's lines come back joined into one paragraph), and " +
+        '"rows.jsonl" is not a Markdown name. Upload the file under the same name with ' +
+        "path (--path <file>), which stores a file whose path does not end in .md or .markdown " +
+        "as its bytes, unchanged; a document takes a name ending in .md or .markdown or with " +
+        "no extension.",
     ]);
     expect(problemsFor("dispatch_search", { query: "a" })).toEqual([
       "--query: Too small: expected string to have >=2 characters",

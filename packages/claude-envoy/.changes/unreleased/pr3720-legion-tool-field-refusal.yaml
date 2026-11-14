@@ -1,0 +1,8 @@
+kind: Fixed
+custom:
+  Issue: pr3720
+body: |-
+  The `legion` tool refuses a field an operation does not take by naming every refused field and
+  then the fields the operation takes, as in `ready_for_update does not accept field "issue"; it
+  takes round`. An issue key a call names is trimmed on `read_record`, `handoff_complete` and
+  `request_backward_move`, and a non-string one is refused naming the operation and the field.

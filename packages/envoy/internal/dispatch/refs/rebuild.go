@@ -52,10 +52,11 @@ type Rebuild struct {
 // every document owed a block index (document_block_versions.version null), which the block-index
 // reconciliation (docs.Service.RunBlockIndexReconciliation) indexes. It marks every comment and
 // message, direct messages included, and every ask owed a block index of its own blocks too
-// (owed_at, a missing state row inserted owed), so the same reconciliation re-reads each item's
-// blocks, an ask's parts included, and the mentions each holds with this build's parser and
-// grammar. It leaves block_grammar_owed alone: it has just re-read every comment, ask and issue
-// message with this build's grammar itself.
+// (owed_at, a missing state row inserted owed), and owed its embedding windows with it
+// (windows_owed_at, ItemsOwedWindows), so the same reconciliation re-reads each item's blocks,
+// an ask's parts included, and the mentions each holds with this build's parser and grammar,
+// and writes the windows those blocks stand in. It leaves block_grammar_owed alone: it has
+// just re-read every comment, ask and issue message with this build's grammar itself.
 //
 // It clears the re-index queue (refs_grammar_owed) for every source it re-indexes: each source's
 // own row goes in that source's transaction (replaceRefs), and the `scope` rows, which owe a
@@ -123,16 +124,19 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 		return report, fmt.Errorf("mark every document owed a block index: %w", err)
 	}
 	report.BlocksOwed = int(owed.RowsAffected())
+	// Both markers: rebuild-refs re-derives every item from its stored text, its windows
+	// included, so the windows an item holds now stand for nothing until that re-index writes
+	// them again (ItemsOwedWindows). The one statement that writes them clears both.
 	for _, mark := range []struct{ kind, query string }{
 		{"comment", `
-			insert into comment_block_state (comment_id, owed_at) select id, now() from comments
-			on conflict (comment_id) do update set owed_at = excluded.owed_at`},
+			insert into comment_block_state (comment_id, owed_at, windows_owed_at) select id, now(), now() from comments
+			on conflict (comment_id) do update set owed_at = excluded.owed_at, windows_owed_at = excluded.windows_owed_at`},
 		{"message", `
-			insert into message_block_state (message_id, owed_at) select id, now() from messages
-			on conflict (message_id) do update set owed_at = excluded.owed_at`},
+			insert into message_block_state (message_id, owed_at, windows_owed_at) select id, now(), now() from messages
+			on conflict (message_id) do update set owed_at = excluded.owed_at, windows_owed_at = excluded.windows_owed_at`},
 		{"ask", `
-			insert into ask_block_state (ask_id, owed_at) select id, now() from asks
-			on conflict (ask_id) do update set owed_at = excluded.owed_at`},
+			insert into ask_block_state (ask_id, owed_at, windows_owed_at) select id, now(), now() from asks
+			on conflict (ask_id) do update set owed_at = excluded.owed_at, windows_owed_at = excluded.windows_owed_at`},
 	} {
 		owed, err := pool.Exec(ctx, mark.query)
 		if err != nil {

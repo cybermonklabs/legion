@@ -24,8 +24,8 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 	target := "role:" + role
 
 	rig := newRoleRig(t)
-	r := rig.receiver(t, holder, true)
-	u := rig.receiver(t, author, true)
+	r := rig.receiver(t, holder)
+	u := rig.receiver(t, author)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	route := target
@@ -83,7 +83,7 @@ func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
 	target := "role:" + role
 
 	rig := newRoleRig(t)
-	u := rig.receiver(t, author, true)
+	u := rig.receiver(t, author)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", nil)

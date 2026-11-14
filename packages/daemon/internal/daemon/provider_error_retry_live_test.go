@@ -48,14 +48,14 @@
 //
 // What the daemon already holds when it boots. Each issue is seeded holding its tree's admission
 // slot, in a worker phase, with that worker's claim mid-launch and the task that phase's start
-// carried pending on the claim — because those two are what a start writes together (workflow's
-// StartOrOwe, the relaunch row and the task row), so a slotted worker holding no task at all is
-// not a state a start leaves. It is the state admission repairs: resumeSlottedWorkers
-// (internal/admit/admit.go) gives any such claim its phase's resume task on the first pass after
-// boot, and a seed with no pending delivery meets that repair before this driver delivers
-// anything of its own, which answers every deliver 409 "a delivery is already pending". A
-// pending delivery of the issue's own generation and phase is what the repair passes over
-// (workflow.StartFor, the delivery's StillWorked), so the seed holds one.
+// carried pending on the claim — because a start is one row and carries its task (workflow's
+// StartOrOwe), so a slotted worker holding no task at all is not a state a start leaves. It is
+// the state admission repairs: resumeSlottedWorkers (internal/admit/admit.go) gives any such
+// claim its phase's resume task on the first pass after boot, and a seed with no pending
+// delivery meets that repair before this driver delivers anything of its own, which answers
+// every deliver 409 "a delivery is already pending". A pending delivery of the issue's own
+// generation and phase is what the repair passes over (workflow.StartFor, the delivery's
+// StillWorked), so the seed holds one.
 //
 // The ladder's claim is seeded with the task step 1 measures, and step 1 reads the daemon's own
 // first send of it rather than making one. That also keeps the repair off the planner for the

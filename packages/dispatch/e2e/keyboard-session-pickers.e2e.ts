@@ -1,8 +1,6 @@
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import { listAgentMessages, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -174,10 +172,6 @@ function answer(sessionID: string, messageID: string, body: string): Promise<unk
   );
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // A2: a picker whose change switches a live session follows the rule the issue picker already
 // keeps (`markKeyStep` in `AgentMessageComposer.tsx`, `keyboard-agents-picker.e2e.ts`): the arrows
 // choose and Enter commits, so a keyboard reader can pass the next model to reach the one after
@@ -186,7 +180,8 @@ test.beforeEach(async () => {
 // SLOW(>=2s): two switches through the fake Envoy and back, each read from the server, in every
 // engine the rule has to hold in.
 // @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
-test("the arrows move a header picker's choice without switching the session, and Enter switches it once @webkit @firefox", async ({
+// @pr: A write a person makes: the header picker must step without switching the session, and Enter must switch it once.
+test("the arrows move a header picker's choice without switching the session, and Enter switches it once @webkit @firefox @pr", async ({
   browser,
 }) => {
   const session = liveSession(11);

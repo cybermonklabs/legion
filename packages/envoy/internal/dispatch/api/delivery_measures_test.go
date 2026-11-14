@@ -96,7 +96,7 @@ func seedMeasuresFixture(t *testing.T, database *store.Store) measuresFixture {
 		t.Fatalf("seed settings: %v", err)
 	}
 
-	if _, err := pool.Exec(ctx, `insert into projects (key, name) values ('ACME', 'Acme') on conflict do nothing`); err != nil {
+	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice') on conflict do nothing`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	for _, issue := range fixture.Issues {

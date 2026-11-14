@@ -752,17 +752,20 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 		default:
 			// Counted under the reason the send came to (countPublishFailure): a send the server
 			// refused under this connection's own publish permissions is a denial; a forward NATS
-			// took whose holder sent no receipt is unanswered, which the request reports as a
-			// receipt timeout with its publish confirmed; every other failure, an unconfirmed
-			// publish among them, is a failure. A role forward its holder's resolution held
-			// pending is none of them: it sent nothing and nothing failed, so it is counted a
-			// hold under that holder's state (countRoleForwardHeld) and is no publish failure.
+			// took whose stored copy the stream did not acknowledge is unanswered, which the
+			// request reports as not acknowledged with its publish confirmed; every other failure
+			// is a failure, an unconfirmed publish among them and a forward the stream refused
+			// the copy of (a full stream's bus.ErrStreamFull), which is no copy that might yet
+			// exist: the stream answered, that it stored nothing. A role forward its holder's
+			// resolution held pending is none of them: it sent nothing and nothing failed, so it
+			// is counted a hold under that holder's state (countRoleForwardHeld) and is no
+			// publish failure.
 			switch hold := send.heldByHolder(); {
 			case errors.Is(err, bus.ErrPublishDenied):
 				deps.countPublishFailure("denied")
 			case hold != nil:
 				deps.countRoleForwardHeld(hold.heldState)
-			case errors.Is(err, bus.ErrReceiptTimeout) && !errors.Is(err, bus.ErrPublishUnconfirmed):
+			case forwardUnanswered(send.dest.forward != nil, err):
 				deps.countPublishFailure("unanswered")
 			default:
 				deps.countPublishFailure("failed")
@@ -821,6 +824,18 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 		}
 		settle(chosen, err)
 	}
+}
+
+// forwardUnanswered reports whether a role forward NATS took is left unanswered rather than
+// failed: it was a forward, its publish was confirmed, and the stream gave no answer to the copy
+// it took (bus.ErrNotAcknowledged), so a copy may yet stand for the holder's consumer. An error
+// that carries bus.ErrPublishUnconfirmed beside that one says the publish itself was never
+// confirmed, so nothing is known to stand and it counts a failure, as every send that is no
+// forward does. One rule for the two switches that count a send that did not reach a session,
+// the batch's (sendChains) and the fallback copies' (publishFallbackCopies), so the two cannot
+// drift apart.
+func forwardUnanswered(forward bool, err error) bool {
+	return forward && errors.Is(err, bus.ErrNotAcknowledged) && !errors.Is(err, bus.ErrPublishUnconfirmed)
 }
 
 // firstAnswered returns the first chain of inflight whose current send's answer is in, and that

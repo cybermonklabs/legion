@@ -17,10 +17,12 @@ import (
 )
 
 // reaches is whether a variable can lead git or jj to a workspace, repository, remote or
-// credential other than the test's own (Isolated's doc says how each does), HOME and
+// credential other than the test's own (Isolated's doc says how each does), or can hand the leak
+// guard a shared check of the machine's rather than the test's own stand-in (PUBLIC_LEAK_CHECK
+// and the rest of the check's own prefix, which internal/leakguard reads), HOME and
 // XDG_CONFIG_HOME aside.
 func reaches(key string) bool {
-	for _, prefix := range []string{"LEGION_", "GIT_", "JJ_", "GH_", "GITHUB_"} {
+	for _, prefix := range []string{"LEGION_", "GIT_", "JJ_", "GH_", "GITHUB_", "PUBLIC_LEAK_CHECK"} {
 		if strings.HasPrefix(key, prefix) {
 			return true
 		}
@@ -169,9 +171,9 @@ func RequireGuarded(t testing.TB) {
 // as the home, an empty user configuration and an identity of the test's. It keeps no test input
 // either, so a fixture that needs one appends it after. It drops:
 //
-//   - LEGION_*: LEGION_WORKSPACE names the workspace a shim adopts and checks for unpushed work
-//     (shim.rescue, shim.runAdoption); a test that leaves it out to see a refusal would otherwise
-//     run on the pod's own.
+//   - LEGION_*: LEGION_WORKSPACE names the workspace a shim adopts and bundles
+//     (shim.runAdoption, shim.runBundle); a test that leaves it out to see a refusal would
+//     otherwise run on the pod's own.
 //   - GIT_*, JJ_*, HOME, XDG_CONFIG_HOME: GIT_DIR and GIT_WORK_TREE name another repository
 //     whatever directory a command runs in, a pod hands every process a GIT_CONFIG_* block of its
 //     own, and a home carries configuration and an identity.

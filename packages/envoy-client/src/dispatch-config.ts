@@ -1,3 +1,4 @@
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   type BearerSource,
   bearerCredential,
@@ -60,17 +61,6 @@ export interface ActiveDispatchConfig {
 export type DispatchConfigResolution = ActiveDispatchConfig | SectionOff;
 
 type ValidCheckout = Extract<CheckoutEnvoyConfig, { readonly kind: "valid" }>;
-
-/**
- * `url` without the slashes it ends in, counted from the right. A `/\/+$/` replace reads the same
- * string once per position its unanchored search starts at, which costs a URL of n slashes O(n²)
- * (CodeQL js/polynomial-redos); this reads it once.
- */
-function withoutTrailingSlashes(url: string): string {
-  let end = url.length;
-  while (end > 0 && url[end - 1] === "/") end -= 1;
-  return url.slice(0, end);
-}
 
 /** A checkout's own server and the token written beside it, which only that server gets. Throws
  * when the checkout names no token. */
@@ -226,7 +216,7 @@ export function dispatchSettings(
     enabled: true,
     url,
     credential,
-    ...(publicUrl === undefined ? {} : { publicUrl: publicUrl.replace(/\/+$/, "") }),
+    ...(publicUrl === undefined ? {} : { publicUrl: withoutTrailingSlashes(publicUrl) }),
   };
 }
 
@@ -339,9 +329,9 @@ function dispatchTarget(
         : `DISPATCH_URL is set and no token is: set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE, or dispatch.token in ${config.path}`
     );
   }
-  const url = (
+  const url = withoutTrailingSlashes(
     explicitUrl ?? (source.kind === "file" ? source.server : (own.serverUrl ?? DEFAULT_SERVER_URL))
-  ).replace(/\/+$/, "");
+  );
   return { enabled: true, url, source };
 }
 

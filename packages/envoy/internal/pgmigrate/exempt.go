@@ -21,13 +21,16 @@ import (
 //     language is not exempt: creating a C function loads its library, which can run any code;
 //   - create trigger, of any form: it takes SHARE ROW EXCLUSIVE on its table and writes
 //     pg_trigger, and the trigger runs only on later writes, never on the rows already there;
-//   - drop trigger and drop function, with RESTRICT, which is the default (catalogOnlyDrop):
-//     dropping a trigger writes pg_trigger and dropping a function writes pg_proc, and neither
-//     reads a row of the table or removes one, so the time the statement holds its lock does not
-//     grow with the table. The lock is not the argument for it: drop trigger takes ACCESS
-//     EXCLUSIVE on its table where create trigger takes SHARE ROW EXCLUSIVE, and what the limit
-//     is about is how long a lock is held, not which lock it is. A drop with cascade is not
-//     exempt: what it drops besides the object it names is not in the statement, so the census
+//   - drop trigger, drop function and drop index, with RESTRICT, which is the default
+//     (catalogOnlyDrop): dropping a trigger writes pg_trigger, dropping a function writes pg_proc,
+//     and dropping an index deletes its pg_class and pg_index rows and unlinks its storage with
+//     them; none of the three reads a row of the table or removes one, so the time the statement
+//     holds its lock does not grow with the table. The lock is not the argument for it: drop
+//     trigger and drop index both take ACCESS EXCLUSIVE on the table where create trigger takes
+//     SHARE ROW EXCLUSIVE, and what the limit is about is how long a lock is held, not which lock
+//     it is. catalogOnlyAlterTable below admits DROP CONSTRAINT RESTRICT on the same reading, and
+//     that form drops the constraint's backing index as part of its work. A drop with cascade is
+//     not exempt: what it drops besides the object it names is not in the statement, so the census
 //     cannot read which objects a cascade reaches, and the exemption is an argument about the
 //     statement the census can read. drop procedure is left out for the one reason that no
 //     migration of this repository drops a procedure;
@@ -94,9 +97,15 @@ func catalogOnlyFunction(node json.RawMessage) string {
 	return ""
 }
 
-// catalogOnlyDrop names a drop's kind as the report names it, "drop trigger" or "drop function",
-// and answers "" for a drop of anything else (a table, an index, a view, a schema, a procedure),
-// for a drop with cascade, and for a node it cannot read. catalogOnlyStatements argues both.
+// catalogOnlyDrop names a drop's kind as the report names it, "drop trigger", "drop function" or
+// "drop index", and answers "" for a drop of anything else (a table, a view, a schema, a
+// procedure), for a drop with cascade, and for a node it cannot read. catalogOnlyStatements
+// argues all three. A concurrent drop is not singled out: it does the same catalog work, and no
+// migration the census reads can hold one anyway, since Postgres refuses CONCURRENTLY inside the
+// transaction a migration runs in and the non-transactional mode holds one CREATE INDEX
+// CONCURRENTLY alone (concurrentIndex). The runner does issue a DROP INDEX CONCURRENTLY of its
+// own, to clear the invalid index a failed build left behind (nontransactional.go), but that
+// statement is the runner's and stands in no migration the census parses.
 func catalogOnlyDrop(node json.RawMessage) string {
 	var drop struct {
 		RemoveType string `json:"removeType"`
@@ -110,6 +119,8 @@ func catalogOnlyDrop(node json.RawMessage) string {
 		return "drop trigger"
 	case "OBJECT_FUNCTION":
 		return "drop function"
+	case "OBJECT_INDEX":
+		return "drop index"
 	}
 	return ""
 }
@@ -246,4 +257,4 @@ const ddlEventTriggersQuery = `
 	select coalesce(string_agg(evtname, ', ' order by evtname), '')
 	from pg_event_trigger
 	where evtenabled <> 'D' and evtevent in ('ddl_command_start', 'ddl_command_end', 'sql_drop')
-		and (evttags is null or evttags && array['CREATE FUNCTION', 'CREATE PROCEDURE', 'CREATE TRIGGER', 'DROP FUNCTION', 'DROP TRIGGER', 'ALTER TABLE', 'CREATE INDEX'])`
+		and (evttags is null or evttags && array['CREATE FUNCTION', 'CREATE PROCEDURE', 'CREATE TRIGGER', 'DROP FUNCTION', 'DROP TRIGGER', 'DROP INDEX', 'ALTER TABLE', 'CREATE INDEX'])`

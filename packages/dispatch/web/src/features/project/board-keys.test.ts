@@ -6,6 +6,8 @@ import { groupIssuesByStatus, type IssueStatus } from "./board-model";
 
 function issue(key: string, status: IssueStatus): IssueSummary {
   return {
+    advances: [],
+    advances_revision: 0,
     route: null,
     repo: null,
     resolved_repo: null,
@@ -28,6 +30,9 @@ function issue(key: string, status: IssueStatus): IssueSummary {
     status,
     title: key,
     updated_at: "2026-09-15T00:00:00Z",
+    closed_at: status === "done" ? "2026-09-15T00:00:00Z" : null,
+    created_by: null,
+    created_at: "2026-09-15T00:00:00Z",
   };
 }
 

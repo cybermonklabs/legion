@@ -44,7 +44,7 @@ resolving", went through three wordings of its first condition in sjawhar/legion
   none of the nine variables, which point to `/legion/scratch/…`, `/legion/go/…` and
   `/legion/uv/…`. Both thermonuclear reviewers found it independently in review round 9. The
   reviewer had missed it in round 8, though the sentence was already in the diff.
-- **Widened** on the architect's ruling: "or under a path on that volume your harness names
+- **Widened** on the architect's decision: "or under a path on that volume your harness names
   itself". This admitted `$LEGION_WORKSPACE`, which the INFRA-43 learning forbids. The tester drove
   why: a two-file root written there showed as `A` in `jj status`, because
   `snapshot.auto-track` is `all()`. That was tester round 12's failure.

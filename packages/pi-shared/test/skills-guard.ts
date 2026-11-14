@@ -79,11 +79,61 @@ export function outsideFences(markdown: string): string[] {
   return kept;
 }
 
+/** `#`, which the parse below counts from the end of a line one code unit at a time. */
+const HASH = "#".charCodeAt(0);
+/** The characters `.` never matches, so no heading's text can hold one or run past one. */
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+
+/**
+ * The text a heading line renders, or undefined where the line is no heading: one to six `#`, then
+ * at least one whitespace character, then at least one character of text, with the line's trailing
+ * run of `#` and the whitespace before that run dropped.
+ *
+ * This reads `/^#{1,6}\s+(.+?)\s*#*$/` as it is written, line by line, rather than running it. That
+ * expression is quadratic: `\s*#*$` rescans the line's trailing whitespace once for every expansion
+ * of the lazy group, so one long heading line in a repository file holds every developer's run of
+ * this guard for minutes (330 ms at 10,000 trailing spaces, 122 s at 200,000). The parse below
+ * reads each line a bounded number of times and keeps that expression's meaning for every input,
+ * oddities included: the group must match one character, so `## ###` is the heading `#`, and the
+ * trailing hashes are dropped only where they end the line, so `## a  ##  ` is the heading `a  ##`.
+ */
+export function headingText(line: string): string | undefined {
+  // The hashes `#{1,6}` matches are the line's whole leading run: after a shorter run stands a `#`,
+  // which is no whitespace, so a line opening with seven leaves `\s+` nothing to match.
+  const opener = /^(#{1,6})(\s+)/.exec(line);
+  if (opener === null) return undefined;
+  const spaces = opener[2];
+  const rest = line.slice(opener[0].length);
+  if (rest === "") {
+    // Whitespace is all that follows the hashes, so `\s+` hands its last character back to the
+    // group, which must match one, and the capture is that one character. The engine hands back
+    // another only where the character is a line terminator, which `.` never matches, and it keeps
+    // the first character for `\s+` itself.
+    for (let at = spaces.length - 1; at >= 1; at--) {
+      const character = spaces.charAt(at);
+      if (!LINE_TERMINATOR.test(character)) return character;
+    }
+    return undefined;
+  }
+  // The group is lazy, so it stops at the first point where `\s*#*$` can read the whole remainder:
+  // the end of the line, the start of its trailing run of `#`, or the start of the whitespace
+  // before that run. Nowhere earlier can, since the character before that whitespace is neither.
+  // `trimEnd` drops exactly the characters `\s` matches (both are WhiteSpace and LineTerminator),
+  // in one pass of its own rather than a regular expression call for every character.
+  let end = rest.length;
+  while (end > 0 && rest.charCodeAt(end - 1) === HASH) end--;
+  end = rest.slice(0, end).trimEnd().length;
+  const heading = rest.slice(0, Math.max(end, 1));
+  // Past a line terminator the group cannot reach, so the expression finds no heading at all: the
+  // shorter captures it could take instead all leave a remainder `\s*#*$` will not read.
+  return LINE_TERMINATOR.test(heading) ? undefined : heading;
+}
+
 /** GitHub's heading anchor: lower-cased, punctuation dropped, each space a hyphen. */
 export function anchors(markdown: string): Set<string> {
   return new Set(
     outsideFences(markdown).flatMap((line) => {
-      const heading = /^#{1,6}\s+(.+?)\s*#*$/.exec(line)?.[1];
+      const heading = headingText(line);
       if (heading === undefined) return [];
       return [
         heading

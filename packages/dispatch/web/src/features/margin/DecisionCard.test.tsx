@@ -1,12 +1,18 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import type { Decision } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionCard } from "./DecisionCard";
 import type { DecisionMarginItem } from "./useMarginItems";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function item(decision: Partial<Decision>): DecisionMarginItem {
   const full: Decision = {
@@ -28,7 +34,10 @@ function item(decision: Partial<Decision>): DecisionMarginItem {
   };
   return {
     blockId: "p-plan",
-    decision: full,
+    // The card draws the reading Go made of the decision's text and parses none of it itself,
+    // so a decision this test invents carries the reading the page's own engine makes of that
+    // text (`__tests__/display-trees`).
+    decision: { ...full, text_tree: displayTree(full.text) },
     id: `decision:${full.block_id}:p-plan`,
     kind: "decision",
   };

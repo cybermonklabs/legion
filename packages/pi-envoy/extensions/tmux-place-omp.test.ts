@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Cleanup,
+  deliveryFor,
+  ompNatsGuard,
   ompRoot,
   type Request,
   serveStandin,
@@ -19,24 +21,21 @@ import {
 // answer only from the server `TMUX` names, and only for a pane whose own process is one of this
 // process's ancestors, so a set of variables with no pane behind it is refused.
 // LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the NATS server, as in
-// card-delivery-omp.test.ts; a tmux on PATH is the third thing this file needs, since the session
-// runs the one it finds there itself. A run without all three skips, except on GitHub Actions,
-// where the pi-envoy job supplies them.
+// card-delivery-omp.test.ts (`ompNatsGuard`); a tmux on PATH is the third thing this file needs,
+// since the session runs the one it finds there itself, and it is guarded the same way. A run
+// without all three skips, except on GitHub Actions, where the pi-envoy job supplies them.
 // This file imports no `nats`, so the package's shared test process serves it: envoy.test.ts's
 // `mock.module("nats", …)` replaces that module for this process alone, and the session's NATS
 // connection is the binary's own, in a process of its own, which no mock here reaches.
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
+const ompNats = ompNatsGuard();
 const tmuxBinary = Bun.which("tmux");
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = (omp === undefined || natsUrl === undefined || tmuxBinary === null) && !onActions;
+const skip = ompNats.skip || (tmuxBinary === null && !ompNats.onActions);
 
 /** The binary, NATS server and tmux a case runs against; throws on GitHub Actions without them. */
 function setup(): { readonly binary: string; readonly nats: string; readonly tmux: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
+  const run = ompNats.setup();
   if (tmuxBinary === null) throw new Error("no tmux is on PATH on GitHub Actions");
-  return { binary: omp, nats: natsUrl, tmux: tmuxBinary };
+  return { ...run, tmux: tmuxBinary };
 }
 
 /** The heartbeat the session re-registers on, each registration carrying whatever the cache
@@ -174,11 +173,17 @@ async function standin(
   const { requests, base } = serveStandin(cleanup, (url, body) => {
     if (url.pathname.startsWith("/anthropic/")) return Response.json({ data: [] });
     if (url.pathname === "/api/v1/asks/open") return new Response("unavailable", { status: 503 });
+    // The Envoy listener: a registration is answered the consumer the listener gave the session
+    // (`deliveryFor`), as every stand-in listener of this repository answers one: the client
+    // refuses a registration answered no delivery, and these cases read the places the
+    // registrations carry.
+    const id = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
-      session_id: typeof body.session_id === "string" ? body.session_id : "",
+      session_id: id,
       machine_id: "tmux-place-machine",
       dir: workspace,
       topics: [],
+      ...deliveryFor(url.pathname, body, id),
     });
   });
   await writeStandinProfile(home, base);

@@ -1,0 +1,5 @@
+kind: Added
+body: 'An agent now reads a person''s decline of an ask wherever it reads their words: in the delivery of the ask''s resolution, in dispatch answers, in the ask''s own detail, in a search answer, and, when it opens another question on the issue, in a line for each ask of that issue a person declined to answer. The person''s own note and the words Dispatch wrote beside it are drawn apart, so neither is read as the other.'
+time: 2026-11-11T02:46:15.206374954Z
+custom:
+    Issue: pr3511

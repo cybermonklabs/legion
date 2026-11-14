@@ -1,16 +1,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  type Browser,
-  expect,
-  type Locator,
-  type Page,
-  type Request,
-  test,
-} from "@playwright/test";
 
 import type { ArtifactUploadResponse } from "../web/src/api/types";
+import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   baseUrl,
@@ -19,9 +12,11 @@ import {
   createIssue,
   createIssueArtifact,
   createMessage,
+  createPriority,
   createProject,
   createProjectDocument,
   dashboardOrigin,
+  patchIssue,
   publishAgentStreamFrame,
   putArchitectureSource,
   syncArchitectureSource,
@@ -32,7 +27,7 @@ import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { type DispatchProcess, processPinCookie, processPinHeader } from "./harness-processes";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
 import { signIn } from "./users";
 
@@ -100,10 +95,6 @@ test.beforeAll(() => {
   ).not.toEqual(builds.a.assets);
 });
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 /** The machine the seeded session reports. It reports it as `machine_id` and no `host`, which
  *  the fake Envoy answers as the session's host (e2e/fake-envoy.ts), so this is the machine
  *  `/machines` lists and `/machines/:machine` draws. */
@@ -150,15 +141,27 @@ const shown = {
   spec: "Both builds serve every page.",
 };
 
-/** The list the issue message carries under its diagram, long enough that the page parses the
- *  message in the Markdown parse worker rather than on its own thread (`markdownWorkerThreshold`,
- *  features/refs/markdown-worker-threshold.ts). It rides the message rather than the comment
- *  because the Conversation draws a message's body whole, where a comment card shows a preview
- *  until its thread is opened. The walk asks for every chunk a build emits, the parse worker's
- *  among them, and a reader on a rolling deploy meets exactly this: a long body whose formatting
- *  arrives from a worker whose code one build served and whose page another did. */
+/** The list the issue message carries under its diagram, drawn from the tree the server read the
+ *  message into: a stored text is parsed nowhere, however long it is
+ *  (features/refs/markdown-engine.ts), and the walk's point here is that the whole of it is drawn
+ *  from a build's own chunks. It rides the message rather than the comment because the
+ *  Conversation draws a message's body whole, where a comment card shows a preview until its
+ *  thread is opened. */
 const longListItems = 300;
 const longList = "- a rollout step\n".repeat(longListItems);
+
+/** The notes the agent's turn carries under its first line, long enough that the page parses the
+ *  turn in the Markdown parse worker rather than on its own thread (`markdownWorkerThreshold`,
+ *  features/refs/markdown-worker-threshold.ts). They ride the live agent turn because it is one
+ *  of the three texts Dispatch does not store, and so one of the three the worker still parses:
+ *  every stored text arrives with the tree the server read it into. The walk asks for every chunk
+ *  a build emits, the parse worker's among them, and a reader on a rolling deploy meets exactly
+ *  this: a turn whose formatting arrives from a worker whose code one build served and whose page
+ *  another did. Derived from the threshold with a margin, so the turn stays the worker's wherever
+ *  that value is set. */
+const agentReplyNote = "- a release note\n";
+const agentReplyNotes = Math.ceil(markdownWorkerThreshold / agentReplyNote.length) + 50;
+const agentReply = `${shown.agentReply}\n\n${agentReplyNote.repeat(agentReplyNotes)}`;
 
 /** The issue message's flowchart, from one node to the other, which draws only once the Mermaid
  *  renderer's worker has run. */
@@ -198,12 +201,14 @@ interface Seeded {
   readonly document: string;
   readonly issue: string;
   readonly issueArtifact: string;
+  readonly priority: string;
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
  *  project with an architecture source, an issue with a spec, a child, a comment, a message
  *  holding a Mermaid diagram and a document artifact, a project document, a live session with a
- *  broadcast, a replayed conversation and a picture, and the delivery timeline's runs. */
+ *  broadcast, a replayed conversation and a picture, a priority with a description and an issue
+ *  in flight that advances it, and the delivery timeline's runs. */
 async function seedEveryRoute(): Promise<Seeded> {
   await setLiveSessions([session]);
   await createProject({ key: "CORE", name: "Core" });
@@ -236,6 +241,16 @@ async function seedEveryRoute(): Promise<Seeded> {
     content: `# Handbook\n\n${shown.document}\n`,
     name: "handbook.md",
   });
+  // The priorities page draws its table only where a priority is written, and a priority's own
+  // page draws the work advancing it, so one priority is written with an issue in flight under
+  // it; the two fault lists of the page are drawn whatever they hold.
+  const priority = await createPriority({
+    description: "Every page is served from either build while a release overlaps the two.",
+    owner: "alice",
+    title: "Serve every page from both builds",
+  });
+  const advancing = await createIssue({ project: "CORE", title: "Pin assets to one process" });
+  await patchIssue(advancing.key, { advances: [priority.id], status: "in_progress" });
   const broadcast = await createBroadcast({
     body: "Report **status**.",
     delivery: "steer",
@@ -262,7 +277,7 @@ async function seedEveryRoute(): Promise<Seeded> {
           message: {
             at: 2_000,
             id: "a2000",
-            parts: [{ text: shown.agentReply, type: "text" }],
+            parts: [{ text: agentReply, type: "text" }],
             role: "assistant",
             streaming: false,
           },
@@ -283,6 +298,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     document: document.artifact.slug,
     issue: issue.key,
     issueArtifact: issueArtifact.artifact.slug,
+    priority: priority.id,
   };
 }
 
@@ -350,9 +366,20 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `/agents/broadcasts/${seed.broadcast}`,
     },
     {
+      // The turn's notes are the parse worker's: the turn is longer than the worker's threshold
+      // and, as a live agent turn, one of the texts Dispatch does not store, so the page parses
+      // it rather than drawing a tree the server read it into (`agentReply`). The card holds the
+      // turn's own text at once and the notes as a list once the worker answers, which is why the
+      // landmark waits for the last of them: that worker's code comes from the build that did not
+      // serve this page, which is the walk's whole point.
+      loads: ["markdown-worker"],
       route: "/agents/:sessionId/live",
       shows: (page) => [
         page.getByTestId("agent-message-assistant").filter({ hasText: shown.agentReply }),
+        page
+          .getByTestId("agent-message-assistant")
+          .locator("li")
+          .nth(agentReplyNotes - 1),
       ],
       url: `${agent}/live`,
     },
@@ -394,11 +421,12 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `${issue}/spec`,
     },
     {
-      // The message's diagram is the Mermaid worker's: without it the body shows its source. The
-      // message is also longer than the worker threshold, so its list is the parse worker's: the
-      // card holds the body's text at once and the list once the worker answers. Both workers'
-      // code comes from the build that did not serve this page, which is the walk's whole point.
-      loads: ["markdown-worker", "mermaid"],
+      // The message's diagram is the Mermaid worker's: without it the body shows its source. Its
+      // list is no worker's: a stored message arrives with the tree the server read it into and
+      // is parsed nowhere (`longList`), so what the list proves here is that the whole of a long
+      // stored body is drawn from the chunks of the build that did not serve this page, which is
+      // the walk's whole point.
+      loads: ["mermaid"],
       route: "/issues/:key/*",
       shows: (page) => [
         page.locator("#issue-conversation-panel").getByText(shown.comment),
@@ -431,6 +459,31 @@ function visits(seed: Seeded): readonly Visit[] {
       route: "/issues/:key/*",
       shows: (page) => [page.getByRole("list", { name: "Issue activity" })],
       url: `${issue}/activity`,
+    },
+    {
+      route: "/priorities",
+      shows: (page) => [
+        heading(page, "Priorities"),
+        page.locator('section[aria-label="Priorities"]'),
+        page.getByRole("table", { name: "Priorities table" }),
+        page.locator('section[aria-label="In flight under no priority"]'),
+        page.locator('section[aria-label="Priority work in backlog or icebox"]'),
+      ],
+      url: "/priorities",
+    },
+    {
+      // Three reads, each its own request: the priority itself, which the title and the owner
+      // are written in where they are read (alice is a person, and every priority write is the
+      // deployment's), the issues advancing it under them, and the history in the margin.
+      route: "/priorities/:id",
+      shows: (page) => [
+        page.getByRole("textbox", { name: "Title" }),
+        page.getByRole("combobox", { name: "Owner" }),
+        page.locator('section[aria-label="Description"]'),
+        page.locator('section[aria-label="Work advancing this priority"]'),
+        page.getByRole("complementary", { name: "Margin" }),
+      ],
+      url: `/priorities/${seed.priority}`,
     },
     {
       // A project with an architecture source opens on its Architecture tab.

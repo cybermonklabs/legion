@@ -1,0 +1,8 @@
+kind: Added
+custom:
+  Issue: pr3939
+body: |-
+  A claim view of `GET /legion/v1/state` and an operator claim carry `leakCheckCause`, the
+  sentence the claim's latest launch try was refused with because the shared public leak check
+  could not be installed in the role's pod. It begins `the shared public leak check could not be
+  installed:`. A caller below daemon API contract 87 is served no such key.

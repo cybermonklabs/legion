@@ -1,4 +1,3 @@
-import { type Browser, expect, type Page, test } from "@playwright/test";
 import type { Comment } from "../web/src/api/types";
 
 import { createComment, createIssue, createProject, getAsk, listComments } from "./api";
@@ -14,8 +13,8 @@ import {
   placeCaret,
   selectEditorText,
 } from "./editor";
-import { resetDatabase } from "./seed";
 import { refusePosts, WRITE_REFUSED_TEXT } from "./sends";
+import { type Browser, expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The margin composer a selection-bar action opens can switch between Comment, Suggest and Ask;
@@ -98,11 +97,8 @@ async function undoUndoRedo(page: Page): Promise<void> {
   await page.keyboard.press("ControlOrMeta+Shift+z");
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("switching an anchored composer from Comment to Ask retypes its mark and asks about the selected text", async ({
+// @pr: The live document: a composer switched from Comment to Ask has to retype its mark and ask about the text that was selected.
+test("switching an anchored composer from Comment to Ask retypes its mark and asks about the selected text @pr", async ({
   browser,
 }) => {
   await withReaders(

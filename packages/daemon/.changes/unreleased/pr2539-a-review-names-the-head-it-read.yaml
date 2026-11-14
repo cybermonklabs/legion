@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A review decides a review round only when it names the head it read, in its own words. The
+  Legion footer a review is submitted with now carries that head, and a review the review App
+  submitted decides the round only when the head its footer names is the pull request's current
+  head, by webhook and by the daemon's read of GitHub's list of reviews alike. GitHub rewrites a
+  review's `commit_id` to the pull request's current head, so its record of a review can name a
+  head the review never saw — an approval of one head has been seen listing, as its `commit_id`,
+  a merge pushed two days later — and nothing rewrites the body a review was submitted with. No
+  clock answers for it either: a force push that puts an earlier head back makes the review of
+  the head in between look like a review of the head the branch now stands on.
+
+  A review whose footer names another head, or none, decides nothing: it is logged, the round
+  stays open, and the reason is kept for the stuck notice the architect gets, so the reviewer
+  submits again at the head it read. A person's review still decides by its webhook on the
+  `commit_id` that event carried; read from GitHub's list, where that id has moved, it decides
+  nothing.

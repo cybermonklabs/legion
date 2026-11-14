@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import { promisify } from "node:util";
 
-import { laneValue } from "./harness-ports";
+import { stackValue } from "./harness-ports";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,8 +22,8 @@ const psqlEnvironment: NodeJS.ProcessEnv = Object.fromEntries(
 );
 
 /** The database this run's SQL writes to: a deployed server's own `PLAYWRIGHT_DATABASE_URL`, else
- *  the `DATABASE_URL` of this process's lane, which is the one the caller supplied for a run of
- *  one lane (`e2e/harness-ports.ts`). A leftover deployed URL must not override a local
+ *  the `DATABASE_URL` of this process's stack, which is the one the caller supplied for a run of
+ *  one stack (`e2e/harness-ports.ts`). A leftover deployed URL must not override a local
  *  harness's DATABASE_URL, and nothing falls back to libpq's default database, because
  *  `resetDatabase` empties whatever this names. It is read when the session connects rather than
  *  at import, so a module that only imports `sql` never refuses before the harness has set it. */
@@ -31,7 +31,7 @@ function databaseUrl(): string {
   const deployed = process.env.PLAYWRIGHT_BASE_URL
     ? process.env.PLAYWRIGHT_DATABASE_URL
     : undefined;
-  const url = deployed ?? laneValue(process.env, "DATABASE_URL");
+  const url = deployed ?? stackValue(process.env, "DATABASE_URL");
   if (url === undefined || url.trim() === "") {
     throw new Error(
       "PLAYWRIGHT_DATABASE_URL or DATABASE_URL must name the database for this e2e run"

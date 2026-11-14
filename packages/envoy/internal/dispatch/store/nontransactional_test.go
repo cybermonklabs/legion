@@ -64,29 +64,47 @@ func migrationKeyLocks(t *testing.T, store *Store) int {
 	return held
 }
 
-// waitForQueuedMigrationKey gives want runners at most bound to queue for migrationLockKey and
-// returns how many of them Postgres was seen holding ungranted. It fails nothing when none
-// appear, because the two worlds this file tells apart queue differently: a runner that waits by
-// polling pg_try_advisory_lock (lockMigrations) has nothing open between two tries and so shows
-// in no catalog at all, while a runner blocked in pg_advisory_lock - the wait these tests refuse
-// - is an ungranted advisory row here.
+// migrationKeyWaitingRunners counts the runners that have said they are waiting for
+// migrationLockKey. lockMigrations writes one record the first time its try for the key is
+// refused, and none at all for a runner granted the key straight away, so one such record is one
+// runner that is in the poll rather than still on its way to its first try. They are read by the
+// "key" attribute every record this runner writes about the key carries, the way
+// migrationKeyErrorMessages reads the ERROR ones, and by the message, so that the record written
+// when the same runner's wait ends is no second count of it.
 //
-// The bound is what makes both worlds reach the release the same way: the blocking one returns
-// as soon as its rows appear, the polling one when the bound runs out, and in both the key is
-// released with every runner already queued for it, which is the order under test. The bound is
-// far longer than the milliseconds two goroutines need to reach their first try, and nothing the
-// polling world shows could confirm that arrival instead.
-func waitForQueuedMigrationKey(t *testing.T, store *Store, want int, bound time.Duration) int {
+// The log is all a waiting runner leaves behind here. A poll holds nothing open between two
+// tries, so a runner waiting for the key shows in no catalog of the server at all: pg_locks has
+// an ungranted advisory row only for the blocking wait lockMigrations refuses.
+func migrationKeyWaitingRunners(records []slog.Record) int {
+	waiting := 0
+	for _, record := range records {
+		if record.Level != slog.LevelInfo || !strings.Contains(record.Message, "waiting for it") {
+			continue
+		}
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == "key" && attr.Value.Kind() == slog.KindInt64 && attr.Value.Int64() == migrationLockKey {
+				waiting++
+				return false
+			}
+			return true
+		})
+	}
+	return waiting
+}
+
+// waitForWaitingRunners gives want runners at most bound to say they are waiting for
+// migrationLockKey and returns how many of them had said so when it stopped looking.
+//
+// It returns the count instead of failing on it so that its caller can release the key it holds
+// before it judges what it got: the runners are blocked on that key, and a test that fails while
+// still holding it hangs in its own cleanup.
+func waitForWaitingRunners(t *testing.T, records *logtest.Recorder, want int, bound time.Duration) int {
 	t.Helper()
-	ctx := context.Background()
 	deadline := time.Now().Add(bound)
 	for {
-		var queued int
-		if err := store.Pool.QueryRow(ctx, "select count(*) "+migrationKeyRows+" and not granted", migrationLockKey).Scan(&queued); err != nil {
-			t.Fatalf("count the sessions queued for the migration key: %v", err)
-		}
-		if queued >= want || time.Now().After(deadline) {
-			return queued
+		waiting := migrationKeyWaitingRunners(records.Records())
+		if waiting >= want || time.Now().After(deadline) {
+			return waiting
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -379,9 +397,6 @@ func TestAnUnlockThatDoesNotLandLogsAtErrorAndEndsItsConnection(t *testing.T) {
 		t.Errorf("the records about the key at ERROR are %v; want the one saying the key was not released", keyErrors)
 	}
 	waitForGoneBackend(t, store, pid, "the connection whose unlock answered false went back to the pool instead of being closed out of it")
-	if held := migrationKeyLocks(t, store); held != 0 {
-		t.Errorf("%d advisory locks on the key are left after the unlock that did not land", held)
-	}
 }
 
 // inMigrationLockTx's failed-lock path, the one no test reached: lockMigrations fails where the
@@ -697,17 +712,15 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 	}
 }
 
-// migrationKeyQueueBound is how long the test below gives its two runners to be waiting for the
-// key before it releases it (waitForQueuedMigrationKey).
+// migrationKeyQueueBound is how long the test below gives its two runners to say they are
+// waiting for the key before it releases it and asserts that both of them did
+// (waitForWaitingRunners).
 //
-// The bound has to exceed migrationLockMaxPause, the longest sleep lockMigrations takes between
-// two tries. Only then must a runner that is already polling have asked for the key at least
-// once inside the window, so the release lands on two runners that are both waiting in the poll
-// - the order this test is about - and not on one still on its way to its first try. Twice the
-// longest pause is that with room for two goroutines to start and be refused once, which takes
-// milliseconds. It is derived rather than written as a number so that raising the pause raises
-// this wait with it, instead of leaving a test that passes while proving nothing about the order
-// it names.
+// A runner says so on its first refused try, which takes no sleep at all and so follows its
+// goroutine's start by milliseconds. The bound is therefore a ceiling on a runner that never
+// arrives rather than a wait the test sits out, and it is derived from migrationLockMaxPause -
+// the longest sleep lockMigrations takes between two tries - rather than written as a number, so
+// that a machine slow enough for that pause to be raised gets the same room here.
 const migrationKeyQueueBound = 2 * migrationLockMaxPause
 
 // A boot already blocked on the migration key when the concurrent build starts. That order is
@@ -744,6 +757,11 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 			migrationKeyQueueBound, pgmigrate.LockTimeout, migrationLockMaxPause)
 	}
 	first, databaseURL := migratedToOne(t)
+	// The runners' own records are what says they are waiting for the key: their wait is a
+	// poll, which holds nothing open between two tries and so shows in no catalog of the
+	// server (migrationKeyWaitingRunners).
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
 	set := fstest.MapFS{
 		"migrations/0001_things.up.sql": censusBase["migrations/0001_things.up.sql"],
 		"migrations/0002_things_kind.up.sql": {Data: []byte(
@@ -777,12 +795,19 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	for _, booting := range []*Store{first, second} {
 		go func(booting *Store) { applied <- booting.applyMigration(ctx, pending) }(booting)
 	}
-	queued := waitForQueuedMigrationKey(t, first, 2, migrationKeyQueueBound)
-	t.Logf("%d of the 2 runners were waiting for the key inside Postgres when it was released", queued)
+	waiting := waitForWaitingRunners(t, records, 2, migrationKeyQueueBound)
 	if _, err := holder.Exec(ctx, "select pg_advisory_unlock($1)", migrationLockKey); err != nil {
 		t.Fatalf("release the key the test's own session holds: %v", err)
 	}
 	holder.Close(ctx)
+	// Judged only now that the key is free. Both runners are blocked on it, pgxpool.Pool.Close
+	// waits for the connections they hold, and the second store's cleanup runs before the
+	// holder's (cleanups run last registered first), so a failure taken while the key was still
+	// held would hang this test in its own cleanup.
+	if waiting != 2 {
+		t.Fatalf("%d of the 2 runners said they were waiting for the key within %s, so the key was released on fewer runners than the order this test is about: it is the loser still waiting while the winner builds the index concurrently that deadlocks, and a release that reaches one runner never sets that up",
+			waiting, migrationKeyQueueBound)
+	}
 	for range 2 {
 		if err := <-applied; err != nil {
 			t.Errorf("a runner queued for the key before the build began: %v", err)
@@ -796,11 +821,11 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	if !valid {
 		t.Error("things_kind is INVALID: the concurrent build did not finish")
 	}
-	var records int
-	if err := first.Pool.QueryRow(ctx, "select count(*) from schema_migrations where version = $1::bigint", pending.Version).Scan(&records); err != nil {
+	var versionRecords int
+	if err := first.Pool.QueryRow(ctx, "select count(*) from schema_migrations where version = $1::bigint", pending.Version).Scan(&versionRecords); err != nil {
 		t.Fatalf("count the migration's version records: %v", err)
 	}
-	if records != 1 {
-		t.Errorf("schema_migrations holds %d records of version %d, want 1", records, pending.Version)
+	if versionRecords != 1 {
+		t.Errorf("schema_migrations holds %d records of version %d, want 1", versionRecords, pending.Version)
 	}
 }

@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import {
@@ -17,15 +15,10 @@ import {
 import { documentEditor } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
-import { signIn } from "./users";
+import { expect, test } from "./test";
 
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
-});
-
-test("an issue and its ask show a cross-project message and structural backlinks", async ({
+// @pr: The backlink surface's own row: a cross-project message and the structural backlinks an issue and its ask carry.
+test("an issue and its ask show a cross-project message and structural backlinks @pr", async ({
   page,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });

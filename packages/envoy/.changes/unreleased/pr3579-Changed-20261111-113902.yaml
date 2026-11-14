@@ -1,0 +1,5 @@
+kind: Changed
+body: The pod template of the clustered hub's session listener and of Dispatch's listener changed, so the next `pulumi up` of a deployed stack rolls each of those pods once. While the clustered hub's listener pod is unready the Tailscale Service's port 9020 refuses connections, and its port 4222 stays up, which is what the split is for. The new termination grace period is 40 seconds, up from 35, so a listener that hangs is killed five seconds later than before. Dispatch's app pod is unchanged.
+time: 2026-11-11T11:39:02.740182915Z
+custom:
+    Issue: pr3579

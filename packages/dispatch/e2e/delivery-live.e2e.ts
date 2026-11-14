@@ -1,11 +1,10 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { expect, type Page, type TestInfo, test, type WebSocketRoute } from "@playwright/test";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { PIPELINE_AT, seedDeliveryFixture, seedPipelineFixture } from "./delivery-seed";
 import { seedDeliveryReconcileGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { expect, type Page, type TestInfo, test, type WebSocketRoute } from "./test";
 import { asUser } from "./users";
 
 interface LiveRecord {
@@ -215,11 +214,8 @@ async function deliveryRequest(page: Page, path: string): Promise<unknown> {
   return response.json();
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("a merge appears without a reload, and the page issues no delivery GET", async ({
+// @pr: Live delivery: a merge reaches the open page over the socket, with no delivery GET behind it.
+test("a merge appears without a reload, and the page issues no delivery GET @pr", async ({
   browser,
 }, testInfo) => {
   await seedDeliveryFixture();
@@ -347,7 +343,8 @@ test("each delta carries only what changed", async ({ browser }) => {
   }
 });
 
-test("after every socket is dropped, the page resumes and equals the GET answer", async ({
+// @pr: Live delivery: a reconnect after every socket is dropped, which must leave the page equal to the GET answer.
+test("after every socket is dropped, the page resumes and equals the GET answer @pr", async ({
   browser,
 }) => {
   await seedDeliveryFixture();
@@ -397,7 +394,8 @@ test("after every socket is dropped, the page resumes and equals the GET answer"
 test("an issue title change reaches the page", async ({ browser }) => {
   await seedDeliveryFixture();
   await sql(
-    `INSERT INTO projects (key, name) VALUES ('ACME', 'Acme') ON CONFLICT DO NOTHING`,
+    // Every project names a default assignee; alice is the person this fixture is read as.
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-690', 'ACME', 690, 'Initial live issue title', 'todo', 1, '{"kind":"system","id":"e2e"}', 'U690')`,
     `INSERT INTO delivery_pull_requests (
@@ -455,7 +453,8 @@ test("the Pipeline page updates live", async ({ browser }) => {
   }
 });
 
-test("the freshness row says Live with the last change, and Reconnecting while dropped", async ({
+// @pr: Live delivery: the freshness row is how a reader knows the page is live, and it must say Reconnecting while it is not.
+test("the freshness row says Live with the last change, and Reconnecting while dropped @pr", async ({
   browser,
 }) => {
   await seedDeliveryFixture();
@@ -479,13 +478,12 @@ test("the freshness row says Live with the last change, and Reconnecting while d
   }
 });
 
+// The WebKit iPhone project owns this phone path and is the only project that runs the row:
+// it selects the row by its title, and `chromium`, the one other project this file reaches,
+// inverts the same fragment (`webkitPhoneDeliveryRow`, e2e/playwright.config.ts).
 test("on a phone the delivery page shows a merge without a reload", async ({
   browser,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "webkit-iphone",
-    "the WebKit iPhone project owns the phone path"
-  );
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
   await sql(

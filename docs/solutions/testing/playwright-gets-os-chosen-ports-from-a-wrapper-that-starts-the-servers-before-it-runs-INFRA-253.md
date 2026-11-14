@@ -16,6 +16,16 @@ related_issues:
 
 # Playwright gets OS-chosen ports from a wrapper that starts the servers before it runs
 
+**Update (2026-11-10, dispatch://INFRA-1410): there is no wrapper.** `e2e/run.ts` and
+`e2e/preflight.ts` are deleted, and Playwright starts the servers itself: `e2e/global-setup.ts`
+is the config's `globalSetup`, it starts one stack per Playwright worker through
+`e2e/harness-pool.ts` and checks each of them, and `e2e/global-teardown.ts` stops them. The whole
+command is `bunx playwright test --config e2e/playwright.config.ts` from `packages/dispatch`; a
+lane is called a stack, `DISPATCH_E2E_WORKERS` and `DISPATCH_E2E_LANES` are gone, a run asks for
+more workers with Playwright's own `--workers <n>`, and a worker reads its own stack out of the
+`DISPATCH_E2E_STACKS` manifest (`stackValue`, `e2e/harness-ports.ts`). What follows is the record
+as it was written.
+
 Extends docs/solutions/testing/dispatch-playwright-harness-from-a-legion-pane-the-harness-owns-its-envoy-own-your-ports-database-and-paths.md.
 
 ## Rule

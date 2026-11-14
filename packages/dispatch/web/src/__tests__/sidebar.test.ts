@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,11 +7,37 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../api/client";
 import { whoAmIQuery } from "../api/queries";
-import type { CredentialPendingRow, IssueSummary, Project } from "../api/types";
+import type { CredentialPendingRow, IssueSummary, Priorities, Project } from "../api/types";
 import { Sidebar } from "../features/sidebar/Sidebar";
+
+/** The summary call the rail reads (`?summary=true`): the two fault counts, and `empty` where
+ *  the deployment has written no priority at all. Neither answer carries a priority row. */
+function summary(parked: number, unplaced: number, written = true): Priorities {
+  return {
+    ...(written
+      ? {}
+      : {
+          empty:
+            "No priority is live now, so the list is empty. Write one, then say which work advances it.",
+        }),
+    priorities: [],
+    priority_work_parked: { by_priority: {}, count: parked, issues: [] },
+    work_under_no_priority: { by_project: {}, count: unplaced, issues: [] },
+  };
+}
+
+/** The spies a test of this file makes through `renderSidebar` that its own `finally` does not
+ *  put back: a spy on `api` outlives its test, so the rail's own read is let go here. */
+const railSpies: { mockRestore: () => void }[] = [];
+
+afterEach(() => {
+  for (const spy of railSpies.splice(0)) spy.mockRestore();
+});
 
 function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
+    advances: [],
+    advances_revision: 0,
     route: null,
     repo: null,
     resolved_repo: null,
@@ -34,6 +60,9 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     rank: "U",
     title: "Pinned work",
     updated_at: "2026-09-10T00:00:00Z",
+    closed_at: null,
+    created_by: null,
+    created_at: "2026-09-10T00:00:00Z",
     ...overrides,
   };
 }
@@ -50,22 +79,34 @@ function project(overrides: Partial<Project> = {}): Project {
 }
 
 /** `pending` is the broker's list of credential requests waiting on the viewer; without it this
- *  Dispatch has no broker (the list answers `null`). */
-function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
+ *  Dispatch has no broker (the list answers `null`). `priorities` is what the rail's summary
+ *  call answers; by default this deployment has written none. */
+function renderSidebar(
+  pathname = "/",
+  pending?: CredentialPendingRow[],
+  priorities: Priorities = summary(0, 0, false)
+) {
+  const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(priorities);
+  railSpies.push(listPriorities);
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([
     {
       anchor: null,
       answer: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "alice", kind: "user" },
       block_id: null,
       created_at: "2026-09-10T00:00:00Z",
       edited_at: null,
       id: "ask-1",
-      // Needs you counts the reader's own questions, so these sit on their issues.
+      // Needs you counts the questions waiting on the reader, which is what the server answers
+      // in `waiting_on_person`: nobody has handed these on, so it is their issue's assignee.
       issue: { assignee: "alice", key: "CORE-1", title: "Pinned work" },
       issue_key: "CORE-1",
       last_reply: null,
+      waiting_on_person: "alice",
       priority: null,
       snoozed_until: null,
       kind: "question",
@@ -92,6 +133,9 @@ function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
       anchor: null,
       answer: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "alice", kind: "user" },
       block_id: null,
       created_at: "2026-09-10T00:00:00Z",
@@ -125,6 +169,9 @@ function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
       anchor: null,
       answer: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "agent-2", kind: "session" },
       block_id: null,
       created_at: "2026-09-10T00:00:00Z",
@@ -132,6 +179,7 @@ function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
       id: "ask-3",
       issue: { assignee: "alice", key: "OPS-2", title: "Operations work" },
       issue_key: "OPS-2",
+      waiting_on_person: "alice",
       priority: null,
       snoozed_until: null,
       kind: "question",
@@ -189,7 +237,15 @@ function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
       )
     )
   );
-  return { getCredentialPending, getInbox, getIssue, listIssues, listProjects, view };
+  return {
+    getCredentialPending,
+    getInbox,
+    getIssue,
+    listIssues,
+    listPriorities,
+    listProjects,
+    view,
+  };
 }
 
 test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Inbox count", async () => {
@@ -349,5 +405,43 @@ test("sidebar keeps its hide control available while navigation loads", async ()
     getCredentialPending.mockRestore();
     listIssues.mockRestore();
     listProjects.mockRestore();
+  }
+});
+
+// The rail's Priorities entry (INFRA-2947, R8): the way to the page from every other page, with
+// the number of faults now beside it, which is the two fault counts added.
+test("the rail's Priorities entry opens the page and counts both faults as one number", async () => {
+  const sidebar = renderSidebar("/", undefined, summary(5, 7));
+
+  try {
+    const entry = await screen.findByRole("link", { name: /^Priorities/ });
+    expect(entry).toHaveAttribute("href", "/priorities");
+    await waitFor(() => expect(entry).toHaveTextContent("12"));
+  } finally {
+    sidebar.view.unmount();
+    sidebar.getCredentialPending.mockRestore();
+    sidebar.getInbox.mockRestore();
+    sidebar.getIssue.mockRestore();
+    sidebar.listIssues.mockRestore();
+    sidebar.listProjects.mockRestore();
+  }
+});
+
+// Where no priority has been written there is nothing for work to be off, so the entry carries
+// no number rather than a zero the reader would read as a state of the board.
+test("the rail's Priorities entry carries no number where no priority exists", async () => {
+  const sidebar = renderSidebar();
+
+  try {
+    const entry = await screen.findByRole("link", { name: /^Priorities/ });
+    await waitFor(() => expect(sidebar.listPriorities).toHaveBeenCalledWith({ summary: true }));
+    expect(entry.textContent).toBe("PrioritiesEvery project's priorities, and the work on none");
+  } finally {
+    sidebar.view.unmount();
+    sidebar.getCredentialPending.mockRestore();
+    sidebar.getInbox.mockRestore();
+    sidebar.getIssue.mockRestore();
+    sidebar.listIssues.mockRestore();
+    sidebar.listProjects.mockRestore();
   }
 });

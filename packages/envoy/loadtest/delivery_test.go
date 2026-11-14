@@ -2,6 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -107,8 +112,8 @@ func TestJoinDeliveryCountsClockAnomalies(t *testing.T) {
 }
 
 // TestReadCommitsNamesTheTableWhenItCannotRead: given a Postgres it cannot reach, readCommits
-// returns no rows and an error naming loadtest.event_commits, never an empty result that reads as
-// no commits; with no write in the window it reads nothing and fails nothing.
+// returns no rows and an error naming public.loadtest_event_commits, never an empty result that
+// reads as no commits; with no write in the window it reads nothing and fails nothing.
 func TestReadCommitsNamesTheTableWhenItCannotRead(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -116,11 +121,253 @@ func TestReadCommitsNamesTheTableWhenItCannotRead(t *testing.T) {
 	if err == nil || rows != nil {
 		t.Fatalf("readCommits on an unreachable Postgres = %v, %v; want no rows and an error", rows, err)
 	}
-	if !strings.Contains(err.Error(), "loadtest.event_commits") {
-		t.Fatalf("error %q does not name loadtest.event_commits", err)
+	if !strings.Contains(err.Error(), "public.loadtest_event_commits") {
+		t.Fatalf("error %q does not name public.loadtest_event_commits", err)
 	}
 	// With no write in the window there is no row to read, and nothing depends on one.
 	if rows, err := readCommits(ctx, unreachablePG, 1, nil); err != nil || rows != nil {
 		t.Fatalf("readCommits with no markers = %v, %v; want nothing read and no error", rows, err)
+	}
+}
+
+// unitWindow is one unit session's life, as a session that started a second into the step and
+// stopped nine seconds in recorded it: its subscribe went out at 1,000 ms and was acknowledged at
+// 1,100 ms, its unsubscribe at 9,000 ms and 9,100 ms.
+func unitWindow() sessionWindow {
+	return sessionWindow{Class: deliveryClassUnit, ID: "ses-lg-unit-00001", Issues: []string{"LOOP-1"},
+		SubSent: 1000 * msNs, SubAck: 1100 * msNs, UnsubSent: 9000 * msNs, UnsubAck: 9100 * msNs}
+}
+
+// loopWrite is one committed comment on issue, with the commit time the case places in a
+// session's life, and the receipts of its event by the sessions that took it.
+func loopWrite(marker, event int64, issue string, commitNs int64) ([]writeRec, []commitRow) {
+	return []writeRec{{Marker: marker, Kind: kindComment, Issue: issue, InWindow: true,
+			Sent: commitNs - 20*msNs, Arrival: commitNs - 10*msNs, Response: commitNs + 10*msNs, Status: 201}},
+		[]commitRow{{EventID: event, Type: primaryEventType[kindComment], Marker: marker, CommitNs: commitNs}}
+}
+
+// TestJoinDeliveryExpectationRule: a loop session is owed a write that committed after the
+// listener acknowledged its subscribe and more than the receipt deadline before it acknowledged
+// its unsubscribe. Every other place in its life is its own column: before the subscribe went out
+// and after the unsubscribe landed it was owed nothing, and inside either edge the write is a
+// boundary, which is neither expected nor lost.
+func TestJoinDeliveryExpectationRule(t *testing.T) {
+	const deadline = time.Second
+	for _, c := range []struct {
+		name     string
+		commitNs int64
+		received bool
+		want     classDelivery
+	}{
+		{"committed before the subscribe went out", 900 * msNs, false, classDelivery{Sessions: 1}},
+		{"committed while the subscribe was in flight", 1050 * msNs, false, classDelivery{Sessions: 1, Boundary: 1}},
+		{"committed after the subscribe and well before the unsubscribe, and lost", 5000 * msNs, false,
+			classDelivery{Sessions: 1, Expected: 1, Lost: 1}},
+		{"committed after the subscribe and well before the unsubscribe, and received", 5000 * msNs, true,
+			classDelivery{Sessions: 1, Expected: 1, Received: 1}},
+		{"committed inside the receipt deadline of the unsubscribe", 8500 * msNs, false,
+			classDelivery{Sessions: 1, Boundary: 1}},
+		{"committed after the unsubscribe was acknowledged", 9200 * msNs, false, classDelivery{Sessions: 1}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			writes, commits := loopWrite(1, 50, "LOOP-1", c.commitNs)
+			var receipts []receipt
+			if c.received {
+				receipts = []receipt{{EventID: 50, Recv: c.commitNs + 100*msNs, Session: unitWindow().ID}}
+			}
+			got, _ := deliveryJoin{writes: writes, commits: commits, receipts: receipts,
+				windows: []sessionWindow{unitWindow()}, deadline: deadline, durationS: 10}.join()
+			if unit := got.ByClass[deliveryClassUnit]; unit != c.want {
+				t.Fatalf("unit class %+v, want %+v", unit, c.want)
+			}
+			// The step's own totals follow the rule: what the sessions were owed is expected, and
+			// what never arrived is missing.
+			if got.ExpectedIssueTopicReceipts != c.want.Expected || got.Missing != c.want.Lost {
+				t.Fatalf("expected %d missing %d, want %d and %d",
+					got.ExpectedIssueTopicReceipts, got.Missing, c.want.Expected, c.want.Lost)
+			}
+		})
+	}
+}
+
+// TestJoinDeliveryCountsASecondReceiptAsADuplicate: one session taking one event twice is one
+// receipt and one duplicate, and the delivery latency is the first receipt's alone.
+func TestJoinDeliveryCountsASecondReceiptAsADuplicate(t *testing.T) {
+	w := unitWindow()
+	writes, commits := loopWrite(1, 50, "LOOP-1", 5000*msNs)
+	receipts := []receipt{
+		{EventID: 50, Recv: 5200 * msNs, Session: w.ID},
+		{EventID: 50, Recv: 5900 * msNs, Session: w.ID},
+	}
+
+	got, _ := deliveryJoin{writes: writes, commits: commits, receipts: receipts,
+		windows: []sessionWindow{w}, deadline: time.Second, durationS: 10}.join()
+
+	want := classDelivery{Sessions: 1, Expected: 1, Received: 1, Duplicate: 1}
+	if unit := got.ByClass[deliveryClassUnit]; unit != want {
+		t.Fatalf("unit class %+v, want %+v", unit, want)
+	}
+	if got.IssueTopicReceipts != 1 || got.Missing != 0 {
+		t.Fatalf("receipts %d missing %d, want 1 and 0: the duplicate is no second receipt", got.IssueTopicReceipts, got.Missing)
+	}
+	if from := got.DeliveryMsFromCommit; from.N != 1 || from.Max != 200 {
+		t.Fatalf("delivery from commit %+v, want one sample of 200 ms, the first receipt's", from)
+	}
+}
+
+// TestJoinDeliveryCountsTheClassesApart: a write both a unit session and the driver session
+// follow is expected twice, once in each class, and each class's loss is its own.
+func TestJoinDeliveryCountsTheClassesApart(t *testing.T) {
+	unit := unitWindow()
+	driver := sessionWindow{Class: deliveryClassDriver, ID: "ses-lg-driver", Issues: []string{"LOOP-1", "LOOP-2"},
+		SubSent: 10 * msNs, SubAck: 20 * msNs}
+	writes, commits := loopWrite(1, 50, "LOOP-1", 5000*msNs)
+	other, otherCommits := loopWrite(2, 60, "LOOP-2", 6000*msNs)
+	receipts := []receipt{
+		{EventID: 50, Recv: 5100 * msNs, Session: driver.ID},
+		{EventID: 60, Recv: 6100 * msNs, Session: driver.ID},
+	}
+
+	got, _ := deliveryJoin{writes: append(writes, other...), commits: append(commits, otherCommits...),
+		receipts: receipts, windows: []sessionWindow{unit, driver}, deadline: time.Second, durationS: 10}.join()
+
+	wantUnit := classDelivery{Sessions: 1, Expected: 1, Lost: 1}
+	wantDriver := classDelivery{Sessions: 1, Expected: 2, Received: 2}
+	if u := got.ByClass[deliveryClassUnit]; u != wantUnit {
+		t.Errorf("unit class %+v, want %+v: the unit followed LOOP-1 alone and took nothing", u, wantUnit)
+	}
+	if d := got.ByClass[deliveryClassDriver]; d != wantDriver {
+		t.Errorf("driver class %+v, want %+v: the driver followed both issues and took both", d, wantDriver)
+	}
+	if got.ExpectedIssueTopicReceipts != 3 || got.IssueTopicReceipts != 2 || got.Missing != 1 {
+		t.Fatalf("expected %d receipts %d missing %d, want 3, 2 and 1",
+			got.ExpectedIssueTopicReceipts, got.IssueTopicReceipts, got.Missing)
+	}
+}
+
+// TestJoinDeliveryWithoutSessionsCarriesNoClass: a step that ran the flat population alone counts
+// what it always has, and summary.json carries no by_class at all.
+func TestJoinDeliveryWithoutSessionsCarriesNoClass(t *testing.T) {
+	writes, commits := loopWrite(1, 50, "LGA-1", 5000*msNs)
+	got := joinDelivery(writes, commits, []receipt{{EventID: 50, Recv: 5100 * msNs}}, map[string]int{"LGA-1": 2}, 10)
+	if got.ByClass != nil {
+		t.Fatalf("by_class %+v, want none", got.ByClass)
+	}
+	if got.ExpectedIssueTopicReceipts != 2 || got.IssueTopicReceipts != 1 || got.Missing != 1 {
+		t.Fatalf("expected %d receipts %d missing %d, want 2, 1 and 1", got.ExpectedIssueTopicReceipts, got.IssueTopicReceipts, got.Missing)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "by_class") {
+		t.Fatalf("a step with no loop session records a class:\n%s", b)
+	}
+}
+
+// lostPairsOfAStep runs the join over the accounting's own inputs, writes what it found into a
+// step directory of its own, and answers that directory and the lost-pairs.json read back from
+// it, nil for a step that wrote none.
+func lostPairsOfAStep(t *testing.T, j deliveryJoin) (string, *lostPairsFile) {
+	t.Helper()
+	_, lost := j.join()
+	dir := t.TempDir()
+	writeLostPairs(dir, lost, log.New(io.Discard, "", 0))
+	b, err := os.ReadFile(filepath.Join(dir, lostPairsName))
+	if os.IsNotExist(err) {
+		return dir, nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got lostPairsFile
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%s: %v:\n%s", lostPairsName, err, b)
+	}
+	return dir, &got
+}
+
+// TestStepNamesEveryLostPair: a step whose unit session was owed a notification it never got
+// writes lost-pairs.json and names that one pair: the event, its kind and the write's marker,
+// the issue topic it was owed on, the session and its class, when the write committed, the four
+// times of the session's own subscribe and unsubscribe (so a reader sees it was no boundary
+// pair), the write's status, that the event did reach another session as a relay frame, and what
+// this session did take. The step that lost nothing writes no such file at all.
+func TestStepNamesEveryLostPair(t *testing.T) {
+	unit := unitWindow()
+	driver := sessionWindow{Class: deliveryClassDriver, ID: "ses-lg-driver", Issues: []string{"LOOP-1"},
+		SubSent: 10 * msNs, SubAck: 20 * msNs}
+	// Two writes on the topic both sessions followed. The driver took both; the unit took the
+	// second alone, so the first is its lost pair.
+	writes, commits := loopWrite(1, 50, "LOOP-1", 5000*msNs)
+	other, otherCommits := loopWrite(2, 60, "LOOP-1", 6000*msNs)
+	receipts := []receipt{
+		{EventID: 50, Recv: 5100 * msNs, Published: 5050 * msNs, Session: driver.ID},
+		{EventID: 60, Recv: 6100 * msNs, Published: 6050 * msNs, Session: driver.ID},
+		{EventID: 60, Recv: 6200 * msNs, Published: 6050 * msNs, Session: unit.ID},
+	}
+	j := deliveryJoin{writes: append(writes, other...), commits: append(commits, otherCommits...),
+		receipts: receipts, windows: []sessionWindow{unit, driver}, deadline: time.Second, durationS: 10}
+
+	_, got := lostPairsOfAStep(t, j)
+
+	if got == nil {
+		t.Fatalf("a step whose unit session lost a notification wrote no %s", lostPairsName)
+	}
+	if got.Lost != 1 || got.Written != 1 || got.Truncated || got.Limit != lostPairLimit || len(got.Pairs) != 1 {
+		t.Fatalf("%s counts %+v, want 1 lost pair written of 1, not truncated", lostPairsName, *got)
+	}
+	want := lostPair{EventID: 50, Kind: kindComment, Marker: 1, Issue: "LOOP-1", CommitNs: 5000 * msNs,
+		Session: unit.ID, Class: deliveryClassUnit,
+		SubSentNs: unit.SubSent, SubAckNs: unit.SubAck, UnsubSentNs: unit.UnsubSent, UnsubAckNs: unit.UnsubAck,
+		WriteStatus: 201, EventReceipts: 1, EventRelayFrames: 1,
+		SessionReceived: 1, SessionLastRecvNs: 6200 * msNs}
+	if got.Pairs[0] != want {
+		t.Fatalf("the lost pair is\n%+v\nwant\n%+v", got.Pairs[0], want)
+	}
+	// The negative control: the same step with that receipt taken by the unit too loses nothing,
+	// and the step directory holds no such file.
+	j.receipts = append(receipts, receipt{EventID: 50, Recv: 5200 * msNs, Published: 5050 * msNs, Session: unit.ID})
+	dir, none := lostPairsOfAStep(t, j)
+	if none != nil {
+		t.Fatalf("a step that lost no pair wrote %s in %s: %+v", lostPairsName, dir, *none)
+	}
+}
+
+// TestLostPairsStopAtTheBound: a step that lost more pairs than the bound writes lostPairLimit of
+// them, the earliest by commit time, and says how many there were and that it stopped.
+func TestLostPairsStopAtTheBound(t *testing.T) {
+	unit := unitWindow()
+	const over = lostPairLimit + 1
+	var writes []writeRec
+	var commits []commitRow
+	for i := range int64(over) {
+		// Each write commits a millisecond after the one before, well inside the session's life,
+		// and no receipt ever arrives: every one of them is a lost pair.
+		w, c := loopWrite(i+1, 1000+i, "LOOP-1", (2000+i)*msNs)
+		writes, commits = append(writes, w...), append(commits, c...)
+	}
+	j := deliveryJoin{writes: writes, commits: commits, windows: []sessionWindow{unit},
+		deadline: time.Second, durationS: 10}
+
+	_, got := lostPairsOfAStep(t, j)
+
+	if got == nil {
+		t.Fatalf("a step that lost %d pairs wrote no %s", over, lostPairsName)
+	}
+	if got.Lost != over || got.Written != lostPairLimit || !got.Truncated || len(got.Pairs) != lostPairLimit {
+		t.Fatalf("%s counts lost %d written %d truncated %v over %d pairs, want %d lost and %d written",
+			lostPairsName, got.Lost, got.Written, got.Truncated, len(got.Pairs), over, lostPairLimit)
+	}
+	first, last := got.Pairs[0], got.Pairs[lostPairLimit-1]
+	if first.EventID != 1000 || first.CommitNs != 2000*msNs {
+		t.Errorf("the first pair is event %d committed at %d, want the earliest, event 1000 at 2,000 ms", first.EventID, first.CommitNs)
+	}
+	if last.EventID != 1000+lostPairLimit-1 || last.CommitNs != (2000+lostPairLimit-1)*msNs {
+		t.Errorf("the last pair is event %d committed at %d, want event %d, the %dth by commit time",
+			last.EventID, last.CommitNs, 1000+lostPairLimit-1, lostPairLimit)
+	}
+	if slices.ContainsFunc(got.Pairs, func(p lostPair) bool { return p.EventID >= 1000+int64(lostPairLimit) }) {
+		t.Errorf("%s names a pair past the bound: the ones it left out are the latest, not the earliest", lostPairsName)
 	}
 }

@@ -21,6 +21,10 @@
       "types": "./src/temporary-tmpdir.ts",
       "bun": "./src/temporary-tmpdir.ts"
     },
+    "./transcript-lines": {
+      "types": "./src/transcript-lines.ts",
+      "bun": "./src/transcript-lines.ts"
+    },
     "./version-control-environment": {
       "types": "./src/version-control-environment.ts",
       "bun": "./src/version-control-environment.ts"

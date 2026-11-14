@@ -187,6 +187,26 @@ func WalkAskBlocks(node *Node, visit func(id string)) {
 	}
 }
 
+// HoldsAskBlock reports whether node is an ask block or holds one wherever it stands, stopping at
+// the first it finds. It walks as WalkAskBlocks walks (holdsBlocks), so it answers true for a node
+// that walk visits at least once. A caller that only asks whether a block holds a decision block
+// reads it rather than walking the whole subtree and setting a flag, since it runs on every body
+// write (itemblocks.Check).
+func HoldsAskBlock(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Type == askBlockType {
+		return true
+	}
+	for _, child := range node.Children {
+		if holdsBlocks(child) && HoldsAskBlock(child) {
+			return true
+		}
+	}
+	return false
+}
+
 // holdsFlags reports whether block holds an ask block or a footnote definition, itself included.
 // It walks as WalkAskBlocks walks (holdsBlocks), so the ask blocks of a block this flags are the
 // ones that walk finds. asWritten keeps every node that is not inline, so the tree as read and as

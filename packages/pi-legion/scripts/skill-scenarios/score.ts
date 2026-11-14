@@ -669,7 +669,7 @@ function instant(text: string, what: string): bigint {
  *      completed it (its last push before the completion, if it pushed) changes nothing under the
  *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
  *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
- *      tester, `- Check <id> (<when>): <pass|fail> at <12 hex>, recorded by tester. <words>`,
+ *      tester, `- Check <id> (<when>): <pass|fail> at <12 hex>, recorded by tester. <the reading>`,
  *      naming a commit of this run's own.
  * Without an accepted completion, rule 3 reads the run's own newest test record, so the notes say
  * what was wrong with it. A line naming another run's PR head instead is two runs meeting in the

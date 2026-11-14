@@ -2,8 +2,8 @@
 
 Tracked Oh My Pi extension package `@sjawhar/pi-legion`: the Legion entry (`extensions/legion.ts`),
 the Legion lifecycle modules (`src/`), the task agents Legion's prompts dispatch (`agents/`), and
-the seven Legion skills (`legion-architect`, `legion-controller`, `legion-oracle`, `legion-retro`,
-`legion-worker`, `leading-a-work-stream`, `simplify-settled-diff`),
+the six Legion skills (`legion-architect`, `legion-controller`, `legion-oracle`, `legion-retro`,
+`legion-worker`, `simplify-settled-diff`),
 staged into `dist/skills` by `scripts/pi-plugin-prepack.sh` at the repository root. It is installed
 beside `@sjawhar/pi-envoy` (`packages/pi-envoy`), which every session loads for Envoy messaging and
 the Dispatch tools; the Legion daemon installs both into its Oh My Pi profile and a worker image
@@ -94,8 +94,60 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 59's end of fix-attempt
-counting and its two recovery operations (the settings block of `GET /legion/v1/state` no longer
+number is the one `DaemonAPIVersion` declares, last bumped by contract 111 (dispatch://INFRA-2560:
+every issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`,
+how long it has been still, which a caller below 111 is served without), after contract 104's
+claim recoveries (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no
+process stands behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming
+`fresh_session`, and no shape the plugin parses moves), after contract 98's held list
+(dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
+each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
+the daemon reads in one order, of which `at_work` names the issues past their review from
+contract 111 on (see `record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where
+no issue holds the one
+that waits; the strict reader this plugin parses the state through takes the key as optional,
+because a caller from a pod whose claims record a contract under 98 is served the admission
+block without it (`api.stateFor`,
+`withoutHeld`), and the controller's tick notice carries the same rows), after contract 94
+(dispatch://INFRA-2800: each issue carries `phaseEntry` and `givenEntry`, which a caller below
+94 is served without, and a completion of an older phase entry is refused
+`HANDOFF_STALE_ENTRY`), after contract 87
+(dispatch://INFRA-3219: each claim view carries `leakCheckCause`, the sentence a launch try was
+refused with because the shared public leak check could not be installed, which a caller below
+87 is served without), after contract 86
+(dispatch://INFRA-714: the phase vocabulary loses `awaiting_merge`, a pull request carries
+`mergeState` in place of `checksVerdict`, a phase carries `pass`, every claim view carries
+`lastTurnStart` and `lastTurnEnd`, and `handoff_complete` takes no `ready`), after contract 85's
+`why` and the
+`waitingLine` fields beside it
+(INFRA-2554: each member of the line carries `part`, `kind`, `partPlace`, `partLength`,
+`holdsSlot`, `since` for a member whose work came back, `rootRank`, `ownRank` and `rootKey`
+for one that has not started, and `reason`, its own rendered sentence, which `legion state`
+prints under its `admission:` counts for the first ten of the line; and every issue that is
+not working now carries `why`, its `state` — `claim_stopped`, `waiting`, `blocked` or
+`unlisted` — and its `reason`, the sentence a person reads, where an issue at work whose
+worker runs carries none unless it also stands in `admission.waiting` or `admission.blocked`,
+as does an issue the record does not hold in the workflow; a caller
+from a pod below 85 is served every issue without `why` and every member of the line with its
+`place` and its `length` alone), after contract 75's decided claim and issue records (INFRA-3083:
+a claim view of `GET /legion/v1/state` carries `servingGeneration`, `updateReasons`,
+`providerErrorRun`, `pendingTask`, `failure` and `pendingCause`, an issue carries `heldFrom`,
+`lingerUntil` and `ancestry`, and the body carries the `contract` mark beside the daemon's
+block, which a caller from a pod below 75 is served none of), after contract 73's count of the
+claims the stale-plugin lane still has to refresh (`claimsToRefresh` on
+`GET /legion/v1/state`, which a caller below 73 is
+served without), after the contracts between 64 and 73, which this history does not list,
+after contract 64's launch spend
+attributes (every pane's environment and every pod's worker container carry `legion.issue`, the
+issue the launch serves, and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`,
+after the attributes the deployment's own `runtime.kubernetes.pod.env` or
+`runtime.tmux.pane_env` sets, so every launch's attributes name the issue it serves, and a
+spend row grouped by issue follows once the spend collector keeps those two keys, which
+dispatch://INFRA-1835 adds to its `theorem.*` keep-list; the project controller's launch serves
+no issue and carries the role alone), after contract 59's end of
+fix-attempt counting and its two recovery operations
+(the settings block of `GET /legion/v1/state` no longer
 carries `max_fix_attempts` and each pull request in it loses `fixAttempts`, which the strict
 reader every worker's `read_record` parses the state through requires, so the boot gate and
 `legion probe-image` hold plugin and daemon equal and neither order of the two ever runs; the
@@ -104,7 +156,7 @@ post `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`
 contract 58's waiting line
 (INFRA-1100: an issue of `GET /legion/v1/state` that `admission.waiting` names carries
 `waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
-an issue the list does not name, a slot holder among them, carries no such key, and a caller
+an issue the list does not name carries no such key, and a caller
 from a pod below 58 is served every issue without the field), after contract 57's claim step
 record and stall numbers (every claim view of `GET /legion/v1/state` and of `legion claims list`
 carries `step`, what the daemon last saw that claim's agent do — the turn it is in, the call it
@@ -112,7 +164,8 @@ is in, and that call's argument length and fingerprint, never their text — and
 every pod's worker container is told `LEGION_STALL_CALL_BOUND_MS`, `LEGION_STALL_CALL_GRACE_MS`
 and `LEGION_STALL_STEP_MS` where the daemon's own environment holds them; a strict reader before
 57 refuses a state carrying `step`, so a caller from a pod below 57 is served the state without
-it), after contract 56's retired stranded state
+it),
+after contract 56's retired stranded state
 (a claim of `strandedClaims` on `GET /legion/v1/state` may be `retired`, an entry a caller from a
 pod below 56 is served without), after contract 55's design-gate steps
 (each root issue of `GET /legion/v1/state` carries `gatedSteps`, one entry for each step the
@@ -165,9 +218,11 @@ limits, read through `@legion/pi-shared`'s `stall-limits.ts`), after contract 41
 command (`legion controller start` ends the operator's Oh My Pi command line with
 `/legion-controller-start`, and this plugin sends the controller's start message from that
 command, never from `session_start`; "The controller's start turn" below), after contract 40's
-`awaiting_person` phase and strict `waitingOn` issue view on `GET /legion/v1/state` (a root that
-gave its admission slot up while its architect waits on a person, and what it waits on; a 39
-plugin rejects both), after contract 39's one-container issue pod (INFRA-208: a sandbox locator
+`awaiting_person` phase and strict `waitingOn` issue view on `GET /legion/v1/state` (a root whose
+architect waits on a person, and what it waits on; such a root holds its admission slot, as every
+issue does from the moment the daemon starts it until its work is past its review, until it is done,
+or until Dispatch takes it out of the workflow;
+a 39 plugin rejects both), after contract 39's one-container issue pod (INFRA-208: a sandbox locator
 of an issue pod's role names container `roles`, and `settings` on `GET /legion/v1/state` gives
 `runtime.kubernetes.resources` as `{issue, controller}`), after contract 38's blocked issues on
 `GET /legion/v1/state` (INFRA-225: `admission.blocked` lists every root and child Legion is waiting
@@ -316,11 +371,22 @@ and daemon sentence and a 5xx or transport failure propagates without exiting �
 stale `pluginContract` is one such 4xx, so a pane that registers on an old contract exits and its
 daemon-side claim is already being relaunched onto the current plugin, under Kubernetes through a
 kept-pod install (docs/kubernetes.md "Contract discipline"), never a new pod; jj session
-attribution, before the capability is set; the Envoy role, which is the claim token and the topic
-the daemon sends an architect every notice on (no claim subscribes to an issue's notice topic, so
-no phase worker is woken by an architect's notice); and `claims/ready`, retried three times a
-second apart on a 5xx or transport failure only, and run again whenever the Envoy heartbeat
-regains the role. The boot measures no capability rows, and neither that `claims/ready` nor the
+attribution, before the capability is set; `claims/ready`, retried three times a second apart on
+a 5xx or transport failure only, and run again whenever the Envoy heartbeat regains the role; and
+last, at the session's first turn, the Envoy role, which is the claim token and the topic the
+daemon sends an architect every notice on (no claim subscribes to an issue's notice topic, so no
+phase worker is woken by an architect's notice). The name is taken last, and at a turn, because
+the listener keeps a message published to a role no session holds and hands the whole kept lane
+over the moment the role is claimed (INFRA-1573): claimed before the daemon's task, that lane
+takes the session's first turn and the task waits for it to end; claimed as a turn starts, it
+arrives inside a turn that is already running. The signal is `ClaimSession.firstTurnStarted`,
+which `extensions/legion.ts` calls from its `agent_start` handler, for any turn and never for a
+`task` subagent's event; a session that is given no turn at all — a role brought back with no
+task — claims at the bound instead, `claimFirstTurnBoundMs` (30 s,
+`LEGION_CLAIM_FIRST_TURN_BOUND_MS`), so it is addressable and hears what waited for it. Only the
+claim is deferred: `session_start` still awaits the whole boot, and Oh My Pi reads no input until
+every such handler has returned, so a boot that waited there for a first turn would deadlock.
+The boot measures no capability rows, and neither that `claims/ready` nor the
 regain's carries a report. The session measures its rows afterwards instead, on the 5 s interval
 it already runs and only while it is idle (INFRA-927, `src/capability-schedule.ts` driven from
 `extensions/legion.ts`), and a report leaves as a `claims/ready` of its own carrying
@@ -402,17 +468,24 @@ from the project's `slack_channels`, empty for none, and the claim refuses it un
 that is not a channel id; any other controller ignores it); each `set_status` then mints from the
 `/grants` controller-session form with the secret the registration was issued. What the daemon
 publishes on the controller topic is listed at `notify.ControllerTopic`
-(`packages/daemon/internal/notify`). The subscriptions last while the session holds the controller
-role (`subscribeLegionNotice`'s
+(`packages/daemon/internal/notify`). Each is registered with the listener for as long as the
+session holds the role, and that registration is the subscription: the listener builds the
+session's one JetStream consumer out of the topics it registered, and a session has no per-topic
+subscription of its own left to take a notice on (INFRA-771). The subscriptions last while the
+session holds the controller role (`subscribeLegionNotice`'s
 `whileHolding`): once another live session holds it, the heartbeat's refused re-assertion closes
-them, so a replaced controller stops taking wakes and mentions within one heartbeat, and a dropped
-connection's retries, each compared with the role's state when the connection dropped, do not
-reopen them once the role has ended. A `/new` or `/resume` keeps them open whichever extension
+them and hands them back to the listener in one unsubscribe, so a replaced controller stops
+taking wakes and mentions within one heartbeat, and neither a dropped connection's retries nor
+the registrations that follow them carry a topic whose role has ended. A `/new` or `/resume`
+keeps them open whichever extension
 handles the switch first: Oh My Pi runs the manifest's order but moves on from a handler that
 outlasts its 30-second budget, and the switch's drop of the outgoing role (`endOutgoingRole`)
-leaves a role already claimed under the new session id alone. None is ever registered with the
-listener, so a replaced controller resumed later gets them back only by claiming the role, which
-the daemon refuses its replaced capability, and a resumed controller hears the channels its own
+leaves a role already claimed under the new session id alone. A replaced controller resumed later
+gets them back only by claiming the role, which the daemon refuses its replaced capability: a
+topic the listener's registry hands a resumed session back is left out of the registration it
+makes while it holds no such role (`reachesPrivateStreamSubject`), which is what the listener
+refuses it as well (`controllerNoticeRole`, `packages/envoy/internal/bus`). So a resumed
+controller hears the channels its own
 launch names, never a list an earlier launch had. A Slack topic a session registered by hand is
 dropped too, a listed channel's included: in the daemon's controller the factory sets the
 interface's `roleClaim.slackRoleOwned`, and the Envoy entry, restoring a resumed session's
@@ -542,14 +615,23 @@ testing, reviewing) ends with a handoff record on the Dispatch issue, which the 
 `$TMPDIR` rather than the workspace, whose every file jj snapshots; no handoff is a commit or a
 push. The operation finds
 what it reports in the pane first (`@legion/pi-shared/handoff-record`): the issue's phase from
-the daemon's state, the role from the session; for a file-backed phase the role works, the newest
+the daemon's state, the role from the session; for a file-backed phase the role works or, once
+the issue has moved on, the one it left, the newest
 record of the phase's word, read from the pane's Dispatch (the envoy.json its session reads),
-refused — posting nothing — when the phase has none (write it, then complete again) or Dispatch
-does not answer (complete again once it does); the implementer's implementing round also reports
-the commit `legion/<issue>@origin` names, refused while `@-` is not on that branch (push it, then
-complete again); retro, the merger's READY and every other phase report the commit the workspace
-stands on, `@-`. It then posts
-`POST /legion/v1/handoff/complete` (`summary`, `verdict`, `ready`, and `handoffId`,
+refused — posting nothing — when a phase the role works has none (write it, then complete again)
+or Dispatch does not answer (complete again once it does), with the head that record's own `head`
+field names reported as the completion's commit, and none reported for the planner, the tester
+and the reviewer when the body holds no readable head; while the issue stands in implementing,
+the implementer's round is refused
+when its record names no head (record the handoff again, then complete again), when the commit
+the workspace stands on, `@-`, is not on `legion/<issue>@origin` (push it, then complete again),
+and when the record's head is not that pushed `@-` (record the handoff again with `head` set to
+it, then complete again); a phase the role left runs no workspace check, and where it holds a
+record of that phase never reads as its own the `@-` of the workspace every role of the issue
+shares, which is then often a sibling's commit; retro, the merger, a left phase with no
+record and every other phase report the commit the workspace stands on, `@-`, and so does an
+implementer whose left record names no head, which sends `@-` alone, naming no record. It then posts
+`POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,
 `handoffVersion`, `commit` and `wakeAt` where they apply). A
 report on a look of a closed issue's production check is the one call that finds neither: the
 operation reads the daemon's state first, and a call on an issue in `done` whose
@@ -574,16 +656,16 @@ role named for its previous phase (`HANDOFF_NOT_NEW`); for the
 implementer's completion of implementing it reads the open pull request on `legion/<issue>` as the
 implement App, records one the webhook has not, and refuses `HANDOFF_NO_PULL_REQUEST` when there
 is none and the record holds none merged (naming a recorded pull request closed without merging,
-which is the architect's to decide), applying the completion unread when GitHub cannot be read;
-and for the merger's `ready: true` it reads the pull request's
-head on GitHub and refuses a packet the workflow must not take on, each refusal named in the
-merger's role prompt
-(`packages/daemon/internal/prompts/go/merger.md`); a refusal changed nothing, and the answer's
-`note` is the already-merged sentence, for a pull request merged before READY, or the by-hand note
-(`MANUAL_MERGE_REQUIRED:`) for a pull request a person merges. The
+which is the architect's to decide), applying the completion unread when GitHub cannot be read; a
+refusal changed nothing, and an accepted completion is answered with an empty object, since the
+merger merges and the daemon submits no merge. The
 operation mints its grant in-process and posts it with the request; nothing is written to the
 pane. A predecessor's handoff is read with `dispatch handoff-read`, at the version the task's
-`Handoff:` line names (`--version <n>`). GitHub is the pane's
+`Handoff:` line names (`--version <n>`), except the plan.
+The plan is the issue's `plan.md` document, which its planner goes on writing after the planning
+phase ends, so a worker builds from `plan.md` at the newest version the plan review approved, the
+version the `Approval:` line of `dispatch read` names, and reads the
+`Handoff: plan version <n>` line as the receipt for the record the daemon accepted. GitHub is the pane's
 `gh` and `git`, which read the role's App tokens from the gh bundle under `LEGION_GH_OWNERS_DIR`; no
 tool operation writes to GitHub for a role. Review threads are the pull request author's to
 resolve: the reviewer, whose review
@@ -606,7 +688,7 @@ controller, a session with no Legion environment, or a `task` subagent), the pha
 `@legion/pi-shared/phase-stall` tracks the phase: the daemon's assignment (a user message) opens it, the tool's successful
 `handoff_complete` closes it, and its successful `ready_for_update` (`onUpdateAnswered`), which
 closes no phase, moves it to the `waiting` state a WAITING reply buys, so the turn the worker
-answered the daemon's update task in ends with no reminder continuing it: work a continuation did
+answered the daemon's update message in ends with no reminder continuing it: work a continuation did
 would go with the replaced pod, and the daemon would see no turn end.
 A person's direct message the Envoy extension sent in as the user's
 own turn is a user message too (for a `/skill:`, the host's `skill-prompt` custom message), and
@@ -649,10 +731,27 @@ head of the
 worker's last message under one idempotency key, minted at the first attempt and kept until the
 count resets, so a listener that holds no architect session yet is tried again by the next
 reminder. A reminder is dropped when the daemon's record says this role no longer works this phase
-(the `read_record` state, bounded at 5 s and failing open, since an unreachable daemon is exactly
-when a stalled worker must still be nudged). A worker the daemon relaunched into an open phase is
+or that the daemon has failed this role's claim (the `read_record` state, bounded at 5 s and
+failing open otherwise, since an unreachable daemon is exactly when a stalled worker must still be
+nudged). A worker the daemon relaunched into an open phase is
 reminded from a timer `LEGION_STALL_RESUME_MS` after its claim boots, since nothing else would
 wake it.
+
+A turn the provider refused earns no reminder at all, neither the continuation nor a timer's.
+`session_stop` classifies the settling message (`turnEndOf`): a reply Oh My Pi stopped at `error`
+is the provider refusing the turn, worded by the host's `errorMessage`, and it is an input of the
+machine of its own (`refused`) rather than a check on the reminder's answer. Reminding such a
+session only buys another refused turn, which is what left dispatch://INFRA-264's implementer
+reminded for ever. What ends it instead is the daemon: `src/turn-outcome.ts` reports every turn
+this pane's claim ends — clean or refused — to `POST /legion/v1/claims/turn-outcome` from
+`agent_end`, under a sequence this plugin counts itself, monotonic from 1 within the claim's
+launch generation. The daemon keys each outcome by `(generation, sequence)` and derives the
+trailing run of refusals, so a report that arrives late lands in its own place, a repeat writes
+the same cell, and the claim fails once the run reaches `launch_failure_limit`. A report that
+cannot be sent is retried only while the daemon is restarting and otherwise warned about once:
+a turn the daemon never hears of is counted neither way. The reporter runs for an architect's
+claim as well as a phase worker's, and for a `task` subagent, whose instance registers no claim,
+not at all.
 
 Four variables tune it, read from the worker's own environment (`@legion/pi-shared/stall-limits`;
 the daemon passes on whichever its own environment holds, to a pane and to a pod alike):
@@ -680,11 +779,11 @@ closed.
 | Task | Location | Notes |
 | --- | --- | --- |
 | OMP extension entry | `extensions/legion.ts` | The one entry; ships as `dist/legion.js` in `@sjawhar/pi-legion`. Inert without `LEGION_TREE`/`LEGION_ROLE`/`LEGION_CONTROLLER` in the environment; in a Legion session it refuses to run without the Envoy plugin's interface (the section above). The Envoy entry is `../pi-envoy/extensions/envoy.ts` (`packages/pi-envoy/AGENTS.md`) |
-| Legion lifecycle modules | `src/` | Classification (`classify.ts`) and the claim session (`claim-session.ts`, an adapter over `@legion/pi-shared/legion-claim-core`; see Daemon contract), which also resolves this pane's jj attribution for the shared writer (`attributionInputs`: the session id off the Oh My Pi transcript, the state directory from `LEGION_STATE_DIR`, and the pane's own trailer key and workspace from `paneAttributionOptions`, the shared package's one reading of those two variables for both harnesses — the `Dispatch:` key from `LEGION_ISSUE_TRAILER` alone, never from `LEGION_ISSUE`, since only the daemon knows whether the issue's repository is one the deployment names, and the workspace that key's line is scoped to from `LEGION_WORKSPACE` resolved, since jj matches a scope against the workspace root it resolved and a path that does not resolve would leave the session line alone; the overlay that carries the trailer is `@legion/pi-shared/jj-attribution`, and the commit identity itself is not the extension's — the daemon puts `JJ_USER`/`JJ_EMAIL` and the Git author/committer variables on the pane, and worker boot writes no jj config), the session title (`session-title.ts`; see Session titles), the `legion` tool (`tools.ts`: the phase ops' schema fields, description template and executor are `@legion/pi-shared/legion-phase-ops`, beside which it serves the architect's and the controller's operations; its description, which `tools.test.ts` pins word for word, states no sentence on `read_record` or `request_backward_move`; every operation that writes mints its grant on `/grants` in-process and posts it with the request; nothing is written to the pane, and no tool call is wrapped or refused), and the recreated-workspace notice's Oh My Pi half (`workspace-recreated.ts`: how this host saves the notice in a session and tells its own copies apart; the notice itself is `@legion/pi-shared/workspace-recreated`, which the Claude Code host sends too). The phase-stall machine is not here: both harnesses run `@legion/pi-shared`'s (the section above) |
+| Legion lifecycle modules | `src/` | Classification (`classify.ts`) and the claim session (`claim-session.ts`, an adapter over `@legion/pi-shared/legion-claim-core`; see Daemon contract), which also resolves this pane's jj attribution for the shared writer (`attributionInputs`: the session id off the Oh My Pi transcript, the state directory from `LEGION_STATE_DIR`, and the pane's own trailer key and workspace from `paneAttributionOptions`, the shared package's one reading of those two variables for both harnesses — the `Dispatch:` key from `LEGION_ISSUE_TRAILER` alone, never from `LEGION_ISSUE`, since only the daemon knows whether the issue's repository is one the deployment names, and the workspace that key's line is scoped to from `LEGION_WORKSPACE` resolved, since jj matches a scope against the workspace root it resolved and a path that does not resolve would leave the session line alone; the overlay that carries the trailer is `@legion/pi-shared/jj-attribution`, and the commit identity itself is not the extension's — the daemon puts `JJ_USER`/`JJ_EMAIL` and the Git author/committer variables on the pane, and worker boot writes no jj config), the session title (`session-title.ts`; see Session titles), the `legion` tool (`tools.ts`: the phase ops' schema fields, description template and executor are `@legion/pi-shared/legion-phase-ops`, beside which it serves the architect's and the controller's operations and refuses a field one of them does not take in the phase ops' wording (`unknownFieldsRefusal`), a `reason` refused on `park_child` or `rerun_child` also naming the `dispatch comment` on the child its why goes in; `tools.test.ts` pins its description and its parameter schema word for word; every operation that writes mints its grant on `/grants` in-process and posts it with the request; nothing is written to the pane, and no other tool's call is wrapped or refused), and the recreated-workspace notice's Oh My Pi half (`workspace-recreated.ts`: how this host saves the notice in a session and tells its own copies apart; the notice itself is `@legion/pi-shared/workspace-recreated`, which the Claude Code host sends too). The phase-stall machine is not here: both harnesses run `@legion/pi-shared`'s (the section above) |
 | Controller session | `src/controller-session.ts` | Owns the controller's identity, the transcript a session navigation compares to decide whether to claim again, the claim and reclaim hooks, the operator's controller's claim behind `/legion-controller-start` (`startCommand`, which sends the start message right before the role claim; see The controller's start turn), and grant minting: it reads the daemon's project, registers on `claims/register` with the controller capability, claims the controller role, and mints with the registration's secret (see Daemon contract). The `legion` tool's `set_status` mints through it (`mintGrant`) and posts the grant with its request. |
 | Shared modules and the interface | `../pi-shared/` | `@legion/pi-shared`: the interface this entry reads (`interface`), the role-claim bridge, the injected-user-turn record, the subagent check, the host types and `toolSuccess`/`toolFailure`, and the Legion modules claude-envoy's MCP server shares with this entry: the daemon client (`daemon-client`), the claim boot (`legion-claim-core`), the `legion` tool's phase ops (`legion-phase-ops`), the handoff report (`handoff-record`), the stale git lock note (`git-lock`), the jj attribution overlay (`jj-attribution`: the `JJ_CONFIG` layer that stamps the `Omp-Session` trailer on every jj commit a pane makes, and the `Dispatch` trailer on those it makes in its own workspace), the recreated-workspace notice (`workspace-recreated`) and the endless phase reminder — its state machine (`phase-stall`), its runner (`phase-reminder`) and the four `LEGION_STALL_*` numbers (`stall-limits`); inlined into `dist/legion.js` by `bun build`. See `packages/pi-shared/AGENTS.md` |
 | Extension unit tests | `extensions/legion.test.ts` | Mocked Pi and NATS surface; every test starts from no `LEGION_*`/`ENVOY_*`/`DISPATCH_*` environment and sets only what it declares, except `ENVOY_CONFIG_FILE`, which the file points at an envoy.json that holds no section before it imports the Envoy entry (the entry picks its file at module load) and `beforeEach` sets again, with `OMP_PROFILE` and `PI_CODING_AGENT_DIR` unset, so no caller's envoy.json reaches a pane; each stubs `fetch` itself, and `afterEach` resets the process-wide interface (`resetEnvoyPluginInterfaceForTests`) so one test's bound Envoy instance or bootstrapped session never reaches the next. Pins the three Envoy-plugin refusals, that `/legion-claim-controller` answers the sentence without exiting, and that `register_gate`'s lookup reads the envoy.json the Envoy entry chose |
-| Both entries in one process | `extensions/legion-role-claim.test.ts`, `extensions/legion-phase-stall-omp.test.ts`, `extensions/legion-role-tools-omp.test.ts`, `extensions/controller-start-omp.test.ts` | Test-only; the shipped sources never import the sibling. `legion-role-claim.test.ts` loads `../pi-envoy/extensions/envoy.ts` by relative path: the role claim through the interface with Legion initialised first. The phase-stall and role-tools omp tests run through the harness's `runLegionPane` (`@legion/pi-shared/test/omp-harness`), which names both entries by path for the Oh My Pi child: the endless phase reminder, and no role refused a tool, on the pinned Oh My Pi (`LEGION_TEST_OMP`). `controller-start-omp.test.ts` runs the operator's controller as `legion controller start` does, interactive Oh My Pi under a pseudo-terminal (the harness's `spawnInteractive`) with both entries by path and `/legion-controller-start` on its command line, against a stand-in gateway, daemon and Envoy listener and the real NATS server the role claim needs (`LEGION_TEST_NATS_URL`), over which it also sends the controller a role-lane card and a controller-topic notice: the start turn runs after startup and shows on screen, the operator can type during it, Esc interrupts it, the start message starts the first turn once, a card published the moment the role is claimed and a notice published the moment the controller topic is registered both reach the model after the start message, and a refused claim shows its warning and sends nothing |
+| Both entries in one process | `extensions/legion-role-claim.test.ts`, `extensions/legion-phase-stall-omp.test.ts`, `extensions/legion-role-tools-omp.test.ts`, `extensions/controller-start-omp.test.ts`, `extensions/claim-boot-order-omp.test.ts` | Test-only; the shipped sources never import the sibling. `legion-role-claim.test.ts` loads `../pi-envoy/extensions/envoy.ts` by relative path: the role claim through the interface with Legion initialised first. The phase-stall and role-tools omp tests run through the harness's `runLegionPane` (`@legion/pi-shared/test/omp-harness`), which names both entries by path for the Oh My Pi child: the endless phase reminder, and no role refused a tool, on the pinned Oh My Pi (`LEGION_TEST_OMP`). `controller-start-omp.test.ts` runs the operator's controller as `legion controller start` does, interactive Oh My Pi under a pseudo-terminal (the harness's `spawnInteractive`) with both entries by path and `/legion-controller-start` on its command line, against a stand-in gateway, daemon and Envoy listener and the real NATS server the role claim needs (`LEGION_TEST_NATS_URL`), over which it also sends the controller a role-lane card and a controller-topic notice: the start turn runs after startup and shows on screen, the operator can type during it, Esc interrupts it, the start message starts the first turn once, a card published the moment the role is claimed and a notice published the moment the controller topic is registered both reach the model after the start message, and a refused claim shows its warning and sends nothing. `claim-boot-order-omp.test.ts` runs a phase worker the same way under RPC (`spawnRpc`), against a stand-in listener that keeps one message for the worker's role and hands it over at the claim, as the listener does (INFRA-1573): the daemon's task is the session's first turn and is not refused, with the kept message reaching the model inside that turn (`handOver: "run-active"` in the host's own transcript); and a worker sent no task at all takes its name at the bound it runs on (`LEGION_CLAIM_FIRST_TURN_BOUND_MS`, which the case shortens) and the kept message starts its turn then |
 | Shipped agents | `agents/`, `src/shipped-agents.test.ts` | The task agents Legion's prompts and skills dispatch: `oracle`, the reviewer's pair `thermonuclear-deep-review` and `thermonuclear-code-quality`, `deep-worker`, the architect's `design-outsider` and `goal-red-team`, and the planner's `plan-gap-analyst` and `plan-reviewer`. The root architect also runs the planner's two on its spec before every approval request, and states its problem to `design-outsider`, which carries no tool that reads a file, before it writes a design. Each agent declares the name of its file, and its model only as role aliases. The planner's two and `goal-red-team` carry `bash` and no edit or write tool. Oh My Pi has no per-agent command limit, so their prompts hold them to read-only commands |
 | Daemon contract pin | `src/daemon-api-version.test.ts` | Pins `legion.daemonApiVersion` to `packages/contracts/fixtures/daemon-api/version.json`, which the daemon's golden test writes |
 | Capability report | `src/capability-report.ts`, `src/capability-report.test.ts` | The six live capability checks a claimed session runs on its own interval, while it is idle, and sends with `claims/ready` (see Daemon contract): `measureCapabilities` over a `CapabilityHost` that wraps every Oh My Pi import and the two child commands (`dispatch read --issue <issue>`, `gh api graphql {viewer{login}}`), with the budgets (8 s a check, 10 s the report) and each row's detail strings; `ompCapabilityHost` is the production host, string-literal `import()` only. The test fakes the host; `extensions/legion.test.ts` substitutes one through `setLegionCapabilityHostForTests` and shortens the budgets through `setLegionCapabilityBudgetsForTests` |
@@ -706,6 +805,6 @@ closed.
 ## Checks
 
 `bunx tsc --noEmit`, `bun run test`, `bunx biome check extensions/ src/`, each from this directory;
-`LEGION_TEST_OMP=<omp> bun test extensions/legion-phase-stall-omp.test.ts extensions/legion-role-tools-omp.test.ts` and
-`LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=<nats> bun test ./extensions/controller-start-omp.test.ts` for the real binary.
+`LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=<nats> bun test ./extensions/claim-boot-order-omp.test.ts ./extensions/controller-start-omp.test.ts ./extensions/legion-phase-stall-omp.test.ts ./extensions/legion-role-tools-omp.test.ts ./extensions/legion-stall-watchdog-omp.test.ts`
+for the real binary: every pane registers against a real NATS server, since a session with no relay subject takes no consumer and its claim boot ends it (INFRA-771).
 The phase reminder's own unit tests live beside the machine, in `packages/pi-shared` (`bun test` there).

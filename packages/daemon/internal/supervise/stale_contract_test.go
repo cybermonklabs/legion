@@ -5,17 +5,18 @@ import "testing"
 // A live claim whose registration declared a plugin contract below PodUpdateContract — a worker
 // started from the image of the release before this one, which is what every roll of this
 // deployment leaves behind for a moment — has no ready_for_update op: the op list is a closed enum
-// compiled into its plugin. An update round still asks it, and it answers by ending the turn its
-// task started (answerByTurnEnd). Outside a round, the stale-plugin relaunch is what brings an Oh
-// My Pi worker onto this daemon's plugin; it keeps the pod and the disk and resumes the claim's
-// own session. Once it has registered at this daemon's contract it answers with the op.
+// compiled into its plugin. An update round still asks it, and the round ends at its bound
+// whether or not it answers: the end of a turn is no answer. Outside a round, the stale-plugin
+// relaunch is what brings an Oh My Pi worker onto this daemon's plugin; it keeps the pod and the
+// disk and resumes the claim's own session. Once it has registered at this daemon's contract it
+// answers with the op.
 //
 // It is relaunched when it is not in a turn, and not before. A relaunch ends the process, and the
 // stale-plugin lane asks the worker nothing first, so ending a turn in flight where it stands
 // throws away whatever it had not pushed, which is the harm this issue exists to end. The wait
 // costs nothing: the claim holds no round open, nothing else of its pod is waiting on it, and the
-// turn ends on its own. The machine already waits out a turn this way for a held suspension and
-// for a plugin round's own end (TestPodUpdateEndedInAPluginRoundRelaunchesOnceTheTurnIsOver).
+// turn ends on its own. The machine already waits out a turn this way for a held suspension
+// (TestAStalePluginWithAHeldSuspensionSuspendsTheClaimAtItsTurnsEndChargingNothing).
 //
 // Observed live on 2026-10-30: after a daemon boot on a newer contract, an issue's claims came up
 // on the previous image at plugin contract 42, every `legion` tool call failed, and the daemon
@@ -192,8 +193,8 @@ func TestAStaleRegistrationNoInstallCanMoveIsAcceptedAtAnyContract(t *testing.T)
 			h.m.deps.PluginContract = PodUpdateContract + 2
 			h.m.deps.PluginRelaunchable = true
 			h.m.deps.NoPluginInstall = func(Claim) bool { return true }
-			// The relaunch a plugin round over this claim already made, which is what turns the
-			// next stale registration into the charged path (relaunchAfterFailure).
+			// The mark a relaunch of this claim already left, which is what turns the next
+			// stale registration into the charged path (relaunchAfterFailure).
 			h.m.claim.PluginRelaunchFor = h.m.deps.PluginContract
 
 			h.must(RequestRegister{
@@ -207,7 +208,7 @@ func TestAStaleRegistrationNoInstallCanMoveIsAcceptedAtAnyContract(t *testing.T)
 				t.Errorf("the registration left budgets %+v, want none charged", c.Budgets)
 			}
 			if c.PluginRelaunchFor != h.m.deps.PluginContract {
-				t.Errorf("PluginRelaunchFor = %d, want the mark the round's relaunch left, %d",
+				t.Errorf("PluginRelaunchFor = %d, want the mark the earlier relaunch left, %d",
 					c.PluginRelaunchFor, h.m.deps.PluginContract)
 			}
 			if c.PluginContract != testCase.declared {

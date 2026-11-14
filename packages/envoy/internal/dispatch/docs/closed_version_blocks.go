@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -38,6 +39,40 @@ func indexedBlocks(ctx context.Context, tx pgx.Tx, artifactID string) ([]indexed
 		return nil, fmt.Errorf("read the indexed blocks of %s: %w", artifactID, err)
 	}
 	return indexed, nil
+}
+
+// heldVersionBlocks is the text a document is indexed or windowed from, and the blocks of it,
+// when the document's live text has moved past the version the index holds: the version's own
+// stored rendering, with only the blocks the index's rows or the live document also hold
+// (closedVersionBlocks), read in the caller's transaction, which holds the document's owner
+// row. live and liveBlocks are the document as the server serves it (TextWithBlocks).
+//
+// A version this build cannot read back is no reason to leave the document owed for ever: the
+// failure is logged under warning, with artifactID, attrs and the error, and the stored
+// markdown is used with no block at all, so what is written covers text the version holds and
+// no block it does not.
+func heldVersionBlocks(
+	ctx context.Context,
+	tx pgx.Tx,
+	artifactID, stored, live string,
+	liveBlocks []model.ArtifactBlock,
+	warning string,
+	attrs ...any,
+) (string, []model.ArtifactBlock, error) {
+	indexRows, err := indexedBlocks(ctx, tx, artifactID)
+	if err != nil {
+		return "", nil, err
+	}
+	held, heldBlocks, err := closedVersionBlocks(stored, live, liveBlocks, indexRows)
+	if err != nil {
+		logged := make([]any, 0, len(attrs)+4)
+		logged = append(logged, "artifact", artifactID)
+		logged = append(logged, attrs...)
+		logged = append(logged, "error", err)
+		slog.Warn(warning, logged...)
+		return stored, nil, nil
+	}
+	return held, heldBlocks, nil
 }
 
 // closedVersionBlocks is the rendering of the version whose stored markdown is stored, with each

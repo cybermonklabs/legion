@@ -15,13 +15,14 @@ import (
 
 const (
 	// grantLogLimit is both the page a caller that names no size gets and the largest page the
-	// broker answers. A limit above the cap is held at it rather than refused, because a review
-	// asking for more is asking for the whole period and pages through it either way, and a
-	// refusal would only make it guess the number this constant already fixes. A thousand
-	// events keeps one answer under about a mebibyte, which is small enough that the broker
-	// holds it, marshals it and writes it without a page of its own becoming the expensive
-	// part of the read.
-	grantLogLimit = 1000
+	// broker answers, which is the store's own page (store.MaxGrantLogPage), so the store
+	// allocates each answer once. A limit above the cap is held at it rather than refused,
+	// because a review asking for more is asking for the whole period and pages through it
+	// either way, and a refusal would only make it guess the number this constant already
+	// fixes. A thousand events keeps one answer under about a mebibyte, which is small enough
+	// that the broker holds it, marshals it and writes it without a page of its own becoming
+	// the expensive part of the read.
+	grantLogLimit = store.MaxGrantLogPage
 	// grantLogSettleTime is how far before now a period's end must be for the period to count as
 	// closed. An audit id comes from a bigserial, which hands it out when the row is inserted
 	// and not when its transaction commits, so a row with a lower id can become visible after

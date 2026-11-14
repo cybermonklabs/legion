@@ -24,8 +24,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
+// replayLimits are the deployment's budget limits as a runtime under test took them from its
+// supervisor (attach): every failure fact it applies carries them.
+var replayLimits = supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2}
+
 // terminalClaims is n claims of project, each its own issue's planner at generation 1, every
-// other one ready and the rest failed, as a boot reads them.
+// other one ready and the rest failed, as a boot reads them. A failed one carries the cause and
+// the counters its failure left on it, as the store kept them, so the fact its replay applies
+// carries them too.
 func terminalClaims(t *testing.T, project string, n int) []supervise.Claim {
 	t.Helper()
 	claims := make([]supervise.Claim, n)
@@ -40,6 +46,10 @@ func terminalClaims(t *testing.T, project string, n int) []supervise.Claim {
 			state = supervise.StateFailed
 		}
 		claims[i] = supervise.Claim{Token: token, Project: project, Tree: issue, Issue: issue, Role: claim.RolePlanner, Generation: 1, State: state, Failure: "worker exited"}
+		if state == supervise.StateFailed {
+			claims[i].FailureCause = supervise.CauseDied
+			claims[i].Budgets = supervise.Budgets{LaunchFailures: 2, Deaths: 3}
+		}
 	}
 	return claims
 }
@@ -147,7 +157,7 @@ func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t 
 	const budget = 5 * time.Second
 	pool := isolatedOutboxPool(t)
 	handler := &slowFactHandler{delay: 20 * time.Millisecond, seen: map[intake.Fact]int{}}
-	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1)}
+	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits}
 	replayed := terminalClaims(t, "legion", 300)
 	failing := make([]supervise.Claim, 100)
 	for i := range failing {
@@ -156,7 +166,8 @@ func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t 
 		if err != nil {
 			t.Fatal(err)
 		}
-		failing[i] = supervise.Claim{Token: token, Project: "legion", Tree: issue, Issue: issue, Role: claim.RoleTester, Generation: 1, State: supervise.StateFailed, Failure: "pane exited"}
+		failing[i] = supervise.Claim{Token: token, Project: "legion", Tree: issue, Issue: issue, Role: claim.RoleTester, Generation: 1, State: supervise.StateFailed,
+			Failure: "pane exited", FailureCause: supervise.CauseNeverRegistered, Budgets: supervise.Budgets{LaunchFailures: 3}}
 	}
 
 	var live sync.WaitGroup
@@ -185,14 +196,15 @@ func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t 
 	for _, c := range replayed {
 		var fact intake.Fact = intake.ClaimReady{Issue: c.Issue, Role: c.Role, Launch: c.Generation}
 		if c.State == supervise.StateFailed {
-			fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure}
+			fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, Cause: c.FailureCause, Budgets: c.Budgets, Limits: replayLimits}
 		}
 		if got := handler.applied(fact); got != 1 {
 			t.Fatalf("replayed %#v was applied %d times, want once", fact, got)
 		}
 	}
 	for _, c := range failing {
-		if fact := (intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure}); handler.applied(fact) != 1 {
+		fact := intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, Cause: c.FailureCause, Budgets: c.Budgets, Limits: replayLimits}
+		if handler.applied(fact) != 1 {
 			t.Fatalf("live %#v was applied %d times, want once", fact, handler.applied(fact))
 		}
 	}

@@ -126,47 +126,20 @@ func readCredentialRequest(r io.Reader) map[string]string {
 }
 
 // repositoryGHConfigDir is the gh directory the bundle under ownersDir answers for owner's
-// repository repo: the repository's own, `<owner>/<repo>`, whose token reaches that one
-// repository, where the bundle holds it, and the owner's own otherwise. It normalizes the name
-// for a directory (ghRepositoryName), so a caller — the gh wrapper's target
-// (gh_selectors.go) as much as a git credential request's path — may hand it as it was given
-// it; the gh wrapper keys a repository by that same name as it reads a command, so two
-// spellings of one repository are one repository, and normalizing it again here changes
+// repository repo (ghconfig.RepositoryDir): the repository's own, `<owner>/<repo>`, whose token
+// reaches that one repository, where the bundle holds it, and the owner's own otherwise. That
+// helper normalizes the name for a directory (ghconfig.RepositoryName), so a caller — the gh
+// wrapper's target (gh_selectors.go) as much as a git credential request's path — may hand it as
+// it was given it; the gh wrapper keys a repository by that same name as it reads a command, so
+// two spellings of one repository are one repository, and normalizing it again there changes
 // nothing for any name GitHub holds.
-// A repo no bundle directory could be named for (ghconfig.IsDirName) is one
-// the bundle holds none for, so it answers the owner's rather than refusing. An owner the bundle
-// holds no directory for at all is refused (ownerGHConfigDir): it is no owner of this project.
+// A repo no bundle directory could be named for (ghconfig.IsDirName) is one the bundle holds
+// none for, so the owner's is answered rather than a refusal. An owner the bundle holds no
+// directory for at all is refused here, which is this caller's own answer to the helper's miss:
+// owner is then no owner of this project, and an answer of nothing would have git prompt.
 func repositoryGHConfigDir(ownersDir, owner, repo string) (string, error) {
-	if name := owner + "/" + ghRepositoryName(repo); repo != "" && ghconfig.IsDirName(name) {
-		if dir := ghconfig.Dir(ownersDir, name); isGHConfigDir(dir) {
-			return dir, nil
-		}
+	if dir := ghconfig.RepositoryDir(ownersDir, owner, repo); dir != "" {
+		return dir, nil
 	}
-	return ownerGHConfigDir(ownersDir, owner)
-}
-
-// ghRepositoryName is a repository's name as the bundle directory holding its token is named for
-// it: lowercased, and without the `.git` git's credential path and a clone URL carry, which gh
-// trims as it reads a remote (ghrepo.FromURL) and which no GitHub repository's own name ends in.
-// One trim is all a spelling of such a name needs, so a second call changes nothing; a name
-// ending `.git.git` would lose one suffix a call, and GitHub holds no repository of that name.
-func ghRepositoryName(repo string) string {
-	return strings.TrimSuffix(strings.ToLower(repo), ".git")
-}
-
-// ownerGHConfigDir is owner's gh directory of the bundle under ownersDir, refused when the bundle
-// holds none: owner is then no owner of this project.
-func ownerGHConfigDir(ownersDir, owner string) (string, error) {
-	dir := ghconfig.Dir(ownersDir, owner)
-	if !isGHConfigDir(dir) {
-		return "", fmt.Errorf("%q is not an owner of this project: %s holds no gh directory for it", owner, ownersDir)
-	}
-	return dir, nil
-}
-
-// isGHConfigDir says whether dir is a directory the bundle holds, and so one a gh or a git
-// request may be answered from.
-func isGHConfigDir(dir string) bool {
-	info, err := os.Stat(dir)
-	return err == nil && info.IsDir()
+	return "", fmt.Errorf("%q is not an owner of this project: %s holds no gh directory for it", owner, ownersDir)
 }

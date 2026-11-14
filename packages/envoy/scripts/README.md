@@ -135,17 +135,19 @@ ports. A full run takes about ten minutes, so it is a manual proof, not a CI job
 
 Brings up the whole local surface the airlock's checks run on, with no container
 runtime and no cluster, and prints the exports a check needs. It runs
-`dev-broker.sh` for Postgres, `dev-oidc-issuer`, the five built binaries and that
+`dev-broker.sh` for Postgres, `dev-oidc-issuer`, the six built binaries and that
 script's own broker, and reads what it printed, rather than starting any of that a
-second time; on top it starts `cmd/dev-airlock-stands` (the stand-in services S and
-T, the GitHub, Google and Microsoft endpoints and the AWS service, and the
-certificate authority they are signed by), writes a rules file and a fake Secrets
-Manager naming each other, starts **two** broker processes on a database of their
-own with the whole `BROKER_AIRLOCK_*` block, puts one TCP front over both brokers'
-API ports and one over both proxy ports (`dev-airlock-stands front`, round-robin per
-connection), and enrols one pod session the way the Legion daemon does — a service
-login at `POST /v1/launcher-credentials/token`, then `POST /v1/enrollments` of kind
-`pod` — so `agent-secrets self` answers `kind: pod`.
+second time. On top it starts a `cmd/dev-airlock-stands` of its own (the stand-in
+services S and T, the GitHub, Google and Microsoft endpoints and the AWS service,
+and the certificate authority they are signed by), which is a second such process:
+`dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
+at, and this script points nothing at that one. It then writes a rules file and a
+fake Secrets Manager naming each other, starts **two** broker processes on a
+database of their own with the whole `BROKER_AIRLOCK_*` block, puts one TCP front
+over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
+front`, round-robin per connection), and enrols one pod session the way the Legion
+daemon does — a service login at `POST /v1/launcher-credentials/token`, then
+`POST /v1/enrollments` of kind `pod` — so `agent-secrets self` answers `kind: pod`.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh
@@ -212,12 +214,13 @@ model with `lake`, prints its theorem statements and their axioms, runs the comp
 fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
 
 The programs the checks drive are files, not text a run writes out. The three Go
-clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-airlock.sh`
-builds: `probe-private` is `k4`'s private-address probe, `probe-bound` is `k7`'s call
-to a bound host, and `load` is `k9`'s load driver and the plain tunnel its baseline
-goes through. CI compiles and vets all three with the rest of that command. The
-others are under `scripts/airlock/`: `memscan.py`, `k6`'s boto3 steps
-(`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git credential helper.
+clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-broker.sh`
+builds and `dev-airlock.sh` runs: `probe-private` is `k4`'s private-address probe,
+`probe-bound` is `k7`'s call to a bound host, and `load` is `k9`'s load driver and
+the plain tunnel its baseline goes through. CI compiles and vets all three with the
+rest of that command. The others are under `scripts/airlock/`: `memscan.py`, `k6`'s
+boto3 steps (`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git
+credential helper.
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
 fake Secrets Manager and makes every broker reread it. A control that needs other
@@ -251,6 +254,41 @@ release, and the consumers come from `sjawhar/dotfiles`), `k6` and `k7` need `bu
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
 time.
+
+## github-narrowing-check.sh
+
+Runs the three checks of `agent-secrets`' `--github-token` that need a broker, a
+GitHub and a session — `k1`, `k2` and `k4` of dispatch://INFRA-2687's verification
+document — end to end on a local stack of its own, and prints one `PASS` or `FAIL`
+line for each property they name, then `all <n> assertions passed` when every one
+passed, so a reader tells a complete run from a cut-off one.
+
+```bash
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-narrowing-check.sh
+```
+
+It starts `dev-broker.sh`, which holds the two `github-app` secrets and the stand-in
+GitHub they are minted against, and enrols one pod session of the service that owns
+them, as the Legion daemon enrols a worker pod, so each request for one is granted
+without asking. `k1` spends a narrowed token at the stand-in and reads back what the
+narrowed mint asked GitHub for; `k2` sets the stand-in to refuse the mint (HTTP 422)
+and then to answer wider than the narrowing asked, at the answer route the stack's
+banner names (`POST {"mode": "ordinary"|"refuse"|"widen"}`), since one stack drives
+all three answers; `k4` drives the secret whose release holds two installations,
+which no one token can be handed over for. Each check runs its own negative control,
+and every line names the exit status it read, because a property that failed and a
+command that never ran look alike in a transcript that holds neither.
+
+No line it prints is a credential: the child reads its token out of its own
+environment and prints the repository it asked for and the status it got, and a
+refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
+child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
+served over plain http on `127.0.0.1`, because the broker mints a kind's value with
+an HTTP client that trusts the host's own roots and nothing else.
+
+`--keep-stack` leaves the stack and the run's work directory up to look at a failure
+with, `--help` prints the usage, and a usage error exits 2. It needs bash, curl, jq,
+go and psql, and takes a few minutes.
 
 ## airlock-lean-axioms.sh
 

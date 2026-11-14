@@ -1,44 +1,87 @@
 /**
  * How long the Inbox's reading column keeps the document it opened at the section it was opened
- * for.
+ * for: until its drawing has been quiet for `quietMs` with no diagram still waiting, and never
+ * past `limitMs` after the first drawing pass.
  *
- * The column scrolls a live document to the heading of the section holding the question or the
- * anchored block it shows, and one scroll is never enough: the editor draws its blocks in
- * pieces, a diagram or a picture draws later still, and every block that lands above the
- * heading pushes it down again. So the placement is applied on every change of the drawn
- * document rather than once - and the one thing that ends it is the reader moving the column
- * themselves. This is the rule the document's own focus re-run follows
- * (`features/doc/refocus-after-diagrams.ts`), without its single shot and read on the column
- * rather than on the window: picking another row in the list beside it is not leaving the
- * section, and the column that pick opens is placed like any other.
+ * One scroll is never enough: the editor draws its blocks in pieces, a diagram or a picture
+ * draws later still, and every block landing above the heading pushes it down again, so the
+ * placement is applied on every drawing pass rather than once. Both clocks start at the first of
+ * those passes rather than at this call, because a column whose document has not drawn yet would
+ * otherwise spend its bound waiting for the first block. The numbers are the document's own
+ * re-run's (`features/doc/refocus-when-settled.ts`), so the two cannot drift apart.
+ *
+ * The reader's press, scroll, touch or key is read on the column and not on the window: the list
+ * beside it moves the selection with `j` and `k`, and a window-wide reading would end the next
+ * item's placement before its document had drawn.
  */
+import { LIMIT_MS, QUIET_MS } from "../doc/refocus-when-settled";
+import { mermaidDrawsWaiting } from "../refs/mermaid-diagrams";
 
 /** What a reader does to move on from where the column put them. */
 const READER_ACTIONS = ["pointerdown", "wheel", "touchstart", "keydown"] as const;
 
 export interface SectionHold {
+  /** Told by the pane of each pass where a block of the opened document stands in the column.
+   *  The first call starts both clocks; every call restarts the quiet one. */
+  readonly drawing: () => void;
   /** Lets go and stops listening: the column is the reader's from here on. Called when the
    *  column closes, and by a placement of the reader's own - the head's **Skip to the answer** -
    *  which is not in the column and so is not seen as a press in it. */
   readonly release: () => void;
-  /** Whether the column may still be put back at its section. */
-  readonly held: () => boolean;
+  /** Whether the column may still be written. */
+  readonly writes: () => boolean;
 }
 
-/** Holds `column` at its section until the reader presses, scrolls, touches or types in it. */
-export function holdSection(column: HTMLElement): SectionHold {
-  let held = true;
+/**
+ * Holds `column` at its section until its drawing settles, the limit passes, the reader presses,
+ * scrolls, touches or types in it, or the hold is released.
+ *
+ * `bounds` is there for a row that proves the limit without waiting three seconds, as
+ * `resetMermaidDiagrams(limitMs)` is for the worker's own.
+ */
+export function holdSection(
+  column: HTMLElement,
+  bounds?: { limitMs?: number; quietMs?: number }
+): SectionHold {
+  const limitMs = bounds?.limitMs ?? LIMIT_MS;
+  const quietMs = bounds?.quietMs ?? QUIET_MS;
+  let writes = true;
+  let quiet: number | undefined;
+  let limit: number | undefined;
   const release = () => {
-    if (!held) {
+    if (!writes) {
       return;
     }
-    held = false;
+    writes = false;
+    window.clearTimeout(quiet);
+    window.clearTimeout(limit);
     for (const type of READER_ACTIONS) {
       column.removeEventListener(type, release, true);
     }
   };
+  // The drawing has been quiet for `quietMs`. A diagram still waiting will move the text above
+  // the reader and raise the next drawing pass itself, so the quiet is waited out again rather
+  // than taken as settled.
+  const settled = () => {
+    if (!writes) {
+      return;
+    }
+    if (mermaidDrawsWaiting()) {
+      quiet = window.setTimeout(settled, quietMs);
+      return;
+    }
+    release();
+  };
+  const drawing = () => {
+    if (!writes) {
+      return;
+    }
+    window.clearTimeout(quiet);
+    quiet = window.setTimeout(settled, quietMs);
+    limit ??= window.setTimeout(release, limitMs);
+  };
   for (const type of READER_ACTIONS) {
     column.addEventListener(type, release, { capture: true, passive: true });
   }
-  return { held: () => held, release };
+  return { drawing, release, writes: () => writes };
 }

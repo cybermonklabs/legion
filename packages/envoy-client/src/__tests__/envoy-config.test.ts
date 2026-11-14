@@ -1384,7 +1384,7 @@ describe("a checkout's .envoy/envoy.json", () => {
     expect(existsSync(runs)).toBe(false);
   });
 
-  // Ruling 55's rule for a file that cannot be read: a repository cannot turn off what the
+  // Decision 55's rule for a file that cannot be read: a repository cannot turn off what the
   // session's environment configured.
   test("a file that cannot be used turns Dispatch off while it would be read, and never Envoy", () => {
     const tokenFile = writeFile(path.join(tempDir(), "dispatch-token"), "daemon-token\n");

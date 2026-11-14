@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, listComments, patchIssue } from "./api";
 import {
   barAction,
@@ -10,7 +8,6 @@ import {
   selectEditorText,
   setSheet,
 } from "./editor";
-import { resetDatabase } from "./seed";
 import {
   answeredPost,
   holdPosts,
@@ -19,6 +16,7 @@ import {
   WRITE_REFUSED,
   WRITE_REFUSED_TEXT,
 } from "./sends";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The composer a selection-bar action opens holds a send's draft until the server answers, like
@@ -26,10 +24,6 @@ import { asUser } from "./users";
 // the middle of a send, and expect the send's draft and its refusal back on the composer that sent
 // it.
 const spec = "The quick brown fox";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** What the margin's open composer says while a newer selection-bar action waits on its send. */
 const stillSending = "Still sending this one. Select the text again once it's sent.";
@@ -140,7 +134,8 @@ test("a bar Comment on another document while a margin send is out opens its own
 // Leaving a document while a margin send is out takes the composer off screen and keeps it, with
 // the send: a refusal while the reader is away hands the draft back there, and coming back to the
 // document finds the draft, the refusal and a Retry that still sends to the send's own mark.
-test("leaving a document while a margin send is out keeps its draft and refusal for the return", async ({
+// @pr: A write the server refused: leaving the document keeps the margin composer's draft and refusal for the return.
+test("leaving a document while a margin send is out keeps its draft and refusal for the return @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

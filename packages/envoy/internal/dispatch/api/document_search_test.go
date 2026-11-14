@@ -46,9 +46,22 @@ type documentSearchStatement struct {
 	statement string
 	oracle    string
 	arguments []any
-	sorted    bool
-	holds     []string
-	lacks     []string
+	// oracleArguments is what the oracle takes where the statement under test now binds more than
+	// it did: search's two take the search bar's filters and the issues a query names by key
+	// beside the parameters main's text knows (searchQueryArguments), all empty here, so both
+	// sides answer over the same subject. Empty for a statement whose oracle takes its own.
+	oracleArguments []any
+	sorted          bool
+	holds           []string
+	lacks           []string
+}
+
+// oracleArgs is the arguments this statement's oracle is run with.
+func (s documentSearchStatement) oracleArgs() []any {
+	if s.oracleArguments != nil {
+		return s.oracleArguments
+	}
+	return s.arguments
 }
 
 // documentSearchFixture is the corpus of R1's plan and equality tests: one project whose
@@ -160,9 +173,14 @@ func newDocumentSearchFixture(t *testing.T) documentSearchFixture {
 func (f documentSearchFixture) statements() []documentSearchStatement {
 	word := documentSearchWord
 	probeLexemes := []string{word, documentSearchDocumentWord, documentSearchOldWord}
-	searchArguments := []any{word, f.project, searchDefaultLimit, firstTerm(word), headlineOptions,
+	mainSearchArguments := []any{word, f.project, searchDefaultLimit, firstTerm(word), headlineOptions,
 		0, contracts.SearchKindDepth, searchFusionK}
-	meaning := f.meaningArguments()
+	// Search's own two statements bind the search bar's filters and the issues a query names by
+	// key beside the parameters main's text knows; this subject names no issue and no filter, so
+	// both sides of each comparison read the same rows.
+	subject := searchParameters{text: word, project: f.project, limit: searchDefaultLimit}
+	searchArguments := searchQueryArguments(subject)
+	searchMeaningArguments := searchMeaningQueryArguments(subject, queryVector(), f.embedder.Identity())
 	relatedKeyword, relatedMeaning := f.relatedArguments()
 	documents := []string{f.notes, f.atlas}
 	return []documentSearchStatement{
@@ -171,13 +189,21 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 			statement: searchQuery,
 			oracle:    mainSearchQuery,
 			arguments: searchArguments,
-			holds:     documents,
+			// main's text takes the eight parameters it knew.
+			oracleArguments: mainSearchArguments,
+			holds:           documents,
 		},
 		{
+			// Both sides are the scoped shape: searchArguments binds the fixture's project, and
+			// that is what the route sends for one (runMeaningSearch).
 			name:      "search, meaning and keywords",
-			statement: searchQueryMeaning,
+			statement: searchQueryMeaningScoped,
+			// This release's own meaning body over main's keyword legs, for the reason
+			// document_search_oracle_test.go gives: main's own meaning arms read the whole-text
+			// rows this release deletes. It opens with the package's own q, so it takes the
+			// statement's own arguments rather than main's eight.
 			oracle:    searchQueryMeaningOverMainsDocumentArm,
-			arguments: slices.Concat(searchArguments, meaning),
+			arguments: searchMeaningArguments,
 			holds:     documents,
 		},
 		{
@@ -189,7 +215,7 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 		},
 		{
 			name:      "the related-item check's meaning stage",
-			statement: relatedMeaningQuery,
+			statement: relatedMeaningScopedQuery,
 			oracle:    relatedMeaningQueryOverMainsDocumentArm,
 			arguments: relatedMeaning,
 			holds:     documents,
@@ -251,8 +277,10 @@ func (f documentSearchFixture) excludingStatements() []documentSearchStatement {
 			arguments: slices.Concat(keyword, owners),
 		},
 		{
+			// The scoped shape, as the plain pair above is: these arguments bind the fixture's
+			// project (relatedMeaningStatementFor).
 			name:      "the related-item check's meaning stage, excluding its own issue",
-			statement: relatedMeaningExcludingQuery,
+			statement: relatedMeaningScopedExcludingQuery,
 			arguments: slices.Concat(meaning, owners),
 		},
 	}
@@ -292,7 +320,7 @@ func TestEveryDocumentArmSearchesTheDocumentSearchIndex(t *testing.T) {
 func TestMainsDocumentArmSearchesNoDocumentSearchIndex(t *testing.T) {
 	fixture := newDocumentSearchFixture(t)
 	statement := fixture.statements()[0]
-	plan := planWithoutSeqScans(t, fixture.database, statement.oracle, statement.arguments...)
+	plan := planWithoutSeqScans(t, fixture.database, statement.oracle, statement.oracleArgs()...)
 	for _, scan := range explaintest.IndexScans(t, plan) {
 		if scan.Index == documentSearchIndex {
 			t.Fatalf("main's keyword search reads %s, a table it does not know:\n%s", documentSearchIndex, plan)
@@ -318,7 +346,7 @@ func TestEveryDocumentArmAnswersWhatMainsStatementDoes(t *testing.T) {
 	ctx := context.Background()
 	for _, statement := range fixture.statements() {
 		t.Run(statement.name, func(t *testing.T) {
-			want := documentSearchRows(t, ctx, fixture.database, statement.oracle, statement.arguments, nil)
+			want := documentSearchRows(t, ctx, fixture.database, statement.oracle, statement.oracleArgs(), nil)
 			got := documentSearchRows(t, ctx, fixture.database, statement.statement, statement.arguments,
 				[]string{"set local enable_seqscan = off"})
 			if statement.sorted {

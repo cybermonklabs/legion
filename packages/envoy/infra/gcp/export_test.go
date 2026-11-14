@@ -96,12 +96,14 @@ var RefuseClusteredHubSecret = refuseClusteredHubSecret
 // calls it directly: chart children are not registered under the mocks.
 var ProtectClusteredHubStatefulSet = protectClusteredHubStatefulSet
 
-// The two shutdown budgets of a gcp:ClusteredNatsHub tailnet host pod, for the test that holds
-// each within the pod's grace period: the tailscale container's preStop hook and containerboot's
-// shutdown, and the session listener's own shutdown on its SIGTERM, after its preStop wait.
+// The shutdown budget of each gcp:ClusteredNatsHub workload that stops on a SIGTERM, for the
+// tests that hold each within its own pod's grace period: the tailnet host's tailscale container,
+// whose preStop hook and containerboot's shutdown run inside that pod's grace, and the session
+// listener's own shutdown, which runs inside the listener pod's grace, after its preStop wait.
 const (
 	TailnetShutdownSeconds              = tailnetShutdownSeconds
 	ClusteredHubListenerShutdownSeconds = clusteredHubListenerShutdownSeconds
+	ClusteredHubListenerGraceSeconds    = clusteredHubListenerGraceSeconds
 )
 
 // DispatchRollingUpdate is the resolved rolling update's bounds, for the tests outside the package.

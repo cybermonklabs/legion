@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A GitHub secondary rate limit met long after the last one no longer waits out the backoff of
+  limits weeks old. The wait doubles with each limit met, a minute to a ceiling of 64, and the
+  count was reset only by the one path that finds GitHub willing again within the pass that was
+  already backing off, so it only ever rose: a scope struck seven times over a month waited an
+  hour on its next limit, which had nothing to do with any of them. A scope that goes an hour
+  with no limit recorded now starts its count again at one, and a limit still in force is never
+  shortened by that.

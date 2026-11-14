@@ -60,16 +60,31 @@ func (reader markdownReader) parse(source []byte, unclosedFrontmatter bool, budg
 // read is goldmark's tree of source, its tables padded and its elements counted on budget, the
 // source's first server bytes the server's (origin), with the count and the parser context it
 // kept, or the refusal of markdown nested past either of parseSource's bounds, before anything else
-// refuses it.
+// refuses it. A display reader's parse is marked as one (displayParseKey), since a block nested
+// past a bound is no refusal there (nestingRefusal).
 func (reader markdownReader) read(source []byte, unclosedFrontmatter bool, budget *WriteBudget, server int) (ast.Node, *parseCount, parser.Context, error) {
+	pc, count := readContext(unclosedFrontmatter, budget, server, reader.display)
+	root, err := parseSource(reader.md.Parser(), source, pc)
+	return root, count, pc, err
+}
+
+// readContext is the context one parse of a document's markdown runs in - the front-matter opener
+// no line closes (frontmatterAttempt), the write's budget, and the count of what the parse makes on
+// it, nil for a budget that counts no elements - with that count. Every read of a document's
+// markdown starts here, the read-only reader of a body the parse refuses included
+// (FindDecisionCard), so each of them hands goldmark the same context and reads the same tree.
+func readContext(unclosedFrontmatter bool, budget *WriteBudget, server int, display bool) (parser.Context, *parseCount) {
 	pc := parser.NewContext()
 	if unclosedFrontmatter {
 		pc.Set(unclosedFrontmatterKey, true)
 	}
+	// A display reader's parse is marked as one, since a block nested past a bound is no refusal
+	// there (nestingRefusal); every other reader of a document's markdown parses as a write does.
+	if display {
+		pc.Set(displayParseKey, true)
+	}
 	pc.Set(writeBudgetKey, budget)
-	count := budget.elements.countParse(pc, server)
-	root, err := parseSource(reader.md.Parser(), source, pc)
-	return root, count, pc, err
+	return pc, budget.elements.countParse(pc, server)
 }
 
 // maxReferenceLines is how many of a paragraph's lines goldmark's link reference definition
@@ -656,6 +671,20 @@ func recordLine(line gmtext.Segment, source []byte, pc parser.Context) {
 // its parse, so pmdoc registers none, and takes the backslash out of a cell's escaped pipes itself
 // once the bounds hold (unescapeTablePipes).
 func parseSource(p parser.Parser, source []byte, context parser.Context) (ast.Node, error) {
+	root := readSource(p, source, context)
+	if err := nestingRefusal(root, source, context); err != nil {
+		return nil, err
+	}
+	unescapeTablePipes(root, source)
+	return root, nil
+}
+
+// readSource is the read parseSource holds its bounds against: source parsed with context, each
+// footnote definition back where it is written (definitionsInPlace), and the lines
+// lineRecordingParagraph recorded left on the document root. It is goldmark's tree as goldmark
+// read it, before any bound is held against it, which a reader that answers no refusal reads
+// instead of the refusal (FindDecisionCard).
+func readSource(p parser.Parser, source []byte, context parser.Context) ast.Node {
 	context.Set(tabFreeKey, bytes.IndexByte(source, '\t') < 0)
 	reader := &lastLineColumns{Reader: gmtext.NewReader(source)}
 	root := p.Parse(reader, parser.WithContext(context))
@@ -666,11 +695,7 @@ func parseSource(p parser.Parser, source []byte, context parser.Context) (ast.No
 	if recorded := context.Get(htmlFlowLinesKey); recorded != nil {
 		root.SetAttribute(htmlFlowLinesAttr, recorded)
 	}
-	if err := nestingRefusal(root, source, context); err != nil {
-		return nil, err
-	}
-	unescapeTablePipes(root, source)
-	return root, nil
+	return root
 }
 
 // lastLineColumns is goldmark's reader keeping the document's last line where it has no line feed

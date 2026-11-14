@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test"
 import { mkdir, stat, utimes, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { EnvoyApiError, type Interest, type SubscribeResult } from "@legion/envoy-client/transport"
 import type {
+  ChannelBrokerMessage,
+  ChannelConnection,
   ChannelConnectionStatus,
-  ChannelForwarderConnection,
-  ChannelInboundMessage,
   ChannelTopicSubscription,
-} from "../src/channel-forwarder"
+} from "../src/channel-topics"
 import {
   type ChannelNotification,
   type ChannelNotifier,
@@ -21,7 +22,6 @@ import {
 } from "../src/session-identity"
 import { STATE_FILE_MAX_AGE_MS } from "../src/session-state"
 import {
-  emptyReplay,
   type FakeClient,
   testCapabilities,
   useScratchState,
@@ -30,11 +30,11 @@ import {
 
 const scratchState = useScratchState()
 
-class IdleNats implements ChannelForwarderConnection {
+class IdleNats implements ChannelConnection {
   subscribe(): ChannelTopicSubscription {
     return {
       unsubscribe: () => undefined,
-      async *[Symbol.asyncIterator](): AsyncGenerator<ChannelInboundMessage> {},
+      async *[Symbol.asyncIterator](): AsyncGenerator<ChannelBrokerMessage> {},
     }
   }
 
@@ -74,9 +74,12 @@ function interest(): Interest {
   }
 }
 
-/** The listener's answer to a registration: the interest, and the core delivery mode. */
+/** The listener's answer to a registration: the interest, and this session's own consumer. */
 function registered(): SubscribeResult {
-  return { ...interest(), delivery: { mode: "core", reason: "not_answered" } }
+  return {
+    ...interest(),
+    delivery: consumerDelivery("ses_current"),
+  }
 }
 
 /** The client instance of the channel server under test, and of a second `claude` process that
@@ -102,7 +105,6 @@ test("reasserts a restored role after a successful registration heartbeat loses 
       return { claimed: true, interest: interest() }
     },
     getRole: async () => ({ role: "reviewer", holder: "ses_lost", last_seen: 1, state: "live" }),
-    replay: emptyReplay,
   }
   const session = await startChannelSession({
     identity: new SessionIdentity("ses_current", "/tmp"),
@@ -154,7 +156,6 @@ test("runs the regain hook once a heartbeat's soft claim takes the held role bac
       if (holder === "ses_current" && regains.length === 0) holder = "ses_lost"
       return answer
     },
-    replay: emptyReplay,
   }
   const session = await startChannelSession({
     identity: new SessionIdentity("ses_current", "/tmp"),
@@ -207,7 +208,6 @@ test("the role read's 404 still means no live holder: the kept lane changed only
         }),
       })
     },
-    replay: emptyReplay,
   }
   const session = await startChannelSession({
     identity: new SessionIdentity("ses_current", "/tmp"),
@@ -263,7 +263,6 @@ test("a soft claim a different live session refuses removes the role record, whi
       last_seen: 1,
       state: "live" as const,
     }),
-    replay: emptyReplay,
   }
   const session = await startChannelSession({
     identity: new SessionIdentity("ses_current", "/tmp"),
@@ -324,7 +323,6 @@ test("a refusal naming this session under another process keeps the record, asks
       state: "live" as const,
       client_instance_id: OTHER_INSTANCE,
     }),
-    replay: emptyReplay,
   }
   const session = await startChannelSession({
     identity: new SessionIdentity("ses_current", "/tmp"),
@@ -407,7 +405,6 @@ test("a lookup marked handed back makes the heartbeat claim the role again and k
       client_instance_id: INSTANCE,
       ...(handedBack ? { handed_back: true } : {}),
     }),
-    replay: emptyReplay,
   }
   const session = await startChannelSession({
     identity: new SessionIdentity("ses_current", "/tmp"),
@@ -472,7 +469,6 @@ test("the age sweep does not reach the record of a process still pressing its re
       state: "live" as const,
       client_instance_id: OTHER_INSTANCE,
     }),
-    replay: emptyReplay,
   }
   const session = await startChannelSession({
     identity: new SessionIdentity("ses_current", "/tmp"),

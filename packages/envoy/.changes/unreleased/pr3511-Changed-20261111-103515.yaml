@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The pre-apply census now admits `drop index` with RESTRICT among the catalog-only statement kinds a migration may be made of and still be exempt from the table-size limit, beside `drop trigger` and `drop function`: dropping an index deletes its `pg_class` and `pg_index` rows and unlinks its storage, reading no row of the table, so the time it holds its lock does not grow with the table. A drop with `cascade`, and a drop of anything else, is still size-dependent, and the census now also reads an enabled event trigger whose tags name `DROP INDEX`, which takes the exemption away as the other command tags do.'
+time: 2026-11-11T10:35:15.919050924Z
+custom:
+    Issue: pr3511

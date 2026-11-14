@@ -1,12 +1,17 @@
-// The harness this package's whole-daemon live proofs share: merged_root_waits_live_test.go,
-// no_required_checks_live_test.go, child_adoption_live_test.go, ci_red_no_takeover_live_test.go,
-// handoff_records_live_test.go and admission_issues_live_test.go. The first five are built with
-// `-tags e2e` by scripts of their own (scripts/e2e/merged-root-waits.sh,
-// scripts/e2e/no-required-checks.sh, scripts/e2e/child-adoption.sh,
-// scripts/e2e/ci-red-no-takeover.sh and scripts/e2e/handoff-records.sh), which make the same run
-// around them through scripts/e2e/lib/live-daemon-proof.sh; the sixth runs in the ordinary
-// `go test ./internal/daemon/` on the broker that package's other tests take (newLiveProofOn over
-// workflowNATS), which is why this file carries no build tag of its own.
+// The harness this package's whole-daemon live proofs share: child_adoption_live_test.go,
+// handoff_records_live_test.go and admission_issues_live_test.go, which embed liveProof;
+// behind_entry_fence_live_test.go, conflict_no_takeover_live_test.go and
+// phase_entry_converge_live_test.go, which embed live_issue_proof_test.go's liveIssueProof,
+// liveProof grown for one issue on an open pull request; and the proofs that drive real Oh My Pi
+// panes, through live_agent_proof_test.go's liveAgentProof. Every one of them but
+// admission_issues_live_test.go is built with `-tags e2e` by a script of its own
+// (scripts/e2e/child-adoption.sh, scripts/e2e/handoff-records.sh,
+// scripts/e2e/behind-entry-fence.sh, scripts/e2e/conflict-no-takeover.sh,
+// scripts/e2e/phase-entry-converge.sh and the four live_agent_proof_test.go names), which makes
+// the same run around it through scripts/e2e/lib/live-daemon-proof.sh;
+// admission_issues_live_test.go runs in the ordinary `go test ./internal/daemon/` on the broker
+// that package's other tests take (newLiveProofOn over workflowNATS), which is why this file
+// carries no build tag of its own.
 //
 // A driver embeds liveProof, which holds what every such proof needs before and around the daemon
 // it boots: the configuration it boots with (newLiveProof reads the broker LEGION_E2E_NATS_URL

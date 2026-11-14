@@ -2198,8 +2198,8 @@ func TestGithubPayloadFields(t *testing.T) {
 			},
 		},
 		{
-			// A fork's pull request names its own repository as the head's; Dispatch attributes
-			// no result's currency to one (delivery's headAttribution).
+			// A fork's pull request names its own repository as the head's; Dispatch compares no
+			// check's results with such a head (delivery's headAttribution).
 			name:  "a fork's pull request names the fork as its head repository",
 			event: "pull_request",
 			body: map[string]any{

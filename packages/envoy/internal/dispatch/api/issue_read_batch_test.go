@@ -133,7 +133,8 @@ func createIssueAsk(t *testing.T, handler http.Handler, key, question string) st
 // getIssue once called them, written with WriteJSON's own encoding into the one type the read
 // answers (issueDetail). loadArtifacts and queryOwnerAsks send the same queueArtifactDetails and
 // queueAskDetails the read queues, so the comparison checks how readIssue puts its two batches
-// and its answer together, not those detail statements themselves.
+// and its answer together, not those detail statements themselves. The read it is compared with
+// sends no `Dispatch-Trees` header, so neither path carries a display tree.
 func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	t.Helper()
 	served := directServer(deps)
@@ -160,6 +161,15 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the children: %v", err)
 	}
+	gateRows, err := pool.Query(ctx, issueDesignGatesStatement, issue.Key, model.GatedStepsKnown)
+	if err != nil {
+		t.Fatalf("query the design gates: %v", err)
+	}
+	gates, err := scanIssueDesignGates(gateRows)
+	gateRows.Close()
+	if err != nil {
+		t.Fatalf("load the design gates: %v", err)
+	}
 	counts, err := refs.BacklinkCounts(ctx, pool, "issue", []string{issue.Key}, nil)
 	if err != nil {
 		t.Fatalf("count the issue's backlinks: %v", err)
@@ -168,9 +178,10 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	WriteJSON(recorder, http.StatusOK, issueDetail{
 		Issue:             issue,
 		Progress:          progress,
-		Artifacts:         artifacts,
-		OpenAsks:          issueOpenAsksOf(asks, replies),
+		Artifacts:         artifactReads(artifacts, nil),
+		OpenAsks:          issueOpenAsksOf(asks, replies, nil),
 		Children:          children,
+		DesignGates:       gates,
 		ReferencedByCount: counts[issue.Key],
 	})
 	return recorder.Body.Bytes()
@@ -395,7 +406,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 	served := directServer(deps)
 	ctx := context.Background()
 
-	if _, err := served.readIssue(ctx, fixture.key); err != nil {
+	if _, err := served.readIssue(ctx, fixture.key, false); err != nil {
 		t.Fatalf("read the issue: %v", err)
 	}
 	prepared := preparedStatementNames(t, deps.Store)
@@ -403,7 +414,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 		t.Fatal("the read prepared no statement, so a deallocation would not show here")
 	}
 
-	if _, err := served.readIssue(ctx, "NOPE-1"); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := served.readIssue(ctx, "NOPE-1", false); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("read a missing issue: %v, want pgx.ErrNoRows", err)
 	}
 	after := preparedStatementNames(t, deps.Store)
@@ -412,7 +423,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 			t.Fatalf("the missing key's read left %s deallocated: %v are prepared, %v were", name, after, prepared)
 		}
 	}
-	if _, err := served.readIssue(ctx, fixture.key); err != nil {
+	if _, err := served.readIssue(ctx, fixture.key, false); err != nil {
 		t.Fatalf("read the issue after the missing key: %v", err)
 	}
 	if again := preparedStatementNames(t, deps.Store); len(again) != len(after) {

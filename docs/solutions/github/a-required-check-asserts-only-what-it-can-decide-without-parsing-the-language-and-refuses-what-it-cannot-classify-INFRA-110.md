@@ -48,7 +48,7 @@ Then apply these, each of which this repository already practised somewhere else
 - **When a plan pins the runtime, it has already decided which assertions are possible.** Resolve
   that conflict in the plan. Standard-library-only Python before the Bun install forecloses a
   TypeScript or Go parser, so it forecloses every assertion that needs one.
-- **An acceptance criterion whose subject is prose belongs to the reviewer; get that ruling before
+- **An acceptance criterion whose subject is prose belongs to the reviewer; get that decision before
   the implementer writes code.** A plan decision marked "the architect may overrule this" is not a
   licence to proceed — it is a question.
 

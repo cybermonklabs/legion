@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The CI reconcile pass now ends within the interval it runs on and says in its one log line
+  how far it got. It paces itself from the work it expects rather than a fixed half-second
+  between requests, never faster than ten requests a second and never slower than that half
+  second; it is bound at its loop's interval, so it always ends and always logs; and it keeps a
+  cursor over the mapped repositories and their open pull requests, so a pass cut short by its
+  deadline or by a rate limit is taken up by the next pass at the head it did not read, and no
+  head waits behind the heads before it. A pass that is cut short keeps what it holds of the
+  head it was reading, so later reads of that head are still conditional. The line adds
+  heads_known, requests, pace, first_head, last_head, cycle_complete and deadline_reached beside
+  the fields it already carried.

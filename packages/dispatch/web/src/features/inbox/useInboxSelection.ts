@@ -7,8 +7,9 @@
  * arrived. The bar reports one press downward and renders what it is told.
  */
 
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useRef, useState } from "react";
 
+import { useMarkedKeys } from "../../hooks/useMarkedKeys";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
 import { type AskSnoozeFailure, useAskSnoozeMany } from "./useAskSnooze";
@@ -113,13 +114,17 @@ export function useInboxSelection({
   /** Whether the list is showing what the reader dismissed, where a press puts rows back. */
   readonly showDismissed: boolean;
 }): InboxSelection {
+  // A mark whose row the list no longer holds at all - dismissed, answered, resolved elsewhere -
+  // drops out, so a row that comes back is unmarked. Read against every row the two reads
+  // answered, which is what the marks are keyed by.
+  const candidateIds = candidates.map((row) => rowId(row)).join(" ");
   // The rows the reader has marked, by `rowId` - asks and threads alike: `x` and the row's own
-  // checkbox are the two ways in. An id the list no longer holds drops out here, so a row that is
-  // listed again comes back unmarked; a mark whose row this view does not list, or whose band is
-  // folded shut, drops out of `selected` below, so the bar never counts - and `h` never writes -
-  // a row that is not on the page. The mark itself outlives both: open the band, or switch back,
-  // and it is still made.
-  const [marked, setMarked] = useState<ReadonlySet<string>>(() => new Set());
+  // checkbox are the two ways in, and the pruning above is the shared hook's own
+  // (`hooks/useMarkedKeys.ts`; a project's issue table marks its rows through TanStack's own `rowSelection` instead). A mark
+  // whose row this view does not list, or whose band is folded shut, drops out of `selected`
+  // below, so the bar never counts - and `h` never writes - a row that is not on the page. The
+  // mark itself outlives both: open the band, or switch back, and it is still made.
+  const { marked, onMark: toggleMark, setMarked } = useMarkedKeys(candidateIds);
   // Whether the reader pressed **Select all**. Any change to the marks ends it.
   const [allRows, setAllRows] = useState(false);
   const bulkWrite = useAskSnoozeMany();
@@ -144,15 +149,14 @@ export function useInboxSelection({
     setMarked(new Set());
     setAllRows(false);
     setSnoozeRefusal(undefined);
-  }, []);
-  const onMark = useCallback((id: string) => {
-    setAllRows(false);
-    setMarked((current) => {
-      const next = new Set(current);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
-  }, []);
+  }, [setMarked]);
+  const onMark = useCallback(
+    (id: string) => {
+      setAllRows(false);
+      toggleMark(id);
+    },
+    [toggleMark]
+  );
   /** The marks the bar counts: the rows this view is drawing. */
   const selected = [...marked].filter((id) => drawnIds.has(id));
   const selectedAsks = selected.filter((id) => rows.get(id)?.kind === "ask");
@@ -208,18 +212,6 @@ export function useInboxSelection({
     // back under the line the page shows for it, not under a bar the reader must look for.
     clearSelection();
   };
-  // A mark whose row the list no longer holds at all - dismissed, answered, resolved elsewhere -
-  // drops out here, so a row that comes back is unmarked. Read against every row the two reads
-  // answered, which is what the marks are keyed by.
-  const candidateIds = candidates.map((row) => rowId(row)).join(" ");
-  useEffect(() => {
-    const listed = new Set(candidateIds === "" ? [] : candidateIds.split(" "));
-    setMarked((current) =>
-      [...current].every((id) => listed.has(id))
-        ? current
-        : new Set([...current].filter((id) => listed.has(id)))
-    );
-  }, [candidateIds]);
 
   return {
     allRows,

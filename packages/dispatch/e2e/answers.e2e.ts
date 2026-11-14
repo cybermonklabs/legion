@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   answerAsk,
   createAsk,
@@ -14,8 +12,8 @@ import {
   listMyAnswers,
 } from "./api";
 import { documentEditor } from "./editor";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -23,10 +21,6 @@ const session = {
   as: "agent" as const,
 };
 const shipOrHold = [{ label: "Ship" }, { label: "Hold" }];
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 function answerRows(page: Page): Locator {
   return page.locator("[data-answer-row]");
@@ -49,7 +43,8 @@ async function expectFocusedAskTurn(page: Page, id: string): Promise<void> {
 
 // SLOW(>=2s): Two people need two contexts: alice's answers page and bob's empty one are the same
 // claim from both sides, and each context pays its own sign-in and first load.
-test("the answers page lists a person's answers and replies, opens each ask, and changes an answer", async ({
+// @pr: Create through answer to close: the answers page opens each ask and changes an answer, read from both people's side.
+test("the answers page lists a person's answers and replies, opens each ask, and changes an answer @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

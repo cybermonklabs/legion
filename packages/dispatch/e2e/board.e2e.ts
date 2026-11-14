@@ -1,17 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
 import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The visible priority tag inside a card or row - the `<select>` options carry the same text. */
 function priorityBadge(scope: Locator, label: string): Locator {
@@ -102,7 +96,8 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
 
 // SLOW(>=2s): four whole-card drags, each paying dnd-kit's own 200 ms landing, plus the board's
 // two fresh renders.
-test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle", async ({
+// @pr: Create through answer to close: the board is where a person moves an issue's status, and the drag has to order List and Board alike.
+test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -149,9 +144,8 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await page.reload();
     await expect(triage.getByRole("article")).toHaveText([/Third card/, /Second card/]);
     await page.getByRole("button", { name: "List" }).click();
-    await expect(
-      page.getByRole("list", { name: "Triage issues" }).getByRole("listitem")
-    ).toHaveText([/Third card/, /Second card/]);
+    await page.getByRole("button", { name: "Triage 2", exact: true }).click();
+    await expect(page.locator("[data-issue-row]")).toHaveText([/Third card/, /Second card/]);
     expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
       third.key,
       second.key,
@@ -467,7 +461,7 @@ test("board cards carry the unread dot the project list shows", async ({ browser
   const page = await context.newPage();
   try {
     await page.goto("/projects/CORE");
-    const unreadRow = page.getByRole("listitem", { name: `${unread.key} Unread card` });
+    const unreadRow = page.getByRole("row", { name: `${unread.key} Unread card`, exact: true });
     await expect(unreadRow.locator('[title="Unread"]')).toHaveCount(1);
     await page.getByRole("button", { name: "Board" }).click();
     const unreadCard = page.getByRole("article", { name: `${unread.key} Unread card` });
@@ -492,7 +486,7 @@ test("project list rows and board cards set an issue's priority in place", async
   try {
     const page = await context.newPage();
     await page.goto("/projects/CORE");
-    const listRow = page.getByRole("listitem", { name: `${issue.key} Prioritized card` });
+    const listRow = page.getByRole("row", { name: `${issue.key} Prioritized card`, exact: true });
     const listControl = listRow.getByLabel(`Priority of ${issue.key}`);
     await expect(priorityBadge(listRow, "P1")).toBeVisible();
     // The badge stays small; the tap target around it is 32 px from md.
@@ -734,10 +728,9 @@ async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
 
 // SLOW(>=2s): a real finger: per-frame touch steps, two snap-scroll flings, the sensor's own
 // 150 ms activation twice over, an issue opened and left, and a carried card.
-test("on the phone a finger drives the board: hold lifts, tap opens, swipes scroll and snap @phone", async ({
+test("on the phone a finger drives the board: hold lifts, tap opens, swipes scroll and snap @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "touch gestures exercise the phone project");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const cards = [];
   for (const title of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"]) {
@@ -891,7 +884,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
   }
 });
 
-test("one URL-backed filter strip drives List and Board alike and survives a reload", async ({
+test("URL-backed labels drive the List table and Board strip and survive a reload", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -905,10 +898,9 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
   try {
     await page.goto("/projects/CORE");
     await expect(page.getByText("Plain card")).toBeVisible();
-    // Apply the label from the List's strip's Labels multi-select: the filter lands in the URL.
-    await page.getByRole("button", { name: "Filters · 0 active" }).click();
+    // Pick a label from the table header; the Board reads the same label parameter.
     await pickFilterOption(page, "Labels", "frontend");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=frontend$/);
+    await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/);
     await expect(page.getByText("Labelled card")).toBeVisible();
     await expect(page.getByText("Plain card")).toBeHidden();
 
@@ -916,7 +908,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
     await page.getByRole("button", { name: "Board" }).click();
     const board = page.getByRole("region", { name: "Project board" });
     await expect(board.getByRole("article")).toHaveText([/Labelled card/]);
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=frontend$/);
+    await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/);
 
     // A reload keeps the filter, on the Board.
     await page.reload();
@@ -926,7 +918,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
     // Removing the chip on the Board shows every card again.
     await page.getByRole("button", { name: "Remove Label: frontend filter" }).click();
     await expect(board.getByRole("article")).toHaveCount(3);
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).not.toHaveURL(/[?&]label=/);
   } finally {
     await context.close();
   }
@@ -934,8 +926,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
 
 test("a filtered drag names the visible neighbours and the hidden card interleaves without error", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the mouse drag exercises a desktop viewport");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   // Todo ranks Alpha < Bravo < Charlie < Delta (creation order); the filter hides Bravo -
   // every other Todo card carries the label.
@@ -1074,10 +1065,9 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
 
 // The board's own toggles are controls a finger presses, so on a phone each holds the 44 px
 // touch target; what the toggles do is the two walks above, which assert it at any width.
-test("the board's view, lanes and edge toggles keep touch-sized targets @phone", async ({
+test("the board's view, lanes and edge toggles keep touch-sized targets @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the 44 px touch rule applies below 1280 px");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Toggle card" });
 

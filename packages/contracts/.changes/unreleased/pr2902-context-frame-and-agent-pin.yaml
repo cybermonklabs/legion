@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  A fifth agent-stream frame, `{kind: "context", tokens, contextWindow}`, says how much of its
+  context window a session fills now, for the ring a live view draws; `contextWindow` is always
+  above zero, since a session whose host reports no window publishes no frame at all. The two
+  figures ride a frame of their own rather than the `settings` frame beside the model, because a
+  viewer drops a whole frame whose fields do not validate and one bad figure would take the model
+  and thinking levels down with it.
+  `UserAgentState` carries `pinned_at`, when the viewer pinned that session, and
+  `UserAgentStateInput` takes `pinned`, which pins it or unpins it and touches neither the Clear
+  nor the read mark: a pin belongs to the person rather than to one browser, and their sidebar
+  lists the sessions they pinned, oldest pin first.

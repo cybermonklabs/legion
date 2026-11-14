@@ -155,8 +155,7 @@ base_env=(
 
 # loadgen_env adds what loadgen needs: the root, the go toolchain for `loadgen tables`
 # (`go tool pprof`), this script's path and the run's lock token, for `loadgen run -restart-at`'s
-# `stack.sh restart-dispatch`, and LOADTEST_SESSION_DELIVERY and LOADTEST_NO_RESUME when they are
-# set (`loadgen run -session-delivery`).
+# `stack.sh restart-dispatch`, and LOADTEST_NO_RESUME when it is set.
 loadgen_env() {
   local gobin
   gobin=$(command -v go || true)
@@ -164,7 +163,6 @@ loadgen_env() {
   [ -n "$gobin" ] && path="$(dirname -- "$gobin"):$path"
   printf '%s\n' "${base_env[@]:1}" "PATH=$path" "LOADTEST_ROOT=$ROOT" "LOADTEST_STACK_SH=$here/stack.sh"
   [ -z "${LOADTEST_LOCK_TOKEN:-}" ] || printf '%s\n' "LOADTEST_LOCK_TOKEN=$LOADTEST_LOCK_TOKEN"
-  [ -z "${LOADTEST_SESSION_DELIVERY:-}" ] || printf '%s\n' "LOADTEST_SESSION_DELIVERY=$LOADTEST_SESSION_DELIVERY"
   [ -z "${LOADTEST_NO_RESUME:-}" ] || printf '%s\n' "LOADTEST_NO_RESUME=$LOADTEST_NO_RESUME"
 }
 
@@ -575,6 +573,19 @@ launch_dispatch() {
     "NATS_URLS=nats://127.0.0.1:$(port nats)"
     "ENVOY_URL=http://127.0.0.1:$envoy_port"
     "ENVOY_TOKEN=$(jq -r .listener_token "$STACK")")
+  # LOADTEST_DISPATCH_ENV names a file of NAME=value lines appended to that environment, which is
+  # how the spec-loop stack points Dispatch at `loadgen stub-embed` (DISPATCH_EMBEDDER=azure, the
+  # DISPATCH_AZURE_* settings and SSL_CERT_FILE for the stub's own certificate). It is a file
+  # rather than a variable so a key never reaches another process's argv or environment listing.
+  if [ -n "${LOADTEST_DISPATCH_ENV:-}" ]; then
+    [ -r "$LOADTEST_DISPATCH_ENV" ] || die "LOADTEST_DISPATCH_ENV=$LOADTEST_DISPATCH_ENV is not readable"
+    local line
+    while IFS= read -r line; do
+      case $line in '' | '#'*) continue ;; esac
+      [ "${line%%=*}" != "$line" ] || die "LOADTEST_DISPATCH_ENV=$LOADTEST_DISPATCH_ENV holds a line that is not NAME=value: $line"
+      dispatch_env+=("$line")
+    done <"$LOADTEST_DISPATCH_ENV"
+  fi
   spawn "${append[@]}" dispatch "$log" dispatch_env "$binary"
   set_pid dispatch "$(pid_of dispatch)"
   stack_set '.pg_direct = $d | .envoy_rtt = $r | .dispatch_log = $l | .dispatch_binary = $b | .dispatch_db = $db | .dispatch_healthz_seconds = $s' \

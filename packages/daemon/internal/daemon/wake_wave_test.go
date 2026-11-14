@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -209,6 +208,26 @@ func waveConfig(t *testing.T) config.Config {
 // per claim would be forty migrations.
 func waveClaims(t *testing.T, cfg config.Config, role claim.Role, build func(i int, token claim.Token) supervise.Claim) []claim.Token {
 	t.Helper()
+	return waveClaimsOf(t, cfg, role, waveSize, build)
+}
+
+// waveClaimsOf is waveClaims over a wave of count claims rather than the file's own size: the
+// stale-plugin lane is bounded by a gate of its own (supervise.RefreshGate), so a test of that
+// bound seeds more claims than the rate it is held to, and a test that reads one wave end to end
+// seeds exactly what the gate admits at once.
+func waveClaimsOf(t *testing.T, cfg config.Config, role claim.Role, count int, build func(i int, token claim.Token) supervise.Claim) []claim.Token {
+	t.Helper()
+	return waveClaimsFrom(t, cfg, role, 1, count, build)
+}
+
+// waveClaimsFrom is waveClaimsOf over the count issues counted from first rather than from one,
+// so that a test which seeds more than one wave gives each of them a range of issues of its own
+// and no tree holds a claim of two: the fleet on an earlier plugin contract and the roots whose
+// first architect launch the same boot raises are two such waves, and a root sharing a tree with
+// a stale claim would be no root of its own (dispatch://INFRA-2712 c-bound). i is the issue's own
+// number, which build reads, so a claim built from it is the same claim wherever the range starts.
+func waveClaimsFrom(t *testing.T, cfg config.Config, role claim.Role, first, count int, build func(i int, token claim.Token) supervise.Claim) []claim.Token {
+	t.Helper()
 	ctx := context.Background()
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -222,8 +241,8 @@ func waveClaims(t *testing.T, cfg config.Config, role claim.Role, build func(i i
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the store: %v", err)
 	}
-	tokens := make([]claim.Token, 0, waveSize)
-	for i := 1; i <= waveSize; i++ {
+	tokens := make([]claim.Token, 0, count)
+	for i := first; i < first+count; i++ {
 		issue := fmt.Sprintf("%s-%d", cfg.Project, i)
 		token, err := claim.NewToken(project, issue, role)
 		if err != nil {
@@ -754,142 +773,6 @@ func TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce(t *testing.T) {
 	}
 }
 
-// A boot that finds forty live claims on a plugin contract this daemon has moved past queues each
-// one an update task — the wake the stale-plugin lane causes, which wakes a live session in place
-// of a launch — at the operator's pace: the state names every one of them as a `plugin-task` wake
-// with the turn the limiter gave it, the schedule is spread like any other wave's, and each
-// claim's own round opens at its own turn rather than at boot. The boot's own start returns inside
-// the thirty seconds startWaveDaemon allows it, with the posts still going out, and the API serves
-// every read this test makes while the wave waits. The sweep's next turn runs meanwhile: it reaps
-// orphans again and carries the one round already open and answered to its end, while the forty
-// claims of the wave still wait their turns.
-//
-// The negative control is the pacing reverted for this case, the rate set to 0
-// (TestWithNoPacingTheStalePluginWaveOpensEveryRoundInOneTick): all forty rounds then open inside
-// one tick of the test clock, which is forty live sessions woken in the same minute.
-func TestAStalePluginWaveQueuesItsUpdateTasksAtTheOperatorsPace(t *testing.T) {
-	cfg := waveConfig(t)
-	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
-		return liveClaim(i, token, supervise.PodUpdateContract)
-	})
-	answered := answeredPluginRound(t, cfg)
-	clock, logged := newWaveClock(), &syncBuffer{}
-	rt := newWaveRuntime(clock)
-	origin := clock.Now()
-	reaped := func() int { return len(rt.fake().CallsOf("ReconcileOrphans")) }
-
-	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
-
-	waiting := awaitWave(t, d, waveSize)
-	for _, wake := range waiting {
-		if wake.Kind != "plugin-task" || !slices.Contains(tokens, wake.Claim) {
-			t.Fatalf("the state names a waiting wake %+v, want a plugin task of one of the wave's claims", wake)
-		}
-	}
-	if launched := rt.launches(); len(launched) != 0 {
-		t.Fatalf("%d launches while the plugin wave waits, want none: the round's task wakes the session that runs", len(launched))
-	}
-	round := supervise.PluginRound(api.DaemonAPIVersion)
-	for _, wake := range waiting {
-		if open := d.claim(wake.Claim).UpdateRound; open != "" {
-			t.Fatalf("%s is already in round %q while its update task waits its turn, want none until that turn", wake.Claim, open)
-		}
-	}
-	if open := openRounds(t, d, tokens, round); open != 1 {
-		t.Fatalf("%d of the wave's rounds are open while it waits, want the one the burst let out", open)
-	}
-
-	// The sweep runs while the wave waits: it reaps again, and the round already answered is
-	// carried to its end — a claim with no process, so it ends launching nothing.
-	atBoot := reaped()
-	testwait.Eventually(t, "the sweep's next turn to reap the runtime's orphans again", func() bool { return reaped() > atBoot })
-	testwait.Eventually(t, "the sweep's next turn to carry the answered round to its end", func() bool {
-		return d.claim(answered).UpdateRound == ""
-	})
-	if got := waitingWakes(t, d); len(got) != len(waiting) {
-		t.Fatalf("%d wakes wait after the sweep's turn, want the %d it found waiting", len(got), len(waiting))
-	}
-
-	moments := wakeMoments(origin, waiting)
-	assertSpread(t, "the stale-plugin wave's update tasks", moments, origin)
-	opened := 1
-	for _, wake := range waiting {
-		clock.advanceTo(wake.DueAt)
-		opened++
-		testwait.Eventually(t, fmt.Sprintf("the update round of %s to open at its turn", wake.Claim), func() bool {
-			return d.claim(wake.Claim).UpdateRound == round
-		})
-		if got := openRounds(t, d, tokens, round); got != opened {
-			t.Fatalf("%d of the wave's rounds are open at %s, want %d: one turn opens one round", got, wake.DueAt, opened)
-		}
-	}
-	if launched := rt.launches(); len(launched) != 0 {
-		t.Fatalf("the plugin wave launched %d processes, want none: every worker was asked to push first", len(launched))
-	}
-	assertWakeLines(t, logged, "plugin-task", moments)
-}
-
-// answeredPluginRound stores a claim of cfg's project whose own plugin round is open and already
-// answered, its process let go by the suspension that followed: the round the sweep has left to
-// carry while a wave waits. It returns its token.
-func answeredPluginRound(t *testing.T, cfg config.Config) claim.Token {
-	t.Helper()
-	project, err := claim.ProjectToken(cfg.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	issue := cfg.Project + "-900"
-	token, err := claim.NewToken(project, issue, claim.RoleTester)
-	if err != nil {
-		t.Fatal(err)
-	}
-	answeredAt := time.Now().UTC()
-	putClaim(t, cfg, supervise.Claim{
-		Token: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleTester, Generation: 1,
-		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon, Session: "ses_answered",
-		SessionFile: "/sessions/answered.jsonl", PluginContract: supervise.PodUpdateContract,
-		UpdateRound: supervise.PluginRound(api.DaemonAPIVersion), UpdateReasons: "the process speaks an earlier plugin contract",
-		UpdateOpenedAt: &answeredAt, UpdateSignalledAt: &answeredAt,
-	})
-	writePrompt(t, cfg, token)
-	return token
-}
-
-// openRounds is how many of tokens are in the round named.
-func openRounds(t *testing.T, d *daemon, tokens []claim.Token, round string) int {
-	t.Helper()
-	open := 0
-	for _, token := range tokens {
-		if d.claim(token).UpdateRound == round {
-			open++
-		}
-	}
-	return open
-}
-
-// The negative control of the stale-plugin case: the pacing reverted, the rate at 0, and every one
-// of the forty rounds opens inside one tick of the test clock — forty live sessions woken in the
-// same minute, which is the plugin wave the cap counts.
-func TestWithNoPacingTheStalePluginWaveOpensEveryRoundInOneTick(t *testing.T) {
-	cfg := waveConfig(t)
-	cfg.WorkerWakesPerMinute = 0
-	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
-		return liveClaim(i, token, supervise.PodUpdateContract)
-	})
-	clock, logged := newWaveClock(), &syncBuffer{}
-	rt := newWaveRuntime(clock)
-	round := supervise.PluginRound(api.DaemonAPIVersion)
-
-	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
-
-	testwait.Eventually(t, "every round of the unpaced plugin wave to open", func() bool {
-		return openRounds(t, d, tokens, round) == len(tokens)
-	})
-	if waiting := waitingWakes(t, d); len(waiting) != 0 {
-		t.Fatalf("wakesWaiting with the pacing off = %+v, want none", waiting)
-	}
-}
-
 // The negative control of every c-spread launch case: the pacing reverted, the rate set to 0, so
 // the limiter releases every wake at its own now. The whole wave then launches inside one tick of
 // the test clock — the restart of 2026-11-04 — which is what the paced cases must not do, and
@@ -1340,15 +1223,23 @@ func TestAnOperatorsCloseOfATreeTakesTheWakesOfItsRootAndItsWorker(t *testing.T)
 // today: the gate leaves such a claim exactly as it stands — idle, with its process recorded — so
 // the process runs until the wake's turn, when the relaunch stops it and starts the next one. No
 // sweep takes it for an orphan meanwhile: the claim still records it, so every reconciliation the
-// sweep runs knows it. The wave here is the stale-plugin lane's other branch, the relaunch of a
-// worker whose plugin cannot answer an update round at all, which is a relaunch no request raised.
+// sweep runs knows it. The wave here is the stale-plugin lane's own: one relaunch for each stale
+// claim, raised by no request at all, and each of them waits under the kind that lane alone
+// parks (supervise.WakePluginRefresh), which is how a reader of the state body tells a fleet's
+// refresh from the launches that start a tree's work.
 //
-// The negative control is the pacing reverted, the rate at 0: every one of the forty processes is
+// The wave is one gate's worth of claims rather than the file's forty, because the lane may hold
+// no more than that in the pacing at once (supervise.RefreshGate): what this test reads end to
+// end is one admitted wave, and the gate's own bound over a fleet larger than it — the rate
+// admitted at this sweep and the next rate's worth at the one after — is the test below
+// (TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHolds).
+//
+// The negative control is the pacing reverted, the rate at 0: every one of the processes is
 // then stopped and replaced inside one tick of the test clock
 // (TestWithNoPacingTheStaleRelaunchWaveReplacesEveryProcessInOneTick).
 func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing.T) {
 	cfg := waveConfig(t)
-	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
+	tokens := waveClaimsOf(t, cfg, claim.RoleImplementer, testWakeRate, func(i int, token claim.Token) supervise.Claim {
 		c := liveClaim(i, token, supervise.PodUpdateContract-1)
 		// Idle rather than working: a worker in a turn has its relaunch held for that turn's end
 		// (holdStaleRelaunch), which is a wait of its own and not the pacing's.
@@ -1361,7 +1252,7 @@ func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
 
-	waiting := awaitWave(t, d, waveSize)
+	waiting := awaitWave(t, d, testWakeRate)
 	running := map[claim.Token]runtime.Locator{}
 	for _, wake := range waiting {
 		c := d.claim(wake.Claim)
@@ -1422,7 +1313,7 @@ func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing
 			t.Fatalf("%s was relaunched %d times, want once", token, got)
 		}
 	}
-	assertWakeLines(t, logged, "launch", moments)
+	assertWakeLines(t, logged, "plugin-refresh", moments)
 }
 
 // resumedPrevious is the incarnation the claim's latest resume replaced: the process the relaunch
@@ -1468,6 +1359,281 @@ func TestWithNoPacingTheStaleRelaunchWaveReplacesEveryProcessInOneTick(t *testin
 			t.Fatalf("an unpaced relaunch is at %s, want the one instant %s", launch.at, origin)
 		}
 	}
+}
+
+// staleController stores the project controller's own claim as a daemon of the release before
+// this one left it: live, idle, on a plugin contract this daemon does not speak, and on no tree
+// and no issue, which is what makes it the controller (claim.IsController, ControllerToken). It
+// is seeded beside a wave so that the stale-plugin pass meets it with the gate already full.
+func staleController(t *testing.T, cfg config.Config) claim.Token {
+	t.Helper()
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := claim.ControllerToken(project)
+	c := liveClaim(0, token, supervise.PodUpdateContract-1)
+	c.State, c.Token, c.Project, c.Role = supervise.StateIdle, token, project, claim.RoleController
+	putClaim(t, cfg, c)
+	return token
+}
+
+// refreshWakesWaiting is the wakes of the stale-plugin lane the pacing holds, by the kind that
+// lane alone parks: what the gate bounds, read where the operator reads it
+// (supervise.WakePluginRefresh, api.State.WakesWaiting).
+func refreshWakesWaiting(t *testing.T, d *daemon) []api.WakeWaiting {
+	t.Helper()
+	var refreshes []api.WakeWaiting
+	for _, wake := range waitingWakes(t, d) {
+		if wake.Kind == supervise.WakePluginRefresh {
+			refreshes = append(refreshes, wake)
+		}
+	}
+	return refreshes
+}
+
+// awaitGate waits until the lane holds exactly count refreshes in the pacing and the reading
+// settles, and returns them. It is awaitWave's discipline — two reads alike in a row, since a
+// wave's posts fan out over one goroutine per claim — over the gate's own K rather than over a
+// whole wave, which no gated lane ever holds at once.
+func awaitGate(t *testing.T, d *daemon, count int) []api.WakeWaiting {
+	t.Helper()
+	var waiting, settled []api.WakeWaiting
+	testwait.Eventually(t, fmt.Sprintf("the gate to hold %d refreshes in the pacing", count), func() bool {
+		waiting, settled = refreshWakesWaiting(t, d), waiting
+		return len(waiting) == count && slices.Equal(waiting, settled)
+	})
+	return waiting
+}
+
+// gateFullLines is every line a stale-plugin pass wrote for the claims it left to a later sweep:
+// one line per pass, naming the pass and how many claims it refused, rather than one per claim —
+// a boot over a fleet of hundreds refuses hundreds at every tick (refreshStalePlugins).
+func gateFullLines(t *testing.T, logged *syncBuffer) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for line := range strings.Lines(logged.String()) {
+		entry := map[string]any{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		if entry["msg"] == "supervise: the stale-plugin refresh gate is full; these claims are left to a later sweep" {
+			lines = append(lines, entry)
+		}
+	}
+	return lines
+}
+
+// claimsOfWakes is the claims a reading of the queue names, as a set.
+func claimsOfWakes(waiting []api.WakeWaiting) map[claim.Token]bool {
+	claims := map[claim.Token]bool{}
+	for _, wake := range waiting {
+		claims[wake.Claim] = true
+	}
+	return claims
+}
+
+// A boot over more stale claims than the rate refreshes the rate and no more: the gate grants one
+// minute of the pacing and the pass posts nothing for the rest, so the wakes that start a newly
+// admitted tree's work queue behind one minute of refreshes rather than behind the fleet
+// (supervise.RefreshGate, dispatch://INFRA-2712 R1). What the refused claims cost is one line of
+// the pass, naming how many were left, and nothing else: the lane re-reads every stale claim at
+// every sweep, so nothing of them is remembered or lost.
+//
+// Then the admitted refreshes run their turns, which gives their credits back, and the sweep that
+// follows posts the next rate's worth — claims the boot pass refused, none of them one the first
+// round already refreshed. That is the drain the whole change is for: the fleet divided by the
+// rate, rather than two wakes and a model turn for each session.
+//
+// The project controller's claim is posted whatever the gate holds, and it takes no credit: its
+// relaunch is exempt from the pacing (supervise's reserveWake, claim.IsController), so it goes in
+// the instant the boot pass reads it and says in its own line that the pacing did not hold it.
+// Without that the one session an operator reads a running wave through would queue behind the
+// wave it is reading.
+//
+// The negative control is the gate's own ask removed from the pass (every claim posted
+// admitted): the whole fleet is then in the pacing at once, which this test reads at the
+// refreshes waiting after the boot.
+func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHolds(t *testing.T) {
+	cfg := waveConfig(t)
+	// The daemon supervises the controller's own claim only where it launches it; an operator's
+	// daemon stops that claim at boot instead (stopLaunchedController).
+	cfg.ControllerLaunch = config.ControllerLaunchDaemon
+	stale := 3 * testWakeRate
+	tokens := waveClaimsOf(t, cfg, claim.RoleImplementer, stale, func(i int, token claim.Token) supervise.Claim {
+		c := liveClaim(i, token, supervise.PodUpdateContract-1)
+		// Idle rather than working: a worker in a turn takes no admission at all, and its turn's
+		// end asks the gate instead (supervise's holdStaleRelaunch, afterTurn).
+		c.State = supervise.StateIdle
+		return c
+	})
+	controller := staleController(t, cfg)
+	clock, logged := newWaveClock(), &syncBuffer{}
+	rt := newWaveRuntime(clock)
+
+	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
+
+	// The boot pass posted the rate: the one line it wrote for the rest names every claim it
+	// left, and the lane holds no more than the rate in the pacing at any reading after it.
+	first := awaitGate(t, d, testWakeRate)
+	refusals := gateFullLines(t, logged)
+	if len(refusals) == 0 {
+		t.Fatal("no pass said it had left claims to a later sweep, want one line for each pass that refused any")
+	}
+	if boot := refusals[0]; boot["trigger"] != "boot" || boot["claims"] != float64(stale-testWakeRate) {
+		t.Fatalf("the boot pass left %v claims of trigger %v, want %d of \"boot\": it posts the rate and no more",
+			boot["claims"], boot["trigger"], stale-testWakeRate)
+	}
+	sweeps := len(rt.fake().CallsOf("ReconcileOrphans"))
+	testwait.Eventually(t, "three sweeps over the claims the boot pass left", func() bool {
+		return len(rt.fake().CallsOf("ReconcileOrphans")) >= sweeps+3
+	})
+	if held := refreshWakesWaiting(t, d); len(held) > testWakeRate {
+		t.Fatalf("the lane holds %d refreshes in the pacing after three more sweeps, want at most the rate, %d",
+			len(held), testWakeRate)
+	}
+	if got := len(rt.launches()); got > testWakeRate+1 {
+		t.Fatalf("%d processes were relaunched while the first refreshes still wait, want at most the rate and the controller's own", got)
+	}
+
+	// The controller's claim went in the instant the pass read it, unpaced and holding none of
+	// what the gate counts.
+	testwait.Eventually(t, "the controller's own relaunch", func() bool { return rt.launchesOf(controller) == 1 })
+	line, wrote := wakeLineOf(t, logged, controller)
+	if !wrote || line["kind"] != string(supervise.WakePluginRefresh) || line["paced"] != false {
+		t.Fatalf("the controller's wake line is %v, want a %s wake the pacing did not hold",
+			line, supervise.WakePluginRefresh)
+	}
+
+	// Every admitted refresh runs at its turn, and the credit each took comes back there.
+	for _, wake := range first {
+		clock.advanceTo(wake.DueAt)
+		testwait.Eventually(t, fmt.Sprintf("the relaunch of %s at its turn", wake.Claim), func() bool {
+			return rt.launchesOf(wake.Claim) == 1
+		})
+	}
+
+	// The sweep that follows posts the next rate's worth, over claims the first round left.
+	next := awaitGate(t, d, testWakeRate)
+	refreshed := claimsOfWakes(first)
+	for _, token := range tokens {
+		if rt.launchesOf(token) > 0 {
+			refreshed[token] = true
+		}
+	}
+	for _, wake := range next {
+		if refreshed[wake.Claim] {
+			t.Fatalf("the sweep after the first round posted %s again, want a claim the boot pass had left", wake.Claim)
+		}
+	}
+	if len(refreshed)+len(next) > stale {
+		t.Fatalf("the lane has acted on %d claims of %d, want no more than the fleet it read", len(refreshed)+len(next), stale)
+	}
+}
+
+// staleRelaunchHeldLine is the line a machine writes where it takes the lane's post over a claim
+// in a turn and holds the relaunch for that turn's end (supervise's holdStaleRelaunch). It is
+// how the case below reads that such a claim was posted at all: it parks no wake and relaunches
+// nothing until its turn ends, so the line is the only thing the post leaves behind.
+const staleRelaunchHeldLine = "supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end"
+
+// A stale claim the boot's snapshot shows in a turn is posted and takes no credit, and the
+// credits of that pass go to the claims the lane can relaunch now: "A claim in a turn takes no
+// admission; its turn's end asks the gate, so it is relaunched then if a credit is free and at
+// the next sweep otherwise" (requirement R2 of dispatch://INFRA-2712, afterTurn,
+// holdStaleRelaunch).
+//
+// What an admission for such a claim would cost is the whole of the gate's point. The machine
+// raises no relaunch for it, so the credit buys no wake, and it is held until the machine's own
+// release lands — which is after this pass has walked every claim, since the pass posts to each
+// claim's inbox and the decisions follow. A turn is minutes while the sweep is one, so the
+// same claim takes another credit at every tick of its turn; and the stale set grows richer in
+// claims in a turn as the wave drains, because a refreshed idle claim leaves the set and a
+// working one stays, so the last idle stragglers would wait sweeps behind credits that raised
+// nothing.
+//
+// The claims in a turn are still the lane's work, and both halves of that are read here: the
+// pass posts each of them, which is the line the machine writes as it holds the relaunch
+// (staleRelaunchHeldLine), and the count the state serves names them, because the lane has
+// them left to refresh (claimsToRefresh).
+//
+// The negative control is the skip reverted (the StateWorking branch of refreshStalePlugins
+// removed): the claims in a turn then take the credits of the boot pass, which this test reads
+// at the claims that pass says it left to a later sweep — the idle ones it should have
+// admitted among them.
+func TestAStaleClaimInATurnIsPostedWithNoCreditWhileTheIdleClaimsTakeTheRate(t *testing.T) {
+	cfg := waveConfig(t)
+	// Twice the rate in a turn, so that a pass admitting them would run the gate dry before it
+	// reached an idle claim, and twice the rate idle, so that the gate is full and the claims it
+	// leaves are countable.
+	inATurn := waveClaimsFrom(t, cfg, claim.RoleImplementer, 1, 2*testWakeRate,
+		// liveClaim is working with a process of its own, which is the claim an earlier daemon
+		// left mid-turn and the one this boot's snapshot reads.
+		func(i int, token claim.Token) supervise.Claim {
+			return liveClaim(i, token, supervise.PodUpdateContract-1)
+		})
+	idle := waveClaimsFrom(t, cfg, claim.RoleImplementer, 2*testWakeRate+1, 2*testWakeRate, func(i int, token claim.Token) supervise.Claim {
+		c := liveClaim(i, token, supervise.PodUpdateContract-1)
+		c.State = supervise.StateIdle
+		return c
+	})
+	clock, logged := newWaveClock(), &syncBuffer{}
+	rt := newWaveRuntime(clock)
+
+	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
+
+	// The boot pass left exactly the idle claims it had no credit for: a claim in a turn is in
+	// none of that count, since nothing refused it. It is read before the pacing is, because it
+	// is the first thing a pass that spent its credits on claims in turns says of itself.
+	var refusals []map[string]any
+	testwait.Eventually(t, "the boot pass to say how many claims it left to a later sweep", func() bool {
+		refusals = gateFullLines(t, logged)
+		return len(refusals) > 0
+	})
+	if boot := refusals[0]; boot["trigger"] != "boot" || boot["claims"] != float64(len(idle)-testWakeRate) {
+		t.Fatalf("the boot pass left %v claims of trigger %v, want %d of \"boot\": the %d claims in a turn take no admission, so the %d idle ones less the rate are all it leaves",
+			boot["claims"], boot["trigger"], len(idle)-testWakeRate, len(inATurn), len(idle))
+	}
+
+	// Every credit the pass granted went to a claim the lane can relaunch now.
+	first := awaitGate(t, d, testWakeRate)
+	working := claimsOfTokens(inATurn)
+	for _, wake := range first {
+		if working[wake.Claim] {
+			t.Fatalf("the refresh of %s is in the pacing, want none of the claims in a turn there: their relaunch waits for the turn's end and takes no wake now", wake.Claim)
+		}
+	}
+
+	// Each of them was posted all the same, and holds its relaunch for the end of its turn with
+	// its process untouched.
+	for _, token := range inATurn {
+		testwait.Eventually(t, fmt.Sprintf("%s to hold the relaunch the boot pass posted it", token), func() bool {
+			for _, line := range loggedLines(t, logged.String(), staleRelaunchHeldLine) {
+				if line["claim"] == string(token) && line["trigger"] == "boot" {
+					return true
+				}
+			}
+			return false
+		})
+		if got := rt.launchesOf(token); got != 0 {
+			t.Fatalf("%s was relaunched %d times while its turn runs, want none: the turn's end is what raises its relaunch", token, got)
+		}
+	}
+
+	// And the lane still has them to do, which is what the count the state serves says of a
+	// fleet whose claims are in turns (claimsToRefresh).
+	if left := d.state().ClaimsToRefresh; left < len(inATurn) {
+		t.Fatalf("the state says the lane has %d claims to refresh, want at least the %d in a turn: their relaunch is still owed", left, len(inATurn))
+	}
+}
+
+// claimsOfTokens is a set of the tokens given, for a membership test over a wave's own claims.
+func claimsOfTokens(tokens []claim.Token) map[claim.Token]bool {
+	set := make(map[claim.Token]bool, len(tokens))
+	for _, token := range tokens {
+		set[token] = true
+	}
+	return set
 }
 
 // A restart while the pacing still holds a wave loses no wake and runs none twice: the claims the
@@ -1680,7 +1846,7 @@ func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
 	// claim's wake still waits: the lanes of an issue are not held behind one another, and none of
 	// them is held behind a wake.
 	tree.commit(t, "board-status", mustOutboxRow(t, tree.root.Key,
-		record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}, tree.clock.Now()))
+		record.OrdinaryStatusWrite("in_progress", "todo", ""), tree.clock.Now()))
 	testwait.Eventually(t, "the board row of the same issue to run while the wake waits", func() bool {
 		return tree.client.count() == 1 && outboxRows(t, tree.pool) == 0
 	})
@@ -1772,7 +1938,7 @@ func TestASecondStartOfAWaitingClaimTakesNoTokenAndStartsNoSecondLaunch(t *testi
 }
 
 // noticeRowOf is the notice row of one issue, and whether the outbox holds one.
-func noticeRowOf(t *testing.T, pool *pgxpool.Pool, issue string) (noticeRow, bool) {
+func noticeRowOf(t *testing.T, pool *store.Pool, issue string) (noticeRow, bool) {
 	t.Helper()
 	var row noticeRow
 	// A notice the pacing reserved no moment for carries no paced_at at all (omitzero).

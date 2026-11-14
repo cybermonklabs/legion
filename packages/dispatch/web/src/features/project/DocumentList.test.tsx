@@ -1,10 +1,12 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the form's own submit
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { DocumentList } from "./DocumentList";
@@ -100,7 +102,9 @@ test("a document's row names its latest version's stored size", async () => {
   }
 });
 
-test("New document opens its document page", async () => {
+// The create sends the title alone: the new document holds nothing, so the heading a person
+// never typed is not there to delete.
+test("New document makes an empty document and opens its document page", async () => {
   const user = userEvent.setup();
   const { listProjectArtifacts, view } = renderList([]);
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(uploadResponse());
@@ -115,7 +119,7 @@ test("New document opens its document page", async () => {
     await waitFor(() =>
       expect(uploadArtifact).toHaveBeenCalledWith(
         { project: "CORE" },
-        { content: "# Design notes\n", name: "Design notes" },
+        { name: "Design notes" },
         keyedAttempt
       )
     );
@@ -133,7 +137,8 @@ test("New document opens its document page", async () => {
 // to open, so the form closes, says what was made and the list is read again - and the form opened
 // again starts empty, so a second press makes no second document.
 test("New document answered KEY_COMMITTED closes the form, says it was made, and a second press sends nothing", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const { listProjectArtifacts, view } = renderList([]);
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
@@ -159,16 +164,17 @@ test("New document answered KEY_COMMITTED closes the form, says it was made, and
     expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Title" }).value).toBe("");
     // An empty form submitted on its own, which no control of it offers: Create is disabled.
     fireEvent.submit(screen.getByRole("form", { name: "New document" }));
-    await Bun.sleep(20);
+    await tick(20);
     expect(uploadArtifact).toHaveBeenCalledTimes(1);
   } finally {
+    realClock();
     view.unmount();
     listProjectArtifacts.mockRestore();
     uploadArtifact.mockRestore();
   }
 });
 
-test("New document refuses a name that already exists", async () => {
+test("New document refuses a title the project already holds, as a name and as a slug", async () => {
   const user = userEvent.setup();
   const { listProjectArtifacts, view } = renderList([document()]);
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(uploadResponse());
@@ -181,11 +187,42 @@ test("New document refuses a name that already exists", async () => {
     await user.click(screen.getByRole("button", { name: "Create" }));
 
     const error = await screen.findByRole("alert");
-    expect(error).toHaveTextContent("A document named Design notes already exists");
+    expect(error).toHaveTextContent(
+      "A document on this project already holds that title: Design notes."
+    );
+
+    // The write reads the owner's slugs too (`$2 in (name, slug)`), so the control refuses the
+    // slug of a document it lists and names the document that holds it.
+    await user.clear(screen.getByRole("textbox", { name: "Title" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("design-notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "A document on this project already holds that title: Design notes."
+    );
     expect(uploadArtifact).not.toHaveBeenCalled();
   } finally {
     view.unmount();
     listProjectArtifacts.mockRestore();
     uploadArtifact.mockRestore();
+  }
+});
+
+// A project's document is not removed: its events are its own rows, so its removal event would
+// need the row the removal deletes. The list says so by offering no such control on any row.
+test("the project document list shows no removal control", async () => {
+  const { listProjectArtifacts, view } = renderList([
+    document(),
+    document({ id: "artifact-2", name: "Goals", ref_key: "CORE/goals", slug: "goals" }),
+  ]);
+
+  try {
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listProjectArtifacts.mockRestore();
   }
 });

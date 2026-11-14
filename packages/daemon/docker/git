@@ -1,0 +1,98 @@
+#!/bin/sh
+# The git first on a pod's PATH, /opt/legion/bin/git (worker.Dockerfile). It runs the real git,
+# /usr/bin/git, with the arguments it was given and nothing else — except for a push, which it
+# runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand and with
+# the push's own `--no-verify` taken out. So git itself computes the update lines, hands them to
+# the root-owned pre-push hook in that directory, and the hook runs Legion's leak guard before a
+# byte reaches the remote; a role can neither write that hook nor name a hooks path that
+# outranks this one.
+#
+# The `-c` goes after the caller's own global options and before the subcommand, rather than
+# ahead of every argument, because git takes the last `-c` of a name: a caller's own
+# `-c core.hooksPath=<anything>` is read first and this one wins over it (measured on the
+# image's git 2.47.3: `git -c core.hooksPath=/opt/legion/githooks -c core.hooksPath=/dev/null
+# config --get core.hooksPath` prints /dev/null, and the two swapped print
+# /opt/legion/githooks). It outranks the runtime's own core.hooksPath=/dev/null for the same
+# reason, which every pod's git carries in GIT_CONFIG_KEY_n (mainEnvironment,
+# packages/daemon/internal/runtime/sandbox/manifest.go): measured on the same git, a
+# `-c core.hooksPath=<dir>` beside that pin reads back as <dir>. The pin still holds for every
+# other command, which is the whole point of leaving them alone.
+#
+# What this does not stop is a role that runs /usr/bin/git itself, PATH unread. Nothing here
+# tries to: the spec's Design says of every layer of this guard that none of them stops somebody
+# who means to publish a name, and that this change does not try to (dispatch://INFRA-1527).
+#
+# `jj git push` shells out to the `git` PATH names (`git -c core.fsmonitor=false … --git-dir <dir>
+# push --porcelain --no-verify …`, measured with jj 0.45.1-sami), so this one wrapper catches a
+# role's own push and jj's, and jj's `--no-verify` is what the removal is for.
+#
+# Only `--no-verify` is removed. `-n` is `--dry-run` for a push, not `--no-verify` (`git push -h`
+# on git 2.47.3: `-n, --[no-]dry-run  dry run` beside `--no-verify  bypass pre-push hook`), and
+# removing it would turn a caller's dry run into a real push.
+#
+# A push is a command whose subcommand word is `push` or `send-pack`. A git alias that expands to
+# one (`git p` with alias.p=push) is neither: git expands it after this wrapper has read the word,
+# so it runs under the runtime's core.hooksPath=/dev/null with no pre-push hook and no leak check,
+# as it always has.
+set -u
+
+real=/usr/bin/git
+hooks=/opt/legion/githooks
+
+# One pass finds the subcommand: the first word that is no global option. The global options
+# whose value is the next argument are git's own (`git --help`, and handle_options in git.c for
+# `--attr-source` and `--shallow-file`, which the usage line leaves out): a wrapper that read one
+# of those values as the subcommand would miss a push — jj's own `--git-dir <dir> push` is
+# exactly that shape — or rewrite a command that is none. Measured on git 2.47.3,
+# `git --shallow-file X version` runs `version`, so `--shallow-file` is one of them. The
+# `--opt=value` spellings need nothing: they are one word, and this skips over them as it does
+# over any other option. ahead counts the words in front of the subcommand.
+push=0
+value=0
+ahead=0
+for arg; do
+  if [ "$value" -eq 1 ]; then
+    value=0
+  else
+    case "$arg" in
+      -C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --shallow-file) value=1 ;;
+      -*) ;;
+      push | send-pack) push=1; break ;;
+      *) break ;;
+    esac
+  fi
+  ahead=$((ahead + 1))
+done
+
+# Only a push has its list rebuilt; every other command gets "$@" as it came. A POSIX shell edits
+# its own positional parameters by taking each from the front and putting the kept ones back at
+# the end with `set -- "$@" "$arg"`, and dash copies the whole list each time, so a rebuild costs
+# time that grows with the square of the argument count: one push's leak check spent 62 s of
+# its 78 s in this wrapper, rebuilding a `git rev-list` of about 4,970 `^<sha>` arguments
+# (dispatch://INFRA-3456).
+if [ "$push" -eq 0 ]; then
+  exec "$real" "$@"
+fi
+
+# A push's rebuild, in order: the ahead words in front of the subcommand as they came, then
+# `-c core.hooksPath=<dir>`, which is after everything the caller wrote in front of the
+# subcommand, then the subcommand and what follows it with `--no-verify` left out. Only what
+# follows the subcommand is read for `--no-verify`, so a `--no-verify` that is some global
+# option's value stays that value.
+left=$#
+while [ "$left" -gt 0 ]; do
+  arg=$1
+  shift
+  left=$((left - 1))
+  if [ "$ahead" -gt 0 ]; then
+    ahead=$((ahead - 1))
+  elif [ "$ahead" -eq 0 ]; then
+    ahead=-1
+    set -- "$@" -c "core.hooksPath=$hooks"
+  elif [ "$arg" = --no-verify ]; then
+    continue
+  fi
+  set -- "$@" "$arg"
+done
+
+exec "$real" "$@"

@@ -85,6 +85,13 @@ until_true() {
   fail "timed out after ${limit}s ($polls polls) waiting for $what"
 }
 
+# lib/loopback-dsn.sh holds require_loopback_dsn and run_database_url, the two helpers a proof
+# that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask
+# libpq. It needs nothing of this rig's, and envoy-session-delivery.sh sources it without this
+# file.
+# shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
+. "$root/scripts/e2e/lib/loopback-dsn.sh"
+
 # A service the run starts serves on a port the kernel chose, held from that choice until the
 # service serves on it, so no other process can take it in between (lib/held-port.py). A port
 # picked free and passed by number could be taken before the service binds it. Each helper below
@@ -167,6 +174,11 @@ report_port() {
   _match=$(grep -m1 -oE -- "$2[0-9]+" "$1" 2>/dev/null) || return 1
   _match=${_match%%$'\n'*}
   printf '%s\n' "${_match##*[!0-9]}"
+}
+
+# port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
+port_answers() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
 }
 
 # listening_holders PORT prints, one per line in order, the pid of every process holding the one

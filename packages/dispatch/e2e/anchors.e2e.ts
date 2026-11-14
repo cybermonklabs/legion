@@ -1,22 +1,18 @@
-import { expect, test } from "@playwright/test";
 import type { Comment } from "../web/src/api/types";
 
 import { createIssue, createProject, listComments } from "./api";
 import { barAction, deleteEditorText, documentEditor, selectEditorText } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // The server's anchor state after a live write is read back from Node, so the probe ladder is
 // this row's own: the default one first sees a fact true at 120 ms at 350 ms.
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // SLOW(>=2s): one document editor, a comment anchored to a block, a reword and a deletion -
 // every one a real live write.
-test("a block-anchored comment remains with its block through a reword and quote deletion", async ({
+// @pr: The live document: a block-anchored comment stays with its block through a reword and a deletion.
+test("a block-anchored comment remains with its block through a reword and quote deletion @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

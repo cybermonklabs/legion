@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A phase's own next start is no longer refused behind a task its worker has already taken. A
+  pending delivery the turn took is the record of that turn and holds nothing back, so the newer
+  task takes its place and is sent at the next point a turn may take it, once, never into the
+  running turn. An untaken task still refuses a second one, and so does a taken one against an
+  update round's ask, which waits for the turn in flight to end. Three supervise rows of the live
+  daemon had been answered "a delivery is already pending" with nothing ever sent.

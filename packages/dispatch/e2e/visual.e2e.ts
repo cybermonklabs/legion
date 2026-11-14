@@ -57,10 +57,14 @@
  *    scrolled to, so a scroll position is in no baseline either, and a change below the fold is
  *    reviewed like one above it. Each project pins its viewport, so the width and every layout
  *    breakpoint are fixed and only the page's own height follows its content.
- *  - Lazy chunks, a pending query, a document still connecting, a reference still resolving. One
- *    wait covers them all: `waitForRouteSettled` (e2e/review-routes.ts), which the accessibility
+ *  - Lazy chunks, a pending query, a document still connecting, a reference still resolving, and
+ *    the rail's Inbox number while a read mark the page wrote is still reaching it. One wait
+ *    covers them all: `waitForRouteSettled` (e2e/review-routes.ts), which the accessibility
  *    layer calls too, so no baseline is of a skeleton, of a route whose chunk is still coming or
  *    of a page that is still filling itself in.
+ *  - The rail's Inbox number after that wait. CI drew a value that a host run of the same seed
+ *    never reaches, so the rail's Inbox entry is masked (the mask list below says what was
+ *    measured).
  */
 import { readFileSync } from "node:fs";
 import { type Browser, expect, test } from "@playwright/test";
@@ -70,6 +74,7 @@ import {
   phoneShotRoutes,
   type ReviewedRoute,
   type ReviewSeed,
+  railInboxLink,
   shotRoutes,
   type VisualSeed,
   waitForRouteSettled,
@@ -87,12 +92,12 @@ const seedPath = process.env.DISPATCH_E2E_VISUAL_SEED;
 
 const SKIP_REASON =
   "This layer compares baselines, which are only the same rendering inside the pinned " +
-  "Playwright image: run `bun e2e/run.ts -- e2e/visual-run.sh` from packages/dispatch, which " +
+  "Playwright image: run `e2e/visual-run.sh` from packages/dispatch, which " +
   "seeds on the host and takes every shot in that container. DISPATCH_E2E_VISUAL_SEED is unset.";
 
 // The live registry, put back after Playwright's own `globalSetup` cleared it. The host's seed
-// runs before Playwright starts (`e2e/visual-run.sh`), and `e2e/preflight.ts:73` resets the fake
-// Envoy when its sentinel check ends, so the sessions `seedWorkspace()` wrote are gone by the
+// runs before Playwright starts (`e2e/visual-run.sh`), and `e2e/global-setup.ts:198` resets the
+// fake Envoy when its sentinel check ends, so the sessions `seedWorkspace()` wrote are gone by the
 // time the first row opens a page: the Agents page then draws "No agents are connected." and
 // every shot of it would be a baseline of an empty registry. The database half of the corpus is
 // untouched by that reset, which is why only this half is written again here. `./agents` and
@@ -179,6 +184,29 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // baseline. Every other page's heading is compared as before. Neither phone page
         // draws that stamp, so on those two rows the header mask matches nothing.
         //
+        // The rail's Inbox entry is masked too. The mask covers the whole link and not only
+        // the number's pill, for the reason the header above is: the pill's width can move
+        // with the digit, and the link is a full-width row of the rail whose box holds still.
+        // The cost is the rail's "Inbox" label, which is in no baseline. The phone rows draw
+        // no rail, so on them this matches nothing. The number itself is proven by its own
+        // tests, not by these pixels.
+        //
+        // Why it is not waited for instead: the number CI draws after the broadcast row's
+        // read mark is not the number this seed gives anywhere else. The baselines read 7 on
+        // rows 1-4 and 5 from row 5 on. CI run 43517763817 read 6 in light and 5 in dark on
+        // `broadcast`, and an earlier run read 6 on `issue-activity`. A host run of this
+        // file's own path (`e2e/visual-seed.ts` on a `e2e/harness-up.ts` stack, the rows in
+        // host Chromium, alice's counts read every 3 s for six minutes) read 7 on rows 1-4
+        // and 6 on every row after the read mark, for three passes over the rows. After the
+        // read mark the server did not change for the rest of those six minutes. The guess
+        // was the delivery sweep (`delivery_sweep.go`): it resends an owed attempt about once
+        // a minute, and that resend would take a thread out of the unread total. That is
+        // ruled out. In the host run every delivery attempt of the seed stayed `sent`, and
+        // none was accepted as `user_turn`, so the sweep owed nothing. CI run 43517763817
+        // logs no resend from the sweep. Its count went from 7 to 5 about 16 s after its
+        // seed, and the read mark was the only write the page made. No seed state can pin a
+        // step that was never found, so this mask stands in for one.
+        //
         // Nothing else is masked, and the Decisions panel is why that matters. It prints the
         // id of the spec block a decision shaped until the reference graph answers, and a
         // mask over that id did NOT settle it: a uuid is a fixed count of characters and not
@@ -196,6 +224,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
             .filter({ has: page.getByText(/^Generated /) })
             .last(),
           page.getByText(/, as of /),
+          railInboxLink(page),
         ],
         // MEASURED, both numbers, by starting at zero.
         // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with

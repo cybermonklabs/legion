@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -21,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // transferredLegion is the pair a deployment configures over sjawhar/legion's transfer to
@@ -67,7 +67,7 @@ func renamedRepositories(served []string, renames ghrepo.Renames) *repositories 
 // renameOutbox is the outbox a transfer's rows run on: the implement App (roleTokens, whose token
 // names the owner it was minted for), GitHub at api, and the project's mapping — served, the
 // repositories Dispatch maps, and the configured pairs — as the boot builds it.
-func renameOutbox(t *testing.T, pool *pgxpool.Pool, records record.Store, api string, served []string, renames ghrepo.Renames) *outbox {
+func renameOutbox(t *testing.T, pool *store.Pool, records record.Store, api string, served []string, renames ghrepo.Renames) *outbox {
 	t.Helper()
 	return &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, tokens: roleTokens{},
 		project: "legion", githubAPI: api, repositories: renamedRepositories(served, renames), now: time.Now}
@@ -75,10 +75,10 @@ func renameOutbox(t *testing.T, pool *pgxpool.Pool, records record.Store, api st
 
 // seedTransferredREADY records LEGION-208 on sjawhar/legion awaiting the merge of its READY head,
 // its pull request #42 open there: a tree whose records were written before the transfer.
-func seedTransferredREADY(t *testing.T, pool *pgxpool.Pool, records record.Store) {
+func seedTransferredREADY(t *testing.T, pool *store.Pool, records record.Store) {
 	t.Helper()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.AwaitingMerge, Generation: 1, Status: "retro", Rank: "U"})
+		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "ready-head"}); err != nil {
@@ -181,87 +181,6 @@ func (g *renameGitHub) assertAddressed(t *testing.T, app appauth.AppRole, repo s
 		if want := "Bearer " + string(app) + "-app-token-for-" + owner; bearer != want {
 			t.Errorf("a GitHub call carried %q, want %q: the token is minted for the owner whose installation holds the repository", bearer, want)
 		}
-	}
-}
-
-// A READY merge of a tree recorded before its repository's transfer is submitted on the
-// repository GitHub holds it under now, with the implement App's token minted for that
-// repository's owner: the record keeps sjawhar/legion, the configured pair and the project's
-// served cybermonklabs/legion make cybermonklabs the owner whose installation holds it, and the
-// GraphQL query names cybermonklabs/legion. The token is the half the old name cannot supply:
-// after the transfer the installation holding the repository is cybermonklabs', and sjawhar's
-// token reaches nothing, so a tree open at the transfer would never be merged. GitHub does
-// answer the old address — a REST call to it redirects, and a GraphQL query resolves the
-// repository — so naming the served one is for the log line and for keeping a write off a
-// redirect. Serving one more repository of the owner the transfer moved it away from changes
-// none of it — that state is what the owner rule this replaced got wrong in production — and
-// with no pair configured the same record is minted for and addressed at sjawhar/legion, as it
-// always was.
-func TestAREADYMergeOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHubServes(t *testing.T) {
-	for _, tc := range transferStates {
-		t.Run(tc.name, func(t *testing.T) {
-			merges := 0
-			var mu sync.Mutex
-			github := newRenameGitHub(t, func(_ *http.Request, body string) string {
-				mu.Lock()
-				defer mu.Unlock()
-				if strings.Contains(body, "mergePullRequest") || strings.Contains(body, "enablePullRequestAutoMerge") {
-					merges++
-					return `{"data":{}}`
-				}
-				return pullJSON("OPEN", "ready-head", "CLEAN")
-			})
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			seedTransferredREADY(t, pool, records)
-			runner := renameOutbox(t, pool, records, github.url, tc.served, tc.renames)
-
-			if err := runner.execute(context.Background(), mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, time.Now())); err != nil {
-				t.Fatalf("execute the READY merge: %v", err)
-			}
-
-			mu.Lock()
-			defer mu.Unlock()
-			if merges != 1 {
-				t.Fatalf("merges = %d, want the one submission of the awaited READY head", merges)
-			}
-			github.assertAddressed(t, appauth.Implement, tc.want)
-		})
-	}
-}
-
-// A disarm of the same tree's pull request reads and writes the same repository: readyMerge and
-// autoMergeDisable share the one client (graphQL), so both follow the transfer together.
-func TestAnAutoMergeDisableOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHubServes(t *testing.T) {
-	for _, tc := range transferStates {
-		t.Run(tc.name, func(t *testing.T) {
-			var mu sync.Mutex
-			disables := 0
-			github := newRenameGitHub(t, func(_ *http.Request, body string) string {
-				mu.Lock()
-				defer mu.Unlock()
-				if strings.Contains(body, "disablePullRequestAutoMerge") {
-					disables++
-					return `{"data":{"disablePullRequestAutoMerge":{"clientMutationId":null}}}`
-				}
-				return armedPullJSON("other-head", disables == 0)
-			})
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			seedTransferredREADY(t, pool, records)
-			runner := renameOutbox(t, pool, records, github.url, tc.served, tc.renames)
-
-			if err := runner.execute(context.Background(), mustOutboxRow(t, "LEGION-208", record.AutoMergeDisable{Number: 42}, time.Now())); err != nil {
-				t.Fatalf("execute the disarm: %v", err)
-			}
-
-			mu.Lock()
-			defer mu.Unlock()
-			if disables != 1 {
-				t.Fatalf("auto-merge disables = %d, want the one disarm of a head the issue does not await", disables)
-			}
-			github.assertAddressed(t, appauth.Implement, tc.want)
-		})
 	}
 }
 

@@ -147,6 +147,12 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			if _, err := refs.IndexAskParts(ctx, tx, reader, stored, ask.CreatedAt); err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 			}
+			// The index records the parts and leaves their windows to the block-index tick's
+			// window arm (refs.recordItemIndexed), so the seed writes them here as that arm
+			// would: a seeded database a server has to window is one it would rewrite.
+			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemAsk, stored.ID); err != nil {
+				return fmt.Errorf("write the windows of ask %s: %w", ask.ID, err)
+			}
 			// The event is owned by the ask's own owner and dated at the ask, as one appended
 			// with the ask is, and it is published (`notify` false, `published_at` set) like
 			// every other event the seed writes.
@@ -279,6 +285,11 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				located, nil); err != nil {
 				return fmt.Errorf("index comment %s: %w", comment.ID, err)
 			}
+			// The windows the index no longer writes, as the tick's window arm writes them
+			// (refs.WriteItemWindows): one set, over the body the comment is left holding.
+			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemComment, comment.ID); err != nil {
+				return fmt.Errorf("write the windows of comment %s: %w", comment.ID, err)
+			}
 			mentions.add(comment.ID, text.Refs(located), comment.CreatedAt)
 		}
 		return mentions.write(ctx, tx)
@@ -325,6 +336,9 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body,
 				message.CreatedAt, located, nil); err != nil {
 				return fmt.Errorf("index message %s: %w", message.ID, err)
+			}
+			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemMessage, message.ID); err != nil {
+				return fmt.Errorf("write the windows of message %s: %w", message.ID, err)
 			}
 			mentions.add(message.ID, text.Refs(located), message.CreatedAt)
 		}

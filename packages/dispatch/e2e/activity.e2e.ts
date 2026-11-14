@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   answerAsk,
   claimIssue,
@@ -15,7 +13,8 @@ import {
   resolveAsk,
   resolveComment,
 } from "./api";
-import { resetDatabase, setEventCreatedAt } from "./seed";
+import { setEventCreatedAt } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -23,13 +22,10 @@ const agent = {
   as: "agent" as const,
 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // The other half of `e2e/conversation.e2e.ts`'s "one card per conversation and no event row":
 // the rows the Conversation leaves out are all here, on an issue seeded exactly the same way.
-test("the Activity tab lists the event rows the Conversation does not draw", async ({
+// @pr: The issue's event history, which no other row reads whole.
+test("the Activity tab lists the event rows the Conversation does not draw @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });

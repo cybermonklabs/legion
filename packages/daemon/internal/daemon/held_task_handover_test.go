@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -138,7 +137,7 @@ func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) 
 type heldTaskRig struct {
 	t         *testing.T
 	ctx       context.Context
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	records   record.Store
 	engine    *workflow.Engine
 	admission *admit.Admission
@@ -224,8 +223,8 @@ func (r *heldTaskRig) launchArchitect() {
 		}
 	}
 	machine.Wait()
-	if got := machine.Claim().State; !supervise.TookRole(got) {
-		r.t.Fatalf("the architect after its ready = %s, want a claim that took its role", got)
+	if got := machine.Claim().State; !supervise.SaidReady(got) {
+		r.t.Fatalf("the architect after its ready = %s, want a claim that can be prompted", got)
 	}
 }
 

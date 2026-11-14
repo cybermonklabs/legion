@@ -5,7 +5,7 @@ import {
   type SearchResponse,
   type SearchResult,
 } from "@legion/contracts";
-import { searchAnswer } from "../search-answer";
+import { type SearchAnswerRead, searchAnswer } from "../search-answer";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const hit: SearchResult = {
@@ -74,8 +74,11 @@ describe("searchAnswer: degraded wording", () => {
   test("names the degraded reason on a legacy no-paging response too", () => {
     // A Dispatch that predates search paging still answers `degraded`: this is the response shape
     // search-answer.ts's `typeof search.total !== "number"` branch handles, whose own degraded
-    // line was also never exercised by a test before this file.
-    const search: Omit<SearchResponse, "total" | "reachable" | "limit" | "offset"> = {
+    // line was also never exercised by a test before this file. Such a Dispatch answers no
+    // `query` reading and no applied `filters` either, since both arrived after paging did. The
+    // type below is that arm of `SearchAnswerRead` itself - the one `searchAnswer` reads a legacy
+    // Dispatch with, named by excluding the paged arm - rather than a second copy of its shape.
+    const search: Exclude<SearchAnswerRead, SearchResponse> = {
       results: [hit],
       took_ms: 5,
       degraded: SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,

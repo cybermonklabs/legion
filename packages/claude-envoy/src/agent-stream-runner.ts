@@ -15,7 +15,7 @@ import { AgentStreamPublisher } from "@legion/pi-shared/agent-stream"
 import type { ModConfigRow, ModEffort, ModEvent } from "../hooks/mod-protocol"
 import { claudeAgentStreamCommands, createClaudeAgentStream } from "./agent-stream-claude"
 import { rememberBounded } from "./bounded-set"
-import type { ChannelForwarderConnection, ChannelTopicSubscription } from "./channel-forwarder"
+import type { ChannelConnection, ChannelTopicSubscription } from "./channel-topics"
 import type { ModLink } from "./mod-link"
 
 const encoder = new TextEncoder()
@@ -47,7 +47,7 @@ export interface AgentStreamOptions {
   readonly link: ModLink
   /** The session's own NATS connection: the frames go out on it, and the control subject is
    *  taken on it. The session's NATS user may already publish and subscribe to both. */
-  readonly connection: ChannelForwarderConnection
+  readonly connection: ChannelConnection
   /** The session id the Agents page knows this session by, which both subjects name. */
   readonly sessionId: string
   /**

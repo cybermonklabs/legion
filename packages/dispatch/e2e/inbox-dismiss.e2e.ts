@@ -1,5 +1,4 @@
 import { INBOX_DISMISSED_PAGE, type InboxDismissSeen, inboxThreadRow } from "@legion/contracts";
-import { type BrowserContext, expect, type Page, type Request, test } from "@playwright/test";
 import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
 
 import { setLiveSessions } from "./agents";
@@ -25,8 +24,8 @@ import {
   THREAD_SESSION,
   unreadThreadRows,
 } from "./inbox-threads";
-import { resetDatabase } from "./seed";
 import { refusePosts, WRITE_REFUSED } from "./sends";
+import { type BrowserContext, expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -174,10 +173,6 @@ async function chooseShow(page: Page, label: string): Promise<void> {
   await expect(menu).toHaveCount(0);
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // ---------------------------------------------------------------------------
 // A thread stays until it is dismissed.
 // ---------------------------------------------------------------------------
@@ -230,7 +225,8 @@ test("a Reply thread and an Agent thread read in the pane stay in the list after
 // Dismiss, by the row's own control and by `e`.
 // ---------------------------------------------------------------------------
 
-test("the row's Dismiss takes a thread out of the list, the counts and the Inbox number, and the selection moves on", async ({
+// @pr: A write the server settles: Dismiss takes the thread out of the list, the counts and the Inbox number, and moves the selection on.
+test("the row's Dismiss takes a thread out of the list, the counts and the Inbox number, and the selection moves on @pr", async ({
   browser,
 }) => {
   const seeded = await seedInbox();

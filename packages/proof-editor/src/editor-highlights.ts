@@ -195,6 +195,9 @@ function mapsHighlights(transaction: Transaction, value: EditorHighlights): bool
 }
 
 function dispatchHighlightChange(view: EditorView, change: HighlightChange): void {
+  // A host writes its highlights from an effect, which can run after the effect that tore this
+  // editor down (INFRA-2409); the pulse's own timer reads the same flag.
+  if (view.isDestroyed) return;
   view.dispatch(view.state.tr.setMeta(highlightsKey, change).setMeta("addToHistory", false));
 }
 

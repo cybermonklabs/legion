@@ -39,15 +39,17 @@ func ThreadLogins(ctx context.Context, q Queryer, threadID string) ([]string, er
 
 // IssueThreadLogins is the status half of an issue event's thread_logins, for an event that
 // closed or reopened the issue: every login with a Replies row on one of issueKey's open asks,
-// sorted and never nil. The Replies list leaves out an open ask on an open issue assigned to that
-// login (api/replies.go, myRepliesOwner), so a close or a reopen moves exactly those rows and no
-// other. It reads the asks through asks_open and their rows through user_threads_thread, so it
-// never scans user_threads.
+// sorted and never nil. The Replies list leaves out an open ask on an open issue that waits on
+// that login (api/replies.go, myRepliesOwner), so a close or a reopen moves exactly those rows
+// and no other. It reads the asks through asks_open and their rows through user_threads_thread,
+// so it never scans user_threads.
 //
-// An issue event carries logins on an assignee move too, the old and the new assignee, since the
-// same rule moves an open ask's row out of one Inbox and into the other; the two sets are joined
-// by api/thread_logins.go's issueWriteThreadLogins, which is the whole of what an issue event
-// names.
+// An issue event carries logins on an assignee move too, the old and the new assignee, a side
+// where the issue holds nobody being the project's default assignee, since the same rule moves
+// the row of an open ask nobody has handed on out of one Inbox and into the other; the two sets are joined by api/thread_logins.go's issueWriteThreadLogins, which is the
+// whole of what an issue event names. An ask somebody handed on waits on the person it was
+// handed to wherever its issue goes, so no assignee move touches its row; the hand-on itself
+// names the two people instead (api/ask_asked_of.go, over api/thread_logins.go's movedLogins).
 func IssueThreadLogins(ctx context.Context, q Queryer, issueKey string) ([]string, error) {
 	logins := []string{}
 	if err := q.QueryRow(ctx, `

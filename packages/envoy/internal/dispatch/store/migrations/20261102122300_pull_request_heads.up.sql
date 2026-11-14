@@ -40,7 +40,7 @@ create table pull_request_heads (
     primary key (repo, number)
 );
 
--- The currency read: is this commit the head of a pull request attributed to this issue?
+-- The results read: is this commit the head of a pull request attributed to this issue?
 create index pull_request_heads_issue_head on pull_request_heads (issue_key, head_sha) where issue_key is not null;
 -- The reconcile's batch: the open rows read longest ago first.
 create index pull_request_heads_open_stale on pull_request_heads (checked_at) where state = 'open';

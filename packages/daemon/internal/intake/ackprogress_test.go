@@ -19,8 +19,12 @@ import (
 )
 
 // What the two rows here prove together is Acceptance A1 of dispatch://INFRA-1530: a fact held
-// well past its acknowledgement window is delivered once and prepared once, because consumeMessage
-// reports it in progress while its handler runs (keepInProgress).
+// well past its acknowledgement window is delivered once and prepared once at the two-second
+// window these rows keep, because consumeMessage reports it in progress while its handler runs
+// (keepInProgress; the delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go).
+// That is why the first row's window is sized above the delays measured for those signals, and
+// why its count is sound at two seconds and was not at consumerSpec's 200 ms (the window comment
+// inside that row).
 //
 // The first row is that claim, on the daemon's own consumers, and it makes three assertions of one
 // held backlog. The signal itself is the one that fails every run when the keeper is gone: the row
@@ -38,11 +42,12 @@ import (
 // pull request only after the handler returns (nats.go v1.53.1's (*pullConsumer).Consume, whose
 // internal handler calls the handler and only then checkPending, which sends the next pull
 // request), so no request of the daemon's is open while the fact is held. A redelivery can only
-// reach the daemon through the request that follows the handler, which races the acknowledgement
-// the handler's end sent — the server works the two on separate queues, o.ackMsgs and
-// o.nextMsgReqs — and the acknowledgement usually wins. A backlog does not settle that race for
-// the held message: measured with the keeper removed, the two of them caught it in 12 runs of 20,
-// and the signal assertion caught it in 20.
+// reach the daemon through the request that follows the handler, and that request races the
+// acknowledgement the handler's end sent — the server works the two on separate queues,
+// o.ackMsgs and o.nextMsgReqs — and either side can win it. A reconnect, which pulls again, is
+// the one exception. A backlog does not settle that race for the held message: measured with the
+// keeper removed, the redelivery won 12 runs of 20, which is where those two assertions caught
+// it, and the signal assertion caught it in 20.
 //
 // The second row is the control, and it is what says the hold is long enough for the server to
 // redeliver at all: the same backlog, the same window and the same hold, on a consumer that
@@ -170,6 +175,57 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// subscription that counts it exists.
 	progress := watchProgressSignals(t, js)
 	spec := consumerSpec(&lockedBuffer{})
+	// The window is this row's own, in place of consumerSpec's 200 ms, and it is what makes the
+	// delivered count below sound: a row whose subject is the broker's own delivery behaviour
+	// must count deliveries, and such a count needs a window above the measured distribution of
+	// the progress keeper's first report (docs/testing.md, "A test asserts no count of work a
+	// broker may repeat"). Until the keeper has reported once, the window alone stands between
+	// the held fact and the server making it due again (the delivery mechanism:
+	// ConsumerSpec.HandlerLimit's comment in consume.go). consumeMessage takes the keeper's
+	// period as a third of the window (spec.AckWait/3 in consume.go), so at two seconds the
+	// period is 667 ms and 1333 ms of the window are left after the first report is due.
+	//
+	// What that has to cover is measured. The campaign of dispatch://INFRA-1113 measured, at a
+	// 200 ms window: the largest trip of an acknowledgement to the server 516.8 ms, the largest
+	// lateness of the keeper's own report 337 ms, and the largest trip of a progress report
+	// 158.6 ms. A late first report costs both of the last two, because the report is made late
+	// and then travels: its worst case is the sum, 495.6 ms. A reader at another period composes
+	// each path from end to end and never takes the larger of its parts, because taking the
+	// larger undersizes the window.
+	//
+	// The criterion is this: the window is the smallest half-second whose every path, composed
+	// end to end, leaves at least 1.9 times that path's own largest delay. At two seconds the
+	// report path spends the keeper's lateness and then a report's trip, and the 1333 ms left
+	// after the first report is due is 2.69 times that path's own 495.6 ms. The acknowledgement
+	// path adds its parts up instead of competing: one period, plus the report's lateness, plus
+	// the acknowledgement's trip, which at this window is 667 + 337 + 516.8, so the
+	// acknowledgement lands 1520.8 ms into the 2000 ms window, 479.2 ms spare, and its trip of
+	// 516.8 ms has 996 ms available, which is 1.93 times. The acknowledgement path is the
+	// binding one, and two seconds is the smallest half-second both paths pass. A second and a
+	// half is rejected on the acknowledgement path alone: the report path would leave 1000 ms,
+	// which is 2.02 times its 495.6 ms and passes, while the acknowledgement path, whose period
+	// is 500 ms there, would leave 1500 - 500 - 337 = 663 ms for a trip of 516.8 ms, which is
+	// 1.28 times.
+	//
+	// The 1.9 is a choice and not a measurement: any threshold above 1.283 and at most 1.927
+	// selects this same window. What would resize the window is a later measurement that puts
+	// any path's largest delay above that path's budget divided by 1.9.
+	//
+	// Those delays are wall-clock and not a fraction of the period, because the mechanism is a
+	// goroutine and a socket that are not scheduled: a starved goroutine is late by the time it
+	// waits, whatever interval it was waiting for. The keeper's clock starts at the entry of the
+	// callback consumeConsumer passes to Consume: from that entry to the keeper's start —
+	// lagWatch.observe and decodeMessage — was at most 1.544 ms, measured in this pod under 16
+	// busy loops on 2 CPUs over 3 runs of 200 deliveries, whose worst values were 372 µs,
+	// 1.544 ms and 264 µs. The library's own dispatch into that callback (nats.go v1.53.1 calls
+	// it at jetstream/pull.go:287) and the server-to-client hop before it are outside that figure
+	// and are unmeasured. At consumerSpec's 200 ms this row is not sound: measured in this pod at
+	// the base commit, under 16 busy loops on 2 CPUs, it failed 11 of 300 runs, each failure a
+	// delivery too many with one event prepared twice, while the control below passed 300 of 300.
+	//
+	// The hold below is three windows, so six seconds, and the limit on the next line is far
+	// above it.
+	spec.AckWait = 2 * time.Second
 	// The hold must cost the handling nothing but time: this row is the progress signal's, and the
 	// limit that cuts a handler which never ends is R2's.
 	spec.HandlerLimit = time.Minute
@@ -229,7 +285,8 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	}
 	// Every delivery counts here, including a redelivered copy the consumer has not reached yet,
 	// so a copy JetStream made and the daemon dropped as a duplicate would show even though no
-	// second preparation did.
+	// second preparation did. The two-second window set above is what makes this exact count
+	// sound, and the comment on it says what sized it.
 	item, err := stream.Consumer(context.Background(), dispatchConsumerName(spec.Project))
 	if err != nil {
 		t.Fatalf("read the Dispatch consumer: %v", err)
@@ -247,9 +304,18 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 // The control: the same backlog, the same window and the same hold, on a consumer of the test's
 // own that reports nothing in progress, and JetStream delivers the held message again. These are
 // the two facts the row above denies.
+//
+// Its window is the row above's two seconds, so the pair stays a pair: the same backlog, the same
+// window and the same hold of three windows. What sized that window is the window comment in the
+// row above: a third of it, 667 ms, is when that row's keeper owes its first report, 495.6 ms is
+// the largest delay on the report path, 516.8 ms is the acknowledgement's own trip, and the
+// acknowledgement path's composition, 667 + 337 + 516.8 = 1520.8 ms, is what binds. The campaign
+// of dispatch://INFRA-1113 measured those delays. This consumer reports nothing in progress, by
+// design, so here the window alone says when the server makes the held message due again, and
+// this consumer's own open request takes it the moment the server does.
 func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal(t *testing.T) {
 	js, stream := testJetStream(t)
-	const ackWait = 200 * time.Millisecond
+	const ackWait = 2 * time.Second
 	publishHeldBacklog(t, js)
 
 	consumer := issueConsumer(t, stream, "held-control", ackWait)
@@ -566,9 +632,10 @@ func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 	mu.Lock()
 	retry := entered[1].Sub(entered[0])
 	mu.Unlock()
-	// The margin: the delay the nak asked for is a fortieth of AckWait, and a late tick would make
-	// this retry a whole AckWait. A quarter of AckWait is five times the delay, which a loaded
-	// runner's scheduling does not cross, and four times under the window a late tick would cost.
+	// The margin: the delay the nak asked for is a fortieth of AckWait, 50 ms of 2 seconds, and a
+	// late tick would make this retry a whole AckWait. The guard is a quarter of AckWait, 500 ms,
+	// which is ten times the delay, so a loaded runner's scheduling does not cross it, and a
+	// quarter of the 2 seconds a late tick would cost.
 	if retry > spec.AckWait/4 {
 		t.Errorf("the naked fact was delivered again after %s, want nearer its %s nak delay than its %s acknowledgement window: a progress signal after the nak reset the server's redelivery timer",
 			retry, spec.NakDelay, spec.AckWait)
@@ -656,6 +723,12 @@ const heldFactLine = "an intake fact outlived its acknowledgement window and was
 // duration. The issue's after-merge check reads the line in production
 // (dispatch://INFRA-1530), so a change that dropped it, or that left its attributes behind, would
 // go unnoticed until that deploy; hence a row of its own, under the name the check selects.
+//
+// Its count is of log lines rather than of deliveries, and what makes it sound at consumerSpec's
+// 200 ms window, which this row keeps, is the delivery mechanism (ConsumerSpec.HandlerLimit's
+// comment in consume.go). It rests as well on heldOnce.hold returning at once for every delivery
+// after the first, so a redelivered copy is handled in milliseconds and outlives no window of
+// its own.
 func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *testing.T) {
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
@@ -676,9 +749,10 @@ func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *tes
 		held.hold(ctx)
 		return Result{}, nil
 	}))()
-	// The hold the rows above put on the same window: three of them, so the handling outlasts the
-	// window by a margin no scheduling delay closes. releaseAfter returns once the fact is held,
-	// so the delivery has happened by the time the waits below start.
+	// Three windows of this row's own 200 ms, as each row above holds three of its own two
+	// seconds, so the handling outlasts the window by a margin no scheduling delay closes.
+	// releaseAfter returns once the fact is held, so the delivery has happened by the time the
+	// waits below start.
 	held.releaseAfter(t, 3*spec.AckWait)
 
 	// consumeMessage writes the line between the handler's end and the one acknowledgement, so a
@@ -695,9 +769,26 @@ func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *tes
 	if said := strings.Count(written, heldFactLine); said != 1 {
 		t.Errorf("%d lines say a fact outlived its acknowledgement window, want one for the one fact: the line is the fact's, not the progress keeper's tick's, in:\n%s", said, written)
 	}
-	// How long it took is a measurement, so the row asks that it is reported and not what it
-	// reads.
-	for _, attribute := range []string{"consumer=", "event_id=", "delivered=", "took="} {
+	// The consumer the held fact was delivered by, by value: the fact this row publishes is an
+	// issue event, which the Dispatch durable alone carries (its filter, consume.go), and the
+	// check reads the line per consumer. A line carrying consumer="" is the metadata read above
+	// the line failing (consume.go), and names no durable at all.
+	if said := logValue(line, "consumer"); said != dispatchConsumerName(spec.Project) {
+		t.Errorf("the held fact's line says consumer=%s, want %s, the Dispatch durable that carried the held fact: %s", said, dispatchConsumerName(spec.Project), line)
+	}
+	// One delivery, by value: this count is the delivery that wrote the line, and the line is
+	// written by the handling that outlived the window, which is the held message's first
+	// delivery. A redelivery would be a delivery of its own, which heldOnce releases at once, so
+	// its handling outlives no window and writes no line of its own to be read here. That is
+	// what makes the count of lines above sound at this row's 200 ms window, and this value
+	// rests on the same reading. A delivered=0 is the metadata read of consume.go failing, and
+	// reads as a held fact nothing ever delivered.
+	if said := logValue(line, "delivered"); said != "1" {
+		t.Errorf("the held fact's line says delivered=%s, want 1, the held copy's own first delivery: %s", said, line)
+	}
+	// How long it took is a measurement, and the event id is the fixture's, so the row asks that
+	// each is reported and not what it reads.
+	for _, attribute := range []string{"event_id=", "took="} {
 		if !strings.Contains(line, attribute) {
 			t.Errorf("the held fact's line carries no %s, which is what an operator reads it for: %s", attribute, line)
 		}

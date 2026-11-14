@@ -1,0 +1,5 @@
+kind: Added
+body: A document write that supersedes a person's approval reports `design_gates`, the issues whose Legion design gate records the written document and the step each records it at, read with each issue's own status. The Legion daemon publishes that record through `PUT /api/v1/issues/{key}/design-gates`, and the issue read answers it as `design_gates`.
+time: 2026-11-11T03:51:30.199652Z
+custom:
+    Issue: pr3535

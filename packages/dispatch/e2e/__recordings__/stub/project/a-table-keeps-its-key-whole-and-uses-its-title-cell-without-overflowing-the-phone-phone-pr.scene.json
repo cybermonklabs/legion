@@ -1,0 +1,5 @@
+{
+  "issue": "CORE-1",
+  "project": "CORE",
+  "title": "Smoke rig checkpoints 5 and 7 assert the retired commit-identity and handoff-cleanup design: implementer+ses_identity, Legion-Session trailer, and the reviewer App authoring the .legion/ deletion"
+}

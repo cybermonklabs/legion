@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  Dispatch's issue listing (`GET /api/v1/issues`) carries each issue's `closed_at`, null while it is
+  open, and takes `closed_since` (inclusive) and `closed_before` (exclusive) to return only the
+  issues closed in that window. A malformed bound is refused with `400 INVALID_CLOSED_SINCE` or
+  `INVALID_CLOSED_BEFORE`, and a backwards window with `400 INVALID_CLOSED_WINDOW`. The listing's
+  time bounds, `updated_since` included, round a sub-microsecond value up to the next microsecond,
+  where they used to move it backward.

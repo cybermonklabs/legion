@@ -221,10 +221,6 @@ func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, parts []itembl
 		pairs: func(next []itemblocks.Block, ids []string) []blockPair {
 			return askPartPairs(next, ids, r)
 		},
-		// The question is what gives an option and an answer their meaning: "eu, for latency"
-		// is found by a reader asking which region was chosen only through the question it
-		// answers, so every part of an ask is embedded under it.
-		windowContext: func(context.Context, pgx.Tx) (string, error) { return ask.Question, nil },
 	})
 }
 

@@ -81,11 +81,10 @@ func statusEcho(seq int64, status string) intake.DispatchIssue {
 		ResolvedRepo: "acme/widgets", DaemonActor: true, ClaimKnown: true}
 }
 
-// superviseRows counts the child's queued supervise rows of op for role. A start of a phase
-// worker is two rows now (workflow.StartOrOwe): the relaunch, which carries no task and brings
-// the role's session back at once, and the row that carries the task and waits for the issue's
-// admission slot. Only the second is the start these tests count, as every other assertion
-// about a start in this tree counts it.
+// superviseRows counts the child's queued supervise rows of op for role. A phase worker's start
+// is one row, which carries the task and waits for the issue's admission slot
+// (workflow.StartOrOwe); a start with no task at all is a role admission brings back beside it,
+// which these tests do not count, as every other assertion about a start in this tree does not.
 func superviseRows(t *testing.T, h *harness, op string, role claim.Role) int {
 	t.Helper()
 	var rows int

@@ -49,12 +49,16 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		// function runs none of them.
 		"an index inside a dollar-quoted body": {"create function f() returns void language plpgsql as $body$ begin create index i on things (kind); end $body$;", "create function"},
 
-		// Dropping a trigger writes pg_trigger and dropping a function writes pg_proc, reading no
-		// row of the table, so a drop with RESTRICT - the default - is exempt as a create is.
+		// Dropping a trigger writes pg_trigger, dropping a function writes pg_proc and dropping an
+		// index deletes its pg_class and pg_index rows, reading no row of the table, so a drop
+		// with RESTRICT - the default - is exempt as a create is.
 		"20261102233626, a dropped trigger and its function": {"drop trigger artifact_versions_embeddings_enqueue on artifact_versions;\ndrop function embeddings_enqueue_document();", "drop trigger and drop function"},
+		"20261111002445, the dropped events index":           {"drop index events_person_words;", "drop index"},
 		"a dropped trigger alone":                            {"drop trigger t_owed on things;", "drop trigger"},
 		"a dropped trigger if exists":                        {"drop trigger if exists t_owed on things;", "drop trigger"},
 		"a dropped function alone":                           {"drop function owe();", "drop function"},
+		"a dropped index alone":                              {"drop index things_kind;", "drop index"},
+		"a dropped index if exists":                          {"drop index if exists things_kind;", "drop index"},
 		"a drop beside a created trigger":                    {"drop trigger t_old on things; create trigger t_owed after insert on things for each row execute function owe();", "drop trigger and create trigger"},
 
 		"a nullable built-in column":                {"alter table things add column covers text[];", "alter table"},
@@ -84,16 +88,17 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"a trigger inside a DO block":               {"do $$ begin create trigger t after insert on things for each row execute function owe(); end $$;", ""},
 		// A drop of anything else reads or removes rows, and a drop with cascade reaches objects
 		// the statement does not name, so neither is exempt.
-		"a dropped table":                 {"drop table things;", ""},
-		"a dropped index":                 {"drop index things_kind;", ""},
-		"a dropped view":                  {"drop view v;", ""},
-		"a dropped schema":                {"drop schema s;", ""},
-		"a dropped procedure":             {"drop procedure p();", ""},
-		"a dropped function with cascade": {"drop function owe() cascade;", ""},
-		"a dropped trigger with cascade":  {"drop trigger t_owed on things cascade;", ""},
-		"a drop beside an index":          {"drop trigger t_owed on things; create index things_kind on things (kind);", ""},
-		"a drop only in a comment":        {"-- drop trigger t_owed on things;\ncreate index things_kind on things (kind);", ""},
-		"a drop only in a string literal": {"update things set kind = 'drop trigger t_owed on things'", ""},
+		"a dropped table":                        {"drop table things;", ""},
+		"a dropped index with cascade":           {"drop index things_kind cascade;", ""},
+		"a dropped view":                         {"drop view v;", ""},
+		"a dropped schema":                       {"drop schema s;", ""},
+		"a dropped procedure":                    {"drop procedure p();", ""},
+		"a dropped function with cascade":        {"drop function owe() cascade;", ""},
+		"a dropped trigger with cascade":         {"drop trigger t_owed on things cascade;", ""},
+		"a drop beside an index":                 {"drop trigger t_owed on things; create index things_kind on things (kind);", ""},
+		"a dropped index beside a created index": {"drop index things_kind; create index things_kind on things (kind);", ""},
+		"a drop only in a comment":               {"-- drop trigger t_owed on things;\ncreate index things_kind on things (kind);", ""},
+		"a drop only in a string literal":        {"update things set kind = 'drop trigger t_owed on things'", ""},
 		// A set is a parameter of the transaction: it takes no lock and reads no row, so it
 		// cannot make a lock window grow with a table, and a migration that bounds its own lock
 		// wait keeps the exemption its other statements earn.

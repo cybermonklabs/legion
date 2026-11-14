@@ -1,14 +1,5 @@
 import { createServer, type Server } from "node:http";
 
-import {
-  type BrowserContext,
-  expect,
-  type Page,
-  type Response,
-  type TestInfo,
-  test,
-} from "@playwright/test";
-
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
 import { usesFakeBroker } from "./harness-broker";
 import {
@@ -23,7 +14,7 @@ import {
   seedPendingRequests,
   withdrawSeededRequests,
 } from "./real-broker";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, type Page, type Response, test } from "./test";
 import { asUser } from "./users";
 
 // A secret request is approved on the secrets broker's own page, by a person signed in to the
@@ -42,14 +33,10 @@ const brokerCookies = /^__Host-broker-/;
 const originRefusal =
   "This request did not come from the secrets broker's own page, so nothing was changed.";
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-/** Skips a row that one browser proves, or that this run has no real broker for: the harness
- *  starts it beside the fake broker only (e2e/harness-listeners.ts). */
-function requireRealBroker(testInfo: TestInfo): void {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broker's page");
+/** Skips a row this run has no real broker for: the harness starts it beside the fake broker
+ *  only (e2e/harness-listeners.ts). Every row of this file runs in `chromium` and in no other
+ *  project, since none of the tagged projects selects it. */
+function requireRealBroker(): void {
   test.skip(!usesFakeBroker, "the harness starts the real broker beside the fake broker only");
 }
 
@@ -122,10 +109,11 @@ async function states(state: string): Promise<string[]> {
   );
 }
 
-test("from the Inbox, a live broker session lands on the record's page with no sign-in, and one Approve grants it", async ({
+// @pr: Sign-in and tokens: a live broker session reaches the record's page with no sign-in, and one Approve grants the credential.
+test("from the Inbox, a live broker session lands on the record's page with no sign-in, and one Approve grants it @pr", async ({
   browser,
 }, testInfo) => {
-  requireRealBroker(testInfo);
+  requireRealBroker();
   const state = testInfo.outputPath("broker-requests.json");
   const [request] = await seedPendingRequests(state, aliceSecret);
   if (request === undefined) throw new Error("the seeding step made no request");
@@ -166,10 +154,11 @@ test("from the Inbox, a live broker session lands on the record's page with no s
   }
 });
 
-test("from the Inbox, a lapsed broker session signs in once and returns to the same record's page", async ({
+// @pr: Sign-in and tokens: a lapsed session signs in once and comes back to the same record's page.
+test("from the Inbox, a lapsed broker session signs in once and returns to the same record's page @pr", async ({
   browser,
 }, testInfo) => {
-  requireRealBroker(testInfo);
+  requireRealBroker();
   const state = testInfo.outputPath("broker-requests.json");
   const [request] = await seedPendingRequests(state, aliceSecret);
   if (request === undefined) throw new Error("the seeding step made no request");
@@ -212,7 +201,7 @@ test("from the Inbox, a lapsed broker session signs in once and returns to the s
 test("three pending requests are approved by one click on Approve all 3 shown", async ({
   browser,
 }, testInfo) => {
-  requireRealBroker(testInfo);
+  requireRealBroker();
   const state = testInfo.outputPath("broker-requests.json");
   const requests = await seedPendingRequests(state, aliceSecret, 3);
   const [first] = requests;
@@ -287,10 +276,11 @@ async function hostileSibling(request: SeededRequest): Promise<{ origin: string;
   return { origin: `http://127.0.0.1:${address.port}`, server };
 }
 
-test("a page on a sibling origin cannot decide the record with a form, a credentialed fetch, or a frame", async ({
+// @pr: Sign-in and tokens: the approval route must refuse a sibling origin's form, credentialed fetch and frame.
+test("a page on a sibling origin cannot decide the record with a form, a credentialed fetch, or a frame @pr", async ({
   browser,
 }, testInfo) => {
-  requireRealBroker(testInfo);
+  requireRealBroker();
   const state = testInfo.outputPath("broker-requests.json");
   const [request] = await seedPendingRequests(state, aliceSecret);
   if (request === undefined) throw new Error("the seeding step made no request");
@@ -374,10 +364,11 @@ test("a page on a sibling origin cannot decide the record with a form, a credent
   }
 });
 
-test("signed in as another person, the record's page offers only the switch, which signs in its approver", async ({
+// @pr: Sign-in and tokens: signed in as the wrong person, the record's page offers only the switch, which signs in its approver.
+test("signed in as another person, the record's page offers only the switch, which signs in its approver @pr", async ({
   browser,
 }, testInfo) => {
-  requireRealBroker(testInfo);
+  requireRealBroker();
   const state = testInfo.outputPath("broker-requests.json");
   const [request] = await seedPendingRequests(state, aliceSecret);
   if (request === undefined) throw new Error("the seeding step made no request");

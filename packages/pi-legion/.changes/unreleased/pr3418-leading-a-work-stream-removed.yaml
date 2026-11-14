@@ -1,0 +1,7 @@
+kind: Removed
+custom:
+  Issue: pr3418
+body: |-
+  The `leading-a-work-stream` skill: there are no more standing leads, and the work moves into
+  Legion. The plugin now ships six skills: `legion-architect`, `legion-controller`,
+  `legion-oracle`, `legion-retro`, `legion-worker` and `simplify-settled-diff`.

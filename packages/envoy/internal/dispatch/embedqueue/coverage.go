@@ -56,21 +56,22 @@ const issueRows = `select s.id, s.text, encode(sha256(convert_to(s.text, 'UTF8')
 // and the queue settles the row it already holds with no vector.
 var issueItems = searchableItems(issueRows)
 
-// windowCoverageKinds is every kind whose rows the indexers own: one row per window of a
-// document's, a comment's, a message's blocks or of an ask's parts (INFRA-370). Migration
+// windowCoverageKinds is every kind whose rows the writers of windows own: one row per window
+// of a document's, a comment's, a message's blocks or of an ask's parts (INFRA-370). Migration
 // 20261102233626 and the three after it dropped the whole-text triggers these replace, so
-// every such row is written by the indexer that wrote the blocks it covers, in that write's
-// own transaction, or by the block-index tick for an owner written before this build. No
-// statement of this pass may invent one: the pass has no way to window an owner, and a row it
-// inserted for a window that no longer exists would be embedded for ever at a text no reader
-// can reach. So no statement here builds a window row (insertMissingIssues and repairStaleIssues
-// are the issue's alone), a window kind takes the settling and the identity steps alone
-// (coverPass), and it is counted in the report from its own rows (windowRows).
+// every such row is written by the block-index tick's window arm, which writes the windows of
+// every comment, message, ask and document whose blocks a write recorded and whose windows it
+// left to that tick (INFRA-988). No statement of this pass may invent one: the pass has no way
+// to window an owner, and a row it inserted for a window that no longer exists would be
+// embedded for ever at a text no reader can reach. So no statement here builds a window row
+// (insertMissingIssues and repairStaleIssues are the issue's alone), a window kind takes the
+// settling and the identity steps alone (coverPass), and it is counted in the report from its
+// own rows (windowRows).
 var windowCoverageKinds = []string{"document_block", "comment_block", "message_block", "ask_part"}
 
 // windowRows is a window kind's items, in the shape issueRows gives the issue's: its own
-// rows, since a window exists only while the indexer that wrote it says so, and its text and
-// hash are the ones that indexer wrote. Reading them from embeddings itself is what makes the
+// rows, since a window exists only while the write that made it says so, and its text and
+// hash are the ones that write left. Reading them from embeddings itself is what makes the
 // report count the windows of the database rather than items the pass has no way to window.
 func windowRows(kind string) string {
 	return fmt.Sprintf(`select s.id, s.text, s.hash, s.written_at from (
@@ -89,9 +90,16 @@ func searchableItems(items string) string {
 // never DO UPDATE: a row a trigger inserts between this statement's read and its insert holds
 // text at least as fresh as what this statement read, and DO UPDATE would revert it to the older
 // text.
+//
+// project_key is the issue's own, read through embeddings_owner_project_key (migration
+// 20261109120000) - the expression embeddings_enqueue itself writes, so this insert is still
+// byte for byte the row the trigger would have made. It is the one insert into embeddings that
+// does not go through one of the two enqueue functions, and a row it left unlabelled would be
+// returned by no project-scoped meaning search (api/search.go).
 var insertMissingIssues = `
-	insert into embeddings (kind, id, text_snapshot, content_hash)
-	select $1::text, item.id, item.text, item.hash from (` + issueItems + `) item
+	insert into embeddings (kind, id, text_snapshot, content_hash, project_key)
+	select $1::text, item.id, item.text, item.hash, embeddings_owner_project_key($1::text, item.id)
+	from (` + issueItems + `) item
 	where not exists (select 1 from embeddings e where e.kind = $1::text and e.id = item.id)
 	limit $2
 	on conflict (kind, id) do nothing`
@@ -437,11 +445,44 @@ func runCoverage(ctx context.Context, deps Deps) {
 	}
 }
 
-// coverageQuery counts, per covered kind, its items left-joined to their embeddings rows, in
-// one statement so every count reads one snapshot: the issue's items are issueItems, a window
-// kind's its own rows (windowRows). $1 is the configured identity, the empty string when there
-// is none, and then no item is current. greatest ignores a null, so an item with no row ages
-// from when it was written; the oldest age is null when nothing of the kind lacks.
+// notIndexedKinds is every kind of node meaning search and keyword search hold no row of at
+// all, in the order the report lists them, each with the expression that counts how many of it
+// the database holds, read from the table that holds that kind: components from components,
+// sessions from the listener's stored session list (route_roster, Dispatch's one record of
+// which sessions exist, '[]' when the listener has not answered and no row at all before the
+// first answer, so a deployment that resolves none counts 0), a document version from
+// artifact_versions (only a document's latest text is indexed, and then as windows of its
+// blocks, so no version row is an item of any covered kind), a result from check_results and a
+// handoff from handoffs.
+//
+// Naming them is the point: with the report carrying the covered kinds alone, a reader could
+// not tell a kind that is covered with nothing left to embed from one nothing indexes.
+var notIndexedKinds = []struct{ kind, items string }{
+	{"component", "(select count(*) from components)"},
+	{"session", "coalesce((select jsonb_array_length(sessions) from route_roster), 0)"},
+	{"document_version", "(select count(*) from artifact_versions)"},
+	{"result", "(select count(*) from check_results)"},
+	{"handoff", "(select count(*) from handoffs)"},
+}
+
+// notIndexedPositions is each notIndexedKinds kind's place in the report's list, so the rows of
+// one statement, whose order no union all promises, land in the order declared above.
+var notIndexedPositions = func() map[string]int {
+	positions := make(map[string]int, len(notIndexedKinds))
+	for position, kind := range notIndexedKinds {
+		positions[kind.kind] = position
+	}
+	return positions
+}()
+
+// coverageQuery counts, per covered kind, its items left-joined to their embeddings rows, and
+// per uncovered kind (notIndexedKinds) the items of it the database holds, in one statement so
+// every count reads one snapshot: the issue's items are issueItems, a window kind's its own
+// rows (windowRows). $1 is the configured identity, the empty string when there is none, and
+// then no item is current. greatest ignores a null, so an item with no row ages from when it
+// was written; the oldest age is null when nothing of the kind lacks. The second column says
+// which half a row came from: an uncovered kind carries its count alone, with no current,
+// failed or oldest age, none of which is defined for a kind nothing indexes.
 var coverageQuery = func() string {
 	arm := func(kind, items string) string {
 		return fmt.Sprintf("select '%s'::text as kind, item.id, item.hash, item.written_at from (%s) item", kind, items)
@@ -451,6 +492,11 @@ var coverageQuery = func() string {
 	for _, kind := range windowCoverageKinds {
 		arms = append(arms, arm(kind, searchableItems(windowRows(kind))))
 	}
+	uncovered := make([]string, 0, len(notIndexedKinds))
+	for _, kind := range notIndexedKinds {
+		uncovered = append(uncovered, fmt.Sprintf(
+			"select '%s'::text, false, (%s)::bigint, 0::bigint, 0::bigint, null::bigint", kind.kind, kind.items))
+	}
 	return `
 		with items as (` + strings.Join(arms, "\n union all ") + `),
 		judged as (
@@ -459,15 +505,18 @@ var coverageQuery = func() string {
 			from items item
 			left join embeddings e on e.kind = item.kind and e.id = item.id
 		)
-		select kind, count(*), count(*) filter (where current), count(*) filter (where dead and not current),
+		select kind, true, count(*), count(*) filter (where current), count(*) filter (where dead and not current),
 		       floor(extract(epoch from now() - min(greatest(pending_since, written_at)) filter (where not current and not dead)))::bigint
 		from judged
-		group by kind`
+		group by kind
+		union all ` + strings.Join(uncovered, "\n union all ")
 }()
 
 // Coverage reports how much of what meaning search covers (coverageKinds) has a current vector
-// from identity, the configured embedder's (empty when none is configured). Its definitions are
-// model.SearchCoverageCounts'; Total sums the kinds, and its oldest lacking age is theirs.
+// from identity, the configured embedder's (empty when none is configured), and how many items
+// each kind it covers nothing of (notIndexedKinds) holds. Its definitions are
+// model.SearchCoverageCounts'; Total sums the covered kinds, and its oldest lacking age is
+// theirs. An uncovered kind is in no total: it has no vector to be behind on.
 func Coverage(ctx context.Context, database *store.Store, identity string) (model.SearchCoverage, error) {
 	var report model.SearchCoverage
 	if identity != "" {
@@ -481,6 +530,10 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 		"message_block":  &report.Kinds.MessageBlock,
 		"ask_part":       &report.Kinds.AskPart,
 	}
+	report.NotIndexed = make([]model.SearchCoverageNotIndexed, len(notIndexedKinds))
+	for position, kind := range notIndexedKinds {
+		report.NotIndexed[position].Kind = kind.kind
+	}
 	rows, err := database.Pool.Query(ctx, coverageQuery, identity)
 	if err != nil {
 		return model.SearchCoverage{}, fmt.Errorf("search coverage: %w", err)
@@ -488,9 +541,18 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 	defer rows.Close()
 	for rows.Next() {
 		var kind string
+		var indexed bool
 		var counts model.SearchCoverageCounts
-		if err := rows.Scan(&kind, &counts.Items, &counts.Current, &counts.Failed, &counts.OldestLackingSeconds); err != nil {
+		if err := rows.Scan(&kind, &indexed, &counts.Items, &counts.Current, &counts.Failed, &counts.OldestLackingSeconds); err != nil {
 			return model.SearchCoverage{}, fmt.Errorf("search coverage: %w", err)
+		}
+		if !indexed {
+			position, ok := notIndexedPositions[kind]
+			if !ok {
+				return model.SearchCoverage{}, fmt.Errorf("search coverage: unknown kind %q", kind)
+			}
+			report.NotIndexed[position].Items = counts.Items
+			continue
 		}
 		counts.Lacking = counts.Items - counts.Current - counts.Failed
 		// A row that became pending in a transaction that began after this statement's own

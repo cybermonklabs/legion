@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The Dispatch skill states that a comment, a message or a close reason holding a decision block
+  is refused, and where the question goes instead: in the issue's document, as a decision block
+  there, or in an ask opened with `dispatch ask`.
+time: 2026-11-11T03:27:26.000000000Z
+custom:
+    Issue: pr3509

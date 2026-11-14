@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import { getUnsubscribeCalls, setInterests, setLiveSessions } from "./agents";
@@ -12,7 +10,7 @@ import {
   getIssueEvents,
   listAskFollowers,
 } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // Two sessions write to one ask over the API with the agent bearer token: the asker and a
@@ -21,11 +19,8 @@ import { asUser } from "./users";
 const asker = { kind: "session" as const, id: "e2e-follow-asker" };
 const replier = { kind: "session" as const, id: "e2e-follow-replier" };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("the ask card lists every session that wrote to the ask and a human can unfollow one", async ({
+// @pr: A write the server settles: the ask card lists every session that wrote to the ask, and an unfollow takes one off.
+test("the ask card lists every session that wrote to the ask and a human can unfollow one @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

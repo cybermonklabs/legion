@@ -31,6 +31,14 @@ import {
   documentRoute,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import {
+  CLOSED_ISSUE_REMOVE_REFUSAL,
+  CLOSED_ISSUE_RENAME_REFUSAL,
+  CorrectTitle,
+  correctionIsOffered,
+  RemoveDocument,
+  removalIsOffered,
+} from "./DocumentWayBack";
 
 export function artifactVersionUrl(artifactID: string, version: number): string {
   return `/api/v1/artifacts/${encodeURIComponent(artifactID)}/versions/${version}`;
@@ -86,6 +94,10 @@ export function ArtifactHeader({
   // issue or project; its page is under the agent's session.
   const agentRoute = documentRoute(artifact);
   const agentSession = agentRoute.kind === "agent-artifact" ? agentRoute.session : undefined;
+  // A project's document is not removed, and an agent's conversation holds files rather than
+  // documents: the removal is the issue document's alone. A `const` keeps the narrowing inside
+  // the callback below.
+  const issueKey = artifact.issue_key;
 
   useEffect(() => {
     if (!highlight) {
@@ -96,6 +108,20 @@ export function ArtifactHeader({
     const timeout = window.setTimeout(() => setHighlighted(false), 2000);
     return () => window.clearTimeout(timeout);
   }, [highlight]);
+
+  // One button, placed by the branch below: it leads the row's non-wrapping box where there is
+  // no version to diff, and sits before that box where there is one.
+  const nameVersion =
+    toolbar === undefined ? null : (
+      <button
+        className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+        disabled={isClosed || toolbar.isNamingVersion}
+        onClick={toolbar.requestNamedVersion}
+        type="button"
+      >
+        Name version
+      </button>
+    );
 
   return (
     <section className="space-y-4">
@@ -186,21 +212,38 @@ export function ArtifactHeader({
               </label>
             ) : null}
             {toolbar === undefined ? null : (
-              // The dot says whether this page is live on the document these actions write to,
-              // so it wraps with them as one group and never onto a line of its own. The group
-              // itself may wrap (a 320 px version view is narrower than both buttons and the
-              // dot); the dot then travels with the action beside it.
+              // Two boxes. The outer one wraps, because at 320 px the actions are wider than the
+              // header card. The inner one does not: the dot says whether this page is live on
+              // the document these actions write to, so it shares that box with the action
+              // beside it — the diff button on a version view, Name version where there is none
+              // — and travels with it instead of wrapping onto a line of its own.
               <div className="flex flex-wrap items-center gap-3">
-                <button
-                  className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-                  disabled={isClosed || toolbar.isNamingVersion}
-                  onClick={toolbar.requestNamedVersion}
-                  type="button"
-                >
-                  Name version
-                </button>
+                {!correctionIsOffered(artifact) ? null : (
+                  <CorrectTitle
+                    artifact={artifact}
+                    refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
+                  />
+                )}
+                {issueKey === null || !removalIsOffered(artifact) ? null : (
+                  <RemoveDocument
+                    artifact={artifact}
+                    onRemoved={() =>
+                      // The route stays on the document the issue no longer holds, so the
+                      // artifacts panel's own branch says it is gone rather than failing to
+                      // load. A version route is normalised away first: the version the person
+                      // was reading went with the document.
+                      navigate(
+                        buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug })
+                      )
+                    }
+                    refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+                  />
+                )}
+                {version === undefined ? null : nameVersion}
                 <div className="flex items-center gap-3">
-                  {version === undefined ? null : (
+                  {version === undefined ? (
+                    nameVersion
+                  ) : (
                     <button
                       className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
                       onClick={() => onShowDiffChange?.(!showDiff)}

@@ -309,10 +309,13 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "this route needs a launcher proof, not a session proof")
 			return caller{}, false
 		}
-		// By the key the proof proved and not by the launcher id alone: the pods of one
-		// ServiceAccount share a credential row, and a sibling's login between the proof's own
-		// lookup and this read moves that row's key and pod uid, which would hand the handler
-		// the sibling's identity (enroll.Service.CredentialForKey).
+		// By the key the proof proved and not by the launcher id alone: a login writes its
+		// own key and pod uid onto the credential row (enroll.Service.IssueTokenLoginTx),
+		// so a login landing between the proof's own lookup and this read moves the row out
+		// from under the proof, and a read by id alone would hand the handler whatever
+		// identity the row then holds. A login bound to no pod takes one row per subject on
+		// either schema, and a pod's own re-login moves its own row under the same id, so
+		// the pair is right on either (enroll.Service.CredentialForKey).
 		cred, err := s.deps.Enroll.CredentialForKey(r.Context(), subject.LauncherID, subject.Thumbprint)
 		switch {
 		case errors.Is(err, enroll.ErrNoCredential):

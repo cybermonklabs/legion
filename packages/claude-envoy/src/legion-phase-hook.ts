@@ -41,6 +41,15 @@ import { configuredValue } from "./claude-session"
  * appended to that turn as its next step (`deliver`/`step` in
  * `packages/daemon/internal/claudebridge/bridge.go`), which would destroy the turn boundary the
  * whole split exists for.
+ *
+ * A turn Claude Code ended on an API error fires `StopFailure` rather than `Stop`, and that is
+ * the provider refusing the turn: it earns no continuation, since the host would turn one into
+ * another turn at once and the provider would refuse that one the same way. It does arm one
+ * timer, because the task that refused turn carried ended with it and nothing else would wake
+ * this worker, so a single transient refusal would otherwise leave the issue idle. What stops
+ * the reminding for good is the runner's record check, which drops every reminder once the
+ * daemon has failed this role's claim — the refused turns themselves are counted by the bridge,
+ * which reports each turn's outcome to the daemon (INFRA-714).
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -165,6 +174,14 @@ export interface PhaseHookDeps {
    * reminder and the recreated-workspace notice both need the claim, and neither is sent before
    * one exists. Never rejects. */
   readonly booted: Promise<void>
+  /** A turn of this session has started, whatever started it: the daemon's task, an Envoy
+   * delivery, a reminder, a person. The channel server answers it by firing the claim boot's
+   * deferred role claim (`startLegionClaim`'s `onFirstTurn`), so the session takes its Envoy
+   * name inside a turn that is already running (INFRA-1573). It is called for every
+   * `UserPromptSubmit`, and the server decides which of them counts: one before the boot
+   * registered its step — the bridge's seeding `/rename` — signals nothing, and one after the
+   * name is taken costs nothing. */
+  readonly firstTurnStarted: () => void
   /** The daemon's whole state, for the reminder's record check, aborted with `signal` once the
    * check's bound passes (`PhaseReminderDeps.readState`). */
   readonly readState: (signal: AbortSignal) => Promise<LegionState>
@@ -481,6 +498,13 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
       // itself: it is refused, and no state moves, so it cannot zero its own count.
       if (!parsed.success) return { error: PHASE_HOOK_REFUSAL }
       const event = parsed.data
+      // Before the gate below, and before anything else this endpoint does: the claim's own
+      // first-turn signal is not the reminder's business, and a turn is a turn whether or not a
+      // claim has registered yet (the bridge's seeding `/rename` turn runs before one has) and
+      // whatever role this pane holds, an architect's included. What a prompt before the boot
+      // registered its step comes to is the server's to decide, not this endpoint's: it holds
+      // the step the signal runs (`src/envoy-channel-server.ts`).
+      if (event.event === "UserPromptSubmit") deps.firstTurnStarted()
       // The same gate as `phaseWorkerSession` in `packages/pi-legion/extensions/legion.ts`: the
       // machine runs for a phase worker whose claim has booted, and for nobody else. The bridge's
       // seeding `/rename` turn is what writes the transcript the claim boot waits for
@@ -501,7 +525,9 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
             stopHookActive: event.stopHookActive ?? "",
             backgroundWork,
           })
-          const reminded = await reminder.settle(event.lastAssistantMessage ?? "", {
+          const reminded = await reminder.settle({
+            kind: "settle",
+            lastAssistantText: event.lastAssistantMessage ?? "",
             backgroundWork,
           })
           // After the settle, so the report carries the wake that settle armed. The daemon
@@ -511,13 +537,17 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           return reminded === undefined ? {} : { decision: "block", reason: reminded }
         }
         case "StopFailure": {
-          // The turn ended on an API error. Claude Code ignores whatever this hook returns, so
-          // this event cannot carry a continuation: the machine is told so and arms the reminder
-          // its settle earned itself, under every guard an armed reminder has. This is the one
-          // event of the five the pod measurements did not cover; it records only, so a
-          // `StopFailure` that never fires costs the reminder after an API-error turn and nothing
-          // else.
-          await reminder.settle(event.lastAssistantMessage ?? "", { canContinue: false })
+          // Claude Code runs this instead of `Stop` when the turn ended on an API error, and
+          // `${last_assistant_message}` is then the error text itself rather than anything the
+          // worker said ("Hooks reference", code.claude.com/docs/en/hooks). So this is the
+          // provider refusing the turn, and the machine takes it as one: it earns no
+          // continuation, because the next turn would be refused the same way, and one timer,
+          // because nothing else would wake this worker once the task that turn carried ended
+          // with it. What ends a session the provider keeps refusing is the daemon failing its
+          // claim on the outcomes the bridge reports, which the timer's own record check reads.
+          // Claude Code ignores whatever this hook returns, which costs nothing now that there
+          // is nothing to return.
+          await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })
           return {}
         }
         case "PostToolUse":
@@ -535,9 +565,8 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // Claude Code's stdin from the bridge and never this process, so what a turn means is
           // read from the prompt itself. The turn is declared first, which makes every armed
           // timer stale, and the pending one is dropped outright: the runner's generation guard
-          // answers the same for the timers it armed, and the one this endpoint arms itself (the
-          // `StopFailure` reminder) obeys the same rule that way rather than through a second
-          // guard of its own.
+          // answers the same for the timers it armed, and dropping the one timer this server
+          // holds is the plainest way to say the same thing.
           reminder.turnStarted()
           dropTimer()
           const prompt = event.prompt ?? ""

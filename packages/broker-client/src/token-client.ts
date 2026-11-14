@@ -18,6 +18,7 @@
 // the identity in a way no retry can cure or the token in hand has run out, so a caller that
 // writes only with what `token()` gave it never writes with no identity.
 
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   allowInsecureRequests,
   Configuration,
@@ -175,17 +176,6 @@ function statusOf(error: unknown): number {
     cause = cause.cause;
   }
   return 0;
-}
-
-/**
- * `url` without the slashes it ends in, counted from the right. A `/\/+$/` replace reads the same
- * string once per position its unanchored search starts at, which costs a URL of n slashes O(n²)
- * (CodeQL js/polynomial-redos); this reads it once.
- */
-function withoutTrailingSlashes(url: string): string {
-  let end = url.length;
-  while (end > 0 && url[end - 1] === "/") end -= 1;
-  return url.slice(0, end);
 }
 
 /** Trades this client's identity for the broker's access tokens and keeps one live. */

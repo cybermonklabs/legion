@@ -4,7 +4,7 @@
 
 Read the handoffs already on the issue with `dispatch handoff-read --issue <issue> --phase <word>` (`plan`, `implement`, `test` or `review`; a phase with none answers `HANDOFF_NOT_FOUND`) before planning.
 
-The plan lives in your `plan` handoff and the issue's `plan.md` document (`dispatch artifact` on the issue), never in the issue's primary document, which is its spec. Write each task of the plan as a `plan_task` block of `plan.md`, with `serves` naming the `requirement` blocks of the spec it serves and `needs` naming the tasks of this plan that come before it; a pointer to a block no document of this issue or of an issue above it holds is refused. Read the issue's checks with `dispatch results --issue <issue>`: a check marked `after_merge` that could be run before the merge is a defect of the plan, and the plan review sends it back. Legion sets no rule on whether a plan or spec goes in the repository: commit a plan, a spec or spec code when the issue, its spec or the repository asks for it. Otherwise, a skill step that says "save the plan to a file" is satisfied by the plan handoff below.
+The plan lives in your `plan` handoff and the issue's `plan.md` document (`dispatch artifact` on the issue, with `--force` once `plan.md` exists, which is what writes a new version of a document the issue already holds), never in the issue's primary document, which is its spec. Write each task of the plan as a `plan_task` block of `plan.md`, with `serves` naming the `requirement` blocks of the spec it serves and `needs` naming the tasks of this plan that come before it; a pointer to a block no document of this issue or of an issue above it holds is refused. Read the issue's checks with `dispatch results --issue <issue>`: a check marked `after_merge` that could be run before the merge is a defect of the plan, and the plan review sends it back. Legion sets no rule on whether a plan or spec goes in the repository: commit a plan, a spec or spec code when the issue, its spec or the repository asks for it. Otherwise, a skill step that says "save the plan to a file" is satisfied by the plan handoff below.
 
 ## A departure from the spec
 
@@ -37,7 +37,7 @@ While a decision you sent to whoever owns the plan is outstanding, end the turn 
 
 ## Plan handoff
 
-Write the plan handoff, as the daemon part below says: a JSON object with `schemaVersion: 1`, `phase: "plan"`, `issue: "<issue>"`, `requiredSkills` (above), and the three records below; nothing stamps any field for you. Write it with the `write` tool to `$TMPDIR/<issue>-plan.json`, record it with `dispatch handoff-write --issue <issue> --phase plan --body-file "$TMPDIR/<issue>-plan.json"`, then report completion.
+Write the plan handoff, as the daemon part below says: a JSON object with `schemaVersion: 1`, `phase: "plan"`, `issue: "<issue>"`, `head` (the 40-character lower-case commit the workspace stood on when you wrote the plan, as `jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id` prints it), `requiredSkills` (above), and the three records below; nothing stamps any field for you. Your completion carries that `head` to the daemon, which takes a completion of an earlier `plan` entry only at the head the record holds. Write it with the `write` tool to `$TMPDIR/<issue>-plan.json`, record it with `dispatch handoff-write --issue <issue> --phase plan --body-file "$TMPDIR/<issue>-plan.json"`, then report completion.
 
 The handoff records the two plan checks and the plan's departures from the spec:
 

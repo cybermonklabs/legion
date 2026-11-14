@@ -19,26 +19,36 @@ import (
 
 // lookup answers the reads an event's destinations depend on: an ask's followers in the order they
 // joined, a comment's thread root's author, a message's author, the sessions a document credits,
-// the sessions a person's reply under a comment reaches (loadCommentRecipients), the sessions an
-// issue's primary document credits (loadPrimaryDocumentAuthors), and what a new comment's mentions
-// did (mentionDeliveries). A comment or message that does not exist answers no author, found
-// false.
+// the sessions a person's reply under a comment reaches and where the read found each
+// (loadCommentRecipients, threadRecipient), the sessions an issue's primary document credits
+// (loadPrimaryDocumentAuthors), what a new comment's mentions did (mentionDeliveries), and which
+// of a comment's mentions failed (mentionFallbackKeys). A comment or message that does not exist
+// answers no author, found false.
 type lookup interface {
 	followers(askID string) ([]string, error)
 	rootCommentAuthor(commentID string) (model.Actor, bool, error)
 	messageAuthor(messageID string) (model.Actor, bool, error)
 	documentAuthors(artifactID string) ([]string, error)
-	commentRecipients(commentID string) ([]string, error)
+	commentRecipients(commentID string) ([]threadRecipient, error)
 	primaryDocumentAuthors(issueKey string) ([]string, error)
 	mentionDeliveries(commentID string) (mentionDeliveries, error)
+	// mentionFallbackKeys answers the failed mentions of one comment alone
+	// (mentionDeliveries.fallbackKeys, keyed by session), which is all a comment's edit asks of
+	// its mentions: whether the session a document credits was named by the comment and never
+	// reached by that mention (addAuthorRoutes). It adds no reading of that comment anywhere
+	// else: a comment only an edit asked for is left out of the batch's readings
+	// (lookups.editOnly, lookups.readings).
+	mentionFallbackKeys(commentID string) (map[string]string, error)
 }
 
 // wanted is the lookup a batch's first pass over its events runs: it answers nothing and records
 // every id asked for, so that the batch reads each kind once (loadLookups). An event's destinations
 // ask for the same ids whatever the answers are, so a second pass over resolved lookups asks for
-// exactly these.
+// exactly these. editMentions holds the comments only mentionFallbackKeys asked for, which the
+// batch reads in the same statements as mentions and leaves out of its readings
+// (lookups.editOnly).
 type wanted struct {
-	asks, comments, messages, documents, threads, issues, mentions map[string]struct{}
+	asks, comments, messages, documents, threads, issues, mentions, editMentions map[string]struct{}
 }
 
 func newWanted() *wanted {
@@ -46,6 +56,7 @@ func newWanted() *wanted {
 		asks: map[string]struct{}{}, comments: map[string]struct{}{},
 		messages: map[string]struct{}{}, documents: map[string]struct{}{},
 		threads: map[string]struct{}{}, issues: map[string]struct{}{}, mentions: map[string]struct{}{},
+		editMentions: map[string]struct{}{},
 	}
 }
 
@@ -69,7 +80,7 @@ func (w *wanted) documentAuthors(artifactID string) ([]string, error) {
 	return nil, nil
 }
 
-func (w *wanted) commentRecipients(commentID string) ([]string, error) {
+func (w *wanted) commentRecipients(commentID string) ([]threadRecipient, error) {
 	w.threads[commentID] = struct{}{}
 	return nil, nil
 }
@@ -82,6 +93,11 @@ func (w *wanted) primaryDocumentAuthors(issueKey string) ([]string, error) {
 func (w *wanted) mentionDeliveries(commentID string) (mentionDeliveries, error) {
 	w.mentions[commentID] = struct{}{}
 	return mentionDeliveries{}, nil
+}
+
+func (w *wanted) mentionFallbackKeys(commentID string) (map[string]string, error) {
+	w.editMentions[commentID] = struct{}{}
+	return nil, nil
 }
 
 // unansweredRecipients is a recipient read - the sessions a reply under a comment reaches, the
@@ -100,17 +116,20 @@ func (e *unansweredRecipients) Unwrap() error { return e.err }
 // kind is keyed by the id's canonical form (canonicalID), as every read keys its rows, and
 // primaries by the issue's key. failed holds each id no read answers - an id that is no uuid,
 // which the column it is read from refuses (validIDs; a thread's is not failed but has no entry),
-// or an id whose recipient read failed (loadRecipients) - keyed by its kind and that same key, with
-// the error the event's destinations then report.
+// or an id whose recipient read failed (loadRecipients) - keyed by its kind and that same key,
+// with the error the event's destinations then report.
 type lookups struct {
 	asks      map[string][]string
 	roots     map[string]json.RawMessage
 	messages  map[string]json.RawMessage
 	documents map[string][]string
-	threads   map[string][]string
+	threads   map[string][]threadRecipient
 	primaries map[string][]string
 	mentions  map[string]mentionDeliveries
-	failed    map[string]error
+	// editOnly names each comment only an edit asked for (wanted.editMentions): its reading is
+	// read and kept whole like every other, and readings leaves it out.
+	editOnly map[string]struct{}
+	failed   map[string]error
 }
 
 func (l *lookups) followers(askID string) ([]string, error) {
@@ -153,7 +172,7 @@ func (l *lookups) documentAuthors(artifactID string) ([]string, error) {
 	return l.documents[id], nil
 }
 
-func (l *lookups) commentRecipients(commentID string) ([]string, error) {
+func (l *lookups) commentRecipients(commentID string) ([]threadRecipient, error) {
 	id := canonicalID(commentID)
 	if err := l.failed["thread:"+id]; err != nil {
 		return nil, err
@@ -176,10 +195,29 @@ func (l *lookups) mentionDeliveries(commentID string) (mentionDeliveries, error)
 	return l.mentions[id], nil
 }
 
+func (l *lookups) mentionFallbackKeys(commentID string) (map[string]string, error) {
+	id := canonicalID(commentID)
+	if err := l.failed["mention:"+id]; err != nil {
+		return nil, err
+	}
+	return l.mentions[id].fallbackKeys, nil
+}
+
 // readings is what the batch read of each comment's mentions, in no order: what the holders of
-// the roles their unpinned attempts target are resolved for (resolveUnpinnedRoleMentions).
+// the roles their unpinned attempts target are resolved for (resolveUnpinnedRoleMentions). The
+// reading of a comment only an edit asked for is left out (editOnly): the edit asks which of its
+// comment's mentions failed and nothing else, so the batch's readings stay the readings of its
+// new comments. This is the one place that rule is applied; every reader of a reading points
+// here.
 func (l *lookups) readings() []mentionDeliveries {
-	return slices.Collect(maps.Values(l.mentions))
+	readings := make([]mentionDeliveries, 0, len(l.mentions))
+	for id, deliveries := range l.mentions {
+		if _, editOnly := l.editOnly[id]; editOnly {
+			continue
+		}
+		readings = append(readings, deliveries)
+	}
+	return readings
 }
 
 func decodeAuthor(raw []byte, kind, id string) (model.Actor, bool, error) {
@@ -204,7 +242,12 @@ type queryer interface {
 // each id. Every kind but the issues' is a uuid, read and answered in its canonical form
 // (validIDs, canonicalID); an id that is no uuid is never sent to Postgres, which would refuse the
 // whole statement over it, and is recorded failed, as the per-id read failed on it before - but a
-// reply's reply_to, which then names no thread, has no recipients and fails nothing.
+// reply's reply_to, which then names no thread, has no recipients and fails nothing. The mention
+// read is of two sets of comments at once - the new comments whose destinations read what their
+// mentions did (wanted.mentions) and the comments whose edits ask which of their mentions failed
+// (wanted.editMentions, mentionFallbackKeys) - so it costs its two statements whatever either set
+// holds, and the reading of a comment only an edit asked for is left out of the batch's readings
+// (editOnlyIDs, lookups.readings).
 //
 // A read of ask followers, thread root authors, message authors or mention deliveries that fails
 // fails the batch, which is then left unrecorded and read again. A recipient read - document
@@ -222,14 +265,16 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 	found := &lookups{
 		asks: map[string][]string{}, roots: map[string]json.RawMessage{},
 		messages: map[string]json.RawMessage{}, documents: map[string][]string{},
-		threads: map[string][]string{}, primaries: map[string][]string{},
-		mentions: map[string]mentionDeliveries{}, failed: map[string]error{},
+		threads: map[string][]threadRecipient{}, primaries: map[string][]string{},
+		mentions: map[string]mentionDeliveries{},
+		failed:   map[string]error{},
 	}
 	asks := validIDs(want.asks, "ask", "load followers of ask %q", found.failed)
 	comments := validIDs(want.comments, "comment", "load root comment author %q", found.failed)
 	messages := validIDs(want.messages, "message", "load message author %q", found.failed)
 	documents := validIDs(want.documents, "document", "load document %q session authors", found.failed)
 	mentions := validIDs(want.mentions, "mention", "load mention deliveries of comment %q", found.failed)
+	editMentions := validIDs(want.editMentions, "mention", "load mention deliveries of comment %q", found.failed)
 	threads := validIDs(want.threads, "thread", "", found.failed)
 	issues := slices.Sorted(maps.Keys(want.issues))
 	if err := loadFollowers(ctx, db, asks, found); err != nil {
@@ -242,12 +287,36 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 		return nil, err
 	}
 	_ = loadRecipients(ctx, db, loadDocumentSessionAuthors, documents, "document", found.documents, found.failed)
-	if err := loadMentionDeliveries(ctx, db, mentions, found); err != nil {
+	found.editOnly = editOnlyIDs(mentions, editMentions)
+	if err := loadMentionDeliveries(ctx, db, mergedIDs(mentions, editMentions), found); err != nil {
 		return nil, err
 	}
 	_ = loadRecipients(ctx, db, loadCommentRecipients, threads, "thread", found.threads, found.failed)
 	_ = loadRecipients(ctx, db, loadPrimaryDocumentAuthors, issues, "issue", found.primaries, found.failed)
 	return found, nil
+}
+
+// mergedIDs is the ids of both lists, sorted and each once, as validIDs answers each: the one
+// list loadMentionDeliveries reads for a batch's new comments and for the comments its edits ask
+// the failed mentions of, which costs the two statements of that read whatever either list holds.
+func mergedIDs(ids, more []string) []string {
+	both := slices.Concat(ids, more)
+	slices.Sort(both)
+	return slices.Compact(both)
+}
+
+// editOnlyIDs names each comment of editMentions that mentions does not hold: a comment the batch
+// read only because an edit asked which of its mentions failed. Its reading is read and kept
+// whole, like every other, and the batch's readings leave it out (lookups.readings). Both lists
+// are sorted (validIDs).
+func editOnlyIDs(mentions, editMentions []string) map[string]struct{} {
+	editOnly := make(map[string]struct{}, len(editMentions))
+	for _, id := range editMentions {
+		if _, both := slices.BinarySearch(mentions, id); !both {
+			editOnly[id] = struct{}{}
+		}
+	}
+	return editOnly
 }
 
 // validIDs returns the canonical form (canonicalID) of every id of set that is a uuid, sorted and
@@ -281,8 +350,10 @@ func canonicalID(id string) string {
 }
 
 // recipientRead is a recipient read - loadDocumentSessionAuthors, loadCommentRecipients or
-// loadPrimaryDocumentAuthors: one statement over ids, answering each id's sessions keyed by it.
-type recipientRead func(ctx context.Context, db queryer, ids []string) (map[string][]string, error)
+// loadPrimaryDocumentAuthors: one statement over ids, answering each id's recipients keyed by it.
+// T is what the read says of each recipient: a session id for the document reads, and the session
+// id with where the read found it for the comment recipients (threadRecipient).
+type recipientRead[T any] func(ctx context.Context, db queryer, ids []string) (map[string][]T, error)
 
 // loadRecipients runs read over ids in one statement and adds each id's sessions to into. A
 // statement Postgres refuses (refusedStatement) - over a row of one id no read can take, a credit
@@ -297,11 +368,11 @@ type recipientRead func(ctx context.Context, db queryer, ids []string) (map[stri
 // yet run failed too and returns it in turn: every id not yet run is recorded failed, which
 // releases the events when the error is the stop (batchEvent.resolveLost). The error the outermost
 // run returns leaves nothing to record, and loadLookups drops it.
-func loadRecipients(ctx context.Context, db queryer, read recipientRead, ids []string, kind string, into map[string][]string, failed map[string]error) error {
-	sessions, err := read(ctx, db, ids)
+func loadRecipients[T any](ctx context.Context, db queryer, read recipientRead[T], ids []string, kind string, into map[string][]T, failed map[string]error) error {
+	recipients, err := read(ctx, db, ids)
 	switch {
 	case err == nil:
-		maps.Copy(into, sessions)
+		maps.Copy(into, recipients)
 		return nil
 	case !refusedStatement(ctx, err):
 		failRecipients(ids, kind, err, failed)
@@ -549,11 +620,14 @@ func (m settledMention) beats(current settledMention) bool {
 }
 
 // loadMentionDeliveries reads what the mentions of every comment in ids did and which of their
-// destinations fallback rows own (mentionDeliveries), in two statements. Only a comment.created
-// that names a mentioned session, or suppresses its route by a mention's target, asks
-// (eventDestinations): every other event, edits, resolutions and reopenings included, suppresses
-// nothing. A comment no attempt was recorded for answers empty sets, so it suppresses nothing
-// either.
+// destinations fallback rows own (mentionDeliveries), in two statements. Two events ask for a
+// comment: a comment.created that names a mentioned session, which takes the whole reading, both
+// the destinations it adds and the routes a mention's target suppresses (eventDestinations), and
+// a comment.edited whose payload names a mention, which takes that reading's failed mentions
+// alone (lookup.mentionFallbackKeys) and adds no reading to the batch's (editOnlyIDs,
+// lookups.readings). Every other event, resolutions and reopenings included, asks for no comment
+// and suppresses nothing. A comment no attempt was recorded for answers empty sets, so it
+// suppresses nothing either.
 //
 // An attempt that names no session is read under its target alone, as every reading here is, and
 // its target's role is recorded beside it with the state the attempt is in

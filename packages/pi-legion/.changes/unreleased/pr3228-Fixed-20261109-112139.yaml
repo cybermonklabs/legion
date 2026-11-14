@@ -1,0 +1,5 @@
+kind: Fixed
+body: A Legion pane now takes its Envoy role at its session's first turn rather than during its boot, so a message the listener kept for that role is handed over inside a turn that is already running instead of taking the first turn ahead of the daemon's task. A session that is given no turn claims the name at a bound instead, 30 seconds by default (`LEGION_CLAIM_FIRST_TURN_BOUND_MS`), so it stays addressable.
+time: 2026-11-09T11:21:39.70496394Z
+custom:
+    Issue: pr3228

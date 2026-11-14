@@ -28,8 +28,8 @@ const (
 	finishedRoot = "LEGION-1"
 	planning     = "LEGION-2" // mid-run in its first phases: handed over
 	heldTesting  = "LEGION-3" // held from testing: handed over
-	inRetro      = "LEGION-4" // past an approved review: left for a person
-	awaiting     = "LEGION-5" // its READY out: left for a person
+	inRetro      = "LEGION-4" // in retro, past an approved review: handed over
+	awaiting     = "LEGION-5" // in merging, not merged yet: handed over
 	inAccepting  = "LEGION-6" // waiting on its architect's acceptance: handed over
 	finished     = "LEGION-7" // done: stays
 	parked       = "LEGION-8" // parked by a person: stays
@@ -37,23 +37,24 @@ const (
 	lingerOfRoot = uint64(1)
 )
 
-// A root whose tree stays done through its linger hands each child it left in its first phases
-// (planning through reviewing, or held from one) to Legion as a root of its own: one Dispatch write
-// sets the child todo with the legion label, and that write's event admits the child as an orphan
-// with its own architect, as the label and the todo do when a person sets them. Before, the child
-// stayed suspended, unlabelled and with no architect, and nothing ran it again (LEGION-624). Every
-// phase carries into the new generation: re-planning a merged child or withdrawing a READY would
-// lose completed work. A child that is finished or parked stays with the tree: what a person
-// took out of the workflow is what a closed tree keeps. The child still at admitted is handed
-// over with the rest — its tree closed and it never started, so nothing would start it where it
-// stands — and this one was the daemon's own to hold besides, since the root stands in
-// awaiting_merge, a phase the daemon has already accepted (record.AcceptedAncestor), and its
-// architect was told it starts once this root closes. The linger keeps that promise whether the
-// close followed the merge or a person made it by hand (the workflow's unfinishedHandOvers).
-// The close itself hands nothing over, so a root that comes back inside its linger resumes its
-// children where they stood and hands none over. The close here is a person's — parked, then
-// closed — where a merged root's close waits for the rest of its tree instead (the workflow's
-// closeMerged) and leaves no child mid-run to hand over.
+// A root whose tree stays done through its linger hands each child it left in the workflow to
+// Legion as a root of its own, whatever phase the child stands in: here planning, held from
+// testing, retro, merging and accepting. One Dispatch write sets the child todo with the legion
+// label, and that write's event admits the child as an orphan with its own architect, as the
+// label and the todo do when a person sets them. Before, the child stayed suspended, unlabelled
+// and with no architect, and nothing ran it again (LEGION-624). Every phase carries into the new
+// generation, since re-planning a child that is past its review would lose completed work. A
+// child that is finished or parked stays with the tree: what a person took out of the workflow
+// is what a closed tree keeps. The child still at admitted is handed over with the rest — its
+// tree closed and it never started, so nothing would start it where it stands — and this one was
+// the daemon's own to hold besides, since the root stands in merging, a phase the daemon has
+// already accepted (record.AcceptedAncestor), and its architect was told it starts once this
+// root closes. The linger keeps that promise whether the close followed the merge or a person
+// made it by hand (the workflow's unfinishedHandOvers). The close itself hands nothing over, so
+// a root that comes back inside its linger resumes its children where they stood and hands none
+// over. The close here is a person's — parked, then closed — where a merged root's close waits
+// for the rest of its tree instead (the workflow's closeMerged) and leaves no child mid-run to
+// hand over.
 func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
 	apply(t, pool, admission, "root-parked", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
@@ -84,17 +85,17 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 	}
 }
 
-// A merged root's close waits for the rest of its tree: the merge leaves the root awaiting it,
-// holding no slot — a root that waits for its merge has no worker with work — and no child
-// disturbed, and the close comes once the last of them leaves — here the architect parking
-// each. That close lingers the tree and opens the root's production check, whose first look its
+// A merged root's close waits for the rest of its tree: the merge leaves the root in merging,
+// holding no slot, since merging is past the root's own review (record.KeepsSlot). No child is
+// disturbed, and the close comes once the last of them leaves — here the architect parking each.
+// That close lingers the tree and opens the root's production check, whose first look its
 // implementer reports, since the tree's close waits for an open check (the workflow's check
 // tests). Nothing is left mid-run by then, so the linger's end hands no child over. A pull
-// request opened from the root's branch while it waits is new work and leaves the merge it
-// waits on standing.
+// request opened from the root's branch while it waits is new work and leaves the merge it waits
+// on standing.
 //
 // One member does not hold the close: the released child that has never started a phase. It
-// stands at admitted beneath a root in awaiting_merge, which is a root the daemon has already
+// stands at admitted beneath a root in merging, which is a root the daemon has already
 // accepted, so the daemon itself holds the child there until that root closes
 // (record.AcceptedAncestor) — and a child the daemon pins is left out of the set the close
 // waits on (record.OpenBeneath). Counting it would deadlock the pair: the child waits for the
@@ -106,11 +107,12 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "acme/widgets", Number: 1, MergeSHA: "merge-1"}, engine, admission); err != nil || result.Refusal != nil {
 		t.Fatalf("merge %s = %+v, %v", finishedRoot, result.Refusal, err)
 	}
-	if got := issue(t, pool, finishedRoot); got.Phase != phase.AwaitingMerge || got.Lingers() {
-		t.Fatalf("the merged root = %#v, want it still awaiting its merge, not lingering", got)
+	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging || got.Lingers() {
+		t.Fatalf("the merged root = %#v, want it still in merging, not lingering", got)
 	}
-	// A root that waits for its merge has no worker with work, so it holds no slot; its tree
-	// runs on, which the untouched children below say.
+	// A root that waits for its merge stands in merging, which is past its own review, so it
+	// holds none of the cap's rows while it waits. Its tree runs on, which the untouched
+	// children below say.
 	assertSlots(t, pool, nil)
 	for _, key := range []string{planning, heldTesting, inRetro, awaiting, inAccepting} {
 		if got := issue(t, pool, key); got.Generation != 1 || got.Tree != finishedRoot {
@@ -120,8 +122,8 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	if result, err := intake.ApplyFact(context.Background(), pool, "github", "follow-up-opened", intake.PullRequestOpened{Repo: "acme/widgets", Number: 2, Branch: "legion/LEGION-1", HeadSHA: "follow-up", UpdatedAt: fixedNow.Add(time.Hour)}, engine, admission); err != nil || result.Refusal != nil {
 		t.Fatalf("open a follow-up pull request from %s's branch = %+v, %v", finishedRoot, result.Refusal, err)
 	}
-	if got := issue(t, pool, finishedRoot); got.Phase != phase.AwaitingMerge {
-		t.Fatalf("the merged root once a follow-up pull request opened = %#v, want it still awaiting its merge", got)
+	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging {
+		t.Fatalf("the merged root once a follow-up pull request opened = %#v, want it still in merging", got)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		pr, err := record.NewStore().PullRequest(context.Background(), tx, finishedRoot)
@@ -140,7 +142,7 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	}
 	for seq, key := range []string{planning, heldTesting, inRetro, awaiting} {
 		park(seq, key)
-		if got := issue(t, pool, finishedRoot); got.Phase != phase.AwaitingMerge {
+		if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging {
 			t.Fatalf("the root once %s was parked = %#v, want it still waiting for the rest of its tree", key, got)
 		}
 	}
@@ -176,10 +178,9 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 // Every phase carries across a durable hand-over. The child is a new root generation, but its gate,
 // pull request head, phase rows and phase itself stay intact; promotion starts the architect and the
 // role that owns a worked phase. A child in accepting waits on its architect, now its own tree's,
-// which promotion starts with no phase named, and no phase worker. The one phase that moves is
-// awaiting_merge: the old tree's linger disarmed the pull request (beginLinger), so nothing would
-// arm it again, and the carried root resumes in merging, as a re-admitted tree's child does
-// (workflow.ResumePhase), its merger started to send READY again.
+// which promotion starts with no phase named, and no phase worker. Every phase resumes as itself
+// (workflow.ResumePhase): the merger merges, so a carried merging child's merger is started again
+// to merge.
 func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -194,7 +195,6 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 		{name: "reviewing", phase: phase.Reviewing, resumes: phase.Reviewing, prState: record.PullRequestOpen, role: claim.RoleReviewer},
 		{name: "retro", phase: phase.Retro, resumes: phase.Retro, prState: record.PullRequestOpen, role: claim.RoleImplementer},
 		{name: "merging", phase: phase.Merging, resumes: phase.Merging, prState: record.PullRequestOpen, role: claim.RoleMerger},
-		{name: "awaiting merge", phase: phase.AwaitingMerge, resumes: phase.Merging, prState: record.PullRequestOpen, role: claim.RoleMerger},
 		{name: "accepting", phase: phase.Accepting, resumes: phase.Accepting, prState: record.PullRequestOpen, role: claim.RoleArchitect},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -445,8 +445,13 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 				}
 			}
 			if tc.hold == nil {
-				if len(mergerTasks) != 1 || !strings.HasSuffix(mergerTasks[0], " Approved head: approved-head.") {
-					t.Fatalf("carried merger tasks = %q, want one naming the carried approved head", mergerTasks)
+				// The merger is no longer told an approved head: Legion re-implements none of a
+				// repository's rules, so no role compares a head with the one a review approved
+				// (dispatch://INFRA-714 R2). A carried root's merger is resumed into the phase it
+				// stood in, and the merge it makes is the head it reads for itself.
+				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Resume the existing phase work."
+				if len(mergerTasks) != 1 || mergerTasks[0] != want {
+					t.Fatalf("carried merger tasks = %q, want one resuming merging: %q", mergerTasks, want)
 				}
 				return
 			}
@@ -721,7 +726,7 @@ func seedFinishingTree(t *testing.T) (*pgxpool.Pool, *Admission, intake.Handler)
 		if err != nil {
 			t.Fatalf("read root: %v", err)
 		}
-		root.Phase = phase.AwaitingMerge
+		root.Phase = phase.Merging
 		for _, put := range []error{
 			records.PutIssue(ctx, tx, *root),
 			records.PutPhase(ctx, tx, record.PhaseRow{Issue: finishedRoot, Role: claim.RoleMerger, Claim: "root-merger", HandoffCommit: "head-1", Summary: "READY #1 at head-1"}),
@@ -729,7 +734,7 @@ func seedFinishingTree(t *testing.T) (*pgxpool.Pool, *Admission, intake.Handler)
 			records.PutIssue(ctx, tx, child(planning, phase.Planning, "in_progress")),
 			records.PutIssue(ctx, tx, held),
 			records.PutIssue(ctx, tx, child(inRetro, phase.Retro, "retro")),
-			records.PutIssue(ctx, tx, child(awaiting, phase.AwaitingMerge, "retro")),
+			records.PutIssue(ctx, tx, child(awaiting, phase.Merging, "retro")),
 			records.PutIssue(ctx, tx, child(inAccepting, phase.Accepting, "needs_review")),
 			records.PutIssue(ctx, tx, child(finished, phase.Done, "done")),
 			records.PutIssue(ctx, tx, child(parked, phase.Done, "backlog")),
@@ -757,7 +762,7 @@ func handOvers(t *testing.T, pool *pgxpool.Pool) []string {
 	var got []string
 	for _, effect := range effects(t, pool) {
 		write, ok := effect.payload.(record.StatusWrite)
-		if !ok || !write.HandOver {
+		if !ok || write.Kind != record.HandOverStatusRow {
 			continue
 		}
 		if write.Status != "todo" || write.HandOverTree != finishedRoot || write.HandOverLinger != lingerOfRoot {
@@ -872,101 +877,6 @@ func seedFinishedChildUnderLingeringRoot(t *testing.T, pool *pgxpool.Pool, root,
 			records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 			records.PutIssue(ctx, tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: child, Parent: &parent, Phase: phase.Done, Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: "B", LastDispatchSeq: 1}),
 			records.PutGate(ctx, tx, record.DesignGate{Issue: root, ArtifactID: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", LatestVersion: 1, ApprovedVersion: new(1)}),
-			records.PutHandover(ctx, tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
-		} {
-			if put != nil {
-				t.Fatalf("seed: %v", put)
-			}
-		}
-	})
-}
-
-const (
-	byHandNote       = "MANUAL_MERGE_REQUIRED: pull request #42 matches a by_hand merge rule; do not auto-arm it"
-	carriedMergeLine = "Merge: the daemon submits pull request #42 at head once READY is accepted"
-	carriedPacket    = "READY #42 at head (approved at approved) for LEGION-209 (https://github.com/acme/widgets/pull/42)\n" + carriedMergeLine + "\n\nA docs/solutions/legion/retro-LEGION-209.md"
-)
-
-// A hand-over carries the merger's phase row whole, the by-hand note of its READY included
-// (PhaseRow.MergeNote, which #1906 records with the READY): a READY a person merges stays one
-// after the carry, so the packet the carried root later tells still says so and asks no reader to
-// arm the merge. Here the READY was refused while the old root's spec was unapproved, so the issue
-// keeps its pending version too.
-func TestAHandedOverChildKeepsItsMergersByHandNote(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	seedByHandREADYUnderLingeringRoot(t, pool)
-
-	apply(t, pool, admission, "handover", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "LEGION-209", Parent: "LEGION-208", Rank: "B", HandedOver: true, DaemonActor: true}, engine)
-	got := issue(t, pool, "LEGION-209")
-	if got.Tree != "LEGION-209" || got.Generation != 2 || got.Phase != phase.Merging || got.ReadyPending == nil || got.ReadyPending.Version != 2 {
-		t.Fatalf("handed-over child = %#v, want its own tree at generation 2, merging, its READY pending version 2", got)
-	}
-	inTx(t, pool, func(tx pgx.Tx) {
-		rows, err := record.NewStore().Phases(context.Background(), tx, "LEGION-209")
-		if err != nil {
-			t.Fatalf("read phase rows: %v", err)
-		}
-		for _, row := range rows {
-			if row.Role == claim.RoleMerger {
-				if row.MergeNote != byHandNote || row.Summary != carriedPacket {
-					t.Fatalf("carried merger row = %#v, want its by-hand note and packet kept", row)
-				}
-				return
-			}
-		}
-		t.Fatalf("phase rows = %#v, want the merger's carried", rows)
-	})
-}
-
-// End to end: once carried, a by-hand READY the closed gate refused is released by a human's
-// approval of the old root's document, and the packet the carried root tells is the carried
-// merger's packet, its carried by-hand note first (record.ReadyPacket's own test owns how that
-// packet is shaped).
-func TestACarriedByHandREADYIsReleasedWithItsNote(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	seedByHandREADYUnderLingeringRoot(t, pool)
-
-	apply(t, pool, admission, "handover", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "LEGION-209", Parent: "LEGION-208", Rank: "B", HandedOver: true, DaemonActor: true}, engine)
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "approval", intake.DispatchArtifact{Key: "LEGION-208", ArtifactID: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", Kind: intake.DispatchArtifactApproved, Version: 2}, engine, admission); err != nil {
-		t.Fatalf("apply the old document's approval: %v", err)
-	}
-	if got := issue(t, pool, "LEGION-209"); got.Phase != phase.AwaitingMerge {
-		t.Fatalf("carried child after the approval = %#v, want awaiting_merge", got)
-	}
-	var told []string
-	for _, effect := range effects(t, pool) {
-		if post, ok := effect.payload.(record.MessagePost); ok && effect.issue == "LEGION-209" {
-			told = append(told, post.Body)
-		}
-	}
-	if len(told) != 1 {
-		t.Fatalf("messages told on LEGION-209 = %q, want the READY once", told)
-	}
-	if !strings.HasPrefix(told[0], byHandNote+"\n\n") || !strings.Contains(told[0], "A docs/solutions/legion/retro-LEGION-209.md") {
-		t.Fatalf("told READY %q, want the carried by-hand note first, then the carried merger's packet", told[0])
-	}
-}
-
-// seedByHandREADYUnderLingeringRoot is a done root lingering, its spec revised to version 2 and not
-// yet approved, and a child of it in merging whose merger's by-hand READY that closed gate refused,
-// with the hand-over fence the linger's expiry wrote for it.
-func seedByHandREADYUnderLingeringRoot(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	const root, child = "LEGION-208", "LEGION-209"
-	until := fixedNow.Add(time.Hour)
-	parent, pending := root, &record.ReadyPending{Step: record.DesignStepSpec, Version: 2}
-	inTx(t, pool, func(tx pgx.Tx) {
-		records, ctx := record.NewStore(), context.Background()
-		for _, put := range []error{
-			records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
-			records.PutIssue(ctx, tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: child, Parent: &parent, Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1, ReadyPending: pending}),
-			records.PutGate(ctx, tx, record.DesignGate{Issue: root, ArtifactID: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", LatestVersion: 2, ApprovedVersion: new(1)}),
-			records.PutPullRequest(ctx, tx, record.PullRequest{Issue: child, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head", Generation: 1, State: record.PullRequestOpen}),
-			records.PutPhase(ctx, tx, record.PhaseRow{Issue: child, Role: claim.RoleMerger, Claim: "merger-claim", HandoffCommit: "head", Summary: carriedPacket, MergeNote: byHandNote}),
 			records.PutHandover(ctx, tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
 		} {
 			if put != nil {

@@ -1,0 +1,5 @@
+kind: Changed
+body: The broker grant-log store sizes its own page before it reads a row, so a caller naming a limit far past the route maximum no longer has the store reserve that many rows; the rows answered are unchanged.
+time: 2026-11-09T11:21:18.376052654Z
+custom:
+    Issue: pr3279

@@ -1,8 +1,7 @@
-import { expect, test } from "@playwright/test";
 import type { RequirementCoverage } from "../web/src/api/types";
 
 import { createIssue, createIssueArtifact, createProject, getIssueCoverage } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /** Two requirements, so one can be served while the other is not. */
@@ -27,15 +26,12 @@ async function coverageOf(issue: string, blockId: string): Promise<RequirementCo
   return requirement;
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // SLOW(>=2s): 3.3 s - one sign-in and one load of the Spec tab, then a second version of the
 // Verification document written under that same open page and its flag watched clearing there.
 // The live refresh of the coverage read is held to the start of its first fetch plus a second
 // (MIN_REFETCH_INTERVAL_MS, web/src/api/query-refresh.ts), and that second is the row's third.
-test("a requirement no check serves is flagged on the Spec tab, and a check that serves it clears the flag", async ({
+// @pr: The coverage surface's own row: an unserved requirement is flagged on the Spec tab and a check written under the open page clears it.
+test("a requirement no check serves is flagged on the Spec tab, and a check that serves it clears the flag @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "COV", name: "Coverage" });

@@ -192,17 +192,17 @@ env -u PGHOSTADDR psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
 # The fake Secrets Manager: a human-tier secret each of the suite's people owns, which a pod's
 # request waits on that person to approve, and a shared one anyone signed in may approve.
 #
-# The name carries this lane's own server, and the file is renamed into place rather than written
-# in place. Each lane runs a Postgres of its own and names the database in it the same as every
-# other lane does (databaseName, e2e/harness-postgres.ts), so the database alone named one path
-# for every lane of a run while the directory they write it in is shared. A plain redirect
-# truncates first, so a broker that read between one lane's truncate and its write got an empty
-# file, which is what one of four brokers died of on run 42403409126, job 128496236572. The
-# rename is atomic within the directory, and the server's host and port differ by lane, so each
-# lane now writes and reads a file of its own and a re-run overwrites it rather than leaving
-# another behind.
-fake_secrets_lane="$(printf '%s' "$broker_server" | tr -c 'A-Za-z0-9_.-' '_')"
-fake_secrets_file="$work/fake-secrets-$broker_database-$fake_secrets_lane.json"
+# The name carries this stack's own server, and the file is renamed into place rather than
+# written in place. Each stack runs a Postgres of its own and names the database in it the same
+# as every other stack does (databaseName, e2e/harness-postgres.ts), so the database alone named
+# one path for every stack of a run while the directory they write it in is shared. A plain
+# redirect truncates first, so a broker that read between one stack's truncate and its write got
+# an empty file, which is what one of four brokers died of on run 42403409126, job 128496236572.
+# The rename is atomic within the directory, and the server's host and port differ by stack, so
+# each stack now writes and reads a file of its own and a re-run overwrites it rather than
+# leaving another behind.
+fake_secrets_stack="$(printf '%s' "$broker_server" | tr -c 'A-Za-z0-9_.-' '_')"
+fake_secrets_file="$work/fake-secrets-$broker_database-$fake_secrets_stack.json"
 (
   umask 077
   cat >"$fake_secrets_file.$$.tmp" <<EOF

@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+    `Suggestions.other_projects`, at most two questions of other projects that somebody answered,
+    each a `WriteSuggestion` whose owner names the project it belongs to. A write that asks a person
+    a question carries them, and every other write leaves the field out.
+time: 2026-11-11T23:40:57.211148715Z
+custom:
+    Issue: pr3661

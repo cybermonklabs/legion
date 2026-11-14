@@ -224,6 +224,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 			},
 			PluginContract:     DaemonAPIVersion,
 			PluginRelaunchable: relaunchable,
+			RefreshGate:        supervise.NewRefreshGate(0),
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
 			TreeClosable: func(ctx context.Context, c supervise.Claim) (bool, error) {
 				var issue *record.Issue

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (one
 > implementer, one PR against `sjawhar/legion`, branch `legion/LEGION-29`). Steps use `- [ ]` for
-> tracking. Every ruling from a review round supersedes this document.
+> tracking. Every decision from a review round supersedes this document.
 
 **Goal:** A session that holds an Envoy role keeps holding it without human action: when the
 listener no longer resolves the session as the role's live holder, the session's own registration

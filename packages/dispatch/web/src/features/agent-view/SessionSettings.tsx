@@ -14,11 +14,13 @@ import { inputClasses, textMutedOnCanvas } from "../../theme/classes";
 import type { SessionSettingsView } from "./conversation";
 import type { SwitchRequest } from "./use-session-switch";
 
-/** A header picker: a native `<select>`, as the composer's "Send as" control is. A long model id
- *  is clipped on screen only (the option's value, which a pick sends, is the whole id), so the
- *  header never runs wider than a phone. A held picker (`aria-disabled`, `useKeySteps`) looks
- *  disabled through the `refused:` variant (`styles.css`). */
-const selectClasses = `min-h-8 max-w-56 min-w-0 truncate rounded-lg px-2 py-1 text-xs refused:opacity-50 ${inputClasses(false)}`;
+/** A picker in the row under the message box: a native `<select>`, as the delivery control is. A
+ *  long model id is clipped on screen only (the option's value, which a pick sends, is the whole
+ *  id), so the picker never runs wider than a phone, and `shrink-0` keeps it at that width while
+ *  the directory beside it takes what is left and shortens (INFRA-812, R6). A held picker
+ *  (`aria-disabled`, `useKeySteps`) looks disabled through the `refused:` variant
+ *  (`styles.css`). */
+const selectClasses = `min-h-8 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-xs refused:opacity-50 ${inputClasses(false)}`;
 
 /** The values a picker offers: the session's list, with the current value added when the list
  *  lacks it (a fallback model can be one the session does not list), so the picker always shows
@@ -128,26 +130,25 @@ function useKeySteps(
 }
 
 /**
- * The session's model and thinking level in the live view's header, and the pickers that switch
- * them (INFRA-195), with the line about the latest switch and the notice that says why a session
- * shows less. `view` is `sessionSettingsView`'s answer; a pick hands `onPick` what was picked, and
- * the page sends it. While a switch is pending the pickers are held (`aria-disabled`): they keep
- * focus and their keys still step, but nothing picks until the switch ends. A picker's own keys
- * only step its choice and `Enter` picks it (`useKeySteps`); the values shown, once not being
- * stepped, are the session's reported ones alone: a picker snaps back to them, and moves only when
- * the session reports the switch.
+ * The session's model and thinking level in the row under the message box, and the pickers that
+ * switch them (INFRA-195). `view` is `sessionSettingsView`'s answer; a pick hands `onPick` what
+ * was picked, and the page sends it. While a switch is pending the pickers are held
+ * (`aria-disabled`): they keep focus and their keys still step, but nothing picks until the
+ * switch ends. A picker's own keys only step its choice and `Enter` picks it (`useKeySteps`);
+ * the values shown, once not being stepped, are the session's reported ones alone: a picker
+ * snaps back to them, and moves only when the session reports the switch.
  *
- * The status and the notice sit on lines of their own at the header's end (`order-last`).
+ * This renders the pickers alone. The line about the latest switch and the notice that says why
+ * a session shows less are `SessionSwitchLines`, which the page puts under the row rather than
+ * in it.
  */
 export function SessionSettings({
   onPick,
   pending,
-  status,
   view,
 }: {
   onPick: (request: SwitchRequest) => void;
   pending: boolean;
-  status: string | undefined;
   view: SessionSettingsView;
 }): ReactNode {
   const model = view.reported ? view.settings.model : view.model;
@@ -161,7 +162,10 @@ export function SessionSettings({
           pending={pending}
         />
       ) : model === undefined ? null : (
-        <span className={`${pillClassName("label")} max-w-56`} data-testid="agent-session-model">
+        <span
+          className={`${pillClassName("label")} max-w-56 shrink-0`}
+          data-testid="agent-session-model"
+        >
           <TruncatedText className="min-w-0" title={model}>
             {model}
           </TruncatedText>
@@ -175,21 +179,41 @@ export function SessionSettings({
           thinking={view.settings.thinking}
         />
       ) : null}
+    </>
+  );
+}
+
+/**
+ * What the latest switch is doing, and why a session shows less than the pickers: each on a
+ * line of its own under the row the pickers sit in (INFRA-812, R6).
+ *
+ * Under the row rather than in it, because the row holds the seven parts R6 names and scrolls
+ * sideways at a phone width: a line of prose inside that scroller is a flex item like any
+ * other, shrinks to a sliver beside the pickers and stacks a word per line, which made the row
+ * taller than the transcript on a 390 px screen and pushed the message box under the keyboard.
+ * A line under the row is read where it always was, at any width.
+ */
+export function SessionSwitchLines({
+  notice,
+  status,
+}: {
+  notice: string | undefined;
+  status: string | undefined;
+}): ReactNode {
+  return (
+    <>
       {status === undefined ? null : (
         <p
-          className={`order-last basis-full text-xs break-words whitespace-pre-wrap ${textMutedOnCanvas}`}
+          className={`mt-1 text-xs break-words whitespace-pre-wrap ${textMutedOnCanvas}`}
           data-testid="agent-switch-status"
           role="status"
         >
           {status}
         </p>
       )}
-      {view.notice === undefined ? null : (
-        <p
-          className={`order-last basis-full text-xs ${textMutedOnCanvas}`}
-          data-testid="agent-settings-notice"
-        >
-          {view.notice}
+      {notice === undefined ? null : (
+        <p className={`mt-1 text-xs ${textMutedOnCanvas}`} data-testid="agent-settings-notice">
+          {notice}
         </p>
       )}
     </>
@@ -250,7 +274,10 @@ function ThinkingControl({
   );
   if (thinking === null) {
     return (
-      <span className={`text-xs ${textMutedOnCanvas}`} data-testid="agent-session-thinking">
+      <span
+        className={`shrink-0 whitespace-nowrap text-xs ${textMutedOnCanvas}`}
+        data-testid="agent-session-thinking"
+      >
         no adjustable thinking
       </span>
     );
@@ -258,7 +285,7 @@ function ThinkingControl({
   if (!offered) {
     return (
       <span
-        className={pillClassName("label")}
+        className={`${pillClassName("label")} shrink-0`}
         data-testid="agent-session-thinking"
         title="Thinking level"
       >

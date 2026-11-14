@@ -24,15 +24,16 @@ import (
 // issue's own record when it runs.
 //
 // Each parking row asserts the whole set of rows the departure queued, not the release alone: the
-// park suspends every role of what it parks, disarms its open pull requests, and queues the
-// suspension and, for a root, the linger's close. That set is how the test shows the release was
-// added to the park and replaced nothing.
+// park suspends every role of what it parks, and queues the suspension and, for a root, the
+// linger's close. That set is how the test shows the release was added to the park and replaced
+// nothing. No row disarms a pull request, since the daemon changes no merge setting of any
+// (dispatch://INFRA-714 R2).
 func TestLeaveQueuesTheClaimRelease(t *testing.T) {
-	// A root's park acts on its whole tree: six suspends, a disarm and an IssueSuspend for each
-	// of its two members, and the one row that closes the linger.
-	parkedTree := map[string]int{"supervise": 12, "auto_merge_disable": 2, "issue_suspend": 2, "linger_close": 1}
+	// A root's park acts on its whole tree: six suspends and an IssueSuspend for each of its two
+	// members, and the one row that closes the linger.
+	parkedTree := map[string]int{"supervise": 12, "issue_suspend": 2, "linger_close": 1}
 	// A child's park ends the child alone, and tells the tree's architect which child left.
-	parkedChild := map[string]int{"supervise": 6, "auto_merge_disable": 1, "issue_suspend": 1, "notice": 1}
+	parkedChild := map[string]int{"supervise": 6, "issue_suspend": 1, "notice": 1}
 	for _, tc := range []struct {
 		name string
 		// lingers seeds a root whose tree already lingers, and operator one whose tree the
@@ -228,12 +229,12 @@ func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 	return issues
 }
 
-// queuedKinds counts every queued row by kind, with the relaunch half of a phase-worker start left
-// out as the package's other outbox assertions leave it out (assertOutboxCount).
+// queuedKinds counts every queued row by kind, with no start passed over: in this package every
+// start carries a task — a phase worker's is one row and carries it (StartOrOwe) — and the
+// task-less starts admission brings back are written in internal/admit, never here.
 func queuedKinds(t *testing.T, pool *pgxpool.Pool) map[string]int {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox
-		where not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') = '')`)
+	rows, err := pool.Query(t.Context(), `select kind from outbox`)
 	if err != nil {
 		t.Fatalf("read the outbox: %v", err)
 	}

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
@@ -14,7 +15,6 @@ import {
   type ChannelNotifier,
   type ChannelSession,
   createChannelDelivery,
-  enqueueChannelMessage,
   MCP_SERVER_INFO,
   sessionCapabilities,
   startChannelSession,
@@ -30,7 +30,6 @@ import {
   noInterest,
   recordingClient,
   sessionOptions,
-  settled,
   useScratchState,
   waitFor,
 } from "./channel-session-harness"
@@ -46,8 +45,16 @@ const temporaryHome = temporaryDirectories("claude-envoy-home")
 const marketplaceEntries = marketplace.plugins.filter((entry) => entry.name === plugin.name)
 
 /**
- * A role-lane envelope the listener forwarded to the direct subject and awaits a receipt for,
- * under the key the listener minted for the publish behind the arbiter's forward mark.
+ * The listener's relay of one stored frame to this session's consumer, the one path a message
+ * reaches it by; its replies go to an inbox of its own, named after its sequence.
+ */
+function relayed(nats: FakeNats, seq: number, raw: string): void {
+  nats.emitRelay("ses_claude", { subject: directSubject, seq, raw, reply: `_INBOX.${seq}` })
+}
+
+/**
+ * A role-lane envelope the listener forwarded to the direct subject, under the key the listener
+ * minted for the publish behind the arbiter's forward mark.
  */
 const roleForwardRaw = JSON.stringify({
   event_id: "evt-role-7",
@@ -78,55 +85,9 @@ test("writes each Envoy envelope into the session as the rendered card that name
   ])
 })
 
-test("enqueues a forwarded role-lane event before publishing its adapter receipt", async () => {
-  const nats = new FakeNats()
-  const delivery = {
-    enqueue: async () => {
-      nats.order.push("enqueue")
-      return true
-    },
-    inbox: () => [],
-  }
-
-  await enqueueChannelMessage(delivery, nats, directSubject, {
-    subject: directSubject,
-    data: new TextEncoder().encode(roleForwardRaw),
-    raw: roleForwardRaw,
-    reply: "_INBOX.receipt",
-    envelopeTopic: "notifications.role.reviewer",
-  })
-
-  expect(nats.order).toEqual(["enqueue", "receipt"])
-})
-
-test("never answers the reply inbox of a JetStream publish to the direct subject", async () => {
-  // /v1/messages/send publishes through JetStream; the reply subject on that
-  // message is the publisher's acknowledgement inbox, and an empty receipt
-  // there fails the publish (`invalid jetstream publish response`) even though
-  // the event was delivered. Only the listener's forwarded role lane, which
-  // keeps its role topic, waits for a receipt.
-  const nats = new FakeNats()
-  const delivery = {
-    enqueue: async () => {
-      nats.order.push("enqueue")
-      return true
-    },
-    inbox: () => [],
-  }
-
-  await enqueueChannelMessage(delivery, nats, directSubject, {
-    subject: directSubject,
-    data: new TextEncoder().encode(deliveryRaw),
-    raw: deliveryRaw,
-    reply: "_INBOX.jetstream-ack",
-    envelopeTopic: directSubject,
-  })
-
-  expect(nats.order).toEqual(["enqueue"])
-  expect(nats.published).toEqual([])
-})
-
-test("delivers each dedupe key once while acknowledging every forwarded request after enqueue", async () => {
+test("delivers each dedupe key once and answers each relayed frame, never a receipt", async () => {
+  // Nothing answers a sender: the listener's role forward counts as delivered once the stream
+  // stored it, and the only bodies this process publishes are its frames' own relay replies.
   const nats = new FakeNats()
   const notifier = new FakeNotifier(nats.order)
   const stateDirectory = scratchState()
@@ -138,16 +99,19 @@ test("delivers each dedupe key once while acknowledging every forwarded request 
   )
 
   try {
-    nats.emit(directSubject, roleForwardRaw, "_INBOX.receipt")
-    nats.emit(directSubject, roleForwardRaw, "_INBOX.receipt")
-    await settled()
+    relayed(nats, 1, roleForwardRaw)
+    relayed(nats, 2, roleForwardRaw)
+    await waitFor(
+      async () =>
+        nats.repliesOn("_INBOX.1").includes("done") && nats.repliesOn("_INBOX.2").includes("done"),
+      "both frames answered",
+    )
 
-    expect(nats.order).toEqual(["receipt", "notification", "receipt"])
     expect(notifier.notifications).toHaveLength(1)
-    expect(nats.published.map(({ subject, data }) => [subject, data.byteLength])).toEqual([
-      ["_INBOX.receipt", 0],
-      ["_INBOX.receipt", 0],
-    ])
+    expect(nats.repliesOn("_INBOX.1")).toEqual(["received", "done"])
+    expect(nats.repliesOn("_INBOX.2")).toEqual(["received", "done"])
+    // The only bodies on the bus are those four answers: no frame is answered a receipt.
+    expect(nats.published).toHaveLength(4)
   } finally {
     await session.shutdown()
   }
@@ -202,9 +166,9 @@ test("a Dispatch Retry the listener re-sends under the same dedupe key reaches C
   )
 
   try {
-    nats.emit(directSubject, listenerSend("attempt"))
-    nats.emit(directSubject, listenerSend("retry"))
-    await settled()
+    relayed(nats, 1, listenerSend("attempt"))
+    relayed(nats, 2, listenerSend("retry"))
+    await waitFor(async () => nats.repliesOn("_INBOX.2").includes("done"), "the retry's done")
 
     expect(notifier.notifications).toHaveLength(1)
     expect(notifier.notifications[0]?.eventId).toBe("evt-attempt")
@@ -234,12 +198,12 @@ test("a send whose notification failed is delivered when it is sent again", asyn
   )
 
   try {
-    nats.emit(directSubject, listenerSend("attempt"))
-    await settled()
-    nats.emit(directSubject, listenerSend("retry"))
-    await settled()
-    nats.emit(directSubject, listenerSend("third"))
-    await settled()
+    relayed(nats, 1, listenerSend("attempt"))
+    await waitFor(async () => nats.repliesOn("_INBOX.1").includes("nak"), "the failed frame's nak")
+    relayed(nats, 2, listenerSend("retry"))
+    await waitFor(async () => nats.repliesOn("_INBOX.2").includes("done"), "the retry's done")
+    relayed(nats, 3, listenerSend("third"))
+    await waitFor(async () => nats.repliesOn("_INBOX.3").includes("done"), "the third's done")
 
     // Claude never saw the first send, so its key must not turn the second away as a repeat; it
     // did see the second, so the third is one.
@@ -330,12 +294,19 @@ test("a card the mod never answered is written again when Envoy resends it", asy
   )
 
   try {
-    nats.emit(directSubject, deliveryRaw)
+    relayed(nats, 1, deliveryRaw)
     await waitFor(async () => written.length === 1, "the card's first write")
-    // Past the bound: a real wait, since the channel server's own startup and heartbeat waits
-    // need real time and no fake clock reaches this bound through the live pipeline.
-    await Bun.sleep(80)
-    nats.emit(directSubject, deliveryRaw)
+    // The mod answers nothing, so the write rejects at its bound and the frame is naked: that
+    // nak is the signal the first delivery is over, which no duration guesses at.
+    await waitFor(async () => nats.repliesOn("_INBOX.1").includes("nak"), "the frame's nak")
+    // Envoy sends it again: the same event on the same stream sequence, a second delivery.
+    nats.emitRelay("ses_claude", {
+      subject: directSubject,
+      seq: 1,
+      raw: deliveryRaw,
+      reply: "_INBOX.1-again",
+      delivered: 2,
+    })
     await waitFor(async () => written.length === 2, "the resent card's own write")
 
     expect(written).toHaveLength(2)
@@ -665,16 +636,19 @@ test("a Dispatch frame the channel answered with an error is answered again when
       }),
     )
 
-    nats.emit(directSubject, rejectedFrameRaw)
+    relayed(nats, 1, rejectedFrameRaw)
+    // Answered on Dispatch, and the frame is done: the key it was claimed under is released
+    // again, since Claude Code was never handed the message.
+    await waitFor(async () => nats.repliesOn("_INBOX.1").includes("done"), "the first answer")
+    expect(replied.filter((path) => path.includes("44444444"))).toHaveLength(1)
+
     // The listener mints a fresh event id for the re-send; its dedupe key is the first send's.
-    nats.emit(
-      directSubject,
-      JSON.stringify({ ...JSON.parse(rejectedFrameRaw), event_id: "resend" }),
-    )
-    // One subscription's frames are delivered in order, so the control's answer comes after
-    // whatever the channel did with the re-send.
-    nats.emit(
-      directSubject,
+    relayed(nats, 2, JSON.stringify({ ...JSON.parse(rejectedFrameRaw), event_id: "resend" }))
+    // The relay hands frames over in stream order, so the control's answer comes after whatever
+    // the channel did with the re-send.
+    relayed(
+      nats,
+      3,
       JSON.stringify({ ...control, event_id: "control", dedupe_key: "dispatch-control" }),
     )
     await controlAnswered.promise
@@ -956,6 +930,11 @@ test("the server calls the listener with the file's envoy.token and signs in to 
             machine_id: "test",
             dir: "/tmp",
             topics: body.topics,
+            // Every stand-in listener answers the session's own consumer
+            // (`@legion/envoy-client/test/subscribe-answer`): one that answers no delivery leaves
+            // its session refused inbound, which is a state of its own and not this case's. What
+            // this case reads is what an accepted registration carries: its bearer and its plugin.
+            delivery: consumerDelivery(body.session_id),
           })
         }
         if (request.method === "DELETE") return new Response(null, { status: 200 })

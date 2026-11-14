@@ -638,7 +638,9 @@ func normalizeAskOptions(options []model.AskOption) []model.AskOption {
 // paragraph. The upload is named with the owner the document belongs to, since the command does
 // not address the document without one, and both spellings of that owner stand in one clause,
 // since an agent holding a project document would read a step it cannot run were the issue named
-// alone. The refusal says a document edit reaches this block for nothing: an agent reading it
+// alone. It carries --force, because the command refuses an upload under the name of a document
+// the owner already holds and this upload is one. The refusal says a document edit reaches this
+// block for nothing: an agent reading it
 // has been told to change a document with a document edit rather than to upload its name again
 // (the dispatch_artifact tool's own description), and only the reason above lets it do otherwise
 // here. The block and the paragraph are quoted as data (quotedAskChild), never written into the
@@ -658,7 +660,7 @@ func refuseEmptyQuestionEdit(block askBlock, edit AskBlockEdit) error {
 				"decision, so none reaches this block - upload the document again "+
 				"as a new version with the question written beside that paragraph (dispatch artifact "+
 				"--issue <KEY>, or --project <KEY> for a project's document, --name <the document> "+
-				"--content-file -), or write the question beside it in "+
+				"--content-file - --force), or write the question beside it in "+
 				"the document editor; either keeps what the paragraph holds",
 			block.id, quoted)}
 	}

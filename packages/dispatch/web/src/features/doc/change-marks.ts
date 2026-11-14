@@ -1,6 +1,7 @@
 import type { BlockWidget, TextDecoration } from "@legion/proof-editor";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 
+import type { DisplayTree } from "../../api/types";
 import { loadedEngine } from "../refs/markdown-engine";
 import { changedWords, pairBlocks } from "./change-set";
 
@@ -21,6 +22,19 @@ export interface ChangeMarks {
   widgets: BlockWidget[];
 }
 
+/** The version a change is marked against: its stored text, and the reading Go made of that text
+ *  where the answer carried one. A pod of the build before this one answers a version with no
+ *  reading for the length of a rollout, and the server builds no tree for an empty text, so the
+ *  markdown travels beside the reading all the way here: a baseline with no tree is parsed, as
+ *  every other view of a stored text does, rather than leaving the approver's change marks
+ *  undrawn. That parse runs on the page's own thread rather than the parse worker, whatever the
+ *  baseline's length, and only while the baseline's own answer carries no tree, which a rollout
+ *  makes brief. */
+export interface ChangeBaseline {
+  markdown: string;
+  tree: DisplayTree | undefined;
+}
+
 /** Nothing marked: each caller owns the lists it is handed. */
 function noMarks(): ChangeMarks {
   return { text: [], widgets: [] };
@@ -36,15 +50,15 @@ function blockTexts(doc: ProseMirrorNode): string[] {
 }
 
 /**
- * What changed in `doc`, the editor's own rendered document, since the version `baselineMarkdown`
- * holds, as the two decoration lists `ProofEditorHandle` draws: the words a changed block gained
- * marked inside its rendered text, the words it lost drawn beside them, and each block the change
+ * What changed in `doc`, the editor's own rendered document, since the version `baseline` holds,
+ * as the two decoration lists `ProofEditorHandle` draws: the words a changed block gained marked
+ * inside its rendered text, the words it lost drawn beside them, and each block the change
  * removed drawn where it stood.
  *
  * Both sides are read as rendered text rather than markdown source - `doc` is the editor's own
- * document, and the baseline is parsed by the same headless engine every Markdown surface reads
- * with - so an offset here is an offset into the text the editor counts, which is what the
- * decorations name. An index the rendered side returns always names a block `doc` holds.
+ * document, and the baseline is drawn or parsed by the same headless engine every Markdown
+ * surface reads with - so an offset here is an offset into the text the editor counts, which is
+ * what the decorations name. An index the rendered side returns always names a block `doc` holds.
  *
  * A removed word run of a changed block is drawn as a widget rather than a mark: the rendered
  * block no longer holds those characters, so there is no range in it to draw them over, and a
@@ -55,15 +69,25 @@ function blockTexts(doc: ProseMirrorNode): string[] {
  * rule, an image - pairs as a changed block all the same, and the editor draws its lost words
  * before that block, there being no text in it to stand inside.
  *
- * Nothing is marked for an absent or equal baseline, or for one the engine refuses: a reader who
- * cannot be told what changed is shown the document itself rather than a guess.
+ * Nothing is marked for an absent, empty or equal baseline, or for one the engine refuses: a
+ * reader who cannot be told what changed is shown the document itself rather than a guess.
  */
-export function changeMarksAgainst(baselineMarkdown: string, doc: ProseMirrorNode): ChangeMarks {
-  if (baselineMarkdown === "") return noMarks();
-  const baseline = loadedEngine()?.parse(baselineMarkdown);
-  if (baseline === undefined) return noMarks();
+export function changeMarksAgainst(
+  baseline: ChangeBaseline | undefined,
+  doc: ProseMirrorNode
+): ChangeMarks {
+  // A version approved while it held no text holds no block to compare the version against:
+  // every block of this one is new, and added blocks are not marked here. The engine reads an
+  // empty text as one empty paragraph, which would otherwise pair with the version's first
+  // block and tell the reader that block changed.
+  if (baseline === undefined || baseline.markdown === "") return noMarks();
+  const engine = loadedEngine();
+  // The reading where the answer carried one, and the stored text itself where it carried none.
+  const baselineDoc =
+    baseline.tree === undefined ? engine?.parse(baseline.markdown) : engine?.draw(baseline.tree);
+  if (baselineDoc === undefined) return noMarks();
 
-  const before = blockTexts(baseline);
+  const before = blockTexts(baselineDoc);
   const rendered = blockTexts(doc);
   const pairs = pairBlocks(before, rendered);
   const text: TextDecoration[] = [];

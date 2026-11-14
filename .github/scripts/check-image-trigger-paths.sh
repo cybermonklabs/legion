@@ -20,7 +20,7 @@
 #     the file READ is this tree's `<rest>/action.yml`. A second checkout of this same
 #     repository holds this same repository's actions, and it can introduce no image builder
 #     this check does not already read at `<rest>`, because `<rest>` is where every other
-#     caller uses it; ci.yaml's `tool-fallback` job runs the merge base's four installs that
+#     caller uses it; ci.yaml's `tool-fallback` job runs the merge base's seven installs that
 #     way. A step counts only where it checks out this same repository: one that names no
 #     `repository:`, or names this one. A checkout of another repository writes that
 #     repository's tree at `<dir>`, and the action it holds there is one this check never

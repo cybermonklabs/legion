@@ -412,7 +412,7 @@ test("an implementer's subagent call open three hours is inside that role's boun
 
 /** k7's negative control, as it is written: "A worker whose bound is 0 records no call and ends
  * nothing, however long a call runs." The deadline-judged call is in it because 0 is the watch
- * off for the worker entirely and not its bound rule waived, which is the issue's own ruling. */
+ * off for the worker entirely and not its bound rule waived, which is the issue's own decision. */
 test("a bound of 0 records no call and ends nothing, deadline-judged calls included", async () => {
   const r = rig({ limits: { callBoundMs: 0 } });
   // One call the bound would judge, and one the deadline rule would: a `pty: true` shell call

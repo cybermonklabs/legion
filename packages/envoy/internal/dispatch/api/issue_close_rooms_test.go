@@ -31,17 +31,37 @@ import (
 // notification committed before that reaches nobody.
 func runDocumentRoomSync(t *testing.T, database *store.Store, documentService *docs.Service) {
 	t.Helper()
-	hub := &pglisten.Hub{
-		Owner: "dispatch test",
-		Dial: func(ctx context.Context) (*pgx.Conn, error) {
-			return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
-		},
+	listening := runDocumentRoomSyncDialing(t, documentService, documentListenerDial(database, documentService))
+	select {
+	case <-listening:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the document service's listener hub never listened")
 	}
+}
+
+// documentListenerDial is documentService's listener connection as cmd/dispatch dials it: a
+// dedicated connection of database named for the process, which is what makes the process a
+// member of the room sync.
+func documentListenerDial(database *store.Store, documentService *docs.Service) func(context.Context) (*pgx.Conn, error) {
+	return func(ctx context.Context) (*pgx.Conn, error) {
+		return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
+	}
+}
+
+// runDocumentRoomSyncDialing is runDocumentRoomSync over dial, the hub's own connection maker,
+// and it waits for no LISTEN: a test whose hub cannot connect yet wraps documentListenerDial
+// with a dial that fails or waits, and has to write while that hub is down. The channel takes a
+// token on each LISTEN that stands, and drops one it has no room for.
+func runDocumentRoomSyncDialing(
+	t *testing.T, documentService *docs.Service, dial func(context.Context) (*pgx.Conn, error),
+) (listening <-chan struct{}) {
+	t.Helper()
+	hub := &pglisten.Hub{Owner: "dispatch test", Dial: dial}
 	run := documentService.RegisterRoomSync(hub)
-	listening := make(chan struct{}, 1)
+	connected := make(chan struct{}, 1)
 	hub.OnConnected(func() {
 		select {
-		case listening <- struct{}{}:
+		case connected <- struct{}{}:
 		default:
 		}
 	})
@@ -60,11 +80,7 @@ func runDocumentRoomSync(t *testing.T, database *store.Store, documentService *d
 		cancel()
 		running.Wait()
 	})
-	select {
-	case <-listening:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the document service's listener hub never listened")
-	}
+	return connected
 }
 
 // Closing an issue is durable the moment its transaction commits, and the commit itself tells

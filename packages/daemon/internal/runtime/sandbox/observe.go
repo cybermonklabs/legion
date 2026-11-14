@@ -210,8 +210,9 @@ func displaced(v view, loc runtime.Locator, obs observation) bool {
 // reads so, so each is relaunched uncharged and they move into one new pod together, rather than
 // the first relaunch for some other reason replacing the pod under the rest. A pod that has merely
 // drifted from the configuration is never StaleAddress (PodDrift): its roles keep running until
-// every worker of the pod has answered its update round, which is the whole point of the round —
-// repointing one of them would end the pod's turns mid-flight, which this verdict must never do.
+// its update round replaces it, once every worker of the pod has answered or at the round's
+// bound, which is the whole point of the round — repointing one of them would end the pod's turns
+// mid-flight, which this verdict must never do.
 // In a pod no update round covers (roundCovers, today the project controller's) movedInPod holds
 // every facet, so each of those reads StaleAddress there and its launch replaces the pod, which is
 // what keeps such a pod from being left behind by a configuration it cannot carry.
@@ -455,24 +456,6 @@ func fetchRepository(pod *corev1.Pod) (ghrepo.Repository, bool) {
 		}
 	}
 	return ghrepo.Repository{}, false
-}
-
-// failedInit includes a failed attempt the kubelet is restarting under restartPolicy Always.
-// A later successful termination wins over LastTerminationState.
-func failedInit(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated) {
-	if pod == nil {
-		return "", nil
-	}
-	for _, status := range pod.Status.InitContainerStatuses {
-		ended := status.State.Terminated
-		if ended == nil {
-			ended = status.LastTerminationState.Terminated
-		}
-		if ended != nil && ended.ExitCode != 0 {
-			return status.Name, ended
-		}
-	}
-	return "", nil
 }
 
 func containerStatus(pod *corev1.Pod, name string) *corev1.ContainerStatus {

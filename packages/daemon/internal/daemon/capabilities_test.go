@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // reserved is a pod's CPU and memory reservation, both set, each request equal to its limit.
@@ -75,8 +76,9 @@ func TestDeploymentReadsTheConfigurationAlone(t *testing.T) {
 func TestReportCapabilitiesLogsAtBootAndOnChangeAlone(t *testing.T) {
 	var logged bytes.Buffer
 	s := &supervision{
-		cfg: config.Config{Runtime: config.Runtime{Name: "tmux"}},
-		log: slog.New(slog.NewTextHandler(&logged, nil)),
+		cfg:         config.Config{Runtime: config.Runtime{Name: "tmux"}},
+		log:         slog.New(slog.NewTextHandler(&logged, nil)),
+		refreshGate: supervise.NewRefreshGate(0),
 	}
 	warnings := func() int { return strings.Count(logged.String(), "level=WARN") }
 
@@ -124,7 +126,8 @@ func TestReportCapabilitiesCarriesTheProbesCapacityWaits(t *testing.T) {
 	}
 	var logged bytes.Buffer
 	s := &supervision{cfg: cfg, log: slog.New(slog.NewTextHandler(&logged, nil)), probed: true,
-		imageReport: bootprobe.ImageReport{ModelFallback: "on", CapacityWaits: 2, CapacityReason: reason}}
+		imageReport: bootprobe.ImageReport{ModelFallback: "on", CapacityWaits: 2, CapacityReason: reason},
+		refreshGate: supervise.NewRefreshGate(0)}
 
 	if got, want := s.reportCapabilities(), []string{"pool-capacity"}; !slices.Equal(got, want) {
 		t.Fatalf("reportCapabilities = %v, want %v", got, want)

@@ -42,8 +42,16 @@ func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
 		}
 	}
 	reason := fmt.Sprintf("%s starts no phase of its own while Dispatch shows an open child under it: %s. "+
-		"Each one must be released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %s, to another parent or to none; %s starts its own first phase when the last of them has.",
-		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent)
+		"Each one must be released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %s, to another parent or to none; %s starts its own first phase when the last of them has. "+
+		"Move a child to icebox "+parkRule+", and cite that reason in a comment on the child. "+
+		"A released child, a held one included, stays under %s, because this wait ends when that child leaves the workflow. "+
+		"Move out from under %s only a child you have not released and that should not run now. "+
+		"Move it under another issue of the same tree that has started a phase and has not reached accepting, and never under an issue it waits on. "+
+		"After the move, ask the person on your tree's root (dispatch ask) when that child's work should run or stop: "+
+		"release it when they say to run it; when they say to stop it, close it, or move it to icebox under the rule when they say its work should wait, citing their answer. "+
+		"Hold the acceptance of the issue you moved it under, and of the root, until they answer. "+
+		"Where the tree holds no issue to move the child under, ask the person.",
+		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent, wait.Parent, wait.Parent)
 	if len(cycles) > 0 {
 		reason += " " + strings.Join(cycles, " ") + "."
 	}

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,10 +152,11 @@ func (s sendClockSender) PublishAsync(item contracts.Envelope) <-chan error {
 // the topic family at once, but S only after the first one does, and S takes all three in order.
 // S is reached two ways: as a session route on its own subject, which fails when the stream stops
 // capturing agent subjects, so NATS answers its publish with no responders; and as the holder of
-// the issue's role, to which the first event's forward fails because S withholds its receipt.
+// the issue's role, whose first forward fails because the stream, capturing no agent subject,
+// acknowledges nothing of it.
 func TestABackedOffEventHoldsBackOnlyItsDestination(t *testing.T) {
 	t.Run("a session route the stream does not take", holdsBackASessionRouteTheStreamRefuses)
-	t.Run("a role holder that withholds its receipt", holdsBackARoleHolderThatWithholdsItsReceipt)
+	t.Run("a role holder whose forward the stream does not acknowledge", holdsBackARoleHolderWhoseForwardIsNotAcknowledged)
 }
 
 func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
@@ -247,32 +248,24 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	}
 }
 
-func holdsBackARoleHolderThatWithholdsItsReceipt(t *testing.T) {
+func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "S"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	// S answers no forward of the first event until released, and every other at once. Each
-	// forward it takes is recorded with whether it answered it.
-	type arrival struct {
-		id       int64
-		answered bool
-	}
+	// The stream captures no agent subject until it is let capture them again, so nothing
+	// acknowledges a forward to S and the first event's send runs out of time. S is handed every
+	// forward over core NATS all the same, and answers none of them: nothing but the stream does.
+	capturing := rig.narrowAgentCapture(t)
 	var (
-		withheld atomic.Int64
-		released atomic.Bool
 		mu       sync.Mutex
-		arrivals []arrival
+		arrivals []int64
 	)
 	sub, err := rig.conn.Subscribe(contracts.AgentSubject(holder), func(msg *natsgo.Msg) {
 		id := envelopeEventID(t, msg.Data)
-		answer := id != withheld.Load() || released.Load()
 		mu.Lock()
-		arrivals = append(arrivals, arrival{id: id, answered: answer})
+		arrivals = append(arrivals, id)
 		mu.Unlock()
-		if answer {
-			_ = msg.Respond(nil)
-		}
 	})
 	if err != nil {
 		t.Fatalf("subscribe S: %v", err)
@@ -281,13 +274,12 @@ func holdsBackARoleHolderThatWithholdsItsReceipt(t *testing.T) {
 	if err := rig.conn.Flush(); err != nil {
 		t.Fatalf("flush S's subscription: %v", err)
 	}
-	taken := func() []arrival {
+	taken := func() []int64 {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Clone(arrivals)
 	}
 	first := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
-	withheld.Store(first.ID)
 	write := func(body string) model.Event {
 		return appendEvent(t, rig.database, rig.broker, model.Event{
 			IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
@@ -308,17 +300,17 @@ func holdsBackARoleHolderThatWithholdsItsReceipt(t *testing.T) {
 		return slices.Contains(bySubject[topic], second.ID) && slices.Contains(bySubject[topic], third.ID)
 	})
 	for _, got := range taken() {
-		if got.id != first.ID {
-			t.Fatalf("S took event %d while the first event's receipt was withheld: %v", got.id, taken())
+		if got != first.ID {
+			t.Fatalf("S took event %d while the first event's forward was unacknowledged: %v", got, taken())
 		}
 	}
 	for _, event := range []model.Event{first, second, third} {
 		if publishedAt(t, rig.database, event.ID) != nil {
-			t.Fatalf("event %d was published before S answered the first event", event.ID)
+			t.Fatalf("event %d was published before the stream stored its forward to S", event.ID)
 		}
 	}
 
-	released.Store(true)
+	capturing()
 	waitFor(t, 45*time.Second, "all three events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil &&
 			publishedAt(t, rig.database, third.ID) != nil
@@ -328,17 +320,10 @@ func holdsBackARoleHolderThatWithholdsItsReceipt(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
-	answeredFirst := slices.IndexFunc(taken(), func(got arrival) bool { return got.id == first.ID && got.answered })
-	if answeredFirst < 0 {
-		t.Fatalf("S never answered the first event: %v", taken())
-	}
 	var order []int64
-	for index, got := range taken() {
-		if got.id != first.ID && index < answeredFirst {
-			t.Fatalf("S took event %d before it answered the first event: %v", got.id, taken())
-		}
-		if !slices.Contains(order, got.id) {
-			order = append(order, got.id)
+	for _, got := range taken() {
+		if !slices.Contains(order, got) {
+			order = append(order, got)
 		}
 	}
 	if want := []int64{first.ID, second.ID, third.ID}; !slices.Equal(order, want) {
@@ -581,14 +566,17 @@ func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostS
 	}
 	// Each comment reply whose mention failed reaches its thread's author, each resolution its
 	// thread root's author, each ask answer its two followers, each message reply its parent's
-	// sender, each document comment the document's author, each person's edit the edited
-	// document's author, and each comment on the unclaimed issue its spec's author; and every
-	// reply, resolution, answer, message and comment on the claimed issue - a person's - reaches
-	// the claimant, which an edit, no claimant event, does not.
+	// sender, each person's edit the edited document's author, and each comment on the unclaimed
+	// issue its spec's author; and every reply, resolution, answer, message and comment on the
+	// claimed issue - a person's - reaches the claimant, which an edit, no claimant event, does
+	// not. Each comment on a document of the claimed issue reaches that document's author no
+	// more: on an issue a session claims, the credits of a document are no second reason to
+	// deliver what the claimant already hears on its own topic (addAuthorRoutes). The read of
+	// those credits is made all the same, so the statement count below is unchanged.
 	if want := each * 5; claimant != want {
 		t.Fatalf("the batch reached the claimant %d times, want %d", claimant, want)
 	}
-	if want := each/2 + each*7 + each*5; agents != want {
+	if want := each/2 + each*6 + each*5; agents != want {
 		t.Fatalf("the batch reached %d sessions' own subjects, want %d", agents, want)
 	}
 	lookups := tracer.matchingAny("ask_followers", "from comments", "from messages", "artifact_versions", "from comment_deliveries", "is_primary")
@@ -767,15 +755,88 @@ func (n planNode) walk(visit func(planNode)) {
 	}
 }
 
-// The statement that chooses a batch reads neither the pending subscription commands, which are
-// never published, nor the backed-off events of owners that have nothing due: with 5,000 of each
-// in the table, no node of its plan that reads events removes a row by filter or recheck, none
-// scans events in full, and it runs in under half a millisecond.
-func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
+// explainedPlan is one EXPLAIN of the claim: the plan's root node, and the JSON body the failure
+// messages print.
+type explainedPlan struct {
+	root planNode
+	body []byte
+}
+
+// claimCost is what the claim costs at one backlog size: the rows Postgres read from events while
+// it ran, the blocks it fetched from the indexes of events, the ids it returned, and the plans it
+// was explained with.
+type claimCost struct {
+	backlog     int
+	rowsRead    int64
+	seqRead     int64
+	indexBlocks int64
+	kept        []int64
+	unpublished []int64
+	plans       []explainedPlan
+	fastest     float64
+}
+
+// claimReads runs the claim once on conn, inside a transaction it rolls back, and reports what
+// Postgres read while it ran: the rows it read from events, all of them and the ones a sequential
+// scan read, the blocks it fetched from the indexes of events, and the event ids the claim
+// returned. Both counters count for the whole backend and a rollback keeps the count, so each
+// figure is the difference across the claim rather than the counter itself, and every call must
+// take the same pinned connection.
+func claimReads(t *testing.T, conn *pgxpool.Conn, claim tracedStatement) (rowsRead, seqRead, indexBlocks int64, kept []int64) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	// The view holds no row for events until this transaction has read it, so sum over the rows
+	// it does hold: that answers 0 and 0 rather than no row at all. The blocks are counted per
+	// index, so they are summed over the indexes of events.
+	counters := func() (seq, fetched, blocks int64) {
+		if err := tx.QueryRow(ctx, `
+			select coalesce(sum(seq_tup_read), 0), coalesce(sum(idx_tup_fetch), 0),
+			       (select coalesce(sum(pg_stat_get_xact_blocks_fetched(indexrelid)), 0)
+			          from pg_index where indrelid = 'events'::regclass)
+			  from pg_stat_xact_user_tables where relname = 'events'
+		`).Scan(&seq, &fetched, &blocks); err != nil {
+			t.Fatalf("read what the claim read from events: %v", err)
+		}
+		return seq, fetched, blocks
+	}
+	seqBefore, fetchedBefore, blocksBefore := counters()
+	rows, err := tx.Query(ctx, claim.sql, claim.args...)
+	if err != nil {
+		t.Fatalf("run the claim: %v\n%s", err, claim.sql)
+	}
+	// The first column is the event's id. Taking the row's values drains the row set, which the
+	// counters need, and spells out none of the row's other nineteen columns.
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			t.Fatalf("read a claimed event: %v", err)
+		}
+		kept = append(kept, values[0].(int64))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the claimed events: %v", err)
+	}
+	seqAfter, fetchedAfter, blocksAfter := counters()
+	return (seqAfter - seqBefore) + (fetchedAfter - fetchedBefore), seqAfter - seqBefore, blocksAfter - blocksBefore, kept
+}
+
+// measureClaim seeds a database of its own with backlog backed-off events and backlog pending
+// commands, ten events the publisher has sent and ten it has not, and reports what the statement
+// choosing a batch costs there. Each size needs its own database: events.id is a sequence, so rows
+// added to a seeded database after the fresh events carry higher ids, which the plan never walks.
+func measureClaim(t *testing.T, backlog int) claimCost {
+	t.Helper()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
+	// Postgres takes several statements in one round trip only over the simple protocol, so the
+	// backlog's size goes into the SQL pgx writes rather than into a bound parameter.
 	if _, err := database.Pool.Exec(ctx, `
 		insert into issues (key, project_key, number, title, created_by, rank)
 		select 'O-' || n, 'TT', 100 + n, 'Waiting', '{"kind":"user","id":"alice"}', 'W'
@@ -783,21 +844,23 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 		insert into events (issue_key, seq, type, actor, payload, notify, attempt_count, next_attempt_at)
 		select 'O-' || (n % 50 + 1), n, 'message.created', '{"kind":"user","id":"alice"}', '{"body":"backed off"}', true,
 		       1, now() + interval '1 hour'
-		from generate_series(1, 5000) as n;
+		from generate_series(1, $1) as n;
 		insert into events (issue_key, seq, type, actor, payload, notify)
 		select 'T-1', 100000 + n, 'subscription.remove_requested', '{"kind":"user","id":"alice"}',
 		       '{"session_id":"gone","pending":true}', true
-		from generate_series(1, 5000) as n;
-	`); err != nil {
+		from generate_series(1, $1) as n;
+	`, pgx.QueryExecModeSimpleProtocol, backlog); err != nil {
 		t.Fatalf("seed the backed-off events and the pending commands: %v", err)
 	}
-	fresh := func() {
+	fresh := func() []int64 {
+		ids := make([]int64, 0, 10)
 		for index := range 10 {
-			appendEvent(t, database, broker, model.Event{
+			ids = append(ids, appendEvent(t, database, broker, model.Event{
 				IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 				Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: fmt.Sprintf("fresh %d", index)},
-			})
+			}).ID)
 		}
+		return ids
 	}
 	fresh()
 	if _, err := database.Pool.Exec(ctx, `analyze events`); err != nil {
@@ -811,19 +874,20 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 		t.Fatal("the scan ran no statement choosing a batch")
 	}
 	claim := claims[0]
-	// Ten more due events, so the statement explained has a batch to choose.
-	fresh()
+	// Ten more due events, so the statement measured and explained has a batch to choose.
+	unpublished := fresh()
 
-	fastest := math.Inf(1)
-	var plan []byte
 	// The fastest of several runs: the box is small and shared, and a run another test's work
 	// delayed says nothing about the statement.
 	const runs = 20
+	fastest := math.Inf(1)
+	plans := make([]explainedPlan, 0, runs)
 	for range runs {
 		tx, err := database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
+		var plan []byte
 		if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+claim.sql, claim.args...).Scan(&plan); err != nil {
 			_ = tx.Rollback(ctx)
 			t.Fatalf("explain the claim: %v\n%s", err, claim.sql)
@@ -836,20 +900,148 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 		if err := json.Unmarshal(plan, &explained); err != nil || len(explained) != 1 {
 			t.Fatalf("decode the plan: %v\n%s", err, plan)
 		}
-		explained[0].Plan.walk(func(node planNode) {
-			if node.Relation != "events" {
-				return
-			}
-			if node.NodeType == "Seq Scan" || node.RemovedByFilter != 0 || node.RemovedByRecheck != 0 {
-				t.Fatalf("the claim's %s of events (%s) removed %.0f rows by filter and %.0f by recheck, want none:\n%s",
-					node.NodeType, node.Index, node.RemovedByFilter, node.RemovedByRecheck, plan)
-			}
-		})
+		plans = append(plans, explainedPlan{root: explained[0].Plan, body: plan})
 		fastest = min(fastest, explained[0].ExecutionTime)
 	}
-	t.Logf("the claim ran in %.3f ms at its fastest of %d:\n%s", fastest, runs, plan)
-	if fastest >= 0.5 {
-		t.Fatalf("the claim ran in %.3f ms at its fastest, want under 0.5 ms:\n%s", fastest, plan)
+	// The measurement comes after the explains, not before them: a pooled connection this
+	// function holds while they run adds about 0.2 ms to each of them, 0.65 ms against 0.43 ms
+	// here, and the logged time would report that delay as the claim's own.
+	conn, err := database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire the connection the counters are read on: %v", err)
+	}
+	defer conn.Release()
+	rowsRead, seqRead, indexBlocks, kept := claimReads(t, conn, claim)
+	secondRowsRead, _, secondIndexBlocks, _ := claimReads(t, conn, claim)
+	if rowsRead != secondRowsRead {
+		t.Errorf("the claim read %d rows from events on the first run and %d on the second, want one figure twice: a measurement that reads pg_stat_xact_user_tables' counter rather than its difference across the claim gives the second run as twice the first",
+			rowsRead, secondRowsRead)
+	}
+	// The blocks are as steady as the rows once the claim has run on this database: 37 on both
+	// runs of each size, in all 12 readings of 3 runs of the healthy claim on 2026-11-09, and 56
+	// and 113 on both runs of the mutated one. The 20 explains above run it first. A claim run
+	// for the first time marks the dead index entries the scan's publish left, and reads those
+	// pages again to do it: measured before the explains, a pair read 38 and 37, and 39 and 37
+	// (the review of INFRA-2065, round 2). So the pair stays after the explains.
+	if indexBlocks != secondIndexBlocks {
+		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and once the explains above have run the claim, a second run on the same connection fetches the same blocks",
+			indexBlocks, secondIndexBlocks)
+	}
+	if rowsRead == 0 && secondRowsRead == 0 {
+		t.Errorf("the claim read 0 rows from events on both runs: track_counts must be on for pg_stat_xact_user_tables to count a row")
+	}
+
+	return claimCost{
+		backlog:     backlog,
+		rowsRead:    rowsRead,
+		seqRead:     seqRead,
+		indexBlocks: indexBlocks,
+		kept:        kept,
+		unpublished: unpublished,
+		plans:       plans,
+		fastest:     fastest,
+	}
+}
+
+// someIDs renders ids as how many there are and at most the first twelve of them, so a message
+// about a claim that returned thousands of rows stays short enough to read.
+func someIDs(ids []int64) string {
+	const most = 12
+	shown, tail := ids, ""
+	if len(shown) > most {
+		shown, tail = shown[:most], " …"
+	}
+	text := make([]string, 0, len(shown))
+	for _, id := range shown {
+		text = append(text, strconv.FormatInt(id, 10))
+	}
+	return fmt.Sprintf("%d events: [%s%s]", len(ids), strings.Join(text, " "), tail)
+}
+
+// The statement that chooses a batch reads neither the pending subscription commands, which are
+// never published, nor the backed-off events of owners that have nothing due: with 5,000 of each
+// in the table it reads three rows of events for each event it returns and nothing else, no node
+// of its plan that reads events removes a row by filter or recheck, none scans events in full,
+// and with 20,000 of each it reads the same number of rows and fetches about as many blocks from
+// the indexes of events. Three a row is what it reads today, and the row allows up to eight, so a
+// plan that reads one more of each event still passes.
+//
+// The row counts two things, because each is blind to work the other sees.
+//
+// seq_tup_read + idx_tup_fetch of pg_stat_xact_user_tables counts the heap tuples the claim read,
+// taken inside the claim's own transaction, as api/suggestion_outcomes_test.go's
+// TestOldPendingSuggestionsOnOtherIssuesCostAPassNothing counts them. It misses a scan that walks
+// a btree and fetches no heap row, which is what an index whose leading column is not the one the
+// claim's predicate names gives: rebuild events_outbox_retry as (id, next_attempt_at) and the
+// claim's retry node becomes an index scan of it with next_attempt_at <= now() as its index
+// condition, which walks every entry of the index, returns none of them and touches no heap row.
+// On 2026-11-09 that claim read the same 30 rows at both sizes, removed no row by filter or
+// recheck and returned the right ten ids, so every other clause here passed it; of the figures
+// the row logged before it counted index blocks, only the time moved, 0.43 ms to 1.08 ms at
+// 20,000.
+//
+// The blocks the claim fetched from the indexes of events, summed over pg_index with
+// pg_stat_get_xact_blocks_fetched in the same transaction and on the same connection, see that
+// walk: on 2026-11-09 the healthy claim fetched 37 blocks at 5,000 and 37 at 20,000, and the
+// claim over the rebuilt index 56 and 113. blocks_fetched counts a hit and a read alike, so cache
+// pressure does not move it. The tuples an index returned do not separate the two cases, which
+// the review of INFRA-2065 measured: the access method skips the entries without returning them.
+//
+// A count is the same on a loaded machine as on an idle one, which no wall clock is. This row
+// asserted the claim ran in under 0.5 ms, and on 2026-11-08 the claim, unchanged and healthy,
+// ran in 0.434 to 0.448 ms on an idle pod and in 0.749 to 0.799 ms on the same pod under 48 busy
+// loops. No one wall-clock bound separates a healthy claim from a broken one on every machine
+// that runs this row, so the row asserts the counts and only logs the time.
+func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
+	small := measureClaim(t, 5000)
+	big := measureClaim(t, 20000)
+	costs := []claimCost{small, big}
+	for _, cost := range costs {
+		t.Logf("with %d backed-off events and %d pending commands the claim read %d rows from events, %d of them sequentially, fetched %d blocks from the indexes of events, and returned %d of the %d events waiting; it ran in %.3f ms at its fastest of %d:\n%s",
+			cost.backlog, cost.backlog, cost.rowsRead, cost.seqRead, cost.indexBlocks, len(cost.kept), len(cost.unpublished),
+			cost.fastest, len(cost.plans), cost.plans[0].body)
+	}
+	for _, cost := range costs {
+		if !slices.Equal(cost.kept, cost.unpublished) {
+			t.Errorf("with a backlog of %d the claim returned %s, want the events no one has published, in id order: %s",
+				cost.backlog, someIDs(cost.kept), someIDs(cost.unpublished))
+		}
+		if cost.seqRead != 0 {
+			t.Errorf("with a backlog of %d the claim read %d rows of events sequentially, want none",
+				cost.backlog, cost.seqRead)
+		}
+	}
+	if big.rowsRead != small.rowsRead {
+		t.Errorf("the claim read %d rows of events with a backlog of %d and %d with a backlog of %d, want the same figure at both sizes",
+			big.rowsRead, big.backlog, small.rowsRead, small.backlog)
+	}
+	if bound := 8 * int64(len(small.kept)); small.rowsRead > bound {
+		t.Errorf("the claim read %d rows of events to return %d events, want at most %d: it reads three of each event it returns, and the row allows eight",
+			small.rowsRead, len(small.kept), bound)
+	}
+	// The blocks the claim fetches in the indexes of events must not grow with the backlog: work
+	// that grows with the rows it skips is the regression this figure is here for. Measured on
+	// 2026-11-09 on an idle pod: 37 blocks at both sizes in all 12 readings of 3 runs of the
+	// healthy claim, against 56 and 113 for a claim whose retry index leads on id. The half is
+	// for a btree that gains a level as the table grows, which costs one more block for each
+	// descent the claim makes, around ten of them; half of 37 is 18, and the mutated claim is 29
+	// blocks past its own bound.
+	if bound := small.indexBlocks + small.indexBlocks/2; big.indexBlocks > bound {
+		t.Errorf("the claim fetched %d blocks from the indexes of events with a backlog of %d and %d with a backlog of %d, want at most %d at the larger size: what the claim does inside an index must not grow with the rows it skips",
+			big.indexBlocks, big.backlog, small.indexBlocks, small.backlog, bound)
+	}
+	for _, cost := range costs {
+		for _, explained := range cost.plans {
+			explained.root.walk(func(node planNode) {
+				if node.Relation != "events" {
+					return
+				}
+				if node.NodeType == "Seq Scan" || node.RemovedByFilter != 0 || node.RemovedByRecheck != 0 {
+					t.Fatalf("the claim's %s of events (%s) removed %.0f rows by filter and %.0f by recheck, want none:\n%s",
+						node.NodeType, node.Index, node.RemovedByFilter, node.RemovedByRecheck, explained.body)
+				}
+			})
+		}
 	}
 }
 

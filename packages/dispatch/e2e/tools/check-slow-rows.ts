@@ -30,9 +30,19 @@
  *
  *  Usage, with a report the run writes itself:
  *
- *    PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/report.json bun e2e/run.ts -- bunx playwright test \
+ *    PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/report.json bunx playwright test \
  *      --config e2e/playwright.config.ts --reporter=list,json
  *    bun e2e/tools/check-slow-rows.ts /tmp/report.json
+ *
+ *  That run names no project, which is the default selection, and the three wall-clock projects
+ *  carry `default: false` (`clockProjectNames`, e2e/configurations.ts), so it runs neither
+ *  `heavy-bodies.e2e.ts` nor `nested-directive.e2e.ts` and every marker those two hold lands in
+ *  "a file the report never ran" above. Their rows are a second report and a second reading:
+ *
+ *    PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/clock-report.json bunx playwright test \
+ *      --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone \
+ *      --project=webkit-alone --workers=1 --reporter=list,json
+ *    bun e2e/tools/check-slow-rows.ts /tmp/clock-report.json
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -201,8 +211,8 @@ function covers(marker: Marker, row: Row): boolean {
  *  It exists because a row that sits at the bar cannot be judged by one run. Four of the eight
  *  rows of `coverage.e2e.ts`, `plan-tab.e2e.ts` and `verification.e2e.ts` live in the 1.5-2.7 s
  *  band; over 15 one-worker runs of one pod against one unchanged head, the Plan tab row
- *  measured 1893-2639 ms and the currency row of `verification.e2e.ts` 1685-2069 ms, the pod
- *  having drifted some 20 % slower and back inside half an hour. Without the band, such a row
+ *  measured 1893-2639 ms and the Verification tab row of `verification.e2e.ts` 1685-2069 ms, the
+ *  pod having drifted some 20 % slower and back inside half an hour. Without the band, such a row
  *  fails this check whichever way it is written - bare when the run is slow, marked when the run
  *  is fast - so both halves of the verdict report the machine rather than the suite. With it,
  *  the half that catches a lie still does its work: a marker over a row that really became fast,

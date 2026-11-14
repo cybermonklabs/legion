@@ -1,9 +1,7 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createComment, createIssue, createProject, getArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 // A bare web address after punctuation or an escaped scheme colon is a link remark-gfm reads, and
@@ -41,16 +39,13 @@ const links: { href: string; name: string }[][] = [
   [{ href: "http://b.test/a_", name: "http://b.test/a_" }],
 ];
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 test.describe("a bare web address is a link in a document written through the API, as in a comment", () => {
   // SLOW(>=2s): 3,811 ms in this head's four-worker CI report (`dispatch-e2e-report-1` of run
   // 42334783358), 2,545 ms at the merge base's merge-group run. Nine paragraphs, each a bare
   // address, asserted twice - once in the Conversation and once in the document editor - which
   // is ten link lookups per surface.
-  test("after punctuation or an escaped scheme colon", async ({ browser }) => {
+  // @pr: The bare-address family's one row on the real stack: a link written through the API must read as a link in the document and in a comment.
+  test("after punctuation or an escaped scheme colon @pr", async ({ browser }) => {
     await createProject({ key: "CORE", name: "Core" });
     const issue = await createIssue({
       project: "CORE",

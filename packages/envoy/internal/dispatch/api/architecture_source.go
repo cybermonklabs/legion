@@ -183,7 +183,7 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, source)
 }
 
@@ -261,7 +261,7 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	w.WriteHeader(http.StatusNoContent)
 }
 

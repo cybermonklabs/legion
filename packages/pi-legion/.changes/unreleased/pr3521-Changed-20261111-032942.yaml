@@ -1,0 +1,5 @@
+kind: Changed
+body: 'Declares daemon API contract 64: every Legion launch now carries the issue it serves as `legion.issue` and the role it runs as `legion.role` in `OTEL_RESOURCE_ATTRIBUTES`, written after the attributes the deployment''s own `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env` sets. Both keys reach the spend collector today, and its keep-list of six `theorem.*` attributes drops every other key, so no spend row names an issue yet. A spend row grouped by issue follows when that collector keeps them. The project controller''s launch serves no issue and carries the role alone. The deployment may still set the variable and a launch spec may not, and a configured value the agent''s OpenTelemetry detector would throw on is refused at load rather than costing a launch every attribute it carries.'
+time: 2026-11-11T03:29:42.447752321Z
+custom:
+    Issue: pr3521

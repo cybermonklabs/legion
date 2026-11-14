@@ -64,6 +64,46 @@ func IsDirName(name string) bool {
 // which for a `<owner>/<repo>` entry is a directory under the owner's own.
 func Dir(root, name string) string { return filepath.Join(root, name) }
 
+// RepositoryName is a repository's name as the bundle directory holding its token is named for
+// it: lowercased, and without the `.git` a git credential request's path and a clone URL carry,
+// which gh trims as it reads a remote (ghrepo.FromURL) and which no GitHub repository's own name
+// ends in. One trim is all a spelling of such a name needs, so a second call changes nothing; a
+// name ending `.git.git` would lose one suffix a call, and GitHub holds no repository of that
+// name.
+func RepositoryName(repo string) string {
+	return strings.TrimSuffix(strings.ToLower(repo), ".git")
+}
+
+// RepositoryDir is the directory of the bundle under root whose token reaches owner's repository
+// repo: the repository's own, `<owner>/<repo>`, whose token reaches that one repository, where
+// the bundle holds it; the owner's own, `<owner>`, where it holds that; and "" where it holds
+// neither, which the caller answers in its own way. It normalizes the repository's name
+// (RepositoryName), so a caller may hand it the name as it was given it, and a repo no bundle
+// directory could be named for (IsDirName) is one the bundle holds none for, so the owner's is
+// answered rather than nothing.
+//
+// It is the one place that choice is made. `legion git-credential` answers git's request from it
+// and refuses a miss (cmd/legion's repositoryGHConfigDir, which `legion gh` picks a call's
+// directory with too). What a miss means is that caller's to decide, not this function's.
+func RepositoryDir(root, owner, repo string) string {
+	if name := owner + "/" + RepositoryName(repo); repo != "" && IsDirName(name) {
+		if dir := Dir(root, name); isDirectory(dir) {
+			return dir
+		}
+	}
+	if dir := Dir(root, owner); isDirectory(dir) {
+		return dir
+	}
+	return ""
+}
+
+// isDirectory says whether path is a directory that is there, which is what makes a bundle entry
+// one a gh or a git request may be answered from.
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
 // DirNames is the bundle's directory names, sorted. An owner sorts before its own repositories'
 // directories, since each of those begins with the owner's name.
 func (b Bundle) DirNames() []string { return slices.Sorted(maps.Keys(b.Dirs)) }

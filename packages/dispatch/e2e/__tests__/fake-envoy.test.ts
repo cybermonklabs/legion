@@ -12,7 +12,7 @@ import { withoutHarnessPort } from "../harness-ports";
 // The fake Envoy is the browser harness's own fixture (e2e/fake-envoy.ts) and no browser varies
 // it, so these tests run here: each starts a fake of its own on a port of its own rather than
 // reseeding the listener a browser run shares. With the fake Envoy port unset under every name
-// this lane carries it under, the fake binds a port the OS chooses, and the test reads it from
+// this stack carries it under, the fake binds a port the OS chooses, and the test reads it from
 // the fake's listening line. The fake is a `bun` process of its own, as the harness starts it,
 // and this file asks with `Bun.fetch`, which is also what the global `fetch` is here: this half
 // loads no preload and registers no DOM, so nothing puts happy-dom's `fetch` on globalThis.

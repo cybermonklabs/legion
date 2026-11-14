@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   createComment,
   createIssue,
@@ -9,7 +7,7 @@ import {
   putIssueState,
 } from "./api";
 import { barAction, selectEditorText } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -17,11 +15,8 @@ const session = {
   as: "agent" as const,
 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("a failed pin shows a retryable error, never lies to the sidebar, and recovers on retry", async ({
+// @pr: A write the server refuses: a failed pin offers a Retry, tells the sidebar nothing untrue, and recovers on that Retry.
+test("a failed pin shows a retryable error, never lies to the sidebar, and recovers on retry @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "WR", name: "Writes" });
@@ -89,7 +84,8 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
   await context.close();
 });
 
-test("double-clicking Submit posts exactly one comment", async ({ browser }) => {
+// @pr: An idempotent repeat: a double-clicked Submit posts exactly one comment.
+test("double-clicking Submit posts exactly one comment @pr", async ({ browser }) => {
   await createProject({ key: "WR", name: "Writes" });
   const issue = await createIssue({
     project: "WR",

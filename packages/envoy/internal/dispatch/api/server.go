@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -76,8 +77,15 @@ type Deps struct {
 	Identity       identity.Identity
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	ServerURL      string
-	Docs           docs.API
+	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
+	// from the words a person typed when those words match nothing it found
+	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
+	// DISPATCH_NEW_ISSUE_SESSION). NewIssueLabel empty is an issue that carries no label;
+	// NewIssueSession empty is an issue made with no conversation started on it.
+	NewIssueLabel   string
+	NewIssueSession string
+	ServerURL       string
+	Docs            docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -135,6 +143,16 @@ type Deps struct {
 	// DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under the test hooks), so a send to a session that
 	// is gone settles without sleeping the production window.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
+	// observation waits before the process logs its stall warning, and how often each of that
+	// Horizon's three warnings repeats - the stall warning while the stall stands, the
+	// failed-observation warning and the failed-persist warning (events.Horizon.SetStallWarning).
+	// Zero keeps the horizon's own five and thirty seconds; a deployment leaves both zero, and
+	// only a test process sets another (cmd/dispatch: DISPATCH_TEST_HORIZON_STALL_AFTER and
+	// DISPATCH_TEST_HORIZON_WARN_EVERY, under the test hooks), so a test whose wait keys on the
+	// stall warning sees it inside its own patience.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces how long a test hook waits for every process's acknowledgement
 	// (testHookTimeout, test_hooks_fanout.go). Zero keeps ten seconds; neither
 	// routes.BuildAppContext nor cmd/dispatch sets it, so every deployment with the hooks on and
@@ -155,6 +173,13 @@ type Deps struct {
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
+	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
+	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
+	// is hashed into every list validator (listETag), so two builds never answer one ETag for
+	// two bodies; a build nothing stamped - every `go test` binary, a devbox `go run` - leaves
+	// it empty, which is one identity for every such build and is why a deploy is what it is
+	// for rather than a key anything depends on being unique.
+	BuildCommit string
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -166,8 +191,12 @@ type DepsInput struct {
 	Identity       identity.Identity
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	ServerURL      string
-	EnvoyURL       string
+	// NewIssueLabel and NewIssueSession are the two new-issue settings; see Deps. A label longer
+	// than one an issue may carry, or a session id that is no session id, refuses startup.
+	NewIssueLabel   string
+	NewIssueSession string
+	ServerURL       string
+	EnvoyURL        string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -210,6 +239,10 @@ type DepsInput struct {
 	// ListenerTakeoverWindow replaces the twelve-second listener take-over window; see
 	// Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace the five-second stall threshold and the
+	// thirty-second repeat of every event-horizon warning; see Deps.HorizonStallAfter.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces the ten-second test-hook acknowledgement timeout; see
 	// Deps.TestHookTimeout.
 	TestHookTimeout time.Duration
@@ -218,6 +251,8 @@ type DepsInput struct {
 	ListenerRosterUncached bool
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
+	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
+	BuildCommit string
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -225,6 +260,13 @@ func NewDeps(input DepsInput) (Deps, error) {
 	defaultProject := strings.TrimSpace(input.DefaultProject)
 	if defaultProject != "" && !projectKeyPattern.MatchString(defaultProject) {
 		return Deps{}, fmt.Errorf("invalid DISPATCH_DEFAULT_PROJECT %q (expected project key)", defaultProject)
+	}
+	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
+	switch problem {
+	case "label":
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
+	case "session":
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
@@ -268,6 +310,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
 		DefaultProject:         defaultProject,
+		NewIssueLabel:          newIssue.Label,
+		NewIssueSession:        newIssue.Session,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
@@ -285,9 +329,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 		StreamHeartbeat:        heartbeat,
 		RouteRosterTTL:         input.RouteRosterTTL,
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
+		HorizonStallAfter:      input.HorizonStallAfter,
+		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
+		BuildCommit:            input.BuildCommit,
 	}, nil
 }
 
@@ -327,14 +374,22 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime        context.Context
-	routeIndex      []routeIndexEntry
+	lifetime   context.Context
+	routeIndex []routeIndexEntry
+	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
+	// write, held to the table this server mounts (going_catalogue.go).
+	going           GoingCatalogue
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
 	// rather than its machine's speed.
 	suggestionTimeout time.Duration
+	// beforeCrossProjectRead runs at the head of relatedOtherProjects, before it reads, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds that one
+	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
+	// as it runs in production.
+	beforeCrossProjectRead func(ctx context.Context) error
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
 	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
 	// (the forced create whose check does not answer), so a case's outcome is its own choice
@@ -349,6 +404,12 @@ type server struct {
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
 	rosters rosterCache
+	// listAnswers keeps what the comment list and the activity feed last answered, under the ETag
+	// each answers with, so a warm read of either writes bytes instead of making them again
+	// (list_answers.go). Every server register mounts has one; a server a test builds directly
+	// (directServer) has none, and every method of the cache takes a nil one, which keeps
+	// nothing.
+	listAnswers *listAnswerCache
 	// deliveryHub keeps the open Delivery and Pipeline pages current (LEGION-690); every server
 	// register mounts has one, and only a server a test builds directly (directServer) has none.
 	deliveryHub *deliveryHub
@@ -419,6 +480,11 @@ type server struct {
 	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
 	// hook did before and since.
 	slowWriteRuns sync.Map
+	// newIssueOverride is what the new-issue test hook last set
+	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
+	// place of the two settings Deps carries; nil until a hook call sets one, which is every
+	// server without TestHooksEnabled, since that mounts no hook.
+	newIssueOverride atomic.Pointer[newIssueSettings]
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
 	// delivery_run_warnings, which decides which process logs the warning (firstToWarn), once per
@@ -436,13 +502,13 @@ type server struct {
 	// branches is what the results reads last learned about each repository's default branch
 	// (delivery.Branches), held across requests so the Verification tab's refetch on every
 	// result.recorded does not spend one GET /repos/{owner}/{repo} apiece. It answers about
-	// every branch a check is measured against, and caches the default branch alone, since what
+	// every branch a check is compared with, and caches the default branch alone, since what
 	// a named branch holds of a commit is kept in the database (branch_commits). The policy is
 	// delivery's; the server holds the one cache the process shares.
 	branches delivery.Branches
 	// commitPulls is the moment before which the results read will not read GitHub again for the
 	// pull requests of a commit it could answer for no other way (delivery.CommitPullReads,
-	// currencyReader.readThroughHead), held across requests so one commit costs at most one such
+	// comparisonReader.readThroughHead), held across requests so one commit costs at most one such
 	// read per delivery.CommitPullReadStaleAfter however often the tab refetches, and one per
 	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
 	// policy is delivery's; the server holds the one cache the process shares.
@@ -607,7 +673,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, rosters: rosterCache{
+	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
 	s.liveKinds = map[string]liveKind{
@@ -633,6 +699,14 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// (routeScopes).
 		panic("api.Register: the route table's scope map names a route the table does not mount: " + strings.Join(unmounted, "; "))
 	}
+	going, err := buildGoingCatalogue(routes)
+	if err != nil {
+		// A catalogue entry naming a row this table does not hold or does not class as a write,
+		// a placeholder no argument of the tool fills, or a relation named in neither edge
+		// family, is refused rather than mounted (going_catalogue.go).
+		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
+	}
+	s.going = going
 	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
 		// A row with no shape is a row the generated OpenAPI document would leave out, so the
 		// one definition of the API would stop being one; the table is refused rather than
@@ -685,6 +759,13 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 			// early answer.
 			handler = s.gateRouteScopes(route.OAuthScopes, handler)
 		}
+		// One place for the whole table: every answer says its body depends on Dispatch-Trees
+		// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
+		// trees an answer written for a reader without them. It is outside the scope gate, so a
+		// refusal of the row's own scopes carries the header too. The answer's other Vary, on
+		// Accept-Encoding, is added by the same loop, where the encoding is chosen
+		// (compressAnswers).
+		handler = varyOnDisplayTrees(handler)
 		if route.Method != http.MethodGet {
 			// Every layer above may answer before the body is read; the answer waits for the body.
 			//
@@ -703,8 +784,11 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		}
 		// The access-log line is outermost, so it records what every layer answered - a keyed
 		// replay, a refused login, an early answer the drain held - and the caller the first of
-		// them resolved.
-		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, s.decideBrokerToken(trackTransactions(handler))))
+		// them resolved. Compression sits just inside it, so every one of those answers is
+		// compressed for a caller that takes gzip and the line counts the bytes that went on the
+		// wire. The two websockets below carry no compressed answer: the upgrade is not a body,
+		// and the frames after it are the socket's (compressAnswers).
+		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler)))))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -796,6 +880,40 @@ func parseQueryInt(query url.Values, field string, min, max int) (value int, pre
 		return 0, true, false
 	}
 	return parsed, true, true
+}
+
+// parseQueryBool reads one query parameter as true or false, as parseQueryInt reads one as an
+// integer: present is false when the request carried no value the route reads, and a value that
+// is neither "true" nor "false" is present with valid false, so each route writes its own code
+// and message around it. The two routes that read such a parameter read it differently, and
+// both readings are carried here rather than either being changed: trim cuts the value's
+// surrounding whitespace before it is read, which search's ?keywords_only= does and GET
+// /api/v1/projects/{key}/related does not, and readFirst reads the parameter as url.Values.Get
+// does - the first value, however many were sent, and a blank one as no value at all - which
+// that related route does where search refuses a repeated or a blank one.
+func parseQueryBool(query url.Values, field string, trim, readFirst bool) (value, present, valid bool) {
+	values, ok := query[field]
+	if !ok {
+		return false, false, false
+	}
+	first := values[0]
+	if trim {
+		first = strings.TrimSpace(first)
+	}
+	if readFirst {
+		if first == "" {
+			return false, false, false
+		}
+	} else if len(values) != 1 {
+		return false, true, false
+	}
+	switch first {
+	case "false":
+		return false, true, true
+	case "true":
+		return true, true, true
+	}
+	return false, true, false
 }
 
 // refuseChangedLogin runs a write route's handler only for the person who pressed the write, when
@@ -1239,14 +1357,20 @@ func countExceededError(code, field string, count, limit int) *apiError {
 		"%s is %d over the %d-item limit (%d/%d)", field, count-limit, limit, count, limit)
 }
 
-// blockBoundError is what a route answers an itemblocks.Check with: nil where the body passed
-// both bounds, else the refusal the typed error words (itemblocks.CapExceeded names the block,
-// itemblocks.CountExceeded the count), with the status and code every cap refusal carries.
-// Every route that bounds a body calls this one helper, so a route added later cannot word the
-// same refusal differently.
+// blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
+// rule, else the refusal the typed error words, under the code that rule is refused by. A bound
+// broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
+// what it holds rather than how long it is. Every route that checks a body calls this one
+// helper, so a route added later cannot word the same refusal differently.
 func blockBoundError(err error) *apiError {
 	if err == nil {
 		return nil
+	}
+	var decision *itemblocks.DecisionBlock
+	if errors.As(err, &decision) {
+		return errorf(http.StatusBadRequest, "DECISION_BLOCK_IN_BODY", "%s", err)
 	}
 	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s", err)
 }
@@ -1368,10 +1492,16 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 	return s.deps.Events.Append(ctx, tx, event)
 }
 
-func (s *server) publish(events ...model.Event) {
+// publish hands each event to the broker and then stores the display trees of the stored texts
+// their payloads carry (storeEventDisplayTrees). ctx is the caller's own: a route's request
+// context, which by here has committed and holds no connection of the pool, or a background
+// writer's. A caller that publishes while its transaction is still open stores nothing, and loses
+// no tree by it: such an event carries a text its own write already stored.
+func (s *server) publish(ctx context.Context, events ...model.Event) {
 	for _, event := range events {
 		s.deps.Events.Publish(event)
 	}
+	s.storeEventDisplayTrees(ctx, events)
 }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {

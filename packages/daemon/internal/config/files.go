@@ -173,6 +173,24 @@ func ReadMemoryInstructions(instructionsPath string) ([]byte, error) {
 	return contents, nil
 }
 
+// ReadHookPrompt is the words of one hook's `prompt_file` (Hook.PromptFile), refused naming the
+// hook and the operator's path when the file is missing, unreadable, or blank: a configured file
+// with nothing in it is a misconfiguration, not an empty prompt, which is this loader's rule for
+// every path key. It writes nothing, so boot reads it with every other refusal before it writes
+// anything. The words come back without the whitespace around them, since a file's last newline
+// is no part of what the hook says.
+func ReadHookPrompt(hook, promptPath string) (string, error) {
+	contents, err := os.ReadFile(promptPath)
+	if err != nil {
+		return "", fmt.Errorf("hook %s prompt_file %s could not be read: %w", hook, promptPath, err)
+	}
+	words := strings.TrimSpace(string(contents))
+	if words == "" {
+		return "", fmt.Errorf("hook %s prompt_file %s is empty", hook, promptPath)
+	}
+	return words, nil
+}
+
 // WriteMemoryInstructions writes the copy of contents ReadMemoryInstructions answered: boot reads
 // the file with every other refusal before it writes anything, and writes this copy once, before
 // the first pane opens. The two are separate, where the deployment's own has a Materialize pair

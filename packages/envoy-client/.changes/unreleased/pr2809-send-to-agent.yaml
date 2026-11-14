@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `dispatch send_to_agent` hands a piece of work to one agent session, in that session's own
+  conversation, which belongs to no issue: the way to reach the agent already on the work, the
+  session holding an issue's claim among them. It takes the session's bare id, the words to send
+  and how they reach it (`btw` waits for the session's next turn, `aside` reaches it while a turn
+  runs, `steer` goes in as a keystroke at its terminal), and threads under an earlier message with
+  `in_reply_to`. The words must name the issue they are about, because the message carries none.
+  It needs a credential holding the person scope and is refused `403 OAUTH_SCOPE_REQUIRED`
+  without it.

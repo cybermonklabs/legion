@@ -21,7 +21,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
-	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -44,7 +45,7 @@ func TestMain(m *testing.M) {
 	if os.Getenv(fakeOMPEnv) == "1" {
 		os.Exit(fakeOMP())
 	}
-	// The tests run real git and jj, in the shim's adoption and push check (fixtureenv.MustGuard).
+	// The tests run real git and jj, in the shim's adoption (fixtureenv.MustGuard).
 	fixtureenv.MustGuard()
 	os.Exit(m.Run())
 }
@@ -59,7 +60,9 @@ func fakeOMP() int {
 		defer mu.Unlock()
 		_, _ = os.Stdout.WriteString(line + "\n")
 	}
-	if err := os.WriteFile(os.Getenv("FAKE_OMP_MARKER"), nil, 0o600); err != nil {
+	// The marker holds the child's whole environment, so a test can read what the shim started
+	// it with (omp.environment) as well as that it started at all (omp.started).
+	if err := os.WriteFile(os.Getenv("FAKE_OMP_MARKER"), []byte(strings.Join(os.Environ(), "\n")), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "fake omp: write the marker: %v\n", err)
 		return 3
 	}
@@ -149,6 +152,27 @@ func (o *omp) started() bool {
 	return err == nil
 }
 
+// environment is the environment the shim started the child with, as the child read it: the
+// marker the child writes at its start holds it, one NAME=value a line. It waits for the child,
+// since a test that reads it is asking what the spawn did.
+func (o *omp) environment(t *testing.T) map[string]string {
+	t.Helper()
+	if !testwait.Holds(waitLimit, 5*time.Millisecond, o.started) {
+		t.Fatal("the fake OMP never started, so it recorded no environment")
+	}
+	body, err := os.ReadFile(o.marker)
+	if err != nil {
+		t.Fatalf("read the fake OMP's environment: %v", err)
+	}
+	env := map[string]string{}
+	for _, entry := range strings.Split(string(body), "\n") {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			env[name] = value
+		}
+	}
+	return env
+}
+
 // received is every line the child read on its stdin, decoded.
 func (o *omp) received(t *testing.T) []shimwire.Frame {
 	t.Helper()
@@ -197,19 +221,28 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	return w.fire
 }
 
-// next is the shim's next wait, which must be of d.
-func (c *fakeClock) next(t *testing.T, d time.Duration) clockWait {
+// nextAny is the shim's next wait whatever its span, named by what the caller expected to be
+// waited for: what a test reads when the span is the thing under test rather than a constant it
+// already knows (drainCommands' bound, which is what is left of a span).
+func (c *fakeClock) nextAny(t *testing.T, what string) clockWait {
 	t.Helper()
 	select {
 	case w := <-c.waits:
-		if w.d != d {
-			t.Fatalf("the shim waited %v, want %v", w.d, d)
-		}
 		return w
 	case <-time.After(waitLimit):
-		t.Fatalf("the shim never waited %v", d)
+		t.Fatalf("the shim never waited %s", what)
 		return clockWait{}
 	}
+}
+
+// next is the shim's next wait, which must be of d.
+func (c *fakeClock) next(t *testing.T, d time.Duration) clockWait {
+	t.Helper()
+	w := c.nextAny(t, fmt.Sprintf("%v", d))
+	if w.d != d {
+		t.Fatalf("the shim waited %v, want %v", w.d, d)
+	}
+	return w
 }
 
 func (w clockWait) elapse() { w.fire <- time.Time{} }
@@ -547,6 +580,133 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 	}
 	if got := frameTypes(child.received(t)); !reflect.DeepEqual(got, []string{shimwire.TypeGetState}) {
 		t.Fatalf("OMP read %v; the pre-ack prompt must never reach it", got)
+	}
+}
+
+// theTag is the pin a pod's worker image carries, as these tests spell one.
+const theTag = "leak-check-v15"
+
+// installedCheck is the directory the pod's launcher installs the check the daemon served into,
+// made the way the launcher makes it: a GitHub-shaped tarball of a stand-in check whose --help
+// names both shapes (leakguardtest.AnswersHelp), packed (leakguard.PackTarball) and installed at
+// tag (leakguard.InstallServed).
+func installedCheck(t *testing.T, tag string) string {
+	t.Helper()
+	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
+		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
+	})
+	body, err := leakguard.PackTarball(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "leak-check")
+	ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
+	defer cancel()
+	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body}); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// The pod's launcher installs the shared public leak check once for the pod, before any role
+// starts, and the shim only reads it. An install of the pin starts the agent, and the shim names
+// it in PUBLIC_LEAK_CHECK where the environment names none, leaving a runtime's own value alone
+// where there is one: the daemon decides wherever it says anything.
+func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		already string // what the shim's own environment names, "" for none
+		want    func(dir string) string
+	}{
+		{"the environment names none, so the installed check is what the child is told", "",
+			func(dir string) string { return filepath.Join(dir, leakguardtest.CheckName) }},
+		{"the environment names one, so the daemon's value is what the child is told", "/opt/another/public-leak-check.sh",
+			func(string) string { return "/opt/another/public-leak-check.sh" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := socketPath(t)
+			daemon := listen(t, path)
+			extra := []string{leakguard.TagVariable + "=" + theTag}
+			if tc.already != "" {
+				extra = append(extra, leakguard.CheckVar+"="+tc.already)
+			}
+			child := newOMP(t, extra...)
+			cfg := config(t, path, child)
+			cfg.LeakCheckDir = installedCheck(t, theTag)
+			sh := run(t, cfg, newClock())
+
+			daemon.accept(t).open(t)
+			if got, want := child.environment(t)[leakguard.CheckVar], tc.want(cfg.LeakCheckDir); got != want {
+				t.Errorf("the child was told %s=%q, want %q; log:\n%s", leakguard.CheckVar, got, want, sh.log)
+			}
+			line := "[worker-shim] the shared public leak check " + theTag + " the pod's launcher installed is at " +
+				filepath.Join(cfg.LeakCheckDir, leakguardtest.CheckName)
+			if sh.log.count(line) != 1 {
+				t.Errorf("the shim did not log %q once; log:\n%s", line, sh.log)
+			}
+		})
+	}
+}
+
+// A role whose environment carries the pin and whose pod holds no install of it runs no agent at
+// all: the shim ends with exit 1 and the read's own refusal. Every write path of such a role would
+// refuse anyway.
+func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dir  func(t *testing.T) string
+		want []string
+	}{
+		{"an absent install", func(t *testing.T) string { return filepath.Join(t.TempDir(), "leak-check") },
+			[]string{"LEAK CHECK SETUP ERROR", leakguard.TagVariable + "=" + theTag, "installed no check"}},
+		{"an install of another tag", func(t *testing.T) string { return installedCheck(t, "leak-check-v14") },
+			[]string{"LEAK CHECK SETUP ERROR", leakguard.TagVariable + "=" + theTag, "is of leak-check-v14"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := socketPath(t)
+			daemon := listen(t, path)
+			child := newOMP(t, leakguard.TagVariable+"="+theTag)
+			cfg := config(t, path, child)
+			cfg.LeakCheckDir = tc.dir(t)
+			sh := run(t, cfg, newClock())
+
+			p := daemon.accept(t)
+			p.expectHello(t)
+			p.send(t, shimwire.HelloAck{})
+			if !testwait.Holds(waitLimit, 5*time.Millisecond, sh.exited) {
+				t.Fatalf("the shim kept running with no install of its pin; log:\n%s", sh.log)
+			}
+			if sh.code != 1 {
+				t.Errorf("the shim ended %d, want 1", sh.code)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(sh.err(), want) {
+					t.Errorf("the shim ended with %q, want it to name %q", sh.err(), want)
+				}
+			}
+			if child.started() {
+				t.Error("the agent was started with no install of the pin")
+			}
+		})
+	}
+}
+
+// A tmux pane's environment carries no pin, and its shim reads no install at all: the agent
+// starts where no install exists, and the shim names no check of its own for it.
+func TestWithNoPinTheAgentStartsWithNoInstall(t *testing.T) {
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	cfg := config(t, path, child)
+	cfg.LeakCheckDir = filepath.Join(t.TempDir(), "leak-check")
+	sh := run(t, cfg, newClock())
+
+	daemon.accept(t).open(t)
+	if got, ok := child.environment(t)[leakguard.CheckVar]; ok {
+		t.Errorf("the child was told %s=%q, want no check named by the shim; log:\n%s", leakguard.CheckVar, got, sh.log)
+	}
+	if sh.log.count("the shared public leak check") != 0 {
+		t.Errorf("the shim logged an install with no pin; log:\n%s", sh.log)
 	}
 }
 
@@ -1011,76 +1171,32 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 	}
 }
 
-// `rescue-unpushed` is answered by the shim itself, as its role and in its role's environment: it
-// checks every workspace on the disk its LEGION_WORKSPACE is on, pushes what the remote lacks to a
-// rescue branch, and answers one entry per workspace; OMP never sees the frame. A shim with no
-// LEGION_WORKSPACE has no disk to check and refuses.
-//
-// The test process's own environment names a decoy disk in LEGION_WORKSPACE, as a Legion issue
-// pod's does its live workspace: neither case may check it or push from it, so the disk's
-// environment (fixtureenv.Isolated) carries none of the process's LEGION_ variables.
-func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
-	decoy := rescuetest.New(t, "DECOY-7")
-	decoy.Write(decoy.Workspace, "decoy.txt", "work on the pod's own disk\n")
-	decoy.JJ("commit", "-m", "work on the pod's own disk")
-	decoyBranches := decoy.RemoteBranches()
-	t.Setenv("LEGION_WORKSPACE", decoy.Workspace)
-	t.Setenv("LEGION_ISSUE", "DECOY-7")
-	d := rescuetest.New(t, "WIDGETS-42")
-	for _, entry := range d.Env {
-		if strings.HasPrefix(entry, "LEGION_") {
-			t.Fatalf("the disk's environment holds %s, want none of the process's LEGION_ variables", entry)
-		}
+// An older daemon still asks a pod's shim for the push check it ran before it replaced the pod,
+// in a frame of a type this shim no longer knows. The shim passes that line to OMP unchanged, as
+// it does every frame that is not its own. OMP refuses it as a command it does not know, and an
+// older daemon reads that refusal as a shim that predates the check, so it replaces the pod on
+// its workers' answers alone. A shim that dropped the line would leave that daemon with no
+// answer, which it reads as a check that failed, and the pod would not be replaced.
+func TestShimForwardsAnUnknownRescueFrameToItsChild(t *testing.T) {
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	run(t, config(t, path, child), newClock())
+	p := daemon.accept(t)
+	p.open(t)
+
+	const older = `{"type":"rescue-unpushed","id":"r1"}`
+	p.sendLine(t, older)
+	p.send(t, shimwire.GetState{ID: "after"})
+	if answer, ok := p.next(t).(shimwire.Response); !ok || answer.ID != "after" {
+		t.Fatalf("the shim sent %#v, want OMP's answer to the get_state after the older daemon's frame", answer)
 	}
-	d.Write(d.Workspace, "feature.txt", "work jj alone holds\n")
-	d.JJ("commit", "-m", "work jj alone holds")
-	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-	for _, tc := range []struct {
-		name        string
-		noWorkspace bool
-	}{{name: "a shim on the issue's workspace"}, {name: "a shim with no LEGION_WORKSPACE", noWorkspace: true}} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := socketPath(t)
-			daemon := listen(t, path)
-			child := newOMP(t)
-			cfg := config(t, path, child)
-			cfg.Env = append(slices.Clone(d.Env), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker, "FAKE_OMP_LOG="+child.log)
-			if !tc.noWorkspace {
-				cfg.Env = append(cfg.Env, "LEGION_WORKSPACE="+d.Workspace)
-			}
-			run(t, cfg, newClock())
-			p := daemon.accept(t)
-			p.open(t)
-
-			request := shimwire.RescueUnpushed{ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a", WorkspaceTimeoutMs: 60_000, TimeoutMs: 120_000}
-			p.send(t, request)
-			got, ok := p.next(t).(shimwire.RescueUnpushedResult)
-			if !ok || got.ID != request.ID {
-				t.Fatalf("the shim answered %#v, want a result for %s", got, request.ID)
-			}
-			if tc.noWorkspace {
-				if got.OK || !strings.Contains(got.Error, "LEGION_WORKSPACE is not set") {
-					t.Fatalf("the shim answered %#v, want a refusal naming LEGION_WORKSPACE", got)
-				}
-			} else {
-				want := []shimwire.RescueWorkspace{{Dir: d.Workspace, Status: "rescued", Branches: []shimwire.RescueBranch{{Name: request.Branch + "-1", Commit: commit}}}}
-				if !got.OK || !reflect.DeepEqual(got.Workspaces, want) {
-					t.Fatalf("the shim answered %#v, want %+v", got, want)
-				}
-				if held := d.RemoteBranch(request.Branch + "-1"); held != commit {
-					t.Fatalf("the remote holds %s-1 at %q, want %s", request.Branch, held, commit)
-				}
-			}
-
-			p.send(t, shimwire.GetState{ID: "after"})
-			p.next(t)
-			if got := frameTypes(child.received(t)); !reflect.DeepEqual(got, []string{shimwire.TypeGetState}) {
-				t.Fatalf("OMP read %v; rescue-unpushed is the shim's own", got)
-			}
-			if got := decoy.RemoteBranches(); !reflect.DeepEqual(got, decoyBranches) {
-				t.Fatalf("the decoy's remote holds %v after the check, want %v: the check reached the process's LEGION_WORKSPACE", got, decoyBranches)
-			}
-		})
+	got := child.received(t)
+	if len(got) != 2 || got[1].FrameType() != shimwire.TypeGetState {
+		t.Fatalf("OMP read %v, want the older daemon's frame and then the get_state", frameTypes(got))
+	}
+	if raw, ok := got[0].(shimwire.Raw); !ok || string(raw.JSON) != older {
+		t.Fatalf("OMP read %#v, want the older daemon's line unchanged: %s", got[0], older)
 	}
 }
 
@@ -1159,20 +1275,29 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 // implementer pushed @ as its commit) would have the next role's work land in that commit, authored
 // by the previous role's App. Before a task reaches the agent, the adoption starts the incoming role
 // on a fresh working copy of its own identity, leaving the described commit and its author as they
-// were; an undescribed working copy is only re-authored. Either way the adoption is one read of the
+// were; an undescribed working copy is only re-authored, which rewrites its author and nothing else:
+// it stays the change it was, holding what it held. Either way the adoption is one read of the
 // working copy and the one change it needs.
+//
+// INFRA-53's case (R3 of dispatch://INFRA-2695): an empty undescribed working copy the previous
+// phase role left, as a `jj split` of its work into a described commit leaves one, becomes the
+// incoming phase role's, and the described commit under it keeps its id and its author.
 func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
 		t.Fatalf("jj is required: %v", err)
 	}
 	for _, tc := range []struct {
-		name      string
-		described bool
-		ran       string
+		name       string
+		leave      []string // what the previous role ran once README.md was written, nil for nothing
+		pushed     string   // the previous role's described commit before the adoption, "" for none
+		empty      bool     // whether the working copy the previous role left holds no change
+		reauthored bool     // whether the adoption re-authors that working copy rather than start a fresh one
+		ran        string
 	}{
-		{name: "a described working copy", described: true, ran: "log\nnew\n"},
-		{name: "an undescribed working copy", ran: "log\nmetaedit\n"},
+		{name: "a described working copy", leave: []string{"describe", "-m", "feat: the pushed change"}, pushed: "@", ran: "log\nnew\n"},
+		{name: "an undescribed working copy", reauthored: true, ran: "log\nmetaedit\n"},
+		{name: "an empty working copy a split left", leave: []string{"split", "-m", "feat: the pushed change", "README.md"}, pushed: "@-", empty: true, reauthored: true, ran: "log\nmetaedit\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The test process's environment (a devbox's jj configuration, a pod's workspace and
@@ -1200,10 +1325,17 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("smoke\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if tc.described {
-				jjAs("implementer", "describe", "-m", "feat: the pushed change")
+			if tc.leave != nil {
+				jjAs("implementer", tc.leave...)
 			}
-			before := jjAs("implementer", "log", "-r", "@", "--no-graph", "-T", "commit_id")
+			var change string
+			if tc.reauthored {
+				change = jjAs("implementer", "log", "-r", "@", "--no-graph", "-T", "change_id")
+			}
+			var pushed string
+			if tc.pushed != "" {
+				pushed = jjAs("implementer", "log", "-r", tc.pushed, "--no-graph", "-T", "commit_id")
+			}
 			// The shim's jj, recording each command it runs: first on PATH, where the shim looks. It
 			// hands the real jj the PATH past its own directory, so a jj on PATH that is itself a
 			// wrapper looking jj up on PATH never finds this one again.
@@ -1235,12 +1367,18 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			if author != "tester|" {
 				t.Fatalf("the working copy after adoption is %q, want an undescribed commit authored by tester", author)
 			}
-			if !tc.described {
+			if tc.reauthored {
+				want := fmt.Sprintf("%s %t", change, tc.empty)
+				if got := jjAs("implementer", "log", "-r", "@", "--no-graph", "-T", `change_id ++ " " ++ empty`); got != want {
+					t.Fatalf("the re-authored working copy is %q (change id, empty), want %q: the change the previous role left, holding what it held", got, want)
+				}
+			}
+			if tc.pushed == "" {
 				return
 			}
 			parent := jjAs("implementer", "log", "-r", "@-", "--no-graph", "-T", `commit_id ++ " " ++ author.name() ++ " " ++ description.first_line()`)
-			if parent != before+" implementer feat: the pushed change" {
-				t.Fatalf("the adopted working copy's parent is %q, want the described commit %s kept, authored by implementer", parent, before)
+			if parent != pushed+" implementer feat: the pushed change" {
+				t.Fatalf("the adopted working copy's parent is %q, want the described commit %s kept, authored by implementer", parent, pushed)
 			}
 		})
 	}
@@ -1340,11 +1478,13 @@ func treeOf(t *testing.T, root string) map[string]string {
 }
 
 // A git lock an interrupted git or jj left in a running pod's workspace fails the adoption on
-// every write of what it locks, and nothing under a running pod removes it: another role's live git
-// may hold it. The failure names the lock and how long ago it was last written, says not to remove
-// it while the pod runs and that replacing the pod removes it, and says what holds under tmux,
-// whether jj's own git backend reported it (the index jj rewrites as it snapshots the working copy,
-// as in LEGION-731) or a git command jj ran; and the lock stays.
+// every write of what it locks, and the role that reads the failure removes nothing: the launcher
+// of the pod's roles container sweeps such a lock once no process of the container holds it open
+// and it is more than 15 minutes old (internal/launcher's gitLockSweep). The failure names the
+// lock and how long ago it was last written, says what that sweep does and how long it takes,
+// tells the role to run the command again, and says what holds under tmux, whether jj's own git
+// backend reported it (the index jj rewrites as it snapshots the working copy, as in LEGION-731)
+// or a git command jj ran; and the lock stays.
 func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
@@ -1402,9 +1542,10 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 			for _, want := range []string{
 				"Command failed (exit 1)",
 				"git lock " + lock + " was last written 31m",
-				"Do not remove it while the issue's pod runs: another role's git, which this container cannot see, may hold it.",
-				"Replacing the issue's pod removes it.",
+				"The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute.",
+				"Run the command again in about 16 minutes.",
 				"Under the tmux runtime nothing removes it",
+				"If the lock is still there after that time, tell the issue's architect.",
 			} {
 				if !strings.Contains(got.Error, want) {
 					t.Errorf("the result's error %q does not mention %q", got.Error, want)

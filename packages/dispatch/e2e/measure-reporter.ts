@@ -2,7 +2,7 @@
  *  file `E2E_MEASURE_FILE` names, read back by e2e/tools/measure-summary.ts. The config adds it
  *  beside the list reporter only when that variable is set, so an ordinary run writes nothing.
  *
- *    E2E_MEASURE_FILE=/tmp/measure/head.jsonl bun e2e/run.ts -- bunx playwright test \
+ *    E2E_MEASURE_FILE=/tmp/measure/head.jsonl bunx playwright test \
  *      --config e2e/playwright.config.ts --project=chromium e2e/smoke.e2e.ts
  */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";

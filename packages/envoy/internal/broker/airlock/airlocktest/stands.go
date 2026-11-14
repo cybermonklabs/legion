@@ -1,12 +1,12 @@
 // packages/envoy/internal/broker/airlock/airlocktest/stands.go
-// The eight stand-ins a Service answers as: GitHub's App endpoints, Google's token endpoint,
-// Microsoft's authority, an AWS service that checks the signature it was sent, the WebSocket
-// upgrade a bound host answers, and the three the broker's model judge calls — a model
-// endpoint, Dispatch's two issue reads, and the Compute Engine metadata server a machine reads
-// its own identity token from. Each is a value holding what it answers and what it was asked,
-// and each installs its Answer on a Service (Service.AnswerWith), so one of them may play a
-// host of its own in the command and the same one may play the bound host of a row that
-// already has a service.
+// The seven stand-ins a Service answers as: Google's token endpoint, Microsoft's authority, an
+// AWS service that checks the signature it was sent, the WebSocket upgrade a bound host answers,
+// and the three the broker's model judge calls — a model endpoint, Dispatch's two issue reads,
+// and the Compute Engine metadata server a machine reads its own identity token from. The eighth
+// stand-in, GitHub's App endpoints, is in github.go beside this file. Each is a value holding
+// what it answers and what it was asked, and each installs its Answer on a Service
+// (Service.AnswerWith), so one of them may play a host of its own in the command and the same
+// one may play the bound host of a row that already has a service.
 package airlocktest
 
 import (
@@ -27,105 +27,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/requests"
 )
-
-// GitHubOptions is what a GitHubStand answers with.
-type GitHubOptions struct {
-	// Installations is the installation id the App has on each owner, by owner. A mint for an
-	// owner no entry names finds no installation, which is what the minter's own refusal is
-	// about.
-	Installations map[string]int64
-	// Token is the installation token every answer carries, and "" is a token of each owner's
-	// own, ghs_standin_<owner>, so a row that mints for two owners can tell the two apart.
-	Token string
-	// Lifetime is how long from now each token's expires_at is, and zero is an hour, the life
-	// GitHub gives one.
-	Lifetime time.Duration
-}
-
-// GitHubStand is the two routes secrets.GitHubApp calls: GET /app/installations, which answers
-// the installations it was given, and POST /app/installations/{id}/access_tokens, which answers
-// that installation's token and its expiry. Pointing BROKER_AIRLOCK_TEST_GITHUB_API_BASE at a
-// Service answering as one is what makes a github-app secret mint against this process.
-type GitHubStand struct {
-	options GitHubOptions
-}
-
-// NewGitHubStand builds one. Install it with Service.AnswerWith(stand.Answer).
-func NewGitHubStand(o GitHubOptions) *GitHubStand { return &GitHubStand{options: o} }
-
-// owners names every owner the App is installed on, in order, so two runs answer one list.
-func (g *GitHubStand) owners() []string {
-	owners := make([]string, 0, len(g.options.Installations))
-	for owner := range g.options.Installations {
-		owners = append(owners, owner)
-	}
-	slices.Sort(owners)
-	return owners
-}
-
-// token is the installation token this stand-in answers for owner.
-func (g *GitHubStand) token(owner string) string {
-	if g.options.Token != "" {
-		return g.options.Token
-	}
-	return "ghs_standin_" + owner
-}
-
-// Answer is GitHub's answer to each of the two routes, and a 404 naming anything else: a minter
-// that called a route this stand-in does not serve reads which one rather than an empty answer.
-func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Request) bool {
-	lifetime := g.options.Lifetime
-	if lifetime <= 0 {
-		lifetime = time.Hour
-	}
-	w.Header().Set("Content-Type", "application/json")
-	switch owner, route := g.route(seen); route {
-	case "installations":
-		installations := []map[string]any{}
-		for _, owner := range g.owners() {
-			installations = append(installations, map[string]any{
-				"id":      g.options.Installations[owner],
-				"account": map[string]string{"login": owner},
-			})
-		}
-		_ = json.NewEncoder(w).Encode(installations)
-	case "token":
-		// 201 and an expires_at: the minter refuses any other status and refuses a token with
-		// no expiry, so an answer short of both is no answer at all.
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"token":      g.token(owner),
-			"expires_at": time.Now().Add(lifetime).UTC().Format(time.RFC3339),
-		})
-	default:
-		http.Error(w, "the GitHub stand-in serves GET /app/installations and POST /app/installations/{id}/access_tokens, not "+seen.Method+" "+seen.Path, http.StatusNotFound)
-	}
-	return true
-}
-
-// route reads which of the two routes a request is, and for a token request the owner whose
-// installation id it names. An id no owner holds is no route of this stand-in's: a minter that
-// asked for a token of an installation nothing was configured for reads the 404 above rather
-// than a token of nobody's.
-func (g *GitHubStand) route(seen Request) (owner, route string) {
-	if seen.Method == http.MethodGet && seen.Path == "/app/installations" {
-		return "", "installations"
-	}
-	rest, isToken := strings.CutSuffix(strings.TrimPrefix(seen.Path, "/app/installations/"), "/access_tokens")
-	if seen.Method != http.MethodPost || !isToken {
-		return "", ""
-	}
-	id, err := strconv.ParseInt(rest, 10, 64)
-	if err != nil {
-		return "", ""
-	}
-	for _, owner := range g.owners() {
-		if g.options.Installations[owner] == id {
-			return owner, "token"
-		}
-	}
-	return "", ""
-}
 
 // GoogleOptions is what a GoogleStand answers with.
 type GoogleOptions struct {

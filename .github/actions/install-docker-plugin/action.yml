@@ -1,0 +1,36 @@
+name: Download the docker provider plugin
+description: >-
+  Fetches the docker provider plugin tarball the envoy-infra live tests run against, into
+  $RUNNER_TEMP, and hands its path to the caller as the `tarball` output.
+
+  The `pulumi-docker` row of .github/ci-tools.yaml pins the version and the one sha256 of the whole
+  release tarball that both sources are checked against, and .github/scripts/check-ci-tools.sh
+  holds that row's version to `const DockerPluginVersion` of
+  packages/envoy/infra/internal/pulumitest/pulumitest.go, the constant the live programs pin the
+  plugin at. The row's second source is get.pulumi.com, which serves the same tarball, so an
+  outage of GitHub's release assets does not stop the job.
+
+  Nothing is installed here: the live tests are handed the path and install the verified tarball
+  into a PULUMI_HOME of their own, so the pulumi CLI downloads no plugin.
+outputs:
+  tarball:
+    description: >-
+      The path of the verified docker provider plugin tarball under $RUNNER_TEMP, for the
+      ENVOY_INFRA_DOCKER_PLUGIN of the step that runs the live tests.
+    value: ${{ steps.fetch.outputs.tarball }}
+runs:
+  using: composite
+  steps:
+    - id: fetch
+      name: Download the docker provider plugin
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        # The name is built from the row's own version, because pulumitest.newHome refuses a
+        # tarball whose base name does not hold `-v<DockerPluginVersion>-`.
+        version=$(ci_tools_field pulumi-docker version)
+        tarball="$RUNNER_TEMP/pulumi-resource-docker-v$version-linux-amd64.tar.gz"
+        ci_tools_fetch pulumi-docker "$tarball"
+        echo "tarball=$tarball" >> "$GITHUB_OUTPUT"

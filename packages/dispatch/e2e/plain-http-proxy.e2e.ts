@@ -17,6 +17,13 @@ const proxyModule = fileURLToPath(new URL("./plain-http-proxy.ts", import.meta.u
 
 test.skip(httpsTarget, plainHttpSkipReason);
 
+// This file keeps Playwright's own `test` rather than the suite's (e2e/test.ts), which resets the
+// database before every row: the row below reaches no Dispatch server at all - it counts sockets
+// on a stand-in upstream of its own - so a reset here would empty a database the row never
+// touches. It is also the one row of this project that could not take the suite's default
+// sign-in, whose `context.request` resolves this project's host name in Node and would answer
+// ENOTFOUND (e2e/plain-http-origin.e2e.ts says the same of its own rows).
+
 test("a page that closes leaves no live socket open upstream of the proxy", async ({ browser }) => {
   // A stand-in upstream counts what the server under test would see: the page's live socket
   // (`/ws/live`, the one connection a Dispatch page holds open) arriving and ending. A socket the
@@ -65,7 +72,7 @@ test("a page that closes leaves no live socket open upstream of the proxy", asyn
   const upstreamPort = (upstream.address() as AddressInfo).port;
   // A second proxy in front of the stand-in: the harness's own proxy forwards to the server under
   // test, whose subscribers this spec cannot count. With the plain-HTTP port unset under every
-  // name this lane carries it under, the second proxy binds a port the OS chooses, which this row
+  // name this stack carries it under, the second proxy binds a port the OS chooses, which this row
   // reads from its listening line.
   const env = withoutHarnessPort("plainHttp");
   const proxy = spawn("bun", [proxyModule], {

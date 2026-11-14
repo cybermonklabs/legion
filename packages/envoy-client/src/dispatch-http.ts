@@ -12,16 +12,20 @@ import type {
   ArtifactText,
   ArtifactUploadResponse,
   ArtifactVersionText,
-  Ask,
   AskRead,
+  AskWithTrees,
   CheckResultRecorded,
+  CheckResultRetraction,
+  CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
   CommentRead,
   CommentWriteResponse,
+  CreateAgentMessageInput,
   CreateArtifactInput,
   CreateAskInput,
   CreateCommentInput,
+  CreatedProject,
   CreateIssueInput,
   CreateMessageInput,
   CreateProjectInput,
@@ -50,12 +54,14 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  MarkdownRoundTripResponse,
   Message,
   MessageRead,
   MessageReplyInput,
   MessageReplyResult,
   MyRepliesResponse,
   OpenAsksResponse,
+  Priorities,
   Project,
   RecordCheckResultInput,
   RelatedCheckInput,
@@ -70,6 +76,7 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -78,6 +85,7 @@ import {
   type IdempotencyLandedCode,
   retriesUnderKey,
 } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
@@ -269,6 +277,11 @@ export interface IssuePageRequest {
   readonly offset: number;
 }
 
+/** What the `dispatch search` command narrows by. It carries none of the five members the search
+ *  bar sends (`number_project`, `status`, `author`, `updated_since`, `keywords_only`): those
+ *  belong to the bar's own feature, and the command cannot narrow by them today. `search` reads
+ *  the request's keys rather than this shape, so the day one is added here it is routed to
+ *  `GET /api/v1/search/results` with nobody remembering to. */
 export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
@@ -788,7 +801,7 @@ export class DispatchClient {
     readonly writeRetry: DispatchWriteRetry = DISPATCH_WRITE_RETRY
   ) {
     this.#credential = credential;
-    this.#baseUrl = baseUrl.replace(/\/+$/, "");
+    this.#baseUrl = withoutTrailingSlashes(baseUrl);
     this.#signal = requestSignal(signal);
     this.#madeAt = this.#now();
   }
@@ -853,6 +866,26 @@ export class DispatchClient {
     );
   }
 
+  /** `GET /api/v1/issues/{key}/artifacts`: every document and file the issue holds, each with
+   *  its versions, which is what `dispatch artifact` reads to refuse a name the issue already
+   *  holds. */
+  async listIssueArtifacts(issue: string): Promise<Artifact[]> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"]);
+  }
+
+  /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
+   *  route writes nothing: it parses the text and renders it again, as a document write does, so
+   *  a caller compares the answer with the text it holds and refuses a text the store would
+   *  change. */
+  async markdownRoundTrip(markdown: string): Promise<string> {
+    const answer: MarkdownRoundTripResponse = await this.#json(
+      "POST",
+      ["api", "v1", "markdown", "round-trip"],
+      { markdown }
+    );
+    return answer.markdown;
+  }
+
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {
     return this.#json(
       "GET",
@@ -905,8 +938,15 @@ export class DispatchClient {
     ]);
   }
 
+  /** `GET /api/v1/search`, or `GET /api/v1/search/results` for a request carrying a member a
+   *  Dispatch released before that route would drop (`everyBuildReadsSearch`), which such a
+   *  build refuses rather than answering unnarrowed. */
   async search(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
-    return this.#json("GET", ["api", "v1", "search"], undefined, { q: query, ...options });
+    const request = { q: query, ...options };
+    const path = everyBuildReadsSearch(request)
+      ? ["api", "v1", "search"]
+      : ["api", "v1", "search", "results"];
+    return this.#json("GET", path, undefined, request);
   }
 
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,
@@ -999,7 +1039,7 @@ export class DispatchClient {
     return { issue, events };
   }
 
-  async ask(issue: string, input: CreateAskInput): Promise<Advised<Ask>> {
+  async ask(issue: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1017,6 +1057,12 @@ export class DispatchClient {
   /** Every open ask on a project's issues and documents (issue- or document-owned), oldest first. */
   async openAsksForProject(project: string): Promise<OpenAsksResponse> {
     return this.#json("GET", ["api", "v1", "asks", "open"], undefined, { project });
+  }
+
+  /** `GET /api/v1/priorities`: every live priority in rank order with the work under it, and the
+   *  two faults; `project`, repeated, counts only those projects' work. */
+  async priorities(projects: readonly string[] = []): Promise<Priorities> {
+    return this.#json("GET", ["api", "v1", "priorities"], undefined, { project: projects });
   }
 
   /** `GET /api/v1/agents/{session_id}/answers`: what people wrote that Dispatch delivered to the
@@ -1064,7 +1110,8 @@ export class DispatchClient {
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
-   *  which no reader re-sorts. `me` is the caller, and keeps the rows on issues assigned to them,
+   *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
+   *  handed to them, and the asks on the issues assigned to them that nobody has handed on —
    *  which is what the Inbox page shows by default. The route reads the caller's own `person`
    *  scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
   async inbox(assignee: string): Promise<InboxRow[]> {
@@ -1089,9 +1136,10 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "credential-requests"], undefined, { approver: "me" });
   }
 
-  /** `POST /api/v1/projects`: create a project. A key that already exists is 409
+  /** `POST /api/v1/projects`: create a project. It answers the project with the default assignee
+   *  the create stored, which the project list leaves out. A key that already exists is 409
    *  PROJECT_EXISTS, and a key that is not a project key or an empty name 400 INVALID_PROJECT. */
-  async createProject(input: CreateProjectInput): Promise<Project> {
+  async createProject(input: CreateProjectInput): Promise<CreatedProject> {
     return this.#json("POST", ["api", "v1", "projects"], input);
   }
 
@@ -1191,7 +1239,7 @@ export class DispatchClient {
     ]);
   }
 
-  async resolveAsk(id: string, input: ResolveAskInput): Promise<Ask> {
+  async resolveAsk(id: string, input: ResolveAskInput): Promise<AskWithTrees> {
     return this.#json("POST", ["api", "v1", "asks", id, "resolve"], input);
   }
 
@@ -1240,12 +1288,35 @@ export class DispatchClient {
     );
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it. */
-  async issueResults(issue: string): Promise<IssueCheckResults> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "results"]);
+  /** Each check of an issue's Verification document with every result recorded against it, and
+   *  for a check CI proves the one result Dispatch derives from its check run.
+   *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
+   *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
+   *  proves, at the issue's newest pull request head as on every read. */
+  async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
+      undefined,
+      at === undefined ? undefined : { at }
+    );
   }
 
-  async editAsk(id: string, input: EditAskInput): Promise<Ask> {
+  /**
+   * Records that one stored result is wrong, with the reason, and answers the retraction. The
+   * result itself is neither changed nor deleted: a reader of the results sees the result and
+   * its retraction together. The session that recorded the result, a session holding the
+   * Dispatch claim of the issue it was recorded on, and a caller whose credential carries a
+   * person may each retract it.
+   */
+  async retractResult(
+    resultID: string,
+    input: CheckResultRetractionInput
+  ): Promise<CheckResultRetraction> {
+    return this.#json("POST", ["api", "v1", "results", resultID, "retract"], input);
+  }
+
+  async editAsk(id: string, input: EditAskInput): Promise<AskWithTrees> {
     return this.#json("PATCH", ["api", "v1", "asks", id], input);
   }
 
@@ -1258,7 +1329,7 @@ export class DispatchClient {
   }
 
   /** Every ask on an issue (all states unless narrowed). */
-  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<Ask[]> {
+  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<AskWithTrees[]> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1267,7 +1338,7 @@ export class DispatchClient {
     );
   }
 
-  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<Ask[]> {
+  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<AskWithTrees[]> {
     return this.#json(
       "GET",
       ["api", "v1", "artifacts", id, "asks"],
@@ -1276,7 +1347,7 @@ export class DispatchClient {
     );
   }
 
-  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<Ask>> {
+  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
     return this.#json("POST", ["api", "v1", "artifacts", id, "asks"], input);
   }
 
@@ -1329,6 +1400,16 @@ export class DispatchClient {
       ["api", "v1", "issues", await this.#resolveIssue(issue), "messages"],
       input
     );
+  }
+
+  /**
+   * `POST /api/v1/agents/{session_id}/messages`: one message into a session's own conversation,
+   * which belongs to no issue. The route is the person's, so the credential must hold the
+   * `person` scope. It answers once the message's first delivery attempt has settled, with that
+   * attempt on the message.
+   */
+  async agentMessage(sessionId: string, input: CreateAgentMessageInput): Promise<Message> {
+    return this.#json("POST", ["api", "v1", "agents", sessionId, "messages"], input);
   }
 
   /**
@@ -1436,6 +1517,14 @@ export class DispatchClient {
     return version === undefined
       ? this.#json("GET", ["api", "v1", "artifacts", id, "text"])
       : this.#json("GET", ["api", "v1", "artifacts", id, "versions", String(version)]);
+  }
+
+  /** `GET /api/v1/artifacts/{id}/text?blocks=true`: the live document's markdown, its token, its
+   *  version and its blocks in one answer, every part of it rendered from the one tree, so a write
+   *  by another session between two reads cannot leave the blocks indexing markdown they were not
+   *  computed over. A Dispatch older than the parameter answers the text without `blocks`. */
+  async docReadWithBlocks(id: string): Promise<ArtifactText> {
+    return this.#json("GET", ["api", "v1", "artifacts", id, "text"], undefined, { blocks: true });
   }
 
   /** One version of an uploaded file as Dispatch stores it: `GET /artifacts/{id}/versions/{n}`
@@ -1655,9 +1744,12 @@ export class DispatchClient {
     return { status: response.status, payload: await this.#response<T>(method, url, response) };
   }
 
-  /** An upload to an owner's artifact route: inline content as JSON, a file as multipart. */
+  /** An upload to an owner's artifact route: a file as multipart, and everything else as JSON -
+   *  inline content, and a name alone, which makes an empty document. */
   async #upload<T>(path: readonly string[], input: CreateArtifactInput, key?: string): Promise<T> {
-    if ("content" in input) return this.#json("POST", path, input, undefined, undefined, key);
+    if (input.file === undefined) {
+      return this.#json("POST", path, input, undefined, undefined, key);
+    }
     const form = new FormData();
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
@@ -1987,7 +2079,13 @@ export class DispatchClient {
     );
     if (query) {
       for (const [name, value] of Object.entries(query)) {
-        if (typeof value === "string" || typeof value === "number") {
+        // A boolean is sent as `true` or `false`, the two words every route that reads one
+        // takes (`parseQueryBool` in the server). It must be sent rather than dropped: a
+        // search's path is picked from the members the request carries
+        // (`everyBuildReadsSearch`), so a dropped `keywords_only: true` would ask for
+        // `/api/v1/search/results` and then arrive with the flag gone, and the server would
+        // answer by meaning the search asked it to skip.
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
           url.searchParams.set(name, String(value));
         } else if (Array.isArray(value)) {
           for (const item of value) url.searchParams.append(name, String(item));

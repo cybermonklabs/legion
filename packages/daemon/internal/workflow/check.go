@@ -192,8 +192,8 @@ func boundText(bound time.Duration) string {
 
 // checkReported records the checking agent's report on a look (intake.CheckReport). A report on an
 // issue with no open check is refused (CHECK_NOT_OPEN), and so is one naming a look that is not
-// the open one (CHECK_LOOK_NOT_OPEN: its bound or a hold ended it, or the report is of an earlier
-// look) or carrying no verdict of pass, pending or fail (CHECK_VERDICT_REQUIRED). The look ends;
+// the check's current one (CHECK_LOOK_NOT_OPEN: the report is of an earlier look) or carrying no
+// verdict of pass, pending or fail (CHECK_VERDICT_REQUIRED). The look ends;
 // pass closes the check as recorded and fail as a defect (closeCheck), and pending ends the look
 // as one with nothing to show (endLookPending), named for the next look at the time the report
 // carries (intake.CheckReport.WakeAt, which the route holds a pending to), clamped into the
@@ -201,6 +201,13 @@ func boundText(bound time.Duration) string {
 // report (api.handoffComplete, before it reaches its checkReport). A pending that names no time
 // is woken as a look nobody reported is, a look bound out, so the check is never left with no row
 // to wake it.
+//
+// How the current look ended does not matter: a report of it counts while the check is open,
+// however that look ended — its bound came due, an operator's hold met its start, or the
+// checking role's claim failed in it (dispatch://INFRA-714/spec R12). The checking agent drove
+// the change in production and its answer is the fact; refusing it threw that away and left the
+// check to close as not run. A report refused here leaves its event unmarked, so the agent's next
+// send of it applies (intake's ApplyFact).
 func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.CheckReport) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil {
@@ -209,8 +216,8 @@ func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.Check
 	if check == nil || !check.Open() {
 		return refused("CHECK_NOT_OPEN", fmt.Sprintf("%s has no open production check; this report changed nothing", fact.Issue)), nil
 	}
-	if !check.LookOpen || fact.Look != check.Looks {
-		return refused("CHECK_LOOK_NOT_OPEN", fmt.Sprintf("look %d of %s's production check is not open: the check is at look %d, and its bound or a hold ends a look nobody reported; this report changed nothing",
+	if fact.Look != check.Looks {
+		return refused("CHECK_LOOK_NOT_OPEN", fmt.Sprintf("look %d of %s's production check is not the look to report: the check is at look %d; this report changed nothing",
 			fact.Look, fact.Issue, check.Looks)), nil
 	}
 	var outcome record.CheckOutcome

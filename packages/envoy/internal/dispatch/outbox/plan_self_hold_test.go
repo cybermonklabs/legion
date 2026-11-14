@@ -52,7 +52,7 @@ func TestAWaitingCopyHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	rig := newRoleRig(t)
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, roleTopic)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	route := "role:" + role

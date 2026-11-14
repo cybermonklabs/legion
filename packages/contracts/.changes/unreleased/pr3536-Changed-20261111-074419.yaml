@@ -1,0 +1,5 @@
+kind: Changed
+body: The daemon state adds `claimsToRefresh`, the number of claims whose plugin the stale-plugin lane still has to move, and the wake kind `plugin-task` is replaced by `plugin-refresh`, the relaunch that lane raises; both are daemon API contract 73.
+time: 2026-11-11T07:44:19.516481833Z
+custom:
+    Issue: pr3536

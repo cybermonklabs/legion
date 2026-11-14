@@ -1,8 +1,6 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, getArtifactText } from "./api";
 import { connectedDot, documentEditor, placeCaret } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // Every row here carries `@webkit`, the tag the `webkit` project selects by
@@ -17,10 +15,6 @@ function bobsCursorInCode(page: Page) {
 function bobsCursor(page: Page) {
   return documentEditor(page).locator(".proof-collab-cursor__label", { hasText: "bob" });
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 const cases = [
   {
@@ -83,7 +77,8 @@ for (const { name, edge, type, code } of cases) {
 
 // @webkit: where a caret lands beside a collaborator's own caret, here the one a reader outside
 // the editor sees over their own stale selection.
-test("a reader outside the editor sees a collaborator's cursor even where their own stale selection sits @webkit", async ({
+// @pr: A two-context race: a collaborator's caret is drawn for a reader whose own selection is stale over the same text.
+test("a reader outside the editor sees a collaborator's cursor even where their own stale selection sits @webkit @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

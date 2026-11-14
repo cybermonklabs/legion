@@ -5,14 +5,14 @@ Treat the numbers as order-of-magnitude figures.
 
 ## Method
 
-`TestOutboxThroughputUnderRemoteLatency` (`throughput_test.go`):
+`TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency` (`throughput_test.go`):
 
 - A real Postgres (pgvector pg16) and a real JetStream server.
 - The outbox's bus client reaches NATS through a TCP proxy that holds each chunk for half the
   round trip, in order (`testnats.StartProxy` with `testnats.ProxyLatency`), as a remote NATS hub
   does.
 - Load: 200 events across 20 issues, each routed to `role:reviewer`, whose holder is a
-  self-subscribed session that answers every forward with its receipt. Half are human replies to a
+  self-subscribed session the stream acknowledges every forward for. Half are human replies to a
   session's message, which take an author lookup and a third destination. That is 500
   destinations in all: 200 issue topics, 200 role forwards to the holder and 100 session topics.
   Before the role forward (#2395, `role.go`) the 200 role routes were core publishes to
@@ -26,6 +26,9 @@ Treat the numbers as order-of-magnitude figures.
 - The single-issue burst: 100 events on one issue, every one of them bound for the same three
   destinations.
 - The rate is (events marked published) / (time from start until none is left).
+- The peak reading is the most sends the outbox held outstanding at any one moment over the
+  drain, counted by a wrapper around every window its batches publish through
+  (`outstandingSends`).
 
 ## Results
 
@@ -38,13 +41,15 @@ Treat the numbers as order-of-magnitude figures.
 | Chains, role routes forwarded to the holder with a receipt (#2395, two runs on 2026-10-27) | 196-199 ev/s | 171-188 ev/s | 73-74 ev/s | 71-72 ev/s | 17.3-17.6 ev/s | 6.2 ev/s |
 | The same, the #2395 head `891e854b`, same machine as the harness-commit row | 175.5 ev/s | 183.9 ev/s | 71.3 ev/s | 70.5 ev/s | 16.7 ev/s (100 in 5.99 s) | 6.2 ev/s (100 in 16.2 s) |
 
-The test requires 25 ev/s of the backlog cases and holds the burst cases to no rate. The old
-design fails it in every case. Chains cost one round trip per event per destination of one issue:
-a batch of the backlog holds five events of each issue, so it takes five round trips, and a burst
-on one issue takes one round trip per event, which is the price of each destination taking an
-issue's events in order whatever fails (`planChains`). With role routes forwarded to the holder
-and answered by its receipt, the backlog cases took about 1.6 times as long as with role routes
-published to the role's topic, and the burst cases about as long.
+The test requires at least 20 sends outstanding at the peak in the backlog cases
+(`minOutstanding`) and asserts no rate; the burst cases, where one issue is one chain, assert
+neither. Both readings are logged, and `throughput_test.go` carries the peaks measured and the
+readings that floor was drawn from. Chains cost one round trip per event per destination of one
+issue: a batch of the backlog holds five events of each issue, so it takes five round trips, and
+a burst on one issue takes one round trip per event, which is the price of each destination
+taking an issue's events in order whatever fails (`planChains`). With role routes forwarded to
+the holder and answered by its receipt, the backlog cases took about 1.6 times as long as with
+role routes published to the role's topic, and the burst cases about as long.
 
 ## Two real processes at the production step and ten times it
 
@@ -52,7 +57,7 @@ published to the role's topic, and the burst cases about as long.
 only with `DISPATCH_OUTBOX_LOAD_STEPS=1`) is black box: real `envoy-dispatch` processes on one
 Postgres and one NATS (no added latency), comments on 40 issues written through the processes'
 HTTP API (alternating between them with two processes), one issue routed to a role whose holder
-answers forwards with its receipt, and a test session that counts each event once at its first
+the stream acknowledges every forward for, and a test session that counts each event once at its first
 arrival. The publish rate is distinct events received per second while writing; the latency runs
 from the event's commit (`IssuedAt`) to that arrival. The burst writes 100 comments on one issue
 through one process. Same file, same 2-core machine, 2026-10-27: "before" at the harness commit
@@ -94,10 +99,11 @@ count is unchanged and the runs below were not repeated.
 
 On #2395's chains, the two queries are two of the batch's lookup statements (`loadLookups`), the
 claimant route is `addClaimantRoute` and the primary document's sessions
-`addPrimaryDocumentAuthors`. The three loads run in `TestOutboxThroughputUnderRemoteLatency`
-beside the burst, which runs on the `messages` load alone, and their stream counts there include
-each role forward, which the stream captures on the holder's agent subject. The rows below were
-measured before #2395 and were not repeated on its chains.
+`addPrimaryDocumentAuthors`. The three loads run in
+`TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency` beside the burst, which runs on the
+`messages` load alone, and their stream counts there include each role forward, which the stream
+captures on the holder's agent subject. The rows below were measured before #2395 and were not
+repeated on its chains.
 
 Method: the test has three loads. Each has 200 events across 20 issues, so each batch of 100 has
 every kind of event in its load.
@@ -156,7 +162,7 @@ against main with #2225.
 | `TestABacklogPublishedAcrossANATSOutageKeepsItsOrder` (NATS down before the scan, then back) | Fails: an issue's subject held `[3 5 7 … 19 1]`, because event 1 was backed off | Passes: in id order, 0.5-0.7 s after NATS came back | Passes: each issue's events in id order on each destination |
 | `TestABatchCutOffInFlightKeepsItsOrder` (connection cut with acknowledgements in flight at 150 ms round trip) | Fails on the first pipelined build: 100 events backed off, then reordered | Passes: every event released, no attempt counted, stream in id order with no duplicates | Passes: every event released, no attempt counted, each destination in id order, no duplicates |
 | `TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates` | Passes | Passes: republished once the claim lapses, the stream's MsgId drops every repeat | Passes: republished once the dead holder's hold lapses, the stream's MsgId drops every repeat |
-| `TestABackedOffEventHoldsBackOnlyItsDestination` (one session's subject fails for an event; or the session holds the issue's role and withholds its receipt for the event) | n/a | Fails: the session takes the later events first, `[2 3 1]` | Passes: the topic family takes the later events at once, the session all three in order; the role variant fails before the role forward, since the holder then receives nothing from the outbox |
+| `TestABackedOffEventHoldsBackOnlyItsDestination` (one session's subject fails for an event; or the session holds the issue's role and the stream does not acknowledge the forward of that event) | n/a | Fails: the session takes the later events first, `[2 3 1]` | Passes: the topic family takes the later events at once, the session all three in order; the role variant fails before the role forward, since the holder then receives nothing from the outbox |
 | `TestAnIssuesEventsGoToEachDestinationOneAtATime` | n/a | n/a | Passes: nothing of an owner is marked or backed off until every answer of that owner is in |
 | `TestAnOutboxStoppedMidBatchMarksTheAnsweredAndReleasesTheRest` | n/a | Passes; fails if the outcome write uses the cancelled context | Passes |
 

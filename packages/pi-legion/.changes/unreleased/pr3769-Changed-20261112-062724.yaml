@@ -1,0 +1,5 @@
+kind: Changed
+body: The note a role reads when a git lock fails its jj says that the launcher of the issue's pod removes a lock no process of the pod holds open and that is more than 15 minutes old, tells the role to run its command again in about 16 minutes, and ends with telling the issue's architect where the lock stays. It no longer tells the role to leave the lock alone or to replace the pod.
+time: 2026-11-12T06:27:24.166192178Z
+custom:
+    Issue: pr3769

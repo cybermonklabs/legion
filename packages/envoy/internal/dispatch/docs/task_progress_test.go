@@ -33,7 +33,7 @@ func seedUncountedIssue(t *testing.T, database *store.Store, number int, markdow
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `insert into projects (key, name) values ('TP', 'Task progress') on conflict (key) do nothing`); err != nil {
+	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TP', 'Task progress', 'alice') on conflict (key) do nothing`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `

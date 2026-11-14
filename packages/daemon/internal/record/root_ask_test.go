@@ -56,6 +56,39 @@ func TestARootAskMirrorKeepsItsNewestState(t *testing.T) {
 	})
 }
 
+// A person's decline round-trips as the one optional value it is: the row keeps it in three
+// columns, and the declined one alone says there is a decline to read, so a decline the person
+// wrote no note with reads back as a decline with an empty note. An ask nobody declined reads
+// back with none.
+func TestARootAskCarriesAPersonsDecline(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	inTx(t, st, func(tx pgx.Tx) {
+		putRoot(t, ctx, records, tx, "LEGION-1")
+		words := "The person chose not to answer this question. Decide the next step without an answer."
+		declines := map[string]*AskDecline{
+			"ask-noted":    {Note: "The vendor owns that date; I do not.", Words: words},
+			"ask-noteless": {Words: words},
+			"ask-plain":    nil,
+		}
+		for ask, decline := range declines {
+			must(t, records.PutRootAsk(ctx, tx, RootAsk{Issue: "LEGION-1", Ask: ask, Kind: AskQuestion, Seq: 8, WaitingOn: "human",
+				WaitingOnSeq: 7, ClosedBy: ClosedByPerson, ClosedSeq: 8, ByTree: true, PersonSeq: 8, Decline: decline}))
+		}
+		for ask, want := range declines {
+			got, err := records.RootAsk(ctx, tx, "LEGION-1", ask)
+			must(t, err)
+			if got == nil {
+				t.Fatalf("%s has no mirror row", ask)
+			}
+			if !reflect.DeepEqual(got.Decline, want) {
+				t.Fatalf("%s reads back the decline %+v, want %+v", ask, got.Decline, want)
+			}
+		}
+	})
+}
+
 // An approval request's answer is a review of its document: it answers no root waiting on the
 // person when that document is the root's design gate's, and does for any other document or for a
 // question. PersonSeq's acts count whatever the document.

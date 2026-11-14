@@ -68,31 +68,31 @@ func TestLiveIsTheLiveRowsInTableOrder(t *testing.T) {
 }
 
 // Every live row cites the Legion issue whose check proves it: the unchecked row's detail names it
-// (Deployment.Report), so a row with no ruling would print an empty parenthesis.
-func TestEveryLiveRowHasARuling(t *testing.T) {
+// (Deployment.Report), so a row with no citation would print an empty parenthesis.
+func TestEveryLiveRowHasACitation(t *testing.T) {
 	for _, row := range Table {
 		if row.Site != SiteLive {
 			continue
 		}
-		if !strings.HasPrefix(row.Ruling, "dispatch://LEGION-") {
-			t.Errorf("live row %s cites %q, want the dispatch://LEGION-<n> whose check proves it", row.Name, row.Ruling)
+		if !strings.HasPrefix(row.Citation, "dispatch://LEGION-") {
+			t.Errorf("live row %s cites %q, want the dispatch://LEGION-<n> issue whose check proves it", row.Name, row.Citation)
 		}
 	}
 }
 
-// A withheld row cites the Legion ruling that withholds it, and only Legion's own keys: the root
+// A withheld row cites the Legion issue that withholds it, and only Legion's own keys: the root
 // AGENTS.md keeps the deployment repository's project key out of the tree.
-func TestWithheldRowsCiteALegionRuling(t *testing.T) {
+func TestWithheldRowsCiteALegionIssue(t *testing.T) {
 	for _, row := range Table {
 		if row.Site != SiteWithheld {
 			continue
 		}
-		if !strings.HasPrefix(row.Ruling, "dispatch://LEGION-") {
-			t.Errorf("withheld row %s cites %q, want a dispatch://LEGION-<n> ruling", row.Name, row.Ruling)
+		if !strings.HasPrefix(row.Citation, "dispatch://LEGION-") {
+			t.Errorf("withheld row %s cites %q, want a dispatch://LEGION-<n> issue", row.Name, row.Citation)
 		}
 	}
 	for _, row := range Table {
-		for _, cited := range strings.Split(row.Ruling, ",") {
+		for _, cited := range strings.Split(row.Citation, ",") {
 			if cited = strings.TrimSpace(cited); cited != "" && !strings.HasPrefix(cited, "dispatch://LEGION-") {
 				t.Errorf("row %s cites %q, which is not a LEGION issue", row.Name, cited)
 			}

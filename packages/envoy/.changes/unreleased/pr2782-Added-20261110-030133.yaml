@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  The CI reconcile pass now keeps a durable record of every pass, and `GET
+  /api/v1/ci-reconcile/passes` answers the last 24 hours of them, newest first, to any signed-in
+  person or agent token. The pass has always logged one line with its counts, and a container
+  log rotates: the production pod's reached back 45 minutes, nine passes, which is no help when
+  the head in question was read six hours ago. Each pass now writes a row when it starts and
+  fills it in when it ends, with the eight counts the line carries, how it ended (complete, its
+  own five-minute deadline, a GitHub rate limit, or the process shutting down under it) and
+  where it left its cursor; the end is written on a bounded context of its own, so a pass its
+  deadline cut short records that rather than nothing at all. A row with no end time reads as
+  running only while its process is still heartbeating, the ci-reconcile lease is held and it is
+  the newest row, and otherwise as a pass whose process died before it could record its end.
+  Rows are kept for 48 hours and pruned by the next pass that ends.

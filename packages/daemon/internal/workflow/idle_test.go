@@ -89,7 +89,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].State = supervise.StateRetired
 				return v
 			}(),
-			image: true, want: IdleHoldNoPod,
+			image: true, want: IdleHoldNoLiveClaim,
 		},
 		{
 			name:  "a release of the pod is already in progress",
@@ -278,11 +278,173 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 	}
 }
 
+// unownedIssue is a root issue of a live tree that no claim of it can use any more: an architect
+// that failed, a planner the daemon retired and an implementer the daemon's own close suspended,
+// none of the three recording a process, the newest of their claim writes forty minutes old,
+// nothing queued for a role of it, its Sandbox there and no release of it under way. Every
+// condition of the rule for an issue with no live claim holds for it, and each row of the table
+// below changes exactly one thing about it.
+func unownedIssue() pods.IdleView {
+	return pods.IdleView{
+		Issue: "LEGION-310", Tree: "LEGION-310", Found: true,
+		Phase: phase.Implementing, Status: "in_progress", Generation: 4,
+		Root: pods.IdleRoot{Phase: phase.Implementing, Status: "in_progress", Generation: 4},
+		Claims: []pods.IdleClaim{
+			{
+				Role: claim.RoleArchitect, State: supervise.StateFailed,
+				UpdatedAt: idleNow.Add(-90 * time.Minute),
+			},
+			{
+				Role: claim.RolePlanner, State: supervise.StateRetired,
+				UpdatedAt: idleNow.Add(-60 * time.Minute),
+			},
+			{
+				Role: claim.RoleImplementer, State: supervise.StateSuspended,
+				SuspendedBy: supervise.SuspendedByDaemon,
+				UpdatedAt:   idleNow.Add(-40 * time.Minute),
+			},
+		},
+	}
+}
+
+// The pod of an issue every claim of which has stopped is released, and each condition that
+// keeps such a pod standing is one row here, holding it under a hold of its own. The rows below
+// the holds prove the three states this rule is deliberately not held by: a bundle the last
+// release could not restore, which this release takes none of, and the two suspensions that are
+// the daemon's own rather than an operator's. The rule is pure, so each row is the view, the
+// clock, the idle period and whether the runtime holds the issue's Sandbox, and nothing else.
+func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		view    pods.IdleView
+		sandbox bool
+		want    IdleHold
+	}{
+		{
+			name: "every condition holds", view: unownedIssue(), sandbox: true, want: IdleHoldNone,
+		},
+		{
+			name: "a claim of the issue is live",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.Claims[2].State, v.Claims[2].SuspendedBy = supervise.StateIdle, ""
+				return v
+			}(),
+			sandbox: true, want: IdleHoldUnownedClaimLive,
+		},
+		{
+			name: "a claim is suspended by an operator",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.Claims[2].SuspendedBy = supervise.SuspendedByOperator
+				return v
+			}(),
+			sandbox: true, want: IdleHoldUnownedOperatorSuspended,
+		},
+		{
+			name: "the issue's Sandbox is gone", view: unownedIssue(), sandbox: false,
+			want: IdleHoldUnownedSandboxGone,
+		},
+		{
+			name: "a suspended claim still records a process",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.Claims[2].HasProcess = true
+				return v
+			}(),
+			sandbox: true, want: IdleHoldUnownedClaimProcess,
+		},
+		{
+			name:    "a delivery waits for a role of the issue",
+			view:    func() pods.IdleView { v := unownedIssue(); v.Waiting = true; return v }(),
+			sandbox: true, want: IdleHoldUnownedDelivery,
+		},
+		{
+			name:    "the issue has left the workflow",
+			view:    func() pods.IdleView { v := unownedIssue(); v.Status = "backlog"; return v }(),
+			sandbox: true, want: IdleHoldUnownedTreeNotLive,
+		},
+		{
+			name:    "the tree lingers after its close",
+			view:    func() pods.IdleView { v := unownedIssue(); v.Root.LingerUntil = &idleNow; return v }(),
+			sandbox: true, want: IdleHoldUnownedTreeNotLive,
+		},
+		{
+			name:    "a release of that Sandbox is already under way",
+			view:    func() pods.IdleView { v := unownedIssue(); v.Releasing = true; return v }(),
+			sandbox: true, want: IdleHoldUnownedReleasing,
+		},
+		{
+			// The newest write of any claim decides, so moving the oldest claim's write inside
+			// the period is what holds the pod, although two claims are older than it.
+			name: "the newest claim write is inside the idle period",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.Claims[0].UpdatedAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			sandbox: true, want: IdleHoldUnownedNotIdle,
+		},
+		{
+			name:    "the record holds no claim of the issue",
+			view:    func() pods.IdleView { v := unownedIssue(); v.Claims = nil; return v }(),
+			sandbox: true, want: IdleHoldUnownedNoClaim,
+		},
+		{
+			name:    "the record does not hold the issue at all",
+			view:    func() pods.IdleView { v := unownedIssue(); v.Found = false; return v }(),
+			sandbox: true, want: IdleHoldUnownedNoClaim,
+		},
+		{
+			// The idle rule keeps such a pod, because its own release would store a bundle over
+			// the unrestored one. This release stores nothing, so the bundle holds nothing.
+			name:    "a bundle the last release could not restore",
+			view:    func() pods.IdleView { v := unownedIssue(); v.BundleUnrestored = true; return v }(),
+			sandbox: true, want: IdleHoldNone,
+		},
+		{
+			// The ordinary case this rule meets: an earlier idle release suspended the role and
+			// no wake brought it back.
+			name: "a claim an earlier release suspended",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.Claims[2].SuspendedBy = supervise.SuspendedByReleased
+				return v
+			}(),
+			sandbox: true, want: IdleHoldNone,
+		},
+		{
+			// Migration 0038's backfill of every suspension written before the column existed,
+			// most of which are the daemon's own: holding on it would keep those pods for ever.
+			name: "a claim suspended before the source was recorded",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.Claims[2].SuspendedBy = supervise.SuspendedByUnknown
+				return v
+			}(),
+			sandbox: true, want: IdleHoldNone,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := UnownedPodRelease(tc.view, idleNow, idlePeriod, tc.sandbox)
+			if got.Hold != tc.want {
+				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
+			}
+			if want := tc.want == IdleHoldNone; got.Release != want {
+				t.Fatalf("release = %v, want %v (hold %s)", got.Release, want, got.Hold)
+			}
+			if len(got.Roles) != 0 {
+				t.Fatalf("roles = %v, want none: this release suspends no role", got.Roles)
+			}
+		})
+	}
+}
+
 // Every hold the rule can report has a name of its own, which is what the daemon records of a pod
 // it kept: two holds that printed the same would make the record unreadable.
 func TestEveryIdleHoldHasANameOfItsOwn(t *testing.T) {
 	seen := map[string]IdleHold{}
-	for hold := IdleHoldNone; hold <= IdleHoldUnauthorized; hold++ {
+	for hold := IdleHoldNone; hold <= IdleHoldUnownedNotIdle; hold++ {
 		name := hold.String()
 		if name == "unknown" {
 			t.Fatalf("hold %d has no name", int(hold))
@@ -292,7 +454,7 @@ func TestEveryIdleHoldHasANameOfItsOwn(t *testing.T) {
 		}
 		seen[name] = hold
 	}
-	if got := IdleHold(int(IdleHoldUnauthorized) + 1).String(); got != "unknown" {
+	if got := IdleHold(int(IdleHoldUnownedNotIdle) + 1).String(); got != "unknown" {
 		t.Fatalf("an unmapped hold prints %q, want unknown", got)
 	}
 }

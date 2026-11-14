@@ -1,0 +1,11 @@
+-- 20261108190000_pull_request_head_arrived.up.sql — when a pull request's current head arrived,
+-- written by a head move alone. The column is dropped again by the migration that follows it
+-- (20261109130413_review_footer_head), and this file stays because databases have recorded it
+-- already: a version a database applied cannot be taken back by deleting its file.
+--
+-- The column held a listed review to the head it names by comparing times: a review decided the
+-- current head only if it was submitted after that head arrived. That rule is retired
+-- (dispatch://INFRA-714/spec R12). A review names the head it read in the Legion footer of its
+-- own body, which the daemon reads from the review itself (internal/intake's PullRequestReview),
+-- so no arrival time is compared and nothing writes or reads this column.
+alter table pull_requests add column head_arrived_at timestamptz not null default '0001-01-01 00:00:00+00';

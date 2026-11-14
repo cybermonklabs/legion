@@ -136,8 +136,34 @@ const RoleTopicPrefix = "notifications.role."
 // GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
 const GithubTopicPrefix = "notifications.github."
 
+// LegionNoticeTopicPrefix opens every Legion daemon notice subject, ControllerNoticeSuffix ends
+// the one subject of that family naming a project's controller rather than an issue, so project
+// <p>'s notice lane is LegionNoticeTopicPrefix + <p> + ControllerNoticeSuffix, and
+// ControllerRoleToken is the Legion role token whose holder that lane is for. Generated from
+// legionControllerNoticeSubject and controllerToken in packages/contracts: a rename there that Go
+// did not follow would leave the listener refusing the holder's registration of its own lane
+// (bus.ReachesPrivateStreamSubject would read a role token no claim names) and the controller
+// would receive no notice, with nothing else failing.
+const LegionNoticeTopicPrefix = "notifications.legion."
+const ControllerNoticeSuffix = ".controller"
+
+func ControllerRoleToken(project string) string {
+	return "legion-" + project + "-controller"
+}
+
+// UncapturedTopicRefusal is what a caller that named topic, a notification topic no stream
+// subject captures and no role lane (bus.ReachesNoSession), is told: nothing would ever be
+// delivered to sessionID on it. POST /v1/interests/subscribe leaves such a topic out of the
+// registration and names it in this warning (splitUncapturedTopics in cmd/listener), and either
+// plugin's explicit subscribe refuses such a topic in the same words. Generated from
+// uncapturedTopicRefusal in packages/contracts, which both plugins build their refusal from, so
+// the listener and the hosts cannot word it apart.
+func UncapturedTopicRefusal(topic, sessionID string) string {
+	return topic + " was not registered: no stream subject captures it, so nothing would be delivered to " + sessionID + " on it; follow a notifications.team.<name> topic instead"
+}
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
-// notification stream and by every host that subscribes over core NATS. Generated from
+// notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
 // this window bounds, so the stream, the hosts and the dashboard read one number.
 const DeliveryDuplicateWindow = 259200000 * time.Millisecond
@@ -196,6 +222,17 @@ const SearchKindDepth = 100
 // Generated from SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE in packages/contracts so the string
 // Dispatch writes and the string search-answer.ts compares against cannot drift apart.
 const SearchDegradedEmbedderUnavailable = "embedder_unavailable"
+
+// SearchOperatorPhrase, SearchOperatorOr and SearchOperatorExclude are the operator forms
+// GET /api/v1/search reads in a person's words and names in its answer's query.operators: a
+// quoted phrase, the OR between two words, and a -word it leaves out. Generated from
+// SEARCH_OPERATOR_PHRASE, SEARCH_OPERATOR_OR and SEARCH_OPERATOR_EXCLUDE in packages/contracts so
+// the strings Dispatch answers and the strings a client reads them by cannot drift apart.
+const (
+	SearchOperatorPhrase  = "phrase"
+	SearchOperatorOr      = "or"
+	SearchOperatorExclude = "exclude"
+)
 
 // The names of the frames one answer's stream carries: text as the answer arrives, item for each
 // thing the answer cites, cut when the answer reached its word cap, changed when the server did
@@ -268,6 +305,12 @@ const GoingRequestTTL = 3600000 * time.Millisecond
 // MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = 20
+
+// MaxIssueAdvances bounds the `advances` input of an issue write before deduplication: the most
+// priorities one issue states it advances, its own relations alone. Generated from
+// MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
+// one number.
+const MaxIssueAdvances = 20
 
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from

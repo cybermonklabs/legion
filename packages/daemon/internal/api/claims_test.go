@@ -277,7 +277,7 @@ func TestReadyMakesTheRegisteredClaimReady(t *testing.T) {
 	}
 }
 
-// A ready the claim takes tells the workflow the claim's agent took its role and can be prompted
+// A ready the claim takes tells the workflow the claim's agent has booted and can be prompted
 // (Options.ClaimReady), once per ready, so a relaunched architect's waiting notices are released;
 // a ready it refuses, naming another session, tells it nothing.
 func TestReadyOfTheClaimsSessionTellsTheWorkflow(t *testing.T) {

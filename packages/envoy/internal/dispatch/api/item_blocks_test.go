@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -276,16 +277,22 @@ func TestTheEditorsCarriedIDsSurviveMoveRewordAndSplit(t *testing.T) {
 	requireCommentBlocks(t, database, comment.ID, "stale", "b1@1 b3@1 b2@6 b4@7", 7)
 }
 
-// A body the document parser refuses, one holding block HTML, is stored exactly as sent and
-// splits at blank lines into blocks of type text; adding block HTML elsewhere in a comment keeps
-// an unchanged paragraph's id and changed revision.
-func TestABodyWithBlockHTMLReadsBackByteForByte(t *testing.T) {
+// A body the document parser refuses, one holding block HTML, is stored as sent apart from its
+// line endings, which a write stores as line feeds
+// (TestAMessageAndACommentBodyAreStoredWithLineFeeds), and splits at blank lines into blocks of
+// type text; adding block HTML elsewhere in a comment keeps an unchanged paragraph's id and
+// changed revision.
+func TestABodyWithBlockHTMLReadsBackAsItIsStored(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Block HTML", "before")
-	body := "Intro paragraph.\r\n\r\n<div align=\"center\">\n  raw <b>html</b>\n</div>\n\n\tClosing."
-	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": body}, "alice")
+	sent := "Intro paragraph.\r\n\r\n<div align=\"center\">\n  raw <b>html</b>\n</div>\n\n\tClosing."
+	// The expectation is the literal rather than pmdoc.LineFeeds(sent): this row is what pins
+	// the premise that a stored body holds line feeds, so writing it with the helper the write
+	// path uses would pin the two to each other and nothing to the premise.
+	body := "Intro paragraph.\n\n<div align=\"center\">\n  raw <b>html</b>\n</div>\n\n\tClosing."
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": sent}, "alice")
 	if read := readThreadComment(t, handler, comment.ID); read.Body != body {
-		t.Fatalf("read body = %q, want %q byte for byte", read.Body, body)
+		t.Fatalf("read body = %q, want %q: the body as sent, with its line endings made line feeds", read.Body, body)
 	}
 	requireCommentBlocks(t, database, comment.ID, "create", "b1@1 b2@1 b3@1", 1)
 	var types string
@@ -773,7 +780,7 @@ func TestAPinnedCommentBlockReadsItsRevision(t *testing.T) {
 		t.Helper()
 		read := readGraph(t, handler, url.Values{"to": {ref}})
 		want := model.BlockPin{Version: 1, Ref: blockRef + "@v1", Text: text, State: state, RemovedVersion: removedVersion}
-		if read.Node.Pin == nil || *read.Node.Pin != want {
+		if read.Node.Pin == nil || !reflect.DeepEqual(*read.Node.Pin, want) {
 			t.Fatalf("%s: the pin reads %#v, want %#v", step, read.Node.Pin, want)
 		}
 		if read.Node.Text != current {

@@ -56,7 +56,9 @@ export function handledAttempts(entries: readonly unknown[]): Set<string> {
 }
 
 /** What became of a person's text sent to `pi.sendUserInput`: the host's answer, the error it
- *  failed with, or, on a host without the method, that host's version. */
+ *  failed with, or, on a host without the method, that host's version. A line the host is never
+ *  handed - a `!command`, which the session runs itself - never reaches here: its report is the
+ *  answer whole, and its caller posts it (`packages/pi-envoy/src/typed-shell.ts`). */
 export type TypedInputOutcome =
   | UserInputResult
   | { readonly error: string }

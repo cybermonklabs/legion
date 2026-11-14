@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  Every answer of the API table carries `X-Content-Type-Options: nosniff`, beside the `Vary` headers the same layer adds, so a browser reads an answer as the type it was given and not as one it guessed from text a person wrote; the routes that serve an upload's own bytes already sent it. An answer that reaches the compression layer naming no media type at all is sent as `application/octet-stream` rather than handed to net/http to sniff a type from its first bytes, which for a body opening with `<` is `text/html`. No route of the table answers without a media type, so nothing Dispatch serves today changes type.
+  A store of display trees that fails after the read it was for no longer logs the subject it was read under: on `GET /api/v1/answers` that subject is the caller's own address, and a server log is no place for a person's address. The line names the mode, the count of texts and the error, and the subject no line now reads is no longer carried to the reader at all.
+time: 2026-11-10T01:00:00.000000000Z
+custom:
+    Issue: pr2712

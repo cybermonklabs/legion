@@ -175,6 +175,11 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 }
 
 // replaceNow is the replacement itself, whose end replaceProcess reads off the claim it leaves.
+//
+// Its first step can end the replacement where it stands: a take-back the store refuses returns
+// here with the claim's process kept, nothing relaunched and no wake raised (interrupted). A
+// stale-plugin relaunch that ends there is raised again by the next pass, which reads the claim
+// as stale as it left it (refreshStalePlugins in internal/daemon).
 func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemory bool) error {
 	if err := m.interrupted(ctx, interruption, outOfMemory); err != nil {
 		return err

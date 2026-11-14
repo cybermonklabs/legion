@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+    The pull-request body line `POST /api/v1/issues/{key}/results` prints carries the reading the
+    role recorded, cut at a word boundary with an ellipsis, in place of the check's own words cut
+    mid-word; a result with no reading says so. `doc-edit`'s `insert` and `move` put list content
+    inside the list that holds the anchor, a `blocks` precondition covers an insert and a move,
+    and a block anchor the document no longer holds is refused with the quote anchor form and,
+    where the batch's own text names one block, the id that block carries now.
+time: 2026-11-11T10:10:03.000000000Z
+custom:
+    Issue: pr3530

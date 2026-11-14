@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+    The results contract drops `CheckResultCurrency` and the `currency` field, and carries the
+    comparison instead: `compared_with`, `compared_nothing` and `pass_stands` on each check, and
+    `commit_stands`, `check_words_moved` and `retracted` on each result, with `?at=<commit>` on
+    the read. `dispatch_results` takes `at` and `brief`, `dispatch_result` takes `retract` and
+    `reason`, `dispatch_artifact` takes `force`, and `DispatchEvent` carries `result.retracted`
+    and `issue.pull_request_attribution_changed`.
+time: 2026-11-11T10:11:03.000000000Z
+custom:
+    Issue: pr3530

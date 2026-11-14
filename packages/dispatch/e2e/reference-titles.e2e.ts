@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   answerAsk,
   createAsk,
@@ -23,7 +21,7 @@ import {
   type Target,
   type TargetKind,
 } from "./reference-surfaces";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -45,10 +43,6 @@ import { asUser } from "./users";
 // comment, ten threads the Inbox lists as Reply rows and ten answered asks, then reads six
 // surfaces.
 test.setTimeout(180_000);
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The kinds whose titles this spec reads: a message is a target of its own, proved beside the
  *  reply cards (`reference-cards.e2e.ts`). */
@@ -303,7 +297,8 @@ async function expectWordsAndAddresses(scope: Locator, seeded: Seeded): Promise<
   }
 }
 
-test("a link its author worded keeps its words in the document, and an address whose target is missing reads as written", async ({
+// @pr: The reference-title family's one row on the lane: an author's own wording is kept, and an address with no target reads as written.
+test("a link its author worded keeps its words in the document, and an address whose target is missing reads as written @pr", async ({
   browser,
 }, testInfo) => {
   const seeded = await seedTitles();

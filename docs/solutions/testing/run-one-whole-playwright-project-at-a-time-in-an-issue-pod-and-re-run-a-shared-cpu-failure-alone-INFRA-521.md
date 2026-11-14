@@ -28,6 +28,12 @@ whole suite that way. None of that changes the rule below: a pod has two CPUs, s
 runs the files it is working on, one project at a time, at one worker.
 `packages/dispatch/AGENTS.md`'s end-to-end section has the model.
 
+**Update (2026-11-10, dispatch://INFRA-1410): the wrapper is deleted and a lane is called a
+stack.** `e2e/run.ts` is gone, and `e2e/global-setup.ts`, Playwright's own `globalSetup`, starts
+one stack per worker through `e2e/harness-pool.ts`. `DISPATCH_E2E_WORKERS` is gone too: the
+config's `workers` is 1 and a run asks for more with Playwright's `--workers <n>`, so the rule
+below — a pod runs one project at a time, at one worker — needs no variable at all.
+
 - An issue pod has two CPUs. Two or three whole-project Playwright runs side by side, each on a
   harness of its own, overrun the 30 s test timeout in the heaviest rows (the collaborative
   margin, the board's touch rows, document anchors), and fail them.

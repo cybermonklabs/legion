@@ -1,13 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import type { FakeSignIn } from "./fake-broker";
 import { setSignIns } from "./fake-broker-helpers";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { withAlice } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Alice's two sign-ins, one per machine she ran `agent-secrets login` on, as the broker lists
  *  them. Bob's is seeded beside them on a machine account of its own, so the page proves it
@@ -45,7 +39,8 @@ const bobLaptop: FakeSignIn = {
 // afterwards can only have come from the broker's own record. Bob's sign-in is in the broker the
 // whole time and never on her page: Dispatch names the person from its own session, so nobody
 // reads anyone else's.
-test("the sign-ins section lists a person's own machines and Revoke ends one on the broker", async ({
+// @pr: Sign-in and tokens: a person reads their own machines and no one else's, and Revoke ends one on the broker.
+test("the sign-ins section lists a person's own machines and Revoke ends one on the broker @pr", async ({
   browser,
 }) => {
   await withAlice(browser, async (page) => {

@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  Dispatch's project List view is one issues table: every column sorts and filters from its header, the groupable columns group, one fuzzy search box covers every issue, rows come in pages, and selected rows start next, move between epics or become a new epic.
+  The issue listing carries each issue's creator and creation time.

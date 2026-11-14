@@ -18,6 +18,11 @@ related_issues:
 
 Extends docs/solutions/testing/a-layout-change-is-proven-by-the-whole-project-and-the-rig-needs-contracts-built-and-three-engines-it-cannot-start-INFRA-92.md.
 
+**Update (2026-11-10, dispatch://INFRA-1410): the worker count is Playwright's own.** The config
+sets `workers: 1` and a run asks for more with `--workers <n>`; `DISPATCH_E2E_WORKERS` is gone,
+the wrapper `e2e/run.ts` with it, and `e2e/global-setup.ts` starts one stack per worker. The rule
+below stands: a pod runs one worker, so split a whole project into two halves of the spec list.
+
 - **Write the spec files before `--project`, or use `--project=<name>`.** `--project` takes a
   list, so the file names after `--project chromium` are read as more project names:
   `bun run e2e -- e2e/a.e2e.ts e2e/b.e2e.ts --project=chromium --project=iphone`.

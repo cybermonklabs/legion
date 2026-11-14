@@ -43,6 +43,15 @@ it: each is one database, one set of servers or one port every lane would share.
 mode is one lane and one worker, so the hand-started stack below is unchanged.
 `packages/dispatch/AGENTS.md`'s end-to-end section has the model.
 
+**Update (2026-11-10, dispatch://INFRA-1410): the stack starts from Playwright, not from a
+wrapper.** `e2e/run.ts` is deleted, so `bun e2e/run.ts -- <command>` above is no command: the
+whole command is `bunx playwright test --config e2e/playwright.config.ts` from
+`packages/dispatch`, and `e2e/global-setup.ts` starts one stack — what the update above calls a
+lane — per Playwright worker. `DISPATCH_E2E_WORKERS` is gone and a run asks for more workers
+with `--workers <n>`; `DISPATCH_E2E_PG_BIN` is unchanged, and each stack's data lives in a
+`worker-<i>` directory under the run's own temporary directory. To start one stack by hand and
+read its variables, use `bun e2e/harness-up.ts`.
+
 A `packages/dispatch` change is proved by driving the dashboard — the real Go server, the
 production SPA bundle and a real browser — not by citing a CI run. An issue pod has no `psql`, no
 Postgres, no docker and no root, which reads like a blocker and is not. This recipe stood the whole

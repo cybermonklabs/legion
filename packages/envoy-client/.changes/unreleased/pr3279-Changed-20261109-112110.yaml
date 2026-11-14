@@ -1,0 +1,5 @@
+kind: Changed
+body: The Dispatch and Envoy clients trim a configured URL through `@legion/contracts/trailing-slash`, so every address is read by one rule and a URL ending in many slashes costs time proportional to its length.
+time: 2026-11-09T11:21:10.924601334Z
+custom:
+    Issue: pr3279

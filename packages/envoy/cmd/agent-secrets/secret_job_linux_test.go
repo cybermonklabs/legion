@@ -285,7 +285,7 @@ func TestPromptJobHelper(t *testing.T) {
 		return n, err
 	}
 	label := &labelCheck{}
-	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", label)
+	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", "", label)
 	restored, restoreErr := unix.IoctlGetTermios(0, unix.TCGETS)
 	fmt.Printf("RETURNED %v MATCH=%t EMPTY=%t RESTORED=%t LABEL_HELD=%t\n", err, value == "headtail", value == "",
 		restoreErr == nil && termiosKey(restored) == reference, label.shown && label.held)

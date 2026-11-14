@@ -24,7 +24,7 @@ import (
 func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 	const server = "https://dispatch.example"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "TEST", "Ask block links", "Context paragraph.\n")
 	long := randomBlockID(t, 3200)
 	askBlock := func(id, question string) string {
@@ -69,6 +69,10 @@ func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 	if _, stored := blocks[long]; stored {
 		t.Fatalf("the block id of %d bytes is a graph node, want none past the bound", len(long))
 	}
+
+	// The writes record the asks' parts; their windows are the tick's to write (INFRA-988),
+	// and the rows embedded below are the ones it writes.
+	windowOwedOwners(t, deps)
 
 	// Each ask is a meaning match for wibbleflorp, at a cosine above the floor, on an axis of
 	// its own, under the embedder's identity, which meaning search compares a query with alone;

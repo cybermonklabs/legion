@@ -12,8 +12,9 @@ type ArtifactVersionEvent = Extract<DispatchEvent, { type: "artifact.version" }>
 
 /** The activity text with the artifact's name turned into a link, so the reader opens the
  *  upload from the Conversation instead of hunting for it on the Artifacts tab. The text itself
- *  comes from `activityDescription`, which names the artifact once, in a text part; an agent
- *  part is never searched for it. */
+ *  comes from `activityDescription`, in a text part; an agent part is never searched for it. The
+ *  link goes on the last reading of the name, because a correction's line names the document
+ *  twice - `renamed <old> to <new>` - and it is the new title that has the page. */
 function LinkedName({
   description,
   name,
@@ -32,7 +33,7 @@ function LinkedName({
           if (index !== linked) {
             return part;
           }
-          const at = part.indexOf(name);
+          const at = part.lastIndexOf(name);
           return (
             <>
               {part.slice(0, at)}
@@ -89,7 +90,12 @@ export function ActivityLine({
   issueKey: string;
 }): ReactNode {
   switch (event.type) {
+    // The slug does not move with a correction, so the new title links to the page the old one
+    // did, which is the page a creation links to. A removed document has no page at all, so
+    // `artifact.removed` takes the plain line the default below renders: a link to a gone
+    // document would answer "No artifact … on …".
     case "artifact.created":
+    case "artifact.renamed":
       return (
         <LinkedName
           description={description}

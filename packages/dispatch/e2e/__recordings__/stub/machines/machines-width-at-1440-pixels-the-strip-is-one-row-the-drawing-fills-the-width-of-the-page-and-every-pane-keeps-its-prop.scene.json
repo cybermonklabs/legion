@@ -1,0 +1,22 @@
+{
+  "clusterHost": "cluster-pool",
+  "elsewhere": "019a1c35-ab8f-7c2e-9d7d-8e5f9a2b3c35",
+  "kubeOne": "019a1c31-6d4b-7e8a-bf39-4a1b5c8d9e31",
+  "repeated": {
+    "builds": "019a1e11-0000-7000-8000-000000000004",
+    "daemon": "019a1e11-0000-7000-8000-000000000003",
+    "editor": "019a1e11-0000-7000-8000-000000000002",
+    "shell": "019a1e11-0000-7000-8000-000000000001"
+  },
+  "repeatedHost": "sami-twoservers",
+  "sharedNameHost": "legion-infra",
+  "undrawn": {
+    "builder": "019a1d11-0000-7000-8000-000000000002",
+    "planner": "019a1d11-0000-7000-8000-000000000001",
+    "reviewer": "019a1d11-0000-7000-8000-000000000004",
+    "split": "019a1d11-0000-7000-8000-000000000005",
+    "tester": "019a1d11-0000-7000-8000-000000000003"
+  },
+  "undrawnHost": "example-host-split",
+  "widthHost": "sami-laptop"
+}

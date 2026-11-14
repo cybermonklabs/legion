@@ -91,13 +91,13 @@ func (s *server) loadInboxAskFollowers(ctx context.Context, q queryer, askIDs []
 // thread) merges loadAskAnswersByAsk over the same ask ids itself rather than making every
 // Inbox load scan `events` for answers that cannot exist. It reads on the pool, never inside a
 // transaction, because the reach read ends with a listener call (loadAskReaches).
-func (s *server) loadAskThreads(ctx context.Context, askIDs []string) (map[string]askThread, error) {
+func (s *server) loadAskThreads(ctx context.Context, askIDs []string, reader *displayTreeReader) (map[string]askThread, error) {
 	threads := make(map[string]askThread, len(askIDs))
 	for _, askID := range askIDs {
 		threads[askID] = askThread{
-			Replies:   []model.Comment{},
-			Edits:     []model.AskEdit{},
-			Answers:   []model.AskAnswer{},
+			Replies:   []shapedComment{},
+			Edits:     []askEditRead{},
+			Answers:   []model.AskAnswerWithTree{},
 			Followers: []model.AskFollower{},
 		}
 	}
@@ -122,9 +122,12 @@ func (s *server) loadAskThreads(ctx context.Context, askIDs []string) (map[strin
 	if err != nil {
 		return nil, err
 	}
+	// Both the Inbox and an issue's ask list shape their threads here, over the reader of the
+	// request that asked for them, so the replies' and the rewordings' texts ride in that one
+	// read of the table and what it did not hold is stored back once.
 	for askID, thread := range threads {
-		thread.Replies = replies[askID]
-		thread.Edits = edits[askID]
+		thread.Replies = shapedComments(replies[askID], reader)
+		thread.Edits = askEditReads(edits[askID], reader)
 		thread.Followers = followers[askID]
 		thread.askReach = reaches[askID]
 		threads[askID] = thread

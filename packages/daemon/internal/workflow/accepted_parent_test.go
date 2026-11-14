@@ -87,15 +87,15 @@ func leave(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status 
 // dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
 func TestAChildHeldUnderAnAcceptedAncestorDoesNotRefuseThatAncestorsSignOff(t *testing.T) {
 	pool := migratedPool(t)
-	// The root's own pull request has merged and it waits in awaiting_merge; LEGION-209 is in
-	// accepting beneath it, and LEGION-300, a person's todo under LEGION-209, stands at admitted
-	// held by the root above it.
+	// The root's own pull request has merged, and the root stands in merging, waiting for the
+	// rest of its tree. LEGION-209 is in accepting beneath it, and LEGION-300, a person's todo
+	// under LEGION-209, stands at admitted held by the root above it.
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.AwaitingMerge, Generation: 1, Status: "needs_review", Rank: "U"})
+		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Accepting, "needs_review")
 	seedBeneath(t, pool, "LEGION-300", "LEGION-208", "LEGION-209", phase.Admitted, "todo")
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-		Branch: "legion/LEGION-209", HeadSHA: "head", CheckedHead: "head", Required: []string{}, Failing: []string{}})
+		Branch: "legion/LEGION-209", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 
 	if result := signOffNow(t, pool, "signoff-209", "LEGION-209"); result.Refusal != nil {
 		t.Fatalf("sign-off of %s = %+v, want it accepted: the only issue beneath it is one the daemon holds at admitted under an accepted ancestor", "LEGION-209", result.Refusal)

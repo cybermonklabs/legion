@@ -1,4 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
 import {
   type FakeSession,
   getSentMessages,
@@ -32,8 +31,8 @@ import {
   resolveComment,
 } from "./api";
 import { conversationFilter } from "./editor";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -71,11 +70,8 @@ const planner: FakeSession = {
   title: "planner",
 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("Conversation owns the route, lists one card per message newest first, and resolves live agent names", async ({
+// @pr: The Conversation tab's own row: it owns the route, lists one card per message newest first, and resolves live agent names.
+test("Conversation owns the route, lists one card per message newest first, and resolves live agent names @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -467,7 +463,8 @@ test("a compact answered ask's Write a reply opens its composer as the next keyb
   }
 });
 
-test("Conversation answers an ask in place, draws no event row, and keeps its cards mounted across the filter", async ({
+// @pr: Create through answer to close: the ask is answered where the reader is, with no event row and the cards left mounted.
+test("Conversation answers an ask in place, draws no event row, and keeps its cards mounted across the filter @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -662,10 +659,9 @@ test("Conversation marks unread conversations, sends with Ctrl+Enter, and jumps 
   }
 });
 
-test("the iPhone Conversation fits controls and keeps the composer above the review panel @phone", async ({
+test("the iPhone Conversation fits controls and keeps the composer above the review panel @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "phone geometry is covered by the iphone project");
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Phone conversation" });
   for (let index = 0; index < 10; index += 1) {

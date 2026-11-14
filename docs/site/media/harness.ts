@@ -71,7 +71,9 @@ async function dumpGoroutines(dispatch: HarnessProcess): Promise<void> {
   const tail = readFileSync(dispatch.log, "utf8").split("\n").slice(-40).join("\n");
   console.error(`--- dispatch's last lines when the run stopped:\n${tail}`);
   const { child } = dispatch;
-  if (child.exitCode !== null || child.signalCode !== null) return;
+  // `pid` is undefined for a child whose spawn itself failed (`node:child_process`), which is a
+  // process there is nothing to signal and no stack to ask for.
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
   process.kill(child.pid, "SIGQUIT");
   await Promise.race([dispatch.drained, Bun.sleep(10_000)]);
   console.error(`--- dispatch's goroutines at that moment end ${relative(REPO, dispatch.log)}`);

@@ -237,6 +237,57 @@ func (d mentionDeliveries) liveFor(sessionID string) bool {
 	return holds.live(sessionID) || holds.waitsForAnUnnamedMention(sessionID)
 }
 
+// decidesCopyFor reports whether a mention of this comment decides the copy bound for sessionID:
+// whether the mentions this reading can say are bound for that session - its own attempts, and
+// the attempts that name no session yet whose role this read resolved to it - are in a state a
+// mention decides the copy in (mentionHolds.named, mentionDecidesTheCopy). A key with no attempt
+// of its own and no attempt resolved to it reads mentionFailed, and no mention decides its copy.
+//
+// The credits filter asks it (addAuthorRoutes). On an issue a session claims, a session a
+// document credits alone is dropped before any copy of it is built - which is where the mention
+// rule would be asked of that session (destinations.addSession) - so a session whose copy a
+// mention of this comment decides has to be kept, and left to that rule: it is what holds the
+// event back while the send is live and what keeps the fallback row the pass publishes should
+// the mention fail (destinations.leftTo, publishFallbackCopies). The filter's other exemption,
+// fallbackKeys, names the one state settled before the batch read it, a mention that already
+// failed; this answers for every state of a mention still to decide the copy.
+//
+// It reads named and not mentionHolds.state. state is named folded with
+// unpinnedRoleMentions.resendingUnnamed, and that fold is a property of the comment rather than
+// of the key: one @role: mention this read could name no holder for, past the lease the outbox
+// waits a send out for, makes every key of the comment read a state other than mentionFailed, so
+// this filter would keep every credit of the document and a person's comment on an issue a
+// session claims would reach them all
+// (TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut). named is the key's
+// own attempts and the attempts this read resolved to that key, which is the question this
+// filter asks: whose copy a mention decides.
+//
+// What that costs, in the decision that took it: a credit-only session an unnamed role attempt is
+// later pinned to is dropped here, although leftTo, reading state, would have kept a
+// comment_fallback_copies row for it (its mentionResending arm), which the pass that publishes
+// those rows sends should that attempt's send fail. It would not have held the event: a credit
+// reaches leftTo with unnamed false, so a live unnamed attempt holds no credit's copy. That
+// narrow case is traded for the broad one. leftTo keeps reading state: the conservative
+// comment-wide fold belongs where a copy that exists is held back, not where a copy is decided
+// to exist at all.
+//
+// Both sides of the rule are pinned. A session no attempt of the comment names and no unpinned
+// attempt resolves to reads mentionFailed and is dropped, so an ordinary credit of a document is
+// left out as before (TestAPersonsCommentOnASessionClaimedIssueObligesTheClaimantAlone); a
+// session this read resolved the comment's @role: mention to keeps its copy, through
+// unpinnedRoleMentions.state inside named
+// (TestACreditThisReadResolvedTheRoleMentionToKeepsItsCopy). A session a mention of the comment
+// delivered to reads mentionSent and is kept, which costs nothing: the mention rule leaves that
+// session's copy to the mention and adds none.
+//
+// A reading of no mentions at all - the zero value, which a comment.edited and a comment.created
+// that names no mention carry (eventDestinations) - answers mentionFailed for every session, so
+// the filter applies plainly there and an edit's exemption is its failed mentions alone
+// (lookup.mentionFallbackKeys).
+func (d mentionDeliveries) decidesCopyFor(sessionID string) bool {
+	return mentionDecidesTheCopy(d.holds().named(sessionID))
+}
+
 // mentionComment is the comment whose mention attempts a mentionDeliveries read, the
 // comment.created event that created it, and the context and store a settle or a hold of one of
 // its keys runs on (settleAbandoned, holdFallbackCopy). It lives as long as the one batch or
@@ -292,6 +343,36 @@ const (
 	// mentionFailed: every attempt failed, or none was recorded.
 	mentionFailed
 )
+
+// mentionDecidesTheCopy reports whether a mention in state decides the copy of the comment bound
+// for one session's own topic: the decision destinations.leftTo makes for an ordinary copy, the
+// copy of a session no comment_fallback_copies row owns a destination of. mentionFailed - every
+// attempt failed, or none was recorded - is the one state that reaches copyGoes and leaves the
+// copy to the event; every other state is a mention's, the copy going to the mention itself
+// (mentionSent, mentionSending), to a fallback row (mentionResending), or to the settle leftTo
+// runs before it answers (mentionAbandoned).
+//
+// Two readings of the comment's attempts ask this one decision, and that is deliberate. leftTo
+// asks it of mentionHolds.state, the comment-wide fold that counts an attempt whose role this
+// read could name no holder for against every key once it is past its lease
+// (unpinnedRoleMentions.resendingUnnamed), because it holds back a copy that exists;
+// mentionDeliveries.decidesCopyFor asks it of mentionHolds.named, that key's own attempts and
+// the attempts this read resolved to that key, because it decides whether the copy is built at
+// all (addAuthorRoutes). Two readings of one decision, which is why the decision has one name: a
+// third reading of the decision itself is what this predicate exists to stop.
+//
+// It is a predicate over a state and reads no destination, and mentionDeliveries.held is the one
+// input leftTo has ahead of it: a destination a comment_fallback_copies row already owns is that
+// row's, which the read fills from the rows that stand (loadMentionDeliveries,
+// mentionFallbackHoldsQuery), and leftTo answers copyLeftToTheMention for it before it reads any
+// state. So at mentionFailed with such a row the two part - this says no mention decides the
+// copy, where leftTo says the copy is the row's - and nothing is lost by it. The credits filter
+// keeps such a session when its own mention failed (fallbackKeys names it) and drops it
+// otherwise, and either way leftTo gives this pass no copy of it, the fallback pass being the
+// one that publishes or settles that row.
+func mentionDecidesTheCopy(state mentionState) bool {
+	return state != mentionFailed
+}
 
 // mentionStateOf is the state of a key whose attempts hold a sent one, one being resent, one
 // being sent and an abandoned one, as each is true.
@@ -865,6 +946,13 @@ func (d *destinations) workingSessionHold(sessionID string) copyHold {
 // resolveRoleHolders, planChains): a keep for a role nobody holds waits on every mention of the
 // comment, no key of the session it reaches being known yet (mentionDeliveries.anyLive), and a
 // forward on the one mention of the holder it reaches (mentionHolds.live).
+//
+// The one answer mentionDecidesTheCopy owns here is the ordinary copy's: whether any mention of
+// the comment decides this copy at all. Which mention decides it, and what becomes of the copy
+// it decides, is the switch below, and the copy a fallback row owns is answered before either
+// (mentionDeliveries.held). mentionDeliveries.decidesCopyFor asks that same predicate of
+// mentionHolds.named rather than of the state read here, the two readings differing by the fold
+// this one keeps (unpinnedRoleMentions.resendingUnnamed).
 func (d *destinations) leftTo(holds mentionHolds, key, destination string, unnamed bool) copyHold {
 	if _, ok := d.mentions.held[destination]; ok {
 		return copyLeftToTheMention
@@ -885,6 +973,11 @@ func (d *destinations) leftTo(holds mentionHolds, key, destination string, unnam
 		// says whose copy it delivers; this is a session it may yet be pinned to.
 		d.mentionPending = true
 		return copyWaitsForAnUnnamedMention
+	}
+	if !mentionDecidesTheCopy(state) {
+		// No mention of the comment decides this copy, so the event publishes it, under the
+		// event's own key or a failed mention's (destinations.addSession).
+		return copyGoes
 	}
 	switch state {
 	case mentionSent:
@@ -1240,7 +1333,7 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // resolved and forwarded to the role's holder, as a batch's role route is (fallbackRoleForward,
 // roleForward.send): a role no live holder can take has its copy kept on the role's kept lane for
 // the holder that claims it next, and the stream's acknowledgement of that keep marks the row
-// published as a holder's receipt of a forward does, and the copy it keeps carries every settled
+// published as a forward's acknowledgement does, and the copy it keeps carries every settled
 // mention of the comment by session, so that whoever forwards it to the role's next holder keys
 // it by that holder's own mention (roleForward.keep, contracts.Envelope.MentionDedupeKeys); a
 // holder whose own mention of the comment settled - the session the row's key names, which a
@@ -1433,18 +1526,18 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 			release(item.held, 0)
 			continue
 		default:
-			// Counted as a batch counts a destination that did not reach NATS (sendChains): a
-			// role forward its holder's resolution held pending sent nothing at all and is
-			// counted under that holder, a forward NATS took whose holder sent no receipt is
-			// unanswered, and a send the server refused under this connection's own publish
-			// permissions is a denial. An answer a stopping process stopped waiting for says
-			// nothing of NATS and counts nothing.
+			// Counted as a batch counts a destination that did not reach NATS, by the batch's
+			// own rule (sendChains, forwardUnanswered): a role forward its holder's resolution
+			// held pending sent nothing at all and is counted under that holder, a forward the
+			// stream never acknowledged is unanswered, and a send the server refused under this
+			// connection's own publish permissions is a denial. An answer a stopping process
+			// stopped waiting for says nothing of NATS and counts nothing.
 			switch forward := item.out.forward; {
 			case errors.Is(err, bus.ErrPublishDenied):
 				deps.countPublishFailure("denied")
 			case forward != nil && forward.err != nil:
 				deps.countPublishFailure("holder")
-			case errors.Is(err, bus.ErrReceiptTimeout) && !errors.Is(err, bus.ErrPublishUnconfirmed):
+			case forwardUnanswered(forward != nil, err):
 				deps.countPublishFailure("unanswered")
 			case !lostToContextEnd(ctx, err):
 				deps.countPublishFailure("failed")

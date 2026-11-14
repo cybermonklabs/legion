@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -227,11 +227,7 @@ func TestBootReconcileReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) 
 	const unrecorded, recorded, unlabelled, child = "CAPTURE-755", "CAPTURE-589", "CAPTURE-526", "CAPTURE-756"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
-	conn, err := nats.Connect(workflowNATS(t), nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)

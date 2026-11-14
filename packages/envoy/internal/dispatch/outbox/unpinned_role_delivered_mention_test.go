@@ -57,7 +57,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 
 	rig := newRoleRig(t)
 	rig.silent(t, roleTopic)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", &route)
@@ -159,7 +159,7 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 
 	rig := newRoleRig(t)
 	rig.silent(t, roleTopic)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", &route)

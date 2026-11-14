@@ -53,7 +53,12 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 // testServerOptions configure the server an API test drives.
 type testServerOptions struct {
 	defaultProject string
-	testHooks      bool
+	// newIssueLabel and newIssueSession are the two settings the dashboard's search bar reads
+	// before it files a person's typed words as an issue (GET /api/v1/settings/new-issue); both
+	// empty is the deployment that configured neither.
+	newIssueLabel   string
+	newIssueSession string
+	testHooks       bool
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
@@ -128,6 +133,9 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
+	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
+	buildCommit string
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -235,6 +243,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Identity:               people,
 		AgentTokens:            sharedAgentTokens(t, "agent-token"),
 		DefaultProject:         options.defaultProject,
+		NewIssueLabel:          options.newIssueLabel,
+		NewIssueSession:        options.newIssueSession,
 		ServerURL:              testServerURL,
 		Docs:                   documentService,
 		Events:                 broker,
@@ -253,6 +263,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Answerer:               options.answerer,
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
+		BuildCommit:            options.buildCommit,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -821,6 +832,7 @@ func TestEventNotifyRules(t *testing.T) {
 		{name: "user state", event: model.Event{Type: "user_state.updated", Actor: user}, want: false},
 		{name: "user thread state", event: model.Event{Type: "user_thread_state.updated", Actor: user}, want: false},
 		{name: "user decision kept", event: model.Event{Type: "decision.kept", Actor: user}, want: false},
+		{name: "user priority write", event: model.Event{Type: "priority.updated", Actor: user, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}}, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := broker.Notify(test.event); got != test.want {
@@ -1980,6 +1992,10 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	if err != nil {
 		t.Fatalf("establish alice's session: %v", err)
 	}
+	// A session cookie is issued at sign-in, and a sign-in records the person (people.Record, as
+	// the sign-in callback does), so alice is somebody who has signed in: a project she creates
+	// defaults to her, and that default is held to the people table like every other.
+	seedPeople(t, database, "alice@d.example")
 	cookie, err := http.ParseSetCookie(auth.IssueSessionCookie("alice@d.example", generation, testSigningKey, true))
 	if err != nil {
 		t.Fatalf("parse session cookie: %v", err)

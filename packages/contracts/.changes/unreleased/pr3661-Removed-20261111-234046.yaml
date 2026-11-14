@@ -1,0 +1,7 @@
+kind: Removed
+body: |-
+    `Suggestions` drops `decision`, and `WriteSuggestion` drops `answered_by` and `answered_at`. The
+    `dispatch_related` tool description drops the clause that named them.
+time: 2026-11-11T23:40:46.632193346Z
+custom:
+    Issue: pr3661

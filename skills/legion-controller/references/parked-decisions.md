@@ -1,22 +1,41 @@
 # Decisions on a parked tree
 
-A parked tree is a root handed to Legion (the `legion` label) whose Dispatch status is `backlog`
-or `icebox` and whose `issues.<KEY>.phase` in `read_state` is `done`. Its architect is suspended
-or gone, so nobody inside the tree hears what a person says on it. The Go daemon sends you each
-such decision as `parked-decision on <KEY>`; the walk below finds one sent while no controller
-ran. You decide whether the tree runs again, unless the park is not your own hold. When it
-runs, its architect's start task, or the catch-up of a later launch, names each decision the
-daemon relayed, and both spec versions when the approved one is not the current one, so you need
-not tell it.
+A parked tree is a root handed to Legion (the `legion` label) whose Dispatch status is `backlog` or
+`icebox` and whose `issues.<KEY>.phase` in `read_state` is `done`. Its architect is suspended or
+gone, so nobody inside the tree hears what a person says on it. The Go daemon sends you each such
+decision as `parked-decision on <KEY>`; the walk below finds one sent while no controller ran. When
+the park is your own hold, you decide whether such a decision runs the tree again; whoever made the
+park, you start the tree when a person asks you to. When it runs, its architect's start task, or the
+catch-up of a later launch, names each decision the daemon relayed, and both spec versions when the
+approved one is not the current one, so you need not tell it.
 
 ## Backlog and icebox
 
 A park means "should not run now", and a parked root keeps its `legion` label. A parked root runs
-again when a person sets it to `todo`, when a wake tells you to re-admit it (`worker-died`,
-`held`), or when it is your own hold (a park you marked `Parked by Legion while it waits on:`, step
-2 of **Deciding**) and a person's decision after the park gives its work a next step, as below.
+again when a person sets it to `todo`, or when it is your own hold (a park you marked
+`Parked by Legion while it waits on:`, step 2 of **Deciding**) and a person's decision after the
+park gives its work a next step, as below.
+A parked root that is your own hold also runs again when you checked that the hold's cause or the
+architect's cause is gone, or that the event it waits on has happened, as the wakes reference
+says (the `held` and `worker-died` wakes, and
+[A tree that waits on an event outside Legion](skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion)):
+you set it to `todo` with a comment on the root that cites the park's mark and says what you
+checked.
+[The walk](#the-walk) makes that check at every start and on each `tick`.
 Every other park, a person's, another session's or an operator's `legion status`, stays parked
-until whoever parked it sets it to `todo`.
+until a person sets it to `todo`, the daemon queues a person's approval of its spec (**The
+notice**, the paragraph that begins "A person's own approval"), or a person asks you to start it:
+that request is a person's move, as the list of moves to `todo` in
+[Free slots](skill://legion-controller/SKILL.md#free-slots) says.
+
+A held root is not a parked one. It stands at `phase: held` and is still in the workflow, and a
+`todo` on it releases the hold instead of starting a new run: the issue returns to the phase its
+hold came from and that phase's role starts again, at the same generation
+(`skill://legion-controller/references/wakes.md`, the `held` wake). A root that is parked or
+lingers takes `todo` alone, and that `todo` re-admits its tree. The pair `backlog` and then `todo`
+(step 1 of **Deciding**) is for a root still in the workflow whose architect has stopped, a held
+root included, where `todo` alone would only release the hold. The `backlog` write takes that
+tree out of the workflow, so the `todo` after it re-admits the tree.
 
 ## The notice
 
@@ -41,22 +60,31 @@ A person's own approval of a parked root's own spec (its primary document), when
 live, is no notice either: it is that person's handover, and the daemon sets the root `todo`
 itself, whoever parked it (`admission: queued a person's handover`, `source=approval`). Two
 approvals of a root's spec are not that handover and still come as notices: a carried approval,
-which Dispatch writes in the person's name when their answer to a decision block was the whole
-change since the version they approved, and an approval on a root that keeps a Dispatch parent,
-as a child a linger handed to Legion does. The other spec notices are a request for changes and
-an approval of a document that is not the root's primary one.
+which Dispatch writes in the person's name with a reason that begins
+`Carried forward from the approval of version`, when their answer to a decision block was the
+whole change since the version they approved or when a later version's text is the text of the
+version they approved, and an approval on a root that keeps a Dispatch parent, as a child a linger
+handed to Legion does. The other spec notices are a request for changes and an approval of a
+document that is not the root's primary one.
 
 ## Deciding
 
 1. **Where the tree stands.** Read `issues.<root>` with `read_state`.
    - Its `phase` is not `done`: the tree runs. When `architect.state` is `failed` or `retired`,
      nobody in the tree heard the decision: skip step 2 and judge it in steps 3 and 4. A decision
-     that gives the work a next step re-admits the tree as the `worker-died` section of
-     [the wakes reference](skill://legion-controller/references/wakes.md) says
-     (`set_status` of the root to `backlog`, then to `todo`), not to `todo` alone. Answer a
-     question as step 4 says, and leave the tree as it is. In that reply and in the root's copy,
-     write `<root>'s architect has stopped, so it` for `<root> is parked, so its architect`,
-     `The tree waits.` for `The tree stays parked.`, and `backlog, then todo,` for `todo`.
+     that gives the work a next step re-admits the tree (`set_status` of the root to `backlog`,
+     then to `todo`, not to `todo` alone) as the `worker-died` section of
+     [the wakes reference](skill://legion-controller/references/wakes.md) says, once that section
+     finds no cause or finds it gone; while the cause stays, the tree stays admitted under that
+     section's park ask. That pair is a restart and not a park. On a root at `phase: held`, `todo`
+     alone releases that hold and starts the held phase's worker, which leaves the failed
+     architect where it is, so the `backlog` write before it is what gives the tree an architect
+     again.
+     You park an issue in `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
+     Answer a question as step 4 says, and leave the tree as it is. In that reply and in the
+     root's copy, write `<root>'s architect has stopped, so it` for `<root> is parked, so its
+     architect`, `The tree waits.` for `The tree stays parked.`, and `backlog, then todo,` for
+     `todo`.
      Otherwise the tree already heard the decision: do nothing.
    - Its `phase` is `done`: read the root's Dispatch status (`dispatch read --issue <root>`).
      `backlog` or `icebox`: go on. `done`: the tree finished; set nothing and name `ref` in your
@@ -72,9 +100,13 @@ an approval of a document that is not the root's primary one.
    legion-daemon:<PROJECT>` and, after it and at most 10 minutes after it, `Events:` show a
    `comment.created` from a session (any controller session: its id changes when the controller
    restarts or is taken over) that begins `Parked by Legion while it waits on:`. That is the mark
-   you post on the root, in the same turn, when you park a tree for a hold (the `held` section of
-   [the wakes reference](skill://legion-controller/references/wakes.md)), and for no other
-   park: a park a person asks for, or one you make at triage, gets no mark. The window pairs the
+   you post on the root, in the same turn, when you park a tree on a person's answer to the
+   `dispatch ask` you opened for a hold, for a failed architect or for a tree that waits on an
+   event outside Legion (the `held`, `worker-died` and
+   [A tree that waits on an event outside Legion](skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion)
+   sections of [the wakes reference](skill://legion-controller/references/wakes.md)), and for no
+   other park: a park a person asks for on their own, without your ask, or one you make at
+   triage, gets no mark. The window pairs the
    mark with the park it was posted for: `set_status` writes the status to Dispatch before it
    returns, so the mark's line follows the park's within the turn, and a mark older than the park
    line belongs to an earlier park. Every other park is someone else's: a person's (`user
@@ -111,23 +143,34 @@ an approval of a document that is not the root's primary one.
      Where `gatedSteps` carries more than one entry, read each one the same way: the tree runs
      again only once every entry is `approved`, and an entry still `waiting`, `unregistered` or
      `changes_requested` is work the architect holds.
-     - It is your own hold (step 2): set the root to `todo` (`set_status`); admission queues it and
-       its architect resumes. Post one comment on the issue where the decision was made
+     - It is your own hold (step 2): set the root to `todo` (`set_status`). Admission queues it,
+       the tree runs again at a new generation and its architect starts with the decision. That
+       `todo` releases no hold. Post one comment on the issue where the decision was made
        (`dispatch comment --issue <KEY> --body-file -`): `Parked decision read: <ref> by <login>
        gives this tree its next step (<one sentence>). Legion runs it again.`
-     - Any other park, or you cannot read who parked the tree: set nothing, since you move only a
-       hold of your own ([Free slots](skill://legion-controller/SKILL.md#free-slots)).
-       Post one comment there: `Parked decision read: <ref> by <login> gives this tree its next
-       step (<one sentence>).`, then the sentence for that park, then `Its architect then starts
+     - Any other park, or you cannot read who parked the tree, when the decision's own words ask
+       Legion to start the tree: that is a person's request to start it
+       ([Free slots](skill://legion-controller/SKILL.md#free-slots)). Set the root to `todo`
+       (`set_status`) and post one comment on the issue where the decision was made:
+       `Parked decision read: <ref> by <login> asks Legion to start this tree. Legion runs it
+       again.`
+     - Any other park, or you cannot read who parked the tree, in any other case: set nothing. A
+       decision that only gives the work a next step is no request to start it.
+       Post one comment on the issue where the decision was made: `Parked decision read: <ref> by
+       <login> gives this tree its next step (<one sentence>).`, then the sentence for that park,
+       then `Its architect then starts
        with this decision.` For a comment that is no reply on an ask, leave out the last sentence:
        the daemon relays no such comment. The sentence for the park:
-       - A person's or another session's: `<parker> parked the tree, so it stays parked until they
-         set it to todo.`, with the login for a person and `session <id>` for a session.
+       - A person's or another session's: `<parker> parked the tree, so it stays parked until a
+         person sets it to todo, approves its spec when it has no parent, or asks Legion to start
+         it.`, with the login for a person and `session <id>` for a session.
        - One by `session legion-daemon:<PROJECT>` with no mark: `The tree was parked through Legion
          (session legion-daemon:<PROJECT>) for no hold of its own, so it stays parked until a
-         person sets it to todo.`
+         person sets it to todo, approves its spec when it has no parent, or asks Legion to start
+         it.`
        - One you cannot read: `Its last 10 events do not show who parked the tree, so it stays
-         parked until whoever parked it sets it to todo.`
+         parked until a person sets it to todo, approves its spec when it has no parent, or asks
+         Legion to start it.`
    - It only questions the work: a question, a doubt about the premise, a request for changes that
      only asks why. Leave it parked and answer the question in one reply:
      - Answer from the record when it holds the answer: the issue and its spec (`dispatch read`,
@@ -165,9 +208,10 @@ an approval of a document that is not the root's primary one.
 
 At every start (step 4 of the start procedure) and on each `tick`:
 
-1. List the parked roots: `dispatch issues --project <PROJECT> --status backlog --label legion
-   --limit 250 --offset 0`, then the same with `--status icebox`, each paged as
-   [At every start](skill://legion-controller/references/triage.md#at-every-start) pages triage.
+1. List the parked roots:
+   `dispatch issues --project <PROJECT> --status backlog --label legion --all`, then the same
+   with `--status icebox`. `--all` reads every match in one request, as
+   [At every start](skill://legion-controller/references/triage.md#at-every-start) reads triage.
    Keep the rows that `read_state` records under `issues` at phase `done`.
 2. For each, read the root (`dispatch read --issue <root>`), then its children
    (`dispatch read --ref dispatch://<root>/children`) and each child (`dispatch read --issue
@@ -180,8 +224,9 @@ At every start (step 4 of the start procedure) and on each `tick`:
    `artifact.approved` or `artifact.changes_requested` event, with the approval request's
    `ask.answered` at the same time, is one decision whose `ref` is `dispatch://<KEY>/spec`, and
    the issue's `Spec approval:` line shows a request's reason. Skip an `artifact.approved` only
-   when it is the person's handover, which the daemon queues itself (the paragraph under **The
-   notice**), and with it the approval request's `ask.answered` at the same time. It is that
+   when it is the person's handover, which the daemon queues itself (**The notice**, the paragraph
+   that begins "A person's own approval"), and with it the approval request's `ask.answered` at the
+   same time. It is that
    handover when all three hold: the root's `parent` is `null`; the event's `payload.artifact_id`
    is the root's `primary_artifact_id`; and its `payload.reason` does not begin `Carried forward
    from the approval of version`. The events `curl` of
@@ -201,3 +246,28 @@ At every start (step 4 of the start procedure) and on each `tick`:
    notice does not depend on that window.
 4. Decide each tree's decisions as **Deciding** says, its step 1 included. An event of those types
    that is older than the park goes in your summary when **Deciding** step 2 says so.
+5. Take each root of step 1's list whose park is your own hold (**Deciding**, step 2) and whose
+   tree had no decision that step 4 judged in this walk: the next walk checks a root whose tree
+   had a decision. The mark of each root you take, the first line of the
+   `Parked by Legion while it waits on:` comment that **Deciding** step 2 pairs with the park,
+   names the cause or the event that the tree waits on. When that comment cites an ask's answer,
+   the root's `Asked whether to park:` comment that names that ask gives the `<key>` of the same
+   wait on its second line
+   (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`). Check that wait
+   now:
+   - For an `event:` key, read what its reference names: the issue, the pull request, the
+     release, the deploy run, or the message or comment that names what the tree waits on.
+   - For any other mark, check the cause that the mark names. That is a mark with a `held` or an
+     `architect failed:` key, or a mark with no park ask: its comment cites no ask, or cites an
+     ask that no `Asked whether to park:` comment names. A mark with no park ask comes from an
+     escalated hold that an earlier Legion parked at once. Judge whether the cause is gone with
+     the test of step 3 of
+     [An escalated hold](skill://legion-controller/references/escalation.md#an-escalated-hold).
+     A live row of `read_state`'s `capabilities` speaks only for a session that runs, and the
+     parked tree runs none. So the lack of such a row is no evidence that the cause is gone.
+
+   When the event has happened or the cause is gone, set the root to `todo` (`set_status`). Post
+   one comment on the root (`dispatch comment --issue <root> --body-file -`) that cites the mark
+   and says what you checked, as the wakes reference says. When the event has not happened, the
+   cause stays, or you cannot tell, move nothing. Name the root and what it waits on in your
+   summary.

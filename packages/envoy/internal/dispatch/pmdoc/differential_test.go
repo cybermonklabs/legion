@@ -43,9 +43,20 @@ type diffDump struct {
 	EngineRender    *string `json:"engine_render"`
 	EngineRenderErr string  `json:"engine_render_err,omitempty"`
 	EngineReadsBack bool    `json:"engine_reads_back"`
+	// Display and DisplayVersion are what the display read reads the document as in its two
+	// modes, block ids dropped, at a revision that has one (diffDisplayRead); a revision without
+	// one leaves both out, and the cross-reader gates it answers are skipped there.
+	Display        json.RawMessage `json:"display,omitempty"`
+	DisplayVersion json.RawMessage `json:"display_version,omitempty"`
 	// Panics names each step that panicked, recovered or not.
 	Panics []string `json:"panics,omitempty"`
 }
+
+// diffDisplayRead is the display read of one document in both modes, or nil at a revision with
+// no display read. differential.sh copies this file alone into the base revision, so nothing
+// here may name ReadForDisplay; the head's differential_display_test.go, which the base does not
+// have, sets this.
+var diffDisplayRead func(markdown string) (latest, version *Node)
 
 // diffReading is the engine's reading of one markdown field: {pm} or {err}; nil where the field
 // was null.
@@ -203,6 +214,14 @@ func TestDifferentialDump(t *testing.T) {
 			dump.Tree, _ = withoutBlockIDs(tree).JSON()
 			dump.Render, dump.RenderErr, dump.ReadsBack = diffRender(&dump, "render", tree)
 			dump.FixedPoint = dump.Render != nil && *dump.Render == source.MD
+		}
+		if diffDisplayRead != nil {
+			var latest, version *Node
+			SetBlockIDGenerator(counterBlockIDs())
+			if err := diffStep(&dump, "display", func() error { latest, version = diffDisplayRead(source.MD); return nil }); err == nil {
+				dump.Display, _ = withoutBlockIDs(latest).JSON()
+				dump.DisplayVersion, _ = withoutBlockIDs(version).JSON()
+			}
 		}
 		if engineTree := diffTree(read.MD); engineTree != nil {
 			dump.EngineRender, dump.EngineRenderErr, dump.EngineReadsBack = diffRender(&dump, "engine render", engineTree)

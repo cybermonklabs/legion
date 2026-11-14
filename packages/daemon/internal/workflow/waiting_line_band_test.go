@@ -1,0 +1,120 @@
+package workflow
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// Where the waiting line puts an issue whose work came back is shipped text, so the fragment is
+// read from the source it is declared in (record.WaitingLineBand) rather than written out again
+// here. The sixteen files below carry the eighteen texts that state it — AGENTS.md and admit.go
+// carry two each — and one loop runs both checks over each file: the fragment's presence, and
+// the ban below. Presence reads the fragment and nothing else: whether the sentence around it
+// is true is a reader's to judge, never this loop's, so green here is coverage and not
+// correctness. The file is read through one helper that puts its prose on a single line, so a
+// text wrapped across a line break reads as one written out on a single line. (INFRA-1100.)
+//
+// The rule those texts keep, and this test with them: a text states the placement,
+// record.WaitingLineBand, with a tree root's own first phase placed at the moment its gate
+// opened, and never the position that placement gives an issue, which depends on what else waits
+// (record.Waiting, record/project.go). The ban is what that rule needed. It runs over the
+// sixteen files of the one list this test holds, which is every file that states the placement
+// at all.
+//
+// Presence alone let a position claim through: AGENTS.md carried record.WaitingLineBand word for
+// word in a sentence about a root's own first phase, two lines below a sentence that claimed a
+// position for an issue whose work came back, and the presence check passed on the neighbouring
+// sentence's words. The ban reads that same one-line text, lower-cased.
+//
+// What the ban proves: no file of the list carries one of the four wordings that claim a
+// position. What it does not prove: whether what a file says instead is true, which stays a
+// reader's to judge; and a wrong wording nobody has written yet, since the list holds the
+// phrases these texts used and no more.
+//
+// It bans rather than judges because the judgement is fuzzy and a plain substring is not.
+// Whether a sentence claims a position or merely defines the ordinal 1 is a reading, and a
+// program that reads sentences to decide it is guesswork this repository does not keep: a
+// programmatic gate checks what a program checks easily and leaves the fuzzy reading to the
+// agent who writes the text. The ban needs no escape hatch because its phrases are narrow
+// enough to leave running-legion.md's honest definition of the ordinal, `1 being first in the
+// line`, standing.
+func TestTheShippedWordsNameTheWaitingLineBand(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "..")
+	body := func(file string) string {
+		t.Helper()
+		text, err := os.ReadFile(filepath.Join(root, file))
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		return string(text)
+	}
+	// The same file with its prose on one line: every line loses a leading run of whitespace and
+	// the comment markers these files carry, and the words are joined by single spaces. A
+	// fragment wrapped inside a `//` or ` * ` comment is the same wording, and a read that left
+	// the markers in would see `work came // back` and report a true text as false.
+	collapsed := func(file string) string {
+		t.Helper()
+		var words []string
+		for _, line := range strings.Split(body(file), "\n") {
+			line = strings.TrimLeft(line, " \t")
+			for _, marker := range []string{"//", "*", "#"} {
+				if rest, found := strings.CutPrefix(line, marker); found {
+					line = rest
+					break
+				}
+			}
+			words = append(words, strings.Fields(line)...)
+		}
+		return strings.Join(words, " ")
+	}
+	band := []string{
+		"AGENTS.md",
+		"packages/daemon/internal/admit/admit.go",
+		"docs/site/src/content/docs/legion/running-legion.md",
+		"docs/site/src/content/docs/legion/troubleshooting.md",
+		"packages/contracts/src/legion-api.ts",
+		"packages/daemon/cmd/legion/main.go",
+		"packages/daemon/internal/admit/awaiting_person_test.go",
+		"packages/daemon/internal/admit/hold_test.go",
+		"packages/daemon/internal/api/state.go",
+		"packages/daemon/internal/daemon/awaiting_catchup.go",
+		"packages/daemon/internal/phase/phase.go",
+		"packages/daemon/internal/workflow/awaiting_person.go",
+		"skills/legion-controller/references/admission.md",
+		"docs/site/src/content/docs/legion/concepts.md",
+		"skills/legion-architect/references/acceptance.md",
+		"skills/legion-controller/references/wakes.md",
+	}
+	// Lower case, since the text is lower-cased before the comparison: a sentence that opens on
+	// one of these is banned as the one that carries it mid-sentence is.
+	banned := []string{
+		"front of the waiting line",
+		"front of the line",
+		"front of the whole line",
+		"never first in",
+	}
+	// One read a file: the collapsed text serves the presence check and the ban alike, so the
+	// failures of one file are reported together rather than the whole list twice.
+	for _, file := range band {
+		text := collapsed(file)
+		if !strings.Contains(text, record.WaitingLineBand) {
+			t.Errorf("%s states where the waiting line puts an answered root without saying it stands %q",
+				file, record.WaitingLineBand)
+		}
+		lowered := strings.ToLower(text)
+		for _, phrase := range banned {
+			if !strings.Contains(lowered, phrase) {
+				continue
+			}
+			t.Errorf("%s says %q, which no file this test lists may say: such a text states where "+
+				"the line puts an issue — %q, a tree root's own first phase placed at the moment its "+
+				"gate opened — and never the position that gives it, which depends on what else "+
+				"waits (record.Waiting, record/project.go).",
+				file, phrase, record.WaitingLineBand)
+		}
+	}
+}

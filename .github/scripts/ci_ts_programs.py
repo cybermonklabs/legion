@@ -12,7 +12,7 @@ Each entry is (filter, project, why):
 The pairs are hand-kept and few; the files of each program are derived, which is the point. A
 job that typechecks a second project is a second entry (the envoy-client job typechecks
 broker-client beside its own package, the dispatch-ui job the proof editor beside the dashboard,
-and the test job the three script directories that are no workspace).
+and the test job the four script directories that are no workspace).
 """
 
 PROGRAMS = [
@@ -37,4 +37,6 @@ PROGRAMS = [
      "test: Typecheck the GitHub App registration script (bunx tsc --noEmit -p scripts/github-apps)"),
     ("test", "scripts/sessions",
      "test: Typecheck the session message-wait script (bunx tsc --noEmit -p scripts/sessions)"),
+    ("test", "scripts/approval-eval",
+     "test: Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)"),
 ]

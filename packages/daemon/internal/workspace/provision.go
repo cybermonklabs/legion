@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"golang.org/x/sys/unix"
 )
 
 // Provision ports provisionIssueWorkspace (packages/workspace/src/workspace.ts). It updates an
@@ -103,6 +104,11 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	if err := configureRepositoryCredential(ctx, run, workspace.Clone, request.CredentialHelper); err != nil {
 		return Workspace{}, err
 	}
+	// Every provision writes it, so a clone made before this setting existed takes it at its next
+	// provision.
+	if err := configureCloneReads(ctx, run, workspace.Clone); err != nil {
+		return Workspace{}, err
+	}
 	if err := removeRepositoryIdentity(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}
@@ -155,12 +161,27 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 // workspace whose checkout failed or was cut short — a jj error, a full disk, a daemon stopped
 // mid-checkout — holds no pattern until a provision checks it out. A shared clone made from a
 // pod's feed permanently holds none either, its patterns cleared when it was made so it carries no
-// working tree (feedClone's `jj sparse set --clear`), and that is no unfinished checkout: this is
-// called on an issue's workspace, never on the clone it is a workspace of. The read never
-// snapshots the working copy (--ignore-working-copy): a pane may be writing it, and a snapshot
-// would run the working-copy filters, fsmonitor and signing programs a tree agent can configure.
-// A directory with no `.jj` is refused, as every jj command in a workspace is (guardWorkspace).
+// working tree (feedClone's `jj sparse set --clear`), and that is no unfinished checkout. So
+// CheckedOut refuses two directories rather than answering for them: the shared clone itself, and
+// any directory under the clone root that clone sits in (CloneRoot). A clone's empty pattern set
+// would answer false, the caller would read that as an unfinished checkout, and its `jj sparse
+// reset` would write the whole tree into the clone. The read never snapshots the working copy
+// (--ignore-working-copy): a pane may be writing it, and a snapshot would run the working-copy
+// filters, fsmonitor and signing programs a tree agent can configure. A directory with no `.jj` is
+// refused, as every jj command in a workspace is (guardWorkspace).
 func CheckedOut(ctx context.Context, run Runner, workspace Workspace) (bool, error) {
+	// A clone sits at <clone root>/<owner>/<name> (Location), so the root it sits in is its
+	// grandparent, and the clone itself is under that root. The clone's own case is therefore
+	// first, for the refusal that names what the directory is. Both come before jj runs at all.
+	if workspace.Clone != "" {
+		cloneRoot := filepath.Dir(filepath.Dir(workspace.Clone))
+		switch {
+		case workspace.Dir == workspace.Clone:
+			return false, fmt.Errorf("CheckedOut cannot answer for %s: that directory is the shared clone itself, not a workspace of one."+whyACloneHasNoAnswer, workspace.Dir)
+		case underDirectory(cloneRoot, workspace.Dir):
+			return false, fmt.Errorf("CheckedOut cannot answer for %s: that directory is under the clone root %s, which holds a shared clone of each repository."+whyACloneHasNoAnswer, workspace.Dir, cloneRoot)
+		}
+	}
 	listed, err := RunCheckedIn(ctx, run, workspace, []string{"jj", "sparse", "list", "--ignore-working-copy", "--color=never"})
 	if err != nil {
 		return false, err
@@ -168,12 +189,72 @@ func CheckedOut(ctx context.Context, run Runner, workspace Workspace) (bool, err
 	return strings.TrimSpace(listed.Stdout) != "", nil
 }
 
+// whyACloneHasNoAnswer is the tail of both of CheckedOut's refusals: the reason a clone's pattern
+// set answers nothing, which is the same whichever clone directory was asked about.
+const whyACloneHasNoAnswer = " A clone holds no sparse pattern by design, because it carries no working tree (feedClone's `jj sparse set --clear`). An answer of false here reads as an unfinished checkout, and the caller then writes the whole tree into the clone"
+
+// underDirectory is whether dir is root or lies below it, compared one path segment at a time
+// (filepath.Rel, then filepath.IsLocal, as cmd/legion's sessions.go and runtime/sandbox's
+// manifest.go compare a path with its root). A string prefix would call /a/bc a child of /a/b.
+func underDirectory(root, dir string) bool {
+	relative, err := filepath.Rel(root, dir)
+	if err != nil {
+		return false
+	}
+	return filepath.IsLocal(relative)
+}
+
+// excludeLimit bounds how much of the shared clone's .git/info/exclude excludeCodegraphDirectory
+// reads: an exclude file a person or a tool wrote can pass gitdirLimit's 4 KiB, and one past a
+// MiB is no list of patterns anyone keeps, so it is refused rather than read whole into memory.
+const excludeLimit = 1 << 20
+
 // excludeCodegraphDirectory appends ".codegraph/" to cloneDir's ".git/info/exclude" unless a
-// line already matches it exactly, so repeated provisioning of the same clone writes it once.
+// line already matches it exactly, so repeated provisioning of the same clone writes it once. A
+// missing .git or info directory is made at 0700, and a missing exclude file at 0600.
+//
+// The file is on the issue's volume, which every role of the pod writes, and the call runs under
+// whatever Provision's caller holds: the tmux daemon's outbox, with the repository's store lock
+// held, which every later provision and removal of the repository waits on. So it is opened once,
+// read and appended to through that one descriptor, and opened as openRegular opens a file a role
+// can write: a symlink there is refused rather than followed, which would grow whatever file the
+// link names, and a fifo or a device is refused rather than waited on, in its open or its read. A
+// directory, or a file larger than excludeLimit, is refused too, each naming the file. The clone
+// and the two directories between it and the file are opened the same way, without following a
+// link (openDirectory), each under the descriptor of the one above it, so a link a role leaves at
+// .git or at info is refused as one at the file is, and nothing below the clone is reached by a
+// path a role could swap between two opens.
 func excludeCodegraphDirectory(cloneDir string) error {
 	excludePath := filepath.Join(cloneDir, ".git", "info", "exclude")
-	existing, err := os.ReadFile(excludePath)
-	if err != nil && !os.IsNotExist(err) {
+	dir, err := openDirectory(unix.AT_FDCWD, cloneDir, cloneDir)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", excludePath, err)
+	}
+	path := cloneDir
+	for _, name := range []string{".git", "info"} {
+		path = filepath.Join(path, name)
+		next, err := openDirectory(dir, name, path)
+		if errors.Is(err, fs.ErrNotExist) {
+			if err := unix.Mkdirat(dir, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+				_ = unix.Close(dir)
+				return fmt.Errorf("create %s: %w", path, err)
+			}
+			next, err = openDirectory(dir, name, path)
+		}
+		_ = unix.Close(dir)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", excludePath, err)
+		}
+		dir = next
+	}
+	defer unix.Close(dir)
+	file, err := openRegular(dir, "exclude", excludePath, unix.O_RDWR|unix.O_CREAT|unix.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", excludePath, err)
+	}
+	defer file.Close()
+	existing, err := readBounded(file, excludePath, excludeLimit)
+	if err != nil {
 		return fmt.Errorf("read %s: %w", excludePath, err)
 	}
 	for _, line := range strings.Split(string(existing), "\n") {
@@ -181,15 +262,14 @@ func excludeCodegraphDirectory(cloneDir string) error {
 			return nil
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(excludePath), 0o700); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(excludePath), err)
+	content := ".codegraph/\n"
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		content = "\n" + content
 	}
-	content := string(existing)
-	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
-		content += "\n"
+	if _, err := file.WriteString(content); err != nil {
+		return fmt.Errorf("write %s: %w", excludePath, err)
 	}
-	content += ".codegraph/\n"
-	if err := os.WriteFile(excludePath, []byte(content), 0o600); err != nil {
+	if err := file.Close(); err != nil {
 		return fmt.Errorf("write %s: %w", excludePath, err)
 	}
 	return nil
@@ -233,17 +313,42 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 	}, nil
 }
 
+// locationOf is the workspace Location puts at dir, read out of dir's path alone: the owner and
+// the name are the two directories above dir's own, the issue is dir's own base name, and the
+// state directory is layoutDepth above it. A dir Location does not put exactly there — one too
+// shallow for the layout, one whose owner and name are no repository, one whose issue Location
+// would case differently — is in no layout this inverts, and is refused rather than guessed at.
+//
+// It reads no file and is the one inverse of Location the daemon keeps: located asks it whether
+// the pair it was handed is a workspace Location names, and WorkspaceOf (gitworktree.go) asks it
+// for the clone of the directory a process stands in. A caller's own refusals — the derivation's
+// absolute path among them — stay with that caller.
+func locationOf(dir string) (Workspace, error) {
+	stateDir := dir
+	for range layoutDepth {
+		stateDir = filepath.Dir(stateDir)
+	}
+	owner, name := filepath.Base(filepath.Dir(filepath.Dir(dir))), filepath.Base(filepath.Dir(dir))
+	repository, err := ghrepo.Parse("workspace repository", owner+"/"+name)
+	if err != nil {
+		return Workspace{}, err
+	}
+	want, err := Location(stateDir, repository, filepath.Base(dir))
+	if err != nil {
+		return Workspace{}, err
+	}
+	if want.Dir != dir {
+		return Workspace{}, fmt.Errorf("the workspace of %s under %s lies at %s", repository, stateDir, want.Dir)
+	}
+	return want, nil
+}
+
 // located is whether workspace's directory and clone are the pair Location derives for the issue
 // its directory names: <state>/workspaces/<owner>/<repo>/<issue> beside
-// <state>/repos/github.com/<owner>/<repo>. The repository is read back from the clone's path, a
-// string like any other input, so it is parsed.
+// <state>/repos/github.com/<owner>/<repo>. The directory is a string like any other input, so
+// locationOf is asked what Location makes of it, and it answers only for a directory that is
+// already the one Location would name; the clone it answers is what is left to compare.
 func located(workspace Workspace) bool {
-	repo, owner := filepath.Base(workspace.Clone), filepath.Base(filepath.Dir(workspace.Clone))
-	stateDir := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(workspace.Clone))))
-	repository, err := ghrepo.Parse("workspace repository", owner+"/"+repo)
-	if err != nil {
-		return false
-	}
-	want, err := Location(stateDir, repository, filepath.Base(workspace.Dir))
-	return err == nil && want.Dir == workspace.Dir && want.Clone == workspace.Clone
+	want, err := locationOf(workspace.Dir)
+	return err == nil && want.Clone == workspace.Clone
 }

@@ -31,7 +31,7 @@ import (
 func outboxRoleIssue(t *testing.T, database *dispatchstore.Store, key, role string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('TT', 'Test') on conflict do nothing`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice') on conflict do nothing`); err != nil {
 		t.Fatalf("create the project: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
@@ -329,10 +329,11 @@ func (w keptUnderAClaimWindow) PublishStoredAsync(subject string, item contracts
 	return w.Sender.PublishStoredAsync(subject, item, msgID)
 }
 
-// answeredForwards subscribes to sessionID's agent subject as a self-subscribed session does and
-// answers every forward with the empty receipt the sender waits for, reporting each envelope it
-// took.
-func answeredForwards(t *testing.T, harness listenerDeliveryHarness, sessionID string) <-chan contracts.Envelope {
+// takenForwards subscribes to sessionID's agent subject as a self-subscribed session does and
+// reports each envelope that arrives there. It answers nothing, as no session does: a forward is
+// published into the stream for the holder's consumer, and the sender reads the server's
+// acknowledgement of that publish and no answer of the session's.
+func takenForwards(t *testing.T, harness listenerDeliveryHarness, sessionID string) <-chan contracts.Envelope {
 	t.Helper()
 	taken := make(chan contracts.Envelope, 16)
 	sub, err := harness.client.Conn.Subscribe(contracts.AgentSubject(sessionID), func(msg *natsgo.Msg) {
@@ -341,9 +342,6 @@ func answeredForwards(t *testing.T, harness listenerDeliveryHarness, sessionID s
 			return
 		}
 		taken <- item
-		if msg.Reply != "" {
-			_ = msg.Respond(nil)
-		}
 	})
 	if err != nil {
 		t.Fatalf("subscribe to %s's agent subject: %v", sessionID, err)
@@ -402,7 +400,7 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 		key    = "T-1"
 	)
 	lane := newKeptLaneUnderClaim(t, harness, func(int, string, contracts.Envelope) error { return nil })
-	taken := answeredForwards(t, harness, holder)
+	taken := takenForwards(t, harness, holder)
 	database := migratedDispatchDatabase(t)
 	broker := events.NewBroker()
 	ctx := context.Background()

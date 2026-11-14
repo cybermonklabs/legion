@@ -89,14 +89,21 @@ func (c ReleaseCause) String() string {
 }
 
 // ReleaseDecision is what the store decided about one row of a release: the act the row may
-// carry out, the cause of a cancel, the release's own id and the roles whose claims it has
-// suspended so far. Release is the id the mark carries, which the save puts on the bundle it
-// stores, and Suspended is the set a cancel resumes and a finished release records.
+// carry out, the cause of a cancel, the release's own id, the roles whose claims it has
+// suspended so far and the rule that decided the release. Release is the id the mark carries,
+// which the save puts on the bundle it stores, and Suspended is the set a cancel resumes and a
+// finished release records.
+//
+// SuspendsNoRole is the mark's kind read back (issue_releases.kind, IdleReleaseMark): the
+// release of a pod no role can use suspends none and saves no bundle, so its rows must be able
+// to tell what release they belong to. A decision that holds no mark — a row of a release that
+// is over — carries the zero of it, as it carries the zero of every other field.
 type ReleaseDecision struct {
-	Act       ReleaseAct
-	Cause     ReleaseCause
-	Release   int64
-	Suspended []claim.Role
+	Act            ReleaseAct
+	Cause          ReleaseCause
+	Release        int64
+	Suspended      []claim.Role
+	SuspendsNoRole bool
 }
 
 // releaseMark is the mark one release in flight left, as every row of that release reads it.
@@ -109,6 +116,9 @@ type releaseMark struct {
 	// suspended are the roles whose claims this release's own role stops have suspended as
 	// `released`, each appended once its stop has suspended it (ReleaseSuspendedClaim).
 	suspended []string
+	// kind is the release rule that wrote this mark, releaseKindIdle or releaseKindUnowned: the
+	// release of a quiet pod, or the release of a pod no role can use, which suspends no role.
+	kind string
 }
 
 // holds is whether row is one of the rows this mark's release queued. Every row of a release was
@@ -120,9 +130,9 @@ func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.l
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
 // the row belongs to.
 func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row int64) (mark releaseMark, held bool, err error) {
-	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended from issue_releases
+	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, kind from issue_releases
 		where project = $1 and issue = $2`, project, issue).Scan(&mark.id, &mark.first, &mark.boundary,
-		&mark.last, &mark.started, &mark.wake, &mark.suspended)
+		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return releaseMark{}, false, nil
 	}
@@ -146,6 +156,12 @@ func (m releaseMark) roles() []claim.Role {
 	}
 	return roles
 }
+
+// suspendsNoRole is whether this mark's release is the one that suspends no role: the release
+// of a pod no role can use, which saves no bundle and queues the teardown alone
+// (IdleReleaseMark.SuspendsNoRole). Its rows read the kind rather than the empty role, because
+// the kind is what the rule wrote and the empty role is only how the table spells it.
+func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned }
 
 // releaseOvertaken is whether the pod was woken or went on working after its release was marked,
 // which is what cancels the release. Four things say it was:
@@ -222,7 +238,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		if err != nil || !held {
 			return err
 		}
-		decision.Release, decision.Suspended = mark.id, mark.roles()
+		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
 		overtaken, err := releaseOvertaken(ctx, tx, project, issue, mark)
 		if err != nil {
 			return err
@@ -293,7 +309,8 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 		if err != nil || !held {
 			return err
 		}
-		decision.Act, decision.Release, decision.Suspended = ReleaseActs, mark.id, mark.roles()
+		decision.Act, decision.Release = ReleaseActs, mark.id
+		decision.Suspended, decision.SuspendsNoRole = mark.roles(), mark.suspendsNoRole()
 		return nil
 	})
 	if err != nil {
@@ -342,7 +359,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if err != nil || !held {
 			return err
 		}
-		decision.Release, decision.Suspended = mark.id, mark.roles()
+		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status, rootPhase, rootStatus string

@@ -1,9 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { createIssue, createProject, getArtifactText, patchIssue } from "./api";
 import { connectedDot, documentEditor, documentTransport, typeAtEnd } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 const INITIAL = "# Offline edits\n\nOriginal paragraph.\n";
@@ -75,10 +73,6 @@ async function waitForPersistedTyping(
     .toBeGreaterThanOrEqual(text.length);
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // @webkit @firefox: IndexedDB-backed recovery, here an edit the store holds across a reload.
 test("an edit typed while the document transport is down survives a reload @webkit @firefox", async ({
   browser,
@@ -147,7 +141,8 @@ test("unsent edits are named, then cleared after acknowledgement and a connected
 
 // SLOW(>=2s): four document loads across two tabs, each with a Yjs restore of its own.
 // @webkit @firefox: IndexedDB-backed recovery, here two tabs' two connections to one store.
-test("two disconnected tabs restore each browser-held edit once @webkit @firefox", async ({
+// @pr: A two-context race: two disconnected tabs each restore their own held edit, once.
+test("two disconnected tabs restore each browser-held edit once @webkit @firefox @pr", async ({
   browser,
 }) => {
   const issue = await makeIssue();
@@ -196,7 +191,10 @@ test("two disconnected tabs restore each browser-held edit once @webkit @firefox
 });
 
 // SLOW(>=2s): three document loads, two status writes and two admissions decided at socket open.
-test("read-only admission preserves edits until a later read-write reload", async ({ browser }) => {
+// @pr: The live document's admission: a read-only admission keeps the reader's edits until a later read-write reload.
+test("read-only admission preserves edits until a later read-write reload @pr", async ({
+  browser,
+}) => {
   const issue = await makeIssue();
   const alice = await asUser(browser, "alice");
   const paragraph = "survives a read-only admission";

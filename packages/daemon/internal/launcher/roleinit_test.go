@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,7 +37,7 @@ const (
 // main_test.go). This file builds only under Linux, where the namespaces it works in exist, so it
 // registers its markers itself rather than leaving them in that list.
 func init() {
-	helperChildVariables = append(helperChildVariables, roleInitStageEnv, roleInitAgentEnv, uncoverControlEnv, roleCheckEnv)
+	helperChildVariables = append(helperChildVariables, roleInitStageEnv, roleInitAgentEnv, uncoverControlEnv, roleCheckEnv, roleDrainEnv)
 }
 
 // stagePlan is what the stage builds and runs. Mount is the directory it covers with a memory
@@ -190,6 +192,22 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	} {
 		if got, ok := report[want.key]; !ok || got != want.value {
 			t.Errorf("%s = %q, want %q: %s\n%s", want.key, got, want.value, want.why, output)
+		}
+	}
+	// The two keys the agent says when its detached process could not be started, or never
+	// reported the ignore of SIGTERM it is there for, and then goes on. The table above names
+	// neither, so nothing in it fails the row for them — and without a process of the role's that
+	// ignores SIGTERM, `detached=gone` is met by role-init's own SIGTERM and says nothing about
+	// the SIGKILL this case is about. So either key, under any generation's prefix, fails the row
+	// here. Measured twice as a pass that proved nothing: with the marker pointed at a path the
+	// agent cannot write, and with it pointed elsewhere under `go test -overlay`.
+	for _, key := range slices.Sorted(maps.Keys(report)) {
+		who, what, _ := strings.Cut(key, " ")
+		switch what {
+		case "detached-start":
+			t.Errorf("%s could not start its detached process: %s. No process of that generation then ignored SIGTERM, so its `detached=gone` says nothing about the SIGKILL this case is about\n%s", who, report[key], output)
+		case "detached-trap":
+			t.Errorf("%s said of its detached process: %s. That process may have died of role-init's own SIGTERM, so its `detached=gone` says nothing about the SIGKILL this case is about\n%s", who, report[key], output)
 		}
 	}
 	// The relaunch's role-init says which link it replaced rather than followed.
@@ -660,11 +678,25 @@ func TestRoleInitAgentHelper(t *testing.T) {
 			say("write-"+dir, err.Error())
 		}
 	}
-	detached := exec.Command("/bin/sh", "-c", "trap '' TERM; /bin/sleep "+plan.Detached)
+	// The detached process says it is running by writing trapped, which it does once its ignore
+	// of SIGTERM is installed: the agent exits the moment it is told that, role-init then reports
+	// the shim's status and signals the role's whole namespace, and a detached process still
+	// under the default disposition would die of that SIGTERM. The row reads only that nothing of
+	// the role is left, so such a run would pass without the SIGKILL this case is about having
+	// reached anything. The marker is removed again before the agent leaves, so the role's own
+	// /tmp is what it was.
+	trapped := "/tmp/detached-trapped"
+	detached := exec.Command("/bin/sh", "-c", "trap '' TERM; : >"+trapped+"; /bin/sleep "+plan.Detached)
 	detached.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := detached.Start(); err != nil {
 		say("detached-start", err.Error())
+	} else if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		_, err := os.Stat(trapped)
+		return err == nil
+	}) {
+		say("detached-trap", "the detached process never reported its ignore of SIGTERM")
 	}
+	_ = os.Remove(trapped)
 	say("done", "yes")
 	os.Exit(0)
 }
@@ -1194,4 +1226,286 @@ func TestARefusedRoleHomeLayerNamesTheOptionsItTried(t *testing.T) {
 			t.Errorf("the refusal reads %q, which does not name %s the mount was tried with", err, want)
 		}
 	}
+}
+
+// TestTheStatusPipeReadsTheWidthItCarries pins the reading end of role-init's status pipe, which
+// is parseStatus and nothing else: every line reportStatus can write — it writes the 32 bits of a
+// syscall.WaitStatus as a decimal, so from zero to the largest of them — reads back as itself,
+// and a line holding anything but such a number is no status at all rather than one truncated
+// into a role exit that never happened. Whitespace around the number is ignored, which costs
+// nothing and asks no caller to trim what it read: both readers take the pipe whole with
+// io.ReadAll (roleinit.go:151, launcher.go:634), and the writer sends no newline of its own.
+// What the writer prints is not checked here: reportStatus lives in roleinit_linux.go, runs
+// inside the re-exec stage and writes to an inherited descriptor, so a test of it is a test of
+// that stage rather than of this function.
+func TestTheStatusPipeReadsTheWidthItCarries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want uint32
+	}{
+		{"an exit of zero", "0", 0},
+		{"an exit code", "1792", 1792},
+		{"a kill by signal", "9", 9},
+		{"the widest status there is", strconv.FormatUint(math.MaxUint32, 10), math.MaxUint32},
+		{"whitespace around the number", "1792\n", 1792},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status := parseStatus([]byte(tc.raw))
+			if status == nil {
+				t.Fatalf("parseStatus(%q) read no status, want %d", tc.raw, tc.want)
+			}
+			if uint32(*status) != tc.want {
+				t.Errorf("parseStatus(%q) = %d, want %d: the pipe carries the status as it was written",
+					tc.raw, uint32(*status), tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"nothing at all", ""},
+		{"role-init was killed before it wrote", "   "},
+		{"a line that is not a number", "killed"},
+		{"a negative number no writer sends", "-1"},
+		{"a number wider than a wait status", strconv.FormatUint(math.MaxUint32+1, 10)},
+		{"a number with something after it", "1792 9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if status := parseStatus([]byte(tc.raw)); status != nil {
+				t.Errorf("parseStatus(%q) = %d, want no status: a line role-init never wrote reports no exit",
+					tc.raw, uint32(*status))
+			}
+		})
+	}
+}
+
+// roleDrainEnv carries the plan of the re-entered stage of
+// TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills, and roleDrainFile is the file the
+// role's descendant removes there when it catches SIGTERM, in the role's own /tmp.
+const (
+	roleDrainEnv  = "LEGION_ROLE_INIT_TEST_DRAIN"
+	roleDrainFile = "descendant"
+)
+
+// roleDrainPlan is what that stage builds and runs: a role layout under Dir, which it covers with
+// a memory filesystem of its own, and a shim that leaves a descendant behind which catches
+// SIGTERM and removes roleDrainFile. Leaves says whether that descendant then exits or goes on
+// running, which is the whole difference between the row's two cases.
+type roleDrainPlan struct {
+	Dir    string
+	Leaves bool
+}
+
+// roleDrainSlack is what that row allows the stage's own clock on a loaded machine. The stage
+// times role-init's wait from its read of the status report, while role-init starts its
+// roleNamespaceDrain after it has written that report and sent the SIGTERM, so under load the
+// stage's clock starts the later of the two and a wait that ran in full reads a little short of
+// the ceiling. It is that scheduling gap alone, never a span of the wait itself: it is a small
+// part of roleNamespaceDrain, and an init that sends no signal and kills the namespace at once
+// ends its wait in milliseconds, which the lower bound below still reads as the failure it is.
+const roleDrainSlack = 250 * time.Millisecond
+
+// A role whose shim exits on its own has its namespace signalled before it is killed: role-init
+// sends SIGTERM over the role's whole namespace once it has reported the shim's status and before
+// the kill(-1, SIGKILL) that ends the namespace, so a git or a jj the role left running finishes
+// and removes its lock rather than dying mid-write. The shim of each case here exits while a
+// descendant that catches SIGTERM is still running, and the case reads the file that descendant
+// removes when it is signalled: the role's namespace is gone by the time the stage looks, so a
+// file that is gone was removed before role-init exited, and one still there is a descendant that
+// was killed with no signal before it.
+//
+// The cases differ in what the descendant does once it has removed the file. One goes on running,
+// so nothing but the SIGKILL ends it and the wait spends the whole of roleNamespaceDrain, which
+// bounds it. The other leaves, and role-init's own exit then comes well inside that ceiling,
+// which is the one reading that tells a wait ending with the namespace from a fixed two-second
+// sleep. Each is timed from role-init's report of the shim's status, where its wait begins, to
+// its own exit.
+func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
+	if encoded := os.Getenv(roleDrainEnv); encoded != "" {
+		var plan roleDrainPlan
+		if err := json.Unmarshal([]byte(encoded), &plan); err != nil {
+			fmt.Println("drain error:", err)
+			os.Exit(2)
+		}
+		if err := runRoleDrain(plan); err != nil {
+			fmt.Println("drain error:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	requireRoleNamespaces(t)
+	mount := stageMountPoint(t)
+	for _, tc := range []struct {
+		name   string
+		leaves bool
+	}{
+		{"a descendant that stays is signalled before it is killed", false},
+		{"a descendant that leaves ends the wait with the namespace", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report, output := roleDrainReport(t, roleDrainPlan{Dir: mount, Leaves: tc.leaves})
+			if report["status"] != "0" {
+				t.Fatalf("the role's status = %q, want the shim's own exit 0\n%s", report["status"], output)
+			}
+			if report["descendant"] != "absent" {
+				t.Errorf("the file the role's descendant removes on SIGTERM is %q, want it gone: the descendant was killed with no signal before it\n%s",
+					report["descendant"], output)
+			}
+			drained, err := time.ParseDuration(report["drained"])
+			if err != nil {
+				t.Fatalf("role-init's wait = %q (%v)\n%s", report["drained"], err, output)
+			}
+			switch {
+			case tc.leaves && drained > roleNamespaceDrain/2:
+				t.Errorf("role-init exited %s after it reported the shim's status, want well inside %s: the wait runs to its ceiling rather than ending with the namespace\n%s",
+					drained, roleNamespaceDrain, output)
+			case !tc.leaves && drained < roleNamespaceDrain-roleDrainSlack:
+				t.Errorf("role-init exited %s after it reported the shim's status, want at least %s (roleNamespaceDrain less the roleDrainSlack the stage's own clock may lose under load): a descendant that never leaves is killed before the wait is over\n%s",
+					drained, roleNamespaceDrain-roleDrainSlack, output)
+			case !tc.leaves && drained > 2*roleNamespaceDrain:
+				t.Errorf("role-init exited %s after it reported the shim's status, want twice roleNamespaceDrain (%s) and no more: the wait is not bounded\n%s",
+					drained, 2*roleNamespaceDrain, output)
+			}
+		})
+	}
+}
+
+// roleDrainReport runs that row's stage in a user and mount namespace of its own, as the role
+// namespace check's helper runs, and answers every `drain <key>=<value>` line it printed, with
+// its whole output for a failure to print.
+func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, string) {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage := exec.Command(self, "-test.run=^TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills$")
+	stage.Env = append(os.Environ(), roleDrainEnv+"="+string(encoded))
+	stage.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		GidMappingsEnableSetgroups: false,
+	}
+	output, err := stage.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the stage: %v\n%s", err, output)
+	}
+	report := map[string]string{}
+	for _, line := range strings.Split(string(output), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "drain ")
+		if !ok {
+			continue
+		}
+		if key, value, ok := strings.Cut(rest, "="); ok {
+			report[key] = value
+		}
+	}
+	return report, string(output)
+}
+
+// runRoleDrain is that stage: it builds a role layout of its own on a memory filesystem under the
+// plan's directory, as CheckRoleNamespaces lays one out, runs one generation over it whose shim
+// leaves a descendant behind and exits, and reports the shim's status, whether the file the
+// descendant removes on SIGTERM is still in the role's own /tmp once the role's namespace is
+// gone, and how long role-init took from its report of that status to its own exit.
+func runRoleDrain(plan roleDrainPlan) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := privateMounts(); err != nil {
+		return err
+	}
+	if err := mountTmpfs(plan.Dir, "size=16m"); err != nil {
+		return err
+	}
+	roleInitLaunch = roleInitHelperLaunch(self)
+	const role = "drain"
+	caught := "rm -f /tmp/" + roleDrainFile + "; while :; do /bin/sleep 600 & wait; done"
+	if plan.Leaves {
+		caught = "rm -f /tmp/" + roleDrainFile + "; exit 0"
+	}
+	cfg := RoleInitConfig{
+		RolesDir: filepath.Join(plan.Dir, "roles"), Role: role, Generation: 1,
+		Home: filepath.Join(plan.Dir, "home"), HomeMounts: filepath.Join(plan.Dir, "home-mounts"),
+		FixedRoot: filepath.Join(plan.Dir, "fixed"), Argv: []string{"/bin/sh", "-c", roleDrainShim(caught)},
+	}
+	dirs := []string{cfg.Home, cfg.HomeMounts}
+	for _, name := range []string{RoleGHDir, RolePrivateDir, RoleStateDir} {
+		dirs = append(dirs, filepath.Join(cfg.RolesDir, role, name), filepath.Join(cfg.FixedRoot, name))
+	}
+	for _, path := range dirs {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return err
+		}
+	}
+	process, err := newRoleProcess(cfg, os.Environ(), os.Stdout, os.Stderr)
+	if err != nil {
+		return err
+	}
+	if err := process.start(); err != nil {
+		return err
+	}
+	// The status pipe closes as soon as role-init has reported the shim's status, which is where
+	// its wait over the role's namespace begins: what is left until role-init is gone is that
+	// wait and the kill that ends the namespace.
+	raw, _ := io.ReadAll(process.status)
+	_ = process.status.Close()
+	reported := time.Now()
+	if err := process.cmd.Wait(); err != nil {
+		return fmt.Errorf("role-init: %w", err)
+	}
+	drained := time.Since(reported)
+	if status := parseStatus(raw); status == nil {
+		fmt.Println("drain status=none")
+	} else {
+		fmt.Printf("drain status=%d\n", status.ExitStatus())
+	}
+	fmt.Printf("drain descendant=%s\n", presence(filepath.Join(cfg.RolesDir, RoleHomesDir, role, "tmp", roleDrainFile)))
+	fmt.Printf("drain drained=%s\n", drained)
+	return nil
+}
+
+// roleDrainShim is the shim that stage runs: it starts a descendant that traps SIGTERM with
+// caught, waits until that descendant is up, and exits on its own while it is still running, as a
+// worker shim that leaves a git or a jj behind does. The descendant installs its trap before it
+// writes the file it removes when it is signalled, so the shim's exit says the trap is in place,
+// and a file that is gone was removed rather than never written; a file that never appeared is
+// the shim's own exit 1 rather than a case that reads as a pass.
+//
+// The descendant holds its life in one sleep, started before its trap so the trap can name it,
+// and spends that life waiting on that one sleep: it forks nothing after the signal but its own
+// cleanup — caught begins with the `rm -f` that removes the file, a process that runs after the
+// SIGTERM and ends on its own — and its trap ends that sleep before caught runs. A descendant
+// that waited in a loop of sleeps would fork its next sleep the moment role-init's SIGTERM killed
+// the one it was waiting for, before the shell ran the pending trap, and a trap that then left
+// would leave that new sleep behind with no signal of its own — a process of the row's own
+// making, which role-init rightly waits the whole of roleNamespaceDrain for and then kills, so
+// the case that reads an early end would read the ceiling instead and fail for what the rig left
+// rather than for what role-init did. The caught of the case whose descendant stays does go on
+// forking sleeps after the signal, which is that case's whole point: a descendant that never
+// leaves is what keeps the role's namespace up until the ceiling.
+func roleDrainShim(caught string) string {
+	return fmt.Sprintf(`/bin/sh -c "/bin/sleep 600 &
+sleeper=\$!
+trap 'kill \$sleeper 2>/dev/null; %s' TERM
+printf alive > /tmp/%s
+wait \$sleeper" &
+waited=0
+while [ ! -f /tmp/%s ]; do
+	waited=$((waited + 1))
+	if [ "$waited" -gt 1000 ]; then
+		exit 1
+	fi
+	/bin/sleep 0.01
+done
+exit 0
+`, caught, roleDrainFile, roleDrainFile)
 }

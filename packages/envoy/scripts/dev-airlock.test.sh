@@ -16,11 +16,12 @@
 # with it, and a fake would prove nothing about that reading.
 #
 # It asserts, one PASS line each: that the run's work directory, and dev-broker.sh's own, are
-# under TMPDIR; that two broker processes are started, each with the whole BROKER_AIRLOCK_*
-# block and both on one database; that every broker is given the model judge - the six
-# BROKER_JUDGE_* settings and the metadata host its own credential is minted at; that the
-# judge's four human-tier secrets are in the rules and the store as they must be for it to
-# decide two of them, leave the third and refuse the administrator's fourth; that the banner
+# under TMPDIR; that it builds no binary of its own, running the dev-airlock-stands that
+# dev-broker.sh built instead; that two broker processes are started, each with the
+# whole BROKER_AIRLOCK_* block and both on one database; that every broker is given the model
+# judge - the six BROKER_JUDGE_* settings and the metadata host its own credential is minted at;
+# that the judge's four human-tier secrets are in the rules and the store as they must be for it
+# to decide two of them, leave the third and refuse the administrator's fourth; that the banner
 # exports the three stands' records, the route a check sets the model's answer at, and the two
 # issues the Dispatch stand holds;
 # that one front stands over the two API ports and one over the two proxy ports, and that both
@@ -304,6 +305,17 @@ if [[ "$airlock_dir" != "$run_tmpdir"/* || "$dev_broker_dir" != "$run_tmpdir"/* 
 fi
 printf 'PASS: the run keeps its own work directory (%s) and dev-broker.sh'"'"'s (%s) under TMPDIR, never /tmp\n' \
   "$airlock_dir" "$dev_broker_dir"
+
+# The stands binary: dev-broker.sh builds it with the other five, and this run reads that one
+# from dev-broker.sh's own bin directory ($BASE_BIN_DIR) rather than compiling the same source
+# a second time.
+if grep -q 'dev-airlock: building' "$log"; then
+  grep 'dev-airlock: building' "$log" >&2
+  echo "FAIL: the run builds a binary of its own; dev-broker.sh built all six" >&2
+  exit 1
+fi
+printf 'PASS: the run builds nothing of its own and runs dev-broker.sh'"'"'s dev-airlock-stands (%s)\n' \
+  "$dev_broker_dir/bin/dev-airlock-stands"
 
 # Each broker logs one "fake broker airlock:" line naming every BROKER_AIRLOCK_* setting it was
 # started with. The airlock stack's brokers are the ones with a rules file; dev-broker.sh's own

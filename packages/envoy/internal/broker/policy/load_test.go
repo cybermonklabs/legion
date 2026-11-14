@@ -112,7 +112,9 @@ func TestARefusalForANameOrTagCostsNoAliasLookup(t *testing.T) {
 // prefix is refused, each logged as the one line the deployment's alarm filters on, while every
 // other secret is still served: one person's malformed tag never freezes anyone else's policy. A
 // secret with no value and a tag or key fault is logged for the fault, which a value alone would
-// not fix.
+// not fix. The one secret it serves carries shape=document, so the table holds both halves of
+// that tag: a word the loader knows is carried into the Secret, and a word it does not is
+// refused.
 func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 	refusals := map[string]struct {
 		secret secrets.LocalSecret
@@ -154,8 +156,11 @@ func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 		s.KmsKeyID = ""
 		s.Value = ""
 	})
+	refuse("BOGUS_SHAPE", policy.ReasonShapeMalformed, func(s *secrets.LocalSecret) { s.Tags[policy.TagShape] = "bogus" })
 
-	store := secrets.NewLocal(policytest.Secret("WELL_TAGGED", owner, policy.TierAgent, "v"))
+	wellTagged := policytest.Secret("WELL_TAGGED", owner, policy.TierAgent, "v")
+	wellTagged.Tags[policy.TagShape] = policy.ShapeDocument
+	store := secrets.NewLocal(wellTagged)
 	store.Alias("arn:aws:kms:us-east-1:111122223333:key/another-key", "alias/someone-elses")
 	for _, r := range refusals {
 		store.Put(r.secret)
@@ -171,6 +176,9 @@ func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 	}
 	if len(set.Secrets) != 1 || set.Secrets["WELL_TAGGED"].Name != "WELL_TAGGED" {
 		t.Fatalf("served %+v, want only WELL_TAGGED", set.Secrets)
+	}
+	if got := set.Secrets["WELL_TAGGED"].Shape; got != policy.ShapeDocument {
+		t.Errorf("WELL_TAGGED's Shape = %q, want the %s tag the store holds", got, policy.ShapeDocument)
 	}
 	lines := logged.String()
 	for name, r := range refusals {
@@ -576,6 +584,43 @@ func TestGoldenDigestWithScopesAndAdmin(t *testing.T) {
 	}
 }
 
+// TestTheShapeTagIsInThePolicyVersion pins what the shape tag does to the digest: a secret
+// carrying the tag writes a version of its own, and each word writes its own. That is what
+// carries a retag to the airlock proxy, which holds a grant's released values per pod and reads
+// them again on no event but a name's own reread or the policy version moving
+// (internal/broker/airlockproxy/bound.go), so a pod would otherwise go on spending the untrimmed
+// value. The other half, that a namespace tagging no shape digests the bytes it digested before
+// the tag existed, is TestGoldenDigest's, which pins this same fixture's version.
+func TestTheShapeTagIsInThePolicyVersion(t *testing.T) {
+	version := func(shape string) string {
+		t.Helper()
+		store := goldenFixture()
+		if shape != "" {
+			deel := policytest.Secret("DEEL_API_KEY", policy.OwnerShared, policy.TierHuman, "v1")
+			deel.Tags[policy.TagShape] = shape
+			store.Put(deel)
+		}
+		set, err := policytest.Loader(store).Load(context.Background())
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := set.Secrets["DEEL_API_KEY"].Shape; got != shape {
+			t.Fatalf("DEEL_API_KEY's Shape = %q, want %q", got, shape)
+		}
+		return set.Version
+	}
+	untagged, token, document := version(""), version(policy.ShapeToken), version(policy.ShapeDocument)
+	if token == untagged {
+		t.Error("tagging a secret shape=token left the version where an untagged namespace has it, so no retag would reach a pod already holding the values")
+	}
+	if token == document {
+		t.Error("shape=token and shape=document gave one version, so the digest holds the tag's presence and not its word")
+	}
+	if document == untagged {
+		t.Error("tagging a secret shape=document left the version where an untagged namespace has it, so no retag would reach a pod already holding the values")
+	}
+}
+
 // TestMergedSetVersionEqualsAFullLoads pins the digest contract: building the same contents by a
 // full Load and by single-name merges gives byte-equal Versions — including names whose slug order
 // differs from their Name order ("A_B" vs "A0": '-' < '0' but '_' > '0').
@@ -885,6 +930,32 @@ func TestAdminCap(t *testing.T) {
 	}
 	if got := strings.Count(lines, "\n"); got != len(refusals) {
 		t.Errorf("logged %d lines, want one per refused secret (%d):\n%s", got, len(refusals), lines)
+	}
+}
+
+// TestTagRulesRefusesAShapeThatIsNeitherWord is the shape tag's own rule, weighed by calling
+// TagRules rather than by driving a load as the two tests above do: the tag says what the stored
+// value is, so the broker takes the two words it knows and the absent tag, and refuses every
+// other value — another casing of a word it knows among them — as ReasonShapeMalformed rather
+// than reading it as one of them. The line a load writes for such a secret is
+// TestLoadRefusesEachUnservableSecretByNameWithTheExactLine's BOGUS_SHAPE row; this is the rule
+// that line comes of, and the one `agent-secrets secret` applies before it writes a tag.
+func TestTagRulesRefusesAShapeThatIsNeitherWord(t *testing.T) {
+	for _, c := range []struct{ shape, reason string }{
+		{"", ""},
+		{policy.ShapeToken, ""},
+		{policy.ShapeDocument, ""},
+		{"Token", policy.ReasonShapeMalformed},
+		{"DOCUMENT", policy.ReasonShapeMalformed},
+		{"documents", policy.ReasonShapeMalformed},
+		{"one-line", policy.ReasonShapeMalformed},
+		{" ", policy.ReasonShapeMalformed},
+	} {
+		// Every other tag of the set is one the rules allow, so the answer is the shape's alone.
+		set := policy.TagSet{Owner: owner, Tier: policy.TierAgent, Shape: c.shape}
+		if got := policy.TagRules(set); got != c.reason {
+			t.Errorf("TagRules(shape=%q) = %q, want %q", c.shape, got, c.reason)
+		}
 	}
 }
 

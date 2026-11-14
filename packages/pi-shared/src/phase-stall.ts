@@ -25,15 +25,15 @@ import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
  * - `waiting`: still open, and either the worker's last reply said with a WAITING line what it
  *   waits on, or its turn ended with background work of its own still running; both buy the
  *   longer quiet wait `LEGION_STALL_WAITING_MS` before the next reminder;
- * - `awaiting-update`: still open, and the worker has answered the daemon's update task
+ * - `awaiting-update`: still open, and the worker has answered the daemon's update message
  *   (`ready_for_update`), so it is to start nothing until the daemon comes back to it. This wait
  *   earns no reminder and no wait of any length, because the daemon is what wakes the worker: a
  *   round, once opened, ends only by replacing its pod or because that pod is gone, so the
  *   process is replaced and the session comes back on the new pod with the task the round held
  *   behind it (`endPodUpdate` in `packages/daemon/internal/supervise/table.go`). That task
  *   arrives as the daemon's own prompt, which is an `assignment` and opens the phase again. A
- *   reminder steered into this wait would instead be a turn the daemon reads as the answer
- *   retracted (`takeBackSignal`), so the round would restart at every wait and never converge
+ *   reminder steered into this wait would instead start a turn of work the replacement throws
+ *   away, and before the round's bound a turn in progress holds that replacement back
  *   (INFRA-484).
  * The reminding never stops where a reminder is the worker's only wake: one that changes nothing
  * is followed by another. */
@@ -52,7 +52,7 @@ export type PhaseStallInput =
   | { readonly kind: "inbound-event" }
   | { readonly kind: "phase-closed" }
   /** The `legion` tool's `ready_for_update` returned without throwing: the worker has pushed
-   * what it wants kept and answered the daemon's update task on its pod (INFRA-484). */
+   * what it wants kept and answered the daemon's update message on its pod (INFRA-484). */
   | { readonly kind: "update-answered" }
   /** The settling assistant message ran at least one real tool call (`assistantRanTool`). */
   | { readonly kind: "tool-call" }
@@ -68,8 +68,18 @@ export type PhaseStallInput =
        */
       readonly backgroundWork?: boolean | undefined;
     }
+  /** The turn ended because the provider refused it, not because the worker had finished saying
+   * something: `message` is the provider's own words for the refusal (Oh My Pi's `errorMessage`
+   * beside an `error` stop, Claude Code's `StopFailure` error text). The worker never read the
+   * last reminder, so this earns no reminder of its own: the runner waits out its delay and
+   * reminds once (`src/phase-reminder.ts`). */
+  | { readonly kind: "refused"; readonly message: string }
   /** The host has just delivered a reminder to the worker. */
   | { readonly kind: "reminded" };
+
+/** How one turn ended, which is the whole of what the host classifies for `PhaseReminder.settle`:
+ * the worker's own settling words, or the provider's refusal of the turn. */
+export type TurnEnd = Extract<PhaseStallInput, { kind: "settle" | "refused" }>;
 
 export interface PhaseStallStep {
   readonly state: PhaseStallState;
@@ -123,7 +133,7 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
     case "phase-closed":
       return { state: { state: "closed", count: 0 } };
     case "update-answered":
-      // The worker has answered the update task and is to start nothing until the daemon comes
+      // The worker has answered the update message and is to start nothing until the daemon comes
       // back to it, so a turn ending now has earned no reminder: a reminder here would continue
       // that turn in the same run, with work a replacement would throw away and no new turn for
       // the daemon to see. The phase stays open — answering is not completing — and the wait this
@@ -140,6 +150,15 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
     case "tool-call":
       // The worker is working, whatever it is working on: nothing is unanswered any more.
       return { state: { state: state.state, count: 0 } };
+    case "refused":
+      // The provider, not the worker, ended this turn: nothing was read and nothing was said, so
+      // the count stands where the last real turn left it and the settling itself earns no
+      // reminder. Reminding such a session at once only buys another refusal, which is what left
+      // the implementer of dispatch://INFRA-264 reminded for ever; the runner arms a delayed one
+      // instead, by which time the daemon — which counts these turns over
+      // `POST /legion/v1/claims/turn-outcome` — has failed the claim if the provider refused it
+      // out of its budget, and a failed claim is reminded of nothing.
+      return { state };
     case "reminded":
       return state.state === "closed"
         ? { state }
@@ -234,6 +253,32 @@ export function assistantRanTool(message: unknown): boolean {
       "type" in block &&
       (block.type === "toolCall" || block.type === "tool_use")
   );
+}
+
+/** The provider's refusal of the turn an assistant message ended, or undefined when that message
+ * is not one: Oh My Pi stops such a reply with `error` and words it in `errorMessage`
+ * (`AssistantMessage` in `src/omp-host.d.ts`; `packages/pi-envoy/extensions/askgate/askgate.ts`
+ * reads the same pair). A refusal the host could not word still has to read as a refusal, so the
+ * stop reason alone stands in for the words. Claude Code never comes here: its own `StopFailure`
+ * hook is what says a turn ended on an API error, and hands the error text with it. */
+export function assistantRefusal(message: unknown): string | undefined {
+  if (typeof message !== "object" || message === null) return undefined;
+  if (!("stopReason" in message) || message.stopReason !== "error") return undefined;
+  const worded =
+    "errorMessage" in message && typeof message.errorMessage === "string"
+      ? message.errorMessage
+      : "";
+  return worded === "" ? "error" : worded;
+}
+
+/** How the turn one Oh My Pi settling message ended, as the machine takes it: the provider's
+ * refusal when it refused the turn, and otherwise what the worker said. One classification, so a
+ * refused turn is an input of the machine rather than a check on its answer. */
+export function turnEndOf(message: unknown): TurnEnd {
+  const refusal = assistantRefusal(message);
+  return refusal === undefined
+    ? { kind: "settle", lastAssistantText: assistantText(message) }
+    : { kind: "refused", message: refusal };
 }
 
 /** The states a record holds. The wait a `ready_for_update` answer creates is not one of them: a

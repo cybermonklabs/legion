@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+  Dispatch refuses a body that holds a decision block (`:::ask`), wherever the block stands in
+  that body: a comment, a comment edit, a project document's comment, a session's reply to a
+  comment, an issue message, a person's message to a session, a reply to a message and a
+  broadcast alike. The answer is `400 DECISION_BLOCK_IN_BODY`. It names the block that holds the
+  question and says where the question belongs: in the issue's own document, as a decision block
+  there, or in an ask. A block written inside a fenced code block is an example, not a question,
+  and is stored as the text it is.
+
+  A decision card drawn in a body now carries one line: the question is text, and it must be
+  opened as an ask before anyone can answer it. The card offers no option to pick and no Answer
+  button, since nobody can answer a question put in a comment or a message.
+
+  A body stored before this refusal keeps its decision block, is read back whole, and is still
+  indexed with the block type `ask`.
+time: 2026-11-11T03:27:24.000000000Z
+custom:
+    Issue: pr3509

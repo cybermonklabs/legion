@@ -218,7 +218,7 @@ type Client struct {
 
 // WithoutTrailingSlashes is raw without the slashes it ends in: the one rule both halves of this
 // client read an address by, the TypeScript half's being `withoutTrailingSlashes` in
-// packages/broker-client/src/token-client.ts. An operator types the address by hand into a unit
+// packages/contracts/src/trailing-slash.ts. An operator types the address by hand into a unit
 // file, a pod's environment or a shell, so an address ending in more than one slash is a typo
 // rather than a shape to refuse; dropping one slash of two would leave this half posting
 // `//v1/...` where the other half posts `/v1/...`, and a proof's htu is the URL the caller built,

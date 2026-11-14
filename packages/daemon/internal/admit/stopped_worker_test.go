@@ -34,8 +34,8 @@ func TestARetiredWorkersSlotIsNotRepaired(t *testing.T) {
 	// (seedSlotRepairRow), so the slot this test reads and the slots that hold the repair's rule
 	// to the stop are one fixture: the root waiting in accepting while its member works, so it
 	// holds no slot of its own and the member's is the one slot the cap gives out; the member
-	// slotted mid-testing at generation 1; the tester's phases row with the assignment a repair
-	// hands back; and the claim in state with suspendedBy, holding that phase's task confirmed.
+	// slotted mid-testing at generation 1; the tester's phases row naming the entry whose work a
+	// repair hands back; and the claim in state with suspendedBy, holding that phase's task confirmed.
 	// Nothing else differs between the two runs: the claim's session, its task and the slot are
 	// the same in both.
 	stopped := func(t *testing.T, state supervise.ClaimState, suspendedBy supervise.SuspendSource) *pgxpool.Pool {
@@ -73,22 +73,14 @@ func TestARetiredWorkersSlotIsNotRepaired(t *testing.T) {
 	}
 
 	// The same fixture, the claim suspended by the daemon instead of stopped. The repair reaches
-	// it and starts the phase again, as two rows: the relaunch, which brings the session back
-	// carrying no task, and the one row that carries the task, held for the issue's own slot
-	// (workflow.StartOrOwe).
+	// it and starts the phase again, as the one row that carries the task, held for the issue's
+	// own slot (workflow.StartOrOwe).
 	resumable := stopped(t, supervise.StateSuspended, supervise.SuspendedByDaemon)
 	applyFact(t, resumable, quiet(t, 1), "dispatch-1", elsewhere)
 	rows := startsOf(t, resumable, member)
 	owed := owedStarts(t, resumable, member)
-	var relaunch []midPhaseStart
-	for _, start := range rows {
-		if !start.needsSlot {
-			relaunch = append(relaunch, start)
-		}
-	}
-	if len(rows) != 2 || len(owed) != 1 || owed[0].role != claim.RoleTester || owed[0].task == "" ||
-		len(relaunch) != 1 || relaunch[0].task != "" {
-		t.Fatalf("the suspended tester of %s has the start rows %+v, want exactly one carrying a task, the tester's, marked for the issue's slot, beside its one relaunch, which carries none: the repair acts on this fixture, so what the retired run above reads is the claim's state",
+	if len(rows) != 1 || len(owed) != 1 || owed[0].role != claim.RoleTester || owed[0].task == "" {
+		t.Fatalf("the suspended tester of %s has the start rows %+v, want the one carrying a task, the tester's, marked for the issue's slot: the repair acts on this fixture, so what the retired run above reads is the claim's state",
 			member, rows)
 	}
 }

@@ -14,7 +14,7 @@ import (
 // sites must come to the same answer or the rename is only half known: delivery's attributionHeld
 // puts both the issue's resolved repository and the pull request's own through it, the results
 // route canonicalises the repository of a check's issue before it asks GitHub anything, in the
-// one helper its results read and its record route share (api/results_currency.go,
+// one helper its results read and its record route share (api/results_comparison.go,
 // server.checkIssueRepository), the three writers of a pull_request_heads row key the row by it
 // (delivery/pull_request_heads.go: RefreshPullRequestHead, ReadThroughCommitPulls and
 // Intake.recordPullRequestHead), the settings route reads it to decide whether a rename's

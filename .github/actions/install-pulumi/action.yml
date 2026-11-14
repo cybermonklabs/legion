@@ -1,15 +1,23 @@
 name: Install the Pulumi CLI
 description: >-
-  Installs the Pulumi CLI v3.268.0 the envoy-infra plugin is tested and released with, checked
-  against its SHA-256 before it is unpacked, and puts it on PATH for the job's later steps.
+  Installs the Pulumi CLI the envoy-infra plugin is tested and released with, and puts it on PATH
+  for the job's later steps.
+
+  The `pulumi-cli` row of .github/ci-tools.yaml names the version and the one sha256 of the whole
+  release tarball that both sources are checked against. It is the one row of the manifest that
+  way round: its primary is the vendor, get.pulumi.com, and its second source is the GitHub
+  release asset pulumi/pulumi publishes those same bytes as, which this install reads when
+  get.pulumi.com does not serve them.
 runs:
   using: composite
   steps:
     - name: Install the Pulumi CLI
       shell: bash
       run: |
-        tarball="$RUNNER_TEMP/pulumi-v3.268.0-linux-x64.tar.gz"
-        curl -fsSL -o "$tarball" https://get.pulumi.com/releases/sdk/pulumi-v3.268.0-linux-x64.tar.gz
-        echo "903cafeaa9f6327e4bf53a8b7b99ae660f26198acfa804a2f982bf5de3f1de0b  $tarball" | sha256sum -c -
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        tarball="$RUNNER_TEMP/$(basename "$(ci_tools_field pulumi-cli primary)")"
+        ci_tools_fetch pulumi-cli "$tarball"
         tar -xzf "$tarball" -C "$RUNNER_TEMP"
         echo "$RUNNER_TEMP/pulumi" >> "$GITHUB_PATH"

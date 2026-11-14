@@ -1,3 +1,6 @@
+// Package architecture imports a project's architecture model. The importer
+// fetches a source's notes through the GitHub App, parses them with the notes
+// package, and projects the model into the components tables.
 package architecture
 
 import (
@@ -7,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -15,11 +19,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
 // SourceDir is the fixed directory an architecture source's model is read
@@ -299,7 +306,7 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 	if importErr != nil {
 		return i.failed(ctx, parent, source, importErr)
 	}
-	parsed, importErr := Parse(files)
+	parsed, importErr := notes.Parse(files)
 	if importErr != nil {
 		return i.failed(ctx, parent, source, importErr)
 	}
@@ -545,7 +552,7 @@ func (i *Importer) abortMoved(ctx context.Context, tx pgx.Tx, source model.Archi
 // currently projects, with that source's repository: component ids are
 // project-wide, so such an import fails for the importing source alone and the
 // source holding the id keeps it.
-func heldElsewhere(ctx context.Context, tx pgx.Tx, source model.ArchitectureSource, repos map[int64]string, parsed Model) error {
+func heldElsewhere(ctx context.Context, tx pgx.Tx, source model.ArchitectureSource, repos map[int64]string, parsed notes.Model) error {
 	ids := make([]string, 0, len(parsed.Components))
 	for _, component := range parsed.Components {
 		ids = append(ids, component.ID)
@@ -584,7 +591,7 @@ func (i *Importer) project(
 	commit string,
 	treeSHA string,
 	files map[string][]byte,
-	parsed Model,
+	parsed notes.Model,
 ) (model.ArchitectureSource, error) {
 	encoded, err := json.Marshal(snapshotFiles(files))
 	if err != nil {
@@ -709,7 +716,33 @@ func (i *Importer) project(
 	if changed {
 		i.events.Publish(event)
 	}
+	i.storeComponentTrees(ctx, source.Project, parsed)
 	return updated, nil
+}
+
+// storeComponentTrees stores the display tree of every component's prose, now that the import's
+// own transaction has committed: a component's prose is a stored text a reader is shown
+// (api's component reads), so its tree is stored where it is written, as a comment's body is.
+// It runs after the commit rather than inside the import's transaction, because a tree that
+// cannot be stored must not fail an import, and because the import holds the project's source
+// rows locked until it commits: a connection taken for this while it held them would be a second
+// one of the pool taken under a lock (store.ErrNestedAcquire).
+//
+// A failure is logged with the project it was for and changes nothing: a read of a component
+// whose tree is missing reads its prose, as it did before there was a table. The store is
+// texttrees.StoreFor, the one policy every path that writes a stored text keeps, so an importer
+// whose caller still holds a pooled connection stores nothing rather than being refused one.
+func (i *Importer) storeComponentTrees(ctx context.Context, project string, parsed notes.Model) {
+	if i.store == nil || len(parsed.Components) == 0 {
+		return
+	}
+	prose := make([]string, 0, len(parsed.Components))
+	for _, component := range parsed.Components {
+		prose = append(prose, component.Prose)
+	}
+	if err := texttrees.StoreFor(ctx, i.store, pmdoc.DisplayLatest, prose...); err != nil {
+		slog.Warn("dispatch: store architecture component display trees failed", "project", project, "error", err)
+	}
 }
 
 // recordComponentFacts records, in the import's transaction, when each component of parsed was
@@ -719,7 +752,7 @@ func (i *Importer) project(
 // changed now. A row with the same digest stays as it is. Then every row of the project whose
 // component no source projects any more is deleted (DeleteOrphanComponentFacts), so a component
 // retired and imported again later is made again.
-func recordComponentFacts(ctx context.Context, tx pgx.Tx, project string, parsed Model) error {
+func recordComponentFacts(ctx context.Context, tx pgx.Tx, project string, parsed notes.Model) error {
 	facts := &pgx.Batch{}
 	for _, component := range parsed.Components {
 		facts.Queue(`
@@ -756,7 +789,7 @@ func DeleteOrphanComponentFacts(ctx context.Context, tx pgx.Tx, project string) 
 // componentDigest is the hex SHA-256 of a canonical JSON of the component's own fields: title,
 // prose, parent, external, paths in the model's order, and depends_on sorted. An absent list and
 // an empty one digest alike.
-func componentDigest(component Component) string {
+func componentDigest(component notes.Component) string {
 	paths := component.Paths
 	if paths == nil {
 		paths = []string{}

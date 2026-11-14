@@ -143,7 +143,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	) || !requireGeneration(w, req.Generation) {
 		return
 	}
-	m, ok := s.authenticated(req.ClaimToken, req.Secret)
+	m, _, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
@@ -207,7 +207,7 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 	) || !requireGeneration(w, req.Generation) {
 		return
 	}
-	m, ok := s.authenticated(req.ClaimToken, req.Secret)
+	m, _, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
@@ -227,19 +227,138 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// turnOutcome is a producer reporting how one turn of its agent ended, clean or refused by the
+// provider, with its own sequence within the launch generation. The daemon keeps the report and
+// derives the claim's run of refused turns from the reports it holds (supervise's turnOutcome),
+// failing the claim once that run reaches the launch failure limit; the answer says what the run
+// now is and whether this report failed the claim.
+//
+// The caller is the claim's, proved one of two ways. An Oh My Pi session's pi-legion holds the
+// registration's secret and names the claim with it, as the ready and the exit do. The Claude
+// bridge holds no secret — its pane's registration is claude-envoy's, inside Claude Code, and the
+// secret never leaves that process — so it presents the launch's own boot token, the 0600 file
+// its pane is told, which the daemon resolves to that launch's claim exactly as a registration's
+// is resolved. A body carrying both, or neither, is refused: each says who is calling, and a
+// caller that cannot say is not answered.
+func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
+	var req claim.TurnOutcomeRequest
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireGeneration(w, req.Generation) {
+		return
+	}
+	if req.Sequence == 0 {
+		// Zero is how a body that named no sequence decodes, and every turn of such a producer
+		// would collide on one key and be counted once, so it is refused rather than recorded.
+		writeJSON(w, http.StatusBadRequest, errorBody("sequence is required, counted from 1 within the generation"))
+		return
+	}
+	if req.Outcome != claim.TurnClean && req.Outcome != claim.TurnRefused {
+		writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("outcome %q is neither %q nor %q", req.Outcome, claim.TurnClean, claim.TurnRefused)))
+		return
+	}
+	token, m, ok := s.turnOutcomeCaller(w, r, req)
+	if !ok {
+		return
+	}
+	ctx, decided := s.decision(r, token)
+	defer decided()
+	err := m.Handle(ctx, supervise.RequestTurnOutcome{
+		Claim: token, Generation: req.Generation, Sequence: req.Sequence,
+		Refused: req.Outcome == claim.TurnRefused, Message: req.Message,
+	})
+	if err != nil {
+		s.claimFailure(w, "turn outcome", token, err)
+		return
+	}
+	c := m.Claim()
+	run := c.RefusedRun()
+	if c.State == supervise.StateFailed {
+		s.log.Error("api: a claim's provider refused its turns out of their budget", "claim", token,
+			"generation", req.Generation, "sequence", req.Sequence, "refusedRun", run, "failure", c.Failure)
+	}
+	writeJSON(w, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: run, Failed: c.State == supervise.StateFailed})
+}
+
+// turnOutcomeCaller is the claim a turn outcome is reported for and its machine: the claim the
+// body names, authenticated by the registration's secret, or the claim the launch's boot token
+// resolves to (claim.TurnOutcomeRequest's two caller types). It writes the refusal itself when
+// the body names neither identity, both, or one the daemon does not recognise.
+func (s *server) turnOutcomeCaller(w http.ResponseWriter, r *http.Request, req claim.TurnOutcomeRequest) (claim.Token, *supervise.Machine, bool) {
+	if caller, named := req.Caller(); named {
+		switch caller := caller.(type) {
+		case claim.BootCaller:
+			return s.turnOutcomeByBootToken(w, r, caller, req.Generation)
+		case claim.AgentCaller:
+			return s.turnOutcomeBySecret(w, r, caller)
+		}
+	}
+	// The body named neither caller, or both — and, were a third ever added to claim without
+	// this route, one this route cannot act on, which is the same answer.
+	writeJSON(w, http.StatusBadRequest, errorBody("a turn outcome names its caller with claimToken, sessionId and secret, or with bootToken; give one"))
+	return "", nil, false
+}
+
+// turnOutcomeByBootToken is the claim of the launch a boot token was minted for, held to the same
+// two rules the shim's hello on that token is held to (stream's Listener.hello): a token of a
+// launch the claim has moved past is refused, and so is a report for any generation but that
+// launch's. A pane left running from a replaced launch — one the daemon could not stop, one whose
+// container outlived its stop — would otherwise add its provider's refusals to the run the daemon
+// counts for the pane that replaced it, and fail a claim whose own agent is working.
+func (s *server) turnOutcomeByBootToken(w http.ResponseWriter, r *http.Request, caller claim.BootCaller, generation uint64) (claim.Token, *supervise.Machine, bool) {
+	launch, known, err := s.bootTokens.Resolve(r.Context(), caller.BootToken)
+	if err != nil {
+		s.log.Error("api: resolve a turn outcome's boot token", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorBody("turn outcome failed: the daemon could not resolve the boot token"))
+		return "", nil, false
+	}
+	m, supervised := s.supervisor.Machine(launch.Claim)
+	if !known || launch.Stale || !supervised {
+		writeJSON(w, claim.InvalidBootToken.Status, claim.InvalidBootToken)
+		return "", nil, false
+	}
+	if generation != launch.Generation {
+		s.log.Warn("api: refused a turn outcome reported for another generation", "claim", launch.Claim,
+			"launch", launch.Generation, "reported", generation)
+		writeJSON(w, claim.StaleGeneration.Status, claim.StaleGeneration)
+		return "", nil, false
+	}
+	return launch.Claim, m, true
+}
+
+// turnOutcomeBySecret is the claim the body names, authenticated by the secret its registration
+// was issued, as the ready and the exit are.
+func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, caller claim.AgentCaller) (claim.Token, *supervise.Machine, bool) {
+	if !requireFields(w,
+		field{"claimToken", string(caller.ClaimToken)}, field{"sessionId", caller.SessionID}, field{"secret", caller.Secret},
+	) {
+		return "", nil, false
+	}
+	m, _, ok := s.authenticated(caller.ClaimToken, caller.Secret)
+	if !ok {
+		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		return "", nil, false
+	}
+	if s.refuseIfStaleClaim(w, r, m.Claim()) {
+		return "", nil, false
+	}
+	return caller.ClaimToken, m, true
+}
+
 // activity is a live role's session reporting what it is doing, after each of its turns and
 // whenever the report's content changes (INFRA-945), so the idle rule can decide whether the
 // session's pod may be released. It decides nothing about the claim, so it posts no request to
 // the claim's machine: the report is written onto the claim's row alone
 // (store.Store.PutClaimActivity, reached through Options.ClaimActivity), where a machine's own
-// write neither carries it nor erases it, and where a report older than the one recorded is
-// dropped rather than written.
+// write never carries it and a launch's write clears it, and where a report older than the one
+// recorded is dropped rather than written. It is written onto the launch whose secret
+// authenticated it — the generation read with the capability check — and nowhere else.
 //
 // It refuses exactly as its siblings do — a blank field with the field's name, a claim this
 // daemon does not hold or a wrong secret with claim.InvalidSecret, a stale plugin with the
-// stale-contract 409 — and answers 204, as ready and exit do. A report the daemon cannot write
-// is a 500 the session's next one replaces: a claim with no report after its last turn is never
-// released, so nothing lost here costs anything but a release.
+// stale-contract 409 — and answers 204, as ready and exit do. A report of a launch that is gone
+// by the time it is written, a relaunch having moved the claim on after the check, is refused
+// with claim.InvalidSecret too, since its secret was that launch's. A report the daemon cannot
+// write is a 500 the session's next one replaces: a claim with no report after its last turn is
+// never released, so nothing lost here costs anything but a release.
 func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 	var req claim.ActivityRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
@@ -251,7 +370,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("activity.at is required"))
 		return
 	}
-	m, ok := s.authenticated(req.ClaimToken, req.Secret)
+	m, held, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
@@ -263,7 +382,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon has no store to record session activity in"))
 		return
 	}
-	known, err := s.claimActivity.PutClaimActivity(r.Context(), req.ClaimToken, req.Activity)
+	known, err := s.claimActivity.PutClaimActivity(r.Context(), req.ClaimToken, held.Generation, req.Activity)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: a session's activity report was not recorded", "claim", req.ClaimToken,
 			"session", req.SessionID)
@@ -367,7 +486,7 @@ func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("since must be an RFC 3339 time: "+err.Error()))
 		return
 	}
-	m, ok := s.authenticated(token, req.Secret)
+	m, _, ok := s.authenticated(token, req.Secret)
 	if !ok {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
@@ -425,19 +544,20 @@ func recordedAt(at time.Time) string {
 	return at.UTC().Format(time.RFC3339)
 }
 
-// authenticated is the claim's machine when secret is the one its registration was issued. A
-// claim the daemon does not supervise, one no agent has registered on, and a wrong secret all
-// answer the same: nothing about the claim is told to a caller that cannot prove it holds it.
-func (s *server) authenticated(token claim.Token, secret string) (*supervise.Machine, bool) {
+// authenticated is the claim's machine, with the claim as it stood when secret was checked
+// against it, when secret is the one its registration was issued. A claim the daemon does not
+// supervise, one no agent has registered on, and a wrong secret all answer the same: nothing
+// about the claim is told to a caller that cannot prove it holds it.
+func (s *server) authenticated(token claim.Token, secret string) (*supervise.Machine, supervise.Claim, bool) {
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		return nil, false
+		return nil, supervise.Claim{}, false
 	}
-	held := m.Claim().CapabilityHash
-	if len(held) == 0 || subtle.ConstantTimeCompare(held, capabilityHash(secret)) != 1 {
-		return nil, false
+	held := m.Claim()
+	if len(held.CapabilityHash) == 0 || subtle.ConstantTimeCompare(held.CapabilityHash, capabilityHash(secret)) != 1 {
+		return nil, supervise.Claim{}, false
 	}
-	return m, true
+	return m, held, true
 }
 
 // claimFailure answers an agent request its machine did not take: a claim refusal with its own
@@ -547,27 +667,29 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // starts that relaunch, so a stale claim there is left running and answered as any other:
 // refusing it would stall agents that work today.
 //
-// A claim whose launch installs no plugin is not stale here, whatever its contract and with no
-// round open (Options.NoPluginInstall — a Claude Code role's plugin in a pod is its image's own
-// claude-envoy, which no install reaches). Nothing relaunches such a claim for its contract: the
-// stale-plugin lane posts it nothing and its stale registration is accepted and charged nothing
-// (internal/daemon's refreshStalePlugins, supervise's staleRegistration), so this refusal's own
-// sentence would be false of it and no sweep would ever make it true. Only a new image moves
-// that worker's plugin, and the update round over its pod is what brings one — a round that
-// opens on pod-shape drift alone, so a release that changes no image opens none, and a refusal
-// here would hold the worker's grants, its handoff_complete and its ready for the rest of the
-// deployment's life.
+// Three of its four terms are the rule internal/supervise holds for both readers of it
+// (supervise.StaleRefusesCalls): the recorded contract is not this daemon's, the claim is in no
+// update round, and a relaunch onto this daemon's plugin can reach the claim at all — which is
+// false on a daemon that can relaunch nothing and false for a claim whose launch installs no
+// plugin (Options.PluginRelaunchable, Options.NoPluginInstall — a Claude Code role's plugin in
+// a pod is its image's own claude-envoy, which no install reaches). Nothing relaunches either
+// of those claims for its contract: the stale-plugin lane posts them nothing and their stale
+// registrations are accepted and charged nothing (internal/daemon's refreshStalePlugins,
+// supervise's staleRegistration), so this refusal's own sentence would be false of them and no
+// sweep would ever make it true. Only a new image moves such a worker's plugin, and the update
+// round over its pod is what brings one — a round that opens on pod-shape drift alone, so a
+// release that changes no image opens none, and a refusal here would hold the worker's grants,
+// its handoff_complete and its ready for the rest of the deployment's life. The round term is
+// there for the same reason read the other way: the round's whole point is that the worker
+// pushes its work before its process is replaced, and it cannot push without the daemon it
+// already speaks to, so while the round is open the daemon serves the claim on its previous
+// contract — grants, handoff_complete and every other grant-bearing route, as well as the claim
+// routes — and the end of the round is what relaunches the process onto the current plugin.
 //
-// A claim whose update round is open (Claim.UpdateRound) is not stale here either, whatever its
-// contract: the round's whole point is that the worker pushes its work before its process is
-// replaced, and it cannot push without the daemon it already speaks to. So while the round is
-// open the daemon serves the claim on its previous contract — grants, handoff_complete and every
-// other grant-bearing route, as well as the claim routes — and the end of the round is what
-// relaunches the process onto the current plugin.
-//
-// Nor is a claim whose worker is in a turn. The stale-plugin lane holds the relaunch of a
-// working claim until that turn ends (holdStaleRelaunch), precisely so the turn can push what it
-// has rather than lose it to a process ended where it stood. Grants are what mint the GitHub App
+// Its fourth term is this route family's own, which the shared rule leaves to it: a claim whose
+// worker is in a turn is not stale here. The stale-plugin lane holds the relaunch of a working
+// claim until that turn ends (holdStaleRelaunch), precisely so the turn can push what it has
+// rather than lose it to a process ended where it stood. Grants are what mint the GitHub App
 // token, so refusing them for the length of that turn would take away the one thing the hold
 // exists to protect: the turn would run on, unable to push and unable to hand off, and the work
 // would go with the relaunch the hold was waiting to start. Working, stale, relaunchable and in
@@ -575,12 +697,13 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // claim the boot pass has not decided yet; serving the last two for that moment is what degraded
 // mode does for every stale claim. The window this refusal describes opens when the relaunch
 // starts, not when the daemon decides on it.
+//
+// supervise's own reader of the shared rule adds no such term, because the one place it is
+// asked has answered it already: a pending delivery is handed to no claim that is not ready or
+// idle (supervise's staleRefusesClaim, sendPending).
 func (s *server) staleClaim(c supervise.Claim) (int, bool) {
-	if s.noPluginInstall != nil && s.noPluginInstall(c) {
-		return c.PluginContract, false
-	}
-	return c.PluginContract, s.pluginRelaunchable && c.PluginContract != DaemonAPIVersion &&
-		c.UpdateRound == "" && c.State != supervise.StateWorking
+	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion, s.pluginRelaunchable, s.noPluginInstall) &&
+		c.State != supervise.StateWorking
 }
 
 // logStaleRefusal is the one log line every stale-caller refusal writes: never the body,
@@ -626,7 +749,7 @@ func (s *server) claimSecretCheck(w http.ResponseWriter, r *http.Request, body [
 	if json.Unmarshal(body, &id) != nil || id.ClaimToken == "" || id.Secret == "" {
 		return false
 	}
-	m, ok := s.authenticated(id.ClaimToken, id.Secret)
+	m, _, ok := s.authenticated(id.ClaimToken, id.Secret)
 	if !ok {
 		return false
 	}

@@ -1,0 +1,99 @@
+# This repository's own leak rules, ported one for one from .github/scripts/check-private-names.sh
+# (its patterns are that file's lines 82-106, its labels lines 108-111, and the way they are applied
+# to a line and to a path its `search` and `search_paths`). The four classes are the private
+# repository Legion is deployed from, the company that runs it, a private host of its own network,
+# and a Tailscale MagicDNS host. No [extend] section: gitleaks' own default rule set is deliberately
+# never loaded, so these rules are the whole of what this file detects.
+#
+# Each class appears twice where the script reads a file's path as well as its text: once as a
+# content rule (`regex`, no `path`) and once as a path rule (`path`, no `regex`), whose description
+# carries the script's own " in its path" suffix.
+#
+# Every literal below is spelled as a regular expression whose own text the rule does not match, the
+# way the shell script splits its literals across two string words: a one-character class ([x]gent)
+# keeps a name out of its own reach, and the [.] form keeps a host out of its own. That is why this
+# file passes the check it is a port of, and why no line of it may be "simplified" by dropping those
+# brackets.
+#
+# The two case-insensitive flags differ by design, exactly as the script's -i flags do (its lines
+# 206-213): four classes are matched in any case, the proper noun is matched case-sensitively.
+title = "Legion private names"
+
+# 1. The deployment repository: the two letters as a token of their own, with at most one separator
+#    between them -- a hyphen, an underscore, a run of ordinary, no-break, figure or narrow no-break
+#    spaces, a percent-encoded byte, or one of the ten typographic dashes. A percent-encoded byte in
+#    front counts as a boundary too, so an encoded URL cannot hide the name.
+[[rules]]
+id = "repository_rule"
+description = "names the private deployment repository or its Dispatch project key"
+regex = '''(?i)(^|[^[:alnum:]]|%[[:xdigit:]]{2})[a]gent([-_]|( |\x{00a0}|\x{2007}|\x{202f})+|%[[:xdigit:]]{2}|\x{2010}|\x{2011}|\x{2012}|\x{2013}|\x{2014}|\x{2015}|\x{2212}|\x{fe58}|\x{fe63}|\x{ff0d})?c([^[:alnum:]]|$)'''
+
+# 2. The company: its two words joined, or parted by one separator or a full stop, in any case, its
+#    hostnames included.
+[[rules]]
+id = "company_rule"
+description = "names the company"
+regex = '''(?i)[t]rajectory([-_]|( |\x{00a0}|\x{2007}|\x{202f})+|%[[:xdigit:]]{2}|\x{2010}|\x{2011}|\x{2012}|\x{2013}|\x{2014}|\x{2015}|\x{2212}|\x{fe58}|\x{fe63}|\x{ff0d}|[.])?labs'''
+
+# 3. The company's first word as a proper noun or in capitals, standing as a whole word. This is the
+#    one class the script matches case-sensitively, since the lowercase English word names nothing
+#    and must pass; gitleaks has no per-rule case flag, so this pattern alone carries no (?i).
+[[rules]]
+id = "proper_noun_rule"
+description = "names the company"
+regex = '''(^|[^[:alnum:]])([T]rajectory|[T]RAJECTORY)([^[:alnum:]]|$)'''
+
+# 4. A private host of the company's own network. Two matches name no private host and are allowed:
+#    the reserved example host, and the vendored NATS client's own property of that name, which is
+#    allowed only inside the one bundle that vendors it.
+[[rules]]
+id = "private_host_rule"
+description = "names a private internal host"
+regex = '''(?i)[[:alnum:]-]+[.]internal[.][[:alnum:].-]+'''
+
+  # The reserved example host, with the trailing full stops a sentence may add. Anchored, so it
+  # clears the whole match and not a part of it, as the script's anchored `grep -v` does.
+  [[rules.allowlists]]
+  description = "the reserved example host names nothing"
+  regexTarget = "match"
+  regexes = ['''(?i)^[[:alnum:]-]+[.]internal[.]example([.](com|net|org))?[.]*$''']
+
+  # The NATS client's own property, in the one bundle that vendors it and nowhere else: both the
+  # path and the match must hold, hence condition = "AND".
+  [[rules.allowlists]]
+  description = "the vendored NATS client's own property in the bundle that vendors it"
+  regexTarget = "match"
+  condition = "AND"
+  paths = ['''^packages/claude-envoy/dist/envoy-channel[.]js$''']
+  regexes = ['''(?i)^this[.]internal[.][[:alnum:]_]+$''']
+
+# 5. A Tailscale MagicDNS host: one DNS label immediately before the literal, with no letter or
+#    digit right after it. The reserved tailnet name is allowed, under any machine name in front.
+[[rules]]
+id = "tailnet_host_rule"
+description = "names a Tailscale MagicDNS host"
+regex = '''(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)'''
+
+  # The match is only the last label and the one trailing character the rule may have captured, so
+  # a machine name in front of the reserved name is allowed by the same pattern.
+  [[rules.allowlists]]
+  description = "the reserved example tailnet name names nothing"
+  regexTarget = "match"
+  regexes = ['''(?i)^example-tailnet[.]ts[.]net[^[:alnum:]]?$''']
+
+# The two classes the script also reads out of a file's path, as path rules. Same patterns, no
+# allowlists: the script's `search_paths` has none either.
+[[rules]]
+id = "repository_rule_path"
+description = "names the private deployment repository or its Dispatch project key in its path"
+path = '''(?i)(^|[^[:alnum:]]|%[[:xdigit:]]{2})[a]gent([-_]|( |\x{00a0}|\x{2007}|\x{202f})+|%[[:xdigit:]]{2}|\x{2010}|\x{2011}|\x{2012}|\x{2013}|\x{2014}|\x{2015}|\x{2212}|\x{fe58}|\x{fe63}|\x{ff0d})?c([^[:alnum:]]|$)'''
+
+[[rules]]
+id = "company_rule_path"
+description = "names the company in its path"
+path = '''(?i)[t]rajectory([-_]|( |\x{00a0}|\x{2007}|\x{202f})+|%[[:xdigit:]]{2}|\x{2010}|\x{2011}|\x{2012}|\x{2013}|\x{2014}|\x{2015}|\x{2212}|\x{fe58}|\x{fe63}|\x{ff0d}|[.])?labs'''
+
+[[rules]]
+id = "proper_noun_rule_path"
+description = "names the company in its path"
+path = '''(^|[^[:alnum:]])([T]rajectory|[T]RAJECTORY)([^[:alnum:]]|$)'''

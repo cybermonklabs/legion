@@ -14,7 +14,7 @@ const server = process.env.LEGION_TEST_PG_DSN ?? "";
 /** Everything those cases need and this host or run does not have. The psql half is the gate
  *  `skipWithout("psql")` is, composed here rather than called: it prints a line of its own, and a
  *  host that has neither psql nor a server would get one line for each half rather than one
- *  naming both (harness-lanes.test.ts composes its Playwright gate the same way). */
+ *  naming both (harness-stacks.test.ts composes its Playwright gate the same way). */
 const missing = [
   ...(hostTool("psql") === null ? ["psql on this host's PATH"] : []),
   ...(server === ""

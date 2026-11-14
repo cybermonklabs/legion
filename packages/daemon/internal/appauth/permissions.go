@@ -18,7 +18,7 @@ import (
 )
 
 // writePermissions is the permission set a role's write token is asked for, one per App role:
-// what that App's roles do to the one repository the token names, and nothing else. It is what
+// what that App's roles do to the repositories they work in, and nothing else. It is what
 // the mint asks for of an installation granted all of it; an installation granted less is asked
 // for what it is granted (exchangeGranted), since GitHub answers a request naming a permission
 // the installation is not granted HTTP 422, minting nothing rather than leaving that one out.
@@ -42,9 +42,25 @@ import (
 // hold them: Legion writes no GitHub issue and no project, and a comment on a pull request needs
 // Issues write or Pull requests write (GitHub's own documentation of the create-comment endpoint,
 // read 2026-11-06), which both sets hold.
+//
+// security_events is the code-scanning alerts of the repository, and it differs by App as checks
+// does: the review App's set asks for write and the implement App's for read, its roles reading
+// which alerts stand on a head. The write is what a dismissal of an alert whose code is right
+// needs, and the set is keyed by App rather than by workflow role, so the token serves every role
+// the review App mints for — architect, planner, tester and reviewer (AppRoleFor, identity.go) —
+// and each of them can dismiss an alert, upload SARIF or delete an analysis. A dismissal names
+// the App in its dismissed_by, whichever of those roles made it, so which role acted is readable
+// only where the comment the dismissal carries says so; an upload or a deletion leaves neither.
+//
+// It is here because, in key mode, a token minted without it is refused those reads whatever the
+// installation holds: measured on 2026-11-10, every code-scanning read of both role Apps answered
+// 403 with `X-Accepted-Github-Permissions: security_events=read` while the accounts' grants of
+// 2026-11-08 stood, because this file named the permission in neither set and GitHub mints a
+// token carrying what the request names. A deployment in token mode asks its command for no
+// permissions at all (tokencommand.go), so this set decides nothing there (dispatch://INFRA-1639).
 var writePermissions = map[AppRole]map[string]string{
-	Implement: {"actions": "write", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "statuses": "write", "workflows": "write"},
-	Review:    {"actions": "write", "checks": "write", "contents": "write", "metadata": "read", "pull_requests": "write"},
+	Implement: {"actions": "write", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
+	Review:    {"actions": "write", "checks": "write", "contents": "write", "metadata": "read", "pull_requests": "write", "security_events": "write"},
 }
 
 // accessOrder ranks GitHub's three accesses, each holding every one below it: a permission
@@ -131,11 +147,10 @@ type saidShortfall struct {
 // A cut that leaves no permission at all refuses the mint instead: GitHub reads a request with
 // no permissions as every permission the installation holds, so a body without them would mint
 // wider than the role's set asks for rather than narrower. The refusal names the role, the
-// owner, the repositories and the set asked for (askedFor), and carries no token.
+// owner and the set asked for (askedFor), and carries no token.
 //
-// A 422 from the exchange after this cut is a repository the installation does not reach, or a
-// grant that changed between the two calls (ErrNarrowingRefused): it stays the hard refusal it
-// is.
+// A 422 from the exchange after this cut is a grant that changed between the two calls
+// (ErrNarrowingRefused): it stays the hard refusal it is.
 func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string, request mintRequest) (Lease, error) {
 	granted, err := m.grantedPermissions(ctx, jwt, installation)
 	if err != nil {
@@ -145,9 +160,9 @@ func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string,
 	m.sayShortfalls(request.role, request.owner, short)
 	if len(permissions) == 0 {
 		return Lease{}, fmt.Errorf("the %s App's installation on %s is granted none of the permissions its token asks for (%s), and a token request naming no permission holds every permission the installation has",
-			request.role, request.owner, askedFor(request.repos, request.permissions))
+			request.role, request.owner, askedFor(request.permissions))
 	}
-	return m.exchange(ctx, jwt, installation, request.repos, permissions)
+	return m.exchange(ctx, jwt, installation, permissions)
 }
 
 // grantedPermissions is what owner's account approved for the App's installation: GET
@@ -193,8 +208,8 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 }
 
 // sayShortfalls writes shortfallMessage for each of short the first time a mint of role for
-// owner meets it, and nothing on every mint after it, whatever repositories that mint or the
-// ones after it named: the grant is the installation's and the line is about the installation.
+// owner meets it, and nothing on any mint after it: the grant is the installation's and the
+// line is about the installation, which the owner names.
 func (m *Manager) sayShortfalls(role AppRole, owner string, short []grantShortfall) {
 	for _, shortfall := range short {
 		key := saidShortfall{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), grantShortfall: shortfall}

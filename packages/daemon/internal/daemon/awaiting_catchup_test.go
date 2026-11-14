@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -124,14 +125,14 @@ func catchUpClock() time.Time { return time.Date(2026, 10, 23, 18, 0, 0, 0, time
 
 // catchUpRig is the daemon's workflow runtime over a fresh store of project CAPTURE, against
 // client, with admission at cap: what the boot catch-up runs on.
-func catchUpRig(t *testing.T, client dispatch.Client, cap int) (*pgxpool.Pool, *workflowRuntime) {
+func catchUpRig(t *testing.T, client dispatch.Client, cap int) (*store.Pool, *workflowRuntime) {
 	t.Helper()
 	return catchUpRigLogging(t, client, cap, quietLogger())
 }
 
 // catchUpRigLogging is catchUpRig writing the runtime's and admission's own lines to log, for a
 // test that reads what the daemon logged rather than what the store holds.
-func catchUpRigLogging(t *testing.T, client dispatch.Client, cap int, log *slog.Logger) (*pgxpool.Pool, *workflowRuntime) {
+func catchUpRigLogging(t *testing.T, client dispatch.Client, cap int, log *slog.Logger) (*store.Pool, *workflowRuntime) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -153,7 +154,7 @@ func bootCatchUp(t *testing.T, w *workflowRuntime) error {
 }
 
 // seedRecord runs put in a transaction of its own.
-func seedCatchUp(t *testing.T, pool *pgxpool.Pool, put func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
+func seedCatchUp(t *testing.T, pool *store.Pool, put func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return put(ctx, tx, record.NewStore()) }); err != nil {
@@ -170,7 +171,7 @@ func captureRoot(at phase.Phase, waiting *record.Awaiting) record.Issue {
 }
 
 // readIssue is key as the record holds it.
-func readIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {
+func readIssue(t *testing.T, pool *store.Pool, key string) *record.Issue {
 	t.Helper()
 	var got *record.Issue
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
@@ -287,7 +288,7 @@ func (d *catchUpRefuser) GetIssue(ctx context.Context, key string) (dispatch.Iss
 
 // waitingRoots seeds an unanswered root of project CAPTURE waiting on its question ask-<key> for
 // each of keys.
-func waitingRoots(t *testing.T, pool *pgxpool.Pool, keys ...string) {
+func waitingRoots(t *testing.T, pool *store.Pool, keys ...string) {
 	t.Helper()
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
 		for i, key := range keys {
@@ -649,7 +650,7 @@ func TestCatchUpAppliesTheApprovalOfANewerVersion(t *testing.T) {
 }
 
 // captureArchitectTasks is the task of every architect start the outbox holds for CAPTURE-100.
-func captureArchitectTasks(t *testing.T, pool *pgxpool.Pool) []string {
+func captureArchitectTasks(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var tasks []string
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, _ *record.Postgres) error {
@@ -672,7 +673,7 @@ func captureArchitectTasks(t *testing.T, pool *pgxpool.Pool) []string {
 }
 
 // captureArchitectOps is every supervise operation the outbox holds for CAPTURE-100's architect.
-func captureArchitectOps(t *testing.T, pool *pgxpool.Pool) []string {
+func captureArchitectOps(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var ops []string
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, _ *record.Postgres) error {
@@ -696,7 +697,7 @@ func captureArchitectOps(t *testing.T, pool *pgxpool.Pool) []string {
 
 // captureNotices counts the outbox rows of CAPTURE-100 that tell anyone anything: architect
 // notices and controller notices.
-func captureNotices(t *testing.T, pool *pgxpool.Pool) []string {
+func captureNotices(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var kinds []string
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, _ *record.Postgres) error {
@@ -721,7 +722,7 @@ func captureNotices(t *testing.T, pool *pgxpool.Pool) []string {
 // slottedCapture seeds CAPTURE-100 admitted in the one slot with its architect running a task it
 // took, and CAPTURE-200 waiting in line behind it, with gate when one is given; cursor names the
 // root's catch-up cursor, nil for a root recorded before the cursor existed.
-func slottedCapture(t *testing.T, pool *pgxpool.Pool, gate *record.DesignGate, cursor *int64) {
+func slottedCapture(t *testing.T, pool *store.Pool, gate *record.DesignGate, cursor *int64) {
 	t.Helper()
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
 		if err := records.PutIssue(ctx, tx, captureRoot(phase.Admitted, nil)); err != nil {
@@ -758,7 +759,7 @@ func slottedCapture(t *testing.T, pool *pgxpool.Pool, gate *record.DesignGate, c
 
 // assertCaptureKeptItsSlot fails unless CAPTURE-100 is admitted with no wait and still holds the
 // one slot, and its architect was neither suspended nor started.
-func assertCaptureKeptItsSlot(t *testing.T, pool *pgxpool.Pool) *record.Issue {
+func assertCaptureKeptItsSlot(t *testing.T, pool *store.Pool) *record.Issue {
 	t.Helper()
 	got := readIssue(t, pool, "CAPTURE-100")
 	if got == nil || got.Phase != phase.Admitted || got.Awaiting != nil {
@@ -823,8 +824,8 @@ func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
 // CAPTURE-100's gate opened at version 3 and the version written after it closed the gate
 // again, so under the children-first rule the root is waiting for its children rather than
 // working, ReconcileAwaiting can start no wait on a person for it (workflow's decideAwait, rule
-// 0), and no pass can start it while a step of its design is unapproved; the slot it still holds
-// is one admission's next pass takes back. CAPTURE-200 waits in line for its first slot, so its
+// 0), and no pass can start it while a step of its design is unapproved; it keeps the row it
+// took at its admission throughout (record.KeepsSlot). CAPTURE-200 waits in line for its first row, so its
 // architect has never run and has handed nothing back. Reading either one's event log would hold
 // it out of admission for a window that can decide nothing, and replay, for the root that never
 // ran, history older than the handout its own admission will be.
@@ -917,12 +918,13 @@ func TestAnOutageWindowIsDecidedOnceAfterItsCatchUp(t *testing.T) {
 	})
 }
 
-// A root already waiting on its gate's approval at the deploy returns its slot at the first boot:
+// A root already waiting on its gate's approval at the deploy keeps its row at the first boot:
 // its gate was registered by a daemon of the earlier release, so the asks' mirror holds no request
 // of its document; the boot mirrors the request Dispatch shows open and, with that request on the
-// person's turn, declares the hand-back as a registration would. A request Dispatch shows on the agent's turn hands nothing
-// back, and the root keeps its slot.
-func TestARootWaitingOnItsGateAtDeployReturnsItsSlot(t *testing.T) {
+// person's turn, declares the hand-back as a registration would. A request Dispatch shows on the
+// agent's turn hands nothing back. Either way the root keeps its row, and the root waiting in
+// line behind it takes none.
+func TestARootWaitingOnItsGateAtDeployKeepsItsRow(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		waitingOn string
@@ -959,16 +961,16 @@ func TestARootWaitingOnItsGateAtDeployReturnsItsSlot(t *testing.T) {
 			if ops := captureArchitectOps(t, pool); len(ops) != 0 {
 				t.Fatalf("architect operations = %v, want none while the root waits", ops)
 			}
-			if !slotHeld(t, pool, "CAPTURE-200") || slotHeld(t, pool, "CAPTURE-100") {
-				t.Fatalf("slot held by CAPTURE-200 %t, by CAPTURE-100 %t, want the root waiting in line to take the one slot",
-					slotHeld(t, pool, "CAPTURE-200"), slotHeld(t, pool, "CAPTURE-100"))
+			if !slotHeld(t, pool, "CAPTURE-100") || slotHeld(t, pool, "CAPTURE-200") {
+				t.Fatalf("row held by CAPTURE-100 %t, by CAPTURE-200 %t, want the waiting root to keep the one row",
+					slotHeld(t, pool, "CAPTURE-100"), slotHeld(t, pool, "CAPTURE-200"))
 			}
 		})
 	}
 }
 
 // slotHeld says whether key holds a slot.
-func slotHeld(t *testing.T, pool *pgxpool.Pool, key string) bool {
+func slotHeld(t *testing.T, pool *store.Pool, key string) bool {
 	t.Helper()
 	held := false
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
@@ -1375,7 +1377,7 @@ func TestAnEventThatFailsAtEveryBootLeavesTheNextBootOnlyItsOwnApply(t *testing.
 		t.Fatalf("open the counted pool: %v", err)
 	}
 	t.Cleanup(counted.Close)
-	w.pool, w.caughtUp, w.bootID = counted, nil, "boot-2"
+	w.pool, w.caughtUp, w.bootID = store.NewPool(counted), nil, "boot-2"
 	if err := bootCatchUp(t, w); err != nil {
 		t.Fatalf("second boot's catch-up: %v", err)
 	}

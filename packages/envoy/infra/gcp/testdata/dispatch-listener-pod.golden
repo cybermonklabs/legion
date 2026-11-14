@@ -141,7 +141,7 @@
     ],
     "enableServiceLinks": false,
     "serviceAccountName": "example-dispatch",
-    "terminationGracePeriodSeconds": 35,
+    "terminationGracePeriodSeconds": 40,
     "topologySpreadConstraints": [
       {
         "labelSelector": {

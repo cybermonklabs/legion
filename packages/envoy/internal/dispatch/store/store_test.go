@@ -260,7 +260,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"message_block_refs_from_node",
 		"comments_replies_to_block",
 		"messages_replies_to_block",
-		"events_person_words",
+		"events_person_words_with_declines",
 		"comment_deliveries_session",
 		"message_deliveries_session_created",
 		"embeddings_window_owner",
@@ -275,12 +275,15 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 	`, expectedIndexes)
 	// Migration 20261101182440 drops asks_open_artifact, the partial index 0009 built for the one
 	// read that lists a document's open asks: that read uses asks_artifact_id, which
-	// api.TestTheAuditedReadsSearchTheirIndex holds it to.
+	// api.TestTheAuditedReadsSearchTheirIndex holds it to. Migration 20261111002445 drops
+	// events_person_words, the partial index 0145 built for the read that lists what people wrote
+	// to a session: that read names a fifth event type now and reads
+	// events_person_words_with_declines instead.
 	assertDatabaseObjectsAbsent(t, ctx, store.Pool, `
 		select indexname
 		from pg_indexes
 		where schemaname = current_schema()
-	`, []string{"asks_open_artifact"})
+	`, []string{"asks_open_artifact", "events_person_words"})
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select viewname
 		from pg_views
@@ -781,6 +784,7 @@ func TestMigrate0015BackfillsIssueRanksByProjectCreationOrder(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed pre-rank issues: %v", err)
 	}
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0015: %v", err)
 	}
@@ -829,6 +833,7 @@ func TestMigrate0009BackfillsProjectAndRefKeyFrom0007(t *testing.T) {
 	migrateThrough(t, store, 7)
 	seedGraphAt0007(t, store)
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0009: %v", err)
 	}
@@ -889,6 +894,7 @@ func TestMigrate0009DropsMalformedArtifactReferences(t *testing.T) {
 		t.Fatalf("seed malformed artifact reference: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate malformed artifact reference: %v", err)
 	}
@@ -922,7 +928,7 @@ func TestMigrateMarksLegacyNonNotifyingEventsPublished(t *testing.T) {
 		t.Fatalf("forget backfill migration: %v", err)
 	}
 	if _, err := store.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Legacy', '{"kind":"session","id":"s"}', 'U');
 		insert into events (issue_key, seq, type, actor, payload, notify)
@@ -974,6 +980,7 @@ func TestMigrate0031RewritesNullAskOptionsToEmptyArrays(t *testing.T) {
 		t.Fatalf("seed null options: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0031: %v", err)
 	}
@@ -1021,6 +1028,7 @@ func TestMigrate0035FoldsActionAsksIntoQuestions(t *testing.T) {
 		t.Fatalf("seed action ask: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0035: %v", err)
 	}
@@ -1061,7 +1069,7 @@ func TestMigrate0053RefusesAnApprovalOnAnyAskButAnApprovalAsk(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := store.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Spec', '{"kind":"session","id":"s"}', 'U');
 	`); err != nil {

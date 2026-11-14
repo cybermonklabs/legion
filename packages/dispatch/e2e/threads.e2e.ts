@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
   acceptSuggestion,
@@ -13,8 +11,8 @@ import {
 } from "./api";
 import { conversationFilter, threadCard } from "./editor";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // "bob" names the session that opened the ask - authenticated over the API with
@@ -38,11 +36,8 @@ async function expandedThread(page: Page, rootId: string): Promise<Locator> {
   return card;
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("an ask is a thread: replies before and after answering, then a live agent reply", async ({
+// @pr: Create through answer to close: an ask is a thread - replies before and after the answer, and then a live agent's reply.
+test("an ask is a thread: replies before and after answering, then a live agent reply @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -375,10 +370,9 @@ test("an agent comment reply appears in the root Conversation thread", async ({ 
   }
 });
 
-test("the phone Conversation opens a full-height thread view with its composer pinned at the bottom @phone", async ({
+test("the phone Conversation opens a full-height thread view with its composer pinned at the bottom @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "This scenario exercises the phone-specific view.");
+}) => {
   await createProject({ key: "PHONE", name: "Phone threads" });
   const issue = await createIssue({
     project: "PHONE",
@@ -704,11 +698,7 @@ test("an orphaned suggestion stays non-actionable through resolve and reopen", a
 // with the reply the reader was writing in it.
 test("a failed queued Conversation comment action keeps its thread and reply, clears later clicks and retries explicitly", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "chromium",
-    "One visible phone thread cannot queue a second action."
-  );
+}) => {
   await createProject({ key: "QUEUE", name: "Queued comment actions" });
   const issue = await createIssue({
     project: "QUEUE",

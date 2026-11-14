@@ -1,7 +1,7 @@
 package githubapp
 
 // commits.go holds this package's reads about one repository's commits: whether the repository
-// holds a commit at all, and the reads a recorded check result's currency turns on — whether a
+// holds a commit at all, and the reads a recorded check result is placed by — whether a
 // commit sits on a branch, a repository's default branch, and the conditional reads of an open
 // pull request's head a background pass fills Envoy's listener records in from (its check runs,
 // its check suites, the repository's open pull requests and the repository's own identity).
@@ -73,9 +73,9 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 // CheckRepositoryResponse classifies one repository read's answer. A 200, or a status the caller
 // names in handled and reads itself, is no error. A 403 or 404 is ErrRepositoryUnreadable — the
 // installation may not read this resource, or cannot see the repository at all — which the
-// currency read takes as "unknown", never as "older"; a rate limit behind either status is the
-// *RateLimitError instead. Any other status is the error CheckResponse makes, named by the
-// target. repoFull is the `owner/repo` the error names.
+// results read takes as unknown, never as a commit it placed elsewhere. A rate limit behind
+// either status is the *RateLimitError instead. Any other status is the error CheckResponse
+// makes, named by the target. repoFull is the `owner/repo` the error names.
 func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFull, target string, handled ...int) error {
 	if status == http.StatusOK || slices.Contains(handled, status) {
 		return nil
@@ -98,8 +98,8 @@ func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFu
 // head; `ahead` and `diverged` both mean the branch does not hold it). Only `status` is decoded:
 // the comparison's commit list, which an unpaginated answer carries up to 250 of, is asked for
 // one page of one so the body stays small, and `status` is a field of every page. A 403 or 404
-// is ErrRepositoryUnreadable, which the currency read takes as "unknown" about the repository's
-// default branch and as "not on it" about an after-merge result's base branch, which GitHub no
+// is ErrRepositoryUnreadable, which the results read takes as unknown about the repository's
+// default branch and as "not on it" about an after-merge check's base branch, which GitHub no
 // longer holding is the usual reason for; a 404 is also GitHub's answer for a commit the
 // repository does not have, which is likewise no proof that the branch lacks it.
 func (c *Client) CommitOnBranch(ctx context.Context, token, owner, repo, branch, sha string) (bool, error) {
@@ -173,13 +173,19 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 // message that begins with anything else — the validation failure and the spammed endpoint
 // GitHub names for the same status — is no proof of absence.
 func noCommitForSHA(body []byte) bool {
+	return strings.HasPrefix(responseMessage(body), "No commit found for SHA")
+}
+
+// responseMessage is the `message` of body, the JSON object GitHub answers a refused request
+// with, and "" for a body that is not JSON or names none.
+func responseMessage(body []byte) string {
 	var answer struct {
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(body, &answer); err != nil {
-		return false
+	if json.Unmarshal(body, &answer) != nil {
+		return ""
 	}
-	return strings.HasPrefix(answer.Message, "No commit found for SHA")
+	return answer.Message
 }
 
 // DefaultBranch is the name of the repository's default branch (`GET /repos/{owner}/{repo}`,

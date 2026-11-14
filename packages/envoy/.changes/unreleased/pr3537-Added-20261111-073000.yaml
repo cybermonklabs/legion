@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `envoy-listener` serves `GET /livez`, which answers 204 and touches nothing: no flush to NATS, no key-value cache ping and no read of the durable consumer. It is the route a startup or a liveness probe reads, because such a probe must not wait on or fail with NATS, and `envoy-dispatch` already served the same route for the same reason. `/healthz`, which reads the bus, stays the readiness route.
+time: 2026-11-11T07:30:00.000000000Z
+custom:
+    Issue: pr3537

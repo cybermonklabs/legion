@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -20,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -115,11 +115,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			}
 			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(records, engine, 1, "LEGION", quietLogger())
-			conn, err := nats.Connect(workflowNATS(t))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(conn.Close)
+			conn := testnats.Connect(t, workflowNATS(t))
 			js, err := jetstream.New(conn)
 			if err != nil {
 				t.Fatal(err)
@@ -195,11 +191,7 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	conn, err := nats.Connect(workflowNATS(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatal(err)
@@ -257,11 +249,7 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	conn, err := nats.Connect(workflowNATS(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatal(err)

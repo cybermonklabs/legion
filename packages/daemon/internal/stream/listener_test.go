@@ -532,28 +532,76 @@ func TestALauncherHelloReachesTheLauncherAcceptorAlone(t *testing.T) {
 	}
 }
 
-// A launcher the acceptor refuses, or one that arrives before any acceptor is registered, is
-// closed with nothing sent and its reason logged.
+// A launcher the acceptor refuses is closed with nothing sent and its reason logged. The hello
+// that arrives before any acceptor is installed is no longer one of these: it waits for the
+// acceptor instead of being refused by name, which is what the two tests below measure.
 func TestARefusedLauncherHelloIsClosedAndLogged(t *testing.T) {
-	for name, tc := range map[string]struct {
-		register bool
-		reason   string
-	}{
-		"no acceptor yet":        {false, "launcher acceptor unavailable"},
-		"refused by the runtime": {true, "launcher token is not current"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			h := startListener(t, harnessOptions{})
-			if tc.register {
-				h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, string) { return nil, tc.reason })
-			}
-			p := dial(t, h.listener.Addr())
-			p.send(shimwire.LauncherHello{Token: "stale", Sandbox: "s", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
-			p.awaitClosed()
-			if lines := h.logs.Lines(); len(lines) != 1 || !strings.Contains(lines[0], tc.reason) {
-				t.Fatalf("log = %q, want one refusal naming %q", lines, tc.reason)
-			}
-		})
+	const reason = "launcher token is not current"
+	h := startListener(t, harnessOptions{})
+	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, string) { return nil, reason })
+	p := dial(t, h.listener.Addr())
+	p.send(shimwire.LauncherHello{Token: "stale", Sandbox: "s", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+	p.awaitClosed()
+	if lines := h.logs.Lines(); len(lines) != 1 || !strings.Contains(lines[0], reason) {
+		t.Fatalf("log = %q, want one refusal naming %q", lines, reason)
+	}
+}
+
+// The boot window: the worker stream accepts from the moment it is bound, while the pod runtime
+// installs its launcher acceptor only once that runtime is built and its informer caches have
+// synced. A launcher that dials in between used to be refused by name and to dial again a second
+// later, 904 times in one incident; it now waits, and the acceptor serves its hello on the
+// connection it was already sent on — no reconnect, and the window is one log line instead of one
+// per refusal.
+func TestALauncherHelloBeforeTheAcceptorIsServedAfterIt(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := dial(t, h.listener.Addr())
+	p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+	// While no acceptor exists the hello is neither answered nor refused: it is parked.
+	select {
+	case frame := <-p.frames:
+		t.Fatalf("a hello sent before the acceptor was answered with %s", frame.FrameType())
+	case <-p.closed:
+		t.Fatal("a hello sent before the acceptor was refused instead of waiting for it")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
+	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, string) { return served, "" })
+
+	p.expect(shimwire.TypeLauncherHelloAck)
+	// The same connection, and now the handler's: what the launcher sends next reaches it.
+	p.send(shimwire.LauncherState{})
+	select {
+	case frame := <-served.frames:
+		if _, ok := frame.(shimwire.LauncherState); !ok {
+			t.Fatalf("the launcher handler read %#v, want the state the waiting launcher sent", frame)
+		}
+	case <-time.After(wait):
+		t.Fatal("the served launcher's frames never reached its handler")
+	}
+	lines := h.logs.Lines()
+	if len(lines) != 1 || !strings.Contains(lines[0], "the launcher acceptor is installed") || !strings.Contains(lines[0], "hellos=1") {
+		t.Fatalf("logs = %q, want one line reporting the window the one hello waited in", lines)
+	}
+}
+
+// The wait is bounded, because an acceptor that never arrives must not hold a launcher silent:
+// past the bound the hello gets the refusal it always got, named, logged once, with nothing
+// written to the connection, and the launcher dials again.
+func TestALauncherHelloIsRefusedOnceTheWaitRunsOut(t *testing.T) {
+	const launcherWait = 50 * time.Millisecond
+	h := startListener(t, harnessOptions{launcherWait: launcherWait})
+	p := dial(t, h.listener.Addr())
+	sent := time.Now()
+	p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+	p.awaitClosed()
+	if waited := time.Since(sent); waited < launcherWait {
+		t.Fatalf("the hello was refused after %s, want the whole %s wait first", waited, launcherWait)
+	}
+	want := []string{"worker-stream: rejected hello (launcher acceptor unavailable)"}
+	if got := h.logs.Lines(); !slices.Equal(got, want) {
+		t.Fatalf("logs = %q, want %q", got, want)
 	}
 }
 

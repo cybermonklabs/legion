@@ -91,7 +91,11 @@ func subscribeNoticeExceptions(conn *nats.Conn, rehold func(data []byte)) (*nats
 // (packages/envoy/cmd/listener/confirmed.go) reports that its forward to the owning architect's
 // session did not complete after it answered the publish 200: the forward failed
 // (`delivery_failed`), the holder lapsed between the two (`no_holder`), or the session the
-// listener forwarded to did not confirm it in time (`receipt_timeout`). Such a listener sends a
+// listener forwarded to did not confirm it in time (`receipt_timeout`). A listener of this
+// release answers no `receipt_timeout`: no session confirms a forward any more, and every
+// forward the stream did not store is `delivery_failed` (dispatch://INFRA-771). The reason is
+// still handled here because a listener of the deployed, older build raises it until the rollout
+// finishes. Such a listener sends a
 // role message on its role lane, which forwards it once and reports a failure on
 // noticeExceptionSubjects instead of answering it; a listener of the confirmed route answers the
 // publish itself, and the notice executor re-holds from that answer (notice). Both run one policy,
@@ -247,9 +251,12 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 // take: the publish, under the dedupe key of reported's row (record.OutboxKey), went to the
 // architect's role topic, the listener named reason, and recipient is the session it forwarded to
 // ("" when it named none). It runs from a role-lane exception of an earlier listener (rehold) and
-// from the 504 `receipt_timeout` answer of the confirmed publish route (notice). A session that
-// stopped running but is still registered produces a receipt_timeout: the listener forwards to it
-// and waits for a receipt that never comes. So does the relaunch window, until the claim's agent
+// from the 504 `receipt_timeout` answer of a confirmed publish route of a listener older than
+// dispatch://INFRA-771, which this daemon still handles until that rollout finishes (a listener
+// of this release answers `delivery_failed` instead). A session that
+// stopped running but is still registered produced a receipt_timeout there: the listener
+// forwarded to it
+// and waited for a receipt that never came. So does the relaunch window, until the claim's agent
 // has taken the Envoy role back. Every such failure is queued, a late receipt from the claim's own
 // session too: a Go relaunch resumes the claim's session id, so a failure naming it cannot tell the
 // stopped process from the relaunched one, and a copy the session already has costs one frame its
@@ -402,16 +409,16 @@ func (r *outbox) issueTree(ctx context.Context, issue string) (root string, ling
 }
 
 // catchUpSuperseded says whether a newer catch-up than catchUp exists for its architect: held, the
-// claim as this daemon supervises it, has taken its role at a later launch than the one catchUp was
-// written for, and that launch's ready wrote one (workflow's claimReady), queued or delivered; or
-// root, as recorded now, is at a later generation, and its re-admission's start writes one,
+// claim as this daemon supervises it, has said it is ready at a later launch than the one catchUp
+// was written for, and that launch's ready wrote one (workflow's claimReady), queued or delivered;
+// or root, as recorded now, is at a later generation, and its re-admission's start writes one,
 // whether it finds the claim running or relaunches it. Neither holds for a catch-up that may be
 // the architect's only one: a claim relaunching or not yet ready has had no later ready, and one
 // its later ready will write drops the queued copy. The newer catch-up was composed from what
 // nobody claimed, so the superseded one's decisions are its own to hand over rather than leave
 // with its row (the outbox's notice, workflow.HandOverKept).
 func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, root *record.Issue) bool {
-	if supervise.TookRole(held.State) && held.Generation > catchUp.Launch {
+	if supervise.SaidReady(held.State) && held.Generation > catchUp.Launch {
 		return true
 	}
 	return root != nil && root.Generation > catchUp.Generation
@@ -420,19 +427,19 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, root *recor
 // copyDueAtOnce says whether the next copy of a notice is due at once, given held, the architect's
 // claim as this daemon supervises it (the zero Claim when it does not), resends, the copies of the
 // notice already sent, and recipient, the session the report (or the listener's 504 answer, as its
-// holder) names. A copy is due at once when the architect's agent has taken its role and said it
-// is ready (supervise.TookRole), and it is the first copy or its report names a session other than the
+// holder) names. A copy is due at once when the architect's agent has said it is ready
+// (supervise.SaidReady), and it is the first copy or its report names a session other than the
 // one the claim is ready on: that ready has passed, so no release (releaseWaiting) would make the
 // copy due, and every later notice to the architect would wait behind it. The first covers a
-// relaunch that took its role inside the receipt window; a later copy that failed on another
+// relaunch that reported ready inside the receipt window; a later copy that failed on another
 // session went where the role no longer is. A later copy whose report names no session (the
 // listener names none for no_holder, or when it could not read the holder) says nothing about
 // where the role went. It waits its delay, as does a later copy that failed on the claim's own
-// ready session and every copy while the claim has not taken its role, so a claim that reads live
+// ready session and every copy while the claim has not reported ready, so a claim that reads live
 // while its session hears nothing (a reconnecting connection, a death the supervisor has not seen)
 // keeps the notice for the whole schedule instead of spending its copies in seconds.
 func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
-	if !supervise.TookRole(held.State) {
+	if !supervise.SaidReady(held.State) {
 		return false
 	}
 	return resends == 0 || recipient != "" && recipient != held.Session
@@ -479,9 +486,13 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 }
 
 // releaseWaiting makes due at once every notice waiting for a later attempt that one of architects
-// now owns, once their claims are ready: each agent took its Envoy role, or took it back, and said
-// it can be prompted, so a notice sent now reaches it. That covers a copy waiting out its re-send
-// delay, whichever session it failed on (a Go relaunch resumes the claim's session file, so the
+// now owns, once their claims are ready: each agent said it can be prompted (supervise.SaidReady),
+// having booted or taken its Envoy role back. A boot's ready comes before the name — the session
+// claims its role at its first turn — so a notice this releases, and the catch-up that same ready
+// writes, can still be refused no_holder and wait the outbox's own backoff (retryBackoff, one
+// second doubling to a cap of 64) until the name is taken. What the release ends is the wait for
+// the architect, not the wait for the role. That covers a copy waiting out its re-send delay,
+// whichever session it failed on (a Go relaunch resumes the claim's session file, so the
 // relaunched agent registers the very session id the stopped one had), and a notice held on the
 // outbox's backoff while nobody held the role. A copy waiting minutes for a stopped session's
 // registration to lapse would otherwise hold back every later notice to that architect behind the

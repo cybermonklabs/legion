@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // Create creates branch on repo, whose REST API github calls, at the current commit of base, a
@@ -22,7 +23,22 @@ import (
 // success: GitHub answers its create with 422 "Reference already exists". Every other answer, to
 // the read of base or to the create, is an error naming the repository, the ref and GitHub's
 // answer (a *githubrest.Answer, its status and body).
+//
+// The ref name passes this repository's own private-name rules before anything is sent
+// (leakguard.Rules): a name they match, and a rule pass that could not be made to run, are each
+// an error, and the base is not even read. The check lives here rather than in the daemon that
+// calls Create so that the package's contract holds for every caller: a create of this package
+// publishes no ref name of a class the rules refuse.
+//
+// The rule pass alone runs, and no shared public leak check: a ref name is a branch name of the
+// daemon's own making, which can carry one of this repository's four private classes — the
+// embedded rule file holds all four — and not a secret, customer text or private code, which is
+// what the shared check reads for. The write itself is one POST of a ref and a sha.
 func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, base string) error {
+	ref := "refs/heads/" + branch
+	if err := leakguard.New(leakguard.Options{}).Rules(ctx, leakguard.RefRecord(ref)); err != nil {
+		return fmt.Errorf("create a branch of %s: %w", repo, err)
+	}
 	var read struct {
 		Object struct {
 			SHA string `json:"sha"`
@@ -36,7 +52,6 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 		return fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", base, repo)
 	}
 
-	ref := "refs/heads/" + branch
 	err := github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
 	var answer *githubrest.Answer
 	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer.Body) {

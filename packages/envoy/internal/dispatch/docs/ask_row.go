@@ -13,7 +13,7 @@ import (
 
 // AskColumns selects one ask row, aliased a, in the order ScanAsk reads it.
 const AskColumns = `a.id::text, a.issue_key, a.artifact_id::text, a.block_id, a.block_artifact_id::text, a.author, a.question, a.options, a.multiple, a.urgency,
-		a.anchor, a.state, a.answer, a.resolution, a.created_at, a.edited_at, a.kind, a.approval`
+		a.anchor, a.state, a.answer, a.resolution, a.created_at, a.edited_at, a.kind, a.approval, a.asked_of, a.asked_of_by, a.asked_of_at`
 
 // ScanAsk decodes one AskColumns row. extra receives, in order, any columns the query
 // selects after AskColumns.
@@ -23,7 +23,7 @@ func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 	var editedAt *time.Time
 	targets := append([]any{
 		&ask.ID, &ask.IssueKey, &ask.ArtifactID, &ask.BlockID, &ask.BlockArtifactID, &author, &ask.Question, &options, &ask.Multiple, &ask.Urgency,
-		&anchor, &ask.State, &answer, &resolution, &ask.CreatedAt, &editedAt, &ask.Kind, &approval,
+		&anchor, &ask.State, &answer, &resolution, &ask.CreatedAt, &editedAt, &ask.Kind, &approval, &ask.AskedOf, &ask.AskedOfBy, &ask.AskedOfAt,
 	}, extra...)
 	if err := row.Scan(targets...); err != nil {
 		return model.Ask{}, err
@@ -69,12 +69,18 @@ func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 	return ask, nil
 }
 
-// WriteAskResolution closes an open ask the caller has locked as retracted or resolved: it
-// records the kind, the reason and who closed it on the row, and returns the ask as it now
-// stands. It is the one place that says what resolving an ask stores; each caller writes a block
-// ask's own state and appends the ask.resolved event its path owns.
+// WriteAskResolution closes an open ask the caller has locked as retracted, resolved or
+// declined: it records the kind, the person's reason and who closed it on the row, and returns
+// the ask as it now stands. A decline (model.AskResolutionDeclined) is the one kind that carries
+// words of Dispatch's own, so this function writes model.DeclineDispatchWords under that kind and
+// leaves DispatchWords empty under every other: no caller can put the words elsewhere. It is the
+// one place that says what resolving an ask stores; each caller writes a block ask's own state
+// and appends the ask.resolved event its path owns.
 func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor) (model.Ask, error) {
 	resolution := model.AskResolution{Kind: kind, Reason: reason, Actor: actor, At: time.Now().UTC()}
+	if kind == model.AskResolutionDeclined {
+		resolution.DispatchWords = model.DeclineDispatchWords
+	}
 	encoded, err := json.Marshal(resolution)
 	if err != nil {
 		return model.Ask{}, fmt.Errorf("encode ask resolution: %w", err)

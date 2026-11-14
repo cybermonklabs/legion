@@ -1,0 +1,11 @@
+#!/bin/sh
+# The pre-push hook of every push a pod makes: /opt/legion/githooks/pre-push, root's, in a
+# root-owned directory no role can write, which the git wrapper (packages/daemon/docker/git)
+# points git at with `-c core.hooksPath=/opt/legion/githooks` for a push and for nothing else.
+#
+# git runs it with the remote's name and URL as its arguments and the update lines it computed on
+# standard input, and both go straight to `legion leak-check pre-push`, which runs the leak guard
+# (packages/daemon/internal/leakguard) over them: this holds no rule and no logic of its own. The
+# command's statuses are the shared public leak check's — 0 clean, 3 refused, 2 the check could
+# not be made to run — and git stops the push on any of them but the first.
+exec '/opt/legion/bin/legion' leak-check pre-push "$@"

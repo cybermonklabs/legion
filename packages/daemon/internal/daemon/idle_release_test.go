@@ -9,16 +9,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -31,8 +31,9 @@ const releasedPodUID = "pod-being-released"
 
 // releaseRuntime is the fake runtime with the two things an idle release asks of a Kubernetes
 // one: the bundle of the issue workspace's unpushed work, taken from a launcher of the pod, and
-// the issue-level teardown that deletes the pod, its disk and its Sandbox. It also answers
-// whether the pod runs the configured image, which the daemon reads outside the transaction.
+// the issue-level teardown that deletes the pod, its disk and its Sandbox. It also answers what
+// the daemon reads of the pod outside the transaction (issuePods): whether it runs the
+// configured image, and whether the runtime still holds the issue's Sandbox.
 type releaseRuntime struct {
 	*fake.Runtime
 	mu        sync.Mutex
@@ -42,6 +43,12 @@ type releaseRuntime struct {
 	bundled   []claim.Role
 	suspended int
 	refused   int
+	// sandboxName is the name the runtime answers the issue's Sandbox under, as the rig derives
+	// it from the issue's claim token (sandbox.SandboxName), and sandboxGone makes it answer that
+	// it holds no Sandbox at all — the pod the runtime has already taken down, which a test sets
+	// before the pass it wants to read that answer.
+	sandboxName string
+	sandboxGone bool
 	// beforeAuthorize runs inside SuspendIssue, before it asks the store: the pod lock is held
 	// and the teardown's own read has already answered, which is where production's second
 	// answer can differ from its first. A test sets it before the drain.
@@ -52,6 +59,15 @@ func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.onImage
+}
+
+func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sandboxGone {
+		return "", false
+	}
+	return r.sandboxName, true
 }
 
 func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
@@ -99,7 +115,7 @@ func (r *releaseRuntime) refusals() int {
 // implementer in its own session, idle with the phase's task still pending, on the daemon's
 // plugin contract and the configured image, with nothing queued for any role.
 type idleRig struct {
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	st      *store.Store
 	issues  record.Store
 	runner  *outbox
@@ -138,6 +154,10 @@ func newIdleRig(t *testing.T) *idleRig {
 	if err != nil {
 		t.Fatalf("mint a locator: %v", err)
 	}
+	// The pod's Sandbox is named as the Kubernetes runtime names it, from a role claim of the
+	// issue (sandbox.SandboxName, which the runtime's own IssueSandbox answers): the roles of an
+	// issue share one Sandbox, so the implementer's token names the pod's.
+	rt.sandboxName = sandbox.SandboxName(token)
 	pending := supervise.Delivery{ID: "outbox:7", Task: "implement it", Phase: phase.Implementing,
 		Generation: 1, QueuedAt: time.Now().UTC().Add(-time.Hour)}
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
@@ -178,8 +198,12 @@ func newIdleRig(t *testing.T) *idleRig {
 		notices: &outboxPublisher{}, log: quietLogger(),
 		now: func() time.Time { return time.Now().Add(time.Minute) },
 	}
-	w := &workflowRuntime{pool: pool, projectID: "legion", log: quietLogger(),
-		idleStore: st, idleImages: rt, idlePeriod: 10 * time.Minute}
+	// The rig's issue records carry the Dispatch project key and its claims the claim token's
+	// spelling, as a deployment's do, and the two passes read the two: the candidate answer of
+	// the rule for a pod no claim owns reads issues.project (dispatchProject), everything else
+	// reads the claims' (projectID).
+	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
+		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
 	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
 		issue: issue, token: token, machine: machine}
 }
@@ -406,6 +430,64 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 	}
 	if len(records.Holds) != 1 || records.Holds[0].Reason != workflow.IdleHoldOvertaken.String() {
 		t.Fatalf("holds = %+v, want the one %s", records.Holds, workflow.IdleHoldOvertaken)
+	}
+}
+
+// A wake the role's open resume refuses resumes a claim that is still released all the same, and
+// this is the case that makes it necessary: the delivery wake commits its take and then resumes
+// the claim in process, so a resume the store refuses, or a daemon that restarts between the two,
+// leaves the role released with its resume open. Only a release closes an open resume, and a pod
+// that is fully released is never released again, so without this the role's every later wake —
+// a delivery, a CI settlement, a role message, its own backstop — would read that resume as a pod
+// already on its way and resume nothing, for as long as the issue lives.
+//
+// The take is made here without the resume behind it, which is what both shapes leave in the
+// record: a resume that failed after its take committed, and a daemon that came back up between
+// the two and reads the claim released with the resume open. The wake that meets it takes no wake
+// of its own — the resume already recorded is still the role's one open resume — and brings the
+// claim back.
+func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	rig.drain(t)
+	if got := rig.machine.Claim(); !got.Released() {
+		t.Fatalf("the claim after the release = %s by %s, want it released", got.State, got.SuspendedBy)
+	}
+
+	taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, claim.RoleImplementer,
+		pods.WakeDelivery, time.Now().UTC())
+	if err != nil || !taken {
+		t.Fatalf("take the wake whose resume never ran = %t, %v; want it taken", taken, err)
+	}
+	resume, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
+	if err != nil || !open {
+		t.Fatalf("the open resume after that take = %d, %t, %v; want the one it recorded", resume, open, err)
+	}
+
+	woken, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key)
+	if err != nil || !woken {
+		t.Fatalf("the wake meeting the open resume = %t, %v; want the claim woken", woken, err)
+	}
+	if got := rig.machine.Claim(); got.Released() {
+		t.Fatalf("the claim after the wake that met the open resume = %s by %s, want it resumed: no release will ever close that resume",
+			got.State, got.SuspendedBy)
+	}
+	// The heal takes no wake of its own: the resume the first take recorded is still the one
+	// open, so the records hold one resume of this release rather than two.
+	again, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
+	if err != nil || !open || again != resume {
+		t.Fatalf("the open resume after the heal = %d, %t, %v; want the first take's %d", again, open, err, resume)
+	}
+	// And a wake that meets the open resume of a role whose process is running resumes nothing:
+	// that pod is back, which is what the refusal means when the claim is no longer released.
+	before := len(rig.rt.CallsOf("Resume"))
+	woken, err = rig.runner.wakeForDelivery(ctx, rig.token, "a second notice of "+rig.issue.Key)
+	if err != nil || woken {
+		t.Fatalf("the wake of a running claim = %t, %v; want it to wake nothing", woken, err)
+	}
+	if after := len(rig.rt.CallsOf("Resume")); after != before {
+		t.Fatalf("resumes after the wake of a running claim = %d, want the %d it already had", after, before)
 	}
 }
 
@@ -675,16 +757,16 @@ func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
 }
 
 // Release is off unless the deployment asks for it: `idle_minutes: 0`, a runtime that is not
-// Kubernetes, and a runtime that cannot read a pod's image each leave the tick with nothing to
+// Kubernetes, and a runtime that cannot read the issue's pod each leave the tick with nothing to
 // run, so it returns rather than ticking over a pod it must not decide.
 func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		w    *workflowRuntime
 	}{
-		{name: "idle_minutes is 0", w: &workflowRuntime{idleStore: &store.Store{}, idleImages: &releaseRuntime{}}},
-		{name: "no store", w: &workflowRuntime{idlePeriod: time.Minute, idleImages: &releaseRuntime{}}},
-		{name: "a runtime with no pod image", w: &workflowRuntime{idlePeriod: time.Minute, idleStore: &store.Store{}}},
+		{name: "idle_minutes is 0", w: &workflowRuntime{idleStore: &store.Store{}, idleRuntime: &releaseRuntime{}}},
+		{name: "no store", w: &workflowRuntime{idlePeriod: time.Minute, idleRuntime: &releaseRuntime{}}},
+		{name: "a runtime that reads no issue pod", w: &workflowRuntime{idlePeriod: time.Minute, idleStore: &store.Store{}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			done := make(chan struct{})

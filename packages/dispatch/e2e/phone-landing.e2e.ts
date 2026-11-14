@@ -1,15 +1,6 @@
-import {
-  type BrowserContext,
-  expect,
-  type Locator,
-  type Page,
-  type Route,
-  test,
-} from "@playwright/test";
-
 import { createAsk, createComment, createIssue, createMessage, createProject } from "./api";
 import { boxesApart } from "./layout";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, type Locator, type Page, type Route, test } from "./test";
 import { asUser } from "./users";
 
 // The iPhone 13 viewport INFRA-95 measured the landing fault at. At the `phone` layout
@@ -117,10 +108,6 @@ async function expectNewestInView(page: Page, card: Locator, label: string): Pro
   expect(apart, `${label}: the newest card shares a point with the composer: ${where}`).toBe(true);
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 /** The three reads the Conversation's list is built from. */
 const READS = ["asks", "comments", "messages"] as const;
 
@@ -195,7 +182,8 @@ async function openWithReadLast(
 // SLOW(>=2s): three opens, each a fresh page because only a page with no history entry is a
 // first open (`history.length` 1 above), each holding the 300 ms margin the partial-data state
 // has no in-page signal for, plus the top-of-page control the fixture needs to stay honest.
-test("on a phone, the Conversation opens with its newest message in view whichever read answers last @phone", async ({
+// @pr: The phone Conversation's first paint: it opens on the newest message whichever of its reads answers last.
+test("on a phone, the Conversation opens with its newest message in view whichever read answers last @phone @pr", async ({
   browser,
 }) => {
   const { issue, newest } = await seedConversation("Landing on the newest message");

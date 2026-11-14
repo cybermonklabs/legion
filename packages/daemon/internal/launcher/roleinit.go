@@ -235,8 +235,12 @@ func (p *roleProcess) start() error {
 // parseStatus reads the wait status role-init wrote to its status pipe: the shim's own, so the
 // daemon is told the role's exit and not its namespace init's. It is nil when role-init wrote
 // none — it was killed before the shim ended, or never got that far.
+//
+// The pipe carries a wait status, which is 32 bits wide (syscall.WaitStatus), and reportStatus
+// writes exactly that: a line naming anything else is a line this protocol never produced, so it
+// is refused here rather than truncated into a status the role never had.
 func parseStatus(raw []byte) *syscall.WaitStatus {
-	value, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	value, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 32)
 	if err != nil {
 		return nil
 	}

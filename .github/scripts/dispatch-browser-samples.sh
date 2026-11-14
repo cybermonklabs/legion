@@ -23,16 +23,16 @@
 # `report` prints the two `::notice::` lines, titled with the leg the caller names (`shard 1`,
 # `webkit-alone`), and changes nothing else: the browser steps run it after the suite and before
 # their own `exit`, so a step still ends on the suite's status and not on this reading's.
-# <dir> is $RUNNER_TEMP in both jobs, beside the lanes' own run directory and under what the
+# <dir> is $RUNNER_TEMP in both jobs, beside the stacks' own run directory and under what the
 # steps upload: a file written into the checkout would leave it dirty afterwards.
 #
 # What the tick records, every 5 s for the length of the browser step:
 #
-# MemAvailable, from /proc/meminfo. The lanes' Postgres containers run outside the job's cgroup,
+# MemAvailable, from /proc/meminfo. The stacks' Postgres containers run outside the job's cgroup,
 # so /proc/meminfo is the one reading that counts them, and the lowest value over the step is
 # what the reading prints.
 #
-# Beside it, where the CPU goes, which is the bound a run of four lanes on four vCPU hits
+# Beside it, where the CPU goes, which is the bound a run of four workers on four vCPU hits
 # (INFRA-317): one line per process of a named group, with the CPU that process has used, read
 # from /proc/<pid>/stat. `pidstat` is not on the runner image and `ps -o pcpu` is a process's
 # average over its whole life, not what it spent since the last tick, so neither answers this;

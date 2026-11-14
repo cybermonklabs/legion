@@ -31,9 +31,10 @@ import (
 )
 
 // stopBound is how long run may take to return once its context is cancelled, given the stop's
-// budget: the budget, then the stamp's and the store close's own bounds (stopBudget).
+// budget: the budget, then the NATS close's, the stamp's and the store close's own bounds
+// (stopBudget).
 func stopBound(budget time.Duration) time.Duration {
-	return budget + stampTimeout + storeCloseTimeout
+	return budget + natsCloseTimeout + stampTimeout + storeCloseTimeout
 }
 
 // stopHangGuard is the bound for a row whose claim is that the stop needed none of its budget,

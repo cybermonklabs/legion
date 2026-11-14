@@ -38,7 +38,7 @@ listener — was withdrawn for every worker by Sami's standing order of 2026-09-
 19:00Z): no smoke rig of any kind, no scratch or stand-in daemon, no throwaway NATS container or
 tmux server, no throwaway OMP profile or scratch plugin tree, no `scripts/smoke-delivery.sh`, and
 `~/.omp/profiles/legion` / `~/.omp/plugins` are the operator's alone. The deployment instructions
-say a Sami ruling wins over a skill default, so the issue does **not** go back to the tester; the
+say a Sami decision wins over a skill default, so the issue does **not** go back to the tester; the
 gap is real, it is accepted by order, and the record has to say so in a way the merge queue and
 the operator can act on.
 

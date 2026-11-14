@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'Delivery attribution reads the host of a GitHub issue URL in a pull-request body rather than matching the ten bytes github.com wherever they fall. So a name that merely ends in github.com is credited to nobody, where it was credited before: a subdomain such as www.github.com or pages.github.com, a name like evilgithub.com or my-github.com, a host run that a word runs into (Seegithub.com), and a percent escape standing immediately before the host, which is part of the host as the bytes stand. Two shapes are credited that were not: a host spelled in any case, and a host carrying a port. Everything else attribution credited it credits still, whatever stands to the left of the authority its issue path hangs off.'
+time: 2026-11-09T11:21:14.916410515Z
+custom:
+    Issue: pr3279

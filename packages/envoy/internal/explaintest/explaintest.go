@@ -1,7 +1,8 @@
 // Package explaintest reads an `EXPLAIN (FORMAT JSON)` plan tree for the things every
 // index-pinning test in this module asks it: whether a named relation is sequentially scanned
-// anywhere in the plan, whether any scan in it reads a relation without an index condition, and
-// which index each index scan reads through, under which condition. It also answers, from the
+// anywhere in the plan, whether any scan in it reads a relation without an index condition,
+// which index each index scan reads through, under which condition, and which relations the
+// plan reads at all, how often each and under which subplan (Scans). It also answers, from the
 // catalog, the first key column of a named index and whether a scan's condition names it, which
 // is what tells a read served by an index from one that reads the whole index and filters it,
 // and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a prepared
@@ -30,13 +31,24 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 
 // planNode is what the checks below read of one "Plan" node of `EXPLAIN (FORMAT JSON)`: its
 // type, the relation and index it names, the index condition it carries - nil when it carries
-// none, which is not the same as an empty one - and its children.
+// none, which is not the same as an empty one - the name of the subplan it begins and its place
+// under its own parent, what an analyzed plan measured of it (its loops and the rows each
+// answered, both 0 in a plan explained without ANALYZE), the CTE it scans, and its children.
 type planNode struct {
-	NodeType     string            `json:"Node Type"`
-	RelationName string            `json:"Relation Name"`
-	IndexName    string            `json:"Index Name"`
-	IndexCond    *string           `json:"Index Cond"`
-	Plans        []json.RawMessage `json:"Plans"`
+	NodeType           string            `json:"Node Type"`
+	RelationName       string            `json:"Relation Name"`
+	IndexName          string            `json:"Index Name"`
+	IndexCond          *string           `json:"Index Cond"`
+	SubplanName        string            `json:"Subplan Name"`
+	ParentRelationship string            `json:"Parent Relationship"`
+	ActualLoops        float64           `json:"Actual Loops"`
+	ActualRows         float64           `json:"Actual Rows"`
+	CTEName            string            `json:"CTE Name"`
+	Plans              []json.RawMessage `json:"Plans"`
+
+	// subplan is the subplan this node runs under, which the walk carries down from the node
+	// that began it (nodesUnder), and so is no field of the plan's own JSON.
+	subplan string
 }
 
 // OnePlan is the one "Plan" node of raw, an `EXPLAIN (FORMAT JSON)` answer, which is what every
@@ -58,18 +70,33 @@ func OnePlan(t testing.TB, raw []byte) json.RawMessage {
 }
 
 // planNodes flattens planJSON - one "Plan" node of `EXPLAIN (FORMAT JSON)`'s top-level array -
-// into every node of the tree under it, each node before its children. Every check this package
-// exports is a filter over this one walk, so the tree is descended in one place rather than once
-// per check.
+// into every node of the tree under it, each node before its children and each carrying the
+// subplan it runs under. Every check this package exports is a filter over this one walk, so
+// the tree is descended in one place rather than once per check.
 func planNodes(t testing.TB, planJSON json.RawMessage) []planNode {
+	t.Helper()
+	return nodesUnder(t, planJSON, "")
+}
+
+// nodesUnder is that walk of one node and the tree below it: a node whose parent relationship
+// is SubPlan begins a subplan, and every node under it belongs to that one, since a plan under
+// a subplan runs as often as the subplan does.
+func nodesUnder(t testing.TB, planJSON json.RawMessage, subplan string) []planNode {
 	t.Helper()
 	var node planNode
 	if err := json.Unmarshal(planJSON, &node); err != nil {
 		t.Fatalf("decode plan node: %v", err)
 	}
+	if node.ParentRelationship == "SubPlan" {
+		subplan = node.SubplanName
+		if subplan == "" {
+			subplan = node.NodeType
+		}
+	}
+	node.subplan = subplan
 	nodes := []planNode{node}
 	for _, child := range node.Plans {
-		nodes = append(nodes, planNodes(t, child)...)
+		nodes = append(nodes, nodesUnder(t, child, subplan)...)
 	}
 	return nodes
 }
@@ -142,6 +169,74 @@ func ScansWithoutIndexCond(t testing.TB, planJSON json.RawMessage) []string {
 		}
 	}
 	return unkeyed
+}
+
+// Scan is one node of a plan that reads a relation: which relation, through which index (empty
+// when the node names none), under which subplan (empty: none, so the node runs with the plan
+// rather than once per row of what drives it), how many times it ran and how many rows it
+// answered each time. Loops and Rows are what `EXPLAIN (ANALYZE)` measured and are 0 in a plan
+// explained without it, so a caller that reads them explains with ANALYZE.
+type Scan struct {
+	Relation, Index, Subplan string
+	Loops, Rows              float64
+}
+
+// Scans names every scan of a relation in planJSON — one "Plan" node of `EXPLAIN (FORMAT
+// JSON)`'s top-level array — at any depth, in the order the walk meets them. A statement
+// written to touch only what it must is held to that by its plan: which relations it reads at
+// all, which of them it reads more than once or once per row of another, and how many rows the
+// read it is driven by answered.
+func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
+	t.Helper()
+	var scans []Scan
+	for _, node := range planNodes(t, planJSON) {
+		if node.RelationName == "" {
+			continue
+		}
+		scans = append(scans, Scan{
+			Relation: node.RelationName, Index: node.IndexName, Subplan: node.subplan,
+			Loops: node.ActualLoops, Rows: node.ActualRows,
+		})
+	}
+	return scans
+}
+
+// Node is one node of a plan, whatever that node reads: its type, the relation, index and CTE
+// it names (each empty when the node names none), the subplan it runs under (empty: none, so
+// it runs with the plan rather than once per row of what drives it) and what
+// `EXPLAIN (ANALYZE)` measured of it, 0 in a plan explained without ANALYZE.
+type Node struct {
+	Type, Relation, Index, CTE, Subplan string
+	Loops, Rows                         float64
+}
+
+// String names the node as a failure message cites it: its type, and whichever of the relation,
+// the index and the CTE it names.
+func (n Node) String() string {
+	description := describeScan(n.Type, n.Relation, n.Index)
+	if n.CTE != "" {
+		description += " on " + n.CTE
+	}
+	return description
+}
+
+// Nodes is every node of planJSON — one "Plan" node of `EXPLAIN (FORMAT JSON)`'s top-level
+// array — at any depth, in the order the walk meets them. Scans is this walk narrowed to the
+// nodes that name a relation; a caller reads the whole of it when the node it must judge reads
+// no relation at all, as a "CTE Scan" does: a CTE scanned more than once is a side the
+// statement pays for per row of whatever drives it, and its loops are the only place the plan
+// says so (store.TestTheEmbeddingProjectKeyBatchReadsOneBoundedIndexScan).
+func Nodes(t testing.TB, planJSON json.RawMessage) []Node {
+	t.Helper()
+	var nodes []Node
+	for _, node := range planNodes(t, planJSON) {
+		nodes = append(nodes, Node{
+			Type: node.NodeType, Relation: node.RelationName, Index: node.IndexName,
+			CTE: node.CTEName, Subplan: node.subplan,
+			Loops: node.ActualLoops, Rows: node.ActualRows,
+		})
+	}
+	return nodes
 }
 
 // describeScan names one scan node as a failure message cites it. A Bitmap Index Scan reports no

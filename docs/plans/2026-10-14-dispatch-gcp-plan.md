@@ -28,7 +28,7 @@ minimum version selection keeps v3.265.0); testcontainers-go v0.41.0 with the pg
 already pins; Pulumi CLI v3.268.0 in CI.
 
 **Spec:** the deploying organization's Dispatch spec, in its deployment repository (private), whose
-rulings are copied below; `docs/plans/2026-10-14-envoy-infra-design.md` (the plugin's design);
+decisions are copied below; `docs/plans/2026-10-14-envoy-infra-design.md` (the plugin's design);
 `docs/plans/2026-10-14-dispatch-google-signin.md` on branch `dispatch-google-signin` (the Google
 sign-in mode whose settings `gcp:Dispatch` passes). Every statement about existing code below cites
 the file and line it was read at, at the slice 4 head (`envoy-infra-gcp`); anything not read is
@@ -67,13 +67,13 @@ clean, tests beside the code, CI's exact commands pass locally before every push
 
 ## Decisions carried from the design conversation
 
-Sami's rulings (2026-10-14), recorded in the spec: Dispatch runs on GKE Autopilot; its database is
+Sami's decisions (2026-10-14), recorded in the spec: Dispatch runs on GKE Autopilot; its database is
 Cloud SQL for PostgreSQL; it is reached only over the deploying organization's tailnet, which is
 closed (a member reaches their own devices and the Envoy services, nothing else); anyone with a
 verified account of the organization's Workspace domain signs in (the Google sign-in mode is the
 separate plan above); the organization shares no infrastructure with any other.
 
-The coordinator's decisions inside those rulings, which this plan implements and never reopens:
+The coordinator's decisions within Sami's, which this plan implements and never reopens:
 
 1. **Tailnet transport.** One unprivileged userspace Tailscale container in the Dispatch pod does
    both directions: Serve (`TS_SERVE_CONFIG`) answers `https://<hostname>.<tailnet>.ts.net` and
@@ -104,7 +104,7 @@ The coordinator's decisions inside those rulings, which this plan implements and
    the component makes is resource-level, straight to the Kubernetes service account's Workload
    Identity principal: Secret Manager accessor on the NATS seed secret. `roles/cloudsql.client`
    on that principal is a project-level grant and is the consumer's, made by its bootstrap
-   program, which its project owner applies (ruling, 2026-10-14: a deploy identity that may set
+   program, which its project owner applies (decision, 2026-10-14: a deploy identity that may set
    project IAM can grant itself any role; R30). The NATS seed stays out of Pulumi state: `envoy-infra
    seed generate` writes it into Secret Manager and the pod reads it as a file
    (`NATS_NKEY_SEED_FILE`) through the GKE Secret Manager add-on. The cookie signing key, the agent
@@ -128,7 +128,7 @@ the secrets broker's URL and UI token by reference (`agentSecretsUrl`, `agentSec
 both optional, once the owner chose to run Dispatch with the broker and the App; and server-side
 deletion protection on the instance and the database, driven by `deletionProtection`.
 
-## Rulings made while planning
+## Decisions made while planning
 
 - **R16. The setting is `ENVOY_NATS_SOCKS5_PROXY`, a `host:port`.** The bus's other variables are
   `ENVOY_ALLOW_REMOTE_NATS` (`internal/bus/reach.go:25`) and `NATS_NKEY_SEED[_FILE]`

@@ -870,9 +870,13 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 }
 
 // ListRunJobsForRuns lists every job of every run in runIDs on repo in one query (not one query
-// per run): the timeline handler's own lookback window can hold hundreds of runs, and
-// ResolveSessionTitles/resolveIssueFacetData already use this `= any($1)` shape for the same
-// reason. Returns a map keyed by run id for a caller to index directly, each run's jobs in
+// per run): the timeline handler's own lookback window can hold hundreds of runs, and this
+// package's other many-id reads pass their whole list as one array parameter for the same
+// reason. IssueAncestors (below) seeds its walk with `key = any($1)` as this read matches its
+// runs; ResolveSessionTitles (agents.go) hands its ids to `unnest($1::text[])` and joins each of
+// them to one ordered read of its own with a `cross join lateral`, which is the same one array
+// for the whole list, read per id because its answer is one row a session rather than a set of
+// rows to match. Returns a map keyed by run id for a caller to index directly, each run's jobs in
 // ListRunJobs' order. Each run's jobs are sorted here rather than by an order by: Postgres cannot
 // read delivery_run_jobs' primary key in (run_id, ...) order for `run_id = any($2)`, so an order by
 // sorts the whole 28-day read (about 50,000 rows), on disk past work_mem, where sorting each run's

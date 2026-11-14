@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -238,8 +237,14 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	if _, touched := api.deleted(rootSandbox); touched || api.pvcRequests != 0 {
 		t.Fatalf("the child's close deleted the root's Sandbox (%t) or sent %d PVC requests, want neither", touched, api.pvcRequests)
 	}
-	if got := storedClaim(planner.Token); got.State != supervise.StateRetired || got.Session != planner.Session || got.SessionFile != "" || got.Locator != nil {
-		t.Fatalf("done child's planner after the close = %+v, want retired with session evidence, no resume path, and no locator", got)
+	// The claim keeps both halves of the session it recorded: a done issue is reopened, and its
+	// roles are then started again on the same issue, where only the resume path brings the
+	// worker that did the work back (dispatch://INFRA-714 R8, A10). This deployment's sessions
+	// are rows in a session database (Options.SessionStore above), not files on the volume the
+	// close deletes, so the path still names a session its store holds and the close leaves it
+	// alone.
+	if got := storedClaim(planner.Token); got.State != supervise.StateRetired || got.Session != planner.Session || got.SessionFile != planner.SessionFile || got.Locator != nil {
+		t.Fatalf("done child's planner after the close = %+v, want retired with its session, its resume path and no locator", got)
 	}
 	if got := storedClaim(architect.Token); got.State != supervise.StateWorking || got.Session != "saved-architect" {
 		t.Fatalf("root architect after the child's close = %+v, want it working with its session", got)
@@ -274,7 +279,8 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	}
 
 	// (b) The done child set back to todo re-enters under its live tree and its planner starts
-	// again: a fresh spawn into a new Sandbox whose workspace-init expects no volume. The fixture
+	// again: a new Sandbox whose workspace-init expects no volume, resuming the planner's own
+	// recorded session. The fixture
 	// runs no controller, so the launch ends at its wait for a pod; what it asked of the API is
 	// what the assertion reads.
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "child-todo", intake.DispatchIssue{Key: done.Key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: done.Title, Parent: root.Key, Rank: "V"}, engine, admission); err != nil {
@@ -292,8 +298,15 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	if !slices.Contains(env, "PATH") {
 		t.Fatalf("the re-entered child's workspace-init environment %v names no PATH; the Running patch wrote no pod template", env)
 	}
-	if got := storedClaim(planner.Token); got.SessionFile != "" {
-		t.Fatalf("re-entered child's planner = %+v, want a fresh launch with no session to resume", got)
+	// The pod and its disk are new, and the session is not: the planner that worked this issue is
+	// started again on the session it recorded, where a fresh agent would have read none of its
+	// own earlier work (dispatch://INFRA-714 R8, A10). Both halves of that record survive the
+	// close here — the id, which the session database holds and the volume reaping reads as its
+	// evidence, and the resume path, which is the only handle a runtime resumes by. No session
+	// store the configuration accepts keeps a session on the deleted disk (config's
+	// readSessionStore refuses pvc), so the close never clears the path.
+	if got := storedClaim(planner.Token); got.Session != "saved-planner" || got.SessionFile != planner.SessionFile {
+		t.Fatalf("re-entered child's planner = %+v, want the session and resume path it recorded kept", got)
 	}
 }
 
@@ -340,7 +353,7 @@ type fenceIssue struct {
 // once.
 type fenceRig struct {
 	ctx       context.Context
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	st        *store.Store
 	api       *issueSandboxAPI
 	engine    *workflow.Engine
@@ -433,6 +446,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	// The root's architect works on, with its session, so the tree runs and never lingers. Each
@@ -721,28 +735,19 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			t.Fatalf("the re-entered child = %s at generation %d in tree %s, want its first phase at generation %d under the tree it was parked in",
 				back.Phase, back.Generation, back.Tree, child.Generation+1)
 		}
-		// Nothing of the old run is wanted back: every start the re-entry queued is the planner's,
-		// of the new generation and the new run's first phase, and the pair of them is the one
-		// workflow.StartOrOwe writes — the task-less relaunch and the row carrying the phase's own
-		// task and the assignment it minted, which is no resume of anything.
+		// Nothing of the old run is wanted back: the one start the re-entry queued is the
+		// planner's, of the new generation and the new run's first phase, carrying that phase's
+		// own task at the entry the transition raised on the planner's phases row, which is no
+		// resume of anything (workflow.StartOrOwe).
 		queued := startRequestsOf(t, rig.pool, child.Key)
-		if len(queued) != 2 {
-			t.Fatalf("the re-entry queued %d starts, want the two of the planner's first phase: %+v", len(queued), queued)
+		if len(queued) != 1 {
+			t.Fatalf("the re-entry queued %d starts, want the one of the planner's first phase: %+v", len(queued), queued)
 		}
-		var relaunched, tasked int
-		for _, row := range queued {
-			if row.Role != claim.RolePlanner || row.Generation != back.Generation || row.Phase != phase.Planning || row.ResumeTask {
-				t.Fatalf("the re-entry queued %+v, want a start of the planner at %s generation %d carrying no resume of the old run", row, phase.Planning, back.Generation)
-			}
-			if row.Relaunch && row.Task == "" {
-				relaunched++
-			}
-			if !row.Relaunch && row.Task != "" && row.Assignment != "" {
-				tasked++
-			}
+		if row := queued[0]; row.Role != claim.RolePlanner || row.Generation != back.Generation || row.Phase != phase.Planning || row.ResumeTask {
+			t.Fatalf("the re-entry queued %+v, want a start of the planner at %s generation %d carrying no resume of the old run", row, phase.Planning, back.Generation)
 		}
-		if relaunched != 1 || tasked != 1 {
-			t.Fatalf("the re-entry queued %d relaunch rows and %d task rows, want one of each: %+v", relaunched, tasked, queued)
+		if row := queued[0]; row.Task == "" || row.Entry == 0 {
+			t.Fatalf("the re-entry's start = %+v, want it carrying the phase's own task at the entry the transition raised", row)
 		}
 
 		// The fixture runs no controller, so the planner's launch ends at its wait for a pod and
@@ -786,8 +791,9 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 			Linger: time.Hour, Clock: func() time.Time { return clock }}, quietLogger())
 		admission := admit.New(records, engine, 2, "LEGION", quietLogger())
+		trees := outboxTreeStore(t, pool, root.Key)
 		runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", supervisor: sup,
-			trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, stateDir: t.TempDir(),
+			trees: trees, tokens: outboxTokens{}, stateDir: t.TempDir(),
 			githubAPI: newBranchGitHub(t, nil, branchExists).url, notices: &outboxPublisher{},
 			dispatch: &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "todo"}},
 			handlers: []intake.Handler{engine, admission}, log: quietLogger(), now: func() time.Time { return clock },
@@ -853,14 +859,24 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			t.Fatal(err)
 		}
 		run("the linger's close of the tree")
+		// The supervisor of this door keeps its claims in a stand-in store of its own
+		// (outboxClaimStore), so the two roles that ran leave no claim row behind. Each is
+		// written to the record here, in the state the close left it: the claim row is the
+		// durable record that a role has run, which a re-admission reads to decide which of a
+		// member's sessions to bring back (admit's startMidPhaseMembers), and it survives the
+		// close and the new generation.
 		for _, tok := range []claim.Token{worker, earlier} {
 			machine, found := sup.Machine(tok)
 			if !found {
 				t.Fatalf("no machine for %s after the linger closed the tree", tok)
 			}
 			machine.Wait()
-			if got := machine.Claim(); got.State != supervise.StateRetired || got.SessionFile == "" {
-				t.Fatalf("%s after the linger closed the tree = %s with session file %q, want it retired with its session kept", tok, got.State, got.SessionFile)
+			stopped := machine.Claim()
+			if stopped.State != supervise.StateRetired || stopped.SessionFile == "" {
+				t.Fatalf("%s after the linger closed the tree = %s with session file %q, want it retired with its session kept", tok, stopped.State, stopped.SessionFile)
+			}
+			if err := trees.PutClaim(ctx, stopped); err != nil {
+				t.Fatalf("record the retired claim of %s: %v", tok, err)
 			}
 		}
 
@@ -878,42 +894,39 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		}
 		// The rows admit.startMidPhaseMembers wrote for the member, which is the only pass that
 		// wrote a start of it here: the phase's own role, the implementer, through
-		// workflow.StartOrOwe, which splits its start in two — the task-less relaunch row,
-		// claimable at once, and the row carrying the phase's resume task (workflow.ResumeTask),
-		// marked ResumeTask and held unclaimable until the member holds a slot — and every other
-		// role one start of its own with no task at all, since a role with nothing to do comes back
-		// and is told nothing.
+		// workflow.StartOrOwe, which writes one row carrying the phase's resume task
+		// (workflow.ResumeTask), marked ResumeTask and held unclaimable until the member holds a
+		// slot — and, beside it, one start with no task at all for each other role of the member
+		// that has run, since a role with nothing to do comes back and is told nothing. The
+		// planner is the one such role here: the claim row it kept through the close is the
+		// durable record that it ran, and the tester, the reviewer, the merger and the member's
+		// own sub-architect hold none, so the re-admission starts no session for them at all.
 		resume := workflow.ResumePhaseTask(*carried)
 		taskless := map[claim.Role]bool{}
-		var relaunch, owed *record.SuperviseRequest
+		var owed *record.SuperviseRequest
 		for _, row := range startRequestsOf(t, pool, member.Key) {
 			if row.Generation != carried.Generation || row.Phase != carried.Phase || row.Tree != root.Tree {
 				t.Fatalf("the re-admission queued %+v for the member, want every start to serve its own run and the phase it stands in", row)
 			}
-			switch {
-			case row.Role != claim.RoleImplementer:
+			if row.Role != claim.RoleImplementer {
 				taskless[row.Role] = row.Task == "" && !row.NeedsSlot && !row.ResumeTask
-			case row.Relaunch:
-				relaunch = &row
-			default:
-				owed = &row
+				continue
 			}
-		}
-		for _, role := range []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
-			if !taskless[role] {
-				t.Fatalf("the re-admission wrote no task-less start of the member's %s, want every role of the member brought back", role)
+			if owed != nil {
+				t.Fatalf("the re-admission queued a second start of the member's implementer, %+v: its start is one row that carries the task", row)
 			}
+			owed = &row
 		}
-		if relaunch == nil || relaunch.Task != "" || relaunch.NeedsSlot {
-			t.Fatalf("the member's relaunch row = %+v, want StartOrOwe's first half: the implementer's start with no task, claimable at once", relaunch)
+		if len(taskless) != 1 || !taskless[claim.RolePlanner] {
+			t.Fatalf("the re-admission wrote the task-less starts %v of the member, want the planner's alone: it is the only role beside the phase's own that has run", taskless)
 		}
 		if owed == nil || owed.Task != resume || !owed.ResumeTask || !owed.NeedsSlot {
-			t.Fatalf("the member's task row = %+v, want StartOrOwe's second half: the phase's resume task %q, held for the member's slot", owed, resume)
+			t.Fatalf("the member's start row = %+v, want the one StartOrOwe writes: the phase's resume task %q, held for the member's slot", owed, resume)
 		}
 
 		run("the re-admitted tree's branches and relaunches")
 		run("the relaunches left over the branches")
-		// The member's task row waits for a slot of its own, which the next admission pass grants;
+		// The member's start row waits for a slot of its own, which the next admission pass grants;
 		// the controller's tick is that pass here.
 		if _, err := intake.ApplyFact(ctx, pool, "controller", "tick-after-the-readmission", intake.ControllerTick{}, engine, admission); err != nil {
 			t.Fatal(err)
@@ -952,7 +965,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 // that queued it wrote it. The rows a drain has run are gone, so a reader must take them before
 // it drains. The name is this file's own: internal/daemon's stopped_worker_test.go has a
 // startRowsOf of its own, which answers the same rows as rendered strings.
-func startRequestsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.SuperviseRequest {
+func startRequestsOf(t *testing.T, pool *store.Pool, issue string) []record.SuperviseRequest {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise'
 		and payload->>'op' = 'start' order by id`, issue)

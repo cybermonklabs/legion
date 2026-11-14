@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -27,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -78,11 +78,7 @@ func mappingRigWith(t *testing.T, installs *installations, opts ...func(*workflo
 func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream, jetstream.JetStream) {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := nats.Connect(workflowNATS(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatal(err)
@@ -278,6 +274,139 @@ func TestARefreshThatUnmapsARepositoryKeepsHearingAnIssueAdmittedOnIt(t *testing
 	}
 	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.zeta.tools.>") {
 		t.Fatalf("GitHub filters = %v, want zeta/tools heard: a live child is recorded on it", filters)
+	}
+}
+
+// heldSubscription stands in for the runtime's subscription update (workflowRuntime's
+// setRepositories), which a test cannot otherwise hold: intake's SetRepositories is a method of a
+// concrete type the runtime owns. Its first call says it is in flight at reached and waits there
+// until release closes, and every call after it — the refresh's second one, and any the
+// refresher makes of its own — goes to intake untouched, so the test still reads what intake
+// really hears.
+type heldSubscription struct {
+	w       *workflowRuntime
+	held    atomic.Bool
+	reached chan struct{}
+	release chan struct{}
+}
+
+// newHeldSubscription is a stand-in ready to be installed, as mappingRigWith's option.
+func newHeldSubscription() *heldSubscription {
+	return &heldSubscription{reached: make(chan struct{}), release: make(chan struct{})}
+}
+
+// install puts the stand-in in the runtime's seam, before the rig's boot: the boot opens its
+// consumers itself, so nothing is held until a mapping read asks for a subscription update.
+func (h *heldSubscription) install(w *workflowRuntime) {
+	h.w = w
+	w.setRepositories = h.set
+}
+
+func (h *heldSubscription) set(ctx context.Context, repositories []ghrepo.Repository) error {
+	if !h.held.Swap(true) {
+		close(h.reached)
+		<-h.release
+	}
+	return h.w.consumers.SetRepositories(ctx, repositories)
+}
+
+// await waits for the stand-in's call to be in flight, releasing it before it fails so the
+// refresh it holds unwinds rather than leaving the test's goroutines where they are.
+func (h *heldSubscription) await(t *testing.T) {
+	t.Helper()
+	select {
+	case <-h.reached:
+	case <-time.After(10 * time.Second):
+		close(h.release)
+		t.Fatal("the mapping read never reached its subscription update")
+	}
+}
+
+// A mapping read holds no transaction across its stream calls. The subscription update reaches
+// JetStream, and a durable consumer that is missing has it read the pool the transaction would be
+// on, so a read that waited on it inside a transaction asked that pool for a second connection
+// while holding one; worse, the transaction holds the fact serializer, so a NATS that answered
+// slowly stopped every fact of the project for as long as the call took, and the production pool
+// sat idle in transaction to its last connection (INFRA-3169). A stand-in holds the call, and
+// while it is held a fact's transaction, which takes the same serializer, still commits — within
+// a deadline of its own, so a refresh that holds a transaction again fails this instead of
+// hanging.
+func TestTheMappingRefreshHoldsNoTransactionAcrossItsStreamCalls(t *testing.T) {
+	ctx := context.Background()
+	held := newHeldSubscription()
+	w, client, _, _ := mappingRigWith(t, &installations{}, held.install)
+	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
+	refreshed := make(chan error, 1)
+	go func() { refreshed <- w.refreshMapping(ctx) }()
+	held.await(t)
+	serialized := make(chan error, 1)
+	go func() {
+		serialized <- pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error { return intake.SerializeFacts(ctx, tx) })
+	}()
+	select {
+	case err := <-serialized:
+		if err != nil {
+			close(held.release)
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		close(held.release)
+		t.Fatal("a fact's transaction could not take the serializer while the mapping read waited on its stream call: the read holds a transaction across it")
+	}
+	close(held.release)
+	if err := <-refreshed; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An admission that resolved a repository of the old mapping and committed before the read's
+// record snapshot leaves that repository heard: the snapshot reads the record it wrote, and the
+// set the read narrows the subscription to carries it. The admission commits here while the
+// read's first stream call is held, which is the window the read's superset covers — the old
+// mapping still serves zeta/tools, so an admission in it can record an issue there — and before
+// the snapshot, which is the serializer's own ordering.
+func TestAnAdmissionAgainstTheOldMappingStaysHeard(t *testing.T) {
+	ctx := context.Background()
+	held := newHeldSubscription()
+	w, client, _, stream := mappingRigWith(t, &installations{}, held.install)
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		if err := w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-300", Tree: "LEGION-300", Project: "LEGION", Title: "root", Phase: phase.Planning,
+			Generation: 1, Status: "in_progress", Rank: "A", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
+			return err
+		}
+		if err := w.records.PutSlot(ctx, tx, record.Slot{Issue: "LEGION-300", Index: 0, AdmittedAt: time.Now()}); err != nil {
+			return err
+		}
+		return openTreeTx(ctx, tx, "LEGION", "LEGION-300")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The child resolves its repository against the mapping as it stands, which serves zeta/tools.
+	child := intake.DispatchIssue{Key: "LEGION-301", Parent: "LEGION-300", Seq: 1, Status: "todo", Title: "child", Rank: "A", ResolvedRepo: "zeta/tools"}
+	if _, err := w.prepareRepository(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
+	refreshed := make(chan error, 1)
+	go func() { refreshed <- w.refreshMapping(ctx) }()
+	held.await(t)
+	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
+	admitting, cancel := context.WithTimeout(ctx, 5*time.Second)
+	_, err := intake.ApplyFact(admitting, w.pool, "test", "child", child, engine)
+	cancel()
+	if err != nil {
+		close(held.release)
+		t.Fatalf("the admission against the old mapping: %v", err)
+	}
+	close(held.release)
+	if err := <-refreshed; err != nil {
+		t.Fatal(err)
+	}
+	if got := recordedIssue(t, w, child.Key); got == nil || got.Repo != "zeta/tools" {
+		t.Fatalf("LEGION-301 = %+v, want it recorded on zeta/tools", got)
+	}
+	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.zeta.tools.>") {
+		t.Fatalf("GitHub filters = %v, want zeta/tools heard: an admission against the old mapping recorded an issue on it", filters)
 	}
 }
 

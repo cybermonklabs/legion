@@ -79,9 +79,9 @@ export async function barAction(page: Page, label: "Comment" | "Suggest" | "Ask"
  *  The link, not the `g i` and `g a` chords: the keymap drops a half-typed chord one second
  *  after its first key (`CHORD_TIMEOUT_MS`, `web/src/features/shell/keymap.ts`), and the two
  *  keys of a chord are two round trips to the engine — on the Agents page, measured in WebKit on
- *  an idle machine, 281-382 ms of that second passes between the `g` and the `i`. A loaded lane
- *  lands the second key after the chord is gone, where `i` on its own opens the inbox peek and
- *  the reader never leaves the page. A link carries no such deadline. */
+ *  an idle machine, 281-382 ms of that second passes between the `g` and the `i`. A loaded
+ *  machine lands the second key after the chord is gone, where `i` on its own opens the inbox
+ *  peek and the reader never leaves the page. A link carries no such deadline. */
 export async function openFromSidebar(page: Page, name: "Agents" | "Inbox"): Promise<void> {
   await page
     .getByRole("navigation", { name: "Navigation" })

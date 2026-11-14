@@ -92,7 +92,7 @@ const REAL_STEP_MS = 100;
  *  `KEYED_SEND_ATTEMPT_MS` of the page's own time is given up and made again under its key
  *  (`writeUnderKey`), and at the ordinary pace this loop spends `stepMs` of page time for each
  *  `REAL_STEP_MS` of real time — 1.1 s for every 0.1 s. Driven at that pace over an attempt in
- *  flight it reaches that 15 s in under a second and a half of a loaded lane's real time,
+ *  flight it reaches that 15 s in under a second and a half of a loaded machine's real time,
  *  abandoning the very attempt the row waits for and raising one more POST than the row counts.
  *  At the crawling pace the same 15 s costs 15 s of real time, which no answer of this harness
  *  takes. The clock crawls rather than stopping because a write that never ends must not hold

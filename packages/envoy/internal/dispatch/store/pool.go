@@ -90,6 +90,14 @@ func holdsConnection(ctx context.Context) bool {
 	return ok && state.connection.Load()
 }
 
+// HoldsPooledConnection reports whether ctx's caller already holds one of this pool's connections:
+// its transaction, an open cursor, or a connection it acquired. Work that may be skipped asks
+// before it takes one of its own - storing a display tree beside a write (texttrees) is the one
+// such caller - because a second connection taken while one is held is the deadlock
+// ErrNestedAcquire refuses, and for optional work a quiet skip is better than that refusal, whose
+// stack names a call site that is working as intended.
+func HoldsPooledConnection(ctx context.Context) bool { return holdsConnection(ctx) }
+
 // ForConcurrentRead returns a context for one of a caller's reads that run side by side: ctx's
 // deadline, cancellation and values, with a hold mark of its own, so that read takes one
 // connection and the pool still refuses it a second. Reads sharing one mark would refuse each
@@ -157,6 +165,7 @@ type Pool struct {
 	leases      *pgxpool.Pool
 	outbox      *pgxpool.Pool
 	compaction  *pgxpool.Pool
+	textTrees   *pgxpool.Pool
 	horizon     *pgxpool.Pool
 	// closed refuses every separate pool but the health probe's from the moment Close begins
 	// (separate); healthClosed refuses that one too, once Close has closed every other pool
@@ -377,7 +386,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // (duty.Exclusive). One connection per caller that can be inside Exclusive at the same moment is
 // the whole requirement, and it is a caller and not a lease that needs one: Exclusive takes its
 // connection before it learns whether the lease is held, so a pass that skips because the other
-// process holds the lease holds a connection for that round trip too. Fifteen names are leased -
+// process holds the lease holds a connection for that round trip too. Seventeen names are leased -
 // the document compaction, the keyed writes' maintenance sweep (api.RunMaintenanceSweep, which
 // keeps the lease name suggestion-outcomes the suggestion sweep carried that work under), the
 // reference-excerpt reconciliation, the block-index reconciliation, the term-statistics refresh,
@@ -385,21 +394,29 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // reconcile (cireconcile.Lease), the edit-notice sweep, the document settlement resumption
 // (docs.RunSettlementResumption), the repair of closed and reopened issues' asks
 // (api.RunIssueAskRepair), one per delivery durable for the consumers' reconciliation
-// (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the server
-// process registry's prune (processes.RunPrune) - taken by fifteen callers, since each delivery
-// intake takes its own durable's name from a bind poll of its own, so fifteen callers can be
-// inside Exclusive at once. The suggestion outcome sweep is not among them: it takes no lease,
-// since the cursor row each of its pages holds for update serialises two processes by itself
-// (api/suggestion_outcomes.go). Fifteen connections are exactly those fifteen: the headroom is
-// zero, not one, and the next leased loop added here makes a sixteenth caller that waits for a
-// connection rather than failing, for as long as the longest pass then holding one - which is
-// why cmd/dispatch counts its leased callers against this number
+// (delivery.consumerLease, a name each for delivery-events and delivery-jobs), the server
+// process registry's prune (processes.RunPrune), the embeddings project_key fill
+// (api.RunEmbeddingProjectKeyFill) and the display tree fill (texttreefill.Run) - taken by
+// seventeen callers, since each delivery intake takes its own durable's name from a bind poll
+// of its own, so seventeen callers can be inside Exclusive at once. The embeddings fill is the
+// one that is no loop of a cadence: it labels in a single pass of one to two hours and holds a
+// connection for the whole of it, tries for its lease again every five minutes while another
+// process is making that pass, and gives its connection back for good once the rows stored
+// before migration 20261109120000 are labelled - which is why it is counted here like any other
+// caller, since the hours it holds one are exactly the window in which every other caller must
+// still find a connection of its own. The suggestion outcome sweep is not among them: it takes
+// no lease, since the cursor row each of its pages holds for update serialises two processes by
+// itself (api/suggestion_outcomes.go). Seventeen connections are exactly those seventeen: the
+// headroom is zero, not one, and the next leased loop added here makes an eighteenth caller
+// that waits for a connection rather than failing, for as long as the longest pass then holding
+// one - which is why cmd/dispatch counts its leased callers against this number
 // (TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller), so that caller fails a test instead.
 // They cannot come from the shared pool: a lease is held for the whole pass, which is minutes
-// for the compaction, and the shared pool's sharedPoolSize connections are what every request
-// reads through. The document compaction holds only its lease here: each document it compacts
-// reads and writes on the compaction pool (Pool.Compaction).
-const LeasePoolSize = 15
+// for the compaction and hours for the first display tree fill of a version, and the shared
+// pool's sharedPoolSize connections are what every request reads through. The document
+// compaction and the display tree fill hold only their lease here: each reads and writes on a
+// pool of its own (Pool.Compaction, Pool.TextTrees).
+const LeasePoolSize = 17
 
 // Leases is where a periodic maintenance loop takes the connection it holds its lease on, so that
 // only one process runs each pass (duty.Exclusive). The lease is a session-level advisory lock, so
@@ -440,11 +457,11 @@ const registryPoolSize = 1
 const listenerConnections = 5
 
 // ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres:
-// every pool's size - the shared, rooms, room-appends, health, lease, outbox and compaction pools,
-// the registry's own pool (processes.Register) and the event horizon's (Horizon) - and one
-// connection per listener it may hold at once, which the listener pool dials and hands off rather
-// than holds.
-const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + registryPoolSize + horizonPoolSize + listenerConnections
+// every pool's size - the shared, rooms, room-appends, health, lease, outbox, compaction and
+// display tree fill pools, the registry's own pool (processes.Register) and the event horizon's
+// (Horizon) - and one connection per listener it may hold at once, which the listener pool dials
+// and hands off rather than holds.
+const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + textTreePoolSize + registryPoolSize + horizonPoolSize + listenerConnections
 
 // Outbox is the pool the events outbox reads and records events through, reads the
 // followers and authors a publish routes to, and holds its publisher hold on. Under load the API's
@@ -480,6 +497,30 @@ func (p *Pool) Compaction() (*pgxpool.Pool, error) {
 // itself in pg_stat_activity, as the room pools' do, so a reader of the database's sessions - the
 // load harness's count of the shared pool's share among them - tells a compaction from a request.
 const compactionApplicationName = "dispatch-compaction"
+
+// textTreePoolSize bounds the pool the background display tree fill reads and writes through
+// (texttreefill). A pass reads its next batch of texts only once the batch before it has been
+// stored, and stores a batch with at most two readings in flight (texttreefill.fillWorkers,
+// which is fewer on a pod with fewer than three cores), so two connections are every connection
+// it can use.
+const textTreePoolSize = 2
+
+// TextTrees is where the background display tree fill takes its connections: the two scans that
+// choose a batch, the reads that take its texts back by key, and the inserts of the trees. The
+// fill is housekeeping that runs for hours - its first pass of a version ends only once every
+// stored text has a tree - so on the shared pool it would hold a connection every request reads
+// through for that whole time, and on the compaction pool it would queue a document's fold
+// behind a batch of markdown readings. Unlike the rooms and compaction pools it is inside the
+// nested-acquire guard, because the fill reaches it through this type and stores its trees
+// through texttrees.Table, which takes a *Pool: the fill drains each batch's cursor before it
+// stores anything, so it never asks for a second connection while it holds one.
+func (p *Pool) TextTrees() (*Pool, error) {
+	opened, err := p.separate(&p.textTrees, textTreePoolSize, "display tree fill", "")
+	if err != nil {
+		return nil, err
+	}
+	return NewPool(opened), nil
+}
 
 // horizonPoolSize bounds the pool the event log's safe horizon (events.Horizon) works through. The
 // server keeps one Horizon, whose concurrent callers share the one observation in flight, so one
@@ -558,11 +599,11 @@ func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applic
 }
 
 // Close releases every connection the pool holds, the separate pools' - the document rooms, their
-// appends, the compaction, the health probe, the listener, the leases, the outbox and the event
-// horizon - included, and returns once every connection in use has come back. It closes the health
-// probe's pool last, after every other pool has closed: Healthy answers for as long as Close
-// waits, and Use keeps counting the closing pools' connections. No other separate pool opens or is
-// handed out once Close has begun.
+// appends, the compaction, the display tree fill, the health probe, the listener, the leases, the
+// outbox and the event horizon - included, and returns once every connection in use has come
+// back. It closes the health probe's pool last, after every other pool has closed: Healthy
+// answers for as long as Close waits, and Use keeps counting the closing pools' connections. No
+// other separate pool opens or is handed out once Close has begun.
 func (p *Pool) Close() {
 	p.mu.Lock()
 	if p.closed {
@@ -570,7 +611,7 @@ func (p *Pool) Close() {
 		return
 	}
 	p.closed = true
-	separates := []*pgxpool.Pool{p.rooms, p.roomAppends, p.listen, p.leases, p.outbox, p.compaction, p.horizon}
+	separates := []*pgxpool.Pool{p.rooms, p.roomAppends, p.listen, p.leases, p.outbox, p.compaction, p.textTrees, p.horizon}
 	p.mu.Unlock()
 	for _, separate := range separates {
 		if separate != nil {

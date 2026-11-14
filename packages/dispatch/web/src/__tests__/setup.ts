@@ -41,30 +41,60 @@ expect.extend(reportableJestDomMatchers());
 (globalThis as unknown as { jest: typeof jest }).jest = jest;
 
 // Two budgets, because a 2-core pod with its cores busy is slower than either default and a suite
-// that waits on the machine reports as a defect of the change under test. Testing Library's own
-// `asyncUtilTimeout` is 1000 ms, which a loaded run of this suite passes while a page is still
-// rendering: it failed `settings.test.tsx`'s own heading wait and `mermaid-diagrams.test.tsx`'s
-// draw in 13 of 30 loaded runs here, each time a different row, which is why the budget is the
-// suite's and not a deadline per row. 10 s is a ceiling that names something wrong rather than
-// slow, and a third of the per-test deadline, so a wait that runs out reports as the wait that
-// failed and names what it waited for rather than as a bare test timeout. Bun's own per-test
-// default is 5 s, which the same runs pass, so the deadline is raised with it.
+// that waits on the machine reports as a defect of the change under test. One of the two is a
+// flag of `package.json`'s test scripts rather than a line of this file, and both are explained
+// here, since this file is what every `web/src` test loads.
+//
+// The per-test deadline is `--timeout 60000`, carried by both command lines that run tests: the
+// `test:web` script for `web/src`, and the `bun test --parallel e2e/__tests__` run beside it.
+// Bun's own default is 5000 ms, which the lane test of `e2e/__tests__/harness-lanes.test.ts`
+// ("the Playwright config refuses a --workers that is not the lane count") fails on a 2-core
+// pod, where it reads 4.45 s idle and 6.55 s loaded; the suite's slowest test,
+// `row-configurations.test.ts`'s "no row runs twice in one configuration", reads 13.83 s loaded.
+// The number is twice the slowest loaded test, and it is sized on the slower of the two pod
+// shapes this suite runs in rather than on the one that measured 13.83 s: at code that does not
+// differ, dispatch://INFRA-983's pod reads 335 s for the whole suite where this one reads 156 s,
+// a factor of 2.15, which puts that same test at about 29.7 s there - inside a 30 s deadline by
+// 0.3 s, which is the failure this issue exists to remove rather than a margin. Twice 29.7 s is
+// 59.4 s, so 60 s, and it is kept as small as that rule allows, because every hung test costs
+// the whole budget on CI as well as in a pod. The flag carries it rather than a
+// `jest.setTimeout` here, for two measured reasons: a preload's deadline is not dependable,
+// since a 6 s probe in a directory run started by hand ended "this test timed out after 5000ms"
+// three times of three with two scratch files beside it and passed with one, and what file of a
+// run kept it and what file lost it did not reproduce the same way twice; and the
+// `e2e/__tests__` lane loads no preload at all, so there the flag is the only deadline those
+// files get. It cuts no deadline a row sets for itself, measured rather than assumed: a row
+// carrying `}, 5_000)` slept 1.2 s and passed under `bun test --timeout 200`, so a row's own
+// number wins over the flag whichever is larger. Rows that set one today are
+// `e2e/__tests__/compare-recordings-refusal.test.ts:28`, `stub-web-server.test.ts:43` and
+// `psql-session.test.ts:61,70` at 60 s, equal to the flag, and `MarkdownBody.test.tsx`'s 40 s,
+// above the 25 s wait that row must let run out. The list is not a superlative and is not
+// checked by anything: a row added tomorrow may set more, as dispatch://INFRA-1571 does with
+// a 90 s limit of its own. What lowering the flag would cut is every row that sets none.
+//
+// The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
+// which a loaded run of this suite passes while a page is still rendering: it failed
+// `settings.test.tsx`'s own heading wait and `mermaid-diagrams.test.tsx`'s draw in 13 of 30
+// loaded runs, each time a different row, which is why the budget is the suite's and not a
+// deadline per row. 10 s is above every per-call budget this tree keeps but one, and a sixth of
+// the per-test deadline, so a wait that runs out reports as the wait that failed and names what
+// it waited for, rather than as a bare test timeout. The slowest test of a loaded run that
+// drives no subprocess reads 5.80 s whole. This number is not re-sized for the slower pod shape
+// as the deadline above is, because a wait is not a test: the longest single wait measured
+// loaded here is `mermaid-diagrams.test.tsx`'s shadow-root draw at 1.2 to 1.4 s, which the 2.15
+// factor puts at about 3 s there, against 10 s. dispatch://INFRA-1405 sets this same number in
+// this same file, so changing it is that tree's to agree to as well.
 //
 // Under `jest.useFakeTimers()` the same budget is 10 s of *fake* time, not of the machine's:
 // Testing Library advances the held clock by its polling interval until the wait succeeds or the
 // deadline passes, so a wait that does not succeed now moves that clock ten times as far as it
-// did. No row of this suite changes verdict for it: the 21 files that install a clock and wait
-// were green before this budget and are green after it, and a wait that used to succeed cannot
-// start failing because it is given longer. What the longer advance can do is let a wait succeed
-// that used to give up - a product timer it now reaches - so what the suite gives up with it is
-// the old second as a bound: a held-clock `waitFor` no longer catches a slowdown that stays
-// under 10 s of fake time, and a failing one reports ten times slower.
-//
-// cybermonklabs/legion#2894 (dispatch://INFRA-1505) sets these same two budgets at these same two
-// numbers in this same file: whichever of the two merges second keeps one copy of them, and that
-// copy is #2894's, which carries the per-call measurements that sized them, plus the two sentences
-// here that it does not say - this paragraph, and the 13-of-30 measurement above.
-jest.setTimeout(30_000);
+// did. No row of this suite changes verdict for it: the files that install a clock and wait -
+// 21 of them when dispatch://INFRA-1405 measured this on its own tree, about twice that in the
+// merged one - were green before this budget and are green after it, and a wait that used to
+// succeed cannot start failing because it is given longer. What the longer advance can do is let
+// a wait succeed that used to give up - a product timer it now reaches - so what the suite gives
+// up with it is the old second as a bound: a held-clock `waitFor` no longer catches a slowdown
+// that stays under 10 s of fake time, and a failing one reports ten times slower.
 configure({ asyncUtilTimeout: 10_000 });
 
 // Unit tests have no Dispatch server to answer GET /api/v1/schema/blocks, so the session cache
@@ -159,12 +189,12 @@ afterEach(resetPinState);
 // otherwise make the next test's first answer start every waiting write's backoff over.
 afterEach(resetReachability);
 
-// A fake clock a test installed is put back here as well as in that test's own `finally`, because
-// Bun keeps it across files: a test that installs it and then fails before its `try` - an awaited
-// helper of its own, say - would otherwise leave every later test in the process, and every later
-// file, with timers that never fire, so one regression reads as timeouts everywhere and the real
-// failure is buried. This runs after the hooks above, and `useRealTimers` on a test that
-// installed nothing does nothing.
+// A fake clock a test installed is put back here as well as in that test's own `finally` or its
+// file's `afterEach`, because Bun keeps it across files: a test that installs it and then fails
+// before its `try` - an awaited helper of its own, say - would otherwise leave every later test
+// in the process, and every later file, with timers that never fire, so one regression reads as
+// timeouts everywhere and the real failure is buried. This runs after the hooks above, and
+// `useRealTimers` on a test that installed nothing does nothing.
 afterEach(() => {
   jest.useRealTimers();
 });

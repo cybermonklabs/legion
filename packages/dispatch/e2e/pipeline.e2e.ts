@@ -1,13 +1,8 @@
-import { expect, test } from "@playwright/test";
 import { mintAgentToken } from "./api";
 import { PIPELINE_AT, seedPipelineFixture } from "./delivery-seed";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the Pipeline rail entry opens the page", async ({ browser }) => {
   await seedPipelineFixture();
@@ -27,7 +22,8 @@ test("the Pipeline rail entry opens the page", async ({ browser }) => {
   await context.close();
 });
 
-test("the Pipeline page shows each stage's timing and the failing jobs", async ({
+// @pr: Live delivery: the Pipeline page's stage timings and failing jobs, which no other row on the lane reads.
+test("the Pipeline page shows each stage's timing and the failing jobs @pr", async ({
   browser,
 }, testInfo) => {
   await seedPipelineFixture();
@@ -75,10 +71,9 @@ test("the Pipeline page shows each stage's timing and the failing jobs", async (
 
 // The narrow-screen half of the row above: the six cards stack in one column on a phone, where
 // the page is narrower than the 46rem the second column needs.
-test("the Pipeline page stacks its cards in one column on a phone @phone", async ({
+test("the Pipeline page stacks its cards in one column on a phone @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the cards only stack below 768 px");
   await seedPipelineFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();

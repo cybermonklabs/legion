@@ -22,7 +22,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 func createReferenceProject(t *testing.T, tx pgx.Tx, key string) {
 	t.Helper()
-	if _, err := tx.Exec(context.Background(), `insert into projects (key, name) values ($1, $2)`, key, key+" project"); err != nil {
+	if _, err := tx.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ($1, $2, 'alice')`, key, key+" project"); err != nil {
 		t.Fatalf("create project %q: %v", key, err)
 	}
 }

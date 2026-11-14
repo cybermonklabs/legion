@@ -77,7 +77,7 @@ type pullRequestPayload struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 		// Repo is the repository the head branch lives in, which the attribution holds a pull
-		// request's currency to (headInOwnRepository): a fork's head is another repository, and
+		// request's head to (headInOwnRepository): a fork's head is another repository, and
 		// GitHub sends null for it once a fork is deleted.
 		Repo *struct {
 			FullName string `json:"full_name"`
@@ -190,10 +190,10 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 // result names a commit that is the head of no pull request it has an event for, so a pull
 // request opened while Dispatch was not listening is known at once.
 //
-// A commit the repository does not have answers an empty list, as GitHub's own 422 for it does;
-// every other answer is githubapp.CheckRepositoryResponse's, so a 403 or 404 is
-// githubapp.ErrRepositoryUnreadable, which the currency read takes as "unknown", never as
-// "older".
+// A commit the repository does not have answers an empty list, as GitHub's own 422 for it
+// does. Every other answer is githubapp.CheckRepositoryResponse's, so a 403 or 404 is
+// githubapp.ErrRepositoryUnreadable, which the results read takes as unknown, never as a
+// commit it placed elsewhere.
 func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, token, owner, repo, sha string) ([]pullRequestPayload, error) {
 	pullsPath := fmt.Sprintf("/repos/%s/%s/commits/%s/pulls", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha))
 	body, status, header, err := readGitHubPage(ctx, client, token, pullsPath)

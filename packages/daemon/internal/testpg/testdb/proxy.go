@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"io"
 	"net"
-	"net/url"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Delayed is dsn reached through a TCP proxy on 127.0.0.1 that holds each chunk the client sends
@@ -19,27 +21,35 @@ import (
 // writes without waiting is delayed once, not once per chunk. The proxy and every connection
 // through it close when the test ends, before the database is dropped (Database's cleanup is
 // registered first, so it runs after this one).
+//
+// The server the proxy dials is the one pgconn.ParseConfig reads from dsn, and the URL it answers
+// is rewriteDSN's, which reads that URL back with the same parser: this helper moves the host of
+// a DSN, so it takes the check DatabaseURL's comment describes. A refusal names the fields that
+// moved, or the string a parser refused, and prints no value of either, so it prints no
+// password.
 func Delayed(t testing.TB, dsn string, delay time.Duration) string {
 	t.Helper()
-	target, err := url.Parse(dsn)
+	const named = "the database URL to proxy"
+	target, err := pgconn.ParseConfig(dsn)
 	if err != nil {
-		t.Fatalf("parse the database URL to proxy: %v", err)
+		t.Fatalf("pgx refuses %s", named)
 	}
-	upstream := target.Host
-	if target.Port() == "" {
-		upstream = net.JoinHostPort(target.Hostname(), "5432")
-	}
+	upstream := net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port)))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for the delayed Postgres proxy: %v", err)
+	}
+	address := listener.Addr().(*net.TCPAddr)
+	through, err := rewriteDSN(named, dsn, rewrite{host: address.IP.String(), port: uint16(address.Port)})
+	if err != nil {
+		_ = listener.Close()
+		t.Fatal(err)
 	}
 	proxy := &delayedProxy{listener: listener, upstream: upstream, delay: delay, conns: map[net.Conn]struct{}{}}
 	proxy.wg.Add(1)
 	go proxy.serve()
 	t.Cleanup(proxy.close)
-	through := *target
-	through.Host = listener.Addr().String()
-	return through.String()
+	return through
 }
 
 // delayedProxy is Delayed's proxy: conns are the client and server connections open through it,

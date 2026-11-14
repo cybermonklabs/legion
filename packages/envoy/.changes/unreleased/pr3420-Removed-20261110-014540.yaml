@@ -1,0 +1,9 @@
+kind: Removed
+body: |-
+  The `default_branch_commits` table is dropped. `branch_commits` has held the answer to "is this
+  commit on this branch" since the release before, keyed by the branch as well as the repository
+  and the commit, and no running build reads or writes the old table.
+
+  A rollback past that release still serves, but its results read finds no cache: every
+  `after_merge` and `default_branch` check then reads GitHub on each results read, and logs two
+  WARN lines with it.

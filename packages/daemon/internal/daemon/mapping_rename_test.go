@@ -364,8 +364,8 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 		slices.Sort(asked)
 		return asked
 	}
-	const gapReason = "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
-	const movedGapReason = "Dispatch's GitHub App is not installed on " + moved + ": GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
+	const gapReason = "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
+	const movedGapReason = "Dispatch's GitHub App is not installed on " + moved + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
 	for _, tc := range []struct {
 		name string
 		// mappings is Dispatch's repository mapping, and missing each installation read GitHub
@@ -684,7 +684,7 @@ func TestAKeptEntrysWebhookAppGapNamesTheRepositoryItIsServedUnder(t *testing.T)
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	// Dispatch is asked the check under the name its own mapping holds, so the reason names the
 	// mapped name while the gap is recorded against the served one.
-	want := []webhookAppGap{{Repo: moved, Reason: "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"}}
+	want := []webhookAppGap{{Repo: moved, Reason: "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}}
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: old, Project: "LEGION", Default: true}}, webhookMissing: map[string]bool{old: true}}
 	github := newNamedGitHub(t, map[string]string{old: "301 " + moved, moved: moved + "@main"})
 	installs := &installations{missing: map[string]bool{"implement " + old: true, "review " + old: true}}

@@ -9,6 +9,7 @@ import {
   call,
   type LegionPane,
   messageStream,
+  ompNatsGuard,
   type Refusal,
   type Request,
   refusalStream,
@@ -22,11 +23,12 @@ import {
 // leaves where they are, when the `context` hook puts the session back inside a turn already
 // running, and that the transcript keeps the arming a relaunched worker restores.
 // LEGION_TEST_OMP names the binary: the fork pin in the repository's .omp-pin, which
-// CI's pi-legion job installs; on the devbox, `mise where <pin>`/bin/omp. A run without one skips,
+// CI's pi-legion job installs; on the devbox, `mise where <pin>`/bin/omp. LEGION_TEST_NATS_URL
+// names the NATS server the pane's Envoy extension connects to: a session is given no consumer
+// without one, and its claim boot then ends the session (INFRA-771). A run without both skips,
 // except on GitHub Actions, where a skip would hide the only run of the check on the host that
-// ships it (GITHUB_ACTIONS, not CI: agent harnesses on the devbox export CI=true).
-const omp = process.env.LEGION_TEST_OMP;
-const onActions = process.env.GITHUB_ACTIONS === "true";
+// ships it (`ompNatsGuard`).
+const { skip, setup } = ompNatsGuard();
 
 /** The pane's own models: the one every model role names, the one its chain steps to, and the
  * one in between, for the case whose chain has two steps. */
@@ -75,8 +77,11 @@ const TWO_STEPS: readonly string[] = [
  */
 const COOLDOWN_MS = 4_000;
 
-/** The wait a worker killed mid-cooldown is resumed inside: long enough to cover omp's own
- * startup twice over, short enough for the return to come while the case watches. */
+/** The cooldown the killed-and-resumed case arms, which is what its return is measured against:
+ * long enough that a restored arming is still running when the replacement pane is relaunched,
+ * short enough for the return to come while the case watches. The relaunch's own boot is not
+ * covered by it and is not meant to be - the case measures the return from the resumed life's
+ * first served turn, and reads the restored arming from where that turn went (below). */
 const RESUME_COOLDOWN_MS = 12_000;
 
 const cleanup: Cleanup = [];
@@ -144,19 +149,17 @@ interface FallbackPane extends LegionPane {
  * architect holds a Legion claim, which is all the model fallback gates on, and is the one role
  * the phase reminder leaves alone, so nothing but the case's own assignments starts a turn.
  */
-async function fallbackPane(
-  binary: string,
-  options: {
-    readonly prompt: readonly string[];
-    /** Answers the turn the gateway was sent: `model` is the request's own model id, and `nth`
-     * counts the turns of the whole pane, its second life included, from 1. */
-    readonly answer: (model: string, nth: number, request: Request) => Response;
-    /** `LEGION_REFUSAL_COOLDOWN_MS`; `COOLDOWN_MS` by default. */
-    readonly cooldownMs?: number;
-    /** The `fallbackChains` lines of the pane's overlay; `ONE_STEP` by default. */
-    readonly chains?: readonly string[];
-  }
-): Promise<FallbackPane> {
+async function fallbackPane(options: {
+  readonly prompt: readonly string[];
+  /** Answers the turn the gateway was sent: `model` is the request's own model id, and `nth`
+   * counts the turns of the whole pane, its second life included, from 1. */
+  readonly answer: (model: string, nth: number, request: Request) => Response;
+  /** `LEGION_REFUSAL_COOLDOWN_MS`; `COOLDOWN_MS` by default. */
+  readonly cooldownMs?: number;
+  /** The `fallbackChains` lines of the pane's overlay; `ONE_STEP` by default. */
+  readonly chains?: readonly string[];
+}): Promise<FallbackPane> {
+  const { binary, nats } = setup();
   const served: Served[] = [];
   const pane = await runLegionPane(
     binary,
@@ -166,6 +169,7 @@ async function fallbackPane(
       role: "architect",
       tree: "FALL-1",
       issue: "FALL-1",
+      nats,
       prompt: options.prompt,
       config: overlay(options.chains ?? ONE_STEP),
       providers: PROVIDERS,
@@ -194,14 +198,13 @@ async function fallbackPane(
   };
 }
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a refusal before any output is retried on the chain's next model, which is the host's own walk",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
     /** When the second assignment's turn must stop pinging the gateway and let the run settle:
      * well past the wait the refusal bought, so the case sees both sides of it. */
     let until = 0;
-    const pane = await fallbackPane(omp, {
+    const pane = await fallbackPane({
       // The second assignment is one long turn that asks the gateway every second, so the model
       // of each of its requests says where the session stood at that moment.
       prompt: ["Start FALL-1.", "Keep working."],
@@ -245,14 +248,13 @@ test.skipIf(omp === undefined && !onActions)(
   180_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a refusal of the fallback model after the host's own walk steps down again and comes back to the model the session started on",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
     /** When the turn that pings the gateway every second must stop and let the run settle: past
      * the doubled wait the second refusal bought. */
     let until = 0;
-    const pane = await fallbackPane(omp, {
+    const pane = await fallbackPane({
       chains: TWO_STEPS,
       prompt: ["Start FALL-1.", "Keep working."],
       answer: (_model, nth) => {
@@ -296,11 +298,10 @@ test.skipIf(omp === undefined && !onActions)(
   240_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a refusal after streamed text, which the host leaves where it is, sends the next turn to the chain's next model",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-    const pane = await fallbackPane(omp, {
+    const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Carry on."],
       answer: (_model, nth) =>
         nth === 1
@@ -317,11 +318,10 @@ test.skipIf(omp === undefined && !onActions)(
   180_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "the session is put back on the model it fell back from inside a turn already running, once the cooldown is over",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-    const pane = await fallbackPane(omp, {
+    const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Keep working."],
       answer: (_model, nth) => {
         if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
@@ -349,13 +349,12 @@ test.skipIf(omp === undefined && !onActions)(
   180_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a second refusal of the same model doubles its wait, so the return does not come at the first one",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
     /** When the turn that pings every two seconds must stop and let the run settle. */
     let until = 0;
-    const pane = await fallbackPane(omp, {
+    const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Keep working.", "Keep going."],
       answer: (model, nth) => {
         // The first assignment is refused on the stronger model, which arms the base wait.
@@ -396,15 +395,14 @@ test.skipIf(omp === undefined && !onActions)(
   240_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a clean turn on the model the session came back to puts its wait back to the base",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
     /** How many turns the stronger model has been sent: the first is refused, the second is the
      * clean turn that puts the wait back, the third is refused again. */
     let onStrong = 0;
     let until = 0;
-    const pane = await fallbackPane(omp, {
+    const pane = await fallbackPane({
       prompt: ["Start FALL-1.", "Keep working.", "Keep going.", "Carry on."],
       answer: (model, nth) => {
         if (model === "strong-model") {
@@ -449,13 +447,12 @@ test.skipIf(omp === undefined && !onActions)(
   240_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a pane whose process is gone resumes its own transcript's arming, and comes back no earlier than it says",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
     /** When the resumed life's long turn must stop pinging the gateway. */
     let until = 0;
-    const pane = await fallbackPane(omp, {
+    const pane = await fallbackPane({
       cooldownMs: RESUME_COOLDOWN_MS,
       // The second assignment is a tool-call turn: its own entries carry the arming written at
       // the end of the refused turn to disk, which is where the resumed life reads it.
@@ -483,16 +480,37 @@ test.skipIf(omp === undefined && !onActions)(
 
     const resumed = pane.served.slice(firstLife);
     expect(resumed.length).toBeGreaterThan(1);
-    // Every request the resumed life sent before the restored due time went to the weaker model:
-    // the arming was restored, not dropped, and its wait was not started again by the relaunch.
-    expect(resumed.filter((turn) => turn.at < dueAt).map((turn) => turn.model)).not.toContain(
-      "strong-model"
-    );
+    // That the arming was restored, and not dropped or started again, is read from where this
+    // life's own turns went. Which half says it depends on whether the relaunch's boot outran the
+    // cooldown, and both are assertions: a filter over the turns before the due time proves
+    // nothing when there are none, which is what a loaded box gives.
+    const beforeDue = resumed.filter((turn) => turn.at < dueAt);
+    if (beforeDue.length > 0) {
+      // The life was serving while the restored wait still ran, so every one of those turns went
+      // to the weaker model.
+      expect(beforeDue.map((turn) => turn.model)).not.toContain("strong-model");
+    } else {
+      // The boot outran the wait, so this life's first turn is already past the due time: it
+      // must be the return itself. A life that had started the wait again would have spent a
+      // whole cooldown on the weaker model first, and a life that had dropped the arming would
+      // never leave it.
+      expect(resumed[0]?.model).toBe("strong-model");
+      expect(pane.returnedAt(dueAt)).toBe(resumed[0]?.at);
+    }
     // And the return did come, which is what says the arming survived at all: a life that had
     // restored nothing would have stayed on the weaker model for good.
+    //
+    // Measured from this life's own first served turn rather than from the restored due time: a
+    // relaunched pane pays its whole boot before it serves anything - the process start, a NATS
+    // connect, its subscribes, the claim's registration and the consumer answer that registration
+    // waits on - and under parallel load that boot alone can outlast the cooldown, which would
+    // red this row with nothing wrong behind it. What the bound is for is the return itself: once
+    // this life is serving turns, the restored arming must give the stronger model back inside
+    // one cooldown rather than holding the weaker one for good.
+    const resumedFrom = Math.max(dueAt, resumed[0]?.at ?? 0);
     const returned = pane.returnedAt(dueAt);
     expect(returned).toBeDefined();
-    expect((returned ?? 0) - dueAt).toBeLessThan(RESUME_COOLDOWN_MS);
+    expect((returned ?? 0) - resumedFrom).toBeLessThan(RESUME_COOLDOWN_MS);
   },
   300_000
 );

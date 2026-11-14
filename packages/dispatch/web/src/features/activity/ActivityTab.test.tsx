@@ -7,11 +7,17 @@ import { MemoryRouter } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { Query } from "../../api/paths";
-import type { Actor, Agent, DispatchEvent, UserIssueState, UserState } from "../../api/types";
+import type { Agent, DispatchEvent, UserIssueState, UserState } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import { ActivityTab } from "./ActivityTab";
 
-function message(seq: number, by?: Actor): DispatchEvent {
+// The writer of a frame is one of the kinds Dispatch writes, not the open `Actor` a route's
+// read answers with: these are `message.created` frames, so the payload's own reading of its
+// author is what names the writer here.
+function message(
+  seq: number,
+  by?: Extract<DispatchEvent, { type: "message.created" }>["payload"]["author"]
+): DispatchEvent {
   const actor = by ?? { id: "alice", kind: "user" as const };
   return {
     actor,

@@ -1,0 +1,5 @@
+kind: Added
+body: 'An issue of `GET /legion/v1/state` that is not working now carries `why`, one state word and one sentence, and each waiting issue carries the line''s own fields beside its place: which part it waits in and why, its place within that part, whether it already holds its admission slot, and the key that placed it.'
+time: 2026-11-12T03:07:07.351937861Z
+custom:
+    Issue: pr3718

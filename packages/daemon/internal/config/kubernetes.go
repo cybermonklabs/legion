@@ -101,8 +101,8 @@ type Kubernetes struct {
 	// and no role's launch ever clones or fetches anything (dispatch://INFRA-1300). The clone takes
 	// that default branch and no other: a deployment whose skills must come from a branch of
 	// another name needs a repository whose default branch is that one. The zero repository when
-	// the file names none, in which case a pod runs two init containers and no role installs a
-	// skill.
+	// the file names no skills repository, in which case a pod runs two init containers and no
+	// role installs a skill.
 	SkillsRepository ghrepo.Repository
 	// RepositoryCache is `runtime.kubernetes.repository_cache`, settled: the file's members where it
 	// sets them and the defaults (DefaultRepositoryCache) for the rest, field by field.
@@ -198,8 +198,8 @@ type Scheduling struct {
 type Toleration struct{ Key, Operator, Value, Effect string }
 
 // PodResources are the reservations of the two pods the daemon builds, each a whole pod's: every
-// issue pod's one container and its two init containers carry Issue, the controller's pod's one
-// container Controller.
+// issue pod's one container and its two init containers carry Issue — its third too, where the
+// deployment names a SkillsRepository — and the controller's pod's one container Controller.
 type PodResources struct {
 	Issue, Controller Reservation
 }
@@ -810,6 +810,12 @@ func unfilledPlaceholder(key, value, put string) error {
 // credential's value (runtime.HoldsSecretValue, as a spec's Env is judged in
 // runtime.ValidateSpawnSpec): a credential travels in a Secret, never as a plain value in the pod's
 // spec.
+//
+// One variable is read for its content and not its name alone: runtime.SpendAttributesVariable,
+// the operator's own resource attributes, which the runtime appends the launch's issue and role
+// to. runtime.SpendAttributesRefusal holds the detector's measured rules, and what it refuses is
+// refused here, where a person reads the refusal — under `legion start --check-config` as at boot
+// — rather than at a launch nobody watches.
 func readPodEnv(value *yaml.Node) (map[string]string, error) {
 	const key = podKey + ".env"
 	if value == nil {
@@ -835,6 +841,11 @@ func readPodEnv(value *yaml.Node) (map[string]string, error) {
 		case runtime.HoldsSecretValue(name):
 			return nil, fmt.Errorf("%s sets %s, a credential-shaped name: a credential comes from a Secret, so mount one with %s.volumes or name its key in provider_keys",
 				key, name, podKey)
+		}
+		if name == runtime.SpendAttributesVariable {
+			if why := runtime.SpendAttributesRefusal(text); why != "" {
+				return nil, fmt.Errorf("%s sets %s to %s: %s", key, name, spendAttributesRule, why)
+			}
 		}
 		env[name] = text
 	}

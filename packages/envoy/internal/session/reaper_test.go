@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -142,6 +143,96 @@ func TestAReaperPassKeepsAnUnresponsiveRecordAndCountsTheGoneOne(t *testing.T) {
 	}
 	if _, state := r.Lookup("ses_stalled"); state != Unresponsive {
 		t.Fatalf("ses_stalled after the pass = %s, want its record still standing as %s", state, Unresponsive)
+	}
+}
+
+// A pass deletes the session consumer of every record it really deleted, and of no other
+// session's: a consumer that outlives its session makes the stream's consumer count follow the
+// churn of sessions rather than the fleet, until the stream's inactive threshold takes it hours
+// later. A record the pass kept keeps its consumer and the position that consumer holds - a
+// session that registered again between the pass's decision and its delete is receiving through
+// it, and so are a live and an unresponsive session, whose records this pass never deletes.
+func TestAReaperPassDeletesTheConsumerOfEveryRecordItDeleted(t *testing.T) {
+	client := setupNATS(t)
+	now := &clock{}
+	r := reapingRegistry(t, client, now)
+	for _, id := range []string{"ses_gone", "ses_back"} {
+		if err := r.Put(id, SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
+			t.Fatalf("register %s: %v", id, err)
+		}
+	}
+	now.advance(90 * time.Second)
+	if err := r.Put("ses_stalled", SessionEntry{Port: 2, MachineID: "m1"}); err != nil {
+		t.Fatalf("register ses_stalled: %v", err)
+	}
+	now.advance(60 * time.Second)
+	if err := r.Put("ses_live", SessionEntry{Port: 3, MachineID: "m1"}); err != nil {
+		t.Fatalf("register ses_live: %v", err)
+	}
+	// ses_gone and ses_back are 2m30s old (past the 2m horizon), ses_stalled 1m (past the 1m
+	// live window, inside the horizon) and ses_live has just registered.
+	if _, state := r.Lookup("ses_stalled"); state != Unresponsive {
+		t.Fatalf("ses_stalled = %s, want %s", state, Unresponsive)
+	}
+	// The registration of ses_back lands between the pass's decision and its delete. It is
+	// written through a second registry while this one's watch is stopped, so the pass judges
+	// ses_back on the row and the revision it holds now and the bucket holds neither: its
+	// conditional delete is the refused one, in a pass and not in a call a test makes itself.
+	r.StopWatch()
+	returning := reapingRegistry(t, client, now)
+	if err := returning.Put("ses_back", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
+		t.Fatalf("re-register ses_back: %v", err)
+	}
+
+	var consumers []string
+	reaper := SessionReaper{DeleteConsumer: func(_ context.Context, sessionID string) {
+		consumers = append(consumers, sessionID)
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if reaped := r.ReapSessions(ctx, reaper); reaped != 1 {
+		t.Fatalf("the pass reaped %d records, want only ses_gone's", reaped)
+	}
+	if want := []string{"ses_gone"}; !slices.Equal(consumers, want) {
+		t.Fatalf("the pass deleted the consumers of %v, want %v: every record it kept keeps its consumer", consumers, want)
+	}
+}
+
+// Every record a pass deleted has its consumer asked for, the one behind the other: a pass that
+// stopped at the first consumer would leave every record behind it standing for a session that
+// is gone, one more listener restart each cycle away from being judged again. The deleter
+// answers nothing, so there is nothing here for the pass to read and nothing for it to decide:
+// what became of each consumer is the deleter's own to log
+// (cmd/listener sessionDelivery.deleteConsumer).
+func TestAReaperPassAsksForTheConsumerOfEveryRecordItReaped(t *testing.T) {
+	client := setupNATS(t)
+	now := &clock{}
+	r := reapingRegistry(t, client, now)
+	for _, id := range []string{"ses_one", "ses_two"} {
+		if err := r.Put(id, SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
+			t.Fatalf("register %s: %v", id, err)
+		}
+	}
+	// Both records are past the two-minute horizon, so the pass judges both gone.
+	now.advance(3 * time.Minute)
+
+	var asked []string
+	reaper := SessionReaper{DeleteConsumer: func(_ context.Context, sessionID string) {
+		asked = append(asked, sessionID)
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if reaped := r.ReapSessions(ctx, reaper); reaped != 2 {
+		t.Fatalf("the pass reaped %d records, want both past the horizon", reaped)
+	}
+	for _, id := range []string{"ses_one", "ses_two"} {
+		if _, err := r.Refresh(ctx, id); !errors.Is(err, natsgo.ErrKeyNotFound) {
+			t.Fatalf("the bucket's record of %s after the pass = %v, want it deleted", id, err)
+		}
+	}
+	if want := []string{"ses_one", "ses_two"}; !slices.Equal(slices.Sorted(slices.Values(asked)), want) {
+		t.Fatalf("the pass asked for the consumers of %v, want %v: the record behind the first one is asked for too", asked, want)
 	}
 }
 

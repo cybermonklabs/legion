@@ -73,6 +73,7 @@ func newBackstopRig(t *testing.T) *backstopRig {
 	}
 	rig.s = &supervision{
 		cfg: cfg, log: quietLogger(), supervisor: sup, plan: plan{clock: stillClock{}},
+		refreshGate: supervise.NewRefreshGate(0),
 		enqueue: func(_ context.Context, issue string, payloads ...record.OutboxPayload) error {
 			rig.mu.Lock()
 			defer rig.mu.Unlock()

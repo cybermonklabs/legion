@@ -27,10 +27,10 @@ type inboxDocument struct {
 // fetch per ask. `answers` is empty on an Inbox row, which is an open ask; the issue ask list
 // fills it for the answered asks on the page.
 type askThread struct {
-	Replies   []model.Comment     `json:"replies"`
-	Edits     []model.AskEdit     `json:"edits"`
-	Answers   []model.AskAnswer   `json:"answers"`
-	Followers []model.AskFollower `json:"followers"`
+	Replies   []shapedComment           `json:"replies"`
+	Edits     []askEditRead             `json:"edits"`
+	Answers   []model.AskAnswerWithTree `json:"answers"`
+	Followers []model.AskFollower       `json:"followers"`
 	askReach
 }
 
@@ -52,7 +52,7 @@ type askReach struct {
 }
 
 type inboxAsk struct {
-	model.Ask
+	shapedAsk
 	Issue     *inboxIssue         `json:"issue,omitempty"`
 	Document  *inboxDocument      `json:"document,omitempty"`
 	Priority  *int                `json:"priority"`
@@ -99,20 +99,26 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// waiting_on is askReadColumns' alias for the turn rule, 'human' or 'agent' on an open ask, so
 	// sorting it descending puts the human's turn first. ORDER BY can name an output column only
 	// bare, never inside an expression such as `waiting_on = 'agent'`, so the rule runs once a row.
+	//
+	// ?assignee= filters on the person the ask waits on (askedOfPersonExpression), not on the
+	// issue's assignee: an ask handed to somebody is in that person's list and out of the
+	// assignee's, and an ask on an issue nobody holds is in the list of the person its project
+	// defaults to. askReadFrom joins all three tables that expression reads - the ask's issue as
+	// i, its own document as ar and their project as p - so this read joins none of them itself
+	// and reads the document's columns off the shared join. `unassigned` is left standing for
+	// the caller that sends it: every question reaches a person now, so it answers nothing.
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+askReadColumns+`,
 		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
 		       sn.snoozed_until
 		`+askReadFrom+`
-		left join issues i on i.key = a.issue_key
-		left join artifacts ar on ar.id = a.artifact_id
 		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4
 		where a.state = 'open'
 		  and (i.key is null or i.closed_at is null)
 		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)
 		  and ($2 = ''
-		       or ($2 = 'unassigned' and (i.key is null or i.assignee is null))
-		       or ($2 = 'login' and i.assignee = $3))
+		       or ($2 = 'unassigned' and `+askedOfPersonExpression+` is null)
+		       or ($2 = 'login' and `+askedOfPersonExpression+` = $3))
 		order by i.priority asc nulls last, waiting_on desc,
 		         coalesce(lr.created_at, a.created_at) desc, a.id desc
 	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID))
@@ -159,13 +165,21 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	threads, err := s.loadAskThreads(r.Context(), askIDs)
+	// The Inbox's asks and the threads under them are one read of the stored trees: each row
+	// registers its texts with this reader, and one query answers the page.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	threads, err := s.loadAskThreads(r.Context(), askIDs, reader)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	for index := range asks {
 		asks[index].Thread = threads[asks[index].ID]
+		// The row's shape is taken once the ask is final: attachAskReadFields has just written
+		// the part ids of its options and of its answer into the row these fields stand in
+		// front of.
+		asks[index].shape(reader)
 	}
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, asks)
 }
