@@ -20,6 +20,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { until } from "@legion/test-fixtures/wait";
 
 // What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
 // the whole input to the daemon's idle rule: a claim that reports background work keeps its pod,
@@ -76,18 +77,6 @@ const SERVICE_NAME = "activity-service";
  *  reading the case makes of what the session reports. */
 const ASYNC_JOB_SECONDS = 600;
 
-/** How long the case waits for one thing the pane owes it before failing on it. */
-const DEADLINE_MS = 90_000;
-
-/**
- * The reporting period the pane's own interval runs on (`SESSION_ACTIVITY_PERIOD_MS` in
- * extensions/legion.ts), and how long the case watches for a report that must not come. Three
- * periods and a margin: a report of the service would have to arrive inside one of them, since
- * the pane reads the host's snapshot once a period and sends whenever the reading changed.
- */
-const REPORT_PERIOD_MS = 5_000;
-const QUIET_WATCH_MS = 3 * REPORT_PERIOD_MS + 2_000;
-
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
@@ -128,20 +117,18 @@ interface Held {
   reply(blocks: readonly Block[]): void;
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline or when omp exits. */
-async function until<T>(
+/** Waits through the shared wait until `probe` returns a value; omp's exit ends it at once. */
+async function waitFor<T>(
   what: string,
   probe: () => T | undefined | Promise<T | undefined>,
   closed: { readonly error?: unknown }
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
-  for (;;) {
+  const answered = await until(what, async () => {
     if (closed.error !== undefined) throw closed.error;
     const value = await probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await Bun.sleep(50);
-  }
+    return value === undefined ? undefined : { value };
+  });
+  return answered.value;
 }
 
 /** The role pane the case runs, and what it lets the case do to it. */
@@ -154,7 +141,8 @@ interface RolePane {
   readonly workspace: string;
   /** Waits for a held Messages request `match` accepts that the case has not taken yet. */
   next(what: string, match: (request: Request) => boolean): Promise<Held>;
-  /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
+  /** Waits through the shared wait until `probe` returns a value, failing at the row's deadline
+   * or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
 
@@ -291,7 +279,7 @@ async function startRolePane(): Promise<RolePane> {
   });
   rpc.send({ type: "prompt", message: ASSIGNMENT });
 
-  await until(
+  await waitFor(
     "the pane's registration with the Envoy listener",
     () => requests.find((request) => request.path === "/v1/interests/subscribe"),
     closed
@@ -303,7 +291,7 @@ async function startRolePane(): Promise<RolePane> {
     malformed,
     workspace,
     async next(what, match) {
-      const request = await until(
+      const request = await waitFor(
         what,
         () => held.find((candidate) => !taken.has(candidate) && match(candidate.request)),
         closed
@@ -311,7 +299,7 @@ async function startRolePane(): Promise<RolePane> {
       taken.add(request);
       return request;
     },
-    until: (what, probe) => until(what, probe, closed),
+    until: (what, probe) => waitFor(what, probe, closed),
   };
 }
 
@@ -387,12 +375,17 @@ test.skipIf(skip)(
     // Nothing else of the session is running — the role's turn is held by the stand-in, which is
     // the host waiting on the model, not background work of the session's own. The pane reads the
     // host's snapshot once a period and sends only what changed, so a service the host reported
-    // would show here as a new report naming a kind. A real clock is what shows it: the
-    // proposition is that the host reported nothing new over three of its own periods, and a
-    // host that reports nothing emits no signal to await.
-    await Bun.sleep(QUIET_WATCH_MS);
-    const serviceTicks = await ticks();
-    expect(serviceTicks).toBeGreaterThan(started);
+    // would show in every report from here on: the two that the job and the subagent below make
+    // the pane send are read for exactly the kinds they name, which a reported service would add
+    // to. The service is running all the while: it writes a heartbeat after its first, and more
+    // by the end.
+    const serviceTicks = await pane.until(
+      "a heartbeat of the service after its first",
+      async () => {
+        const written = await ticks();
+        return written > started ? written : undefined;
+      }
+    );
     expect(pane.reports.length).toBeGreaterThan(0);
     for (const report of pane.reports.slice(beforeTheService)) {
       expect(report.backgroundWork).toEqual({ running: false, kinds: [] });
@@ -455,6 +448,5 @@ test.skipIf(skip)(
         `the named bash service wrote ${await ticks()} heartbeats and was reported by nothing, ` +
         `across ${pane.reports.length} reports`
     );
-  },
-  300_000
+  }
 );

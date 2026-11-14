@@ -27,7 +27,7 @@ beforeAll(async () => {
   out = join(scratch, "plugin")
   const result = await build("--out", out)
   expect(result).toMatchObject({ exitCode: 0 })
-}, 120_000)
+})
 
 afterAll(async () => {
   await rm(scratch, { recursive: true, force: true })
@@ -49,7 +49,7 @@ test("--out keeps bin/dispatch executable, and it runs the built CLI", async () 
     stderr: "pipe",
   })
   expect(await run.exited).toBe(0)
-}, 30_000)
+})
 
 test("--out refuses a directory inside the repository and creates nothing", async () => {
   const inside = join(packageRoot, `build-out-${randomUUID()}`)
@@ -60,7 +60,7 @@ test("--out refuses a directory inside the repository and creates nothing", asyn
   } finally {
     await rm(inside, { recursive: true, force: true })
   }
-}, 30_000)
+})
 
 test("--out refuses an existing directory that is not empty and leaves it as it was", async () => {
   const occupied = await mkdtemp(join(tmpdir(), "claude-envoy-build-out-occupied-"))
@@ -72,7 +72,7 @@ test("--out refuses an existing directory that is not empty and leaves it as it 
   } finally {
     await rm(occupied, { recursive: true, force: true })
   }
-}, 30_000)
+})
 
 test("with no mode, more than one, --out without a directory, or a mode that writes the package's own files the script exits 2", async () => {
   expect((await build()).exitCode).toBe(2)
@@ -80,4 +80,4 @@ test("with no mode, more than one, --out without a directory, or a mode that wri
   expect((await build("--out")).exitCode).toBe(2)
   expect((await build("--unknown")).exitCode).toBe(2)
   expect((await build("--in-place")).exitCode).toBe(2)
-}, 30_000)
+})

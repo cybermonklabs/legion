@@ -25,7 +25,7 @@ test("the Legion plugin is named legion, so its skills and agents load as legion
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 30_000)
+})
 
 test("an agent's tools take Claude Code's names, and its autoloaded skills its skills field", () => {
   const source = [

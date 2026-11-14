@@ -17,6 +17,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { until } from "@legion/test-fixtures/wait";
 
 // On the real Oh My Pi: a Legion role pane dispatches `deep-worker`, gets its
 // `task` call back while the subagent is still running, reads a message that arrives in the
@@ -64,12 +65,6 @@ const SUBAGENT_REPORT = "BGSUB-SUBAGENT-REPORT: the scratch check passed.";
 /** What the message published while the subagent runs says. */
 const MESSAGE_SUMMARY = "BGSUB-MESSAGE: answer the reviewer's question about the retry bound.";
 
-/** How long the case waits for one thing the pane owes it before failing on it. */
-const DEADLINE_MS = 60_000;
-
-/** The bound on the message: in the role's context at its next model turn within 30 seconds. */
-const MESSAGE_BOUND_MS = 30_000;
-
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
@@ -104,9 +99,9 @@ function isRoleTurn(request: Request): boolean {
 }
 
 /**
- * One moment the case observed: `at` is the wall clock, which the message's bound and the report
- * are measured in, and `order` is a counter minted with it, which is what the orderings are
- * asserted on. Date.now() has a one-millisecond floor, and the moments this case orders are
+ * One moment the case observed: `at` is the wall clock, which the report at the end is measured
+ * in, and `order` is a counter minted with it, which is what every assertion is made on.
+ * Date.now() has a one-millisecond floor, and the moments this case orders are
  * separated by the host's own work rather than by any wait: a request the stand-in takes and the
  * reply the case sends next land inside one millisecond often enough on a loaded runner that a
  * `<` between their stamps fails on an order that is in fact right. Every moment here is minted
@@ -174,7 +169,7 @@ function forwardedRoleEnvelope(summary: string, label: string): string {
  */
 async function natsRelay(
   url: string,
-  /** The pane's own ending: its error fails a send at once, rather than at the bound. */
+  /** The pane's own ending: its error fails a send at once, rather than at the row's deadline. */
   stopped: { readonly error?: unknown }
 ): Promise<(sessionID: string, payload: string, seq: number) => Promise<Moment>> {
   const address = new URL(url);
@@ -302,27 +297,10 @@ async function natsRelay(
       subject: `notifications.agent.${sessionID}`,
       payload: new TextEncoder().encode(payload),
       seq,
-      withinMs: DEADLINE_MS,
       stopped,
     });
     return sent;
   };
-}
-
-/** Polls `probe` until it returns a value, failing on `what` at the deadline or when omp exits. */
-async function until<T>(
-  what: string,
-  probe: () => T | undefined,
-  closed: { readonly error?: unknown }
-): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
-  for (;;) {
-    if (closed.error !== undefined) throw closed.error;
-    const value = probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await Bun.sleep(10);
-  }
 }
 
 /** The role pane the case runs, and what it lets the case do to it. */
@@ -337,7 +315,8 @@ interface RolePane {
   next(what: string, match: (request: Request) => boolean): Promise<Held>;
   /** Relays `payload` to the pane as its consumer's frame, returning the frame's stamp. */
   publish(payload: string): Promise<Moment>;
-  /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
+  /** Waits through the shared wait until `probe` returns a value, failing at the row's deadline
+   * or when omp exits. */
   until<T>(what: string, probe: () => T | undefined): Promise<T>;
 }
 
@@ -480,15 +459,21 @@ async function startRolePane(): Promise<RolePane> {
   });
   rpc.send({ type: "prompt", message: ASSIGNMENT });
 
-  const sessionId = await until(
-    "the pane's registration with the Envoy listener",
-    () => {
-      const subscribe = requests.find((request) => request.path === "/v1/interests/subscribe");
-      const id = subscribe?.body.session_id;
-      return typeof id === "string" && id !== "" ? id : undefined;
-    },
-    closed
-  );
+  /** Waits through the shared wait until `probe` returns a value; omp's exit ends it at once. */
+  const waitFor = async <T>(what: string, probe: () => T | undefined): Promise<T> => {
+    const answered = await until(what, () => {
+      if (closed.error !== undefined) throw closed.error;
+      const value = probe();
+      return value === undefined ? undefined : { value };
+    });
+    return answered.value;
+  };
+
+  const sessionId = await waitFor("the pane's registration with the Envoy listener", () => {
+    const subscribe = requests.find((request) => request.path === "/v1/interests/subscribe");
+    const id = subscribe?.body.session_id;
+    return typeof id === "string" && id !== "" ? id : undefined;
+  });
   const relay = await natsRelay(nats, closed);
   // The stand-in stream's sequence: one case is one stream, so its frames are ordered by this.
   let seq = 1;
@@ -499,16 +484,14 @@ async function startRolePane(): Promise<RolePane> {
     sessionId,
     firstAgentEnd: () => agentEnds[0],
     async next(what, match) {
-      const request = await until(
-        what,
-        () => held.find((candidate) => !taken.has(candidate) && match(candidate.request)),
-        closed
+      const request = await waitFor(what, () =>
+        held.find((candidate) => !taken.has(candidate) && match(candidate.request))
       );
       taken.add(request);
       return request;
     },
     publish: (payload) => relay(sessionId, payload, seq++),
-    until: (what, probe) => until(what, probe, closed),
+    until: waitFor,
   };
 }
 
@@ -599,7 +582,17 @@ test.skipIf(skip)(
     const read = await pane.next("the role's turn carrying the message", (request) =>
       isRoleTurn(request) ? conversation(request).includes(MESSAGE_SUMMARY) : false
     );
-    expect(read.arrived.at - published.at).toBeLessThan(MESSAGE_BOUND_MS);
+    // The message is in the role's context at its next model turn: no turn of the role came
+    // between the frame's arrival and the turn that read it.
+    expect(published.order).toBeLessThan(read.arrived.order);
+    expect(
+      pane.held.filter(
+        ({ request, arrived }) =>
+          isRoleTurn(request) &&
+          arrived.order > published.order &&
+          arrived.order < read.arrived.order
+      )
+    ).toEqual([]);
     read.reply([{ type: "text", text: "Noted; the retry bound is three." }]);
 
     const released = subagent.reply([{ type: "text", text: SUBAGENT_REPORT }]);
@@ -622,6 +615,5 @@ test.skipIf(skip)(
         `the message was read ${read.arrived.at - published.at} ms after it was published; ` +
         `the job woke the role ${woken.arrived.at - released.at} ms after the release`
     );
-  },
-  300_000
+  }
 );

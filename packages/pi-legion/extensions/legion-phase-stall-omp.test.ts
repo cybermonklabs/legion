@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { symlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { LegionActivityRequest } from "@legion/contracts/legion-api";
 import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
 import {
   type Cleanup,
@@ -416,8 +417,7 @@ test.skipIf(skip)(
     const entries = await pane.phaseEntries();
     expect(stallCounts(entries)).toEqual([0, 1, 0]);
     expect(entries.at(-1)).toMatchObject({ state: "closed", count: 0 });
-  },
-  120_000
+  }
 );
 
 test.skipIf(skip)(
@@ -463,21 +463,19 @@ test.skipIf(skip)(
     // stopped nothing, and the third reminder earned no second notice.
     expect(pane.publishes()).toHaveLength(1);
     expect(pane.completions()).toHaveLength(1);
-  },
-  120_000
+  }
 );
 
 test.skipIf(skip)(
   "a WAITING reply buys its quiet wait, and the reminder comes again when the wait is over",
   async () => {
     const run = setup();
-    // Every request the stand-in served, with the moment it was served: the proposition is that
-    // nothing reached the session until the wait was over, and only elapsed time shows it.
-    const seen: { readonly path: string; readonly at: number }[] = [];
-    // The quiet wait a WAITING line buys, and the bound every assertion below measures against.
-    // The bound allows the timer a little early, since a host timer may fire slightly short.
+    // Every request the stand-in served, in the order it served them: the proposition is that
+    // nothing reached the session until the wait was over, which the pane's own record of the
+    // reminder it armed and the order of what it did then show.
+    const seen: { readonly path: string; readonly body: Record<string, unknown> }[] = [];
+    // The quiet wait a WAITING line buys.
     const waitMs = 1_500;
-    const waitedAtLeastMs = waitMs - 100;
     const pane = await stallPane(
       run,
       [
@@ -494,8 +492,8 @@ test.skipIf(skip)(
       {
         env: { LEGION_STALL_WAITING_MS: String(waitMs) },
         quietMs: 4_000,
-        answer: (url) => {
-          seen.push({ path: url.pathname, at: Date.now() });
+        answer: (url, body) => {
+          seen.push({ path: url.pathname, body });
           return undefined;
         },
       }
@@ -503,22 +501,40 @@ test.skipIf(skip)(
 
     const turns = pane.turns();
     expect(turns).toHaveLength(3);
-    const [waitingTurn = 0, reminderTurn = 0] = seen
-      .filter((request) => request.path === "/anthropic/v1/messages")
-      .map((request) => request.at);
-    // The WAITING line bought the wait: no turn started while it ran, and the reminder's did
-    // only once it was over.
-    expect(reminderTurn - waitingTurn).toBeGreaterThanOrEqual(waitedAtLeastMs);
+    const modelRequests = seen.flatMap((request, index) =>
+      request.path === "/anthropic/v1/messages" ? [index] : []
+    );
+    const [waitingTurn = -1, reminderTurn = -1] = modelRequests;
+    const between = seen.slice(waitingTurn + 1, reminderTurn);
+    // The WAITING line bought the wait: the settle that read it armed the reminder that long
+    // ahead, and reported the wake at once (`session_stop` in extensions/legion.ts). Read on the
+    // pane's own clock, the report's moment and the wake it names are the wait apart, less the
+    // little the pane did between arming and reporting.
+    const armedAt = between.findIndex(
+      (request) =>
+        request.path === ACTIVITY_ROUTE &&
+        LegionActivityRequest.parse(request.body).activity.phase.nextReminderAt !== null
+    );
+    expect(armedAt).toBeGreaterThanOrEqual(0);
+    const armed = LegionActivityRequest.parse(between[armedAt]?.body).activity;
+    const armedFor = Date.parse(armed.phase.nextReminderAt ?? "") - Date.parse(armed.at);
+    expect(armedFor).toBeGreaterThanOrEqual(waitMs - 100);
+    expect(armedFor).toBeLessThanOrEqual(waitMs);
+    // No turn started while it ran: the reminder's own record check (a read of the daemon's state)
+    // is the first thing the pane did once its timer fired, and the reminder's turn came after it.
+    const fired = between.findIndex(
+      (request, index) => index > armedAt && request.path === "/legion/v1/state"
+    );
+    expect(fired).toBeGreaterThan(armedAt);
     // Nothing arrived from outside in between: in that gap the pane spoke only to the daemon,
     // for the reminder's own record check, the outcome of the turn that bought the wait and the
     // activity report its settle sends, and to the listener for its session registration. The
     // stand-in also serves as Dispatch, which holds the handoff record, so the session reads its
     // people's answers before every model request (pi-envoy's answers line), the reminder's
-    // included. That read belongs to the reminder's turn, so it comes only once the wait is over.
-    const between = seen.filter((request) => request.at > waitingTurn && request.at < reminderTurn);
+    // included. That read belongs to the reminder's turn, so it comes only once the timer fired.
     const answersRead = /^\/api\/v1\/agents\/[^/]+\/answers$/;
-    for (const request of between.filter(({ path }) => answersRead.test(path))) {
-      expect(request.at - waitingTurn).toBeGreaterThanOrEqual(waitedAtLeastMs);
+    for (const [index, request] of between.entries()) {
+      if (answersRead.test(request.path)) expect(index).toBeGreaterThan(fired);
     }
     expect(
       between
@@ -544,8 +560,7 @@ test.skipIf(skip)(
     expect(stallCounts(entries)).toEqual([0, 1, 0]);
     expect(entries.at(-1)).toMatchObject({ state: "closed", count: 0 });
     expect(pane.completions()).toHaveLength(1);
-  },
-  120_000
+  }
 );
 
 test.skipIf(skip)(
@@ -607,8 +622,7 @@ test.skipIf(skip)(
     // a run's first again, so it told the architect nothing.
     expect(pane.turns()).toHaveLength(7);
     expect(pane.completions()).toHaveLength(1);
-  },
-  120_000
+  }
 );
 
 test.skipIf(skip)(
@@ -641,8 +655,7 @@ test.skipIf(skip)(
     // unanswered in a row, so the threshold is never reached.
     expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2, 0, 1, 2]);
     expect(pane.publishes()).toEqual([]);
-  },
-  120_000
+  }
 );
 
 /** The daemon's state with STALL-2 moved past implementing: the reviewer works it now, so no
@@ -678,8 +691,7 @@ test.skipIf(skip)(
     expect(pane.completions()).toEqual([]);
     // Nothing was put in front of the worker, so nothing was counted.
     expect(stallCounts(await pane.phaseEntries())).toEqual([0]);
-  },
-  120_000
+  }
 );
 
 test.skipIf(skip)(
@@ -714,8 +726,7 @@ test.skipIf(skip)(
     const entries = await pane.phaseEntries();
     expect(stallCounts(entries)).toEqual([0, 1]);
     expect(entries.at(-1)).toMatchObject({ state: "open", count: 1 });
-  },
-  120_000
+  }
 );
 
 // The run-end ask nudge (extensions/envoy.ts) is a hidden side-turn self-check whose
@@ -754,8 +765,7 @@ test.skipIf(skip)(
     expect(userText(selfChecks[0] as Request)).toContain("WAITING or PROCEEDING");
     const asks = pane.requests.filter((request) => request.path === "/api/v1/asks/open");
     expect(asks).toHaveLength(2);
-  },
-  180_000
+  }
 );
 
 test.skipIf(skip)(
@@ -789,8 +799,7 @@ test.skipIf(skip)(
     // self-check and read no third open-ask snapshot: one nudge per period, and no loop.
     const asks = pane.requests.filter((request) => request.path === "/api/v1/asks/open");
     expect(asks).toHaveLength(2);
-  },
-  180_000
+  }
 );
 
 // Background work is on for every role, so a worker can end its turn with a job of its own
@@ -832,6 +841,5 @@ test.skipIf(skip)(
     // The phase is still open underneath; the WAITING line of the woken turn is what quiets it.
     expect(entries.at(-1)).toMatchObject({ state: "waiting", count: 0 });
     expect(pane.completions()).toHaveLength(0);
-  },
-  180_000
+  }
 );

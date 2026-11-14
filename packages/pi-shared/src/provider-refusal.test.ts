@@ -229,5 +229,5 @@ describe("an error text a provider chose the length of", () => {
       const spent = performance.now() - started;
       expect({ prefix, spent: spent < 1_000 }).toEqual({ prefix, spent: true });
     }
-  }, 60_000);
+  });
 });

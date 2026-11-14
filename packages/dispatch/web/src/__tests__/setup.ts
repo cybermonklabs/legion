@@ -2,7 +2,8 @@
 // one: Bun's preload list is the one order that holds, and an import written first inside a file
 // is not (`register-dom.ts` and package.json's `test:web` script say why).
 import { afterAll, afterEach, expect, jest } from "bun:test";
-import { configure } from "@testing-library/react";
+import { timeLeft } from "@legion/test-fixtures/wait";
+import { configure, getConfig } from "@testing-library/react";
 // happy-dom has no IndexedDB; the store of a document's unsent edits (`pending-edits.ts`) runs on
 // this in-memory one, which keeps IndexedDB's transaction ordering.
 import "fake-indexeddb/auto";
@@ -72,30 +73,45 @@ expect.extend(reportableJestDomMatchers());
 // checked by anything: a row added tomorrow may set more, as dispatch://INFRA-1571 does with
 // a 90 s limit of its own. What lowering the flag would cut is every row that sets none.
 //
-// The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
-// which a loaded run of this suite passes while a page is still rendering: it failed
-// `settings.test.tsx`'s own heading wait and `mermaid-diagrams.test.tsx`'s draw in 13 of 30
-// loaded runs, each time a different row, which is why the budget is the suite's and not a
-// deadline per row. 10 s is above every per-call budget this tree keeps but one, and a sixth of
-// the per-test deadline, so a wait that runs out reports as the wait that failed and names what
-// it waited for, rather than as a bare test timeout. The slowest test of a loaded run that
-// drives no subprocess reads 5.80 s whole. This number is not re-sized for the slower pod shape
-// as the deadline above is, because a wait is not a test: the longest single wait measured
-// loaded here is `mermaid-diagrams.test.tsx`'s shadow-root draw at 1.2 to 1.4 s, which the 2.15
-// factor puts at about 3 s there, against 10 s. dispatch://INFRA-1405 sets this same number in
-// this same file, so changing it is that tree's to agree to as well.
+// The wait budget is set as each wait starts, from the row's own deadline. Every `waitFor` and
+// `findBy*` runs inside Testing Library's `asyncWrapper` and reads `asyncUtilTimeout` as the wait
+// inside it starts (@testing-library/dom@10.4.1, dist/wait-for.js: `waitForWrapper` and the
+// default of `timeout`), so the wrapper below sets it from `timeLeft()`
+// (`@legion/test-fixtures/wait`): the time left before the deadline the row-deadline preload
+// keeps, which ends a margin before the row's `--timeout`. Every wait of a row, the second
+// included, then ends before the row's guard and fails naming what it waited for, rather than as
+// a bare test timeout. It chains the wrapper React Testing Library installs, which runs the wait
+// outside React's act environment and drains the microtasks the wait left. It replaces one
+// number for every wait whatever its row had left: Testing Library's own 1000 ms, which a loaded
+// run of this suite passes while a page is still rendering (it failed `settings.test.tsx`'s own
+// heading wait and `mermaid-diagrams.test.tsx`'s draw in 13 of 30 loaded runs, each time a
+// different row), and then this file's 10 s, which a row's later waits could add up past its
+// guard. The row-deadline preload is the last of `test:web`'s list because Bun runs the preloads'
+// `afterEach` hooks in that order (measured on Bun 1.4.4): its mark after a row then follows this
+// file's `jest.useRealTimers()` below, so a row that left the fake clock held still gets one.
 //
-// Under `jest.useFakeTimers()` the same budget is 10 s of *fake* time, not of the machine's:
-// Testing Library advances the held clock by its polling interval until the wait succeeds or the
-// deadline passes, so a wait that does not succeed now moves that clock ten times as far as it
-// did. No row of this suite changes verdict for it: the files that install a clock and wait -
-// 21 of them when dispatch://INFRA-1405 measured this on its own tree, about twice that in the
-// merged one - were green before this budget and are green after it, and a wait that used to
-// succeed cannot start failing because it is given longer. What the longer advance can do is let
-// a wait succeed that used to give up - a product timer it now reaches - so what the suite gives
-// up with it is the old second as a bound: a held-clock `waitFor` no longer catches a slowdown
-// that stays under 10 s of fake time, and a failing one reports ten times slower.
-configure({ asyncUtilTimeout: 10_000 });
+// Under `jest.useFakeTimers()` the budget stays 10 s of *fake* time, not of the machine's, and
+// does not read `timeLeft()`, which refuses a held clock: Testing Library advances the held clock
+// by its polling interval until the wait succeeds or the budget passes, which spends a few
+// milliseconds of real time a step, so no load moves it and it ends long before the row's real
+// guard. The 10 s replaced Testing Library's 1 s here, and no row of this suite changed verdict
+// for it: the files that install a clock and wait - 21 of them when dispatch://INFRA-1405
+// measured this on its own tree, about twice that in the merged one - were green before it and
+// after it, and a wait that used to succeed cannot start failing because it is given longer.
+// What the longer advance can do is let a wait succeed that used to give up - a product timer it
+// now reaches - so what the suite gave up with it is the old second as a bound: a held-clock
+// `waitFor` does not catch a slowdown that stays under 10 s of fake time, and a failing one
+// reports ten times slower than it did.
+const FAKE_CLOCK_WAIT_BUDGET_MS = 10_000;
+const reactAsyncWrapper = getConfig().asyncWrapper;
+configure({
+  asyncWrapper: (wait) => {
+    configure({
+      asyncUtilTimeout: jest.isFakeTimers() ? FAKE_CLOCK_WAIT_BUDGET_MS : timeLeft(),
+    });
+    return reactAsyncWrapper(wait);
+  },
+});
 
 // Unit tests have no Dispatch server to answer GET /api/v1/schema/blocks, so the session cache
 // starts already holding the checked-in server schema: every MarkdownBody, ask card, and

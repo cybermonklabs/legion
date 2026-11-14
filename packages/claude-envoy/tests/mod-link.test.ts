@@ -1,9 +1,10 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, jest, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { createServer, type Server } from "node:net"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { settled, until } from "@legion/test-fixtures/wait"
 import {
   MOD_HEALTH_MARKER,
   MOD_INSTANCE_HEADER,
@@ -24,6 +25,8 @@ import { type ModSession, modSession } from "../src/mod-session"
 const scratch: string[] = []
 const links: ModLink[] = []
 afterEach(async () => {
+  // A case that failed while the fake clock ran leaves the next one the real clock.
+  jest.useRealTimers()
   for (const link of links.splice(0)) await link.close()
   for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true })
 })
@@ -120,7 +123,23 @@ async function readEvents(link: ModLink, count: number): Promise<ModEvent[]> {
 /** Wait until the link has a poll in hand, which `connected()` reports: the server's own signal,
  *  rather than a delay long enough to hope the poll arrived. */
 async function untilPolled(link: ModLink): Promise<void> {
-  while (!link.connected()) await Bun.sleep(5)
+  await until("the link to hold the mod's poll", () => link.connected())
+}
+
+/** The mod's first poll of a fresh link, held under the fake clock: Bun's fake timers start just
+ *  before the poll goes, so the hold the link arms as it arrives is a timer of the fake clock,
+ *  which only the test moves. The wait for its arrival begins first, on the real clock, whose
+ *  deadline it keeps. Turning the real clock back on drops a fake timer still pending, so a hold
+ *  the test did not run out never answers. The poll's answer comes back inside an object, which
+ *  an async function hands over as it is rather than waiting on it. */
+async function heldUnderFakeClock(link: ModLink): Promise<{ readonly poll: Promise<Answer> }> {
+  const arrived = Promise.withResolvers<void>()
+  link.onConnected(() => arrived.resolve())
+  const taken = settled("the link to take the mod's first poll", arrived.promise)
+  jest.useFakeTimers()
+  const poll = call(link.socketPath, "POST", MOD_ROUTE_REQUESTS, {})
+  await taken
+  return { poll }
 }
 
 /** A socket file with nothing behind it, as a server killed before it could unlink one leaves: a
@@ -239,35 +258,45 @@ test("a request still unanswered when the link closes rejects", async () => {
   expect(await answered).toBe("the mod link closed before the mod answered")
 })
 
-// The hold is wall-clock behaviour of the running server: the point of the test is that a real
-// poll over a real socket comes back on its own, so the clock here is the one under test.
+// The hold is a timer of the running server: the point of the test is that a real poll over a
+// real socket comes back on its own when the hold is up, so the test moves the clock that hold
+// runs on and reads the poll's answer.
 test("a poll with nothing to do answers an empty list once the hold is up, rather than hanging", async () => {
   const dir = await directory()
   const link = await start(dir, "s7")
-  const startedAt = Date.now()
-  const answer = await call(link.socketPath, "POST", MOD_ROUTE_REQUESTS, {})
-  const held = Date.now() - startedAt
-  expect(answer).toEqual({ status: 200, body: { requests: [] } })
-  expect(held).toBeGreaterThanOrEqual(MOD_POLL_HOLD_MS - 250)
-  expect(held).toBeLessThan(MOD_POLL_HOLD_MS * 2)
+  const { poll } = await heldUnderFakeClock(link)
+  // A millisecond short of `MOD_POLL_HOLD_MS` the hold has not run out: every timer the fake
+  // clock held as the poll arrived, the hold among them, is armed still.
+  const armed = jest.getTimerCount()
+  expect(armed).toBeGreaterThan(0)
+  jest.advanceTimersByTime(MOD_POLL_HOLD_MS - 1)
+  expect(jest.getTimerCount()).toBe(armed)
+  // At `MOD_POLL_HOLD_MS` it runs out and answers; a hold any longer is dropped unfired here,
+  // and its poll never answers.
+  jest.advanceTimersByTime(1)
+  jest.useRealTimers()
+  expect(await settled("the held poll's answer", poll)).toEqual({
+    status: 200,
+    body: { requests: [] },
+  })
 })
 
 test("a request made while a poll is held is answered at once, not after the hold", async () => {
   const dir = await directory()
   const link = await start(dir, "s8")
-  const startedAt = Date.now()
-  const poll = call(link.socketPath, "POST", MOD_ROUTE_REQUESTS, {})
-  await untilPolled(link)
+  const { poll } = await heldUnderFakeClock(link)
   const answered = link.request("command.list", undefined)
-  const requests = polled(await poll)
-  expect(Date.now() - startedAt).toBeLessThan(MOD_POLL_HOLD_MS - 1_000)
+  // The fake clock never moves: the hold never runs out, and is dropped unfired with the fake
+  // clock, so only the request itself can answer this poll.
+  jest.useRealTimers()
+  const requests = polled(await settled("the held poll's answer", poll))
   expect(requests).toHaveLength(1)
   const [request] = requests
   expect(request?.call).toBe("command.list")
   await call(link.socketPath, "POST", MOD_ROUTE_RESULTS, {
     results: [{ id: request?.id ?? "", ok: true, value: [] }],
   })
-  expect(await answered).toEqual([])
+  expect(await settled("command.list's answer", answered)).toEqual([])
 })
 
 test("the liveness probe is answered while a poll is held", async () => {

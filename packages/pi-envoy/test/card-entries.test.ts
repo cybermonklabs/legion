@@ -51,16 +51,32 @@ test("the same fragment is selected once the pane has exited, so parsing it thro
 
 // The control for the wait: every case that reads cards asserts an exact count of them, and a
 // read taken while the host is mid-line would count one short rather than throw. With the wait
-// removed from `readCardLines`, the first assertion below resolves with one card instead of
-// rejecting.
+// removed from `readCardLines`, the first read below prints the one finished card instead of
+// failing. That read runs in a Bun driver of its own, whose deadline (`LEGION_PROOF_DEADLINE_MS`,
+// as a proof's script sets one) is half a second after it is spawned, so a file nothing finishes
+// fails it there rather than at this row's guard.
 test("a card read waits for the file to end on a finished line, and fails when it never does", async () => {
   const torn = await sessionFile(`${card("a")}\n${card("b").slice(0, 60)}`);
-  await expect(readCardLines(torn, "alive", 50)).rejects.toThrow(torn);
+  const driver = Bun.spawnSync(
+    [
+      process.execPath,
+      "-e",
+      `import { readCardLines } from ${JSON.stringify(path.join(import.meta.dir, "card-entries.ts"))};
+await readCardLines(${JSON.stringify(torn)}, "alive").then(
+  (lines) => console.log(\`read \${lines.length} cards\`),
+  (error) => console.log(String(error))
+);`,
+    ],
+    { env: { ...process.env, LEGION_PROOF_DEADLINE_MS: String(Date.now() + 500) } }
+  );
+  expect(driver.stdout.toString()).toContain(
+    `until gave up waiting for the session file ${torn} to end on a finished line`
+  );
 
   const whole = await sessionFile(`${card("a")}\n${card("b")}\n`);
-  expect(await readCardLines(whole, "alive", 5_000)).toEqual([card("a"), card("b")]);
+  expect(await readCardLines(whole, "alive")).toEqual([card("a"), card("b")]);
 
   // A writer that is gone is never waited for: nothing will finish its last line, so the
   // fragment is handed on and throws where it is parsed.
-  expect(await readCardLines(torn, "gone", 50)).toHaveLength(2);
+  expect(await readCardLines(torn, "gone")).toHaveLength(2);
 });

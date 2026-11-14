@@ -1,10 +1,11 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, jest, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
 import type { SetRoleInput, SetRoleResult } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import { settled, span } from "@legion/test-fixtures/wait"
 import { legion } from "../package.json" with { type: "json" }
 import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
@@ -31,6 +32,14 @@ const scratch: string[] = []
 afterEach(async () => {
   for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true })
 })
+
+/** Resolves once every microtask queued so far has run: a macrotask comes after all of them, and
+ *  `setImmediate` is one Bun's fake timers leave on the real event loop. */
+function microtasksRun(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>()
+  setImmediate(resolve)
+  return promise
+}
 
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "claude-envoy-legion-claim-"))
@@ -464,36 +473,62 @@ test("a claim under this session's own id that is never granted stops the pane o
   const setRoles: SetRoleInput[] = []
   const lines: string[] = []
   let stops = 0
-  const claim = startLegionClaim({
-    pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
-    sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
-    clientInstanceID: INSTANCE,
-    client: {
-      setRole: async (input) => {
-        setRoles.push(input)
-        return { claimed: false, holder: SESSION }
+  // The wait's deadline is read off `Date.now()` and its attempts paced by its own timer, both of
+  // which run on Bun's fake clock from before the claim starts: the test moves that clock one
+  // retry at a time, so the attempts are the schedule's, not as many as a loaded host fits into
+  // 40 ms. The wait for the first attempt begins first, on the real clock, whose deadline it
+  // keeps.
+  const firstAsked = Promise.withResolvers<void>()
+  const asked = settled("the claim's first attempt", firstAsked.promise)
+  jest.useFakeTimers()
+  try {
+    const claim = startLegionClaim({
+      pane: {
+        daemonUrl: "http://daemon.test",
+        bootToken: "boot-1",
+        configDir,
+        launcherSaves: false,
       },
-    },
-    session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
-    signal: new AbortController().signal,
-    log: (line) => lines.push(line),
-    stop: () => {
-      stops += 1
-    },
-    pollMs: 5,
-    roleRetryMs: 5,
-    roleWaitMs: 40,
-    onFirstTurn: firstTurnNow,
-  })
-  await claim.claimed
+      sessionID: SESSION,
+      daemon: createLegionDaemonClient("http://daemon.test", fetch),
+      clientInstanceID: INSTANCE,
+      client: {
+        setRole: async (input) => {
+          setRoles.push(input)
+          firstAsked.resolve()
+          return { claimed: false, holder: SESSION }
+        },
+      },
+      session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+      signal: new AbortController().signal,
+      log: (line) => lines.push(line),
+      stop: () => {
+        stops += 1
+      },
+      pollMs: 5,
+      roleRetryMs: 5,
+      roleWaitMs: 40,
+      onFirstTurn: firstTurnNow,
+    })
+    await asked
+    for (let moved = 0; moved < 40; moved += 5) {
+      await microtasksRun()
+      jest.advanceTimersByTime(5)
+    }
+    await microtasksRun()
+    jest.useRealTimers()
+    await settled("the claim boot to give up", claim.claimed)
+  } finally {
+    jest.useRealTimers()
+  }
 
   const token = String(registered["claimToken"])
   expect(posted.map(({ path }) => path)).toEqual([
     "/legion/v1/claims/register",
     "/legion/v1/claims/ready",
   ])
-  expect(setRoles.length).toBeGreaterThan(1)
+  // One attempt at the claim and one at each 5 ms retry up to the 40 ms the wait allows.
+  expect(setRoles).toHaveLength(40 / 5 + 1)
   expect(lines.at(-1)).toBe(
     `claim boot failed after claims/register registered ${token}; stopping the pane so the daemon launches it again: Envoy role ${token} is still claimed under this session by another process after 40 ms of asking`,
   )
@@ -580,10 +615,14 @@ async function bootOn(env: Record<string, string>): Promise<{
 
 test("in a pod whose launcher keeps the transcript, the registration waits for the launcher's first save", async () => {
   const { posted, transcript, booted } = await bootOn({ LEGION_CLAUDE_SESSION_ID: SESSION })
-  // A real delay, deliberately: the boot polls the real filesystem every 5 ms, and the only sign
-  // that it waits is a registration that does not come, which no fake clock can stand in for.
-  // Twelve polls with the transcript there and no marker register nothing.
-  await Bun.sleep(60)
+  // The only sign that the boot waits is a registration that does not come. Twelve polls with
+  // the transcript there and no marker register nothing.
+  await span(
+    60,
+    "the boot polls the real filesystem on its own 5 ms delay, and a poll that finds no marker " +
+      "leaves no state to read and no later effect to wait for; a fake clock cannot drive the " +
+      "stat each poll awaits",
+  )
   expect(posted).toEqual([])
   await writeFile(`${transcript}${SAVED_MARKER_SUFFIX}`, "")
   await booted
@@ -710,10 +749,10 @@ test("a prompt submitted before the boot registered its step takes no name, the 
     beforeRegistration: (submitPrompt) => submitPrompt(),
   })
 
-  // The assertion below is that nothing happened, and nothing has a signal to await, so this
-  // waits out the one thing that could: the claim step runs on a microtask of its own, and the
-  // ten-minute bound is the only other way the name could be taken inside this case.
-  await Bun.sleep(20)
+  // The assertion below is that nothing happened. The one thing that could make it happen is the
+  // claim step, which runs on a microtask of its own, so every microtask queued so far runs
+  // first; the ten-minute bound is the only other way the name could be taken inside this case.
+  await microtasksRun()
   expect(pane.posted.map(({ path }) => path)).toEqual([
     "/legion/v1/claims/register",
     "/legion/v1/claims/ready",

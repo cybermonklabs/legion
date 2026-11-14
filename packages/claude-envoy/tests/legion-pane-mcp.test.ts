@@ -237,4 +237,4 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     await broker.stop()
     await rm(root, { recursive: true, force: true })
   }
-}, 20_000)
+})

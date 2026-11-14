@@ -144,7 +144,7 @@
   },
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 60000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/ test/"
   },
   "devDependencies": {

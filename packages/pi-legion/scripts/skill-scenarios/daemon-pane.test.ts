@@ -93,120 +93,103 @@ test.skipIf(skip)(
       `oauth_token: ${RIG_GH_TOKEN}`
     );
     expect(readFileSync(path.join(ghConfigDir, "config.yml"), "utf8")).toBe('version: "1"\n');
-  },
-  600_000
+  }
 );
 
 // The pane's own Envoy extension reads the profile's envoy.json, so the daemon is asked to name the
 // listener and NATS servers written there.
-test.skipIf(skip)(
-  "names the listener and NATS servers the profile's envoy.json writes",
-  () => {
-    const agent = path.join(home, ".omp", "profiles", "rig-envoy-profile", "agent");
-    mkdirSync(agent, { recursive: true });
-    writeFileSync(
-      path.join(agent, "envoy.json"),
-      JSON.stringify({
-        envoy: {
-          enabled: true,
-          url: "http://rig-listener.internal.example:9020",
-          natsUrls: ["nats://rig-nats.internal.example:4222"],
-        },
-      })
-    );
-    const workerEnv = workerPane(
-      { rig, port: 13399, profile: "rig-envoy-profile" },
-      inherited,
-      { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
-      { daemonModule: DAEMON_MODULE }
-    ).env;
+test.skipIf(skip)("names the listener and NATS servers the profile's envoy.json writes", () => {
+  const agent = path.join(home, ".omp", "profiles", "rig-envoy-profile", "agent");
+  mkdirSync(agent, { recursive: true });
+  writeFileSync(
+    path.join(agent, "envoy.json"),
+    JSON.stringify({
+      envoy: {
+        enabled: true,
+        url: "http://rig-listener.internal.example:9020",
+        natsUrls: ["nats://rig-nats.internal.example:4222"],
+      },
+    })
+  );
+  const workerEnv = workerPane(
+    { rig, port: 13399, profile: "rig-envoy-profile" },
+    inherited,
+    { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+    { daemonModule: DAEMON_MODULE }
+  ).env;
 
-    expect(workerEnv).toMatchObject({
-      OMP_PROFILE: "rig-envoy-profile",
-      PI_CODING_AGENT_DIR: agent,
-      ENVOY_URL: "http://rig-listener.internal.example:9020",
-      ENVOY_NATS_URL: "nats://rig-nats.internal.example:4222",
-    });
-  },
-  600_000
-);
+  expect(workerEnv).toMatchObject({
+    OMP_PROFILE: "rig-envoy-profile",
+    PI_CODING_AGENT_DIR: agent,
+    ENVOY_URL: "http://rig-listener.internal.example:9020",
+    ENVOY_NATS_URL: "nats://rig-nats.internal.example:4222",
+  });
+});
 
 // A seed the profile's envoy.json pairs with other servers than ENVOY_NATS_URL leaves Envoy on with
 // inbound messages off, which the pane's own extension would meet; the rig refuses it, as it refuses
 // an Envoy that is off with an error, rather than ask the daemon for a pane with no NATS server.
-test.skipIf(skip)(
-  "refuses a profile envoy.json whose NATS seed Envoy refuses",
-  () => {
-    const agent = path.join(home, ".omp", "profiles", "rig-seed-profile", "agent");
-    mkdirSync(agent, { recursive: true });
-    const file = path.join(agent, "envoy.json");
-    writeFileSync(
-      file,
-      JSON.stringify({
-        envoy: {
-          url: "http://rig-listener.internal.example:9020",
-          natsUrls: ["nats://rig-nats.internal.example:4222"],
-          natsSeed: "rig-seed-placeholder",
-        },
-      })
-    );
+test.skipIf(skip)("refuses a profile envoy.json whose NATS seed Envoy refuses", () => {
+  const agent = path.join(home, ".omp", "profiles", "rig-seed-profile", "agent");
+  mkdirSync(agent, { recursive: true });
+  const file = path.join(agent, "envoy.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      envoy: {
+        url: "http://rig-listener.internal.example:9020",
+        natsUrls: ["nats://rig-nats.internal.example:4222"],
+        natsSeed: "rig-seed-placeholder",
+      },
+    })
+  );
 
-    expect(() =>
-      workerPane(
-        { rig, port: 13399, profile: "rig-seed-profile" },
-        { ...inherited, ENVOY_NATS_URL: "nats://other-nats.internal.example:4222" },
-        { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
-        { daemonModule: DAEMON_MODULE }
-      )
-    ).toThrow(
-      `envoy: ENVOY_NATS_URL names other servers than ${file}'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`
-    );
-  },
-  600_000
-);
+  expect(() =>
+    workerPane(
+      { rig, port: 13399, profile: "rig-seed-profile" },
+      { ...inherited, ENVOY_NATS_URL: "nats://other-nats.internal.example:4222" },
+      { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+      { daemonModule: DAEMON_MODULE }
+    )
+  ).toThrow(
+    `envoy: ENVOY_NATS_URL names other servers than ${file}'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`
+  );
+});
 
 // An Envoy that is on with no NATS server takes no inbound messages either, and the pane's Legion
 // claim refuses then (pi-envoy's `requireInbound`), so the rig refuses it the same way.
-test.skipIf(skip)(
-  "refuses a profile envoy.json whose Envoy has no NATS server",
-  () => {
-    const agent = path.join(home, ".omp", "profiles", "rig-no-nats-profile", "agent");
-    mkdirSync(agent, { recursive: true });
-    writeFileSync(
-      path.join(agent, "envoy.json"),
-      JSON.stringify({ envoy: { url: "http://rig-listener.internal.example:9020" } })
-    );
+test.skipIf(skip)("refuses a profile envoy.json whose Envoy has no NATS server", () => {
+  const agent = path.join(home, ".omp", "profiles", "rig-no-nats-profile", "agent");
+  mkdirSync(agent, { recursive: true });
+  writeFileSync(
+    path.join(agent, "envoy.json"),
+    JSON.stringify({ envoy: { url: "http://rig-listener.internal.example:9020" } })
+  );
 
-    expect(() =>
-      workerPane(
-        { rig, port: 13399, profile: "rig-no-nats-profile" },
-        inherited,
-        { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
-        { daemonModule: DAEMON_MODULE }
-      )
-    ).toThrow("envoy: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)");
-  },
-  600_000
-);
+  expect(() =>
+    workerPane(
+      { rig, port: 13399, profile: "rig-no-nats-profile" },
+      inherited,
+      { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+      { daemonModule: DAEMON_MODULE }
+    )
+  ).toThrow("envoy: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)");
+});
 
 // The daemon refuses a script as the first gh on its PATH (a gh wrapper would answer in place of
 // the claim's App token), and so does the rig's reading of it; a gh the rig names, as an operator
 // names one with LEGION_GH_PATH, is the pane's real gh whatever it is, which is how the rig hands
 // panes its recording stand-in.
-test.skipIf(skip)(
-  "refuses a script as the first gh on PATH and takes the gh the rig names",
-  () => {
-    const claim = { project: "skillsrig", issue: "LWEVAL-1", role: "tester" } as const;
-    const launch = { rig, port: 13399, profile: "rig-profile" };
-    const shimmed = { ...inherited, PATH: `${scriptBin}:${outerBin}:/usr/bin` };
-    expect(() => workerPane(launch, shimmed, claim, { daemonModule: DAEMON_MODULE })).toThrow(
-      `the first gh on the daemon's PATH, ${path.join(scriptBin, "gh")}, is a script`
-    );
-    const named = workerPane(launch, shimmed, claim, {
-      daemonModule: DAEMON_MODULE,
-      ghPath: path.join(scriptBin, "gh"),
-    }).env;
-    expect(named.LEGION_GH_PATH).toBe(path.join(scriptBin, "gh"));
-  },
-  600_000
-);
+test.skipIf(skip)("refuses a script as the first gh on PATH and takes the gh the rig names", () => {
+  const claim = { project: "skillsrig", issue: "LWEVAL-1", role: "tester" } as const;
+  const launch = { rig, port: 13399, profile: "rig-profile" };
+  const shimmed = { ...inherited, PATH: `${scriptBin}:${outerBin}:/usr/bin` };
+  expect(() => workerPane(launch, shimmed, claim, { daemonModule: DAEMON_MODULE })).toThrow(
+    `the first gh on the daemon's PATH, ${path.join(scriptBin, "gh")}, is a script`
+  );
+  const named = workerPane(launch, shimmed, claim, {
+    daemonModule: DAEMON_MODULE,
+    ghPath: path.join(scriptBin, "gh"),
+  }).env;
+  expect(named.LEGION_GH_PATH).toBe(path.join(scriptBin, "gh"));
+});

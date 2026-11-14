@@ -12,6 +12,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { until } from "@legion/test-fixtures/wait"
 import type {
   EngineInterface,
   HookStream,
@@ -117,6 +118,14 @@ let scratch: string | undefined
  *  its reconnect backoff instantly on the socket this file has unlinked instead of sleeping 31 s
  *  into the next test file. */
 let over = false
+/** Ends each of the host clock's sleeps still running, as `runOutHostSleeps` does. */
+const hostSleeps = new Set<() => void>()
+
+/** Every sleep the mod is spending on the host's clock ends now: the moment each timer it armed
+ *  there (`$.clock.sleep`) runs out, brought forward by the test rather than waited for. */
+function runOutHostSleeps(): void {
+  for (const end of hostSleeps) end()
+}
 
 /** One request over the socket, as the host's own `$.http.fetch({ socketPath })` makes it. */
 function fetchOverSocket(url: string, init: HttpInit = {}): Promise<HttpResponse> {
@@ -208,9 +217,20 @@ function engineOn(directory: string): EngineInterface {
       },
     },
     env: { get: async (name) => (name === "XDG_RUNTIME_DIR" ? directory : undefined) },
+    // The host's own clock: each sleep lasts the time the mod asks for, in real time as Claude
+    // Code's `$.clock.sleep` does, unless a test runs it out first (`runOutHostSleeps`).
     clock: {
-      sleep: async (ms) => {
-        if (!over) await Bun.sleep(ms)
+      sleep: (ms) => {
+        if (over) return Promise.resolve()
+        const { promise, resolve } = Promise.withResolvers<void>()
+        const end = (): void => {
+          clearTimeout(timer)
+          hostSleeps.delete(end)
+          resolve()
+        }
+        const timer = setTimeout(end, ms)
+        hostSleeps.add(end)
+        return promise
       },
     },
     // This plugin's own store, which 2.1.310 keeps as a JSON file: a value round-trips as
@@ -331,16 +351,6 @@ async function eventsThrough(holds: (event: ModEvent) => boolean): Promise<ModEv
   }
 }
 
-/** Poll until `holds`, which is how this file waits on work the mod does off a hook: the
- *  prompt at unread rows goes out after `turn.complete` has returned. */
-async function until(what: string, holds: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 400; attempt += 1) {
-    if (holds()) return
-    await Bun.sleep(5)
-  }
-  throw new Error(`timed out waiting for ${what}`)
-}
-
 /** `prompt` with the mark it carries put aside, so a prompt the mod submitted and the prompt
  *  it should be compare equal: the mark is minted fresh for every prompt and checked absent
  *  from the messages it quotes (`unreadRowPrompt`), so this leaves every other character of
@@ -408,7 +418,7 @@ beforeAll(async () => {
   await start(engine, { cwd: directory, isInteractive: true }, async (e) => ({ cwd: e.cwd }))
   // The mod probes the socket off the hook, so the link is up a moment after `session.start`
   // returns; the server says when, rather than this file guessing a delay.
-  while (!server.connected()) await Bun.sleep(5)
+  await until("the mod's link to the server", () => server.connected())
 })
 
 afterAll(async () => {
@@ -897,10 +907,10 @@ test("a pointer prompt the engine holds past the row window still has its row st
   expect((await message(card)).as).toBe("row")
 
   // The turn's end points the model at that unread row, and the engine holds the prompt it
-  // submits for 2.5 s — past `PROMPT_ROW_MS` (2 s) — before taking it and writing its row.
-  // The wait is real because the window is: the mod spends it on the host's own clock
-  // (`$.clock.sleep`, which this file answers with `Bun.sleep`), and there is no handle on
-  // that wait to advance, so crossing the window means crossing it in real time.
+  // submits until every timer the mod has armed on the host's clock (`$.clock.sleep`, this
+  // file's engine) has run out — `PROMPT_ROW_MS` (2 s) among them were it timed from the call —
+  // before taking it and writing its row. Run out by the test, not waited out: the host clock
+  // is this file's own.
   const held = Promise.withResolvers<void>()
   holdNextPrompt = held
   await turnComplete(
@@ -909,10 +919,15 @@ test("a pointer prompt the engine holds past the row window still has its row st
     async (e) => ({ text: e.answer }),
   )
   await until("the pointer submit to be in flight", () => holdNextPrompt === undefined)
-  await Bun.sleep(2_500)
+  runOutHostSleeps()
+  // What each ended sleep resumes runs on microtasks, all of which a macrotask comes after: a row
+  // window timed from the call has given its row up by the time the engine takes the prompt.
+  const drained = Promise.withResolvers<void>()
+  setImmediate(drained.resolve)
+  await drained.promise
   held.resolve()
   await until("the pointer submitted", () => submits.length === sent + 1)
 
   expect((await rowReported(`prompt-row-${promptRows}`)).wrote).toBe("pointer")
   await turn("turn-after-slow-pointer", 1)
-}, 20_000)
+})

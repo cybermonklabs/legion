@@ -242,8 +242,7 @@ test.skipIf(omp === undefined && !onActions)(
     if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
     const available = new Set([...shippedAgents(packageRoot), ...(await bundledAgents(omp))]);
     expect(unresolvedAgentDispatches([staged], available)).toEqual([]);
-  },
-  60_000
+  }
 );
 
 test("a heading inside a code fence is no anchor, since a Markdown reader renders none", () => {

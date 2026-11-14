@@ -1,4 +1,4 @@
-import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
@@ -23,8 +23,8 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 //     Dispatch variables of its environment, and runs `mise x <pin> -- <command>` as the command
 //     (a run names its pin's omp by path).
 // Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
-// must stop its server when it ends.
-setDefaultTimeout(120_000);
+// must stop its server when it ends. Each row runs two rigs end to end, under the command's one
+// guard.
 
 // Every row here runs the rig through python3, which puts it in a process group of its own
 // (`runRig` below says why it must). Read once, so one warning names python3 for the whole file.

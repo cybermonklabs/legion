@@ -14,7 +14,7 @@ let distDirectory = ""
 beforeAll(async () => {
   distDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-fresh-dist-"))
   await buildBundles(distDirectory)
-}, 60_000)
+})
 
 afterAll(async () => {
   await rm(distDirectory, { recursive: true, force: true })
@@ -368,7 +368,7 @@ test("two builds of one tree are byte for byte the same", async () => {
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 60_000)
+})
 
 // `bun run verify-build` spawns a new "bun" to run scripts/build.ts, and that spawn
 // resolves "bun" from PATH rather than reusing whichever binary the caller invoked `bun run` with

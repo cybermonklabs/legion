@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { settled } from "@legion/test-fixtures/wait"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
 
@@ -187,7 +188,10 @@ function builtPlugin(): Promise<string> {
       stdout: "ignore",
       stderr: "pipe",
     })
-    const [exitCode, stderr] = await Promise.all([build.exited, new Response(build.stderr).text()])
+    const [exitCode, stderr] = await settled(
+      "scripts/build.ts --out to exit",
+      Promise.all([build.exited, new Response(build.stderr).text()]),
+    )
     if (exitCode !== 0) throw new Error(`scripts/build.ts --out exited ${exitCode}: ${stderr}`)
     return out
   })()
@@ -489,7 +493,7 @@ async function runWorker(options: {
   let sent = 1
   let ended = 0
   for (;;) {
-    const { done, value } = await reader.read()
+    const { done, value } = await settled("Claude Code's next stream-json output", reader.read())
     if (done) break
     buffered += decoder.decode(value, { stream: true })
     for (let end = buffered.indexOf("\n"); end >= 0; end = buffered.indexOf("\n")) {
@@ -508,11 +512,11 @@ async function runWorker(options: {
         if (ended >= (options.runs ?? options.prompts.length)) child.stdin.end()
         continue
       }
-      await ready.promise
+      await settled("the daemon stand-in to be told the pane is ready", ready.promise)
       prompt(next)
     }
   }
-  await child.exited
+  await settled("Claude Code to exit once stdin ends", child.exited)
 
   const debug = await readFile(join(configDir, "debug", `${SESSION}.txt`), "utf8")
   const paneLog = (await readFile(paneLogFile, "utf8").catch(() => "")).split("\n").filter(Boolean)
@@ -628,7 +632,6 @@ test.skipIf(claude === undefined)(
       lastMessage: "Still going.",
     })
   },
-  180_000,
 )
 
 test.skipIf(claude === undefined)(
@@ -675,7 +678,6 @@ test.skipIf(claude === undefined)(
     })
     expect(run.stopHookActive.slice(-2)).toEqual(["false", "true"])
   },
-  180_000,
 )
 
 // A turn that ends while a background task of the worker's own is still running is a
@@ -731,5 +733,4 @@ test.skipIf(claude === undefined)(
       lastMessage: "WAITING on nothing more.",
     })
   },
-  180_000,
 )

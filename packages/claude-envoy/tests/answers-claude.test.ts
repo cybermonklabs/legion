@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { SessionAnswer } from "@legion/contracts"
 import { renderSessionAnswers } from "@legion/envoy-client/session-answers"
+import { settled } from "@legion/test-fixtures/wait"
 
 // What people wrote to a session, on the real Claude Code (hooks/session-hook.ts
 // `answers`): Claude Code keeps a hook's additionalContext where only the requests it
@@ -25,8 +26,6 @@ const binary = (): string => {
 }
 
 const packageRoot = resolve(import.meta.dir, "..")
-/** What a case waits for at most: a process's exit, or a turn's result line. */
-const WAIT_MS = 60_000
 /** The assignment the stand-in's Agent call hands the subagent, which tells its requests apart. */
 const ASSIGNMENT = "SUBAGENT-ASSIGNMENT: report that you are done."
 const SUBAGENT_PROMPT = "Run a subagent."
@@ -315,13 +314,16 @@ async function print(
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    timeout: WAIT_MS,
   })
-  const [exitCode, stdout, stderr] = await Promise.all([
-    run.exited,
-    new Response(run.stdout).text(),
-    new Response(run.stderr).text(),
-  ])
+  // A run still going when its case ends (one whose wait below gave up) goes with the case.
+  cleanup.push(async () => {
+    run.kill()
+    await run.exited
+  })
+  const [exitCode, stdout, stderr] = await settled(
+    `claude ${args.join(" ")} to exit`,
+    Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()]),
+  )
   if (exitCode !== 0) {
     throw new Error(
       `claude ${args.join(" ")} exited ${exitCode}\nstdout: ${stdout}\nstderr: ${stderr}`,
@@ -353,7 +355,6 @@ function streamSession(
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      timeout: WAIT_MS,
     },
   )
   cleanup.push(async () => {
@@ -402,11 +403,25 @@ function streamSession(
           if (results.length > before) settle()
         }
       })
-      // The process's own `timeout` bounds the wait: Bun kills it, and `exited` settles.
-      const outcome = await Promise.race([
-        done.then(() => "done" as const),
-        run.exited.then(() => "exited" as const),
-      ])
+      let outcome: "done" | "exited"
+      try {
+        outcome = await settled(
+          `the turn for ${JSON.stringify(text)} to end`,
+          Promise.race([
+            done.then(() => "done" as const),
+            run.exited.then(() => "exited" as const),
+          ]),
+        )
+      } catch (error) {
+        // Stopped first, so what it wrote to stderr is whole.
+        run.kill()
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}\n${await output()}`,
+          {
+            cause: error,
+          },
+        )
+      }
       if (outcome !== "done" && results.length <= before) {
         throw new Error(
           `claude ended no turn for ${JSON.stringify(text)} (${outcome})\n${await output()}`,
@@ -418,8 +433,8 @@ function streamSession(
     },
     async end() {
       run.stdin.end()
-      const exitCode = await run.exited
-      await reading
+      const exitCode = await settled("claude to exit once its stdin ends", run.exited)
+      await settled("claude's stream-json output to end", reading)
       if (exitCode !== 0) throw new Error(`claude exited ${exitCode}\n${await output()}`)
     },
   }
@@ -440,7 +455,6 @@ test.skipIf(skipped)(
       `/api/v1/agents/${setup.session}/answers`,
     ])
   },
-  WAIT_MS * 2,
 )
 
 test.skipIf(skipped)(
@@ -458,7 +472,6 @@ test.skipIf(skipped)(
     expect(carries(turnOf(setup.standin.messages, "Turn one."), "RESUME-ANSWER")).toBe(false)
     expect(carries(turnOf(setup.standin.messages, "Turn two."), rendered(items))).toBe(true)
   },
-  WAIT_MS * 3,
 )
 
 test.skipIf(skipped)(
@@ -482,7 +495,6 @@ test.skipIf(skipped)(
     expect(carries(after, "SUMMARY-OF-THE-TURNS")).toBe(true)
     expect(carries(after, rendered(items))).toBe(true)
   },
-  WAIT_MS * 4,
 )
 
 test.skipIf(skipped)(
@@ -517,5 +529,4 @@ test.skipIf(skipped)(
     ])
     expect(subagentReads[0]?.index ?? Number.POSITIVE_INFINITY).toBeLessThan(subagent.index)
   },
-  WAIT_MS * 2,
 )

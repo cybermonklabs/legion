@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { until as waitUntil } from "@legion/test-fixtures/wait";
 
 // Where a session sits in tmux, as the real Oh My Pi reports it (envoy-client's `readTmuxPlace`,
 // the cached reading extensions/envoy.ts takes a registration's place from without waiting on it,
@@ -24,9 +25,8 @@ import {
 // card-delivery-omp.test.ts (`ompNatsGuard`); a tmux on PATH is the third thing this file needs,
 // since the session runs the one it finds there itself, and it is guarded the same way. A run
 // without all three skips, except on GitHub Actions, where the pi-envoy job supplies them.
-// This file imports no `nats`, so the package's shared test process serves it: envoy.test.ts's
-// `mock.module("nats", …)` replaces that module for this process alone, and the session's NATS
-// connection is the binary's own, in a process of its own, which no mock here reaches.
+// This file imports no `nats`: the session's NATS connection is the binary's own, in a process of
+// its own, which no mock in a test process reaches.
 const ompNats = ompNatsGuard();
 const tmuxBinary = Bun.which("tmux");
 const skip = ompNats.skip || (tmuxBinary === null && !ompNats.onActions);
@@ -47,8 +47,6 @@ const HEARTBEAT_MS = 3_000;
  *  on. It is short against `HEARTBEAT_MS`, so the window is read again within a fraction of a
  *  heartbeat after a split, and the registration after that reading carries the split window. */
 const PLACE_CACHE_MS = 500;
-/** How long a case waits for one thing the session owes it before failing on it. */
-const DEADLINE_MS = 60_000;
 
 /** What the case gives tmux, and holds the reported place to. The window is not the session's
  *  first and the pane is not the window's first, so an index reported from the wrong end of
@@ -231,21 +229,27 @@ function layoutPanes(layout: string): string[] {
   return [...layout.matchAll(/\d+x\d+,\d+,\d+,(\d+)/g)].map(([, id]) => `%${id}`);
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline with what `diagnose`
- *  has to say about the session that owed it. */
+/** Polls `probe` until it returns a value, failing on `what` at the row's deadline with what
+ *  `diagnose` has to say about the session that owed it. A request reaching the stand-in has no
+ *  event the case can await, so it is polled. */
 async function until<T>(
   what: string,
   probe: () => T | undefined,
   diagnose: () => Promise<string>
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
-  for (;;) {
-    const value = probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline)
-      throw new Error(`timed out waiting for ${what}: ${await diagnose()}`);
-    // A request reaching the stand-in has no event the case can await, so it is polled.
-    await Bun.sleep(20);
+  try {
+    const { value } = await waitUntil(what, () => {
+      const read = probe();
+      return read === undefined ? undefined : { value: read };
+    });
+    return value;
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}: ${await diagnose()}`,
+      {
+        cause: error,
+      }
+    );
   }
 }
 
@@ -328,12 +332,10 @@ test.skipIf(skip)(
       expect(layoutPanes(layoutOf(first))).toHaveLength(3);
 
       await run(["split-window", "-d", "-t", `${window}.2`, "sleep 600"]);
-      // The registrations taken from here on read the window after the split: a reading stands
-      // for `PLACE_CACHE_MS`, and this waits that out before it counts what the stand-in holds.
-      // The cache reads the split window on its own timer inside that lifetime, so the first
-      // registration past it carries what that reading found; a registration that overtakes the
-      // reading carries the window as it was, and `until` waits for the one behind it.
-      await Bun.sleep(PLACE_CACHE_MS);
+      // The registrations from here on carry the window after the split once the cache has read
+      // it again, which it does on its own timer within `PLACE_CACHE_MS`; a registration that
+      // overtakes that reading carries the three panes, so `until` waits for the first one that
+      // carries any other layout.
       const taken = registrations(requests).length;
       const next = await until(
         "a registration carrying the window the split left",
@@ -356,45 +358,40 @@ test.skipIf(skip)(
     } finally {
       await tmuxCommand(tmux, socket, ["kill-server"], environment).catch(() => undefined);
     }
-  },
-  180_000
+  }
 );
 
 // The same binary, started the way every other case of this package starts it: no pane, no `TMUX`,
 // nothing to report. The place is left off the body rather than sent empty: the listener builds
 // its entry fresh from each registration, so a body carrying no place leaves the session with
 // none, which is what a session outside tmux is.
-test.skipIf(skip)(
-  "a session outside tmux registers no place at all",
-  async () => {
-    const { binary, nats } = setup();
-    const { home, workspace, sessions } = await ompRoot(binary, "tmux-place-outside-omp-", cleanup);
-    const { requests, base } = await standin(home, workspace);
+test.skipIf(skip)("a session outside tmux registers no place at all", async () => {
+  const { binary, nats } = setup();
+  const { home, workspace, sessions } = await ompRoot(binary, "tmux-place-outside-omp-", cleanup);
+  const { requests, base } = await standin(home, workspace);
 
-    const closed: { error?: unknown } = {};
-    const rpc = spawnRpc(
-      binary,
-      {
-        extensions: [path.join(import.meta.dir, "envoy.ts")],
-        home,
-        workspace,
-        sessions,
-        env: sessionEnvironment(base, nats),
-        onFrame: () => undefined,
-      },
-      cleanup
-    );
-    rpc.closed.catch((error: unknown) => {
-      closed.error = error;
-    });
+  const closed: { error?: unknown } = {};
+  const rpc = spawnRpc(
+    binary,
+    {
+      extensions: [path.join(import.meta.dir, "envoy.ts")],
+      home,
+      workspace,
+      sessions,
+      env: sessionEnvironment(base, nats),
+      onFrame: () => undefined,
+    },
+    cleanup
+  );
+  rpc.closed.catch((error: unknown) => {
+    closed.error = error;
+  });
 
-    const first = await until(
-      "the session's first registration with the listener",
-      () => registrations(requests)[0],
-      async () => String(closed.error ?? "omp is still running")
-    );
-    expect("tmux_place" in first).toBe(false);
-    await rpc.end();
-  },
-  180_000
-);
+  const first = await until(
+    "the session's first registration with the listener",
+    () => registrations(requests)[0],
+    async () => String(closed.error ?? "omp is still running")
+  );
+  expect("tmux_place" in first).toBe(false);
+  await rpc.end();
+});

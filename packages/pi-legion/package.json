@@ -27,7 +27,7 @@
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 --path-ignore-patterns '**/*-omp.test.ts' --path-ignore-patterns '**/daemon-pane.test.ts' && bun test --preload @legion/test-fixtures/row-deadline --timeout 600000 ./extensions/*-omp.test.ts ./scripts/skill-scenarios/daemon-pane.test.ts",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

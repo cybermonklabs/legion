@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -6,9 +6,8 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
-// takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
-// one minute.
-setDefaultTimeout(60_000);
+// takes longer than bun's 5 s default (the eight-turn conversation took 11 s), which the command's
+// one guard covers.
 
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
 // one warning names docker for the whole file.

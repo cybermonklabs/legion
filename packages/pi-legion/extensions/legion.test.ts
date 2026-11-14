@@ -65,6 +65,7 @@ import {
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
 import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ConnectionOptions, NatsConnection } from "nats";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
@@ -1133,11 +1134,19 @@ async function firstTurn(pane: ClaimPane): Promise<void> {
         "role" in request.body &&
         request.body.role === pane.claimToken
     );
-  const deadline = Date.now() + 2_000;
-  while (!claimed()) {
-    if (Date.now() > deadline) throw new Error("the session's first turn claimed no Envoy role");
-    await Bun.sleep(5);
-  }
+  await until("the session's first turn to claim its Envoy role", claimed);
+}
+
+/**
+ * Resolves once every microtask queued before it has run: Bun's fake timers leave `setImmediate`
+ * real (measured on Bun 1.4.4), and the event loop runs an immediate only once the microtask
+ * queue is empty. Under fake timers, work the stand-in answered in memory has run on by then, up
+ * to the next timer it arms.
+ */
+function everyMicrotask(): Promise<void> {
+  const ran = Promise.withResolvers<void>();
+  setImmediate(ran.resolve);
+  return ran.promise;
 }
 
 const daemonRequests = <T extends { readonly path: string }>(requests: readonly T[]) =>
@@ -2109,14 +2118,21 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         activity: { backgroundWork: { running: false, kinds: [] } },
       });
 
-      // The second settle arms the ordinary reminder, and reports the wake it armed.
-      await worker.settles("Still pushing.");
+      // The second settle arms the ordinary reminder, and reports the wake it armed: the moment
+      // the settle read from the clock, which the row holds still, plus the reminder's delay.
+      const settledAt = Date.UTC(2026, 10, 14, 9, 30);
+      setSystemTime(new Date(settledAt));
+      try {
+        await worker.settles("Still pushing.");
+      } finally {
+        setSystemTime();
+      }
       expect(activityReports(worker)).toHaveLength(3);
       const wake = activityReports(worker).at(-1) as {
         activity: { phase: { nextReminderAt: string | null } };
       };
-      expect(Date.parse(String(wake.activity.phase.nextReminderAt))).toBeGreaterThanOrEqual(
-        Date.now() + DEFAULT_STALL_LIMITS.reminderMs - 1_000
+      expect(wake.activity.phase.nextReminderAt).toBe(
+        new Date(settledAt + DEFAULT_STALL_LIMITS.reminderMs).toISOString()
       );
     });
 
@@ -3194,21 +3210,40 @@ describe.skipIf(skip)("Legion OMP extension", () => {
   });
 
   test("claims/ready is retried on a 5xx and on a transport failure, three attempts a second apart", async () => {
+    const posted = [1, 2, 3].map(() => Promise.withResolvers<void>());
     const recovered = await claimPane({
       role: "implementer",
       sessionId: "ses_ready_recovers",
       ready: (attempt) => {
+        posted[attempt - 1]?.resolve();
         if (attempt === 1) return Response.json({ error: "daemon unavailable" }, { status: 503 });
         if (attempt === 2) throw new TypeError("fetch failed");
         return new Response(null, { status: 204 });
       },
     });
-    const started = Date.now();
-    await recovered.start();
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1_900);
-    expect(
-      daemonRequests(recovered.requests).filter((r) => r.path === "/legion/v1/claims/ready")
-    ).toHaveLength(3);
+    const readyPosts = () =>
+      daemonRequests(recovered.requests).filter((r) => r.path === "/legion/v1/claims/ready").length;
+    // The pause between attempts is a `setTimeout` of this process, so the row holds the clock it
+    // runs on (Bun's fake timers) and moves it: each next attempt comes once a whole second has
+    // passed since the failure before it, and not a millisecond sooner.
+    jest.useFakeTimers();
+    try {
+      const booting = recovered.start();
+      for (const failed of [1, 2]) {
+        await posted[failed - 1]?.promise;
+        // The stand-in answers in memory, so the failure is read and its pause armed in microtasks.
+        await everyMicrotask();
+        jest.advanceTimersByTime(999);
+        await everyMicrotask();
+        expect(readyPosts()).toBe(failed);
+        jest.advanceTimersByTime(1);
+        await posted[failed]?.promise;
+      }
+      await booting;
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(readyPosts()).toBe(3);
     expect(recovered.exits).toEqual([]);
   });
 
@@ -3843,7 +3878,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     test("a send the daemon takes and never answers is bounded: the request is aborted, the tick ends, the failure costs one log line, and the session measures again at its next due tick", async () => {
-      // The real bound is 10 s, past Bun's limit for one test; the machine is the same at 50 ms.
+      // The real bound is 10 s; the machine is the same at 50 ms, which keeps the row short.
       setLegionCapabilitySendTimeoutForTests(50);
       const session = await capabilitySession({
         sessionId: "ses_capability_hung",
@@ -3858,6 +3893,14 @@ describe.skipIf(skip)("Legion OMP extension", () => {
        * is a real timer inside the schedule, and no duration is guessed at. */
       const bounded = Promise.withResolvers<void>();
 
+      // The second send's bound is a `setTimeout` of this process: every timer armed from here on
+      // is recorded, and so is every one cleared, while each still runs as it would. Each record
+      // is read before the spies are restored, which empties them.
+      const armedTimers = spyOn(globalThis, "setTimeout");
+      const clearedTimers = spyOn(globalThis, "clearTimeout");
+      /** The timers armed for the second send's 50 ms bound, and every timer cleared since. */
+      let secondBounds: NodeJS.Timeout[] = [];
+      let cleared: unknown[] = [];
       const { warnings } = await loggedWarnings(async () => {
         const stopSink = logger.registerLogSink((entry) => {
           if (entry.message.includes("capability report did not reach the daemon")) {
@@ -3871,11 +3914,19 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           // leaving the schedule's in-flight guard set for the session's life.
           await bounded.promise;
           await drain();
+          armedTimers.mockClear();
+          clearedTimers.mockClear();
           await ticks(session.pane, CAPABILITY_RETRY_TICKS);
           await session.reported(2);
           await drain();
+          secondBounds = armedTimers.mock.calls.flatMap((call, index) =>
+            call[1] === 50 ? [armedTimers.mock.results[index]?.value as NodeJS.Timeout] : []
+          );
+          cleared = clearedTimers.mock.calls.map(([handle]) => handle);
         } finally {
           stopSink();
+          armedTimers.mockRestore();
+          clearedTimers.mockRestore();
         }
       });
 
@@ -3898,13 +3949,12 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(String((hung?.reason as Error | undefined)?.message)).toContain(
         "claims/ready did not answer within 50 ms"
       );
-      // The send the daemon took ends its own bound: its request is never aborted. The wait is
-      // what makes that an assertion — the second send answered at once, well before its own
-      // 50 ms bound, so only a wait past that bound tells a cleared timer from one still armed.
-      // It is a real wait on purpose: the bound is a real `setTimeout` inside the schedule, and
-      // a timer that was cleared fires nothing there is to await.
-      await Bun.sleep(150);
+      // The send the daemon took ends its own bound: its request is not aborted when it ends, and
+      // the bound's timer is cleared, so it never fires to abort it later — read from the timer
+      // itself, since a timer that was cleared fires nothing there is to await.
       expect(session.readySignals[1]?.aborted).toBe(false);
+      expect(secondBounds).toHaveLength(1);
+      expect(cleared).toContain(secondBounds[0]);
     });
   });
 });
@@ -4393,9 +4443,14 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.sentUserMessages).toEqual([]);
     expect(atTopicRegistration).toEqual([]);
 
-    const before = Date.now();
-    expect(await runStartCommand(controller, context)).toEqual([]);
-    const after = Date.now();
+    // The mark reads this process's clock, which the row holds still for the command's run.
+    const sentAt = Date.UTC(2026, 10, 14, 9, 30);
+    setSystemTime(new Date(sentAt));
+    try {
+      expect(await runStartCommand(controller, context)).toEqual([]);
+    } finally {
+      setSystemTime();
+    }
 
     expect(sentAtRegister).toEqual([[]]);
     expect(sentAtRoleClaim).toEqual([[message]]);
@@ -4410,11 +4465,8 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.sentUserMessageOptions).toEqual([undefined]);
     expect(envoyPluginInterface().startupTurn).toEqual({
       session: "ses_controller_start",
-      sentAt: expect.any(Number),
+      sentAt,
     });
-    const sentAt = envoyPluginInterface().startupTurn?.sentAt ?? 0;
-    expect(sentAt).toBeGreaterThanOrEqual(before);
-    expect(sentAt).toBeLessThanOrEqual(after);
 
     // A second run finds the claim done: it says so, and neither claims nor sends again.
     const registrations = controller.requests.filter(
@@ -5255,17 +5307,23 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(daemonRequests(controller.requests)).toEqual([]);
     expect(controller.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
 
-    const before = Date.now();
-    expect(await runStartCommand(controller, context)).toEqual([]);
+    // The mark reads this process's clock, which the row holds still for the command's run.
+    const sentAt = Date.UTC(2026, 10, 14, 9, 30);
+    setSystemTime(new Date(sentAt));
+    try {
+      expect(await runStartCommand(controller, context)).toEqual([]);
+    } finally {
+      setSystemTime();
+    }
 
     expect(marksAtRegister).toEqual([{ session: "ses_controller_pending", sentAt: undefined }]);
     expect(controller.sentUserMessages).toEqual([
       "Legion controller start: follow skill://legion-controller",
     ]);
-    const sent = envoyPluginInterface().startupTurn;
-    expect(sent?.session).toBe("ses_controller_pending");
-    expect(sent?.sentAt).toBeGreaterThanOrEqual(before);
-    expect(sent?.sentAt).toBeLessThanOrEqual(Date.now());
+    expect(envoyPluginInterface().startupTurn).toEqual({
+      session: "ses_controller_pending",
+      sentAt,
+    });
   });
 
   // Only a controller with a start message of its own to send has a start turn to keep first: the
@@ -5394,7 +5452,9 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
     // The daemon always names its controller's Slack channels; this project has none.
     process.env.LEGION_SLACK_CHANNELS = "";
-    const before = Date.now();
+    // The mark reads this process's clock, which the row holds still from the session's start.
+    const readyAt = Date.UTC(2026, 10, 14, 9, 30);
+    setSystemTime(new Date(readyAt));
     let commandNotices: CommandNotice[];
     try {
       await controller.handlers.get("session_start")?.(
@@ -5404,6 +5464,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       // Its start command, run while the process is still the daemon's controller.
       commandNotices = await runStartCommand(controller, controller.context("ses_controller_pod"));
     } finally {
+      setSystemTime();
       delete process.env.LEGION_BOOT_TOKEN_FILE;
     }
     expect(daemonRequests(controller.requests)).toEqual([
@@ -5431,10 +5492,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     const paths = controller.requests.map((request) => request.path);
     expect(paths.indexOf("/v1/roles/set")).toBeLessThan(paths.indexOf("/legion/v1/claims/ready"));
     expect(controller.sentUserMessages).toEqual([]);
-    expect(markAtReady).toEqual([{ session: "ses_controller_pod", sentAt: expect.any(Number) }]);
-    const sentAt = markAtReady[0]?.sentAt ?? 0;
-    expect(sentAt).toBeGreaterThanOrEqual(before);
-    expect(sentAt).toBeLessThanOrEqual(Date.now());
+    expect(markAtReady).toEqual([{ session: "ses_controller_pod", sentAt: readyAt }]);
     // Its start command had nothing to do: it claimed at session_start, and the daemon delivers
     // the start message.
     expect(commandNotices).toEqual([NOTHING_TO_DO]);
@@ -7240,8 +7298,8 @@ describe("the stall watch the plugin's entry arms", () => {
    * and waits for the sweep it started to have written `wanted` records in all. The host arms the
    * sweep with `void` and never awaits it — a step of the ladder can outlast the tick that armed
    * it — so there is no promise or event here to await, and each step crosses the teller's
-   * publish before its record is written. The loop ends at the record rather than at a duration,
-   * and the deadline is the failure message. */
+   * publish before its record is written. The shared wait ends at the record, and its failure
+   * names the records written by then. */
   const sweeps = async (
     intervals: readonly (() => void)[],
     entries: readonly AppendedEntry[],
@@ -7249,16 +7307,14 @@ describe("the stall watch the plugin's entry arms", () => {
   ): Promise<StallWatchRecord[]> => {
     if (intervals.length === 0) throw new Error("this session armed no interval to sweep on");
     for (const tick of intervals) tick();
-    const deadline = Date.now() + 2_000;
-    while (records(entries).length < wanted) {
-      if (Date.now() > deadline) {
-        throw new Error(
-          `the stall watch wrote ${records(entries).length} records, not ${wanted}: ${JSON.stringify(records(entries))}`
-        );
-      }
-      await Bun.sleep(5);
-    }
-    return records(entries);
+    return until(`the stall watch to have written ${wanted} records`, () => {
+      const written = records(entries);
+      return written.length >= wanted && written;
+    }).catch((error: unknown) => {
+      throw new Error(`${(error as Error).message}: it wrote ${JSON.stringify(records(entries))}`, {
+        cause: error,
+      });
+    });
   };
 
   /** The clock the watch judges a call by is the machine's own (`Date.now` in the entry), so a

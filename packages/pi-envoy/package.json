@@ -27,7 +27,7 @@
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 120000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns='**/*-omp.test.ts' && bun test --timeout 360000 --preload @legion/test-fixtures/row-deadline omp.test.ts",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

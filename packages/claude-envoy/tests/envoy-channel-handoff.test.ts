@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test"
 import { mkdir, readdir, readFile, stat, utimes, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
+import { span } from "@legion/test-fixtures/wait"
 import {
   type ChannelNotifier,
   executeEnvoyTool,
@@ -305,10 +306,14 @@ test("a heartbeat tick that outlives the interval is never overlapped by the nex
 
   try {
     await waitFor(async () => registrations === 2, "the first heartbeat tick to begin")
-    // Real time on purpose: the server's own setInterval is what must not fire
-    // a second registration while this one is stalled, so give it several
-    // intervals to try.
-    await Bun.sleep(100)
+    // The server's own setInterval is what must not fire a second registration while this one
+    // is stalled, so it is given several intervals to try.
+    await span(
+      100,
+      "the heartbeat is the server's own setInterval, on which ChannelSessionOptions gives no " +
+        "handle, and a tick it skips while one is stalled leaves no state to read and no later " +
+        "effect to wait for: four of its 25 ms intervals",
+    )
     expect(events).toEqual(["start 1", "end 1", "start 2"])
 
     release.resolve()
