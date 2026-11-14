@@ -1,12 +1,23 @@
 import { setLiveSessions } from "./agents";
-import { createAsk, createComment, createIssue, createProject, getInbox, patchIssue } from "./api";
+import {
+  createAsk,
+  createComment,
+  createIssue,
+  createProject,
+  editArtifact,
+  getInbox,
+  getIssue,
+  patchIssue,
+} from "./api";
 import { recordClipboard } from "./clipboard";
 import { nextFrames } from "./frames";
 import { clearAssigneeFilter, closeAssigneeFilter, pickAssignee } from "./inbox-filter";
 import {
+  askControls,
   hasReadingPane,
   inboxList,
   inboxPane,
+  inboxRow,
   paneScroller,
   selectedRow,
   selectRow,
@@ -34,8 +45,9 @@ import { asUser } from "./users";
 
 /**
  * The Inbox's keyboard, in the rows whose claim reaches the server: a bulk snooze written and
- * read back, the refusals a pick in flight comes back with, the order the server serves, and
- * the thread row `e` dismisses. What the page draws over one fixed answer - marks, focus,
+ * read back, the refusals a pick in flight comes back with, the order the server serves, the
+ * thread row `e` dismisses, and the issue the reading column shows as `j` and `k` move it
+ * between two issues. What the page draws over one fixed answer - marks, focus,
  * Escape, the names a row's controls carry and the reading pane's own keys - is in
  * `keyboard-inbox.stub.e2e.ts`.
  */
@@ -757,6 +769,130 @@ test("l moves the focus into the reading pane, the keyboard scrolls the document
     await expect(rows.nth(0)).toBeFocused();
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.cardAskId);
   } finally {
+    await context.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// A reader moved between two issues (dispatch://INFRA-299, `c-observer-key`). Two questions,
+// each a decision block in its own issue's spec, are drawn by one document pane, so `j` and `k`
+// change the issue that pane reads rather than mounting another. The issue a pane reads decides
+// whether the column says the issue is closed. A query's own rule for Dispatch's answers
+// (`issueQuery`'s, which keeps the held issue over an older answer) judges what enters the cache
+// and never what a reader showed for the issue before, so the closed issue, changed before the
+// open one, still shows as closed. The column is drawn from 1280 px, which only `chromium` is
+// wide enough for, so the row takes no `@phone` tag.
+// ---------------------------------------------------------------------------
+
+const decisionBlock = (question: string) =>
+  `:::ask{#decision urgency="high" multiple="false" state="open"}\n${question}\n\n- Yes: Go ahead\n- No: Wait\n:::\n`;
+
+/** An issue at `priority` whose spec holds one decision block, asked by the session, and the
+ *  id of the question that block is once Dispatch has indexed it. */
+async function seedDecision(
+  title: string,
+  priority: number,
+  question: string
+): Promise<{ askId: string; key: string }> {
+  const issue = await createIssue({ project: "MOVE", spec: "## Plan\n\nContext.\n", title });
+  await patchIssue(issue.key, { priority });
+  await editArtifact(
+    issue.primary_artifact_id,
+    { ops: [{ after: "end", markdown: decisionBlock(question), op: "insert" }] },
+    session
+  );
+  const indexed = async () =>
+    ((await getIssue(issue.key)).open_asks ?? []).find((ask) => ask.block_id === "decision");
+  await expect.poll(async () => (await indexed()) !== undefined).toBe(true);
+  return { askId: (await indexed())?.id ?? "", key: issue.key };
+}
+
+test("a reader moved between two issues shows the issue it is on: j and k move the reading column between an open issue with a held pick and a closed one", async ({
+  browser,
+}) => {
+  await createProject({ key: "MOVE", name: "Moving reader" });
+  const open = await seedDecision("Lease handover", 1, "Ship the lease handover?");
+  const closed = await seedDecision("Replay window", 3, "Replay the whole window?");
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const releasePick = Promise.withResolvers<void>();
+  const releaseInbox = Promise.withResolvers<void>();
+  let holdingInbox = false;
+  try {
+    // The pick's PATCH is held for the whole row, so its change is live throughout.
+    await page.route(`**/api/v1/issues/${open.key}`, async (route) => {
+      if (route.request().method() !== "PATCH") {
+        await route.continue();
+        return;
+      }
+      await releasePick.promise;
+      await route.continue();
+    });
+    // Closing an issue withdraws its questions, so once the close is on its way the Inbox's own
+    // reads are held: the closed issue's question stays listed for the reader to move to.
+    await page.route("**/api/v1/inbox", async (route) => {
+      if (holdingInbox) await releaseInbox.promise;
+      await route.continue();
+    });
+    await page.goto("/");
+    await expect(inboxRow(page, open.askId)).toBeVisible();
+    await expect(inboxRow(page, closed.askId)).toBeVisible();
+    test.skip(!hasReadingPane(page), "the column the keys move is the reading column");
+    const rows = page.locator("[data-inbox-row]");
+    await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", open.askId);
+    await expect(rows.nth(1)).toHaveAttribute("data-inbox-row", closed.askId);
+
+    const controls = await askControls(page, open.askId);
+    const badge = (label: string) =>
+      controls.locator("span", { hasText: new RegExp(`^${label}$`) });
+    await controls.getByLabel(`Priority of ${open.key}`).selectOption("0");
+    await expect(badge("P0")).toBeVisible();
+
+    holdingInbox = true;
+    await patchIssue(closed.key, { status: "done" }, { login: "bob" });
+    // The open issue changes after the close, so it is the more recently changed of the two,
+    // and the page has read it so.
+    const renamed = "Lease handover, renamed";
+    const reread = page.waitForResponse(
+      async (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === `/api/v1/issues/${open.key}` &&
+        (await response.json()).title === renamed
+    );
+    await patchIssue(open.key, { title: renamed }, { login: "bob" });
+    await reread;
+
+    const pane = inboxPane(page);
+    const closedLine = pane.getByText("This issue is closed. Its document is read-only.", {
+      exact: true,
+    });
+    const block = pane.locator('[data-dispatch-ask-block="decision"]');
+    await expect(block).toContainText("Ship the lease handover?");
+    await expect(closedLine).toHaveCount(0);
+
+    // The keys are pressed from the list, where the reader walks it. The walk goes to the
+    // closed issue, back, and to it again: the second time the page already holds its answer.
+    await inboxRow(page, open.askId).focus();
+    for (const [key, onClosed] of [
+      ["j", true],
+      ["k", false],
+      ["j", true],
+    ] as const) {
+      await page.keyboard.press(key);
+      if (onClosed) {
+        await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", closed.askId);
+        await expect(block).toContainText("Replay the whole window?");
+        await expect(closedLine).toBeVisible();
+      } else {
+        await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", open.askId);
+        await expect(block).toContainText("Ship the lease handover?");
+        await expect(closedLine).toHaveCount(0);
+        await expect(badge("P0")).toBeVisible();
+      }
+    }
+  } finally {
+    releasePick.resolve();
+    releaseInbox.resolve();
     await context.close();
   }
 });

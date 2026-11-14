@@ -2667,6 +2667,40 @@ test("a read sent before the save answers after it lands: the pick stays over it
   }
 });
 
+// The fetch counter's other half: a cache written by hand - an event frame merged over the row the
+// cache holds, which may still be the row as it stood before the save - is a `success` the client
+// marks `manual`, and no read Dispatch answered after the landing. While the read begun after the
+// landing is still out, such a write leaves the pick over the list until that read answers.
+test("a read sent before the save answers after it lands: a hand write while the read begun after the landing is out leaves the pick over it", async () => {
+  const tab = keptTab();
+  const client = dispatchClient();
+  const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
+  const key = [...CORE_LISTS, []];
+  const list = heldList(client, key);
+  const shown = () => shownBy<Card[]>(writes, client, key)?.[0]?.priority;
+  try {
+    await list.answer(0, 2);
+    const saved = Promise.withResolvers<unknown>();
+    const pick = pickOf(writes, 0, saved.promise);
+    void client.invalidateQueries({ queryKey: key });
+    saved.resolve({ key: "CORE-1", priority: 0 });
+    await pick;
+    void client.invalidateQueries({ queryKey: key });
+    await list.answer(1, 2);
+    // The read begun after the landing is out.
+    await waitFor(() => expect(list.answers).toHaveLength(3));
+    client.setQueryData(key, [{ key: "CORE-1", priority: 2 }]);
+    expect(shown()).toBe(0);
+
+    await list.answer(2, 1);
+    expect(shown()).toBe(1);
+  } finally {
+    list.unsubscribe();
+    writes.clear();
+    tab.close();
+  }
+});
+
 // Round seven's Medium, per cache: the pick lands while the board's list and a filtered list of
 // the same project both hold it, each with a read out from before the landing. The board's list
 // answers a read begun after the landing and is Dispatch's whole; the filtered list has had no
