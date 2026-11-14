@@ -165,8 +165,10 @@ type issueListQuery struct {
 	Pinned bool `query:"pinned"`
 	// Project lists one project's issues.
 	Project string `query:"project"`
-	// Status lists issues at one status.
-	Status string `query:"status"`
+	// Status, repeatable, lists issues standing in any of these statuses; none, or only blank
+	// ones, is every status. A value is matched as written, so one the lifecycle does not hold
+	// matches no issue and is never refused: alone it lists none, beside another it adds nothing.
+	Status []string `query:"status"`
 	// Parent lists the children of one issue.
 	Parent string `query:"parent"`
 	// Label lists issues carrying every label given.
@@ -179,6 +181,13 @@ type issueListQuery struct {
 	ClosedBefore string `query:"closed_before"`
 	// Priority lists issues at these priorities, 0-3, or `none` for unset.
 	Priority []string `query:"priority"`
+	// Advances lists issues that advance these priorities, by their own relation or by one an
+	// issue above them states, over every project; `none` lists those that advance no live
+	// priority and `any` those that advance one, which is every other issue.
+	Advances []string `query:"advances"`
+	// Moved, `true`, adds moved_at and moved_by to each row standing in backlog or icebox: when
+	// the issue was moved there and who moved it. A listing without it reads neither.
+	Moved bool `query:"moved"`
 	// RouteStatus lists open issues whose route is live, no_holder or unknown.
 	RouteStatus string `query:"route_status"`
 	// Open, `true`, lists open issues alone.
@@ -188,6 +197,18 @@ type issueListQuery struct {
 	Limit int `query:"limit"`
 	// Offset is where the page starts, 0 or more; alone it pages at the default limit.
 	Offset int `query:"offset"`
+}
+
+// prioritiesQuery is GET /api/v1/priorities's query. The list of priorities is the whole
+// deployment's and neither key narrows it; both narrow what the route answers beside it, which
+// is the counts of the work under each priority and the two fault lists.
+type prioritiesQuery struct {
+	// Project, repeatable, narrows the counts and the fault lists to those projects and leaves
+	// the list of priorities whole. It is the repeatable key issueListQuery's Priority is.
+	Project []string `query:"project"`
+	// Summary, `true`, answers the two fault counts alone, which is what the navigation rail
+	// reads.
+	Summary bool `query:"summary"`
 }
 
 // issueResolveQuery is GET /api/v1/issues/resolve's query.
@@ -577,6 +598,21 @@ var routeShapes = map[string]routeShape{
 		Also: []routeAnswer{{Status: http.StatusOK, Body: whoamiAgent{}}},
 	},
 	"GET /api/v1/dashboard/builds": {Status: http.StatusOK, Response: dashboardBuilds{}},
+	"GET /api/v1/priorities": {
+		Status: http.StatusOK, Response: model.Priorities{}, Params: prioritiesQuery{},
+	},
+	"POST /api/v1/priorities": {
+		Status: http.StatusCreated, Response: model.Priority{}, Request: createPriorityInput{},
+	},
+	"PATCH /api/v1/priorities/{id}": {
+		Status: http.StatusOK, Response: model.Priority{}, Request: patchPriorityInput{},
+	},
+	// A delete answers no body: the state it wrote is `gone` and the row is still there, which
+	// the listing and the priority's own read already say (priorities.go).
+	"DELETE /api/v1/priorities/{id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
+	// The history is a bare list, newest act first: the acts are the whole answer, and the
+	// priority they belong to is the id the path already names (priorities.go).
+	"GET /api/v1/priorities/{id}/history": {Status: http.StatusOK, Response: []model.PriorityAct{}},
 	"GET /api/v1/issues": {
 		Status: http.StatusOK, Response: []model.IssueSummary{}, Params: issueListQuery{},
 		// A request naming limit or offset is answered the page wrapper instead

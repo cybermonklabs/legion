@@ -230,6 +230,7 @@ func outboxSuffix(t *testing.T) string {
 }
 
 type blockingDispatch struct {
+	noArtifacts
 	mu      sync.Mutex
 	issue   dispatch.Issue
 	entered chan struct{}
@@ -424,6 +425,7 @@ func TestACredentialOrUncodedRefusalIsRiddenOutRatherThanDroppingTheWrite(t *tes
 // refusingDispatch answers SetStatus for a named status with a Dispatch refusal that will never
 // change, and takes every other status.
 type refusingDispatch struct {
+	noArtifacts
 	status string
 	reads  int
 	refuse map[string]*dispatch.Error
@@ -480,6 +482,7 @@ func (d *refusingDispatch) PutDesignGates(context.Context, string, []dispatch.De
 
 // boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies.
 type boardDispatch struct {
+	noArtifacts
 	status   string
 	failures int
 }

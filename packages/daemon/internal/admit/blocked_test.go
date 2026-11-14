@@ -135,7 +135,7 @@ func TestTheRootIsAdmittedOnItsLastBlockersCloseExactlyAsAnUnblockedOneIs(t *tes
 	if got, want := effects(t, subject), effects(t, control); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the admission of the unblocked root wrote %#v, want the rows a control admission writes, %#v", got, want)
 	}
-	if got, want := issue(t, subject, "LEGION-ROOT"), issue(t, control, "LEGION-ROOT"); !reflect.DeepEqual(got, want) {
+	if got, want := withoutMovement(issue(t, subject, "LEGION-ROOT")), withoutMovement(issue(t, control, "LEGION-ROOT")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the admitted root = %#v, want the record a control admission leaves, %#v", got, want)
 	}
 	if got, want := slots(t, subject), slots(t, control); !reflect.DeepEqual(got, want) {

@@ -334,6 +334,48 @@ func TestPodDriftAnswersTheScriptAndReplacePodEndsIt(t *testing.T) {
 	}
 }
 
+// A ReplacePod over a pod the runtime finds no longer there answers nil as the Sandbox runtime
+// does, without asking due: the last word is asked only of a pod there is to replace. It records
+// a ReplacePodNoPod call and no ReplacePod one, and leaves the claim's drift as it was. Cleared,
+// the next ReplacePod asks due and replaces as before.
+func TestReplacePodOfAPodThatIsNotThereAsksNothingAndReplacesNothing(t *testing.T) {
+	ctx := context.Background()
+	fake := NewRuntime()
+	drifted, err := fake.Spawn(ctx, spec("legion-omp-LEGION-208-tester"))
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	fake.ScriptPodDrift(drifted.Claim, "image")
+	known := runtime.Known{Claim: drifted.Claim, Locator: &drifted}
+	asked := 0
+	due := func(context.Context) error { asked++; return nil }
+
+	fake.FindNoPodToReplace(true)
+	if err := fake.ReplacePod(ctx, known, due); err != nil {
+		t.Fatalf("replace a pod that is not there: %v, want nil", err)
+	}
+	if asked != 0 {
+		t.Fatalf("due was asked %d times for a pod that is not there, want never", asked)
+	}
+	if calls := fake.CallsOf("ReplacePod"); len(calls) != 0 {
+		t.Fatalf("ReplacePod recorded %+v for a pod that is not there, want no replacement", calls)
+	}
+	if calls := fake.CallsOf("ReplacePodNoPod"); len(calls) != 1 || calls[0].Pod.Claim != drifted.Claim {
+		t.Fatalf("ReplacePodNoPod recorded %+v, want the one call of the claim", calls)
+	}
+	if got, err := fake.PodDrift(ctx, known); err != nil || !slices.Equal(got, []string{"image"}) {
+		t.Fatalf("the claim's drift after no replacement = %q, %v; want it as scripted", got, err)
+	}
+
+	fake.FindNoPodToReplace(false)
+	if err := fake.ReplacePod(ctx, known, due); err != nil {
+		t.Fatalf("replace pod: %v", err)
+	}
+	if asked != 1 || len(fake.CallsOf("ReplacePod")) != 1 {
+		t.Fatalf("after the clear, due was asked %d times and ReplacePod recorded %d calls, want one of each", asked, len(fake.CallsOf("ReplacePod")))
+	}
+}
+
 func TestConnRecordsWhatTheDaemonAskedOfTheAgent(t *testing.T) {
 	ctx := context.Background()
 	conn := NewConn()

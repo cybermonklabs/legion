@@ -113,6 +113,16 @@ export const issueFields = {
   parent: z.string().nullable(),
   /** Issue keys in the same project this issue waits on, sorted. */
   blocked_by: z.array(z.string()),
+  /** Every priority this issue advances: the ones it states itself and, marked `inherited`, the
+   *  ones an issue above it states. Absent from a Dispatch older than priorities. */
+  advances: z
+    .array(z.strictObject({ id: z.string(), inherited: z.boolean() }).readonly())
+    .nullable()
+    .optional(),
+  /** The revision of the issue's own `advances` set, which a whole-set write carries so two
+   *  writers cannot each move a relation off the same read. Absent from a Dispatch older than
+   *  priorities. */
+  advances_revision: z.number().int().optional(),
   /** Lowercase email of the person who answers this issue's asks; null when unassigned. */
   assignee: z.string().nullable(),
   /** The session or human working this issue, or null when nobody has claimed it. */

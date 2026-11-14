@@ -348,6 +348,20 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
+// grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
+// guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
+// is older than the live window, while the role claim copy's last whole read is past its repair
+// bound or none has completed, or while this listener's own renewal of that claim failed inside
+// the window (roleOwnSessionVerdict). The error after it names which of the two refused. One
+// string, so it matches in a test and in a deployed log filter. It is deliberately not
+// busUnansweredPrefix: every read the guard rests on answered, so "the message bus did not
+// answer" would send an operator looking for an outage instead of at the repair's age or at the
+// renewal that failed. It rides the 409 that names the claimant's own session id as the holder
+// (writeGrantGuardRefusal), which the claimant waits out as it waits out a standing claim of
+// another process: the guard stops refusing once a whole read completes inside the bound and the
+// record of the failure is cleared or older than the live window.
+const grantGuardPrefix = "envoy: the role grant guard refused the claim because this listener cannot vouch that its holder stopped renewing it"
+
 // writeBusUnavailable answers a send, a publish, a role lookup or a session or interest read the
 // bus did not serve, in the one place that writes that 503, so the body's prefix and the hint never
 // drift apart. Retry-After is set only where retrying can help: every member of bus.ErrRefused -
@@ -389,6 +403,34 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 		w.Header().Set("Retry-After", "1")
 	}
 	return writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", busUnansweredPrefix, err))
+}
+
+// writeGrantGuardRefusal answers a soft claim the grant guard refused (roleGrantGuarded) as the
+// route answers the refusal of a role held under the claimant's own session id by another process
+// (roleHeldByAnotherProcess, through store.ErrRoleHeld): a 409 whose body names role and, as
+// holder, the session the standing claim is held under, which is the claimant's own. Its error
+// opens with grantGuardPrefix and goes on to err, which names the arm that refused. No
+// Retry-After rides it.
+//
+// The status and the body are that refusal's, and not the bus-unavailable 503's, for what the
+// clients do with each. A relaunched Legion pane claims under the session id of the process it
+// replaced, with a client instance of its own, while that process's claim still stands, and none
+// of its registrations clears a record the guard reads against that claim. On a 503
+// envoy-client's setRole makes its two attempts, 250 ms apart, and rejects
+// (packages/envoy-client/src/transport.ts), and a rejected claim stops the pane
+// (packages/pi-shared/src/legion-claim-core.ts, stopAfterRegistration). setRole reads a 409
+// carrying error, role and holder as a claim not granted that names its holder, and both
+// harnesses ask again on their own cadence for as long as that holder is their own session
+// (packages/claude-envoy/src/legion-claim.ts, packages/pi-envoy/src/registration-state.ts): the
+// wait a standing claim of another process gets. claude-envoy asks for no longer than
+// ROLE_CLAIM_WAIT_MS, the live window and 10 s, so a refusal that outlasts that still stops its
+// pane.
+func writeGrantGuardRefusal(w http.ResponseWriter, role, holder string, err error) {
+	writeJSON(w, http.StatusConflict, map[string]string{
+		"error":  fmt.Sprintf("%s: %s", grantGuardPrefix, err),
+		"role":   role,
+		"holder": holder,
+	})
 }
 
 // storeAnswered reports whether err, from the store work of a /v1 route that writes, done within
@@ -1687,15 +1729,25 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // live session's id is refused the 409 naming the holder, and reads the lookup to see which
 // process holds the role; a request that states no instance, and a claim record that names none,
 // both reach the renewal test rather than a case of their own, since an absent instance matches
-// nothing. That renewal test is read only while the role claim view can answer
-// (store.Registry.RoleViewErr): nothing but a registration renews a claim, a registration renews
-// through that view, and so a view that cannot answer leaves every claim's renewal ageing with
-// nothing able to move it - a refill longer than the live window would hand a live holder's role
-// to the second process. While it cannot answer, that one arm is the bus-unavailable 503 with
-// Retry-After: 1 naming the view (writeBusUnavailable), and nothing is claimed; a claim from the
-// process the standing claim names rests on no renewal and is granted through it, since it is
-// that holder re-claiming its own role after a listener restart. A hard claim reads no holder and
-// lands last-claim-wins as it always has.
+// nothing. A renewal older than the window is read as the holder having stopped only while this
+// listener can vouch for that: nothing but a registration renews a claim, and the claim record
+// reads the same whether its holder stopped registering or this listener failed to renew it. So
+// the claim is refused, naming the state and with nothing claimed, in three states. While the
+// role claim view cannot be served (store.Registry.RoleViewErr) it is the bus-unavailable 503
+// with Retry-After: 1 (writeBusUnavailable). While the copy's last whole read of the role bucket
+// is past its repair bound or none has completed (store.RoleClaimRepairReport.Err), and while
+// this listener's own renewal of that role's claim for its holder failed inside the live window
+// (store.Registry.RenewalFailedWithin, which says how long that record stands), it is the grant
+// guard's own answer (writeGrantGuardRefusal), since the bus answered: the 409 a second process
+// gets while the holder still answers for its claim, naming the claimant's own session id as the
+// holder, with an error that opens with grantGuardPrefix and names the state. The claimant waits
+// that 409 out as it waits out a standing claim of another process, though a refusal that
+// outlasts claude-envoy's wait (ROLE_CLAIM_WAIT_MS, the live window and 10 s) still stops a
+// Legion pane. Without them a listener whose renewals stopped landing would hand a live holder's
+// role to the second process once the window passed. A claim from the process the standing claim
+// names rests on no renewal and is granted through all three, since it is that holder re-claiming
+// its own role after a listener restart. A hard claim reads no holder and lands last-claim-wins
+// as it always has.
 //
 // A claim that landed also hands the role's kept lane to its new holder: whatever the listener
 // kept while the role had none is forwarded to the claimant (runKeptRoleDrain, which reads the
@@ -1708,9 +1760,10 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // that takes a role from the predecessor it names because the claimant's entry or the
 // predecessor's carries no client instance id, which is the one takeover the route cannot tell
 // from a different client instance's, and so names both session ids. And a soft claim refused
-// the role held under its own session id, logged once with the role, that session id, the
-// holder's client instance and the claimant's, so an operator sees a second process being held
-// off rather than a bare 409.
+// the role held under its own session id, whether its holder still answers for the claim or the
+// grant guard refused, logged once with the role, that session id, the holder's client instance
+// and the claimant's - and, for the guard, the arm that refused - so an operator sees a second
+// process being held off rather than a bare 409.
 func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1857,9 +1910,15 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// asks: it reads no holder and claims last-claim-wins.
 		//
 		// The error is non-nil for the claim read that did not answer, which carries no
-		// verdict, and with roleHolderUnread, which is a read of the holder's session record or
-		// of the role claim view that did not answer; the two are answered differently and the
-		// verdict is what tells them apart.
+		// verdict; with roleHolderUnread, which is a read of the holder's session record that
+		// did not answer or, for a role held under the claimant's own session id, a role claim
+		// view that cannot be served; and with roleGrantGuarded, which is the grant guard
+		// refusing a role held under the claimant's own session id while every read it rests
+		// on answered (the repair past its bound, or this listener's own renewal of that claim
+		// that failed), and which is answered as the 409 naming the claimant's own session id,
+		// which the claimant waits out as it waits out a standing claim of another process
+		// (writeGrantGuardRefusal). The three are answered differently and the verdict is what
+		// tells them apart.
 		//
 		// The registry sees only interest rows; a holder that is another session is the session
 		// bucket's call (roleSupersessionVerdict, through liveSessionEntry and
@@ -1884,7 +1943,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				// An unheld role is the claimant's: there is nobody to supersede.
 				return nil, claim, roleUnclaimed, nil
 			case holder == body.SessionID:
-				verdict, err = roleOwnSessionVerdict(d.registry, claim, claimantInstanceID, liveWindow)
+				verdict, err = roleOwnSessionVerdict(d.registry, body.Role, claim, claimantInstanceID, liveWindow)
 			default:
 				// The predecessor rule reads the claimant's own registration where the
 				// request states no instance. Without that fallback a client that sends none
@@ -1943,8 +2002,23 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				supersedable, claim, verdict, decideErr = decideSoftClaim()
 				switch {
 				case verdict == roleHolderUnread:
-					// A read that did not answer takes nothing from a holder.
+					// A read that did not answer, or a role claim view that cannot be
+					// served, takes nothing from a holder.
 					writeBusUnavailable(w, decideErr)
+					return
+				case verdict == roleGrantGuarded:
+					// The bus answered, and this listener still cannot vouch that the
+					// holder stopped renewing its claim: nothing is taken, and the claimant
+					// is told its own session holds the role, as a second process is while
+					// the holder still answers for its claim, so it asks again. This answer
+					// is the route's, so the refusal is logged here, once.
+					logger.Info("listener role claim refused: the grant guard cannot vouch that the process holding the role under this session id stopped renewing it",
+						slog.String("role", body.Role),
+						slog.String("session_id", body.SessionID),
+						slog.String("holder_client_instance_id", claim.ClientInstanceID),
+						slog.String("client_instance_id", claimantInstanceID),
+						slog.String("arm", decideErr.Error()))
+					writeGrantGuardRefusal(w, body.Role, claim.HolderSessionID, decideErr)
 					return
 				case decideErr != nil:
 					writeStoreError(ctx, w, decideErr, http.StatusServiceUnavailable)
@@ -2563,10 +2637,18 @@ func (d *listenerDeps) registerPass(
 //
 // The renewal is the one thing here that cannot fail the registration. It runs last, once the
 // records this route owns are written, and whatever it could not do is logged and passed over: a
-// claim view that cannot answer yet (store.ErrRoleViewNotReady, which every listener leaves
-// behind it for a while after a restart), a bucket call that did not answer, a renewal that lost
-// its compare-and-swap. A heartbeat refused for any of those would take down the very sessions
-// whose claims it keeps alive.
+// bucket call that did not answer, a claim record this build cannot read, a renewal that lost its
+// compare-and-swap. A heartbeat refused for any of those would take down the very sessions whose
+// claims it keeps alive.
+//
+// Passed over is not forgotten. A claim the renewal could not read or write is recorded against
+// its role and this session (store.Registry.RenewalFailedWithin), and so is every role the
+// session may hold when the registration fails before its renewal runs - the interest record's
+// read or write, or the session entry's write - since such a registration renews nothing
+// (store.Registry.RecordRenewalFailures). That record is what keeps POST /v1/roles/set from
+// reading a claim this listener failed to renew as one its holder abandoned
+// (roleOwnSessionVerdict); store.Registry.RenewalFailedWithin says what clears it and how long
+// it stands.
 func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2600,22 +2682,24 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		defer cancel()
 		// One read and one merge decide this registration's topics, which are both the row it
 		// stores and the filter of the session's own consumer (store.Registry.PlanInterest). The
-		// roles the session holds are read for the topics the body names and for the row it
-		// already holds together, since either may name its own project's controller notice lane
-		// (notifications.legion.<project>.controller, the daemon's notify.ControllerTopic),
-		// which its holder registers because a Legion controller receives that lane from its own
-		// consumer now and from no core subscription of its own (INFRA-771): a heartbeat whose
-		// body leaves the lane out therefore keeps it in the filter and in the row alike, and
-		// the write below stores this plan rather than deciding it a second time
-		// (store.Registry.UpsertPlanned).
+		// claim of the controller role behind a project's notice lane
+		// (notifications.legion.<project>.controller, the daemon's notify.ControllerTopic) is read
+		// for the topics the body names and for the row it already holds together, since either
+		// may name that lane, which its holder registers because a Legion controller receives
+		// that lane from its own consumer now and from no core subscription of its own
+		// (INFRA-771): a heartbeat whose body leaves the lane out therefore keeps it in the filter
+		// and in the row alike, and the write below stores this plan rather than deciding it a
+		// second time (store.Registry.UpsertPlanned).
 		//
-		// The roles are read only when one of the two names such a lane, so no other
-		// registration is refused while that view cannot answer (store.ErrRoleViewNotReady), and
-		// one that does is refused the bus-unavailable 503 rather than stored without the lane:
-		// the stored topics are the consumer's filter, and a notice published while the lane is
-		// out of it reaches the controller on no later path. The row's own read is the registry
-		// cache's on every heartbeat, and one that fails refuses the registration as the write
-		// it precedes would.
+		// The session holds that role when the role's claim record names it, read from the claim
+		// bucket and not from this listener's copy of the claims, which can lack a claim the
+		// store gives the session or name one the store has moved to another session. The claim
+		// is read only when one of the two names such a lane, so no other registration waits on
+		// it, and a registration whose claim read did not answer or failed is refused the
+		// bus-unavailable 503 rather than stored without the lane: the stored topics are the
+		// consumer's filter, and a notice published while the lane is out of it reaches the
+		// controller on no later path. The row's own read is the registry cache's on every
+		// heartbeat, and one that fails refuses the registration as the write it precedes would.
 		requested := append(slices.Clone(body.Topics), contracts.AgentSubject(body.SessionID))
 		// The topics that would deliver to no session are split off once, here
 		// (splitUncapturedTopics): they are neither planned, stored nor filtered on, and the
@@ -2634,13 +2718,22 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// words and not the interest row's: the row is stored, and nothing tells another reader
 		// the session is here (sessionEntryWriteError). It is answered before the ordinary store
 		// error below, and nothing past here reads a registration whose entry was never written.
-		var entryErr *sessionEntryWriteError
-		if errors.As(err, &entryErr) {
-			logger.Error("listener session registry put failed", slog.String("session_id", body.SessionID), slog.String("error", entryErr.cause.Error()))
-			writeStoreError(ctx, w, fmt.Errorf("session registry unavailable: %w", entryErr.cause), http.StatusServiceUnavailable)
-			return
-		}
+		//
+		// Either failure ends the registration before its renewal, so no claim the session
+		// holds is renewed by this heartbeat. Each is recorded as a failed renewal of every role
+		// the session may hold - the roles the role claim copy names for it and the role topics
+		// of its cached interest row, read with no bucket call, since the bus is what just
+		// failed - before the answer, so a second process of the session is not granted a role
+		// whose renewal this listener could not make (store.Registry.RecordRenewalFailures,
+		// roleOwnSessionVerdict).
 		if err != nil {
+			d.registry.RecordRenewalFailures(body.SessionID, err)
+			var entryErr *sessionEntryWriteError
+			if errors.As(err, &entryErr) {
+				logger.Error("listener session registry put failed", slog.String("session_id", body.SessionID), slog.String("error", entryErr.cause.Error()))
+				writeStoreError(ctx, w, fmt.Errorf("session registry unavailable: %w", entryErr.cause), http.StatusServiceUnavailable)
+				return
+			}
 			logger.Warn("listener could not register the session's interest",
 				slog.String("session_id", body.SessionID),
 				slog.Any("topics", body.Topics),
@@ -2709,24 +2802,35 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// standing at a deploy ages out for nobody. The write is the registration's last, so
 		// a renewal never costs the records above it.
 		//
-		// What it renews is decided on the claims alone, and on no topic list: a claim a
+		// The roles it weighs are the role topics of the stored row this registration's own
+		// UpsertPlanned returned - the bucket's row, read by that write and merged with the
+		// plan, so no cache that has not yet followed the bucket hides one - and the roles the
+		// role claim copy names for the session, and each of them is renewed only as its own
+		// claim record, read here, says (store.Registry.RenewRoleClaims). A claim the copy lost
+		// is renewed from the row, and one the copy names that the store gives another session
+		// or nobody is left alone. While the copy cannot answer, the row's roles are the set,
+		// which is no failure. Nothing on the row decides a renewal on its own: a claim a
 		// hand-back could not free carries that hand-back as a mark of its own
 		// (store.RoleClaim.HandedBack, written by POST /v1/interests/unsubscribe), and no
 		// registration renews a marked claim, which the role claim reaper then frees at its
-		// first pass past the live window. So this registration's topics - the record it just
-		// wrote, or the absence of a list on the request - say nothing about which roles it
-		// renews.
-		if err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID)); err != nil {
-			switch {
-			case errors.Is(err, store.ErrRoleViewNotReady):
-				logger.Info("listener subscribe renewed no role claim: the role claim view cannot answer yet",
-					slog.String("session_id", body.SessionID),
-					slog.String("error", err.Error()))
-			default:
-				logger.Warn("listener subscribe left a role claim unrenewed",
-					slog.String("session_id", body.SessionID),
-					slog.String("error", err.Error()))
-			}
+		// first pass past the live window.
+		//
+		// A role whose claim read or write did not answer or failed is the renewal's failure:
+		// it is in the error logged below, and the renewal records it against that role and
+		// this session, where POST /v1/roles/set reads it (roleOwnSessionVerdict);
+		// store.Registry.RenewalFailedWithin says what clears that record and how long it
+		// stands. A lost compare-and-swap, a claim another session or process holds, a
+		// handed-back claim and a role with no claim record are none: the record said what
+		// stands.
+		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), registered.row)
+		logger.LogEvent(slog.LevelDebug, "listener subscribe weighed the session's role claims",
+			slog.String("session_id", body.SessionID),
+			slog.Any("roles", renewal.Set),
+			slog.Any("renewed", renewal.Renewed))
+		if err != nil {
+			logger.Warn("listener subscribe left a role claim unrenewed",
+				slog.String("session_id", body.SessionID),
+				slog.String("error", err.Error()))
 		}
 		warningCtx, cancelWarnings := context.WithTimeout(ctx, unwiredRepositoryWarningTimeout)
 		defer cancelWarnings()

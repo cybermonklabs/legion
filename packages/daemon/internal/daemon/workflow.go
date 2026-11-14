@@ -225,8 +225,9 @@ type workflowRuntime struct {
 	// the engine's Config.ReadMergeState) that readMergeStates has not started a ladder for yet,
 	// and mergeStateRunning each issue whose ladder is still reading, which is why a second fact
 	// of an issue already being read starts no second ladder. mergeStateRetry is how long a
-	// ladder waits between reads of a state GitHub answers `unknown` for, mergeStateLadderWait
-	// when zero, which a test shortens.
+	// ladder waits between reads of a state GitHub answers `unknown` for, and how long the
+	// outbox's merge-queue read waits after a failed read (mergeStateWait, which attach hands the
+	// outbox), mergeStateLadderWait when zero, which a test shortens (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateRunning map[string]bool
@@ -314,13 +315,13 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 // token passed asks GitHub only for the review token. A mint asks for what each App's
 // installation is granted of the role's set and says on stderr what it left out (appauth's
 // exchangeGranted), so a permission an account has not approved no longer stops the boot: what
-// does is a repository the installation cannot reach, an installation granted none of the set
-// at all, or GitHub's own trouble lasting past the retries.
+// does is an installation granted none of the role's set, an answer the mint refuses, an App not
+// installed on the owner, or GitHub's own trouble lasting past the retries.
 func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Repository, log *slog.Logger) error {
 	return bootprobe.Run(ctx, "GitHub App tokens mint", appMintRetry, log, appAttempt(func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, err := tokens.Token(ctx, role, repo); err != nil {
-				return fmt.Errorf("mint %s GitHub App token at boot: %w", role, err)
+				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, repo, err)
 			}
 		}
 		return nil
@@ -396,13 +397,16 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err != nil {
 		return nil, err
 	}
-	// A token names the repository it acts on, so the boot proves each App's key on every
-	// repository the mapping serves rather than once per owner: an installation that does not
-	// reach one of them, or that is granted none of the permissions a role's write token asks
-	// for, stops the boot naming the repository and the set, where it would otherwise leave a
-	// role with no gh files at its launch. An installation granted some of the set mints with
-	// what it is granted, and the mint says the rest on stderr (appauth's exchangeGranted), so
-	// one permission awaiting an account's approval costs the role no gh files at all.
+	// A lease is keyed by the repository it is minted for, so the boot mints each App's write
+	// lease for every repository the mapping serves rather than once per owner. No mint names its
+	// repository to GitHub (INFRA-2543), so each App's mints for one owner's repositories all send
+	// that owner's installation the same request, and what stops the boot is about the owner: an
+	// App not installed on it, or an installation granted none of the permissions a role's write
+	// token asks for, stops the boot naming the repository it was minting for (mintAtBoot), where
+	// it would otherwise leave a role with no gh files at its launch. An installation granted some
+	// of the set mints with what it is granted, and the mint says the rest on stderr (appauth's
+	// exchangeGranted), so one permission awaiting an account's approval costs the role no gh
+	// files at all.
 	for _, repo := range w.repositories.Accepted() {
 		if err := mintAtBoot(ctx, tokens, repo, log); err != nil {
 			return nil, err
@@ -434,6 +438,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The project's `memory` block decides what each tree admission opens is drawn: a project the
 	// file names no entry for is the zero block, which is off.
 	w.admission.UseMemory(cfg.Projects[cfg.Project].Memory)
+	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
+	// has stopped at: the loader gives six hours to a file that names no key, so the pass
+	// always runs under a number somebody chose.
+	w.admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
 	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).
@@ -1048,13 +1056,21 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
 // the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run).
+// lanes reserve from was built before either of them (run). The outbox's merge-queue read reads
+// GitHub through this runtime's own read of a pull request and waits this runtime's wait between
+// failed reads (readPullRequest, mergeStateWait), both set before the records' wake can reach the
+// outbox (outboxWake).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, w.log)
+	w.outbox.readPullRequest = func(ctx context.Context, pr record.PullRequest) (githubPullRequest, error) {
+		_, pull, err := w.readPullRequest(ctx, pr)
+		return pull, err
+	}
+	w.outbox.mergeStateWait = w.mergeStateWait
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1172,6 +1188,24 @@ func (w *workflowRuntime) booted(ctx context.Context, bootID int64) error {
 	fact := intake.DaemonBooted{Boot: bootID}
 	if _, err := intake.ApplyFact(ctx, w.pool, "daemon", fmt.Sprintf("boot:%s:%d", w.dispatchProject, bootID), fact, w.handlers...); err != nil {
 		return fmt.Errorf("apply the boot of %s: %w", w.dispatchProject, err)
+	}
+	return nil
+}
+
+// repairCutoverMergers applies the boot's one-time repair of the mergers the `awaiting_merge`
+// cutover left stopped (intake.CutoverMergerRepair, workflow's cutoverMergerRepair), under the
+// one event id the project keeps for it, so processed_events records that it ran and a later
+// boot's apply is a duplicate that repairs nothing (dispatch://INFRA-3274/spec R2). run applies
+// it after the listing's reconcile and the roots' catch-up and before the consumers start, so no
+// wake of the boot comes before it. A duplicate runs no handler, and the boot still writes its one
+// record of the repair (R2), so this logs it: the repair owed a start to no merger.
+func (w *workflowRuntime) repairCutoverMergers(ctx context.Context) error {
+	result, err := intake.ApplyFact(ctx, w.pool, "daemon", "cutover-merger-repair:"+w.dispatchProject, intake.CutoverMergerRepair{}, w.handlers...)
+	if err != nil {
+		return fmt.Errorf("apply the cutover merger repair of %s: %w", w.dispatchProject, err)
+	}
+	if result.Duplicate {
+		w.log.Info("cutover merger repair: owed a start to 0 mergers; the repair ran at an earlier boot", "count", 0, "issues", []string{})
 	}
 	return nil
 }

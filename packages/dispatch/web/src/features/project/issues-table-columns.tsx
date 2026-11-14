@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
+import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   checkboxAccent,
@@ -18,11 +19,15 @@ import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
+import { priorityPath } from "../priorities/priority-routes";
 import { AgentName } from "../refs/AgentName";
+import { ReferenceLink } from "../refs/ReferenceLink";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
+import type { IssueListing } from "./issues-table-data";
+import type { LayoutColumns } from "./issues-table-layout";
 import {
   COLUMN_MIN,
   COLUMNS,
@@ -30,6 +35,7 @@ import {
   type ColumnId,
   createdAt,
   createdBy,
+  ISSUE_TABLE_COLUMNS,
   type Item,
   matchesFilters,
 } from "./issues-table-model";
@@ -263,13 +269,180 @@ const renderings = (
   },
 });
 
+/** The columns only some listings have a use for: which project a row is in, which priorities
+ *  it advances, when it was moved into backlog or icebox and by whom, and why. A table has each
+ *  only where its listing gives the cell something true to say (`listingColumns`). */
+export type ListingColumnId = "project" | "advances" | "moved" | "reason";
+
+/**
+ * The listing columns a table of `listing` has, `titled` when its caller gives each priority's
+ * title:
+ *
+ * - Project, on a listing of no project (an `advances` listing, the work of every project); a
+ *   project's own table would name that one project on every row.
+ * - Advances, where the titles are given: a title is the only name a reader knows a priority by,
+ *   and without them the column could name each priority only by its id.
+ * - Moved there, on a listing that asks for the move (`moved`): no other listing is answered with
+ *   one, so its every cell would be empty, whatever the record holds.
+ * - Reason, on that same listing and no other: why the work was moved there. Nothing records a
+ *   reason yet, and every cell says so, naming the work that records one (R6).
+ */
+export function listingColumns(listing: IssueListing, titled: boolean): ListingColumnId[] {
+  const scoped = "advances" in listing;
+  return [
+    ...(scoped ? (["project"] as const) : []),
+    ...(titled ? (["advances"] as const) : []),
+    ...(scoped && listing.moved === true ? (["moved", "reason"] as const) : []),
+  ];
+}
+
+/** The work that records why an issue was moved into backlog or icebox. Until it lands no move
+ *  carries a reason, and the Reason cell names it. */
+const MOVE_REASON_WORK = "dispatch://INFRA-2934";
+
+/**
+ * The four listing columns. They name what R6 asks each fault row to name, and none of them
+ * sorts, filters or groups - deliberately: the table's view in the address reads only the
+ * columns `features/project/issues-table-model.ts` registers (`readUrl` drops any other id), and
+ * these are the cells' own, kept out of that registry. Every registered column still sorts,
+ * filters and groups on every table that shows these beside it. A table has only the ones its
+ * listing gives a use (`listingColumns`).
+ */
+const LISTING_COLUMNS: readonly {
+  readonly id: ListingColumnId;
+  readonly size: number;
+  readonly min: number;
+  readonly rendering: (titleOf: (id: string) => string) => Partial<ColumnDef<Item>>;
+}[] = [
+  {
+    id: "project",
+    size: 120,
+    min: 96,
+    rendering: () => ({
+      header: "Project",
+      accessorFn: (item) => issueProject(item.issue.key),
+      cell: ({ getValue }) => (
+        <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
+      ),
+    }),
+  },
+  {
+    id: "advances",
+    size: 220,
+    min: 140,
+    rendering: (titleOf) => ({
+      header: "Advances",
+      accessorFn: (item) => (item.issue.advances ?? []).map(({ id }) => titleOf(id)).join(", "),
+      cell: ({ row }) => (
+        <span className="flex flex-wrap gap-x-2">
+          {(row.original.issue.advances ?? []).map(({ id }) => (
+            <Link className={`${linkText} ${linkHoverText}`} key={id} to={priorityPath(id)}>
+              {titleOf(id)}
+            </Link>
+          ))}
+        </span>
+      ),
+    }),
+  },
+  {
+    id: "moved",
+    size: 220,
+    min: 160,
+    rendering: () => ({
+      header: "Moved there",
+      accessorFn: (item) => item.issue.moved_at ?? "",
+      // A row the listing answered with no move - it stands outside backlog and icebox, or the
+      // issue's events do not reach back to the move - draws an empty cell: absent is absent,
+      // and no cell claims a record is missing.
+      cell: ({ row }) => {
+        const { moved_at: at, moved_by: by } = row.original.issue;
+        return at === undefined ? null : (
+          <span className="flex flex-wrap items-center gap-1">
+            <Timestamp at={at} className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`} />
+            {by === undefined ? null : <AgentName actor={by} />}
+          </span>
+        );
+      },
+    }),
+  },
+  {
+    id: "reason",
+    size: 240,
+    min: 140,
+    rendering: () => ({
+      header: "Reason",
+      accessorFn: () => "",
+      // The same words on every row, since no move carries a reason yet: the cell says the
+      // record is missing rather than drawing an empty cell a reader could take for no reason.
+      cell: () => (
+        <span className={textSecondaryOnCanvas}>
+          Not recorded until <ReferenceLink reference={MOVE_REASON_WORK} />
+        </span>
+      ),
+    }),
+  },
+];
+
+/** The columns a caller may name among those its table opens with shown: the listing columns,
+ *  and Updated, which a project's table opens with hidden and a fault list opens with shown,
+ *  since R6 asks every fault row to name how long it has stood. */
+export type ShownColumnId = ListingColumnId | "updated";
+
+/** Each layout `issueTableLayout` built, by its columns and the ones it opens with shown. */
+const layouts = new Map<string, LayoutColumns>();
+
+/**
+ * The layout of an issues table with the listing columns `columns` (`listingColumns`) that opens
+ * with `shown` shown: the registry's own (`ISSUE_TABLE_COLUMNS`), with those listing columns at
+ * their widths, and every column the registry opens hidden or a listing column not in `shown`
+ * hidden until the reader shows it. A project's table has none of them and names none; each
+ * fault list of the priorities page names its own. Built once for each pair and kept, since the
+ * stored layout is read again whenever this object changes (`useTableLayout`).
+ */
+export function issueTableLayout(
+  columns: readonly ListingColumnId[],
+  shown: readonly ShownColumnId[] = []
+): LayoutColumns {
+  const name = `${columns.join(" ")}|${shown.join(" ")}`;
+  const built = layouts.get(name);
+  if (built !== undefined) return built;
+  const listing = LISTING_COLUMNS.filter(({ id }) => columns.includes(id));
+  const hidden = {
+    ...ISSUE_TABLE_COLUMNS.hiddenByDefault,
+    ...Object.fromEntries(listing.map(({ id }) => [id, false])),
+  };
+  const layout: LayoutColumns = {
+    ...ISSUE_TABLE_COLUMNS,
+    ids: [...ISSUE_TABLE_COLUMNS.ids, ...listing.map(({ id }) => id)],
+    hiddenByDefault: Object.fromEntries(
+      Object.entries(hidden).filter(([id]) => !shown.includes(id as ShownColumnId))
+    ),
+    sizes: {
+      ...ISSUE_TABLE_COLUMNS.sizes,
+      ...Object.fromEntries(listing.map(({ id, size }) => [id, size])),
+    },
+    minimums: {
+      ...ISSUE_TABLE_COLUMNS.minimums,
+      ...Object.fromEntries(listing.map(({ id, min }) => [id, min])),
+    },
+  };
+  layouts.set(name, layout);
+  return layout;
+}
+
 export function useIssueTableColumns(
   userState: UserState | undefined,
-  compact: boolean
+  compact: boolean,
+  /** The table's layout (`issueTableLayout`): which listing columns it has. */
+  layout: LayoutColumns,
+  /** Each priority's title by its id, which the Advances column names a priority by; one this
+   *  map does not hold, a priority deleted since it was read, is named by its id. */
+  priorityTitles?: ReadonlyMap<string, string>
 ): ColumnDef<Item>[] {
   return useMemo<ColumnDef<Item>[]>(() => {
     const rendering = renderings(userState);
-    return COLUMNS.map((column) => {
+    const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
+    const registered = COLUMNS.map((column): ColumnDef<Item> => {
       const picks = column.filter?.kind === "picks" ? column.filter : undefined;
       return {
         ...rendering[column.id],
@@ -290,5 +463,20 @@ export function useIssueTableColumns(
         },
       };
     });
-  }, [userState, compact]);
+    const listing = LISTING_COLUMNS.filter(({ id }) => layout.ids.includes(id)).map(
+      (column): ColumnDef<Item> => ({
+        ...column.rendering(titleOf),
+        id: column.id,
+        size: column.size,
+        minSize: column.min,
+        enableResizing: true,
+        enableSorting: false,
+        enableColumnFilter: false,
+        enableGrouping: false,
+      })
+    );
+    // Beside the title, which is what a reader reads a row of every project's issues by.
+    const after = registered.findIndex(({ id }) => id === "title") + 1;
+    return [...registered.slice(0, after), ...listing, ...registered.slice(after)];
+  }, [userState, compact, layout, priorityTitles]);
 }
