@@ -5,6 +5,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
 import { endsWhole, type Writer, writtenLines } from "@legion/test-fixtures/transcript-lines";
+import { until } from "@legion/test-fixtures/wait";
 
 /** The one `.jsonl` under `sessions`, or `undefined` when the directory does not hold exactly one. */
 async function soleTranscript(sessions: string): Promise<string | undefined> {
@@ -50,16 +51,12 @@ export async function transcriptSettled(sessions: string): Promise<boolean> {
 }
 
 /**
- * Waits until `transcriptSettled` holds, polling every 25 ms, and throws naming the directory at
- * `withinMs`. One line is one `write`, so a wait that reaches its bound is a transcript nothing
- * is finishing rather than a poll that was too quick.
+ * Waits through the shared wait until `transcriptSettled` holds, and fails naming the directory at
+ * the row's deadline. One line is one `write`, so a wait that reaches the deadline is a transcript
+ * nothing is finishing rather than a poll that was too quick.
  */
-export async function awaitSettled(sessions: string, withinMs: number): Promise<void> {
-  const deadline = Date.now() + withinMs;
-  while (!(await transcriptSettled(sessions))) {
-    if (Date.now() > deadline) {
-      throw new Error(`the transcript under ${sessions} still ends mid-line`);
-    }
-    await Bun.sleep(25);
-  }
+export async function awaitSettled(sessions: string): Promise<void> {
+  await until(`the transcript under ${sessions} to end on a whole line`, () =>
+    transcriptSettled(sessions)
+  );
 }

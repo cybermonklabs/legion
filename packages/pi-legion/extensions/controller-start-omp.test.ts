@@ -31,6 +31,7 @@ import {
   type Writer,
   writtenLines,
 } from "@legion/test-fixtures/transcript-lines";
+import { settled, span, until } from "@legion/test-fixtures/wait";
 import { connect, type Msg, headers as natsHeaders, StringCodec } from "nats";
 import { z } from "zod";
 
@@ -92,18 +93,18 @@ const PROJECT = "legion";
  */
 /**
  * The lever a person sets by hand to see the notice case red without the delivery it rests on,
- * and to see that red arrive by name rather than at the case's own bound
+ * and to see that red arrive by name rather than as a wait that ran out
  * (LEGION_TEST_CONTROLLER_NOTICE; nothing in CI or in this repository sets it).
  *
  *   - `undecodable` relays the notice with `Envoy-Delivered: 0`, which a real session cannot
  *     decode, so it answers `done` first and `sendRelayFrame` refuses that word at once.
- *   - `unheld` relays the notice to a session id nobody holds, with a bound of its own, so the
- *     server answers no responders and the relay refuses it inside that bound.
+ *   - `unheld` relays the notice to a session id nobody holds, so the server answers no
+ *     responders and the relay refuses it at the row's deadline, naming the 503 it last met.
  *
  * Both are refusals the relay names, and the case ends on the next poll of any wait, because the
  * refusal is given to the stand-in's `fault` hook. A notice lost in a way the relay cannot see -
  * one published before the session followed the lane, which a session still answers `received` -
- * is no arm here and stays what it has always been: the case's own 150-second red with no cause.
+ * is no arm here and stays what it has always been: the case's wait running out with no cause.
  *
  * A value that is neither of the two and not unset is refused as this file loads, naming what it
  * read, rather than running the shipped shape under a title claiming an arm.
@@ -121,12 +122,6 @@ const noticeArm: NoticeArm | undefined = ((): NoticeArm | undefined => {
   }
   return given as NoticeArm;
 })();
-
-/**
- * How long the `unheld` arm's relay is offered before it is refused: a bound of its own, far
- * under the case's, so that arm's red arrives by name rather than at the case's deadline.
- */
-const NOTICE_UNHELD_MS = 3_000;
 
 const SLACK_CHANNEL = "C0CONTROLLER";
 const SLACK_TEAM = "T0LEGION";
@@ -152,19 +147,6 @@ const WAKE_ONE = "1 Envoy message above arrived with no turn to read it";
 
 /** The TUI's busy row while a turn runs (`⎋ Working…`). */
 const BUSY = "Working…";
-
-/**
- * How long after the spawn a wait may last: Oh My Pi's startup, which loads both extensions before
- * `/legion-controller-start` runs, took about 27 s of wall time (9 s of CPU) in a slow but normal
- * pod, so the waits that span it get this much from the spawn.
- */
-const STARTUP_DEADLINE_MS = 150_000;
-
-/** How long one wait for something the started session owes a case may last once startup is over. */
-const STEP_DEADLINE_MS = 30_000;
-
-/** A case's own timeout: its startup, each of its waits and the cleanup of its processes. */
-const CASE_TIMEOUT_MS = 600_000;
 
 /**
  * Wide enough that the start message, as the TUI renders the user message, fits on one row, so
@@ -244,15 +226,9 @@ interface ControllerSession {
   transcriptWhole(): Promise<void>;
   /** The transcript's message entries, in order. */
   messages(): Promise<MessageEntry[]>;
-  /**
-   * Polls `probe` until it returns a value, failing at the deadline (`withinMs` from now, when a
-   * case's own bound is the property under test) or when omp exits.
-   */
-  until<T>(
-    what: string,
-    probe: () => T | undefined | Promise<T | undefined>,
-    withinMs?: number
-  ): Promise<T>;
+  /** Waits through the shared wait until `probe` returns a value, failing at the row's deadline,
+   * when omp exits, or on a refusal the stand-in recorded. */
+  until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
   /** Resolves once the screen shows all of `texts` at once; fails on `what` at the deadline. */
   shows(what: string, ...texts: readonly string[]): Promise<void>;
 }
@@ -539,7 +515,6 @@ async function startController(
   const startupHold = path.join(root, "startup-hold.ts");
   if (hooks.startupHold !== undefined) await writeFile(startupHold, STARTUP_HOLD_EXTENSION);
 
-  const spawnedAt = Date.now();
   const terminal = spawnInteractive(
     binary,
     {
@@ -572,37 +547,28 @@ async function startController(
     exitCode = code;
   });
 
-  const until = async <T>(
+  const waitFor = async <T>(
     what: string,
-    probe: () => T | undefined | Promise<T | undefined>,
-    withinMs?: number
+    probe: () => T | undefined | Promise<T | undefined>
   ): Promise<T> => {
-    // A wait gets its own step, and one that starts before Oh My Pi's startup could be over gets
-    // until the startup deadline: the first wait of every case spans that startup. A case's own
-    // bound replaces both.
-    const deadline =
-      withinMs === undefined
-        ? Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS)
-        : Date.now() + withinMs;
-    for (;;) {
-      if (exitCode !== undefined) {
-        throw new Error(
-          `omp exited (${exitCode}) while waiting for ${what}; its screen:\n${terminal.screen()}`
-        );
-      }
+    // What the cases wait on (a request reaching the stand-in, the screen, the transcript) has no
+    // event the test can await, so it is polled through the shared wait, and its failure carries
+    // the screen.
+    const answered = await until(what, async () => {
+      if (exitCode !== undefined)
+        throw new Error(`omp exited (${exitCode}) while waiting for ${what}`);
       // On every poll, not only at the start: a refusal a stand-in callback recorded is the
       // case's answer, so the wait ends on it the moment it is there.
       const fault = hooks.fault?.();
       if (fault !== undefined) throw fault;
       const value = await probe();
-      if (value !== undefined) return value;
-      if (Date.now() > deadline) {
-        throw new Error(`timed out waiting for ${what}; the screen:\n${terminal.screen()}`);
-      }
-      // What the cases wait on (a request reaching the stand-in, the screen, the transcript) has
-      // no event the test can await, so it is polled, and a missing one fails at the deadline.
-      await Bun.sleep(25);
-    }
+      return value === undefined ? undefined : { value };
+    }).catch((error: unknown) => {
+      throw new Error(`${(error as Error).message}; the screen:\n${terminal.screen()}`, {
+        cause: error,
+      });
+    });
+    return answered.value;
   };
 
   // Which of the two states the transcript's writer is in, sampled before each read of the file
@@ -613,7 +579,7 @@ async function startController(
   // What a read that proves an absence waits for: with the transcript ending on a finished line,
   // an empty result is the absence of the record rather than of a line still being written.
   const transcriptWhole = async (): Promise<void> => {
-    await until("the transcript to end on a finished line", async () =>
+    await waitFor("the transcript to end on a finished line", async () =>
       endsWhole(await transcriptText(sessions)) ? true : undefined
     );
   };
@@ -623,16 +589,16 @@ async function startController(
     terminal,
     turns,
     async nextTurn(what) {
-      const turn = await until(what, () => turns[taken]);
+      const turn = await waitFor(what, () => turns[taken]);
       taken += 1;
       return turn;
     },
     transcriptLines: () => transcriptLines(sessions, writer()),
     transcriptWhole,
     messages: () => transcriptMessages(sessions, writer()),
-    until,
+    until: waitFor,
     async shows(what, ...texts) {
-      await until(what, () => {
+      await waitFor(what, () => {
         const screen = terminal.screen();
         return texts.every((text) => screen.includes(text)) ? true : undefined;
       });
@@ -661,7 +627,8 @@ interface DaemonController {
   abort(): Promise<void>;
   /** The one transcript's lines, raw; none until Oh My Pi writes the file. */
   transcriptLines(): Promise<string[]>;
-  /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
+  /** Waits through the shared wait until `probe` returns a value, failing at the row's deadline
+   * or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
 
@@ -686,7 +653,6 @@ async function startDaemonController(
 
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
-  const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
     {
@@ -720,23 +686,20 @@ async function startDaemonController(
     closed.error = error;
   });
 
-  const until = async <T>(
+  const waitFor = async <T>(
     what: string,
     probe: () => T | undefined | Promise<T | undefined>
   ): Promise<T> => {
-    // As in `startController`: the first wait spans Oh My Pi's startup.
-    const deadline = Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS);
-    for (;;) {
+    const answered = await until(what, async () => {
       if (closed.error !== undefined) throw closed.error;
       // As in `startController`: a refusal a stand-in callback recorded ends this wait at once.
       const fault = hooks.fault?.();
       if (fault !== undefined) throw fault;
-      const value = await probe();
-      if (value !== undefined) return value;
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
       // As in `startController`: what the cases wait on has no event the test can await.
-      await Bun.sleep(25);
-    }
+      const value = await probe();
+      return value === undefined ? undefined : { value };
+    });
+    return answered.value;
   };
 
   // One RPC command, answered by its response frame; a refusal throws.
@@ -756,7 +719,7 @@ async function startDaemonController(
   return {
     turns,
     async nextTurn(what) {
-      const turn = await until(what, () => turns[taken]);
+      const turn = await waitFor(what, () => turns[taken]);
       taken += 1;
       return turn;
     },
@@ -772,7 +735,7 @@ async function startDaemonController(
     // As in `startController`, the writer's state is read before the file: the RPC stream closes
     // when Oh My Pi exits, so an error on `closed` is a transcript nothing appends to any more.
     transcriptLines: () => transcriptLines(sessions, closed.error === undefined ? "alive" : "gone"),
-    until,
+    until: waitFor,
   };
 }
 
@@ -830,10 +793,9 @@ interface StoredMessage {
   readonly summary: string;
   /**
    * Relays this message to `sid`. `delivered` is the frame's delivery count, which a session
-   * cannot decode at 0, and `withinMs` is how long the frame is offered before the relay refuses
-   * it; the helper's own bound by default.
+   * cannot decode at 0.
    */
-  deliver(sid: string, delivered?: number, withinMs?: number): Promise<unknown>;
+  deliver(sid: string, delivered?: number): Promise<unknown>;
 }
 
 /**
@@ -910,13 +872,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     sid: string,
     subject: string,
     payload: Uint8Array,
-    stamp: {
-      readonly seq: number;
-      readonly storedAt: string;
-      readonly delivered: number;
-      /** How long the frame is offered before the relay refuses it; the helper's own by default. */
-      readonly withinMs?: number;
-    } = {
+    stamp: { readonly seq: number; readonly storedAt: string; readonly delivered: number } = {
       seq: nextSequence(),
       storedAt: new Date().toISOString(),
       delivered: 1,
@@ -942,8 +898,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     );
     return {
       summary,
-      deliver: (sid, delivered = 1, withinMs) =>
-        relay(sid, subject, frame, { ...stored, delivered, withinMs }),
+      deliver: (sid, delivered = 1) => relay(sid, subject, frame, { ...stored, delivered }),
     };
   };
   const storeNotice = (): StoredMessage =>
@@ -1003,13 +958,13 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
       //   - no arm: the notice as it ships, relayed to the session itself.
       //   - undecodable: delivered 0, which no session can decode, so it answers `done` first
       //     and the relay refuses that word at once.
-      //   - unheld: relayed to a session id nobody holds, under a bound of its own, so the
-      //     server answers no responders and the relay refuses it inside that bound.
+      //   - unheld: relayed to a session id nobody holds, so the server answers no responders and
+      //     the relay refuses it at the row's deadline, naming that cause.
       const delivery =
         noticeArm === "undecodable"
           ? message.deliver(sid, 0)
           : noticeArm === "unheld"
-            ? message.deliver(`${sid}-unheld`, 1, NOTICE_UNHELD_MS)
+            ? message.deliver(`${sid}-unheld`)
             : message.deliver(sid);
       void delivery.catch((error: unknown) => {
         noticeFault ??= new Error(
@@ -1037,35 +992,78 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
 //   - a word the table does not hold, refused for being in none of its rows, so a word nobody
 //     has met yet is not read as a take by default.
 //   - an id nothing subscribes, where the server answers 503 no responders.
-//   - a session that takes the frame and never answers, where each request runs its own 1 s
-//     timeout out.
+//   - a session that takes the frame and never answers, where the send's request is still out
+//     when its deadline comes.
 //
 // The last two are held to their own cause, since the relay names both in the same words and
 // carries the cause it last met: a half pointed at the wrong subject - main's
 // `notifications.agent.<sid>`, where no session listens for a frame - reads as the no-responders
-// half and is caught rather than passing as the timeout half. The case gives the relay a bound
-// of its own rather than the 30 s a card is allowed, since the only half that has to reach it is
-// the silent one, and it needs the NATS server and not the binary, so it runs wherever one is
-// configured.
-const RELAY_REFUSAL_MS = 3_000;
+// half and is caught rather than passing as the silent half. Neither ends before the send's
+// deadline, so each is sent from a process of its own (`sentAlone`) whose deadline is a few
+// seconds off rather than at this row's guard, and that process says how much of its time was
+// left when the send gave up: none, for a send that offered the frame until its deadline. The
+// case needs the NATS server and not the binary, so it runs wherever one is configured.
+/** How far off the deadline of the process `sentAlone` sends from lies. */
+const ALONE_SEND_MS = 3_000;
 test.skipIf(natsUrl === undefined && !onActions)(
   "a relay frame is answered by the session that takes it, and refused by its own cause when none does",
   async () => {
     const connection = await connect({ servers: natsUrl ?? "" });
     cleanup.push(() => connection.close());
     const codec = StringCodec();
+    const subject = `${ROLE_TOPIC_PREFIX}${controllerToken(PROJECT)}`;
     const send = (sid: string) =>
       sendRelayFrame({
         connection,
         newHeaders: natsHeaders,
         sessionID: sid,
-        subject: `${ROLE_TOPIC_PREFIX}${controllerToken(PROJECT)}`,
+        subject,
         payload: codec.encode(JSON.stringify({ event_id: `evt-${randomUUID()}` })),
         seq: 1,
         storedAt: new Date().toISOString(),
         delivered: 1,
-        withinMs: RELAY_REFUSAL_MS,
       });
+    /**
+     * The same send to `sid`, made by a process of its own: what it ended with, then the time its
+     * shared wait had left when it ended (`timeLeft`). That process is no `bun test`, so it waits
+     * by LEGION_PROOF_DEADLINE_MS (`@legion/test-fixtures/wait`), which this sets
+     * `ALONE_SEND_MS` off.
+     */
+    const sentAlone = async (sid: string): Promise<string[]> => {
+      const driver = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `import { sendRelayFrame } from "@legion/pi-shared/test/omp-harness";
+import { timeLeft } from "@legion/test-fixtures/wait";
+import { connect, headers, StringCodec } from "nats";
+const connection = await connect({ servers: ${JSON.stringify(natsUrl)} });
+const outcome = await sendRelayFrame({
+  connection,
+  newHeaders: headers,
+  sessionID: ${JSON.stringify(sid)},
+  subject: ${JSON.stringify(subject)},
+  payload: StringCodec().encode(JSON.stringify({ event_id: "evt-alone" })),
+  seq: 1,
+  storedAt: new Date().toISOString(),
+  delivered: 1,
+}).then(String, String);
+console.log(outcome.replaceAll("\\n", " "));
+console.log(timeLeft());
+await connection.close();`,
+        ],
+        {
+          cwd: import.meta.dir,
+          env: { ...process.env, LEGION_PROOF_DEADLINE_MS: String(Date.now() + ALONE_SEND_MS) },
+          stdout: "pipe",
+        }
+      );
+      const [printed] = await settled(
+        `the send to ${sid} from a process of its own`,
+        Promise.all([new Response(driver.stdout).text(), driver.exited])
+      );
+      return printed.trim().split("\n");
+    };
 
     // One session on its own deliver subject, answering each frame as the half wants: the word it
     // writes, on its own connection as a session answers, or nothing at all for the half whose
@@ -1107,119 +1105,106 @@ test.skipIf(natsUrl === undefined && !onActions)(
     );
 
     const unheard = `nobody-${randomUUID()}`;
-    await expect(send(unheard)).rejects.toThrow(
-      new RegExp(`${unheard} took no relay frame.*503`, "s")
-    );
+    const [unheardOutcome, unheardLeft] = await sentAlone(unheard);
+    expect(unheardOutcome).toMatch(new RegExp(`${unheard} took no relay frame.*503`));
+    expect(unheardLeft).toBe("0");
 
     const sid = `silent-${randomUUID()}`;
-    // Taken and never answered, which is the shape the bound exists for.
+    // Taken and never answered: the send's one request is still out when its deadline comes.
     await listens(sid, () => undefined);
-    const started = Date.now();
-    await expect(send(sid)).rejects.toThrow(new RegExp(`${sid} took no relay frame.*TIMEOUT`, "s"));
-    expect(Date.now() - started).toBeGreaterThanOrEqual(RELAY_REFUSAL_MS);
-  },
-  RELAY_REFUSAL_MS * 2 + 60_000
-);
-
-test.skipIf(skip)(
-  "the start turn runs after startup and the TUI shows it",
-  async () => {
-    const session = await startController();
-    const start = await session.nextTurn("the start turn's model request");
-    await session.shows(
-      "the start message and the busy row on screen while the start turn's request is held",
-      START_MESSAGE,
-      BUSY
+    const [silentOutcome, silentLeft] = await sentAlone(sid);
+    expect(silentOutcome).toMatch(
+      new RegExp(`${sid} took no relay frame.*(still unanswered|TIMEOUT)`)
     );
-    start.reply("Start procedure done.");
-    await settledOn(session, "Start procedure done.");
-    expect(session.turns.length).toBe(1);
-  },
-  CASE_TIMEOUT_MS
+    expect(silentLeft).toBe("0");
+  }
 );
 
-test.skipIf(skip)(
-  "the operator can type during the start turn",
-  async () => {
-    const session = await startController();
-    const start = await session.nextTurn("the start turn's model request");
-    await session.shows("the busy row while the start turn's request is held", START_MESSAGE, BUSY);
-    const typed = `TYPED-${randomUUID().slice(0, 8)}`;
-    session.terminal.write(typed);
-    // Enter only once the composer holds the text, so the keystrokes reach the TUI as typing.
-    await session.shows("the typed text in the composer", typed);
-    session.terminal.write("\r");
-    await session.shows("the typed text queued as a steer", "Steering", `1. ${typed}`);
-    expect(session.turns.length).toBe(1);
+test.skipIf(skip)("the start turn runs after startup and the TUI shows it", async () => {
+  const session = await startController();
+  const start = await session.nextTurn("the start turn's model request");
+  await session.shows(
+    "the start message and the busy row on screen while the start turn's request is held",
+    START_MESSAGE,
+    BUSY
+  );
+  start.reply("Start procedure done.");
+  await settledOn(session, "Start procedure done.");
+  expect(session.turns.length).toBe(1);
+});
 
-    start.reply("Start procedure done.");
-    const next = await session.nextTurn("the typed message's model request");
-    const held = conversation(next.request);
-    const startAt = held.indexOf(START_MESSAGE_JSON);
-    expect(startAt).toBeGreaterThanOrEqual(0);
-    expect(held.indexOf(typed)).toBeGreaterThan(startAt);
-    expect(lastMessage(next.request)).toContain(typed);
-    next.reply("Typed message answered.");
-    await settledOn(session, "Typed message answered.");
-  },
-  CASE_TIMEOUT_MS
-);
+test.skipIf(skip)("the operator can type during the start turn", async () => {
+  const session = await startController();
+  const start = await session.nextTurn("the start turn's model request");
+  await session.shows("the busy row while the start turn's request is held", START_MESSAGE, BUSY);
+  const typed = `TYPED-${randomUUID().slice(0, 8)}`;
+  session.terminal.write(typed);
+  // Enter only once the composer holds the text, so the keystrokes reach the TUI as typing.
+  await session.shows("the typed text in the composer", typed);
+  session.terminal.write("\r");
+  await session.shows("the typed text queued as a steer", "Steering", `1. ${typed}`);
+  expect(session.turns.length).toBe(1);
 
-test.skipIf(skip)(
-  "Esc interrupts the start turn",
-  async () => {
-    const session = await startController();
-    await session.nextTurn("the start turn's model request");
-    await session.shows("the busy row while the start turn's request is held", START_MESSAGE, BUSY);
-    // A lone ESC byte is the Esc key. Oh My Pi aborts the held request's connection itself; the
-    // stand-in answers it at cleanup.
-    session.terminal.write("\x1b");
-    await session.until("the interrupted start turn's assistant entry", async () =>
-      (await session.messages()).find(
-        ({ message }) =>
-          message.role === "assistant" &&
-          message.stopReason === "aborted" &&
-          message.errorMessage === "Interrupted by user"
-      )
-    );
-    await session.until("the busy row to leave the screen", () =>
-      session.terminal.screen().includes(BUSY) ? undefined : true
-    );
-    // A real clock, deliberately: the proposition is that the interrupted session starts no
-    // further turn, and a host that does nothing emits no signal to await, so only a quiet
-    // window with no Messages request shows the absence.
-    await Bun.sleep(3_000);
-    expect(session.turns.length).toBe(1);
-  },
-  CASE_TIMEOUT_MS
-);
+  start.reply("Start procedure done.");
+  const next = await session.nextTurn("the typed message's model request");
+  const held = conversation(next.request);
+  const startAt = held.indexOf(START_MESSAGE_JSON);
+  expect(startAt).toBeGreaterThanOrEqual(0);
+  expect(held.indexOf(typed)).toBeGreaterThan(startAt);
+  expect(lastMessage(next.request)).toContain(typed);
+  next.reply("Typed message answered.");
+  await settledOn(session, "Typed message answered.");
+});
 
-test.skipIf(skip)(
-  "the start message starts the first turn, once",
-  async () => {
-    const session = await startController();
-    const start = await session.nextTurn("the start turn's model request");
-    expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
-    start.reply("Start procedure done.");
-    await settledOn(session, "Start procedure done.");
+test.skipIf(skip)("Esc interrupts the start turn", async () => {
+  const session = await startController();
+  await session.nextTurn("the start turn's model request");
+  await session.shows("the busy row while the start turn's request is held", START_MESSAGE, BUSY);
+  // A lone ESC byte is the Esc key. Oh My Pi aborts the held request's connection itself; the
+  // stand-in answers it at cleanup.
+  session.terminal.write("\x1b");
+  await session.until("the interrupted start turn's assistant entry", async () =>
+    (await session.messages()).find(
+      ({ message }) =>
+        message.role === "assistant" &&
+        message.stopReason === "aborted" &&
+        message.errorMessage === "Interrupted by user"
+    )
+  );
+  await session.until("the busy row to leave the screen", () =>
+    session.terminal.screen().includes(BUSY) ? undefined : true
+  );
+  // The proposition is that the interrupted session starts no further turn, and a host that
+  // does nothing emits no signal to await.
+  await span(
+    3_000,
+    "a turn the host does not start leaves no state to read, and no later action marks a moment it would have come by: only a quiet window with no Messages request shows the absence"
+  );
+  expect(session.turns.length).toBe(1);
+});
 
-    for (const turn of session.turns) {
-      expect(JSON.stringify(turn.request.body)).not.toContain(START_COMMAND);
-    }
-    // An absence read: the start command's word must be nowhere in the transcript. It waits for
-    // the transcript to end on a finished line first, since a line the host had not finished
-    // would be withheld and read as the absence this asserts.
-    await session.transcriptWhole();
-    const lines = await session.transcriptLines();
-    expect(lines.filter((line) => line.includes(START_COMMAND))).toEqual([]);
-    const userMessages = (await session.messages())
-      .filter(({ message }) => message.role === "user")
-      .map((entry) => JSON.stringify(entry));
-    expect(userMessages[0]).toContain(START_MESSAGE_JSON);
-    expect(userMessages.filter((entry) => entry.includes(START_MESSAGE_JSON))).toHaveLength(1);
-  },
-  CASE_TIMEOUT_MS
-);
+test.skipIf(skip)("the start message starts the first turn, once", async () => {
+  const session = await startController();
+  const start = await session.nextTurn("the start turn's model request");
+  expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
+  start.reply("Start procedure done.");
+  await settledOn(session, "Start procedure done.");
+
+  for (const turn of session.turns) {
+    expect(JSON.stringify(turn.request.body)).not.toContain(START_COMMAND);
+  }
+  // An absence read: the start command's word must be nowhere in the transcript. It waits for
+  // the transcript to end on a finished line first, since a line the host had not finished
+  // would be withheld and read as the absence this asserts.
+  await session.transcriptWhole();
+  const lines = await session.transcriptLines();
+  expect(lines.filter((line) => line.includes(START_COMMAND))).toEqual([]);
+  const userMessages = (await session.messages())
+    .filter(({ message }) => message.role === "user")
+    .map((entry) => JSON.stringify(entry));
+  expect(userMessages[0]).toContain(START_MESSAGE_JSON);
+  expect(userMessages.filter((entry) => entry.includes(START_MESSAGE_JSON))).toHaveLength(1);
+});
 
 // Main's pi-envoy delivers every card as a steer, which starts a turn of its own when the session
 // is idle, so whatever reaches the session on the controller role's lane or the controller topic
@@ -1303,33 +1288,30 @@ test.skipIf(skip)(
       .map((entry) => JSON.stringify(entry));
     expect(userMessages[0]).toContain(START_MESSAGE_JSON);
     expect(userMessages.filter((entry) => entry.includes(START_MESSAGE_JSON))).toHaveLength(1);
-  },
-  CASE_TIMEOUT_MS
+  }
 );
 
 // The claim runs from the start command, after startup, in the terminal the operator reads: a
 // refusal there is shown as one warning naming the daemon's answer and the command that claims
 // again, and no start message is sent.
-test.skipIf(skip)(
-  "the operator sees a claim refusal",
-  async () => {
-    const session = await startController({
-      register: () => Response.json({ error: "invalid controller capability" }, { status: 403 }),
-    });
-    await session.shows(
-      "the claim refusal's warning on screen",
-      "the controller claim failed",
-      "invalid controller capability",
-      "/legion-claim-controller"
-    );
-    // A real clock, deliberately: the proposition is that the refused claim sends no start
-    // message, and a send that never happens emits no signal to await, so only a quiet window
-    // with no Messages request shows the absence.
-    await Bun.sleep(3_000);
-    expect(session.turns).toHaveLength(0);
-  },
-  CASE_TIMEOUT_MS
-);
+test.skipIf(skip)("the operator sees a claim refusal", async () => {
+  const session = await startController({
+    register: () => Response.json({ error: "invalid controller capability" }, { status: 403 }),
+  });
+  await session.shows(
+    "the claim refusal's warning on screen",
+    "the controller claim failed",
+    "invalid controller capability",
+    "/legion-claim-controller"
+  );
+  // The proposition is that the refused claim sends no start message, and a send that never
+  // happens emits no signal to await.
+  await span(
+    3_000,
+    "a start message the refused claim does not send leaves no state to read, and no later action marks a moment it would have come by: only a quiet window with no Messages request shows the absence"
+  );
+  expect(session.turns).toHaveLength(0);
+});
 
 // A `/new` replaces the controller session, and pi-legion's session_switch handler claims the new
 // session again. When the daemon refuses that re-claim, the operator is told in a warning naming
@@ -1338,45 +1320,36 @@ test.skipIf(skip)(
 // (command-controller.ts `#runNewSessionFlow` in the pinned build), so a notice the handler shows
 // while it runs is wiped before the operator can read it. The new session's `legion` tool then
 // refuses every call, and the screen does not say why.
-test.skipIf(skip)(
-  "the operator sees a refused re-claim after /new",
-  async () => {
-    const fixture: unknown = JSON.parse(
-      await readFile(
-        path.resolve(
-          import.meta.dir,
-          "../../contracts/fixtures/daemon-api/register-controller.json"
-        ),
-        "utf8"
-      )
-    );
-    let registrations = 0;
-    const session = await startController({
-      register: () => {
-        registrations += 1;
-        return registrations === 1
-          ? Response.json(fixture)
-          : Response.json({ error: "capability revoked" }, { status: 403 });
-      },
-    });
-    const start = await session.nextTurn("the start turn's model request");
-    start.reply("Start procedure done.");
-    await settledOn(session, "Start procedure done.");
+test.skipIf(skip)("the operator sees a refused re-claim after /new", async () => {
+  const fixture: unknown = JSON.parse(
+    await readFile(
+      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/register-controller.json"),
+      "utf8"
+    )
+  );
+  let registrations = 0;
+  const session = await startController({
+    register: () => {
+      registrations += 1;
+      return registrations === 1
+        ? Response.json(fixture)
+        : Response.json({ error: "capability revoked" }, { status: 403 });
+    },
+  });
+  const start = await session.nextTurn("the start turn's model request");
+  start.reply("Start procedure done.");
+  await settledOn(session, "Start procedure done.");
 
-    session.terminal.write("/new");
-    await session.shows("/new in the composer", "/new");
-    session.terminal.write("\r");
-    await session.until("the re-claim's registration", () =>
-      registrations >= 2 ? true : undefined
-    );
-    await session.shows(
-      "the re-claim's refusal on screen after /new",
-      "re-claiming the controller for this session failed",
-      "capability revoked"
-    );
-  },
-  CASE_TIMEOUT_MS
-);
+  session.terminal.write("/new");
+  await session.shows("/new in the composer", "/new");
+  session.terminal.write("\r");
+  await session.until("the re-claim's registration", () => (registrations >= 2 ? true : undefined));
+  await session.shows(
+    "the re-claim's refusal on screen after /new",
+    "re-claiming the controller for this session failed",
+    "capability revoked"
+  );
+});
 
 // A `/new` typed while the start command's claim is in flight stops that claim at its
 // registration, and the session change's re-claim registers the new session and sends the start
@@ -1458,8 +1431,7 @@ test.skipIf(skip)(
     expect(newUsers?.filter((entry) => entry.includes(START_MESSAGE_JSON))).toHaveLength(1);
     expect(replacedUsers).toEqual([]);
     expect(session.turns).toHaveLength(1);
-  },
-  CASE_TIMEOUT_MS
+  }
 );
 
 // The same refused re-claim, with a `task` subagent's view focused when the `/new` starts. Oh My
@@ -1566,8 +1538,7 @@ test.skipIf(skip)(
       "re-claiming the controller for this session failed",
       "capability revoked"
     );
-  },
-  CASE_TIMEOUT_MS
+  }
 );
 
 // The start command's claim sends the start message, marking the start turn sent, then claims the
@@ -1640,8 +1611,7 @@ test.skipIf(skip)(
       }
     }
     expect(reached()).toBe(true);
-  },
-  CASE_TIMEOUT_MS
+  }
 );
 
 // The daemon's controller reports ready once it holds the role and the controller topic, and the
@@ -1696,8 +1666,7 @@ test.skipIf(skip)(
       (await session.state()).isSettled ? true : undefined
     );
     expect(session.turns).toHaveLength(2);
-  },
-  CASE_TIMEOUT_MS
+  }
 );
 
 // An interrupt of the start turn: RPC `abort`, as the terminal's Esc does (it ends the run with
@@ -1762,8 +1731,7 @@ test.skipIf(skip)(
       (await session.state()).isSettled ? true : undefined
     );
     expect(session.turns).toHaveLength(2);
-  },
-  CASE_TIMEOUT_MS
+  }
 );
 
 // The operator's controller claims and sends its start message only from
@@ -1815,8 +1783,7 @@ test.skipIf(skip)(
     );
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toContain('"wake":"startup"');
-  },
-  CASE_TIMEOUT_MS
+  }
 );
 
 // The start-turn mark owes every startup card one wake after the start turn, since the start
@@ -1856,20 +1823,21 @@ test.skipIf(skip)(
     expect(read).toContain(during.card.summary);
     next.reply("Read both cards.");
     await settledOn(session, "Read both cards.");
-    // A real clock, as in "the operator sees a claim refusal": a wake that is not sent emits no
-    // signal to await, so only a quiet window with no further Messages request shows its absence.
-    await Bun.sleep(3_000);
+    // As in "the operator sees a claim refusal": a wake that is not sent emits no signal to await.
+    await span(
+      3_000,
+      "a wake the session does not send leaves no state to read, and no later action marks a moment it would have come by: only a quiet window with no further Messages request shows its absence"
+    );
     expect(session.turns.slice(2).map(({ request }) => lastMessage(request))).toEqual([]);
-  },
-  CASE_TIMEOUT_MS
+  }
 );
 
 // The operator's controller marks its start unsent at `session_start`, and while the mark holds,
 // a startup card waits for the start turn. Two ways leave that start unsent for good: the start
 // claim's registration that never answers (the daemon unreachable mid-request), and a session
 // launched without the start word on its command line. A card that reached the idle session must
-// still get a turn of its own, without waiting for the operator to type; the bound here is three
-// times pi-envoy's STARTUP_TURN_CAP_MS (30 s).
+// still get a turn of its own, without waiting for the operator to type; pi-envoy's
+// STARTUP_TURN_CAP_MS (30 s) is when.
 for (const variant of ["the start claim never answers", "the start command never runs"] as const) {
   test.skipIf(skip)(
     `a startup card held by an unsent start mark gets its turn when ${variant}`,
@@ -1901,16 +1869,13 @@ for (const variant of ["the start claim never answers", "the start command never
       await inbound.repeat(opened, card);
       startupHold.release();
 
-      // A real clock: the bound is the property under test.
-      const first = await session.until(
-        "the startup card's model request, within 90 s",
-        () => session.turns[0],
-        90_000
-      );
+      // The card's own turn, which no typing started. When it comes is pi-envoy's
+      // STARTUP_TURN_CAP_MS, a timer of its own that src/card-wake.test.ts holds on a fake clock;
+      // the wait here ends at the row's deadline.
+      const first = await session.until("the startup card's model request", () => session.turns[0]);
       expect(conversation(first.request)).toContain(card.summary);
       expect(lastMessage(first.request)).toContain(WAKE_ONE);
-    },
-    CASE_TIMEOUT_MS
+    }
   );
 }
 
@@ -2076,6 +2041,5 @@ test.skipIf(skip)(
       expect(conversation(request)).not.toContain(afterNotice.summary);
       expect(conversation(request)).not.toContain(afterMention.summary);
     }
-  },
-  CASE_TIMEOUT_MS
+  }
 );

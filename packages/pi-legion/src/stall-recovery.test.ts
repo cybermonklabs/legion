@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { StallCall, StallWatchdogLog } from "@legion/pi-shared/stall-watchdog";
+import { until } from "@legion/test-fixtures/wait";
 import {
   readStallProcesses,
   type StallProcessScan,
@@ -50,16 +51,6 @@ async function alive(pid: number): Promise<boolean> {
     .trim()
     .split(/\s+/)[0];
   return state !== undefined && state !== "" && state !== "Z";
-}
-
-/** Waits for one reading of the machine to come true. A real tree has no clock to fake, so what
- * is awaited is the reading itself, never a guessed delay. */
-async function until(ready: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    if (await ready()) return;
-    await Bun.sleep(10);
-  }
-  throw new Error("the machine never reached the state the case needs");
 }
 
 function callOf(over: Partial<StallCall> = {}): StallCall {
@@ -146,8 +137,9 @@ test("the first step ends the stuck call's own processes, and only those", async
   const everyone = ["own-runner", "sub-runner", "before", "stuck", "other", "ended", "plain"];
   expect(everyone.filter((name) => pids.has(name))).toEqual(everyone);
 
-  // Every one of them is in the agent's tree, with the environment its case needs.
-  await until(async () => {
+  // Every one of them is in the agent's tree, with the environment its case needs. A real tree
+  // has no clock to fake, so what is awaited is the reading itself, never a guessed delay.
+  await until("every process of the agent in its tree, with its case's environment", async () => {
     const scan = await readStallProcesses({ agentPid: agent.pid });
     if (!scan.read) return false;
     const found = new Map(scan.processes.map((process) => [process.pid, process]));
@@ -192,14 +184,17 @@ test("the first step ends the stuck call's own processes, and only those", async
 
   // Step one, first rule: the child whose environment names the stuck call, and nothing else.
   expect(await processes.endCall(stuck)).toBe(1);
-  await until(async () => !(await alive(pidOf("stuck"))));
+  await until("the stuck call's child to be gone", async () => !(await alive(pidOf("stuck"))));
   expect(await alive(pidOf("plain"))).toBe(true);
 
   // With no such child, a descendant that started at or after the call's execution.
   const nameless = callOf({ toolCallId: "toolu_nameless", startedAt: execution });
   openCalls = [nameless, other];
   expect(await processes.endCall(nameless)).toBe(1);
-  await until(async () => !(await alive(pidOf("plain"))));
+  await until(
+    "the descendant started inside the call to be gone",
+    async () => !(await alive(pidOf("plain")))
+  );
 
   // With none of those: the runner the tool keeps between calls — but not while the host still
   // holds a background job of that tool, which is what the runner would be serving.
@@ -216,7 +211,10 @@ test("the first step ends the stuck call's own processes, and only those", async
   // One call of the tool open, and no background job: the runner of this session goes.
   openCalls = [nameless, other];
   expect(await processes.endCall(nameless)).toBe(1);
-  await until(async () => !(await alive(pidOf("own-runner"))));
+  await until(
+    "this session's own runner to be gone",
+    async () => !(await alive(pidOf("own-runner")))
+  );
 
   // The negative control, at the end of every run: the other open call's child, the background
   // job of the call that ended, the subagent's own runner, the process started before the call
@@ -226,7 +224,7 @@ test("the first step ends the stuck call's own processes, and only those", async
   }
   expect(await alive(outsider.pid)).toBe(true);
   expect(await alive(agent.pid)).toBe(true);
-}, 60_000);
+});
 
 // ---------------------------------------------------------------------------------------------
 // The rules, read apart from the machine: what the step would end, and what it never ends.

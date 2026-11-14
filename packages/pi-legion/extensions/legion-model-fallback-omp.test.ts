@@ -72,8 +72,8 @@ const TWO_STEPS: readonly string[] = [
 
 /**
  * The first wait a refusal of one selector buys, through `LEGION_REFUSAL_COOLDOWN_MS`
- * (`fallbackCooldownLimits`): seconds here, an hour in a deployment, so every case below runs
- * inside the pi-legion job's ten minutes.
+ * (`fallbackCooldownLimits`): seconds here, an hour in a deployment, so every case below sees its
+ * waits run out while it watches.
  */
 const COOLDOWN_MS = 4_000;
 
@@ -244,8 +244,7 @@ test.skipIf(skip)(
     expect(waiting.map((turn) => turn.model)).not.toContain("strong-model");
     // And the session does come back, once the wait is over.
     expect(pane.returnedAt(dueAt)).toBeDefined();
-  },
-  180_000
+  }
 );
 
 test.skipIf(skip)(
@@ -294,8 +293,7 @@ test.skipIf(skip)(
     expect(waiting.map((turn) => turn.model)).not.toContain("strong-model");
     expect(pane.returnedAt(dueAt)).toBeDefined();
     expect(pane.models().slice(2)).not.toContain("middle-model");
-  },
-  240_000
+  }
 );
 
 test.skipIf(skip)(
@@ -314,8 +312,7 @@ test.skipIf(skip)(
     // host ends the run there — and the next request is the next assignment's, on the model the
     // plugin's own walk moved the session to.
     expect(userText(pane.turns()[1] as Request)).toContain("Carry on.");
-  },
-  180_000
+  }
 );
 
 test.skipIf(skip)(
@@ -345,8 +342,7 @@ test.skipIf(skip)(
     });
     // The return clears the arming and leaves the doubling where it stands.
     expect(states.at(-1)).toEqual({ levels: { [STRONG]: 1 } });
-  },
-  180_000
+  }
 );
 
 test.skipIf(skip)(
@@ -391,8 +387,7 @@ test.skipIf(skip)(
     const returned = pane.returnedAt((secondRefusal ?? 0) + 1);
     expect(returned).toBeDefined();
     expect((returned ?? 0) - (secondRefusal ?? 0)).toBeGreaterThanOrEqual(2 * COOLDOWN_MS);
-  },
-  240_000
+  }
 );
 
 test.skipIf(skip)(
@@ -443,8 +438,7 @@ test.skipIf(skip)(
     const returned = pane.returnedAt((secondRefusal ?? 0) + 1);
     expect(returned).toBeDefined();
     expect((returned ?? 0) - (secondRefusal ?? 0)).toBeLessThan(2 * COOLDOWN_MS);
-  },
-  240_000
+  }
 );
 
 test.skipIf(skip)(
@@ -511,6 +505,5 @@ test.skipIf(skip)(
     const returned = pane.returnedAt(dueAt);
     expect(returned).toBeDefined();
     expect((returned ?? 0) - resumedFrom).toBeLessThan(RESUME_COOLDOWN_MS);
-  },
-  300_000
+  }
 );

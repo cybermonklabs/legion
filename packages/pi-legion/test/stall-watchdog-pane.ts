@@ -20,6 +20,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { writtenLines } from "@legion/test-fixtures/transcript-lines";
+import { until } from "@legion/test-fixtures/wait";
 import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
 import {
   STALL_WATCH_ENTRY,
@@ -64,15 +65,6 @@ export const STEP_MS = 4_000;
  * and short enough that the rule comes due well within the case. */
 export const SHELL_DEADLINE_MS = 20_000;
 
-/** How long a case waits for something the pane owes it before failing: the pane's boot and the
- * three steps of the ladder, each a 5-second sweep apart. */
-export const DEADLINE_MS = 120_000;
-
-/** How long `settled()` waits for the pane to finish the line it is writing. One line is one
- * `write`, so this is orders of magnitude more than it takes even on a loaded pod; it is a
- * bound, not a sleep. */
-const SETTLED_MS = 5_000;
-
 /** How long a case watches for something that must not happen: the bound, two of the plugin's
  * 5-second sweeps, and a margin. */
 export const QUIET_MS = BOUND_MS + 12_000;
@@ -115,7 +107,7 @@ export async function runs(pid: number): Promise<boolean> {
 }
 
 /**
- * Waits until `pid` is gone, and fails at the pane's own deadline if it never is.
+ * Waits until `pid` is gone, and fails at the row's deadline if it never is.
  *
  * The ladder's first step sends SIGKILL and counts the signal (`src/stall-recovery.ts:242-243`);
  * it does not wait for the task to end, and the kernel ends it after that call has returned. So
@@ -345,9 +337,10 @@ export interface StallPane {
    * which nothing should be written: the only line that could falsify such a read is one a
    * write has not finished, which `records()` withholds while the pane runs. It is a separate
    * read from the one that follows, so it does not promise that one finds the file whole — it
-   * narrows the window to the gap between the two. Throws naming the file at its bound. */
+   * narrows the window to the gap between the two. Fails naming the file at the row's deadline. */
   settled(): Promise<void>;
-  /** Polls `probe` until it answers, failing on `what` at the deadline. */
+  /** Waits through the shared wait until `probe` answers, failing on `what` at the row's
+   * deadline, and at once when omp has exited while the case waits on it. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
 
@@ -553,20 +546,21 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     },
     exited: rpc.exited,
     running: () => running,
-    settled: () => awaitSettled(sessions, SETTLED_MS),
+    settled: () => awaitSettled(sessions),
     async until(what, probe) {
-      const deadline = Date.now() + DEADLINE_MS;
-      for (;;) {
+      // The answer is boxed, so a probe whose answer is falsy (a 0, an empty string) still ends
+      // the wait: only `undefined` is "not yet". A poll, because what is awaited is a line in a
+      // transcript the pane writes and a request it makes, neither of which this process can be
+      // woken by.
+      const answered = await until(what, async () => {
         const value = await probe();
-        if (value !== undefined) return value;
+        if (value !== undefined) return { value };
         if (options.denyAbort !== true && !running) {
           throw new Error(`omp exited while this case waited for ${what}`);
         }
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-        // A poll, because what is awaited is a line in a transcript the pane writes and a request
-        // it makes, neither of which this process can be woken by.
-        await Bun.sleep(100);
-      }
+        return undefined;
+      });
+      return answered.value;
     },
   };
   await pane.until("the pane's registration with the Envoy listener", () =>

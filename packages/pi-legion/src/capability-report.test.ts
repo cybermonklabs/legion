@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, jest, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -83,7 +83,25 @@ afterAll(async () => {
 });
 afterEach(() => {
   process.env.PATH = originalPath;
+  // A row that holds the clock hands it back here too, so a failure inside it leaves no later
+  // row on a clock that does not move.
+  jest.useRealTimers();
 });
+
+/** The moment a row that holds the clock (Bun's fake timers) starts it at. */
+const CLOCK_START = 1_793_000_000_000;
+
+/**
+ * Resolves once every microtask queued before it has run: Bun's fake timers leave `setImmediate`
+ * real (measured on Bun 1.4.4), and the event loop runs an immediate only once the microtask
+ * queue is empty. Under fake timers a check that answers at once has answered by then, and so
+ * has every continuation of a timer the row fired.
+ */
+function everyMicrotask(): Promise<void> {
+  const ran = Promise.withResolvers<void>();
+  setImmediate(ran.resolve);
+  return ran.promise;
+}
 
 function input(overrides: Partial<CapabilityInput> = {}): CapabilityInput {
   return {
@@ -125,18 +143,28 @@ function passingNamesExceptTheDiskCheck(report: LegionCapabilityReportBody): str
 
 describe("the report", () => {
   test("carries the six live rows in the daemon's table order, when it started and how long it took, in the wire's shape", async () => {
-    const before = Date.now();
-    const report = await measureCapabilities(fakeHost(), input());
-    const after = Date.now();
+    // The report reads the time from this process's clock, so the row holds that clock (Bun's
+    // fake timers) and moves it while the two commands are out: the moments are the ones it set.
+    const measuredMs = 1_234;
+    const answered = Promise.withResolvers<void>();
+    const answers = fakeHost();
+    const host = fakeHost({
+      run: async (command, args, options) => {
+        await answered.promise;
+        return answers.run(command, args, options);
+      },
+    });
+    jest.useFakeTimers({ now: CLOCK_START });
+    const measuring = measureCapabilities(host, input());
+    jest.advanceTimersByTime(measuredMs);
+    answered.resolve();
+    const report = await measuring;
+    jest.useRealTimers();
 
     expect(report.rows.map((row) => row.name)).toEqual([...LIVE_CAPABILITIES]);
     expect(report.rows.every((row) => row.ok)).toBe(true);
-    const measuredAt = Date.parse(report.measuredAt);
-    expect(measuredAt).toBeGreaterThanOrEqual(before);
-    expect(measuredAt).toBeLessThanOrEqual(after);
-    expect(Number.isInteger(report.elapsedMs)).toBe(true);
-    expect(report.elapsedMs).toBeGreaterThanOrEqual(0);
-    expect(report.elapsedMs).toBeLessThanOrEqual(after - measuredAt + 1);
+    expect(report.measuredAt).toBe(new Date(CLOCK_START).toISOString());
+    expect(report.elapsedMs).toBe(measuredMs);
     expect(LegionCapabilityReport.parse(report)).toEqual(report);
   });
 
@@ -207,14 +235,31 @@ describe("the report", () => {
   test("a row still pending at the report's budget is a failing row naming that budget, and the report does not wait for it", async () => {
     const pending = Promise.withResolvers<CommandResult>();
     const host = fakeHost({ run: () => pending.promise });
-    // Nothing but a budget can end the two command rows, and the check budget is six times the
-    // per-test limit below: a report that ends them on its own 20 ms budget comes back at once,
-    // while one that waited for its checks could not come back inside that limit at all, so the
-    // limit is the hang guard this row's proof rests on.
-    const report = await measureCapabilities(host, input(), { checkMs: 30_000, reportMs: 20 });
-    // The report is back: resolving lets the abandoned checks settle, so their 30 s timers clear.
+    // Nothing but a budget can end the two command rows, and the row holds the clock both budgets
+    // run on (Bun's fake timers): it moves it past the report's 20 ms and never to the checks'
+    // 30 s, and answers the commands only after that. The order of the two is the verdict: a
+    // report that waited for its checks could come back only once the commands had answered.
+    const order: string[] = [];
+    jest.useFakeTimers({ now: CLOCK_START });
+    const measuring = measureCapabilities(host, input(), { checkMs: 30_000, reportMs: 20 }).then(
+      (report) => {
+        order.push("the report came back");
+        return report;
+      }
+    );
+    // Every check that answers at once has answered before the report's budget passes.
+    await everyMicrotask();
+    jest.advanceTimersByTime(20);
+    await everyMicrotask();
+    order.push("the commands answered");
+    // Resolving lets the abandoned checks settle, so their 30 s timers clear.
     pending.resolve({ code: 0, stdout: "", stderr: "" });
+    const report = await measuring;
+    jest.useRealTimers();
 
+    expect(order).toEqual(["the report came back", "the commands answered"]);
+    // And by the report's own reading of that clock, it ended at its budget.
+    expect(report.elapsedMs).toBe(20);
     for (const name of ["github", "dispatch-envoy-tools"])
       expect(report.rows.find((row) => row.name === name)).toEqual({
         name,
@@ -222,7 +267,7 @@ describe("the report", () => {
         detail: "did not finish within 20 ms",
       });
     expect(passingNamesExceptTheDiskCheck(report)).toEqual(["subagents", "web-search", "mcp"]);
-  }, 5_000);
+  });
 
   test("a whole-second budget reads in seconds", async () => {
     const host = fakeHost({ run: () => Promise.withResolvers<never>().promise });
@@ -251,8 +296,15 @@ describe("the report", () => {
     });
     const budgets = { checkMs: 20, reportMs: 500 };
 
-    const first = await measureCapabilities(host, input(), budgets);
+    // The row holds the clock both measurements read (Bun's fake timers) and moves it once: past
+    // the first search's budget, after every check that answers at once has answered.
+    jest.useFakeTimers({ now: CLOCK_START });
+    const measuringFirst = measureCapabilities(host, input(), budgets);
+    await everyMicrotask();
+    jest.advanceTimersByTime(budgets.checkMs);
+    const first = await measuringFirst;
     const second = await measureCapabilities(host, input(), budgets);
+    jest.useRealTimers();
 
     expect(first.rows.find((row) => row.name === "web-search")).toEqual({
       name: "web-search",
@@ -268,9 +320,11 @@ describe("the report", () => {
       "github",
     ]);
     // The second report is its own measurement, not the first with one row patched: it started
-    // after the first ended, and every check asked the host a second time.
-    expect(Date.parse(second.measuredAt)).toBeGreaterThan(Date.parse(first.measuredAt));
-    expect(first.elapsedMs).toBeGreaterThanOrEqual(20);
+    // when the first ended, at the moment the first's search budget passed, and every check asked
+    // the host a second time.
+    expect(first.measuredAt).toBe(new Date(CLOCK_START).toISOString());
+    expect(first.elapsedMs).toBe(budgets.checkMs);
+    expect(second.measuredAt).toBe(new Date(CLOCK_START + budgets.checkMs).toISOString());
     expect(searches).toBe(2);
     // `dispatch` and `gh`, once each per measurement, in the order the checks start them.
     expect(host.runs.map((run) => run.command)).toEqual(["dispatch", "gh", "dispatch", "gh"]);
@@ -898,23 +952,23 @@ describe("cleanDetail", () => {
   // 383 ms on an idle machine.
   //
   // What this row holds is that `cleanDetail` comes back on the largest input the fixture builds,
-  // inside the hang guard below. What it does not hold is that a rule has stayed linear: a
+  // inside the command's one guard. What it does not hold is that a rule has stayed linear: a
   // quadratic rule is not caught here. The JWT rule made quadratic by hand costs 13,570 to
-  // 14,088 ms on a 2-CPU gVisor agent pod, which the 10 s guard does fail; but CI is about 4.5
-  // times faster (job 128346885451 ran the two cases above at 83.20 and 80.76 ms), where that same
-  // regression would cost about 3 s and pass — an estimate from those ratios, not a run on CI. One
-  // bound at 64 KiB cannot hold both machines: it would have to sit above the 2,633 ms a linear
-  // rule costs on that pod under load and below that 3 s, which is no room to stand on.
-  // INFRA-985's architect ruled on 2026-11-07 that this is not fixed here: an accepted risk of this
-  // change, recorded in the pull request body, not an oversight.
+  // 14,088 ms on a 2-CPU gVisor agent pod, and CI is about 4.5 times faster (job 128346885451 ran
+  // the two cases above at 83.20 and 80.76 ms), where that same regression would cost about 3 s —
+  // an estimate from those ratios, not a run on CI. No limit on time can hold both machines, and
+  // JavaScriptCore counts no regular-expression steps a row could read instead, so the row has no
+  // count of the work to judge either. INFRA-985's architect ruled on 2026-11-07 that this is not
+  // fixed here: an accepted risk of this change, recorded in the pull request body, not an
+  // oversight.
   for (const { name, unit } of redaction.linear) {
     test(`cleans 64 KiB of ${name} without stalling`, () => {
       const text = unit.repeat(Math.ceil((64 * 1024) / unit.length));
       cleanDetail(text);
-      // The limit is a hang guard: on bun 1.4.4 a per-test limit is reported for a body that
-      // blocks the thread only once that body comes back, so it ends a blow-up that returns at
-      // all, and a rule that never returns is ended by the pi-legion job's own timeout-minutes: 10.
-    }, 10_000);
+      // No limit of its own: on bun 1.4.4 the command's guard is reported for a body that blocks
+      // the thread only once that body comes back, so it ends a blow-up that returns at all, and
+      // a rule that never returns is ended by the pi-legion job's own `timeout-minutes`.
+    });
   }
 });
 
