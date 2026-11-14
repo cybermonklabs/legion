@@ -112,13 +112,37 @@ gh api "repos/<o>/<r>/actions/runs?head_sha=<head>&event=pull_request&per_page=1
   --jq '.workflow_runs[] | [.id,.name,.run_attempt,.conclusion] | @tsv'
 ```
 
-A run of that head whose `run_attempt` is above 1 is a re-run somebody already pressed, and the
-head's one re-run is spent. `event=pull_request` keeps the by-hand `workflow_dispatch` runs out,
-as the counted set does. The reviewer's existing re-run of a cancelled or absent required check
+A run of that head whose `run_attempt` is above 1 is a re-run somebody already pressed. Whether
+it spent the head's one re-run is read on each earlier attempt of that run, `<n>` from 1 to one
+below the run's `run_attempt`:
+
+```bash
+gh api --paginate "repos/<o>/<r>/actions/runs/<run-id>/attempts/<n>/jobs?per_page=100" \
+  --jq '.total_count, (.jobs[] | [.name,.conclusion] | @tsv)'
+```
+
+Count the jobs it returned against `total_count`, because a run can hold more than 100 jobs; a
+count that falls short is a read to make again, never a decision.
+
+The re-run after an earlier attempt spends nothing only when every job of that attempt that did
+not succeed or skip is `cancelled`, or is an aggregate that failed over such a lane. Any other
+conclusion spends it, one this page does not name included. A lane GitHub cancelled at two
+attempts of the same run is read as `failure`, so a cancelled lane gets one re-run that spends
+nothing, and the head's one re-run is still left after it. That bound is what holds a hung job:
+GitHub cancels a job that runs past its `timeout-minutes`, so a lane that hangs again reads
+`cancelled` again
+(<https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idtimeout-minutes>).
+Measured on run 43330369709 at `94fa9812fd0fcbecf444016d93ff41428dcce523`: attempt 1 ended
+`cancelled`, its job `dispatch-browser / merge` `cancelled` and the aggregate `ci-ok` `failure`,
+and attempt 2 passed, so that head's one re-run is unspent. `event=pull_request` keeps the by-hand
+`workflow_dispatch` runs out, as the counted set does.
+
+An aggregate is resolved to its lane, as step 2 of *Which red is the change's* says, before the
+spend is judged. The reviewer's existing re-run of a cancelled or absent required check
 (`skill://legion-worker/references/merge-gate.md`) neither spends the head's re-run nor is spent
-by it, since it presses no run of a check that was `failure`. A `gh run rerun <run-id> --failed`
-call pressed while a check of the counted set is `failure` spends the head's re-run, whatever
-else that call clears.
+by it, and an aggregate that reads `failure` over a lane GitHub cancelled is that cancelled lane.
+A `gh run rerun <run-id> --failed` call pressed while a check of the counted set, resolved to its
+lane, is `failure` spends the head's re-run, whatever else that call clears.
 
 When the re-run is spent, the role re-runs nothing. It fails the round, or it requests changes,
 and it names the check.

@@ -323,7 +323,8 @@ and each scenario's scoring rule is on the `score.ts` function that scores it. I
 route (the gateway, an Anthropic key file, or a provider block of the operator's own models.yml).
 A batch starts its Postgres and its NATS as two containers, unless `SKILL_SCENARIOS_POSTGRES_URL`
 and `SKILL_SCENARIOS_NATS_URL` name two servers of your own, both or neither: set both and the
-batch starts no container. `SKILL_SCENARIOS_OMP` runs the Oh My Pi binary it names in place of
+batch starts no container. The NATS must run JetStream (`nats-server -js`), or the Envoy listener
+exits before any run starts. `SKILL_SCENARIOS_OMP` runs the Oh My Pi binary it names in place of
 the install mise made for the label's pin, and each run's agent is then a process group of the
 rig's own shell rather than a tmux pane, so a box with neither mise nor tmux runs a batch too.
 The judges are what still needs Docker: `rig.sh judge-omp` runs each one in a container, and

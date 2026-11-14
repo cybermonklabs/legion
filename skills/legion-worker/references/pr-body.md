@@ -57,7 +57,7 @@ gives them).
 Under the Go daemon a check that settles red on the head moves the issue nowhere: the daemon names
 every check GitHub reported, with the conclusion GitHub gave it, in one message to the tree's
 architect, the worker of the issue's current phase and the implementer, and judges none of them.
-That message is the implementer's to act on while it still works the issue: a red that failed on
+That message is the implementer's to act on while it holds `implementing`: a red that failed on
 its own, once the head's counted set reports that check `completed`, is re-run once
 (`gh run rerun <run-id> --failed`), woken by the pull request's checks event (`skill://envoy`,
 *Wait for CI or a merge*: subscribe, then end the turn) and never by a sleep loop; a red at the code is fixed, which the reviewer asks for anyway, since it reads the

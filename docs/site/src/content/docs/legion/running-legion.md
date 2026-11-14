@@ -939,9 +939,12 @@ Closing the terminal leaves the project without one, and the daemon logs
    sets `projects.<KEY>.review_workflows` is refused at load with
    `Unknown key "projects.<KEY>.review_workflows"`, by `legion start --check-config` and by the
    daemon's boot alike, so the daemon does not come up on it: delete the key before or with the
-   image pin (an empty list is refused too). A review bot's red is now CI like any other: it sends
-   the work back to the implementer, which answers and resolves the bot's threads and pushes, and
-   the bot runs again; the reviewer adjudicates nothing of it and re-runs nothing. Where the bot's
+   image pin (an empty list is refused too). A review bot's red is now CI like any other: the
+   daemon names it, with every other check GitHub reported, in one message to the tree's architect,
+   the worker of the issue's current phase and the implementer, and moves the issue for none of
+   them. The base branch holds the merge for a check it requires, and a re-run does not clear a
+   bot's red while its thread stands, so the implementer answers or fixes each of the bot's
+   threads, resolves them and pushes, and the bot runs again on that push. Where the bot's
    threads must be closed before a merge, make that the repository's own rule (a ruleset's
    "Require conversation resolution before merging").
 

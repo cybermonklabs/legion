@@ -133,7 +133,8 @@
 # and they cannot detect a lost skill rule. A new scenario is an instrument only once an ablate
 # arm has scored lower on it.
 #
-# A batch's services are a Postgres, a NATS, and the Envoy listener built from this checkout. The
+# A batch's services are a Postgres, a NATS that runs JetStream, and the Envoy listener built from
+# this checkout. The
 # Postgres and the NATS are two containers the batch starts and removes, or, when
 # SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL are both set, the two servers those
 # URLs name, which the batch uses and leaves running: that is how a batch runs where there is no
@@ -206,7 +207,12 @@
 #                                 what the server admits. A server that admits 100 takes a
 #                                 parallelism of 1 or 2
 #   SKILL_SCENARIOS_NATS_URL      a NATS the batch uses in place of the container it would start,
-#                                 as a URL (nats://<host>:<port>). Each run's agent is given it as
+#                                 as a URL (nats://<host>:<port>). It must run JetStream
+#                                 (nats-server -js), as the batch's own container does: without
+#                                 it the Envoy listener exits before any run starts, with
+#                                 "connect to NATS and reconcile the ENVOY_NOTIFICATIONS stream:
+#                                 nats: no responders available for request", and every world
+#                                 ends exit=1. Each run's agent is given it as
 #                                 ENVOY_NATS_URL, so give a URL whose credentials a run may hold
 # Set both and the batch starts no container, so it needs neither docker nor a docker daemon. Set
 # one without the other and the batch ignores it and starts both containers, as it does when
