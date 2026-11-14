@@ -20,11 +20,29 @@ const webRoot = fileURLToPath(new URL(".", import.meta.url));
 const fixtures = process.env.DISPATCH_DEMO_FIXTURES;
 const singleFile = process.env.DISPATCH_DEMO_SINGLE_FILE === "1";
 
+/** The fixtures' read time, which the page's clock starts from (src/demo/clock.ts): read again
+ *  for each page, so a rebuilt fixtures directory moves it with no restart. */
+async function clockOrigin(): Promise<string> {
+  if (fixtures === undefined) throw new Error("set DISPATCH_DEMO_FIXTURES");
+  const manifest = JSON.parse(await readFile(join(fixtures, "manifest.json"), "utf8"));
+  if (typeof manifest.daemon_read_at !== "string") {
+    throw new Error("the fixtures' manifest names no daemon_read_at");
+  }
+  return manifest.daemon_read_at;
+}
+
 const stub: Plugin = {
   name: "views-demo-stub",
   transformIndexHtml: {
     order: "pre",
-    handler: () => [
+    // A classic script runs as the page parses, before any module, so no module reads the
+    // browser's own time; the stub's module then goes in ahead of the app's entry.
+    handler: async () => [
+      {
+        tag: "script",
+        children: `window.__DISPATCH_DEMO_CLOCK__ = ${JSON.stringify(await clockOrigin())};`,
+        injectTo: "head-prepend",
+      },
       {
         tag: "script",
         attrs: { type: "module", src: "/src/demo/install.ts" },

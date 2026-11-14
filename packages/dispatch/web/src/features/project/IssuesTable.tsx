@@ -299,15 +299,24 @@ function ViewsTable({ hasLegion, project }: { hasLegion: boolean; project: strin
           ];
     // On a phone Select and Key are the pinned columns, and Title, which fills the rest of the
     // box, comes straight after them, so a row at rest reads its key and its title.
-    const order =
-      storedLayout.boxWidth < 640
-        ? [
-            "select",
-            "key",
-            "title",
-            ...kept.filter((id) => id !== "select" && id !== "key" && id !== "title"),
-          ]
-        : kept;
+    const phone = storedLayout.boxWidth < 640;
+    const phoneOrder = (ids: readonly string[]) => [
+      "select",
+      "key",
+      "title",
+      ...ids.filter((id) => id !== "select" && id !== "key" && id !== "title"),
+    ];
+    const order = phone ? phoneOrder(kept) : kept;
+    // A header drag on a phone keeps that rule: a column dropped on Title lands right after it
+    // (the core puts it before Title, and Title is put back after Key), a column dropped on
+    // another moves among the columns after Title, and Title dragged anywhere stays where it
+    // is. What is stored is the order drawn, so it survives a reload.
+    const setOrder: typeof storedLayout.setOrder = phone
+      ? (next) =>
+          storedLayout.setOrder((current) =>
+            phoneOrder(typeof next === "function" ? next(current) : next)
+          )
+      : storedLayout.setOrder;
     const hidden: VisibilityState = hasLegion
       ? {}
       : Object.fromEntries(COLUMNS.filter((c) => c.board).map((c) => [c.id, false]));
@@ -351,10 +360,11 @@ function ViewsTable({ hasLegion, project }: { hasLegion: boolean; project: strin
         widths.title = narrowed - Math.min(over, Math.max(0, narrowed - 156));
       return { ...drawn, sizing: widths };
     })();
-    if (shown === undefined) return { ...storedLayout, order, responsive, visibility };
+    if (shown === undefined) return { ...storedLayout, order, responsive, setOrder, visibility };
     return {
       ...storedLayout,
       order,
+      setOrder,
       responsive,
       visibility,
       // `cols=` holds for this load and writes nothing: a change of columns rewrites it.
@@ -684,7 +694,6 @@ function ViewsTable({ hasLegion, project }: { hasLegion: boolean; project: strin
           },
         ]),
   ];
-  const narrowed = isViewChanged(params);
   // The Columns menu lists the Legion columns and the stage first, where a reader looks for
   // them, then the issue's own columns.
   const legionFirst = (id: string) =>
@@ -777,7 +786,9 @@ function ViewsTable({ hasLegion, project }: { hasLegion: boolean; project: strin
         <IssueTableToolbar
           columns={offeredColumns}
           extraChips={extraChips}
-          onClear={narrowed ? reset : undefined}
+          // Only while the view is changed: a built-in view whose address carries more than its
+          // own parameters, or a saved view whose address differs from its saved query.
+          onClear={changed ? reset : undefined}
           searchRef={searchRef}
           table={table}
           trailing={toolbarTrailing}

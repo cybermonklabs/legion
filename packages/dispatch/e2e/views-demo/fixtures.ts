@@ -204,7 +204,8 @@ for (const key of phaseWork) {
     waiting_reason: cards.get(key)?.waiting?.reason ?? "",
     work_first_at: derived.work_first_at,
     work_last_at: derived.work_last_at,
-    updated_at: builtAt,
+    // Invented: written as if at the read, the moment the page's clock stands at (clock.ts).
+    updated_at: daemonReadAt,
   };
 }
 population.facts = facts;
@@ -233,7 +234,7 @@ const legionSettings: LegionSetting[] = [
       ? `${flags["daemon-url"].replace(/\/$/, "")}/legion/v1/state`
       : "",
     created_by: { kind: "user", id: login },
-    updated_at: builtAt,
+    updated_at: daemonReadAt,
   } as LegionSetting,
 ];
 const readerFixture: ReaderFixture = { login, user_state: {}, legion_settings: legionSettings };
@@ -250,7 +251,13 @@ const manifest: DemoManifest = {
   issues_read_at: issuesReadAt,
   daemon_read_at: daemonReadAt,
   derived_summary: ["time in phase", "time per phase", "work time", "rounds", "close times"],
-  invented_summary: ["the project's Legion setting", "the facts' write times"],
+  // What the pages show that no production read holds, in reader.json's and population.json's
+  // words below; the facts' cursor age is invented too, and no page shows it.
+  invented_summary: [
+    `${project}'s Legion setting`,
+    "the signed-in reader and its empty Inbox",
+    "the facts' write times",
+  ],
   fixtures: {
     "issues.json": {
       source: `GET /api/v1/issues?project=${project}&open=true (${open.length} rows) and GET /api/v1/issues?project=${project}&status=done (${done.length} rows), production Dispatch`,
@@ -277,7 +284,7 @@ const manifest: DemoManifest = {
         `facts (${Object.keys(facts).length} rows, one per issue with phase work): hours_by_phase, work_hours, review_rounds, work_first_at and work_last_at by the metrics package's rule for an issue the sampler never observed (timeline.go fallbackPhases, compute.go computeWorkTime and reviewRounds), from Dispatch events alone; the sampler's own observations would move them. Waiting on a person, Held and waiting on children have no hours here: their time is in 'other'. root_key and tree_depth by the board's tree walk over the daemon's tree and Dispatch's parents; waiting_reason is the card's; opened_at and closed_at are the issue's`,
         "slot_hours: from slot.admittedAt to the read (or the close) for an issue holding a slot; 0 for any other",
       ],
-      invented: ["facts updated_at: the time the fixtures were built", "cursor_age_seconds: 20"],
+      invented: ["facts updated_at: the daemon's read time", "cursor_age_seconds: 20"],
     },
     "board.json": {
       source:
@@ -320,7 +327,7 @@ const manifest: DemoManifest = {
       derived: [],
       invented: [
         `the signed-in reader (${login})`,
-        `the Legion setting naming ${project}, made by the reader at the build time, with the daemon's in-cluster state address`,
+        `the Legion setting naming ${project}, made by the reader at the daemon's read time, with the daemon's in-cluster state address`,
         "the reader's issue state: nothing pinned, nothing read",
         "answered by the stub with no fixture: the reader's Inbox, replies and agent state, all empty; no secrets broker (the credential list answers null); no architecture source for any project; no comments and no asks on any issue (an issue's own page is outside the demo)",
       ],

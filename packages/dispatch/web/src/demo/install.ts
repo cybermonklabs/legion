@@ -3,7 +3,9 @@
 // `WebSocket` for the page: every `/api/` and `/auth/` request and the `/ws/live` socket are
 // answered in the browser by DemoServer, from the fixtures; anything else goes to the browser's
 // own fetch. It works the same from the dev server and from the single file opened from the disk,
-// where no service worker can run.
+// where no service worker can run. The demo's clock goes in first, before any other module reads
+// the time.
+import "./clock";
 import { showBanner } from "./banner";
 import { loadFixtures } from "./fixtures";
 import { demoWebSocket } from "./live";

@@ -21,7 +21,10 @@ const STYLE = `
 .views-demo-banner .short { display: none; }
 .views-demo-banner b { font-weight: 600; }
 @media (max-width: 640px) {
-  .views-demo-banner { left: auto; right: 4px; bottom: 4px; padding: 2px 6px; font-size: 10px; }
+  .views-demo-banner {
+    left: 4px; right: 4px; bottom: 4px; max-width: none; padding: 2px 6px;
+    font-size: 9px; line-height: 1.3;
+  }
   .views-demo-banner .full { display: none; }
   .views-demo-banner .short { display: block; }
 }`;
@@ -49,7 +52,8 @@ export function showBanner(manifest: DemoManifest): void {
   }
   const short = document.createElement("div");
   short.className = "short";
-  short.textContent = `Stubbed back end · real ${manifest.project} issues and daemon state, read ${utc(manifest.daemon_read_at)} · phase times and rounds estimated, Legion setting invented`;
+  // The phone's two lines: the same facts, the invented ones in the manifest's own words.
+  short.textContent = `Stubbed · real ${manifest.project} data of ${utc(manifest.daemon_read_at)}, times estimated · invented: ${manifest.invented_summary.join(", ")}`;
   banner.append(full, short);
   document.body.append(banner);
 }

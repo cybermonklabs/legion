@@ -1,14 +1,15 @@
 // The views demo's screenshot run (README.md beside this file): against a running demo, it opens
 // each page the design shows and writes one PNG per picture, named by what it shows, then fails
-// if the stub left any request unanswered, the page threw, or a check of the clicks failed.
+// if a page never drew, the stub left any request unanswered, the page threw, or a check failed.
 //
 //   bun e2e/views-demo/shots.ts --base http://127.0.0.1:5190 --out <dir> \
 //     [--before | --file] [--chromium <path>] [--project <KEY>] [--only <name part>,…]
 //
 // --before takes the pictures of the page before the design (the List, the Board and the Legion
 // view of cybermonklabs/legion#2731). --file opens the single file (--base file:///….html) with
-// the network off, and clicks through it: a view tab, the Board, a drag on the Board and Save
-// view. With neither, it takes the design's pictures.
+// the network off, and clicks through it: a view tab, the Board, a drag on the Board, Save view
+// and its delete, the Columns menu and the Closed filter. With neither, it takes the design's
+// pictures.
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -56,17 +57,21 @@ function address(path: string): string {
   return base.endsWith(".html") ? `${base}#${path}` : `${base}${path}`;
 }
 
+/** What a page of issues draws once its rows are in: a table row, a Board card or, before the
+ *  design, a Legion view card. */
+const ROWS = "[data-issue-row], [data-board-card], [data-legion-card]";
+
 /** Opens `path` and waits until the page has drawn what `ready` names, its rows by default. */
 async function open(page: Page, path: string, ready?: Locator): Promise<void> {
   await page.goto(address(path));
   await settle(page, ready);
 }
 
+/** Waits for `ready`, the page's rows by default, and then for the drawing to settle. A page
+ *  that never draws them fails its picture rather than leaving a loading state in it. */
 async function settle(page: Page, ready?: Locator): Promise<void> {
   await page.waitForLoadState("networkidle").catch(() => undefined);
-  await (ready ?? page.getByText(new RegExp(`${project}-\\d+`)).first())
-    .waitFor({ timeout: 30_000 })
-    .catch(() => undefined);
+  await (ready ?? page.locator(ROWS).first()).waitFor({ timeout: 30_000 });
   await page.waitForTimeout(1_200);
 }
 
@@ -94,7 +99,7 @@ const beforeShots: Shot[] = [
     take: async (page) => {
       await open(page, issuesPath);
       await page.getByRole("button", { name: "Board", exact: true }).click();
-      await settle(page);
+      await settle(page, page.locator("[data-board-card]").first());
     },
   },
   {
@@ -103,7 +108,7 @@ const beforeShots: Shot[] = [
     take: async (page) => {
       await open(page, issuesPath);
       await page.getByRole("button", { name: "Legion", exact: true }).click();
-      await settle(page);
+      await settle(page, page.locator("[data-legion-card]").first());
     },
   },
   { name: "before-list-390", viewport: PHONE, take: (page) => open(page, issuesPath) },
@@ -307,6 +312,71 @@ const fileShots: Shot[] = [
       check((await saved.count()) === 1, "Save view adds the saved tab");
     },
   },
+  {
+    name: "file-saved-view-deleted-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await openSaveView(page, "Implementing");
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      const saved = page.locator('[data-saved-view-tab="Implementing"]');
+      await settle(page, saved);
+      await page.getByRole("button", { name: "Delete saved view Implementing" }).click();
+      await page.waitForTimeout(500);
+      check((await saved.count()) === 0, "Delete takes the saved tab away");
+      await page.reload();
+      await settle(page);
+      check((await saved.count()) === 0, "the deleted view stays gone after a reload");
+    },
+  },
+  {
+    name: "file-columns-menu-shows-work-time-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("open"));
+      const header = page.locator("thead th", { hasText: "Work time" });
+      check((await header.count()) === 0, "All open shows no Work time column at first");
+      await page.getByRole("button", { name: /^Columns/ }).click();
+      await page.getByRole("checkbox", { name: "Work time" }).check();
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(500);
+      check((await header.count()) === 1, "ticking Work time in the Columns menu shows the column");
+    },
+  },
+  {
+    name: "file-closed-filter-7-days-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("finished"));
+      const listed = async () => {
+        const text = await page.getByText(/^\d+ of \d+ issues$/).textContent();
+        return Number(/^(\d+)/.exec(text ?? "")?.[1] ?? Number.NaN);
+      };
+      const before = await listed();
+      await page.getByRole("button", { name: /^Filter Closed/ }).click();
+      await page.getByRole("button", { name: "7 days", exact: true }).click();
+      // Off the rows, so no issue's hover preview stands in the picture.
+      await page.mouse.move(1, 1);
+      await settle(page);
+      const after = await listed();
+      // The rows the view should list: the done issues closed in the last 7 times 24 hours of
+      // the page's own clock that have Legion work, from the stub's own two routes.
+      const expected = await page.evaluate(async (key) => {
+        const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
+        const rows: { key: string }[] = await (
+          await fetch(`/api/v1/issues?project=${key}&status=done&closed_since=${since}`)
+        ).json();
+        const board: { issues: Record<string, unknown> } = await (
+          await fetch(`/api/v1/projects/${key}/legion/board`)
+        ).json();
+        return rows.filter((row) => Object.hasOwn(board.issues, row.key)).length;
+      }, project);
+      check(page.url().includes("f.closed=7d"), "the 7 days preset writes f.closed=7d");
+      check(
+        after === expected && after > 0 && after < before,
+        `Closed in the last 7 days lists ${after} rows of the 28 days' ${before}; the stub's rows say ${expected}`
+      );
+    },
+  },
 ];
 
 /** A drag with the pointer, in steps, as a person makes one: dnd-kit starts a drag only once the
@@ -325,6 +395,8 @@ async function drag(page: Page, from: Locator, to: Locator): Promise<void> {
   await page.mouse.move(end.x + end.width / 2, end.y + 70, { steps: 25 });
   await page.waitForTimeout(200);
   await page.mouse.up();
+  // Off the cards, so no issue's hover preview stands in the picture.
+  await page.mouse.move(1, 1);
 }
 
 async function takeAll(browser: Browser, shots: Shot[]): Promise<void> {
@@ -347,6 +419,16 @@ async function takeAll(browser: Browser, shots: Shot[]): Promise<void> {
     });
     try {
       await shot.take(page);
+      if (shot.viewport.width < 640) {
+        // The phone's banner is its short form, which holds two lines at most.
+        const lines = await page
+          .locator('[data-testid="views-demo-banner"] .short')
+          .evaluate((short) => {
+            const height = Number.parseFloat(getComputedStyle(short).lineHeight);
+            return Math.round(short.getBoundingClientRect().height / height);
+          });
+        check(lines <= 2, `${shot.name}: the phone banner takes ${lines} lines`);
+      }
       const file = join(out, `${shot.name}.png`);
       await page.screenshot({ path: file });
       report.shots.push(file);

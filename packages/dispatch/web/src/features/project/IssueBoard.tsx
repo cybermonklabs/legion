@@ -490,6 +490,15 @@ export function IssueBoard({
   };
 
   const done = rows.filter((item) => item.stage === "done");
+  // Icebox, while the reader has not turned it on, is a rail in its own place in the stage order
+  // (after Triage, before Backlog), as the Board on main draws it: for a view that lists Icebox
+  // issues or picks the Icebox status. One rule for the whole board, so every lane draws it.
+  const iceboxRail =
+    !stages.includes("icebox") &&
+    (rows.some((item) => item.stage === "icebox") || (statusPicks ?? []).includes("icebox"));
+  const order: readonly StageId[] = iceboxRail
+    ? [...stages, "icebox" as const].sort((a, b) => stageIds.indexOf(a) - stageIds.indexOf(b))
+    : stages;
   const drawRow = (from: readonly Item[], lane: string | undefined) => {
     const columns = new Map<StageId, Item[]>();
     for (const item of from) {
@@ -497,22 +506,27 @@ export function IssueBoard({
       list.push(item);
       columns.set(item.stage, list);
     }
-    const icebox = columns.get("icebox") ?? [];
     return (
       <div className="flex w-max items-stretch gap-4">
-        {stages.map((stage) => (
-          <StageColumn
-            dropId={dropIdOf(stage, lane)}
-            items={columns.get(stage) ?? []}
-            key={stage}
-            nowMs={nowMs}
-            stage={stage}
-            userState={userState}
-          />
-        ))}
-        {!stages.includes("icebox") && icebox.length > 0 ? (
-          <Rail count={icebox.length} dropId={dropIdOf("icebox", lane)} stage="icebox" />
-        ) : null}
+        {order.map((stage) =>
+          stage === "icebox" && iceboxRail ? (
+            <Rail
+              count={(columns.get("icebox") ?? []).length}
+              dropId={dropIdOf("icebox", lane)}
+              key={stage}
+              stage="icebox"
+            />
+          ) : (
+            <StageColumn
+              dropId={dropIdOf(stage, lane)}
+              items={columns.get(stage) ?? []}
+              key={stage}
+              nowMs={nowMs}
+              stage={stage}
+              userState={userState}
+            />
+          )
+        )}
         {listsDone ? (
           <StageColumn
             dropId={dropIdOf("done", lane)}

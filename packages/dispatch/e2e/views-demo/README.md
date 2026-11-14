@@ -13,6 +13,10 @@ data (issue titles, keys, people) never goes into a file here.
   app's entry (`web/src/demo/install.ts`), so no app file imports demo code. The dev server
   serves the fixtures from `DISPATCH_DEMO_FIXTURES` and proxies nothing.
 - `web/src/demo/`: the stub.
+  - `clock.ts` fixes the page's clock: the page reads the time as the fixtures' read time
+    (`manifest.daemon_read_at`) plus the time since it loaded, so every age (Waited, In phase,
+    Closed) and Finished's 28-day window look the same whenever the demo is opened.
+    `vite.demo.config.ts` writes that time into the page before any module runs.
   - `install.ts` replaces `fetch` and `WebSocket`.
   - `server.ts` answers every `/api/` and `/auth/` request the page makes. The listing applies
     every filter the server applies. Writes change its state, which the tab keeps in
@@ -50,6 +54,24 @@ DISPATCH_URL=<Dispatch base URL> DISPATCH_TOKEN_FILE=<token file> \
 each fixture, its source, the UTC time it was read, and which of its fields are real, derived or
 invented.
 
+## The fixtures as an archive
+
+The files the stub reads, the manifest with them, are also kept as one archive (it holds
+production data, so it stays outside the repository). To run the demo or the pictures from it,
+unpack it into a directory and name that directory as below:
+
+```sh
+mkdir -p "$TMPDIR/views-demo/fixtures"
+tar -xzf <the archive>.tar.gz -C "$TMPDIR/views-demo/fixtures"
+```
+
+To make the archive again from a fixtures directory:
+
+```sh
+tar -czf <the archive>.tar.gz -C "$TMPDIR/views-demo/fixtures" \
+  manifest.json issues.json population.json projects.json reader.json schema.json agents.json
+```
+
 ## Run the demo
 
 ```sh
@@ -86,8 +108,11 @@ Without `--before` it takes the design's pictures, each named by what it shows:
   and Time per phase in Hours.
 
 `--before` takes the page before the design, on a checkout of its base: the List, the Board, the
-Legion view and the phone List. The run fails if the stub left a request unanswered or the page
-threw. `report-<mode>.json` in the output lists all of it.
+Legion view and the phone List. A picture is taken only once its page has drawn its rows (a
+table row, a Board card or a Legion view card) or its own element; a page that does not draw
+them in 30 s fails its picture. The run fails if a picture failed, the stub left a request
+unanswered, the page threw, or the phone banner took more than two lines. `report-<mode>.json`
+in the output lists all of it.
 
 ## Build the single file
 
@@ -105,9 +130,11 @@ the fixtures into the page. The page opens from the disk with no network. No ser
 at a `file:` address, so the stub replaces `fetch` and `WebSocket` in the page. The router reads
 the address's fragment, the one part of a `file:` address a page may change.
 
-The second command opens the file with the network off and checks four things:
+The second command opens the file with the network off and checks that:
 
-- a view tab opens its view;
+- the file opens on the Issues tab, and a view tab opens its view;
 - the Board draws cards;
 - a drag on the Board sets a status;
-- Save view adds a tab.
+- Save view adds a tab, and its delete takes the tab away, also after a reload;
+- the Columns menu shows a column it ticks;
+- the Closed filter's 7 days lists the done issues with Legion work closed in the last 7 days.
