@@ -896,9 +896,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // the four counts the failure left, each against the limit it ran out at (noticeFailure). The
 // worker-died of a role that does not work the issue's phase names it too, since that role's
 // architect decides whether to start it again on the same evidence. The tree architect's own
-// worker-died carries no failure record, so its reason carries the sentence instead, with the pod
-// end when there is one (deathReason): it is the one notice of that failure the architect and the
-// controller are sent.
+// worker-died carries no failure record, so its reason carries the sentence instead, with the
+// runtime's account of the last death and the pod end when the claim holds them (deathReason):
+// it is the one notice of that failure the architect and the controller are sent.
 //
 // A child's sub-architect works no phase and holds none: the operator starts it, and no transition
 // or admission ever starts an architect below the tree's root. Its claim failing holds nothing and
@@ -990,35 +990,38 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 }
 
 // deathReason is what a worker-died notice says on the two paths that build no reason of their
-// own — the tree architect's and the held phase's. It names the pod end the claim's process was
-// last observed to have died of (supervise.Claim.PodEnd), which is the cause no role chose — an
-// eviction for ephemeral storage above all — with the supervisor's own sentence before it
-// (supervise.Claim.Failure, intake.ClaimFailed.Reason), so an architect reads the two as one
-// line. Both are persisted on the claim, so a daemon that restarted between the death and the
-// moment the budget ran out says the same thing.
+// own — the tree architect's and the held phase's. It names the supervisor's own sentence
+// (supervise.Claim.Failure, intake.ClaimFailed.Reason), then the runtime's account of the
+// process's last death (supervise.Claim.LastDeathCause, intake.ClaimFailed.Death), then the pod
+// end that process was last observed to have died of (supervise.Claim.PodEnd), which is the
+// cause no role chose — an eviction for ephemeral storage above all — joined with "; " so an
+// architect reads them as one line, and leaving out each the fact does not hold. All three are
+// persisted on the claim, so a daemon that restarted between the death and the moment the budget
+// ran out says the same thing.
 //
 // failureCarried says the notice carries a failure record beside this reason, as the held
 // phase's does whenever the fact names a cause. That record's `detail` already carries the
-// sentence (noticeFailure), so a claim the cluster did not end gets no reason there, since
-// repeating the sentence would say one thing twice. The tree architect's notice carries no
-// failure record, and neither does a held phase's whose fact names no cause, so their reason is
-// the sentence whether or not the cluster ended the claim: without it the notice would say
-// nothing of why the claim failed.
+// sentence and its `death` the runtime's account (noticeFailure), so such a reason is the pod
+// end alone, and empty when there is none, since repeating either would say one thing twice.
+// The tree architect's notice carries no failure record, and neither does a held phase's whose
+// fact names no cause, so their reason carries the sentence and the death whether or not the
+// cluster ended the claim: without them the notice would say nothing of why the claim failed.
 //
 // The two paths that already build a reason keep theirs: a role that does not work the issue's
 // phase, and a checking role of a closed issue, each say what the failure meant for that issue,
 // which is more than either of these facts is.
 func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
-	switch {
-	case fact.PodEnd == "" && failureCarried:
-		return ""
-	case fact.PodEnd == "":
-		return fact.Reason
-	case fact.Reason == "":
-		return "the pod ended: " + fact.PodEnd
-	default:
-		return fact.Reason + "; the pod ended: " + fact.PodEnd
+	said := make([]string, 0, 3)
+	if !failureCarried && fact.Reason != "" {
+		said = append(said, fact.Reason)
 	}
+	if !failureCarried && fact.Death != "" {
+		said = append(said, "the process was last found gone: "+fact.Death)
+	}
+	if fact.PodEnd != "" {
+		said = append(said, "the pod ended: "+fact.PodEnd)
+	}
+	return strings.Join(said, "; ")
 }
 
 // The bounds on what an issue's architect is told about its pod's volume filling, and the two

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"golang.org/x/sys/unix"
 )
 
 // volumeTrimOwnHoldEnv names the sweep TestASweepsOwnDeleterIsNoHoldHelper runs as PID 1 of
@@ -93,6 +94,57 @@ func TestARemovalOfADirectoryStillBeingWrittenInEnds(t *testing.T) {
 	filling := filepath.Join(dir, "entry", "filling")
 	mkdirFixture(t, filling)
 
+	removal := removeWhileFilling(t, held, filling)
+	if !errors.Is(removal, errStillFilling) {
+		t.Fatalf("the removal answered %v, want %v for the directory still being written in", removal, errStillFilling)
+	}
+	if want := filepath.Join("entry", "filling"); !strings.Contains(removal.Error(), want+":") {
+		t.Errorf("the removal answered %q, want it to name %s, the directory that was still filling", removal, want)
+	}
+}
+
+// A directory still being written in that also holds a name whose removal fails for a reason of
+// its own is answered with that reason, not with errStillFilling: the writer is what made the
+// removal stop at its bound, but the name that failed is what would still stand once the writer
+// stopped, and it is the one an operator reading the sweep's line can act on. The name here is a
+// directory made 0500 holding a file, whose unlink fails with EACCES on every pass. The negative
+// control is empty answering errStillFilling at its bound whatever its passes' names had failed
+// with.
+func TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
+	}
+	dir := t.TempDir()
+	held, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	filling := filepath.Join(dir, "entry", "filling")
+	locked := filepath.Join(filling, "locked")
+	mkdirFixture(t, locked)
+	if err := os.WriteFile(filepath.Join(locked, "kept"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	removal := removeWhileFilling(t, held, filling)
+	if !errors.Is(removal, syscall.EACCES) {
+		t.Fatalf("the removal answered %v, want the %v its unremovable name failed with", removal, syscall.EACCES)
+	}
+	if !strings.Contains(removal.Error(), "kept") {
+		t.Errorf("the removal answered %q, want it to name kept, the name that could not be removed", removal)
+	}
+}
+
+// removeWhileFilling removes held's entry while a writer creates names in filling, a directory
+// under it, as fast as it can, and answers the removal. A removal that has not answered within
+// the bound fails the case.
+func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
+	t.Helper()
 	// The writer creates names until it is told to stop, as fast as it can: a removal that read
 	// the directory again for as long as it found new names would never answer while it runs.
 	// Each name is an empty directory, which is one mkdir to the writer and an unlink, an open, a
@@ -118,22 +170,88 @@ func TestARemovalOfADirectoryStillBeingWrittenInEnds(t *testing.T) {
 	answered := make(chan error, 1)
 	go func() { answered <- removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes)) }()
 	bound := testwait.Bounded(t, 30*time.Second, 5*time.Second)
-	var removal error
 	select {
-	case removal = <-answered:
+	case removal := <-answered:
 		close(stop)
 		<-stopped
+		return removal
 	case <-time.After(bound):
 		close(stop)
 		<-stopped
 		<-answered // the writer has stopped, so the removal now runs out of names
 		t.Fatalf("the removal had not answered %v after it began, with a writer still creating names in the directory it was emptying", bound)
+		return nil
 	}
-	if !errors.Is(removal, errStillFilling) {
-		t.Fatalf("the removal answered %v, want %v for the directory still being written in", removal, errStillFilling)
+}
+
+// A removal that fails deep in a tree answers an error that names the entry, the name that
+// failed and how deep that name lay, and nothing of the path between: the error is the deleter's
+// one line of answer and the sweep's one line of log (trimmer.remove), so its size must be one
+// this package chose rather than one the roles' tree happened to have. The tree is a chain 1000
+// directories deep of 100-byte names, the last made 0500 and holding a file, whose unlink fails
+// with EACCES. The negative control is under renaming the error to its whole path on the way
+// back up, which answered an error as long as the path of more than 100 KB.
+func TestARemovalThatFailsDeepInATreeAnswersABoundedError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
 	}
-	if want := filepath.Join("entry", "filling"); !strings.Contains(removal.Error(), want+":") {
-		t.Errorf("the removal answered %q, want it to name %s, the directory that was still filling", removal, want)
+	const depth = 1000
+	const errorBytes = 512
+	name := strings.Repeat("d", 100)
+	held, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	if err := unix.Mkdirat(int(held.Fd()), "entry", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The chain is made through descriptors, a name at a time, since its path is far past
+	// PATH_MAX; the descriptor of its last directory is kept, which is how the cleanup makes it
+	// writable again.
+	fd, err := unix.Openat(int(held.Fd()), "entry", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for level := 1; level <= depth; level++ {
+		if err := unix.Mkdirat(fd, name, 0o700); err != nil {
+			t.Fatalf("make level %d: %v", level, err)
+		}
+		next, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		_ = unix.Close(fd)
+		if err != nil {
+			t.Fatalf("open level %d: %v", level, err)
+		}
+		fd = next
+	}
+	kept, err := unix.Openat(fd, "kept", unix.O_WRONLY|unix.O_CREAT|unix.O_CLOEXEC, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unix.Close(kept)
+	if err := unix.Fchmod(fd, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = unix.Fchmod(fd, 0o700)
+		_ = unix.Close(fd)
+		if err := removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes)); err != nil {
+			t.Errorf("remove the chain once its last directory is writable again: %.200s", err)
+		}
+	})
+
+	removal := removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes))
+	if !errors.Is(removal, syscall.EACCES) {
+		t.Fatalf("the removal answered %.200v, want the %v its unremovable name failed with", removal, syscall.EACCES)
+	}
+	said := removal.Error()
+	pathBytes := len("entry") + depth*(len(name)+1) + len("/kept")
+	if len(said) > errorBytes {
+		t.Errorf("the removal answered an error of %d bytes for a failure %d bytes of path below the entry, want at most %d: %.200s…",
+			len(said), pathBytes, errorBytes, said)
+	}
+	if want := fmt.Sprintf("entry/.../kept (depth %d)", depth+1); !strings.Contains(said, want) {
+		t.Errorf("the removal answered %.200q…, want it to name %q", said, want)
 	}
 }
 

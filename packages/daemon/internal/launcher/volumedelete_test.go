@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -994,3 +995,41 @@ func (r *countingRemover) removeAll(dir *sweepDir, name string) error {
 func (r *countingRemover) process() int { return os.Getpid() }
 
 func (r *countingRemover) close() { *r.closed++ }
+
+// The parent keeps at most volumeDeleteReplyBytes of one reply of its deleter, and reads the rest
+// of a longer one up to its newline and drops it, so the reply after it is read from its own
+// start. A reply is a line the parent logs (trimmer.remove), so its size must be one this
+// package chose rather than one the child happened to write. The replies here are a refusal 64
+// times the bound, a refusal of ordinary size and a removal, read through the reader the remover
+// is started with (newDeleterReplies). The negative control is the read with no bound
+// (ReadString), which kept the whole of the long line and answered it as the refusal.
+func TestADeletersReplyIsKeptToItsBoundAndTheNextReplyIsReadWhole(t *testing.T) {
+	long := strings.Repeat("x", 64*volumeDeleteReplyBytes)
+	replies := "failed " + strconv.Quote(long) + "\nfailed " + strconv.Quote("the second refusal") + "\nremoved\n"
+	dir := &sweepDir{}
+	remover := &containedRemover{requests: discardRequests{}, replies: newDeleterReplies(strings.NewReader(replies)),
+		at: map[*sweepDir]int{dir: 0}, said: &saidBuffer{}}
+
+	first := remover.removeAll(dir, "entry")
+	if first == nil || errors.Is(first, errRemoverGone) {
+		t.Fatalf("the long refusal was answered %.200v, want it as a refusal of that entry", first)
+	}
+	if said, bound := first.Error(), volumeDeleteReplyBytes+len(volumeDeleteReplyCut); len(said) > bound || !strings.HasSuffix(said, volumeDeleteReplyCut) {
+		t.Errorf("the long refusal was answered as %d bytes ending %q, want at most %d ending %q",
+			len(said), said[max(0, len(said)-len(volumeDeleteReplyCut)):], bound, volumeDeleteReplyCut)
+	}
+	if second := remover.removeAll(dir, "entry"); second == nil || second.Error() != "the second refusal" {
+		t.Errorf("the reply after the long one was answered %v, want the refusal %q", second, "the second refusal")
+	}
+	if third := remover.removeAll(dir, "entry"); third != nil {
+		t.Errorf("the third reply was answered %v, want the removal it says", third)
+	}
+}
+
+// discardRequests is a deleter's request pipe that goes nowhere, for a case that writes its
+// replies itself.
+type discardRequests struct{}
+
+func (discardRequests) Write(p []byte) (int, error) { return len(p), nil }
+
+func (discardRequests) Close() error { return nil }

@@ -206,8 +206,8 @@ its deployment sets, 85 per cent used by default, it deletes, oldest first, unti
 back to the low mark, 70 per cent by default, and it deletes only these:
 
 - a `go-build*` directory of `$TMPDIR`, which Go names and owns, and **nothing else of `$TMPDIR`**;
-- a `-a` or `-d` entry of the Go build cache, `/legion/go/build`, which is what `go clean -cache`
-  would remove;
+- a `-a` or `-d` entry of the Go build cache, `/legion/go/build`, the entries Go's own cache
+  trim removes by age;
 - an immediate child of the cache home, `/legion/scratch/cache`, except `ms-playwright` and
   `legion-claude-code`;
 - an immediate child of the bun install cache, `/legion/scratch/bun/install/cache`.

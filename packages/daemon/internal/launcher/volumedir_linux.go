@@ -135,10 +135,11 @@ func openRetrying(open func() (int, error)) (int, error) {
 // no containment, 80 trials of 80, on 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3
 // (TestTheDeletersRemovalFollowsNoLinkWithNoContainment).
 //
-// The error names what it failed on relative to dir, so a line in the pod's log is the entry's
-// path followed by a name under it. names is the buffer every directory's names are read into,
-// which the deleter makes once for all its removals (VolumeTrimDelete): a directory's names are
-// all read before any of them is removed, so one buffer serves the whole tree.
+// The error names what it failed on below dir by the entry's name, the name that failed and how
+// deep that name lay (removalFailure), so a line in the pod's log is the entry's path followed by
+// those two. names is the buffer every directory's names are read into, which the deleter makes
+// once for all its removals (VolumeTrimDelete): a directory's names are all read before any of
+// them is removed, so one buffer serves the whole tree.
 func removeEntryAt(dir *os.File, name string, names []byte) error {
 	removal := treeRemoval{names: names}
 	return removal.remove(int(dir.Fd()), name)
@@ -150,12 +151,12 @@ type treeRemoval struct {
 }
 
 // remove removes name from the directory parent holds open. It is given the name alone and
-// never the path above it: an error names what it failed on by its path from parent, built on
-// the way back up a name at a time (under), so that no level of a deep tree holds a copy of the
-// whole path above it while the levels below it are removed. Measured in a test process on
-// 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3, on a chain 1500 directories deep of
-// 250-byte names: the heap in use rose 289 MB over the removal with the path carried down to
-// every level, and 1.5 MB with the name alone.
+// never the path above it: an error names what it failed on by the name that failed and its
+// depth below parent, counted on the way back up a level at a time (under), so that no level of
+// a deep tree holds a copy of the whole path above it while the levels below it are removed.
+// Measured in a test process on 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3, on a chain
+// 1500 directories deep of 250-byte names: the heap in use rose 289 MB over the removal with the
+// path carried down to every level, and 1.5 MB with the name alone.
 func (r *treeRemoval) remove(parent int, name string) error {
 	if !isOneName(name) {
 		return &fs.PathError{Op: "unlinkat", Path: name, Err: syscall.EINVAL}
@@ -188,19 +189,51 @@ func (r *treeRemoval) remove(parent int, name string) error {
 	return nil
 }
 
-// under is err, raised below the directory name, renamed to its path from the directory name is
-// in. An error that names the directory itself carries no path of its own.
+// under is err, raised below the directory name, renamed to what it failed on from the directory
+// name is in: the error of a name in name, or of name itself, becomes a removalFailure under it,
+// and a removalFailure already under name is moved up a level in place. An error that names the
+// directory itself carries no path of its own.
 func under(name string, err error) error {
-	failed, ok := err.(*fs.PathError)
-	if !ok {
-		return err
+	switch failed := err.(type) {
+	case *removalFailure:
+		failed.top = name
+		failed.depth++
+		return failed
+	case *fs.PathError:
+		if failed.Path == "" {
+			return &removalFailure{op: failed.Op, top: name, name: name, err: failed.Err}
+		}
+		return &removalFailure{op: failed.Op, top: name, name: failed.Path, depth: 1, err: failed.Err}
 	}
-	path := name
-	if failed.Path != "" {
-		path = name + "/" + failed.Path
-	}
-	return &fs.PathError{Op: failed.Op, Path: path, Err: failed.Err}
+	return err
 }
+
+// removalFailure is a removal that failed in a directory's tree, named by the directory it is
+// in (top), the name that failed and how many levels below top that name lay (depth, 0 for top
+// itself), and never by the path between them: the deleter answers it as its reply and the sweep
+// logs it, so a failure deep in a tree is an error of a size set by two names rather than by the
+// tree's depth (TestARemovalThatFailsDeepInATreeAnswersABoundedError). It reads as the
+// fs.PathError of the same failure would, with the levels between top and name written as "..."
+// and the depth beside them where there are any.
+type removalFailure struct {
+	op    string
+	top   string
+	name  string
+	depth int
+	err   error
+}
+
+func (f *removalFailure) Error() string {
+	switch f.depth {
+	case 0:
+		return f.op + " " + f.top + ": " + f.err.Error()
+	case 1:
+		return f.op + " " + f.top + "/" + f.name + ": " + f.err.Error()
+	}
+	return fmt.Sprintf("%s %s/.../%s (depth %d): %v", f.op, f.top, f.name, f.depth, f.err)
+}
+
+func (f *removalFailure) Unwrap() error { return f.err }
 
 // volumeRemovalPasses is how many times empty removes the names it reads from one directory: the
 // first pass, and one more for the names created while the first ran.
@@ -214,11 +247,15 @@ var errStillFilling = fmt.Errorf("names were still appearing in it after %d pass
 // empty removes every name of the directory fd holds open. It reads the names again after each
 // pass, for what was created while it removed, and stops at a pass that removed nothing, with the
 // first error of that pass. It makes volumeRemovalPasses passes at most: a directory that still
-// has names after them is answered with errStillFilling rather than read again, since a writer
-// that keeps creating names would otherwise hold the removal, and the sweep waiting on it, for as
-// long as it writes. Its errors name what they failed on by its path from this directory, and
-// the directory itself by no path at all (under).
+// has names after them is answered rather than read again, since a writer that keeps creating
+// names would otherwise hold the removal, and the sweep waiting on it, for as long as it writes.
+// That answer is the first error any pass's names failed with, and errStillFilling only where
+// none failed: a name that cannot be removed is what would still stand once the writer stopped,
+// and errStillFilling in its place would hide it
+// (TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet). Its errors name what they
+// failed on from this directory, and the directory itself by no path at all (under).
 func (r *treeRemoval) empty(fd int) error {
+	var failed error
 	for pass := 1; ; pass++ {
 		names, err := r.read(fd)
 		if err != nil {
@@ -228,6 +265,9 @@ func (r *treeRemoval) empty(fd int) error {
 			return nil
 		}
 		if pass > volumeRemovalPasses {
+			if failed != nil {
+				return failed
+			}
 			return &fs.PathError{Op: "getdents", Err: errStillFilling}
 		}
 		var first error
@@ -243,6 +283,9 @@ func (r *treeRemoval) empty(fd int) error {
 		}
 		if !removed {
 			return first
+		}
+		if failed == nil {
+			failed = first
 		}
 	}
 }

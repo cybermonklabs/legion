@@ -2,8 +2,9 @@ package workflow
 
 // What a worker-died notice says of a failed claim on the two paths that said nothing at all: the
 // tree architect's, and the held phase's. Each now carries the sentence the supervisor wrote when
-// it gave up on the claim and the pod end the claim's process was last observed to have died of,
-// which is the cause no role chose — an eviction for the node's disk above all (INFRA-2009).
+// it gave up on the claim, the runtime's account of the process's last death, and the pod end the
+// claim's process was last observed to have died of, which is the cause no role chose — an
+// eviction for the node's disk above all (INFRA-2009).
 
 import (
 	"context"
@@ -25,6 +26,11 @@ const evictedPodEnd = "Evicted: The node was low on resource: ephemeral-storage.
 // budgetRanOut is the sentence the supervisor writes when a claim's relaunches run out
 // (supervise's fail, Claim.Failure).
 const budgetRanOut = "deaths with work outstanding ran out"
+
+// lastFoundGone is a claim's stored account of its process's last death as the runtime gave it
+// (supervise.Claim.LastDeathCause, supervise's deathCause): a death the cluster did not cause,
+// so the claim holds no pod end beside it.
+const lastFoundGone = "gone: pod legion-legion-208 (uid 8a1f) ended: OOMKilled"
 
 // The tree architect's own claim failing is told to that architect and to the controller, and the
 // notice now names both of the things the supervisor knows. The negative control is the code at
@@ -146,6 +152,82 @@ func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithNoPodEnd(t *testing.T) {
 			if said := strings.Count(notices[0].Reason+"\n"+detail, budgetRanOut); said != 1 {
 				t.Errorf("the held phase's worker-died names the sentence %d times across its reason %q and its failure detail %q, want once",
 					said, notices[0].Reason, detail)
+			}
+		})
+	}
+}
+
+// A held phase whose fact names a cause and a pod end still names the sentence once: the failure
+// record's detail carries it, so the reason carries only the pod end, which the record has no
+// field for. The runtime's account of the death is the record's own `death`, so the reason does
+// not repeat that either. The negative control is deathReason putting the sentence before the
+// pod end whatever the notice carried beside it, which named the sentence twice.
+func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithAPodEnd(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
+
+	if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "implementer-failed",
+		intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer, Reason: budgetRanOut, PodEnd: evictedPodEnd,
+			Death: lastFoundGone, Cause: supervise.CauseDied},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("ApplyFact the implementer's failed claim: %v", err)
+	}
+	notices := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+	if len(notices) != 1 {
+		t.Fatalf("the outbox holds %d worker-died notices, want one beside the hold", len(notices))
+	}
+	failure := notices[0].Failure
+	if failure == nil {
+		t.Fatalf("the held phase's worker-died carries no failure record, want one: its fact names a cause")
+	}
+	if !strings.Contains(notices[0].Reason, evictedPodEnd) {
+		t.Errorf("the held phase's worker-died reads %q, want the pod end the failure record has no field for", notices[0].Reason)
+	}
+	if said := strings.Count(notices[0].Reason+"\n"+failure.Detail, budgetRanOut); said != 1 {
+		t.Errorf("the held phase's worker-died names the sentence %d times across its reason %q and its failure detail %q, want once",
+			said, notices[0].Reason, failure.Detail)
+	}
+	if said := strings.Count(notices[0].Reason+"\n"+failure.Death, lastFoundGone); said != 1 {
+		t.Errorf("the held phase's worker-died names the death %d times across its reason %q and its failure death %q, want once",
+			said, notices[0].Reason, failure.Death)
+	}
+}
+
+// A death the cluster did not cause leaves the claim no pod end, and the runtime's own account
+// of it is what the daemon last observed. The two notices with no failure record — the tree
+// architect's, and a held phase's whose fact names no cause — name it in their reason beside
+// the sentence, since nothing else in either notice carries it. The negative control is
+// deathReason reading only the sentence and the pod end, which left both reasons the sentence
+// alone.
+func TestAWorkerDiedWithNoFailureRecordNamesTheLastObservedDeath(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		role  claim.Role
+		phase phase.Phase
+	}{
+		{"the tree architect's", claim.RoleArchitect, phase.Planning},
+		{"a held phase's whose fact names no cause", claim.RoleImplementer, phase.Implementing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: tc.phase, Generation: 1, Status: "in_progress", Rank: "U"})
+
+			if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "claim-failed",
+				intake.ClaimFailed{Issue: "LEGION-208", Role: tc.role, Reason: budgetRanOut, Death: lastFoundGone},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact the failed claim: %v", err)
+			}
+			notices := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+			if len(notices) != 1 {
+				t.Fatalf("the outbox holds %d worker-died notices, want one", len(notices))
+			}
+			if notices[0].Failure != nil {
+				t.Fatalf("the worker-died carries the failure record %+v, want none: its reason is where the death goes", notices[0].Failure)
+			}
+			if want := budgetRanOut + "; the process was last found gone: " + lastFoundGone; notices[0].Reason != want {
+				t.Errorf("the worker-died reads %q, want %q", notices[0].Reason, want)
 			}
 		})
 	}

@@ -196,7 +196,7 @@ type containedRemover struct {
 	// exit (pidGuard).
 	guard    *pidGuard
 	requests io.WriteCloser
-	replies  *bufio.Reader
+	replies  *bufio.Reader // newDeleterReplies, whose size is what bounds a reply (readReply)
 	// at is the child's descriptor number for each directory the listing opened. The
 	// descriptors are passed at the exec and never again, so a directory the listing did not
 	// open is a directory this remover cannot be asked about at all.
@@ -237,7 +237,7 @@ func startContainedRemover(guard *pidGuard, cover RoleCover, dirs []*sweepDir) (
 	if err != nil {
 		return nil, fmt.Errorf("the sweep's deleter: %w", err)
 	}
-	remover.replies = bufio.NewReader(replies)
+	remover.replies = newDeleterReplies(replies)
 	if _, err := guard.start(cmd); err != nil {
 		return nil, fmt.Errorf("start the sweep's deleter in a mount namespace of its own: %w", err)
 	}
@@ -260,15 +260,20 @@ func (r *containedRemover) removeAll(dir *sweepDir, name string) error {
 	if _, err := fmt.Fprintf(r.requests, "%d %s\n", at, strconv.Quote(name)); err != nil {
 		return r.ended(err)
 	}
-	line, err := r.replies.ReadString('\n')
+	line, cut, err := readReply(r.replies)
 	if err != nil {
 		return r.ended(err)
 	}
-	answer, refusal, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
+	answer, refusal, _ := strings.Cut(line, " ")
 	switch answer {
 	case "removed":
 		return nil
 	case "failed":
+		if cut {
+			// Its closing quote was not kept, so it cannot be unquoted: it is the refusal as
+			// the deleter wrote it, as far as it was kept, and the mark that says it was cut.
+			return errors.New(refusal + volumeDeleteReplyCut)
+		}
 		said, err := strconv.Unquote(refusal)
 		if err != nil {
 			return r.ended(fmt.Errorf("it answered %q, which is no answer of this protocol", line))
@@ -277,6 +282,47 @@ func (r *containedRemover) removeAll(dir *sweepDir, name string) error {
 	default:
 		return r.ended(fmt.Errorf("it answered %q, which is no answer of this protocol", line))
 	}
+}
+
+// volumeDeleteReplyBytes is the most of one reply of the deleter the parent keeps, and
+// volumeDeleteReplyCut what it writes after a reply it kept only that much of. A reply is the
+// one line the parent logs of a removal (trimmer.remove), so its size is this package's to
+// choose rather than the child's. A refusal of a removal names the entry it was asked for and at
+// most one name below it (removalFailure, volumedir_linux.go), each at most NAME_MAX, 255 bytes
+// on Linux, before it is quoted.
+const (
+	volumeDeleteReplyBytes = 4096
+	volumeDeleteReplyCut   = "… (the deleter's reply was longer, and was cut here)"
+)
+
+// newDeleterReplies is the reader a remover reads its deleter's replies through: a buffer one
+// byte past the bound, so one ReadSlice holds the whole of a reply within it, newline included
+// (readReply).
+func newDeleterReplies(replies io.Reader) *bufio.Reader {
+	return bufio.NewReaderSize(replies, volumeDeleteReplyBytes+1)
+}
+
+// readReply is the next reply of the deleter, without its newline, and whether it was longer
+// than volumeDeleteReplyBytes. A longer one is kept to that many bytes and the rest of it read
+// and dropped up to its newline, so the reply after it is read from its own start. replies is a
+// reader made by newDeleterReplies, or one with a larger buffer: a smaller one would cut a reply
+// within the bound.
+func readReply(replies *bufio.Reader) (string, bool, error) {
+	chunk, err := replies.ReadSlice('\n')
+	if err == nil && len(chunk) <= volumeDeleteReplyBytes+1 {
+		return string(chunk[:len(chunk)-1]), false, nil
+	}
+	if err != nil && err != bufio.ErrBufferFull {
+		return "", false, err
+	}
+	kept := string(chunk[:min(len(chunk), volumeDeleteReplyBytes)])
+	for err == bufio.ErrBufferFull {
+		_, err = replies.ReadSlice('\n')
+	}
+	if err != nil {
+		return "", true, err
+	}
+	return kept, true, nil
 }
 
 // ended records the first failure of the remover itself and is what every call answers after it.
