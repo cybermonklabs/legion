@@ -59,16 +59,18 @@ var forwardingWrites = map[string][]writerKey{
 // checkRefusalWrites refuses a refusal its port's recorder would record without the code a
 // registered writer names: in each package of refusalDirs, outside the body of every
 // registeredWriters and forwardingWrites function, each way net/http writes a 4xx. A raw write
-// (w.WriteHeader(status), http.Error(w, message, status), http.Redirect(w, r, url, status) or
+// (w.WriteHeader(status), or as a method expression http.ResponseWriter.WriteHeader(w, status),
+// http.Error(w, message, status), http.Redirect(w, r, url, status) or
 // http.RedirectHandler(url, status)) is refused when its status is from 400 to 499 or is one
 // refgen cannot read as a constant. A status that is the enclosing function's own parameter is
 // followed to each call of that function, and one a local variable holds to each value it is
 // assigned; a status only returned or compared writes nothing, and is not read. A raw write
 // taken as a value rather than called is refused, since refgen cannot follow its calls, and so
-// is every name of netWrites, called or not, each of which writes a 4xx no argument names. A name
-// of net/http is read by the name its file imports net/http by, an alias or http, and an import
-// of it as . or _, which names none, is refused. Each problem names the file and line of the
-// status, and of the write when the status is on another line.
+// is every name of netWrites, called or not, each of which writes a 4xx no argument names, but a
+// pointer to a ServeMux on the API port (muxPorts). A name of net/http is read by the name its
+// file imports net/http by, an alias or http, and an import of it as . or _, which names none, is
+// refused. Each problem names the file and line of the status, and of the write when the status
+// is on another line.
 func checkRefusalWrites(root string) error {
 	var problems []string
 	for _, dir := range refusalDirs {
@@ -82,8 +84,8 @@ func checkRefusalWrites(root string) error {
 }
 
 // writes is one package read for checkRefusalWrites: its functions, every call in it, every value
-// each function's local variables are assigned and every name of net/http it refers to, each with
-// the function it is in.
+// each function's local variables are assigned and every reference to a name of net/http the
+// rule refuses, each with the function it is in.
 type writes struct {
 	src   *source
 	decls map[writerKey]*ast.FuncDecl
@@ -105,9 +107,10 @@ type writes struct {
 	problems       []string
 }
 
-// scope is where a node sits: the function declaring it (nil at package level) and the function
-// literals around it, outermost first.
+// scope is where a node sits: the file holding it, the function declaring it (nil at package
+// level) and the function literals around it, outermost first.
 type scope struct {
+	file *ast.File
 	fn   *ast.FuncDecl
 	lits []*ast.FuncLit
 }
@@ -134,14 +137,13 @@ type local struct {
 // write is one raw write the rule reads: its callee as written, and where it is.
 type write struct{ what, at string }
 
-// netRef is one reference a package makes to a name of net/http, or to a WriteHeader method that
-// is no call of it, and where it is.
+// netRef is one reference the rule refuses outside a registered writer, and where it is: a name
+// of netWrites, or a raw write taken as a value rather than called.
 type netRef struct {
 	sel *ast.SelectorExpr
-	// http is whether the name is net/http's (isHTTP) rather than a WriteHeader method's;
-	// called whether it is a call's callee; and pointer whether it names a type a pointer type
-	// holds (*http.ServeMux), which builds no value of it.
-	http, called, pointer bool
+	// pointer is whether a pointer type holds the name (*http.ServeMux), which builds no value of
+	// it.
+	pointer bool
 	scope
 }
 
@@ -177,9 +179,11 @@ func readWrites(src *source) *writes {
 	}
 	for _, f := range src.files {
 		// callee and declared are the nodes no reference is read from: each call's callee, and
-		// each name being declared, and each selector's field or method name.
+		// each name being declared, and each selector's field or method name; httpNames is the
+		// names this file imports net/http by.
 		callee := map[ast.Node]bool{}
 		declared := map[*ast.Ident]bool{}
+		httpNames := w.httpNames[f]
 		var stack []ast.Node
 		ast.Inspect(f, func(n ast.Node) bool {
 			if n == nil {
@@ -253,9 +257,14 @@ func readWrites(src *source) *writes {
 				if !callee[x] {
 					w.selectorUses[x.Sel.Name] = append(w.selectorUses[x.Sel.Name], x)
 				}
-				if isNet := w.isHTTP(x); isNet || (x.Sel.Name == "WriteHeader" && !callee[x]) {
+				name := x.Sel.Name
+				pkg, _ := x.X.(*ast.Ident)
+				isNet := pkg != nil && httpNames[pkg.Name]
+				_, named := netWrites[name]
+				_, raw := rawWrites[name]
+				if isNet && named || !callee[x] && (isNet && raw || name == "WriteHeader") {
 					_, pointer := stack[len(stack)-2].(*ast.StarExpr)
-					w.netRefs = append(w.netRefs, netRef{sel: x, http: isNet, called: callee[x], pointer: pointer, scope: scopeOf(stack)})
+					w.netRefs = append(w.netRefs, netRef{sel: x, pointer: pointer, scope: scopeOf(stack)})
 				}
 			case *ast.Ident:
 				if !declared[x] && !callee[x] {
@@ -284,6 +293,8 @@ func scopeOf(stack []ast.Node) scope {
 	var sc scope
 	for _, n := range stack {
 		switch x := n.(type) {
+		case *ast.File:
+			sc.file = x
 		case *ast.FuncDecl:
 			sc.fn = x
 		case *ast.FuncLit:
@@ -335,7 +346,7 @@ func (w *writes) check() []string {
 		w.refuse(fmt.Sprintf("%s: net/http is imported as %s, a write refgen cannot read, since it reads net/http's names only through the name a file imports it by; a refusal is written through %s", w.src.at(spec), spec.Name.Name, oneOf(registeredWriters[dir])))
 	}
 	for _, c := range w.calls {
-		status, ok := w.rawWrite(c.call)
+		status, ok := w.rawWrite(c.call, c.scope)
 		if !ok || w.skipped[c.fn] {
 			continue
 		}
@@ -358,81 +369,85 @@ var rawWrites = map[string]struct{ args, status int }{
 	"RedirectHandler": {2, 1},
 }
 
-// rawWrite is the status a raw write writes: w.WriteHeader(status), or the status argument of a
-// call of rawWrites (http.Error(w, message, status), http.Redirect(w, r, url, status),
-// http.RedirectHandler(url, status)).
-func (w *writes) rawWrite(call *ast.CallExpr) (ast.Expr, bool) {
+// rawWrite is the status a raw write in sc writes: w.WriteHeader(status), the same method called
+// as a method expression with its receiver first (http.ResponseWriter.WriteHeader(w, status),
+// (*T).WriteHeader(t, status)), or the status argument of a call of rawWrites (http.Error(w,
+// message, status), http.Redirect(w, r, url, status), http.RedirectHandler(url, status)).
+func (w *writes) rawWrite(call *ast.CallExpr, sc scope) (ast.Expr, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return nil, false
 	}
-	if sel.Sel.Name == "WriteHeader" && len(call.Args) == 1 {
-		return call.Args[0], true
+	if sel.Sel.Name == "WriteHeader" && (len(call.Args) == 1 || len(call.Args) == 2) {
+		return call.Args[len(call.Args)-1], true
 	}
-	if f, ok := rawWrites[sel.Sel.Name]; ok && w.isHTTP(sel) && len(call.Args) == f.args {
+	if f, ok := rawWrites[sel.Sel.Name]; ok && w.isHTTP(sel, sc.file) && len(call.Args) == f.args {
 		return call.Args[f.status], true
 	}
 	return nil, false
 }
 
-// isHTTP reports whether sel names a name of net/http: whether it is qualified by a name its
-// file imports net/http by.
-func (w *writes) isHTTP(sel *ast.SelectorExpr) bool {
+// isHTTP reports whether sel, in file, names a name of net/http: whether it is qualified by a
+// name file imports net/http by.
+func (w *writes) isHTTP(sel *ast.SelectorExpr, file *ast.File) bool {
 	pkg, ok := sel.X.(*ast.Ident)
-	return ok && w.httpNames[w.src.fileOf(sel)][pkg.Name]
-}
-
-// netWrite is one name of netWrites: what it writes, completing "<name>, outside a registered
-// writer, ...", and, for the type ServeMux, handed: that a pointer to one names a mux the package
-// is handed to register its routes on, which whoever built it serves, so it writes nothing here.
-type netWrite struct {
-	writes string
-	handed bool
+	return ok && w.httpNames[file][pkg.Name]
 }
 
 // The 4xx a ServeMux writes of its own: 400 to a request for "*", 404 to a path none of its
 // patterns matches, and 405 to a method none of the patterns matching the path names.
 const muxWrites = "a ServeMux, which writes a fixed 400, 404 or 405 of its own"
 
-// netWrites is each name of net/http that writes a 4xx no argument of a call names, each refused
-// wherever it is named outside a registered writer, since a handler it returns or a function
-// taken as a value writes as its call does: a fixed 4xx net/http writes of its own, or a status
-// it chooses as it serves a file or a range, which refgen cannot read. A mux writes its own from
-// a value of its type, which a reference builds unless a pointer type holds it, a pointer being
-// handed a mux built and served elsewhere: api.Register's mux is cmd/broker's, which
-// answer.Middleware records. A CrossOriginProtection's 403 is written by the handler it wraps
-// around the package's own, so one is refused however the package holds it.
-var netWrites = map[string]netWrite{
-	"NotFound":                 {writes: "writes a fixed 404"},
-	"NotFoundHandler":          {writes: "is a handler that writes a fixed 404"},
-	"StripPrefix":              {writes: "is a handler that writes a fixed 404 to a path without its prefix"},
-	"ServeContent":             {writes: "writes a status net/http chooses as it serves a range (412 or 416), a write refgen cannot read"},
-	"ServeFile":                {writes: "writes a status net/http chooses as it serves a file (400, 403, 404, 412 or 416), a write refgen cannot read"},
-	"ServeFileFS":              {writes: "writes a status net/http chooses as it serves a file (400, 403, 404, 412 or 416), a write refgen cannot read"},
-	"FileServer":               {writes: "is a handler that writes a status net/http chooses as it serves a file (403, 404, 412 or 416), a write refgen cannot read"},
-	"FileServerFS":             {writes: "is a handler that writes a status net/http chooses as it serves a file (403, 404, 412 or 416), a write refgen cannot read"},
-	"ServeMux":                 {writes: "builds " + muxWrites, handed: true},
-	"NewServeMux":              {writes: "builds " + muxWrites},
-	"DefaultServeMux":          {writes: "is " + muxWrites},
-	"Handle":                   {writes: "registers on http.DefaultServeMux, " + muxWrites},
-	"HandleFunc":               {writes: "registers on http.DefaultServeMux, " + muxWrites},
-	"CrossOriginProtection":    {writes: "is a CrossOriginProtection, whose Handler writes a fixed 403 of its own"},
-	"NewCrossOriginProtection": {writes: "builds a CrossOriginProtection, whose Handler writes a fixed 403 of its own"},
+// netWrites is each name of net/http that writes a 4xx no argument of a call names, and what it
+// writes, completing "<name>, outside a registered writer, ...". Each is refused wherever it is
+// named outside a registered writer, since a handler it returns or a function taken as a value
+// writes as its call does: a fixed 4xx net/http writes of its own, or a status it chooses as it
+// serves a file or a range, which refgen cannot read. A mux writes its own from a value of its
+// type, which a reference builds unless a pointer type holds it, a pointer being handed a mux
+// built and served elsewhere, which is accepted on the API port alone (muxPorts). A
+// CrossOriginProtection's 403 is written by the handler it wraps around the package's own, so one
+// is refused however the package holds it.
+var netWrites = map[string]string{
+	"NotFound":                 "writes a fixed 404",
+	"NotFoundHandler":          "is a handler that writes a fixed 404",
+	"StripPrefix":              "is a handler that writes a fixed 404 to a path without its prefix",
+	"ServeContent":             "writes a status net/http chooses as it serves a range (412 or 416), a write refgen cannot read",
+	"ServeFile":                "writes a status net/http chooses as it serves a file (400, 403, 404, 412 or 416), a write refgen cannot read",
+	"ServeFileFS":              "writes a status net/http chooses as it serves a file (400, 403, 404, 412 or 416), a write refgen cannot read",
+	"FileServer":               "is a handler that writes a status net/http chooses as it serves a file (403, 404, 412 or 416), a write refgen cannot read",
+	"FileServerFS":             "is a handler that writes a status net/http chooses as it serves a file (403, 404, 412 or 416), a write refgen cannot read",
+	"ServeMux":                 "builds " + muxWrites,
+	"NewServeMux":              "builds " + muxWrites,
+	"DefaultServeMux":          "is " + muxWrites,
+	"Handle":                   "registers on http.DefaultServeMux, " + muxWrites,
+	"HandleFunc":               "registers on http.DefaultServeMux, " + muxWrites,
+	"CrossOriginProtection":    "is a CrossOriginProtection, whose Handler writes a fixed 403 of its own",
+	"NewCrossOriginProtection": "builds a CrossOriginProtection, whose Handler writes a fixed 403 of its own",
 }
 
-// netName checks ref, outside every registered writer: a name of netWrites is refused wherever
-// it is named, but for a pointer to a mux the package is handed; and a raw write taken as a value
-// rather than called is refused too, since refgen cannot follow the calls of the value to read
-// their status.
+// muxPorts is each package of the API port, whose answers answer.Middleware records, a mux's own
+// 400, 404 and 405 among them: api.Register mounts the API's routes and the approval page's on the
+// mux cmd/broker builds and serves behind it, so a pointer to a ServeMux there is that mux handed
+// in, and writes nothing the port does not record. The airlock's proxy port records only what
+// Server.refuse writes, so a mux it were handed would answer its own 400, 404 and 405 with no
+// line, and none is accepted there.
+var muxPorts = map[string]bool{apiDir: true, approvalDir: true}
+
+// netName checks ref, outside every registered writer: a name of netWrites, refused wherever it
+// is named but for a pointer to a ServeMux on the API port (muxPorts); or a raw write taken as a
+// value rather than called, refused since refgen cannot follow the value's calls to read their
+// status.
 func (w *writes) netName(ref netRef) {
 	name := ref.sel.Sel.Name
 	at, what, writers := w.src.at(ref.sel), w.src.text(ref.sel), oneOf(registeredWriters[w.src.dir])
-	if nw, ok := netWrites[name]; ok && ref.http && !(nw.handed && ref.pointer) {
-		w.refuse(fmt.Sprintf("%s: %s, outside a registered writer, %s; a refusal is written through %s", at, what, nw.writes, writers))
-		return
-	}
-	if _, raw := rawWrites[name]; !ref.called && (raw || !ref.http) {
+	writes, named := netWrites[name]
+	switch {
+	case !named:
 		w.refuse(fmt.Sprintf("%s: %s, outside a registered writer, is taken as a value, a write whose status refgen cannot read, since it cannot follow the value's calls; a refusal is written through %s", at, what, writers))
+	case name != "ServeMux" || !ref.pointer:
+		w.refuse(fmt.Sprintf("%s: %s, outside a registered writer, %s; a refusal is written through %s", at, what, writes, writers))
+	case !muxPorts[w.src.dir]:
+		w.refuse(fmt.Sprintf("%s: *%s, outside a registered writer, is a ServeMux the package is handed, which writes a fixed 400, 404 or 405 of its own that this port's recorder does not record, as only the API port's (answer.Middleware) records a handed mux's; a refusal is written through %s", at, what, writers))
 	}
 }
 
@@ -449,7 +464,7 @@ func (w *writes) status(e ast.Expr, sc scope, wr write) {
 			return
 		}
 	case *ast.SelectorExpr:
-		if code, ok := httpStatus[x.Sel.Name]; ok && w.isHTTP(x) {
+		if code, ok := httpStatus[x.Sel.Name]; ok && w.isHTTP(x, sc.file) {
 			w.code(code, x, wr)
 			return
 		}
@@ -494,7 +509,7 @@ func (w *writes) name(id *ast.Ident, sc scope, wr write) {
 		}
 	}
 	if value, ok := w.constant(id.Name); ok {
-		w.status(value, scope{}, wr)
+		w.status(value, scope{file: w.src.fileOf(value)}, wr)
 		return
 	}
 	w.unreadable(id, wr, "")

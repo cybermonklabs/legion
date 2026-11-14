@@ -262,7 +262,8 @@ type brokerStop struct {
 	// ShutdownAirlock drains the airlock's proxy port, and is nil for a deployment with no
 	// airlock. In production: airlockproxy.Server.Shutdown.
 	ShutdownAirlock func(ctx context.Context) error
-	// ShutdownMetrics drains the metrics port, and is nil only where boot bound none. In
+	// ShutdownMetrics drains the metrics port, which every broker binds. It is nil only in a row
+	// of ordering_test.go about another step, for which drainBeside answers nil at once. In
 	// production: the metrics server's Shutdown.
 	ShutdownMetrics func(ctx context.Context) error
 	// EndServing ends the work that outlived the drain. In production: booted.EndServing.

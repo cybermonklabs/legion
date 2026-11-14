@@ -226,7 +226,8 @@ const missingActionsMessage = "broker: a GitHub App installation does not hold a
 // (DELETE /installation/token), for a token Mint minted and will not release, retried as the
 // mint's other calls are and from the same wait budget. It runs to its own bound even once ctx
 // ends, since GitHub honours an unreleased token for an hour otherwise. A 401 or a 404 GitHub
-// answers an attempt after the first is a revoke done, and answers nil.
+// answers an attempt after the first means GitHub no longer accepts the token, which is what the
+// revoke wanted, and answers nil.
 func (m GitHubApp) revokeInstallationToken(ctx context.Context, mint *mintRetry, token string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
 	defer cancel()
@@ -237,12 +238,13 @@ func (m GitHubApp) revokeInstallationToken(ctx context.Context, mint *mintRetry,
 	}
 	_, err = mintCall(mint, m.HTTP, request, what, "GitHub", http.StatusNoContent, mintResponseLimit)
 	// GitHub answers a request made as a token it has revoked 401, and one made as a token it no
-	// longer knows 404. At an attempt after the first, that is a token an earlier attempt of this
-	// revoke reached: GitHub revoked it there and that attempt's answer was lost, past
-	// mintAttemptTimeout or on a connection that dropped, so the retry is all that came back. The
-	// token is gone, and Mint must not log revokedWiderMessage for it. At the first attempt nothing
-	// of this revoke has reached GitHub before, so either status stays the refusal it is; and a rate
-	// limit is no verdict on the token at any attempt.
+	// longer knows 404. At an attempt after the first, either says GitHub no longer accepts the
+	// token, which is what the revoke wanted, whatever the earlier attempts met: one may have
+	// revoked it and lost its answer, past mintAttemptTimeout or on a connection that dropped, or
+	// they may have been rate limits, which revoked nothing. Either way Mint must not log
+	// revokedWiderMessage for a token GitHub no longer accepts. At the first attempt no earlier
+	// attempt of this revoke has reached GitHub, so either status stays the refusal it is; and a
+	// rate limit is no verdict on the token at any attempt.
 	var status *mintStatusError
 	if MintAttempts(err) > 1 && errors.As(err, &status) && !status.rateLimited &&
 		(status.code == http.StatusUnauthorized || status.code == http.StatusNotFound) {

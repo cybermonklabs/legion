@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -80,11 +81,14 @@ type refusedForm struct {
 // line, whose position fills the %s of says.
 type problemAt struct{ file, line, says, write string }
 
-// refusedForms is the table of ca-refusal-gate (the Verification document's check): one row for
-// each way net/http writes a 4xx, the first eight named as that check names them. A row's files
-// name each name of net/http that writes the row's way (http.NotFound's row http.NotFoundHandler
-// too), and some of them as a value rather than a call. http.Error's row also writes through
-// net/http imported by an alias, and imports it as . and as _, which name none of its writes.
+// refusedForms is the table of the check
+// dispatch://INFRA-2771/artifact/verification-md#b-ca-refusal-gate: one row for each way net/http
+// writes a 4xx, the first eight named as that check names them. A row's files name each name of
+// net/http that writes the row's way (http.NotFound's row http.NotFoundHandler too), and some of
+// them as a value rather than a call. WriteHeader's row also calls it as a method expression, with
+// its receiver first; http.Error's row writes through net/http imported by an alias, and imports
+// it as . and as _, which name none of its writes; and http.ServeMux's row is handed a mux on the
+// airlock's proxy port, where no recorder records a mux's own answers.
 var refusedForms = []refusedForm{
 	{"WriteHeader", map[string]string{
 		apiDir + "/conflict.go": `package api
@@ -105,10 +109,22 @@ func answer(w http.ResponseWriter, r *http.Request) {
 
 func later(w http.ResponseWriter) func(int) { return w.WriteHeader }
 `,
+		apiDir + "/method.go": `package api
+
+import "net/http"
+
+type held struct{ http.ResponseWriter }
+
+func missingByMethod(w http.ResponseWriter) { http.ResponseWriter.WriteHeader(w, http.StatusNotFound) }
+
+func goneByMethod(h *held) { (*held).WriteHeader(h, 410) }
+`,
 	}, []problemAt{
 		{apiDir + "/conflict.go", "http.StatusConflict", "http.StatusConflict is 409, which w.WriteHeader at %s writes outside a registered writer", "func writeStatus"},
 		{approvalDir + "/answer.go", "w.WriteHeader(statusOf(r))", "w.WriteHeader writes statusOf(r), a status refgen cannot read as a constant", ""},
 		{approvalDir + "/answer.go", "return w.WriteHeader", "w.WriteHeader, outside a registered writer, is taken as a value, a write whose status refgen cannot read", ""},
+		{apiDir + "/method.go", "http.ResponseWriter.WriteHeader(w", "http.ResponseWriter.WriteHeader writes 404 outside a registered writer", ""},
+		{apiDir + "/method.go", "(*held).WriteHeader(h", "(*held).WriteHeader writes 410 outside a registered writer", ""},
 	}},
 	{"http.Error", map[string]string{
 		apiDir + "/forbid.go": `package api
@@ -258,12 +274,19 @@ func onDefault() {
 
 func serveDefault(w http.ResponseWriter, r *http.Request) { http.DefaultServeMux.ServeHTTP(w, r) }
 `,
+		airlockDir + "/mount.go": `package airlockproxy
+
+import "net/http"
+
+func mount(mux *http.ServeMux) http.Handler { return mux }
+`,
 	}, []problemAt{
 		{airlockDir + "/mux.go", "http.NewServeMux()", "http.NewServeMux, outside a registered writer, builds a ServeMux, which writes a fixed 400, 404 or 405 of its own", ""},
 		{airlockDir + "/mux.go", "new(http.ServeMux)", "http.ServeMux, outside a registered writer, builds a ServeMux, which writes a fixed 400, 404 or 405 of its own", ""},
 		{airlockDir + "/mux.go", "http.Handle(", "http.Handle, outside a registered writer, registers on http.DefaultServeMux, a ServeMux, which writes a fixed 400, 404 or 405 of its own", ""},
 		{airlockDir + "/mux.go", "http.HandleFunc(", "http.HandleFunc, outside a registered writer, registers on http.DefaultServeMux, a ServeMux, which writes a fixed 400, 404 or 405 of its own", ""},
 		{airlockDir + "/mux.go", "http.DefaultServeMux", "http.DefaultServeMux, outside a registered writer, is a ServeMux, which writes a fixed 400, 404 or 405 of its own", ""},
+		{airlockDir + "/mount.go", "func mount", "*http.ServeMux, outside a registered writer, is a ServeMux the package is handed, which writes a fixed 400, 404 or 405 of its own that this port's recorder does not record", ""},
 	}},
 	{"http.CrossOriginProtection", map[string]string{
 		apiDir + "/origin.go": `package api
@@ -283,8 +306,9 @@ func handedGuard(c *http.CrossOriginProtection, h http.Handler) http.Handler { r
 	}},
 }
 
-// gateForms is each row of refusedForms by its form, in order: the eight ca-refusal-gate names,
-// then a mux's and a CrossOriginProtection's own answers.
+// gateForms is each row of refusedForms by its form, in order: the eight
+// dispatch://INFRA-2771/artifact/verification-md#b-ca-refusal-gate names, then a mux's and a
+// CrossOriginProtection's own answers.
 var gateForms = []string{
 	"WriteHeader", "http.Error", "http.Redirect", "http.NotFound", "http.ServeContent", "http.ServeFile", "http.FileServer", "http.StripPrefix",
 	"http.ServeMux", "http.CrossOriginProtection",
@@ -294,8 +318,9 @@ var gateForms = []string{
 // which it accepts; over refusalBase with each row of refusedForms added, where it refuses each
 // problem the row names, with its file and line, and nothing else; and over the broker's own
 // source, as the docs build reads it, which it accepts. It counts the rows it drove and fails
-// when that is fewer than the table holds, or when the table is not one row for each of
-// gateForms.
+// when that is fewer than the table holds, when the table is not one row for each of gateForms,
+// or when a name the rule reads (each of netWrites and rawWrites, and WriteHeader) is spelled in
+// no row's fixture that the row then refuses, so a name the rule learns needs a row.
 func TestARefusalIsWrittenOnlyThroughARegisteredWriter(t *testing.T) {
 	forms := make([]string, len(refusedForms))
 	for i, row := range refusedForms {
@@ -303,6 +328,15 @@ func TestARefusalIsWrittenOnlyThroughARegisteredWriter(t *testing.T) {
 	}
 	if !slices.Equal(forms, gateForms) {
 		t.Fatalf("refusedForms holds the rows %q, want one for each of %q", forms, gateForms)
+	}
+	for _, name := range slices.Concat(slices.Sorted(maps.Keys(netWrites)), slices.Sorted(maps.Keys(rawWrites)), []string{"WriteHeader"}) {
+		spelled, named := regexp.MustCompile(`\.`+name+`\b`), regexp.MustCompile(`\.`+name+`[ ,]`)
+		if !slices.ContainsFunc(refusedForms, func(row refusedForm) bool {
+			return slices.ContainsFunc(slices.Collect(maps.Values(row.files)), spelled.MatchString) &&
+				slices.ContainsFunc(row.problems, func(p problemAt) bool { return named.MatchString(p.says) })
+		}) {
+			t.Errorf("no row of refusedForms spells .%s in its fixture and refuses it there; each name the rule reads needs a row", name)
+		}
 	}
 	t.Run("the fixture's writers alone", func(t *testing.T) {
 		if err := checkRefusalWrites(writeTree(t, refusalBase)); err != nil {
