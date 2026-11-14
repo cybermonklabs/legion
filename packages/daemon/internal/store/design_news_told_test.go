@@ -93,7 +93,7 @@ func (r *toldRig) newsTask(id string) supervise.Delivery {
 	r.t.Helper()
 	news, err := json.Marshal(record.DeliveryNews{Task: "Review the change.", Items: []record.DeliveryNewsItem{
 		{Issue: toldChild, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", From: new(3), To: 5},
-		{Issue: toldRoot, Audience: record.AudienceArchitect, Step: record.DesignStepCriteria, Artifact: "artifact-checks", Baseline: new(1), To: 2},
+		{Issue: toldRoot, Audience: record.AudienceArchitect, Step: record.DesignStepCriteria, Artifact: "artifact-checks", To: 2},
 	}, Openings: []record.DeliveryOpening{{Issue: toldChild, Audience: record.AudienceHolder}}})
 	if err != nil {
 		r.t.Fatal(err)

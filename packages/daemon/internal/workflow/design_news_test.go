@@ -93,6 +93,22 @@ func unreadHolderNews() News {
 		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{unread}}
 }
 
+// unreadBaselineChanges is the pair the reconcile records when Dispatch's review history could
+// not say which version an issue whose record knew none took: from 0, unavailable, with the reason
+// naming the failed read (the daemon's designChanges).
+func unreadBaselineChanges() NewsChange {
+	return NewsChange{Step: record.DesignStepSpec, Changes: record.DesignChanges{
+		VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 0, To: 5}, State: record.DesignChangesUnavailable,
+		Reason: "the version this issue last took could not be read from the review history: dispatch: 502 Bad Gateway"}}
+}
+
+// unreadBaselineHolderNews is the news of a child's tester whose taken version the review history
+// could not give.
+func unreadBaselineHolderNews() News {
+	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-217", Phase: phase.Testing,
+		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{unreadBaselineChanges()}}
+}
+
 // firstApprovalHolderNews is the news of a child's planner whose phase began before any version
 // of the spec was approved.
 func firstApprovalHolderNews() News {
@@ -173,6 +189,7 @@ func everyNewsForm() map[string]string {
 		"the holder sent news after the gate closed":         RenderNews(closedHolderNews()),
 		"the holder of an unread pair":                       RenderNews(unreadHolderNews()),
 		"the holder of the first approved version":           RenderNews(firstApprovalHolderNews()),
+		"the holder whose taken version could not be read":   RenderNews(unreadBaselineHolderNews()),
 		"the sub-architect of an accepting child":            RenderNews(acceptingHolderNews()),
 		"the holder of a decision-only version":              RenderNews(decisionOnlyHolderNews()),
 		"the root architect's tree summary":                  RenderNews(treeSummaryNews()),
@@ -323,6 +340,37 @@ func TestNewsOfAnUnreadPairNamesTheReasonAndTheCommandThatPrintsIt(t *testing.T)
 	}
 	if strings.Contains(item, "Sections:") {
 		t.Errorf("the unread pair's item names sections it could not read:\n%s", item)
+	}
+}
+
+// A pair from version 0 recorded unavailable is not a first approval: the review history could not
+// say which version the issue took. The holder is told the new version since a version the daemon
+// could not read, with the reason as for any unread pair, and never that no version was approved
+// before; the architect's summary names the member the same way.
+func TestNewsOfAPairWhoseTakenVersionCouldNotBeReadSaysSoAndNotAFirstApproval(t *testing.T) {
+	text := RenderNews(unreadBaselineHolderNews())
+	t.Logf("the news of a pair whose taken version could not be read:\n%s", text)
+	item := newsItem(t, text, "The spec document (artifact-spec)")
+	for _, want := range []string{"version 5, since a version the daemon could not read",
+		"The change list could not be read: the version this issue last took could not be read from the review history: dispatch: 502 Bad Gateway.",
+		"`dispatch doc-read --issue LEGION-208 --artifact artifact-spec --version 5`"} {
+		if !strings.Contains(item, want) {
+			t.Errorf("the item does not say %q:\n%s", want, item)
+		}
+	}
+	summary := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
+		Members: []NewsMember{{Issue: "LEGION-217", Phase: phase.Testing, State: NewsSentNow, Items: []NewsChange{unreadBaselineChanges()}}}})
+	if want := "owed version 5 of the spec document, since a version the daemon could not read"; !strings.Contains(summary, want) {
+		t.Errorf("the summary does not say %q:\n%s", want, summary)
+	}
+	for _, never := range []string{"first version a person approved", "No approved version came before it"} {
+		if strings.Contains(text, never) || strings.Contains(summary, never) {
+			t.Errorf("the news says %q of a pair whose taken version could not be read:\n%s\n%s", never, text, summary)
+		}
+	}
+	// The control: the same pair read from version 0 is a first approval, and says so.
+	if first := RenderNews(firstApprovalHolderNews()); !strings.Contains(first, "the first version a person approved") {
+		t.Errorf("the news of a first approval does not say so:\n%s", first)
 	}
 }
 

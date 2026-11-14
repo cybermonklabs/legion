@@ -203,7 +203,7 @@ func holderNews(news News) []string {
 			list = append(list, "- "+nothingChanged(item))
 			continue
 		}
-		list = append(list, fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.Changes.ArtifactID, pairWords(item.Changes.VersionPair, "your phase")))
+		list = append(list, fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.Changes.ArtifactID, pairWords(item.Changes, "your phase")))
 		list = append(list, indented(changeLines(news.Tree, item))...)
 	}
 	return []string{strings.Join(list, "\n"), holderRule(news.Issue, news.Phase)}
@@ -246,7 +246,7 @@ func architectNews(news News) []string {
 			if own[item.Changes.VersionPair] {
 				taker = "you"
 			}
-			line := fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.Changes.ArtifactID, pairWords(item.Changes.VersionPair, taker))
+			line := fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.Changes.ArtifactID, pairWords(item.Changes, taker))
 			if item.Changes.DecisionOnly {
 				list = append(list, line+" Only its decision blocks changed, so nothing any issue holds changed.")
 				continue
@@ -293,7 +293,7 @@ func memberWords(member NewsMember) string {
 	if len(member.Items) > 0 {
 		owed := make([]string, len(member.Items))
 		for i, item := range member.Items {
-			owed[i] = fmt.Sprintf("version %d of the %s document, %s", item.Changes.To, item.Step, sinceWords(item.Changes.From, "its phase"))
+			owed[i] = fmt.Sprintf("version %d of the %s document, %s", item.Changes.To, item.Step, sinceWords(item.Changes, "its phase"))
 		}
 		owes = "owed " + strings.Join(owed, ", and ")
 	}
@@ -335,16 +335,23 @@ func memberWords(member NewsMember) string {
 	return "told nothing."
 }
 
-// pairWords is a version pair as news says it: the new version, then what taker took before it
-// (sinceWords).
-func pairWords(pair record.VersionPair, taker string) string {
-	return fmt.Sprintf("version %d, %s", pair.To, sinceWords(pair.From, taker))
+// pairWords is a change set's pair of versions as news says it: the new version, then what taker
+// took before it (sinceWords).
+func pairWords(changes record.DesignChanges, taker string) string {
+	return fmt.Sprintf("version %d, %s", changes.To, sinceWords(changes, taker))
 }
 
-// sinceWords is the version taker last took, from, as news says it, or that no version was
-// approved before the new one (from 0). An empty taker names nobody's taking.
-func sinceWords(from int, taker string) string {
+// sinceWords is the version taker last took, the change set's From, as news says it, or that no
+// version was approved before the new one (From 0). A pair from 0 recorded unavailable is not a
+// first approval: it is the pair the reconcile records when Dispatch's review history could not
+// say which version an issue whose record knew none took (the daemon's designChanges), so it is
+// said as a version the daemon could not read, and its change lines give the reason. An empty
+// taker names nobody's taking.
+func sinceWords(changes record.DesignChanges, taker string) string {
+	from := changes.From
 	switch {
+	case from == 0 && changes.State == record.DesignChangesUnavailable:
+		return "since a version the daemon could not read"
 	case from == 0 && taker == "":
 		return "the first version a person approved"
 	case from == 0:

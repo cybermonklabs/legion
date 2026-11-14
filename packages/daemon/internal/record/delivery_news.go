@@ -35,33 +35,25 @@ type DeliveryNews struct {
 // (From, nil where the row did not know it), and the approved version it tells (To). Its
 // confirmation raises the row's version of Step to To, and taking that confirmation back puts it
 // back to From, or forgets the step where From is nil, which is what the row held.
-//
-// Baseline is the earlier version of the change set an item with no From names: the approved
-// version before To that the reconcile read from Dispatch's review history, 0 where none came
-// before, as it recorded the pair (DesignChanges). The record cannot give it back, since a told
-// row that knows no version names no pair, so the item carries it. It is nil on an item that has
-// a From, whose pair starts there.
 type DeliveryNewsItem struct {
 	Issue    string         `json:"issue"`
 	Audience DesignAudience `json:"audience"`
 	Step     DesignStep     `json:"step"`
 	Artifact string         `json:"artifact"`
 	From     *int           `json:"from"`
-	Baseline *int           `json:"baseline,omitempty"`
 	To       int            `json:"to"`
 }
 
-// Pair is the change set the item names, and whether it names one: from From, or from Baseline
-// where the told row knew no version. An item with neither names no pair the record can hold.
+// Pair is the change set the item names, and whether it names one: from From to To. An item whose
+// told row knew no version names none. The reconcile resolves such a version into the row itself
+// (Store.FillTold, from Dispatch's review history) before any change set of it is recorded, and a
+// start attaches only an item whose change set is recorded, so an item a delivery carries names
+// its pair.
 func (i DeliveryNewsItem) Pair() (VersionPair, bool) {
-	from := i.From
-	if from == nil {
-		from = i.Baseline
-	}
-	if from == nil {
+	if i.From == nil {
 		return VersionPair{}, false
 	}
-	return VersionPair{ArtifactID: i.Artifact, From: *from, To: i.To}, true
+	return VersionPair{ArtifactID: i.Artifact, From: *i.From, To: i.To}, true
 }
 
 // DeliveryOpening is one audience of one issue a delivery carries the gate's opening to.

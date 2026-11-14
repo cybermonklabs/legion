@@ -1616,6 +1616,10 @@ func entrySweepPeriod(override time.Duration) time.Duration {
 // — the word, the project, this boot and the run's time — since processed_events is shared by
 // every project's daemon. A failed apply is logged, and the next run tries again, as
 // applyControllerTick does.
+//
+// The same tick queues the reconcile of each tree's news of its approved design that
+// record.OwedNews owes and no queued row will reconcile (queueOwedDesignNews): the backstop for
+// news no fact queued a row for. A failed pass is logged, and the next tick tries again.
 func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 	ticker := time.NewTicker(entrySweepPeriod(w.entrySweep))
 	defer ticker.Stop()
@@ -1625,6 +1629,9 @@ func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 			return
 		case at := <-ticker.C:
 			w.applyEntrySweep(ctx, at)
+			if err := w.queueOwedDesignNews(ctx); err != nil {
+				w.log.Warn("queue the reconcile of the news each tree is owed failed", "error", err)
+			}
 		}
 	}
 }

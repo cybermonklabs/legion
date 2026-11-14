@@ -110,6 +110,90 @@ func (s *Postgres) SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, 
 	return nil
 }
 
+// FillTold writes each step of versions on issue's audience row where the row knows no version of
+// that step, writing the row when there is none, and leaves every step the row knows as it stands:
+// a known version is never lowered or overwritten, and a step versions does not name keeps what
+// the row holds. It is how a version the record did not know is resolved into it — the reconcile
+// reads it from Dispatch's review history (dispatch.Client.ApprovedVersionBefore) — so that every
+// later reader of the row names the same pair of versions, where a version read again at each send
+// could name another. A row already there keeps its owed opening and the moment it last rose.
+func (s *Postgres) FillTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error {
+	if len(versions) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(versions)
+	if err != nil {
+		return fmt.Errorf("encode the versions %s's %s is taken to have worked from: %w", issue, audience, err)
+	}
+	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
+		values ($1, $2, $3, false, $4)
+		on conflict (issue, audience) do update set versions = excluded.versions || design_news_told.versions`,
+		issue, string(audience), encoded, at); err != nil {
+		return fmt.Errorf("write the versions %s's %s is taken to have worked from: %w", issue, audience, err)
+	}
+	return nil
+}
+
+// TreeNewsFacts is what OwedNews reads of tree, as tx finds the record: the deployment's steps, the
+// root's gate rows, every member with the root among them, their told rows, and whether each
+// member's pull request has merged, read from the pull request's own state whatever phase the
+// member stands in. Every reader of a tree's owed news reads its facts here, so the opening, a
+// phase move, the reconcile, a start, the merger's hold and the sweep weigh one rule over one read.
+func TreeNewsFacts(ctx context.Context, store Store, tx pgx.Tx, steps []DesignStep, tree string) (NewsFacts, error) {
+	gates, err := store.GatesOf(ctx, tx, tree)
+	if err != nil {
+		return NewsFacts{}, err
+	}
+	members, err := store.TreeIssues(ctx, tx, tree)
+	if err != nil {
+		return NewsFacts{}, err
+	}
+	told, err := store.TreeTold(ctx, tx, tree)
+	if err != nil {
+		return NewsFacts{}, err
+	}
+	merged := make(map[string]bool, len(members))
+	for _, member := range members {
+		pr, err := store.PullRequest(ctx, tx, member.Key)
+		if err != nil {
+			return NewsFacts{}, err
+		}
+		merged[member.Key] = pr != nil && pr.State == PullRequestMerged
+	}
+	return NewsFacts{Steps: steps, Gates: gates, Members: members, Told: told, Merged: merged}, nil
+}
+
+// DesignNewsPending says whether the outbox holds a reconcile of tree's news (DesignNewsReconcile)
+// that has not begun to run at now: one due, backing off or retrying, under no live lease. A row a
+// lane runs now is not counted, since it may have read the record before the caller's write.
+func (s *Postgres) DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error) {
+	var pending bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and issue = $2
+		and (lease_until is null or lease_until <= $3))`, string(OutboxKindDesignChanges), tree, now).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read whether the news of tree %s is queued for its reconcile: %w", tree, err)
+	}
+	return pending, nil
+}
+
+// QueueDesignNews queues the reconcile of tree's news of its approved design, due at now, unless one
+// that has not begun to run is queued already (Store.DesignNewsPending): the reconcile reads the
+// record when it runs, so the row already queued does all a second would. Its writers — the write
+// of a gate row that raises an approved version or opens the standing gate (workflow's
+// putGateTold), a phase move that leaves its member owed news (workflow's transition), a send that
+// drops an item it carried (the daemon's designNews) and the sweep — each take the lock every
+// fact applies under, so no two of them can each find none and both queue one.
+func QueueDesignNews(ctx context.Context, store Store, tx pgx.Tx, tree string, now time.Time) error {
+	pending, err := store.DesignNewsPending(ctx, tx, tree, now)
+	if err != nil || pending {
+		return err
+	}
+	row, err := NewOutboxRow(tree, DesignNewsReconcile{}, now)
+	if err != nil {
+		return err
+	}
+	return store.Enqueue(ctx, tx, row)
+}
+
 const changesColumns = `artifact_id, from_version, to_version, state, decision_only, sections, blocks, reason, read_at`
 
 // DesignChangesOf is the recorded change set of each of pairs that has one, by pair, in one read;

@@ -1295,6 +1295,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
+	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
+		return err
+	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
 		return err
 	}
@@ -1306,6 +1309,27 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if row.To == phase.Done {
 		return e.leave(ctx, tx, issue, "done")
+	}
+	return nil
+}
+
+// queueMovedNews queues the reconcile of issue's tree's news of its approved design
+// (record.QueueDesignNews) when the move just written leaves the holder of issue's phase owed news
+// (record.OwedNews over the record as the move leaves it). A phase worker's start carries what its
+// holder is owed (the daemon's start executor), but no start carries news into accepting, since
+// the engine starts no architect (start): the reconcile is what sends an owed member in accepting
+// its news, as a task to the architect that owns it, beside the phase-finished notice. A move into
+// any other phase queues it too, so news whose change set no start could carry yet is sent once
+// the reconcile has recorded it.
+func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	facts, err := record.TreeNewsFacts(ctx, e.store, tx, e.cfg.Steps, issue.Tree)
+	if err != nil {
+		return err
+	}
+	for _, member := range record.OwedNews(facts).Members {
+		if member.Issue == issue.Key {
+			return record.QueueDesignNews(ctx, e.store, tx, issue.Tree, e.now())
+		}
 	}
 	return nil
 }

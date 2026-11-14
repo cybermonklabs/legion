@@ -45,6 +45,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, News: true},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, News: true},
+		DesignNewsReconcile{},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
@@ -209,9 +212,10 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt,
-		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish}
+		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
+		OutboxKindDesignChanges}
 	lanes := map[OutboxKind][]OutboxLane{}
-	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
+	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim, LaneDocuments} {
 		for _, kind := range LaneKinds(lane) {
 			lanes[kind] = append(lanes[kind], lane)
 		}
@@ -294,6 +298,12 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a check look on an architect's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, CheckLook: 1}, reason: checkLookRefusal},
 		{name: "a check look on a reviewer's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, CheckLook: 1}, reason: checkLookRefusal},
 		{name: "a negative check look", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: -1}, reason: checkLookRefusal},
+		{name: "a news-only start with a task", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, Task: "Review it.", News: true}, reason: newsOnlyRefusal},
+		{name: "a news-only start of an entry", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, Entry: 2, News: true}, reason: newsOnlyRefusal},
+		{name: "a news-only start of a worker naming no phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, News: true}, reason: newsOnlyRefusal},
+		{name: "a news-only start of an architect naming a phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, Phase: phase.Accepting, News: true}, reason: newsOnlyRefusal},
+		{name: "a news-only suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, News: true}, reason: newsOnlyRefusal},
+		{name: "a news-only boot resume", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, RuleResume: true, News: true}, reason: newsOnlyRefusal},
 		{name: "a check wake without a look", payload: CheckWakeDue{Reason: "the tester's own wake"}, reason: "check wake requires the look it was named at"},
 		{name: "a check wake without a reason", payload: CheckWakeDue{Look: 1}, reason: "check wake requires the reason it wakes the check"},
 		{name: "a phase-ended message to an architect", payload: PhaseEnded{Role: claim.RoleArchitect, From: phase.Accepting, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "never to an architect"},
@@ -365,6 +375,11 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 // checkLookRefusal is the validation's words for a supervise row whose check look is not a start
 // of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
+
+// newsOnlyRefusal is the validation's words for a supervise row marked a news-only start that is
+// not a start of no task and no entry naming the phase of the holder it tells, or none for an
+// architect.
+const newsOnlyRefusal = "a supervise start for news alone carries no task and no entry"
 
 // A hook prompt's message is three parts with a blank line between them: the daemon's header,
 // the hook's words exactly as the deployment wrote them, and the daemon's remaining facts. The

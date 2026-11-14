@@ -1489,6 +1489,12 @@ type Store interface {
 	RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
 	// SetOpeningOwed sets or clears whether the gate's opening is owed to issue's audience.
 	SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error
+	// FillTold writes each step of versions on issue's audience row where the row knows no
+	// version of that step, and leaves every step it knows as it stands (Postgres.FillTold).
+	FillTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
+	// DesignNewsPending says whether a reconcile of tree's news (DesignNewsReconcile) is queued and
+	// has not begun to run at now (Postgres.DesignNewsPending).
+	DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
 	// DesignChangesOf is the recorded change set of each of pairs that has one, by pair.
 	DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []VersionPair) (map[VersionPair]DesignChanges, error)
 	// PutDesignChanges records the change set of one pair; a pair already recorded read keeps

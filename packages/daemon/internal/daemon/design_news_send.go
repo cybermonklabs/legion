@@ -46,8 +46,15 @@ import (
 // all stands is answered with the bytes it carries, so a send of a task the record has not moved
 // under writes nothing.
 //
+// An item dropped from the text and the delivery queues one design_changes row for its tree
+// (record.QueueDesignNews): the item no longer stands, or its change set was not recorded, and the
+// reconcile weighs again what that tree's holders are owed now and records what changed.
+//
 // It is the machine that asks, because the machine owns the pending delivery: it holds its own
-// lock and asks this in a short read-only transaction of its own, as rootHears is asked.
+// lock and asks this in a short read-only transaction of its own, as rootHears is asked. A send
+// that dropped an item then queues the reconcile in a second transaction, serialized with every
+// fact (intake.SerializeFacts), as rootTask's write is, since every writer of that row takes the
+// fact lock so that none queues a second beside one still to run; it takes no lock of the daemon's.
 func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
 	if len(d.News) == 0 {
 		return d.Task, d.News, nil
@@ -63,6 +70,11 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 		return err
 	}); err != nil {
 		return "", nil, fmt.Errorf("read what the news the task held for %s carries says now: %w", c.Token, err)
+	}
+	if len(sent.dropped) > 0 {
+		if err := w.queueDesignNews(ctx, sent.dropped); err != nil {
+			return "", nil, fmt.Errorf("queue the reconcile of the news the task held for %s dropped: %w", c.Token, err)
+		}
 	}
 	if carried.NewsOnly && !sent.says {
 		return "", nil, nil
@@ -83,12 +95,14 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 
 // newsAtSend is what a delivery's news says at its send: the text that follows the start's own
 // (text), what of the news still stands (kept, which keeps the start's own text and whether it is
-// a news-only start), and whether any of it is worth a task of its own (says): an item that
-// stands, or an opening owed while the gate stands open.
+// a news-only start), whether any of it is worth a task of its own (says): an item that stands,
+// or an opening owed while the gate stands open, and the tree of each item it dropped (dropped),
+// each once, whose reconcile the send queues.
 type newsAtSend struct {
-	text string
-	kept record.DeliveryNews
-	says bool
+	text    string
+	kept    record.DeliveryNews
+	says    bool
+	dropped []string
 }
 
 // newsListener is one audience of one issue a delivery speaks to: the items it tells that
@@ -147,7 +161,8 @@ type newsListened struct {
 // readNewsAtSend reads, in the caller's one transaction, what carried says as the record stands,
 // and renders it (designNews). An item, an opening or a listener whose issue the record does not
 // hold is dropped: nothing can say what the gate of a tree the record does not know stands at. So
-// is the architect of a tree that lingers, items, opening and summary alike.
+// is the architect of a tree that lingers, items, opening and summary alike. Every other item it
+// drops names its tree among the dropped, for the reconcile its caller queues.
 func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, carried record.DeliveryNews) (newsAtSend, error) {
 	trees := map[string]*newsTree{}
 	var listened []newsListened
@@ -229,6 +244,13 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	for i, item := range carried.Items {
 		if keep[i] {
 			sent.kept.Items = append(sent.kept.Items, item)
+		}
+	}
+	for _, heard := range listened {
+		for _, i := range heard.listener.items {
+			if !keep[i] && !slices.Contains(sent.dropped, heard.issue.Tree) {
+				sent.dropped = append(sent.dropped, heard.issue.Tree)
+			}
 		}
 	}
 	sent.text = paragraphs(texts...)
@@ -428,7 +450,7 @@ func readMemberClaims(ctx context.Context, tx pgx.Tx, records record.Store, root
 		return nil, nil, err
 	}
 	for _, key := range keys {
-		holders[key.Issue] = holderTold(runs[key.Token], root, entries[key.Token])
+		holders[key.Issue] = holderTold(runs[key.Token], entries[key.Token])
 	}
 	held, err := records.RoleClaims(ctx, tx, architects)
 	if err != nil {
@@ -451,19 +473,16 @@ func readMemberClaims(ctx context.Context, tx pgx.Tx, records record.Store, root
 	return holders, owners, nil
 }
 
-// holderTold is how the holder of a member owed news is told, from its role's run: by a task now
-// when its claim was given its phase's current entry and runs, the claim a news-only start
-// reaches; by the next start of its phase when the claim is owed that entry's start
-// (workflow.OwedEntry), or there is no claim, or it retired, failed, or an operator suspended it,
-// since the start that revives it carries the news.
-func holderTold(run record.RoleRun, root record.Issue, entry int64) workflow.NewsState {
-	held := run.Claim
-	switch {
-	case workflow.OwedEntry(run, root, entry), held == nil, claimEnded(held.State),
-		held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByOperator:
-		return workflow.NewsAtNextStart
+// holderTold is how the holder of a member owed news is told, from its role's claim: by a task now
+// when a news-only start reaches the claim (recordedClaimTakesNews, the one rule the reconcile
+// queues that start under and the start runs under); by the next start of its phase otherwise — a
+// claim behind its phase's current entry, owed that entry's start, no claim at all, or one that
+// retired, failed, or an operator suspended — since the start that revives it carries the news.
+func holderTold(run record.RoleRun, entry int64) workflow.NewsState {
+	if recordedClaimTakesNews(run.Claim, entry) {
+		return workflow.NewsSentNow
 	}
-	return workflow.NewsSentNow
+	return workflow.NewsAtNextStart
 }
 
 // recordedClaimRuns is claimRuns over a claim as the record holds it: it has not ended, and it is

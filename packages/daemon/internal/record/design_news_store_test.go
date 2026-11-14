@@ -96,6 +96,72 @@ func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 	}
 }
 
+// A version the record does not know is resolved into the told row once, and a fill never moves a
+// version the row knows: it writes each step the row does not know, leaves each step it knows as
+// it stands whatever the fill names, and keeps the owed opening. A fill of an audience with no row
+// writes one.
+func TestAFillWritesOnlyTheVersionsTheToldRowDoesNotKnow(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := issueFixture("LEGION-310")
+	at := time.Date(2026, 11, 13, 21, 0, 0, 0, time.UTC)
+	var rows []DesignTold
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, root))
+		must(t, records.RaiseTold(ctx, tx, root.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 4}, at))
+		must(t, records.SetOpeningOwed(ctx, tx, root.Key, AudienceHolder, true))
+		must(t, records.FillTold(ctx, tx, root.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 2, DesignStepCriteria: 1}, at.Add(time.Hour)))
+		must(t, records.FillTold(ctx, tx, root.Key, AudienceArchitect, map[DesignStep]int{DesignStepSpec: 3}, at.Add(time.Hour)))
+		var err error
+		rows, err = records.TreeTold(ctx, tx, root.Key)
+		must(t, err)
+	})
+	want := []DesignTold{
+		{Issue: root.Key, Audience: AudienceArchitect, Versions: map[DesignStep]int{DesignStepSpec: 3}, ToldAt: at.Add(time.Hour)},
+		{Issue: root.Key, Audience: AudienceHolder, Versions: map[DesignStep]int{DesignStepSpec: 4, DesignStepCriteria: 1}, OpeningOwed: true, ToldAt: at},
+	}
+	if !reflect.DeepEqual(rows, want) {
+		t.Fatalf("the told rows after the fills = %+v, want %+v: the known spec kept at 4, the unknown criteria filled at 1, the opening still owed, and the architect's row written", rows, want)
+	}
+}
+
+// One reconcile of a tree's news stands queued at a time: a queue beside one that has not begun to
+// run queues nothing, since that one reads the record when it runs, and a queue beside one a lane
+// runs now queues another, since the running one may have read the record before the write.
+func TestOneReconcileOfATreesNewsStandsQueued(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := issueFixture("LEGION-320")
+	now := time.Date(2026, 11, 13, 21, 0, 0, 0, time.UTC)
+	count := func() int {
+		t.Helper()
+		var rows int
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, tx.QueryRow(ctx, `select count(*) from outbox where kind = $1 and issue = $2`, string(OutboxKindDesignChanges), root.Key).Scan(&rows))
+		})
+		return rows
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, root))
+		must(t, QueueDesignNews(ctx, records, tx, root.Key, now))
+		must(t, QueueDesignNews(ctx, records, tx, root.Key, now))
+	})
+	if got := count(); got != 1 {
+		t.Fatalf("design_changes rows after two queues = %d, want one: the second finds the first still to run", got)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		_, err := tx.Exec(ctx, `update outbox set lease_token = 'a-lane', lease_until = $2 where kind = $1`,
+			string(OutboxKindDesignChanges), now.Add(time.Minute))
+		must(t, err)
+		must(t, QueueDesignNews(ctx, records, tx, root.Key, now))
+	})
+	if got := count(); got != 2 {
+		t.Fatalf("design_changes rows after a queue beside a running one = %d, want two", got)
+	}
+}
+
 // A change set is recorded per pair of versions. A pair Dispatch could not answer is recorded
 // unavailable with its reason, and a later read replaces it; a pair recorded read is final, since
 // two stored versions never change, and a later failure leaves it as it stands. A set whose shape

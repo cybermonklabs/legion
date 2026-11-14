@@ -770,7 +770,9 @@ func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testi
 // already running, as a new spec version does: the merger and the root architect are told it
 // closed, and the predicate the merger's start hold reads (standingGateOpen, which the outbox's
 // designGateClosed asks through classify.StandingGate) holds the merge until a person approves
-// that version. The approval opens the gate, and they are told that too.
+// that version. The approval opens the gate, and they are told that too: each took the version
+// before, so each is owed the new one's news, and the task that carries it leads with the opening,
+// its told row recording the opening as owed in place of the opened message (openingDelivery).
 func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
@@ -779,6 +781,9 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc,
 		LatestVersion: 3, ApprovedVersion: new(3)})
 	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	took := map[record.DesignStep]int{record.DesignStepCriteria: 1, record.DesignStepSpec: 3}
+	seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
+	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	if !engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
 		t.Fatal("the standing gate is closed with both documents approved, want it open")
@@ -796,13 +801,11 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 	}
 
 	applyMirrored(t, pool, engine, "criteria-approved-2", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 11}))
-	opened := gateMovedBody(record.DesignStepCriteria, criteriaDoc, 2, true)
 	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: opened},
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: opened},
 	})
+	assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")
 	if !engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
 		t.Fatal("the standing gate is closed once the new Verification version is approved, want it open")
 	}

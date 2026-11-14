@@ -45,9 +45,14 @@ const (
 	// row (DesignGatesPublish). Unlike the gated_steps_publish above it, this row's issue column
 	// is an issue key like every other kind's.
 	OutboxKindDesignGatesPublish OutboxKind = "design_gates_publish"
+	// OutboxKindDesignChanges reconciles one tree's news of its approved design
+	// (DesignNewsReconcile): it reads what changed between the versions its holders took and the
+	// versions approved now, and queues the starts that tell them. Its issue column is the tree's
+	// root.
+	OutboxKindDesignChanges OutboxKind = "design_changes"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on five lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
@@ -68,6 +73,11 @@ const (
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
 // is what a place on the board lane would cost it.
+// The documents lane runs the reconcile of a tree's news of its approved design (design_changes),
+// which reads Dispatch for what changed between two versions of a gated document, on a lane of its
+// own: on the lifecycle lane that read would hold every start, stop and suspend of the tree's
+// root behind it, and on the board lane it would wait behind a notice that waits as long as its
+// architect holds no role, while the news it sends is owed to every holder of the tree.
 type OutboxLane string
 
 const (
@@ -75,6 +85,7 @@ const (
 	LaneBoard       OutboxLane = "board"
 	LaneRoleMessage OutboxLane = "role_message"
 	LaneClaim       OutboxLane = "claim"
+	LaneDocuments   OutboxLane = "documents"
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
@@ -84,6 +95,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt},
 	LaneClaim:       {OutboxKindClaimRelease},
+	LaneDocuments:   {OutboxKindDesignChanges},
 }
 
 // LaneOf is the lane that runs kind.
@@ -681,10 +693,22 @@ type SuperviseRequest struct {
 	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), the
 	// phase's resume task a ready worker level with the entry its phases row names is given
 	// (workflow's readyWorkerTask), a production check's look (workflow's startLook), the pod
-	// wake (workflow's wakeRow) and the resume of a cancelled idle release (the daemon's
-	// outbox). Each hands its role work it was already on, or work no phase entry numbers at
-	// all.
+	// wake (workflow's wakeRow), the resume of a cancelled idle release (the daemon's outbox)
+	// and a start queued for news of the approved design alone (News below, the daemon's
+	// design_changes reconcile). Each hands its role work it was already on, or work no phase
+	// entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
+	// News marks a start queued for news of the approved design alone: the reconcile of a tree's
+	// news (the daemon's design_changes executor) queues it as a row of its own (Store.Enqueue),
+	// never through workflow.StartOrOwe, which would take the issue's owed phase start out in its
+	// place, and it waits for no admission slot.
+	// It carries no task and no entry of its own: its executor reads, when it runs, what the record
+	// owes the claim it reaches and hands that as the task, and finishes without acting where the
+	// record owes it nothing then. A holder's carries the phase of the member it tells (Phase), so
+	// it finishes once that member has left the phase; an architect's carries none, as every
+	// architect start, and is queued on the architect's own issue: the tree root's for its
+	// summary, and the owning architect's for the holder form of a member in accepting.
+	News bool `json:"news,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
 	// (supervise.Claim.GivenEntry, the queue's entry test). The held phase's retry, by any route
@@ -901,6 +925,16 @@ type DesignGateDocument struct {
 }
 
 func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }
+
+// DesignNewsReconcile is the reconcile of one tree's news of its approved design: the row's issue
+// column is the tree's root, which is the whole of what it carries. Its executor (the daemon's
+// designChanges) reads what the tree owes (OwedNews) when it runs, never what it owed when the row
+// was queued, so one unrun row stands for every reason to run one, and a write that would queue a
+// second beside it queues nothing (QueueDesignNews). A row already running is not that row: it
+// may have read the record before the write that would queue one, so such a write queues another.
+type DesignNewsReconcile struct{}
+
+func (DesignNewsReconcile) OutboxKind() OutboxKind { return OutboxKindDesignChanges }
 
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
@@ -1222,6 +1256,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindDesignChanges:
+		value := DesignNewsReconcile{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	default:
 		return nil, fmt.Errorf("decode outbox row %d: unknown kind %q", row.ID, row.Kind)
 	}
@@ -1260,7 +1300,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Reason != "" && value.Status != "done" {
 			return fmt.Errorf("a status write to %s carries a reason; only a done write does", value.Status)
 		}
-	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
+	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease, DesignNewsReconcile:
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
@@ -1357,6 +1397,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
+		}
+		if value.News && (value.Op != "start" || value.Task != "" || value.Entry != 0 || value.RuleResume || value.CheckLook != 0 ||
+			(value.Phase == "") != (value.Role == claim.RoleArchitect)) {
+			return fmt.Errorf("a supervise start for news alone carries no task and no entry, and names the phase of the holder it tells, or none for an architect")
 		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {

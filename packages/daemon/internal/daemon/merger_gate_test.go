@@ -21,7 +21,8 @@ import (
 // person's review of that version decides: the merger's start waits while the gate is closed and
 // runs when it opens again (dispatch://INFRA-714/spec R5). The start is held, not dropped: the row
 // stays on its backoff with nobody spawned, and the same row starts the merger once the approval
-// lands.
+// lands. The merger took version 3 and what changed up to version 4 is recorded, so the news it is
+// owed holds nothing back once the gate opens (mergerWaitsForTheDesignGate).
 func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -31,6 +32,8 @@ func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 	// The gate as a new version leaves it: version 4 with the person's approval still at 3.
 	approved := 3
 	putOutboxGate(t, pool, records, record.DesignGate{Issue: issue.Key, ArtifactID: "artifact-208", LatestVersion: 4, ApprovedVersion: &approved})
+	putOutboxTold(t, pool, records, issue.Key, map[record.DesignStep]int{record.DesignStepSpec: 3})
+	putOutboxChanges(t, pool, records, record.VersionPair{ArtifactID: "artifact-208", From: 3, To: 4})
 	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
 	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
 		trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
@@ -68,7 +71,8 @@ func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 // Under `root-issues` a root that registered its Verification document as criteria holds its
 // tree on that document too (record.TreeSteps), so a new version of it holds the merger's start
 // as a new spec version does, with the spec itself approved, and the approval of that version
-// runs the same row.
+// runs the same row. The merger took the spec at 4 and the checks at 1, and what changed in the
+// checks from 1 to 2 is recorded.
 func TestTheMergersStartWaitsWhileItsTreesRegisteredVerificationDocumentIsClosed(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -80,6 +84,8 @@ func TestTheMergersStartWaitsWhileItsTreesRegisteredVerificationDocumentIsClosed
 	// The Verification document as a new version leaves it: version 2 with the approval at 1.
 	putOutboxGate(t, pool, records, record.DesignGate{Issue: issue.Key, Step: record.DesignStepCriteria, ArtifactID: "artifact-208-verification",
 		LatestVersion: 2, ApprovedVersion: new(1)})
+	putOutboxTold(t, pool, records, issue.Key, map[record.DesignStep]int{record.DesignStepSpec: 4, record.DesignStepCriteria: 1})
+	putOutboxChanges(t, pool, records, record.VersionPair{ArtifactID: "artifact-208-verification", From: 1, To: 2})
 	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
 	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
 		trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
@@ -115,5 +121,27 @@ func putOutboxGate(t *testing.T, pool *store.Pool, records record.Store, gate re
 		return records.PutGate(context.Background(), tx, gate)
 	}); err != nil {
 		t.Fatalf("put the design gate of %s: %v", gate.Issue, err)
+	}
+}
+
+// putOutboxTold records what issue's holder took of its tree's approved design.
+func putOutboxTold(t *testing.T, pool *store.Pool, records record.Store, issue string, versions map[record.DesignStep]int) {
+	t.Helper()
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		return records.RaiseTold(context.Background(), tx, issue, record.AudienceHolder, versions, time.Now().UTC())
+	}); err != nil {
+		t.Fatalf("record what %s's holder took: %v", issue, err)
+	}
+}
+
+// putOutboxChanges records what changed in pair's document between its two versions, as Dispatch
+// read it.
+func putOutboxChanges(t *testing.T, pool *store.Pool, records record.Store, pair record.VersionPair) {
+	t.Helper()
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		return records.PutDesignChanges(context.Background(), tx, record.DesignChanges{VersionPair: pair, State: record.DesignChangesRead,
+			Sections: []record.SectionChange{{Heading: "Design", Change: "changed"}}, ReadAt: time.Now().UTC()})
+	}); err != nil {
+		t.Fatalf("record the change set of %+v: %v", pair, err)
 	}
 }

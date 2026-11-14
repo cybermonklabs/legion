@@ -137,9 +137,11 @@ func newsItem(issue string, audience record.DesignAudience, step record.DesignSt
 // its audience has not taken it; it renders with the change set recorded for its pair. An item the
 // gate approved past since is dropped, and so is one its audience already took, and one whose
 // change set is not recorded yet, each from the text and from the news the delivery goes on
-// carrying. A phase start left with no news is sent as its own text; a task queued for its news
-// alone is left with nothing to say. And the gate sentence is said of the gate at the send: a task
-// composed while the gate stood open and sent after a later version closed it says closed.
+// carrying, and a send that drops one queues the reconcile of its tree's news once, which weighs
+// again what the tree is owed now. A phase start left with no news is sent as its own text; a task
+// queued for its news alone is left with nothing to say. And the gate sentence is said of the gate
+// at the send: a task composed while the gate stood open and sent after a later version closed it
+// says closed.
 func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 	r := newNewsRig(t)
 	const ownText = "Implement the plan. Issue: LEGION-500. Phase: implementing."
@@ -163,6 +165,13 @@ func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 	}
 	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{standing}) || len(carried.Openings) != 1 {
 		t.Fatalf("the task still carries %+v, want the standing spec item and the opening alone", carried)
+	}
+	var queued int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from outbox where kind = 'design_changes' and issue = $1`, newsRoot).Scan(&queued); err != nil {
+		t.Fatalf("count the design_changes rows: %v", err)
+	}
+	if queued != 1 {
+		t.Fatalf("design_changes rows after a send that dropped an item = %d, want one for the tree", queued)
 	}
 
 	// The reviewer's holder already took version 5, so a task queued for that news alone is left
@@ -196,6 +205,11 @@ func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 	}
 	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{standing}) {
 		t.Fatalf("the task still carries %+v, want the standing spec item", carried)
+	}
+	// Every later send dropped an item too, and none queued a second reconcile beside the one still
+	// to run.
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from outbox where kind = 'design_changes'`).Scan(&queued); err != nil || queued != 1 {
+		t.Fatalf("design_changes rows after every send = %d (%v), want the one still to run", queued, err)
 	}
 }
 
