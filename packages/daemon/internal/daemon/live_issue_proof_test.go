@@ -420,19 +420,24 @@ func (c *liveClaimant) endTurn() {
 	})
 }
 
-// liveGitHub is GitHub's REST API for acme/widgets as a liveIssueProof's daemon reads it: the one
+// liveGitHub is GitHub's REST API for acme/widgets as a live proof's daemon reads it: the one
 // pull request at the head the driver last pushed, with its base and the `mergeable` the driver
-// last set, true until it sets one (conflicts; readPullRequest), and its reviews as none
-// (readReviews). It also answers what a launch and a disarm read: any repository, with the
-// proof's base as its default branch, and a GraphQL root that knows no pull request. Anything else
-// is answered 404 unless the proof's also answers it, so a read the proof did not foresee fails the
-// step that waited on it rather than reaching github.com.
+// last set, true until it sets one (conflicts; readPullRequest), the `mergeable_state` a proof
+// sets (mergeState), and its reviews as none (readReviews). It also answers what a launch and a
+// disarm read: any repository, with the proof's base as its default branch, and a GraphQL root
+// that knows no pull request. Anything else is answered 404 unless the proof's also answers it, so
+// a read the proof did not foresee fails the step that waited on it rather than reaching
+// github.com. A liveIssueProof starts it with serveGitHub; late_completion_live_test.go, whose
+// panes are real, starts one of its own.
 type liveGitHub struct {
 	t      *testing.T
 	url    string
 	key    string
 	number int
 	base   string
+	// mergeState, when set, is the pull request's `mergeable_state`, which GitHub computes beside
+	// `mergeable` ("clean" for one it would merge); unset, the answer carries none.
+	mergeState string
 	// also is what one proof's stand-in answers beyond that, each answer by its path under
 	// /repos/acme/widgets.
 	also map[string]any
@@ -507,11 +512,15 @@ func (g *liveGitHub) answer(w http.ResponseWriter, path string) bool {
 	case rest == fmt.Sprintf("/pulls/%d/reviews", g.number):
 		g.write(w, []any{})
 	case rest == fmt.Sprintf("/pulls/%d", g.number):
-		g.write(w, map[string]any{
+		pull := map[string]any{
 			"number": g.number, "state": "open", "mergeable": !g.conflicting,
 			"base": map[string]string{"ref": g.base},
 			"head": map[string]string{"ref": "legion/" + g.key, "sha": g.sha},
-		})
+		}
+		if g.mergeState != "" {
+			pull["mergeable_state"] = g.mergeState
+		}
+		g.write(w, pull)
 	default:
 		answer, answered := g.also[rest]
 		if !answered {
