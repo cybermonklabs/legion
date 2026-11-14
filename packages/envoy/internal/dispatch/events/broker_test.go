@@ -141,7 +141,7 @@ func TestQuietSeparatesAnAgentsActivityFromBookkeeping(t *testing.T) {
 func TestAppendSequencesArtifactOwnedEvents(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('PP', 'Project')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice')`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
@@ -208,7 +208,7 @@ func TestAppendSequencesArtifactOwnedEvents(t *testing.T) {
 func TestAppendRejectsEventsWithoutAValidOwnerOrAgentTarget(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('PP', 'Project')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice')`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
@@ -282,7 +282,7 @@ func TestAppendRejectsEventsWithoutAValidOwnerOrAgentTarget(t *testing.T) {
 func TestChildAndParentPatchesCompleteWithoutDeadlock(t *testing.T) {
 	database := storetest.Open(t)
 	seed := context.Background()
-	if _, err := database.Pool.Exec(seed, `insert into projects (key, name) values ('PP', 'Project')`); err != nil {
+	if _, err := database.Pool.Exec(seed, `insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice')`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	if _, err := database.Pool.Exec(seed, `
@@ -436,7 +436,7 @@ func TestAppendAllSequencesMixedOwnersInInputOrderWithOneInsert(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('PP', 'Project');
+		insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank)
 		values
 			('PP-1', 'PP', 1, 'First', '{"kind":"user","id":"alice"}', 'U'),
@@ -589,7 +589,7 @@ func TestConcurrentAppendsKeepOwnerSequencesDense(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('DD', 'Density');
+		insert into projects (key, name, default_assignee) values ('DD', 'Density', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank)
 		values ('DD-1', 'DD', 1, 'Issue', '{"kind":"user","id":"alice"}', 'U');
 	`); err != nil {
@@ -682,7 +682,7 @@ func seedEventOwners(t *testing.T, database *store.Store) string {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('PP', 'Project');
+		insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank)
 		values
 			('PP-1', 'PP', 1, 'One', '{"kind":"user","id":"alice"}', 'U'),

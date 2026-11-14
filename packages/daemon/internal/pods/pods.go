@@ -65,10 +65,15 @@ type IdleClaim struct {
 	// send started, zero for a claim holding no delivery. A session's report counts only when it
 	// was read after it (IdleClaim.Reported).
 	LastTurnAt time.Time
-	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are the session's
-	// last activity report (POST /legion/v1/claims/activity): when it read what it was doing,
-	// whether it found background work of its own running, what kinds it named, and when the
-	// phase reminder armed in it is due. ActivityAt is zero for a session that has reported none.
+	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are the last
+	// activity report of the process the claim runs now (POST /legion/v1/claims/activity): when
+	// it read what it was doing, whether it found background work of its own running, what kinds
+	// it named, and when the phase reminder armed in it is due. ActivityAt is zero for a session
+	// that has reported none, and for a claim whose only report an earlier process of it made:
+	// the launch that replaced that process cleared the four columns (store's putClaim clears
+	// them on every write that moves the claim's generation). So the release holds no pod on
+	// background work a pod replacement killed, or on a reminder that died with the process
+	// that armed it.
 	ActivityAt             time.Time
 	ActivityBackground     bool
 	ActivityKinds          []string

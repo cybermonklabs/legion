@@ -458,6 +458,10 @@ type loopSend struct {
 	method, url string
 	body        any
 	bytes       int64
+	// person is the person the write is made as, through the identity header; empty sends it as
+	// the seed's session under the stack's shared bearer, which is what every write but the
+	// project create does.
+	person string
 	// accept lists the statuses other than 2xx this write takes as the object existing.
 	accept  []int
 	localID func(body []byte) string
@@ -472,7 +476,7 @@ func (w *loopWriter) send(ctx context.Context, s loopSend) (string, bool, error)
 	if local, ok := w.ids.get(s.path); ok {
 		return local, true, nil
 	}
-	res := w.api.callRetryKeyed(ctx, s.method, s.url, who{}, s.body, loopKey(w.planID, s.path))
+	res := w.api.callRetryKeyed(ctx, s.method, s.url, who{person: s.person}, s.body, loopKey(w.planID, s.path))
 	if ctx.Err() != nil {
 		// The run is over (another worker's failure, or a signal): this answer says nothing
 		// about the write, so it is not counted as a refusal.
@@ -607,14 +611,17 @@ func (w *loopWriter) progress() {
 }
 
 // createProject creates the project every issue is created in. A project that is already there
-// answers 409, which the existing seed takes the same way (seed.go:122-128): the project exists,
+// answers 409, which the existing seed takes the same way (seed.go:125-131): the project exists,
 // which is all this write wanted.
+//
+// It is the one write made as a person, seedPerson, so that the project names them as its
+// default assignee: the create takes the person creating it where the call names no login, and
+// the seed's session acts for nobody (internal/dispatch/api/projects.go).
 func (w *loopWriter) createProject(ctx context.Context) error {
 	_, _, err := w.send(ctx, loopSend{
 		kind: loopKindProject, path: loopKindProject, route: "POST /api/v1/projects",
-		method: "POST", url: "/api/v1/projects",
-		body: map[string]any{"key": w.project, "name": "Verified Linux spec loop " + w.project,
-			"actor": loopSeedActorBody},
+		method: "POST", url: "/api/v1/projects", person: seedPerson,
+		body:    map[string]any{"key": w.project, "name": "Verified Linux spec loop " + w.project},
 		accept:  []int{http.StatusConflict},
 		localID: func([]byte) string { return w.project },
 	})

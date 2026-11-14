@@ -639,6 +639,12 @@ func readGitRemotes() ([]ghRemote, error) {
 // gitLines runs git with args in the working directory and answers the lines it prints: none for
 // a directory that is no git repository, where no git runs, or, for `git config --get-regexp`,
 // where nothing matches.
+//
+// It takes no lock: `git remote -v` and `git config --get-regexp` read configuration and write
+// nothing, so neither can leave a lock file behind for the next reader of the repository. R8 of
+// dispatch://INFRA-3098 gives a process group of its own and the SIGTERM-then-grace-then-SIGKILL
+// stop to the two command runners of internal/workspace, whose git and jj do take locks, and
+// leaves a read that takes none as it is: this child needs neither the group nor the grace.
 func gitLines(args ...string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

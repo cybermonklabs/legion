@@ -23,7 +23,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 func seedFileVersion(t *testing.T, database *store.Store, slug string, body []byte) string {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('FILES', 'Files') on conflict do nothing`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('FILES', 'Files', 'alice') on conflict do nothing`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `

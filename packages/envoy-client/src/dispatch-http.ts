@@ -25,6 +25,7 @@ import type {
   CreateArtifactInput,
   CreateAskInput,
   CreateCommentInput,
+  CreatedProject,
   CreateIssueInput,
   CreateMessageInput,
   CreateProjectInput,
@@ -1128,9 +1129,10 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "credential-requests"], undefined, { approver: "me" });
   }
 
-  /** `POST /api/v1/projects`: create a project. A key that already exists is 409
+  /** `POST /api/v1/projects`: create a project. It answers the project with the default assignee
+   *  the create stored, which the project list leaves out. A key that already exists is 409
    *  PROJECT_EXISTS, and a key that is not a project key or an empty name 400 INVALID_PROJECT. */
-  async createProject(input: CreateProjectInput): Promise<Project> {
+  async createProject(input: CreateProjectInput): Promise<CreatedProject> {
     return this.#json("POST", ["api", "v1", "projects"], input);
   }
 
@@ -1279,9 +1281,11 @@ export class DispatchClient {
     );
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it.
+  /** Each check of an issue's Verification document with every result recorded against it, and
+   *  for a check CI proves the one result Dispatch derives from its check run.
    *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
-   *  hex characters, and Dispatch reads GitHub for none of it. */
+   *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
+   *  proves, at the issue's newest pull request head as on every read. */
   async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
     return this.#json(
       "GET",

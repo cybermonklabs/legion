@@ -33,7 +33,7 @@ update pod_resumes older set closed_at = newer.at
 -- resume before this migration, so a wake whose role's first turn the daemon never saw left one
 -- behind, and that one row would refuse every later wake of the role for as long as the issue
 -- lives. A resume older than the issue's newest release measures a pod that is gone, which is the
--- same reading UnfinishedPodResumes takes of it (release_records.go), so it is closed at the time
+-- same reading UnfinishedPodResumesTx takes of it (release_records.go), so it is closed at the time
 -- of the release that stopped its pod.
 update pod_resumes r set closed_at = later.at
   from pod_releases later

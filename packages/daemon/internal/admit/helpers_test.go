@@ -140,12 +140,10 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // helpers are. A start that names no phase is no phase worker's — the architect start promotion
 // makes, the production check's look — and is left in.
 //
-// A supervise start carries an assignment the workflow mints fresh at each start
-// (record.SuperviseRequest.Assignment), so two runs of the same events never write the
-// same one and a comparison of two runs would fail on that id alone. Every such id is replaced
-// here by one sentinel, which drops only the value no run can repeat. It holds nothing about the
-// assignment itself: a start that carries none is left as it is, and what a start carries is
-// pinned by internal/api's completion route tests and by migration 0067's test.
+// A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
+// which the transition raised on the role's phases row: the record counts the entries a role has
+// been handed, so two runs of the same events write the same number and a comparison of two runs
+// reads it like any other field.
 func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select kind, issue, payload from outbox order by id`)
@@ -167,10 +165,6 @@ func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 			if start.Op == "start" && start.Task == "" && start.Phase != "" {
 				continue
 			}
-			if start.Assignment != "" {
-				start.Assignment = mintedAssignment
-				payload = start
-			}
 		}
 		got = append(got, effect{kind: row.Kind, issue: row.Issue, payload: payload})
 	}
@@ -179,9 +173,6 @@ func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 	}
 	return got
 }
-
-// mintedAssignment stands for the assignment a start minted, whatever it was (effects).
-const mintedAssignment = "<minted>"
 
 func assertSlots(t *testing.T, pool *pgxpool.Pool, want []record.Slot) {
 	t.Helper()
@@ -219,7 +210,7 @@ func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []recor
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		_, _, line, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil)
+		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil, time.Now())
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
@@ -258,6 +249,17 @@ func issue(t *testing.T, pool *pgxpool.Pool, key string) record.Issue {
 		t.Fatalf("issue %s is missing", key)
 	}
 	return *got
+}
+
+// withoutMovement is a record with the moment the daemon last saw the issue move taken off
+// (record.Issue.MovedAt). Every write of a record stamps it from the database's own clock and
+// every fact that moves the issue writes it again, so two runs of the same events never agree on
+// it and no fixture can name it: a test about what a fact records compares everything else. The
+// column's own rule is held to by TestTheRecordKeepsWhenAnIssueLastMoved, which is the one test
+// here that reads it.
+func withoutMovement(issue record.Issue) record.Issue {
+	issue.MovedAt = time.Time{}
+	return issue
 }
 
 func maybeIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {

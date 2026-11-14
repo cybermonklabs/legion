@@ -1,5 +1,5 @@
 {
-  "about": "GitHub's check runs on one head, and the settlement Envoy's listener publishes for them once every run has completed: each check's highest-id run, its name cut as the listener keys it, failed and cancelled grouped by conclusion, and a tester or architect run counted only from the reviewer App. Envoy's listener (packages/envoy/internal/cistore, its webhook handler, CI store and summary loop) and the daemon's pass (packages/daemon/internal/daemon, listenerSettlement) are each tested against it. A name is a string, or {repeat, times, then}: repeat written times over, then then.",
+  "about": "GitHub's check runs on one head, and the settlement Envoy's listener publishes for them once every run has completed: each check's highest-id run, its name cut as the listener keys it, failed and cancelled grouped by conclusion, and a tester or architect run counted only from the reviewer App. Envoy's listener (packages/envoy/internal/cistore, its webhook handler, CI store and summary loop) is tested against it; the daemon keeps each check's highest-id run the same way (packages/daemon/internal/classify, mergeAttemptSets). A name is a string, or {repeat, times, then}: repeat written times over, then then.",
   "reviewerAppId": "271000",
   "checkRuns": [
     {

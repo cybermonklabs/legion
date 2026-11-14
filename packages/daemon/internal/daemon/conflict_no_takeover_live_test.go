@@ -5,8 +5,8 @@
 // phase ended is still working a turn it has not ended — nothing is sent to that role's connection
 // to end its turn, the role is told its phase is over by one message on its own Envoy role topic,
 // and a completion the old turn reports once the issue has handed the phase out again is refused
-// HANDOFF_STALE_ASSIGNMENT, where the new assignment's completion in the turn that assignment's
-// task starts is taken. scripts/e2e/conflict-no-takeover.sh builds this driver with `-tags e2e` and
+// HANDOFF_STALE_ENTRY, where the completion of the new phase entry, in the turn that entry's task
+// starts, is taken. scripts/e2e/conflict-no-takeover.sh builds this driver with `-tags e2e` and
 // owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
@@ -139,7 +139,7 @@ func TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive(t *testing.T) {
 	r.step("step1-the-tester-works-the-assignment-its-phase-handed-it", r.testerWorksItsAssignment)
 	r.step("step2-the-red-starts-the-implementer-while-the-testers-turn-runs-on", r.redStartsAtOnce)
 	r.step("step3-the-tester-is-told-its-phase-ended-on-its-own-role-topic", r.testerIsToldItsPhaseEnded)
-	r.step("step4-the-old-turns-completion-is-refused-and-the-new-assignments-is-taken", r.staleAssignmentRefused)
+	r.step("step4-the-old-turns-completion-is-refused-and-the-new-assignments-is-taken", r.staleEntryRefused)
 	r.step("step5-a-phase-ended-message-no-session-holds-finishes-and-the-start-still-acts", r.noHolderFinishesTheRow)
 }
 
@@ -514,12 +514,12 @@ func (r *conflictNoTakeoverLive) testerIsToldItsPhaseEnded() {
 	r.note("read back over %s: the tester's topic has taken that one message and no other", liveSettle)
 }
 
-// Step 4. The implementer fixes and completes, which hands testing out again with an assignment of
-// its own. The tester's first turn is still running and still serving the assignment before it, so
-// the completion it reports from that turn is refused HANDOFF_STALE_ASSIGNMENT and records
+// Step 4. The implementer fixes and completes, which hands testing out again with a phase entry of
+// its own. The tester's first turn is still running and still serving the entry before it, so
+// the completion it reports from that turn is refused HANDOFF_STALE_ENTRY and records
 // nothing, and the refusal sends it to the new task's own work: the completion of the handoff that
 // task's turn writes, at a commit of its own, is taken.
-func (r *conflictNoTakeoverLive) staleAssignmentRefused() {
+func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	t := r.t
 	r.github.head(conflictSecondHead)
 	r.publishPush(conflictFirstHead, conflictSecondHead)
@@ -543,8 +543,8 @@ func (r *conflictNoTakeoverLive) staleAssignmentRefused() {
 		t.Fatalf("the tester is %s, want it still working the turn it began in step 1", stale.State)
 	}
 	status, failure := r.test.complete("tested it", conflictFirstTesterHandoff, "pass")
-	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ASSIGNMENT" {
-		t.Fatalf("the completion from the tester's old turn = %d %s %s, want 409 HANDOFF_STALE_ASSIGNMENT", status, failure.Code, failure.Error)
+	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ENTRY" {
+		t.Fatalf("the completion from the tester's old turn = %d %s %s, want 409 HANDOFF_STALE_ENTRY", status, failure.Code, failure.Error)
 	}
 	r.note("read back: the completion the tester reported from its first turn = 409 %s — %s", failure.Code, failure.Error)
 	if after := r.issue(r.key); after.Phase != phase.Testing {

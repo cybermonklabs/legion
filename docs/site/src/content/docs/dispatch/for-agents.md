@@ -67,15 +67,16 @@ Everything the agent writes is attributed to the person who made the token: Disp
 agent's name followed by `(for <login>)`, and an issue the agent creates without naming an
 assignee goes to that person. An agent on the shared token has no such person, so its issue takes
 its parent's assignee instead, and where no parent names one, the project's default assignee, set
-on the Settings page. `dispatch issue` names the assignee Dispatch chose. `dispatch whoami`
+on the Settings page. Every project names a default assignee, so every issue has one.
+`dispatch issue` names the assignee Dispatch chose. `dispatch whoami`
 tells the agent who Dispatch takes it for.
 
 ## The commands
 
 | Area | Commands |
 | --- | --- |
-| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues in the same project it waits on. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, or components; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves it on nobody; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
-| Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `dispatch projects` lists every project's key and name. |
+| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues in the same project it waits on. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, or components; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
+| Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists every project's key and name. |
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
 | Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
 | Messages | `dispatch message` posts a message or replies to one. |
@@ -140,7 +141,7 @@ Each kind of write reaches people differently. Pick by what you need from them.
 
 | You need | Use | Where it lands |
 | --- | --- | --- |
-| A decision only a person can make | An ask (`dispatch ask`, or a decision block in the spec) | The Inbox of the person it waits on: the issue's assignee, until a person hands it to somebody else |
+| A decision only a person can make | An ask (`dispatch ask`, or a decision block in the spec) | The Inbox of the person it waits on: the person it was handed to, else the issue's assignee, else the project's default assignee |
 | To point at a passage in a document | A comment with a quote (`dispatch comment`) | The document's margin and the issue's Conversation |
 | To change specific text | A suggestion (`dispatch suggest`) | The margin, where a person accepts or rejects it |
 | To tell people a deliverable landed, or answer a person's message | A message (`dispatch message`) | The issue's Conversation |

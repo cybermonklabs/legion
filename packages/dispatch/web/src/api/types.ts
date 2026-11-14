@@ -84,6 +84,7 @@ export type {
   CreateBroadcastInput,
   CreateCommentInput,
   CreatedAgentToken,
+  CreatedProject,
   CreateIssueInput,
   CreateProjectInput,
   CredentialPendingResponse,

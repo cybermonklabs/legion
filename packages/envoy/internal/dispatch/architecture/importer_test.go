@@ -353,7 +353,7 @@ func newImporterFixture(t *testing.T, fake *fakeSource) (*Importer, *store.Store
 
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(),
-		`insert into projects (key, name) values ('CORE', 'Core')`); err != nil {
+		`insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice')`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -848,7 +848,7 @@ func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 	client := newGitHubClient(t, mux)
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}');
 	`); err != nil {
@@ -916,7 +916,7 @@ func TestSyncAbortsWhenTheSourceMovedMidFetch(t *testing.T) {
 	client := newGitHubClient(t, mux)
 	database = storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}');
 	`); err != nil {
@@ -1176,7 +1176,7 @@ func TestListEnabledNamesEveryEnabledSource(t *testing.T) {
 	ctx := context.Background()
 	importer, database := newImporterFixture(t, &fakeSource{t: t, files: validFiles()})
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('OPS', 'Operations'), ('OLD', 'Retired');
+		insert into projects (key, name, default_assignee) values ('OPS', 'Operations', 'alice'), ('OLD', 'Retired', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('OPS', 'legion/ops', 'main', 1, '{"kind":"user","id":"alice"}'),
 		       ('OLD', 'legion/old', 'main', 1, '{"kind":"user","id":"alice"}'),
@@ -1480,7 +1480,7 @@ func TestSyncAcrossProcessesEmitsOneEventForOneHead(t *testing.T) {
 	client := newGitHubClient(t, mux)
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}');
 	`); err != nil {
@@ -1822,7 +1822,7 @@ func TestACollisionRacedAcrossProcessesFailsOneSourceByName(t *testing.T) {
 	client := newGitHubClient(t, mux)
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by) values
 			('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}'),
 			('CORE', 'acme/infra', 'main', 11, '{"kind":"user","id":"alice"}');
@@ -1911,7 +1911,7 @@ func TestTheLegacySourceResyncsThroughTheUnchangedHeadShortcut(t *testing.T) {
 	database := storetest.Open(t)
 	// One multi-statement Exec takes no parameters, so the commit is spelled into the text.
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by, last_sync_at, last_commit, last_tree_sha)
 			values ('CORE', 0, 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}', now() - interval '1 hour', '`+commitOne+`', 'tree-legacy');
 		insert into architecture_snapshots (id, project_key, commit, files) values (700, 'CORE', '`+commitOne+`', '{}');
@@ -1963,7 +1963,7 @@ func TestSyncProjectLeavesOutASourceDeletedMidCall(t *testing.T) {
 	client := newGitHubClient(t, mux)
 	database = storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core'), ('BARE', 'Bare');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice'), ('BARE', 'Bare', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by) values
 			('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}'),
 			('CORE', 'acme/infra', 'main', 11, '{"kind":"user","id":"alice"}');
@@ -2103,7 +2103,7 @@ func twoProcesses(t *testing.T, branch *movingBranch) (a, b *Importer, database 
 	client := newGitHubClient(t, branch.handler())
 	database = storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}');
 	`); err != nil {

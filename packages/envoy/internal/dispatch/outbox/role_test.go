@@ -254,7 +254,7 @@ func (r *roleRig) routedEvent(t *testing.T, key, role string, actor model.Actor)
 	t.Helper()
 	route := "role:" + role
 	if _, err := r.database.Pool.Exec(context.Background(),
-		`insert into projects (key, name) values ('TT', 'Test') on conflict do nothing`); err != nil {
+		`insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice') on conflict do nothing`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	var number int

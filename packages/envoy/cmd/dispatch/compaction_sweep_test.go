@@ -23,7 +23,7 @@ func TestTheCompactionSweepFoldsABackdatedLogWithNATSDisabled(t *testing.T) {
 	database := storetest.Open(t)
 	const artifactID = "5a660655-04ad-4ce0-8a9b-93dd03c41300"
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('SWEEP', 'Sweep')`,
+		`insert into projects (key, name, default_assignee) values ('SWEEP', 'Sweep', 'alice')`,
 		`insert into issues (key, project_key, number, title, created_by, rank)
 			values ('SWEEP-1', 'SWEEP', 1, 'Sweep', '{"kind":"session","id":"s"}', 'U')`,
 		`insert into artifacts (id, issue_key, project_key, slug, name, kind, created_by)

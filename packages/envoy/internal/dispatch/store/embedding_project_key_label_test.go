@@ -20,7 +20,7 @@ func openLabelTestStore(t *testing.T) *Store {
 		why string
 		sql string
 	}{
-		{"seed the project", `insert into projects (key, name) values ('LABL', 'Label')`},
+		{"seed the project", `insert into projects (key, name, default_assignee) values ('LABL', 'Label', 'alice@d.example')`},
 		{"seed the issue", `
 			insert into issues (key, project_key, number, title, created_by, rank)
 			values ('LABL-1', 'LABL', 1, 'An issue to label', '{"kind":"user","id":"alice"}', '00000001')`},

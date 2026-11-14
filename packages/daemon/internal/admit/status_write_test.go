@@ -108,11 +108,11 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 				if got.Phase != phase.Merging || got.LingerUntil != nil || got.Status != "retro" || got.LastDispatchSeq != 2 || reasserted != 1 {
 					t.Fatalf("root after %s = %#v with %d re-asserted status writes, want merging, not lingering, status retro kept, seq 2, and retro re-asserted over %s once", tc.name, got, reasserted, tc.status)
 				}
-				// The root stands in merging, a worker's phase on this release, so it keeps the
-				// slot that phase takes whoever wrote on it; what the write must not do is end
-				// its tree, which the kept phase, the absent linger and LEGION-9's slot beside
-				// it say.
-				assertSlots(t, pool, []record.Slot{{Issue: "LEGION-1", Index: 0, AdmittedAt: fixedNow}, {Issue: "LEGION-9", Index: 1, AdmittedAt: fixedNow}})
+				// The root stands in merging, which is past its own review, so it holds none of
+				// the cap's rows whoever wrote on it; what the write must not do is end its
+				// tree, which the kept phase, the absent linger and LEGION-9's slot beside it
+				// say.
+				assertSlots(t, pool, []record.Slot{{Issue: "LEGION-9", Index: 1, AdmittedAt: fixedNow}})
 				wantTold := 0
 				if tc.outcome == setBackAndTold {
 					wantTold = 1
@@ -197,7 +197,7 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 					Parent: deref(tc.issues[len(tc.issues)-1].Parent), Rank: "B", HandedOver: true, ActorSession: actor}, engine)
 				var got result
 				for _, seeded := range tc.issues {
-					got.issues = append(got.issues, issue(t, pool, seeded.Key))
+					got.issues = append(got.issues, withoutMovement(issue(t, pool, seeded.Key)))
 				}
 				got.slots, got.effects = slots(t, pool), effects(t, pool)
 				return pool, got
@@ -357,7 +357,7 @@ func TestAnEditReachesTheSameOutcomeWhetherOrNotTheSetBackHasFinished(t *testing
 					}
 				}
 				event(4, editor.actor, "backlog", "renamed")
-				got := outcome{root: issue(t, pool, "LEGION-1"), slots: slots(t, pool)}
+				got := outcome{root: withoutMovement(issue(t, pool, "LEGION-1")), slots: slots(t, pool)}
 				for _, effect := range effects(t, pool) {
 					if notice, ok := effect.payload.(record.Notice); ok && notice.Kind == "status-reasserted" {
 						got.notices++

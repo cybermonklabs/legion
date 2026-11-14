@@ -115,7 +115,7 @@ const SPELLED_TWICE = Object.entries(SCHEMAS)
 /** How many shapes are spelled twice today. A derivation that found none would pass every row
  *  below in silence, so the count is pinned here and moves deliberately: a schema added beside a
  *  generated type raises it, and a shape that stops being the route table's lowers it. */
-const SPELLED_TWICE_COUNT = 40;
+const SPELLED_TWICE_COUNT = 39;
 
 /** The fields one spelling of a pair knows and the other does not, each named by its shape and
  *  by the side that knows it: a count that mixed the two directions would pass a swap across

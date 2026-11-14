@@ -298,6 +298,11 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
         <Fact label="Run" testId="verification-check-run">
           {check.run}
         </Fact>
+        {check.ci === undefined ? null : (
+          <Fact label="CI check" testId="verification-check-ci">
+            {check.ci.run}
+          </Fact>
+        )}
         <Fact label="Negative control" testId="verification-check-negative-control">
           {check.negative_control}
         </Fact>
@@ -306,22 +311,43 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
         </Fact>
       </dl>
       <BlockReferences reference={check.ref} />
-      {results.length === 0 ? (
-        <p className={`text-sm ${textMutedOnSurface}`} data-testid="verification-check-no-results">
-          No result recorded against this check.
-        </p>
-      ) : (
-        <ul
-          aria-label={`Results of ${check.block_id}`}
-          className="space-y-3"
-          data-testid="verification-check-results"
-        >
-          {results.map((result) => (
-            <Result checkVersion={check.version} key={result.id} result={result} />
-          ))}
-        </ul>
-      )}
+      <CheckResults check={check} results={results} />
     </li>
+  );
+}
+
+/** A check's results, newest first. A check CI proves holds no recorded result, only the one the
+ *  server derives from the CI run it names, drawn as a recorded one is; where that run proved
+ *  nothing, the server's sentence saying why stands in its place. The tab reads that run as of
+ *  its own load and asks GitHub nothing more. */
+function CheckResults({
+  check,
+  results,
+}: {
+  check: CheckBlock;
+  results: readonly CheckResult[];
+}): ReactNode {
+  if (results.length === 0) {
+    return check.ci === undefined ? (
+      <p className={`text-sm ${textMutedOnSurface}`} data-testid="verification-check-no-results">
+        No result recorded against this check.
+      </p>
+    ) : (
+      <p className={`text-sm ${textMutedOnSurface}`} data-testid="verification-check-ci-unproved">
+        {check.ci.detail}
+      </p>
+    );
+  }
+  return (
+    <ul
+      aria-label={`Results of ${check.block_id}`}
+      className="space-y-3"
+      data-testid="verification-check-results"
+    >
+      {results.map((result) => (
+        <Result checkVersion={check.version} key={result.id} result={result} />
+      ))}
+    </ul>
   );
 }
 

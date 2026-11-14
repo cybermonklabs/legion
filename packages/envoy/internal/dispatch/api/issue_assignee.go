@@ -13,9 +13,10 @@ import (
 )
 
 // parseIssueAssignee decodes the tri-state `assignee` field of an issue write. Absent →
-// (nil, false): leave it alone. JSON null → (nil, true): clear it. A string → its canonical
-// email, which must name a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise).
-// Anything else → 400 INVALID_ISSUE.
+// (nil, false): leave it alone. JSON null → (nil, true): clear it, which only an update does; a
+// create reads a null as naming nobody, as it reads an absent field, and fills the assignee in
+// (defaultAssignee). A string → its canonical email, which must name a person who has signed in
+// (400 ASSIGNEE_NOT_ALLOWED otherwise). Anything else → 400 INVALID_ISSUE.
 func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (assignee *string, provided bool, err error) {
 	if len(raw) == 0 {
 		return nil, false, nil
@@ -49,29 +50,50 @@ func (s *server) allowedLogin(ctx context.Context, login string) (string, error)
 	return canonical, nil
 }
 
-// defaultAssignee is who a new issue goes to when the create names nobody, in order: the human
-// who created it, the owner of the personal token that created it, the parent's assignee, and
-// the project's default assignee (projectDefault, the column a human sets through PUT
-// /api/v1/projects/{key}/default-assignee). An explicit assignee on the create, a JSON null
-// among them, never reaches here: parseIssueAssignee decides both. The shared token creating a
-// root issue in a project with no default leaves it unassigned.
+// actorPerson is the one rule for which person a credential acts for, read off the actor the
+// request was authenticated as: a person at a browser is that person (a `user` actor names
+// their login in ID), and any other credential acts for the person its Owner names - a personal
+// token's owner, a broker-issued token's person. A credential that acts for nobody - the shared
+// token, a pod's service-account token, a broker-issued token naming a service - names none,
+// which is the false second result.
 //
-// The project's default is used only when it still names a person who has signed in: the create's
-// own update of the project row returns the stored default only in that case (see the `returning`
-// in createIssue), so a create in a project with no default costs nothing new and no extra round
-// trip runs under the project row lock. That check is deliberately not allowedLogin: a default
-// left stale by a restore or a direct write must fall through to nobody, not refuse the create.
-func defaultAssignee(actor model.Actor, parent, projectDefault *string) *string {
+// The login is returned as model.CanonicalLogin leaves it, blank included: an actor that names
+// the person it acts for with a blank login still named one, and the two callers decide what to
+// do with that themselves. defaultAssignee (below) takes it as the new issue's assignee, and
+// createProject (api/projects.go) falls through to its refusal, each as it did when both
+// spelled these two steps out.
+func actorPerson(actor model.Actor) (string, bool) {
 	if actor.Kind == "user" {
-		return new(model.CanonicalLogin(actor.ID))
+		return model.CanonicalLogin(actor.ID), true
 	}
 	if actor.Owner != nil {
-		return new(model.CanonicalLogin(*actor.Owner))
+		return model.CanonicalLogin(*actor.Owner), true
+	}
+	return "", false
+}
+
+// defaultAssignee is who a new issue goes to when the create names nobody, with no assignee key
+// or a JSON null, in order: the person the creating credential acts for (actorPerson - the human
+// who created it, else the owner of the token that did), the parent's assignee, and the project's
+// default assignee (projectDefault, the column a human sets through PUT
+// /api/v1/projects/{key}/default-assignee). A create that names a person never reaches here:
+// parseIssueAssignee checks that login instead. So no create leaves an issue nobody holds, under
+// a parent that holds nobody included; only PATCH /api/v1/issues/{key} with a null assignee does.
+//
+// The last step is the stored column as it stands, which every project names
+// (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql): a shared token
+// creating a root issue lands on that person rather than on nobody. The create's own update of
+// the project row returns it (see the `returning` in createIssue), so no extra round trip runs
+// under the project row lock, and a default left stale by a restore or a direct write is used
+// as it stands rather than refusing the create.
+func defaultAssignee(actor model.Actor, parent *string, projectDefault string) *string {
+	if login, acts := actorPerson(actor); acts {
+		return &login
 	}
 	if parent != nil {
 		return parent
 	}
-	return projectDefault
+	return &projectDefault
 }
 
 type dispatchUser struct {

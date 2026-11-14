@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -130,7 +130,7 @@ func sessionClaim(id string) *dispatch.Claim { return &dispatch.Claim{Kind: "ses
 // (RunOnce) on a clock the test holds, with the runner's log captured.
 type claimReleaseRig struct {
 	t      *testing.T
-	pool   *pgxpool.Pool
+	pool   *store.Pool
 	runner *outbox
 	client *claimReleaseDispatch
 	clock  *heldClock
@@ -242,7 +242,7 @@ func parkedIssue() record.Issue {
 
 // seedSessionClaim records session working in tree, under project, the claim row
 // SessionClaimsTree and SessionClaimsAnywhere read.
-func seedSessionClaim(t *testing.T, pool *pgxpool.Pool, token, project, tree, issue, session string) {
+func seedSessionClaim(t *testing.T, pool *store.Pool, token, project, tree, issue, session string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
 		session, session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
@@ -255,7 +255,7 @@ func seedSessionClaim(t *testing.T, pool *pgxpool.Pool, token, project, tree, is
 // seedControllerClaim records session as the project's controller: the one claims row with no
 // issue and no tree (migration 0032_controller_claim), which SessionClaimsAnywhere accounts for
 // while SessionClaimsTree, which matches on a tree, never can.
-func seedControllerClaim(t *testing.T, pool *pgxpool.Pool, project, session string) {
+func seedControllerClaim(t *testing.T, pool *store.Pool, project, session string) {
 	t.Helper()
 	token, err := claim.ProjectToken(project)
 	if err != nil {

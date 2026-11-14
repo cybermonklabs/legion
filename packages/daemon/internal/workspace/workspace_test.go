@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 const testTimeout = 30 * time.Second
@@ -55,15 +56,34 @@ func runUnderAHomeOfThePackagesOwn(m *testing.M) int {
 			return 1
 		}
 	}
+	check, err := leakguardtest.WriteFile(home, leakguardtest.Passes)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain:", err)
+		return 1
+	}
+	leakCheckStandIn = check
 	return m.Run()
 }
+
+// leakCheckStandIn is the stand-in shared public leak check every fixture command of this package
+// runs under, written once by TestMain into the package's own home. The fixtures push: the seed
+// push every local bare remote is made with (seedRemote), and the pushes the tests make into one.
+// Those run under whatever git is first on PATH, and in an issue pod that is Legion's wrapper
+// (/opt/legion/bin/git), which points a push at a hook running the leak guard; the guard refuses a
+// push it can resolve no shared check for (leakguard's Resolve), and fixtureenv.Isolated drops
+// PUBLIC_LEAK_CHECK along with everything else of the process that reaches past the test. So
+// without a check of this package's own every fixture that pushes stops with LEAK CHECK SETUP
+// ERROR in a pod, while passing on a runner that has no such git — the stand-in, which clears
+// every write, is what makes the two the same run.
+var leakCheckStandIn string
 
 // setupEnvironment is the environment of a fixture command: fixtureenv.Isolated under the home
 // the test's provisioning reads too (TestMain's, or newLocalRunner's), so a fixture and a
 // provision read the same jj repository configuration, and no fixture reads the workspace,
-// configuration, provisioning token or credential of the process that runs the tests.
+// configuration, provisioning token or credential of the process that runs the tests. The
+// stand-in leak check is named for the pushes among those commands.
 func setupEnvironment() []string {
-	return fixtureenv.Isolated(os.Getenv("HOME"))
+	return append(fixtureenv.Isolated(os.Getenv("HOME")), "PUBLIC_LEAK_CHECK="+leakCheckStandIn)
 }
 
 // recordingRunner runs every command through the production runner, NewRunner, with the real jj
@@ -807,8 +827,7 @@ func TestProvisionFromAFeedHoldsNoCredential(t *testing.T) {
 // behind holds no working tree at all — its clone takes --no-checkout, and the clear and the
 // abandon that follow keep jj's first snapshot from recording that absent tree as deleted — while
 // the issue's own workspace holds the default branch's files. A clone whose working copy recorded
-// the tree as deleted would show here as a dirty status, a visible deletion commit, or a record of
-// one in .jj/legion-held, which a check of the pod's work reads (internal/rescue).
+// the tree as deleted would show here as a dirty status or a visible deletion commit.
 func TestProvisionFromAFeedLeavesTheSharedCloneWithNoWorkingTree(t *testing.T) {
 	run := newLocalRunner(t)
 	pushRemoteBranch(t, run.remote, "main", "history.txt")
@@ -849,21 +868,14 @@ func TestProvisionFromAFeedLeavesTheSharedCloneWithNoWorkingTree(t *testing.T) {
 	}
 	at := commitOf(t, cloneDir, "@")
 	// The repository's visible heads are the clone's own empty working-copy commit and the one the
-	// issue's workspace works on, which `jj workspace add` created after the clone was recorded:
-	// the deletion commit a clone with no working tree would otherwise carry is one of neither.
+	// issue's workspace works on, which `jj workspace add` created after the clone was made: the
+	// deletion commit a clone with no working tree would otherwise carry is one of neither.
 	heads := strings.Fields(runSetup(t, cloneDir, "jj", "log", "-r", "visible_heads()", "--no-graph", "-T", `commit_id ++ "\n"`, "--ignore-working-copy", "-R", cloneDir))
 	slices.Sort(heads)
 	wantHeads := []string{at, commitOf(t, working.Dir, "@")}
 	slices.Sort(wantHeads)
 	if !slices.Equal(heads, wantHeads) {
 		t.Errorf("the shared clone's visible heads are %q, want %q: its empty working-copy commit and the issue workspace's, and no commit deleting the tree", heads, wantHeads)
-	}
-	recorded, ok, err := Held(cloneDir)
-	if err != nil || !ok {
-		t.Fatalf("Held = %v, %t, %v; want the clone's record of what it held", recorded, ok, err)
-	}
-	if !slices.Equal(recorded, []string{at}) {
-		t.Errorf("the clone's record of what it held names %q, want its empty working-copy commit %s alone: no commit deleting the tree", recorded, at)
 	}
 	if clone := findCall(t, calls, "git", "clone", "--quiet"); !slices.Contains(clone.Argv, "--no-checkout") {
 		t.Errorf("the clone was made with %q, want --no-checkout: no working tree", clone.Argv)
@@ -1483,9 +1495,9 @@ func TestGitWorktreeEntriesResolveACloneSymlinkOutsideTheWorkspace(t *testing.T)
 		t.Fatal(err)
 	}
 
-	got, err := gitWorktreeEntries(logicalClone, workspace)
-	if err != nil {
-		t.Fatalf("gitWorktreeEntries(%s, %s): %v", logicalClone, workspace, err)
+	got, unread, err := gitWorktreeEntries(logicalClone, workspace)
+	if err != nil || unread != nil {
+		t.Fatalf("gitWorktreeEntries(%s, %s): %v (unread: %v)", logicalClone, workspace, err, unread)
 	}
 	if !slices.Equal(got, []string{entry}) {
 		t.Errorf("gitWorktreeEntries(%s, %s) = %q, want %q", logicalClone, workspace, got, []string{entry})

@@ -58,16 +58,17 @@ func xdgHome(stateDir string) string { return filepath.Join(stateDir, "home") }
 // The daemon resolves it because a pane cannot: PUBLIC_LEAK_CHECK is no allow-listed name
 // (paneEnvAllowList), a pane's XDG_CONFIG_HOME is the daemon's own rather than the operator's
 // (xdgHome, deliberately), and the check's installer puts its files on no PATH a pane has — so
-// all three places are closed in a pane, and every `legion gh` and every rescue push from one
-// would be refused with the setup error naming the missing check. A launch resolves again rather
+// all three places are closed in a pane, and every `legion gh` from one would be refused with the
+// setup error naming the missing check. A launch resolves again rather
 // than reading an answer taken at boot: the check is installed, moved and republished on an
 // operator's machine while the daemon runs, and the pane is told where it is now.
 //
 // A machine that carries none answers an error, which is no launch failure: the pane is told no
 // PUBLIC_LEAK_CHECK and every public write from it is refused with the setup error naming the
 // check, which is the honest answer on a machine that writes to public repositories with no
-// check. Legion installs none there — the pinned install is the pod's (leakguard.Install) — so
-// the cure is the check's own installer, on the machine the daemon runs on.
+// check. Legion installs none there: the pinned install is a pod's, which the pod's launcher makes
+// from the check the daemon reads at the worker image's pin and pushes to it. So the cure is the
+// check's own installer, on the machine the daemon runs on.
 func resolveLeakCheck(environ []string) (string, error) {
 	return leakguard.New(leakguard.Options{Env: environ}).Resolve()
 }

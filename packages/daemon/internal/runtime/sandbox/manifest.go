@@ -300,7 +300,7 @@ type launch struct {
 // keptPod is what a live pod a launch keeps was built with, for the one role that launch starts in
 // it: the facets of the pod the role's own start command names, which a pod cannot be changed to
 // carry (INFRA-484). A pod that has drifted from the configuration is replaced by an update round,
-// which first tasks every worker in it to push its work and answer, and not by the launch that
+// which first asks every role in it to push its work and answer, and not by the launch that
 // finds it; so the launch starts its role as that pod was built, and the role runs degraded —
 // without the secrets broker, without an overlay added since — until the round replaces the pod.
 // It can still push its work and answer the round, which a process that refused to start could
@@ -354,7 +354,8 @@ type keptPod struct {
 // in). A role in a kept pod that carries no enrollment is told of none, so it reports a resource
 // it cannot reach rather than a secrets grant it never had, and its generation is recorded as
 // carrying no broker URL, so moving the broker's URL never reads as StaleAddress and never
-// repoints that role mid-turn: the update round replaces its pod once every worker has answered.
+// repoints that role mid-turn: the update round replaces its pod once every worker has answered,
+// or at the round's bound.
 //
 // The launch reads the pod from the Sandbox's stored template, the pod's own build (keptBy), and
 // an observation from the live pod; neither a kubelet nor an admission webhook takes a volume off
@@ -1348,15 +1349,15 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	add("PI_SHELL_PREFIX", shellprefix.For(legionDir))
 	add("GIT_TERMINAL_PROMPT", "0")
 	env = append(env, gitConfigEnv()...)
-	// The shared public leak check every write of this role runs first: its `legion gh`, its
-	// pushes and the rescue helper each resolve PUBLIC_LEAK_CHECK before anything else
+	// The shared public leak check every write of this role runs first: its `legion gh` and its
+	// pushes each resolve PUBLIC_LEAK_CHECK before anything else
 	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
-	// image — it is published by tag, and a pod installs the pinned one once, before any role's
-	// agent starts (leakguard.Install, run by each role's shim from the pin the image carries) —
-	// so what is named here is the installed copy, under the scratch the roles of this pod share.
-	// The path is the installer's own constant, so the path a role is told and the path the
-	// install writes are one string and cannot drift
-	// (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
+	// image — it is published by tag, the image carries the pin, and the daemon reads the check at
+	// that pin and pushes it to the pod's launcher, which installs it once for the pod before any
+	// role starts (launchers.serveLeakCheck; each role's shim only reads that install) — so what
+	// is named here is the installed copy, under the scratch the roles of this pod share. The path
+	// is the installer's own constant, so the path a role is told and the path the install writes
+	// are one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
 	add(leakguard.CheckVar, leakguard.InstalledCheck)
 	// The two variables an agent reads to decide it holds a broker at all, gated on the same one
 	// decision as the shim's agent-secrets flags (enrollsIn, launcherCommand): a generation in a

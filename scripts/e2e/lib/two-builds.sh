@@ -23,7 +23,7 @@
 # base_pid and head_pid (two_builds_setup), base_sha (two_builds_prerequisites), and agent_token,
 # signin_key, base_url and head_url (two_builds_identity). call sends to target_url, which the
 # caller sets to the build it is talking to, and waits call_seconds for an answer, which the
-# caller may set; it is 20 here.
+# caller may set; it is 20 here. sign_in and call_person do the same as a person.
 #
 # A proof calls these in the order they stand in below: two_builds_setup once, then
 # two_builds_prerequisites, two_builds_build, two_builds_reset_database, two_builds_fake_envoy
@@ -113,17 +113,26 @@ cleanup() {
 # returns non-zero with the answer on stderr when it is not 2xx, so a caller inside a bounded
 # wait polls again and a caller outside one fails the check. The body of an agent's write
 # carries its actor.
-call() {
-  local method=$1 path=$2 body=${3:-} out status
-  out=$(mktemp "$work/call.XXXXXX")
-  if [ -z "$body" ]; then
-    status=$(curl -sS -o "$out" -w '%{http_code}' --max-time "$call_seconds" -X "$method" \
-      -H "Authorization: Bearer $agent_token" "$target_url$path") || status=000
+call() { call_as bearer "$@"; }
+
+# call_person METHOD PATH [BODY] is call as the person sign_in signed in: their session cookie
+# and, as every cookie write needs (enforceCookieOrigin, internal/dispatch/routes/router.go), the
+# build's own origin as Origin, with no bearer, so Dispatch takes the write as that person's
+# (an actor of kind user) and the body names no actor.
+call_person() { call_as person "$@"; }
+
+call_as() {
+  local as=$1 method=$2 path=$3 body=${4:-} out status
+  local -a credential data=()
+  if [ "$as" = person ]; then
+    credential=(-b "$work/person-cookies" -H "Origin: $target_url")
   else
-    status=$(curl -sS -o "$out" -w '%{http_code}' --max-time "$call_seconds" -X "$method" \
-      -H "Authorization: Bearer $agent_token" -H 'Content-Type: application/json' \
-      -d "$body" "$target_url$path") || status=000
+    credential=(-H "Authorization: Bearer $agent_token")
   fi
+  [ -z "$body" ] || data=(-H 'Content-Type: application/json' -d "$body")
+  out=$(mktemp "$work/call.XXXXXX")
+  status=$(curl -sS -o "$out" -w '%{http_code}' --max-time "$call_seconds" -X "$method" \
+    "${credential[@]}" "${data[@]}" "$target_url$path") || status=000
   case "$status" in
     2??)
       cat "$out"
@@ -135,6 +144,23 @@ call() {
       return 1
       ;;
   esac
+}
+
+# sign_in LOGIN signs the person LOGIN, an email, in at the dev sign-in route of the build on
+# $target_url (GET /auth/_dev/signin, which start_server's DISPATCH_DEV_SIGNIN=1 mounts), which
+# records them in `people` as a real sign-in does, and keeps their session cookie in
+# $work/person-cookies for call_person. It returns non-zero, naming the answer on stderr, when the
+# route answers anything but its redirect with a cookie. Both builds sign with one key
+# (two_builds_identity) over one database, so the cookie is good against either.
+sign_in() {
+  local status
+  rm -f "$work/person-cookies"
+  status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$call_seconds" -c "$work/person-cookies" \
+    "$target_url/auth/_dev/signin?login=$1") || status=000
+  if [ "$status" != 302 ] || ! grep -q dsession "$work/person-cookies" 2>/dev/null; then
+    echo "GET /auth/_dev/signin for $1 answered $status with no session cookie" >&2
+    return 1
+  fi
 }
 
 # json_field FIELD reads one string member of a JSON object on stdin. bun is already required by

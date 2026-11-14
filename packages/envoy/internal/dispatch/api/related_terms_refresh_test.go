@@ -124,7 +124,7 @@ func newTermFixture(t *testing.T, project string) termFixture {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	fixture := termFixture{database: database, project: project, issueKey: project + "-1"}
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ($1, $1)`, project); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ($1, $1, 'alice')`, project); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
@@ -382,7 +382,7 @@ func TestRefreshCountsAProjectCreatedSinceTheLastPass(t *testing.T) {
 		what      string
 		statement string
 	}{
-		{"the project", `insert into projects (key, name) values ('LATER', 'Later')`},
+		{"the project", `insert into projects (key, name, default_assignee) values ('LATER', 'Later', 'alice')`},
 		{"its issue", `insert into issues (key, project_key, number, title, created_by, rank)
 			values ('LATER-1', 'LATER', 1, 'Theodolite survey', '{"kind":"user","id":"alice"}', 'U')`},
 		{"its comment", `insert into comments (issue_key, author, body)
@@ -764,7 +764,7 @@ func TestSearchTermItemsAnswerWhatMainsStatementDoes(t *testing.T) {
 		t.Fatalf("write the second version: %v", err)
 	}
 	for _, seed := range []string{
-		`insert into projects (key, name) values ('OTHER', 'Other')`,
+		`insert into projects (key, name, default_assignee) values ('OTHER', 'Other', 'alice')`,
 		`insert into issues (key, project_key, number, title, created_by, rank)
 			values ('OTHER-1', 'OTHER', 1, 'Astrolabe survey elsewhere', '{"kind":"user","id":"alice"}', 'U')`,
 	} {

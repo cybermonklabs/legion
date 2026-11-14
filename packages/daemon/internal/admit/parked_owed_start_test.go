@@ -66,7 +66,8 @@ func TestAStartOwedBeforeAParkIsFinishedRatherThanCarriedAcrossIt(t *testing.T) 
 		if err != nil {
 			t.Fatalf("read the line's facts: %v", err)
 		}
-		for _, entry := range record.Waiting(issues, nil, facts) {
+		line, _ := record.Waiting(issues, nil, facts)
+		for _, entry := range line {
 			if entry.Issue.Key == member {
 				t.Fatalf("%s stands in the waiting line though its tree lingers", member)
 			}

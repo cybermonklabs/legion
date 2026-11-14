@@ -133,8 +133,20 @@ pass
 begin seed
 target_url=$base_url
 actor='"actor":{"kind":"session","id":"two-builds"}'
-call POST /api/v1/projects "{\"key\":\"CORE\",\"name\":\"Core\",$actor}" >/dev/null ||
+# CORE is a person's, not the session's: this build's migration fills every project's default
+# assignee from the person holding most of its issues or, failing that, from the person whose
+# project.created event made it, each a `people` row
+# (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), and stops on a
+# project neither names. Nobody holds CORE's issues, so its creator is what the migration fills
+# it from: the person sign_in records in `people` at the base build's dev sign-in, whose cookie
+# makes the project.created actor {kind: user, id: <their email>}. The body names no
+# default_assignee, a member a base build from before it refuses (INVALID_JSON), and no actor,
+# since the cookie is the writer.
+core_owner=core-owner@example.com
+sign_in "$core_owner" || fail "the base build did not sign $core_owner in"
+call_person POST /api/v1/projects '{"key":"CORE","name":"Core"}' >/dev/null ||
   fail "the base build refused the project"
+note "the base build made CORE as $core_owner, signed in at its dev sign-in"
 target_key=$(call POST /api/v1/issues "{\"project\":\"CORE\",\"title\":\"Warm the cache\",$actor}" | json_field key) ||
   fail "the base build refused the target issue"
 host_key=$(call POST /api/v1/issues "{\"project\":\"CORE\",\"title\":\"Reference host\",$actor}" | json_field key) ||
@@ -180,9 +192,9 @@ pass
 begin overlap
 # The older build, still serving, writes a second comment citing the same issue by its bare key
 # (an edit of the first is the other half of the same case, and Dispatch admits a comment edit
-# from a person alone, which this run holds no cookie for). Neither write is
-# indexed with this release's grammar — the build making them does not have it — and both are
-# enqueued by the triggers this build's migration installed.
+# from a person alone, while the one cookie this run holds is CORE's creator's, taken for the seed
+# alone). Neither write is indexed with this release's grammar — the build making them does not
+# have it — and both are enqueued by the triggers this build's migration installed.
 target_url=$base_url
 second=$(call POST "/api/v1/issues/$host_key/comments" "{\"body\":\"Also blocked on $target_key.\",$actor}" | json_field id) ||
   fail "the base build refused the second comment"
