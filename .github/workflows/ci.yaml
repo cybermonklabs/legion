@@ -406,6 +406,11 @@ jobs:
               - 'packages/envoy/brokerclient/*'
               - 'packages/envoy/brokertest/*'
               - 'packages/envoy/daemonpermissions/*'
+              # dispatchblocks is the one public door onto the Dispatch server's own document
+              # reader, which register_gate reads an ancestor's requirement blocks and a root's
+              # checks with (packages/daemon/internal/api): internal/dispatch/pmdoc is in the
+              # daemon's build through it as well.
+              - 'packages/envoy/dispatchblocks/*'
               # dispatchbody is the one public door onto the Dispatch server's own block
               # splitter, which the daemon refuses a close reason or a READY packet the server
               # would refuse with (packages/daemon/internal/api): internal/dispatch/itemblocks
@@ -626,6 +631,10 @@ jobs:
               - 'packages/daemon/internal/workflow/*'
               - 'packages/daemon/internal/workspace/*'
               - 'packages/envoy/brokerclient/*'
+              # packages/envoy/dispatchblocks reads a document version's typed blocks with the
+              # server's own reader, which register_gate's basis check reads (packages/daemon/
+              # internal/api): the document parser under it comes with it.
+              - 'packages/envoy/dispatchblocks/*'
               # packages/envoy/dispatchbody answers whether Dispatch would refuse a body with the
               # server's own splitter, which the close route and the merger's READY completion
               # hold their text to (packages/daemon/internal/api): the splitter, the document
@@ -1170,9 +1179,11 @@ jobs:
               - 'packages/pi-shared/test/**'
               - 'packages/envoy-client/src/**'
               # extensions/legion.test.ts reaches the Envoy plugin's own test helper for a
-              # registration answer (packages/envoy-client/test/subscribe-answer.ts), so the tsc
-              # program of this package compiles that file too.
+              # registration answer (packages/envoy-client/test/subscribe-answer.ts), and
+              # src/tools.test.ts its fake Dispatch (packages/envoy-client/test/fake-dispatch.ts),
+              # so the tsc program of this package compiles both files too.
               - 'packages/envoy-client/test/subscribe-answer.ts'
+              - 'packages/envoy-client/test/fake-dispatch.ts'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
@@ -1202,9 +1213,12 @@ jobs:
               - 'packages/daemon/internal/**'
               # daemon-pane.go compiles the daemon module, which reaches these envoy packages:
               # the migration identifier rule, the generated session timings the daemon reads
-              # through their one public package, and the Dispatch body check the close route and
+              # through their one public package, the Dispatch body check the close route and
               # the merger's READY completion make with the server's own splitter
-              # (packages/envoy/dispatchbody, and the parser and contracts under it).
+              # (packages/envoy/dispatchbody, and the parser and contracts under it), and the
+              # document reader register_gate's basis check reads blocks with
+              # (packages/envoy/dispatchblocks).
+              - 'packages/envoy/dispatchblocks/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -1952,6 +1966,7 @@ jobs:
               - 'packages/envoy/cmd/**'
               - 'packages/envoy/daemonpermissions/**'
               - 'packages/envoy/deploy/**'
+              - 'packages/envoy/dispatchblocks/**'
               - 'packages/envoy/dispatchbody/**'
               - 'packages/envoy/docker/**'
               - 'packages/envoy/docs/**'

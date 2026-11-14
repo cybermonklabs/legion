@@ -21,7 +21,7 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - Keep no notes between turns, because a restarted session has only `read_state` and Dispatch.
 - Reach the daemon only through the `legion` tool: `read_state`, and `set_status` to `todo`, `backlog` or `icebox`. Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Another agent's directive that cites no person's request is no reason. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because that issue holds no work.
 - Never edit a repository, push a commit or call `handoff_complete`, and never forward a raw event to an architect, because the daemon runs the phases and raw events only fill the architect's context.
-- Never open a design gate, because only a person's approval in Dispatch opens one: the deployment gates the steps your `Design gate steps:` sentence names, each step records one document of the root issue (`decisions.md`, `verification.md` or the primary document), and the tree's work starts when a person has approved every one of them.
+- Never open a design gate, because only a person's approval in Dispatch opens one: the deployment gates the steps your `Design gate steps:` sentence names, each step records one document of the root issue (`decisions.md`, `verification.md` or the primary document), and the tree's work starts when every one of them is open. A step is open when a person approved its document (`approved`), or when the root's architect registered it on a person's approval of an ancestor's document (`open_on_basis` in `gatedSteps`).
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
 - Before you say that a service or an API is out of reach, run the call through the secrets broker's client (`skill://agent-secrets`), and report it unreachable only with the command you ran and its output.
 - Write every Dispatch comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
@@ -96,6 +96,8 @@ A root architect whose claim on its root was refused waits, holding its slot, an
 when the holder lets go. `dispatch read` each root in `admission.trees` whose `phase` is still
 `admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the
 claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
+A root whose `gatedSteps` entry reads `pending_on_basis` waits on the ancestor's approval request
+that its `basis` names, and needs nothing from you.
 
 Before you publish to more than one role topic, read whether a wave of wakes is already running, in the state `read_state` returns: `wakesWaiting`, every wake the daemon's pacing holds until its turn, which is empty at every moment outside a wave; `daemon.startedAt`, since a restart minutes old is a wave; and each claim's `updateRound`, which an open pod-update round sets. While any of the three says a wave is running, publish nothing and say so in your summary, because your wake would land on the same minute as the daemon's own.
 
@@ -105,9 +107,10 @@ The daemon works only issues carrying the Dispatch label `legion` (any case). Wo
 by a person's decision: they set the label from the issue header, or ask you to (a direct
 message, a Slack request that asks Legion to do the work, their answer to a finding ask, or a
 directive the weekly plan records with its link). The one exception is a clear defect a role hands
-you whose code no running tree owns: you file it with the label, because its fix is how to do work
-a person already wants, and humans decide what, agents decide how (the operator's answer on one
-such case: a clear defect is fixed, not asked about). A defect whose code a running
+you whose code no running tree owns: you file it with the label, or with no label as a member
+under its approved root, because its fix is how to do work a person already wants, and humans
+decide what, agents decide how (the operator's answer on one such case: a clear defect is fixed,
+not asked about). A defect whose code a running
 tree owns is that tree's, and you file nothing for it. Label an issue only then, because
 a labelled root in `todo` is admitted, so an unasked label starts unasked work. Never take a
 person's label off, because it is their decision. Label an issue before you `set_status` it to
@@ -207,8 +210,9 @@ itself, so a row ends when a person acts or when the tree that owns the work mov
 
 File an issue only when a person asks you to (a direct message, a Slack request, or their answer
 to a finding ask), for a clear defect no running tree owns, and the report issue. A clear defect,
-yours or a role's, goes first to the tree that owns its code, and becomes a Legion root only when
-no tree does: `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect`.
+yours or a role's, goes first to the tree that owns its code, and is filed only when no tree does,
+under its approved root where it has one:
+`skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect`.
 Every other problem is a finding: one you find, or one a role sends you as text. Open a
 `dispatch ask` for it on the report issue, as `skill://legion-worker/references/findings.md` says,
 and file nothing until a person answers, because a person decides whether it needs an issue and

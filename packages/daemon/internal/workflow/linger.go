@@ -56,6 +56,12 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if issue.Lingers() {
 			return nil
 		}
+		// A root whose step rests on an ancestor's approval ends here the wait that ancestor's
+		// sign-off and close hold for it (dispatch://INFRA-3320, R8), whichever way it leaves, so
+		// that ancestor's architect is told (tellRestingLeft).
+		if err := e.tellRestingLeft(ctx, tx, issue, status); err != nil {
+			return err
+		}
 		if held, err := record.OperatorHoldsTree(ctx, e.store, tx, issue); err != nil || held {
 			if err != nil {
 				return err

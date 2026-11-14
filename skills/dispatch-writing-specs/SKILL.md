@@ -28,7 +28,7 @@ Part | Content
 `Design` | How it meets them; a value and its reason for each limit, size and time
 `Decisions` | One line: `The decisions are in dispatch://KEY/artifact/decisions-md.`
 
-`serves` and `needs` name a block of this issue or an ancestor. Another agent can build and check the work from these alone. A small change gets a few sentences per part, no matrix; split a large design into children.
+`serves` and `needs` name a block of this issue or an ancestor. A view (`skill://legion-architect/references/design-gate.md`) holds no requirement block: its `Delivers:` line names the ancestor's requirements its checks serve. Another agent can build and check the work from these alone. A small change gets a few sentences per part, no matrix; split a large design into children.
 
 ## Rules for the text
 
@@ -40,7 +40,7 @@ For each spec, ask, comment and message:
 - Treat a person's stated preference or past answer as evidence of their taste, never as a decision that settles the question. A commit attributed to a person is not their decision.
 - In a spec, cite code by file and symbol, never a line number.
 - A sentence citing a gate passing also says what the pass does not show: "Tests pass: a wrong verdict, not a missing one."
-- Keep only text a reader needs to understand, decide, build or check, and say what each issue you name does for them (`skill://plain-words`).
+- Keep only what a reader needs, and say what each issue you name does for them (`skill://plain-words`).
 - In an ask, ask block, comment or message, name a requirement or check by what it is, never its number.
 
 ## Questions

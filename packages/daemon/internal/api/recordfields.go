@@ -208,4 +208,6 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
 	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
+	{Field: "ViewOf", Column: ColumnWithheld,
+		Reason: "the ancestor whose requirements the issue's spec is a view on, which reaches the issue's roles as a sentence of each phase task naming that ancestor (workflow's continueLine and checkTask) rather than as a key of the state"},
 }

@@ -130,7 +130,8 @@ const checkTaskLead = "Production check of "
 // (wokenBy), whether it is the last, and the rules of the check in prose: the three verdicts and
 // what each asks of the pull request, no commit, the wake a pending names for its own next look
 // and the suspension that follows it, and nothing to wait for in the session, since the look ends
-// with the report.
+// with the report. For an issue whose spec is a view on an ancestor's requirements, the line after
+// the first says so (viewSentence), as every phase task of the issue does.
 func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) string {
 	merge := check.MergeSHA
 	if merge == "" {
@@ -138,6 +139,9 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	}
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s%s: %s.\n", checkTaskLead, issue.Key, issue.Title)
+	if view := viewSentence(issue); view != "" {
+		text.WriteString(view + "\n")
+	}
 	fmt.Fprintf(&text, "Repository %s, pull request #%d, merge commit %s. Look %d, woken by %s.", check.Repo, check.Number, merge, check.Looks, wokenBy(cause, detail))
 	if last {
 		text.WriteString(" This is the last look: no look follows.")

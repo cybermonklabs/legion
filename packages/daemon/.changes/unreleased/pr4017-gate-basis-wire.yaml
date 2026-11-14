@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  A root's design-gate step can stand open on an ancestor's approval, or wait on an ancestor's open
+  approval request, and the daemon says which. `register_gate` takes `basisArtifactId`,
+  `basisVersion` and `reason`, which come together or not at all. In `GET /legion/v1/state`, a
+  root's `gatedSteps` entry reads `open_on_basis` or `pending_on_basis` with a `basis` that names
+  the ancestor, its document, the version, and the approver and time or the ask id; for an open
+  basis, `approvedVersion` is the root's version registered, which no person approved. Every root
+  the daemon records carries `treeRuns`, whether its tree runs. The architect's catch-up states such
+  a step with `pending` and `basis`, and an open basis reads open with no `approved` version. A
+  caller below daemon API contract 126 gets no `treeRuns` and no `gatedSteps` on an issue with a
+  step on a basis.
+custom:
+    Issue: pr4017

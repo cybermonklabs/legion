@@ -52,6 +52,12 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
+	// OutboxKindPendingBasisSeed reads the ancestor's approval request a root's step waits on
+	// (PendingBasisSeed), and OutboxKindReparentSeed the new Dispatch parent of a root that ran as
+	// a tree of its own (ReparentSeed). Each applies what it read as a fact, as the gate seed
+	// does.
+	OutboxKindPendingBasisSeed OutboxKind = "pending_basis_seed"
+	OutboxKindReparentSeed     OutboxKind = "reparent_seed"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
@@ -90,9 +96,11 @@ const (
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
-// one lane (TestEveryOutboxKindIsInExactlyOneLane).
+// one lane (TestEveryOutboxKindIsInExactlyOneLane). The three seeds — the gate's, a pending
+// basis's and a re-parented root's — each read Dispatch and apply what they read as a fact, and
+// run on the lifecycle lane together.
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -369,12 +377,13 @@ type Notice struct {
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
 	// Dispatch actor as `<kind>:<id>`, a person `user:<login>`. Empty where no person decided:
-	// gates.design off opened the gate.
+	// gates.design off opened the gate. A basis notice (basisNoticeKinds) may carry the person
+	// whose act on the ancestor's document it reports.
 	Actor string `json:"actor,omitempty"`
 	// Ref is that decision's Dispatch reference: the document of the design-gate step a design
 	// decision is of (workflow's stepRef), `dispatch://<KEY>/spec` for the spec step,
 	// `dispatch://<KEY>/ask/<id>` for an answer or a resolution, `dispatch://<KEY>/comment/<id>`
-	// for a reply.
+	// for a reply. A basis notice may carry the reference of the ancestor's document it is about.
 	Ref string `json:"ref,omitempty"`
 	// Decision is what a parked-decision notice relays, and Root the root of the tree it was made
 	// on. Every other kind carries neither.
@@ -554,19 +563,53 @@ type CatchUp struct {
 // Unregistered says the root holds no record of the step at all, which is the step its architect
 // has still to register.
 //
+// A step can also stand open on an ancestor's approval, or wait, closed, on an ancestor's open
+// approval request (dispatch://INFRA-3320, R1 and R2): Basis names that approval or that request,
+// and Pending says the step waits on the request. A step open on a basis reads Open with no
+// Approved, since no person approved the version the root registered, so a relaunched architect
+// reads the step as open and registered on its ancestor's approval rather than as one a person
+// approved, or as one it must ask a person to approve. A pending step reads Open false, Pending,
+// and the version a person approved of the root's own document, if any. A step whose basis has
+// ended carries neither, and reads as registered on the root's own document.
+//
 // A catch-up carries one entry for each step the root must hold open before its tree works
 // (classify.RequiredSteps), so a deployment that gates nothing carries the one spec entry with
 // Gated false: that registration opens the step at once and asks no person, which is what the
 // policy word `off` said. The list replaced that word, because one word cannot name a list and
 // each entry now says its own step's part of it.
 type CatchUpGate struct {
-	Step         DesignStep `json:"step"`
-	Gated        bool       `json:"gated"`
-	Unregistered bool       `json:"unregistered,omitempty"`
-	Artifact     string     `json:"artifact,omitempty"`
-	Version      int        `json:"version,omitempty"`
-	Approved     int        `json:"approved,omitempty"`
-	Open         bool       `json:"open"`
+	Step         DesignStep    `json:"step"`
+	Gated        bool          `json:"gated"`
+	Unregistered bool          `json:"unregistered,omitempty"`
+	Artifact     string        `json:"artifact,omitempty"`
+	Version      int           `json:"version,omitempty"`
+	Approved     int           `json:"approved,omitempty"`
+	Open         bool          `json:"open"`
+	Pending      bool          `json:"pending,omitempty"`
+	Basis        *CatchUpBasis `json:"basis,omitempty"`
+}
+
+// CatchUpBasis is the ancestor's approval a step stands open on, or the ancestor's open approval
+// request it waits on, as a catch-up names it (GateBasis): the ancestor, its document and
+// the version a person approved or is asked to approve; for an approval, who gave it and
+// Dispatch's time of it; for a request, its ask id.
+type CatchUpBasis struct {
+	Issue      string    `json:"issue"`
+	Artifact   string    `json:"artifact"`
+	Version    int       `json:"version"`
+	Approver   string    `json:"approver,omitempty"`
+	ApprovedAt time.Time `json:"approved_at,omitzero"`
+	Ask        string    `json:"ask,omitempty"`
+}
+
+// CatchUpBasisOf is basis as a catch-up names it.
+func CatchUpBasisOf(basis GateBasis) *CatchUpBasis {
+	stated := &CatchUpBasis{Issue: basis.Issue, Artifact: basis.ArtifactID, Version: basis.Version,
+		Approver: basis.Approver, ApprovedAt: basis.Approval.At}
+	if basis.Pending != nil {
+		stated.Ask = basis.Pending.Ask
+	}
+	return stated
 }
 
 // CatchUpIssue is one issue of the tree as a catch-up lists it.
@@ -839,6 +882,47 @@ type GateSeed struct {
 }
 
 func (GateSeed) OutboxKind() OutboxKind { return OutboxKindGateSeed }
+
+// PendingBasisSeed reads, from Dispatch, the ancestor's approval request a root's step waits on
+// (DesignGate.Basis.Pending) and applies what it finds, as a fact of its own rather than the gate
+// seed's: a person's approval of the version opens the step, a changes request, a newer version
+// or the request's close with no approval ends the wait, and a request still waiting changes
+// nothing. The row's issue is the root. A registration queues one, and so does the boot for every
+// pending step of the project, whatever phase its root stands in.
+type PendingBasisSeed struct {
+	// Step and ArtifactID are the root's step and its own document the step was registered on.
+	Step       DesignStep `json:"step"`
+	ArtifactID string     `json:"artifactId"`
+	// BasisArtifactID is the ancestor's document, and BasisVersion the version of it the request
+	// asks a person to approve.
+	BasisArtifactID string `json:"basisArtifactId"`
+	BasisVersion    int    `json:"basisVersion"`
+	// Ask is the approval request the step waits on (PendingBasis.Ask).
+	Ask string `json:"ask"`
+	// Generation is the root generation that registered the step; the seed's fact is that
+	// generation's.
+	Generation uint64 `json:"generation"`
+}
+
+func (PendingBasisSeed) OutboxKind() OutboxKind { return OutboxKindPendingBasisSeed }
+
+// ReparentSeed reads the new Dispatch parent of a root that ran as a tree of its own and that a
+// person has made a child of a live tree (workflow's tellReparented), and applies what it finds
+// as a fact that posts the message on the row's issue, the re-parented root, and queues the
+// child-status notice to the architect of the parent's tree. The engine does no I/O, so the read
+// of whether the parent carries the legion label, holds a person's approval of its primary
+// document's latest version and marks requirement blocks in it, which decides whether the words
+// name the path of a view on that parent, waits on this row.
+type ReparentSeed struct {
+	// Parent is the root's new Dispatch parent, whose labels and primary document the row reads.
+	Parent string `json:"parent"`
+	// Tree is the root of the live tree Parent belongs to, whose architect the notice goes to.
+	Tree string `json:"tree"`
+	// Ran is why the root stays a tree of its own (workflow's RanAsRoot), which the words name.
+	Ran string `json:"ran"`
+}
+
+func (ReparentSeed) OutboxKind() OutboxKind { return OutboxKindReparentSeed }
 
 // LingerClose records the issue generation whose linger should close.
 type LingerClose struct {
@@ -1288,6 +1372,18 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindPendingBasisSeed:
+		value := PendingBasisSeed{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindReparentSeed:
+		value := ReparentSeed{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindLingerClose:
 		value := LingerClose{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1449,6 +1545,14 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			}
 		}
 	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
+	case PendingBasisSeed:
+		if !value.Step.Valid() || value.ArtifactID == "" || value.BasisArtifactID == "" || value.BasisVersion <= 0 || value.Ask == "" || value.Generation == 0 {
+			return fmt.Errorf("a pending-basis seed names the root's step and document, the ancestor's document and the version its request asks approval of, the request and the generation that registered the step")
+		}
+	case ReparentSeed:
+		if value.Parent == "" || value.Tree == "" || value.Ran == "" {
+			return fmt.Errorf("a re-parent seed names the root's new parent, the live tree that parent is in and why the root stays a tree of its own")
+		}
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
@@ -1472,8 +1576,8 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if (value.Kind == "catch-up") != (value.CatchUp != nil) {
 			return fmt.Errorf("a %s notice carries a catch-up only when it is one", value.Kind)
 		}
-		if _, spec := SpecDecision(value.Kind); !spec && (value.Actor != "" || value.Ref != "") {
-			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
+		if _, spec := SpecDecision(value.Kind); !spec && !basisNoticeKind(value.Kind) && (value.Actor != "" || value.Ref != "") {
+			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does, and a basis notice's", value.Kind)
 		}
 		if value.Decision != "" || value.Root != "" {
 			return fmt.Errorf("a %s notice carries a decision or a root; only a parked-decision controller notice does", value.Kind)
@@ -1688,10 +1792,18 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // workerBackgroundStalled). It is that worker's issue's architect's to read, and it is a telling
 // and not a repair: it names the kinds the session reported and how long the report has stood,
 // and says that nothing was sent and nothing will be sent for it.
+//
+// The three basis notices (basisNoticeKinds) are of a root's design-gate step on an ancestor's
+// approval (dispatch://INFRA-3320): `basis-ended` tells a root's architect that its step's wait on
+// the ancestor's approval request has ended, and what ended it; `basis-changes-requested` tells a
+// root's architect, and the ancestor's, of a person's changes request on the ancestor's version
+// an open step rests on; and `resting-root` tells the ancestor's architect that a root's step
+// rests on it.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
+	"basis-ended", "basis-changes-requested", "resting-root",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted",
 	"session-lost", "session-store-fault",
@@ -1700,6 +1812,19 @@ var validNoticeKinds = []NoticeKind{
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
+}
+
+// basisNoticeKinds are the notices of a step on an ancestor's approval, which may carry the
+// Dispatch reference of the document they are about and the person who acted on it (Notice.Ref,
+// Notice.Actor) as a spec decision's notice does, and which are no spec decision: SpecDecision
+// names none of them, so the backlog relay passes none of them on (a root back from the backlog
+// starts a new generation with no gate, and its architect reads the ancestor again when it
+// registers).
+var basisNoticeKinds = []NoticeKind{"basis-ended", "basis-changes-requested", "resting-root"}
+
+// basisNoticeKind says whether kind is one of basisNoticeKinds.
+func basisNoticeKind(kind NoticeKind) bool {
+	return slices.Contains(basisNoticeKinds, kind)
 }
 
 // validateNoticeFailure holds a notice's failure record to the two kinds that report a claim's

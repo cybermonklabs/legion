@@ -302,6 +302,82 @@ type GateAboveDispatch struct {
 
 func (GateAboveDispatch) isFact() {}
 
+// BasisReview is one review of an ancestor's document that a seed read from Dispatch for a step on
+// that ancestor's approval (dispatch://INFRA-3320, R1 and R3): where Dispatch recorded it in the
+// ancestor's event log (Mark: its time, and its sequence where the read gave one: the review list
+// gives none, so only the review the document's approval shows carries it), who gave it (Actor),
+// and the reason it gave (dispatch.Review.Reason), "" for none.
+type BasisReview struct {
+	Mark   record.EventMark
+	Actor  dispatch.Actor
+	Reason string
+}
+
+// PendingBasisRead is the pending-basis seed's read (record.PendingBasisSeed) of the ancestor's
+// document a root's step waits on, closed, at the version the step names: the root (Issue), its
+// step, its own document (ArtifactID) and the generation that registered the step; the
+// ancestor's document, the version and the approval request the step waits on; and what the read
+// found. Approval is the first review of that version, where it is a person's approval, nil
+// otherwise. Changes is a changes request on that version: after such an approval, the newest
+// one; with none, the first review of that version, where it is a changes request. LatestVersion
+// is the document's latest version, and RequestOpen says the request still stands open.
+//
+// It is a fact of its own and never the gate seed's (intake.DispatchArtifact), whose rows are the
+// root's own document's: applied as one of those, the ancestor's read would reach the ancestor's
+// own gate as well. The workflow applies it only to a step of that generation still pending on
+// that request, so a read of a wait that has ended or opened since changes nothing.
+type PendingBasisRead struct {
+	Issue           string
+	Step            record.DesignStep
+	Generation      uint64
+	ArtifactID      string
+	BasisArtifactID string
+	BasisVersion    int
+	Ask             string
+	Approval        *BasisReview
+	Changes         *BasisReview
+	LatestVersion   int
+	RequestOpen     bool
+}
+
+func (PendingBasisRead) isFact() {}
+
+// BasisChangesRead is the gate seed's read (record.GateSeed) of the ancestor's document a root's
+// step stands open on: a person's changes request on the version the step's basis names, which
+// Dispatch recorded after the approval the step opened on (Changes). Nothing done to the
+// ancestor's document moves an open step (R3), so the workflow only tells it, as the live event of
+// that review tells it (basis-changes-requested, once per review), and only for a step of that
+// generation standing open on that same basis. The root is Issue, and Step its step.
+type BasisChangesRead struct {
+	Issue           string
+	Step            record.DesignStep
+	Generation      uint64
+	BasisArtifactID string
+	BasisVersion    int
+	Changes         BasisReview
+}
+
+func (BasisChangesRead) isFact() {}
+
+// ReparentRead is the re-parent seed's read (record.ReparentSeed) of the new Dispatch parent of a
+// root that ran as a tree of its own and that a person made a child of a live tree: the root
+// (Issue), the parent, the root of the live tree the parent is in (Tree), and why the root stays a
+// tree of its own (Ran). BasisVersion is the version of the parent's primary document that R1's
+// path can rest the root on (dispatch://INFRA-3320, R1 and R2): the document's latest version,
+// where a person approved that version, the parent carries the legion label, Dispatch shows it
+// neither retro nor done, and that version marks requirement blocks. It is 0 where any of those
+// fails. The workflow posts the message on the root and tells the architect of Tree, and names
+// R1's path only where BasisVersion is set.
+type ReparentRead struct {
+	Issue        string
+	Parent       string
+	Tree         string
+	Ran          string
+	BasisVersion int
+}
+
+func (ReparentRead) isFact() {}
+
 // DispatchAskOpened is an ask a session or a person opened on an issue, with its kind (Kind:
 // record.AskQuestion, record.AskApproval, or "" for a kind this daemon does not know, such as an
 // event retained from before Dispatch had the two), the document an approval request asks a person
@@ -337,26 +413,37 @@ func (DispatchAskRestored) isFact() {}
 // document as DispatchAskOpened names them, the actor who closed it, and where Dispatch recorded
 // that act (Mark).
 //
-// Decline is the person's decline to answer, set where the close carries a resolution of the one
-// kind this daemon acts on (ResolutionDeclined) and nil for every other close: an answer, a close
-// whose payload carries no resolution, and a resolution kind this daemon does not know, which is
-// no defect to report — Dispatch resolves asks for several reasons and the daemon acts on this
-// one. It carries the person's own note and Dispatch's own words apart (record.AskDecline), each
-// as Dispatch recorded it.
+// Decline is the person's decline to answer, set where the close carries a resolution of that
+// kind (ResolutionDeclined) and nil for every other close: an answer, a close whose payload
+// carries no resolution, and a resolution kind this daemon does not know, which is no defect to
+// report — Dispatch resolves asks for several reasons and the daemon acts on two of them. It
+// carries the person's own note and Dispatch's own words apart (record.AskDecline), each as
+// Dispatch recorded it.
+//
+// Withdrawn says the close is the withdrawal Dispatch records on each open ask of an issue that
+// is set done (ResolutionWithdrawn), whose ask.resolved events come before the issue's own
+// issue.closed: what closed the ask is the issue's close, which a reader names as that
+// (workflow's endPendingOnRequest) rather than as a resolution by the actor who closed the issue.
 type DispatchAskClosed struct {
-	Key      string
-	Ask      string
-	Kind     string
-	Artifact string
-	State    string
-	Decline  *record.AskDecline
-	Actor    dispatch.Actor
-	Mark     record.EventMark
+	Key       string
+	Ask       string
+	Kind      string
+	Artifact  string
+	State     string
+	Decline   *record.AskDecline
+	Withdrawn bool
+	Actor     dispatch.Actor
+	Mark      record.EventMark
 }
 
 // ResolutionDeclined is the resolution kind of an ask a person chose not to answer
 // (DispatchAskClosed.Decline), which Dispatch writes on its POST /api/v1/asks/{id}/decline.
 const ResolutionDeclined = "declined"
+
+// ResolutionWithdrawn is the resolution kind Dispatch records on each open ask of an issue whose
+// close (a move to done) withdrew it (DispatchAskClosed.Withdrawn). Only Dispatch's server writes
+// it: its resolve route refuses the kind.
+const ResolutionWithdrawn = "withdrawn"
 
 func (DispatchAskClosed) isFact() {}
 
@@ -941,6 +1028,21 @@ func (SignOff) isFact() {}
 // (dispatch.Approval.LatestReviewer), zero with neither: the notice the registration sends names
 // that person, since it goes to the controller when nobody in the tree can hear it (the daemon's
 // parkDecision).
+//
+// Basis is the ancestor's approval the registration rests the step on, or, while its Pending is
+// set, the ancestor's open approval request the step waits on (dispatch://INFRA-3320, R1), as
+// register_gate checked it against Dispatch: the ancestor and its document for the step, the
+// version, where Dispatch recorded the person's approval in the ancestor's event log and who gave
+// it (both zero while pending), the ancestor's requirement references the root's checks serve, the
+// architect's reason and the architect session that registered it. Its RegisteredAt is zero: the
+// daemon's own time of the registration is the engine's to stamp as it applies the fact. Basis is
+// nil for a registration with no basis, and for one whose basis a person's approval of the root's
+// own document at the version registered made needless.
+//
+// ViewOf is the view fact of a registration of the spec step (R4): the ancestor whose requirement
+// blocks the root's documents read as a view on, the nearest reviewed ancestor that marks
+// requirement blocks (api's viewOf), "" where there is none or the root is no view on it. A
+// registration of another step reads no view and carries "".
 type GateRegistered struct {
 	Issue string
 	// Step is the design-gate step this registration records, which register_gate resolved
@@ -959,6 +1061,8 @@ type GateRegistered struct {
 	RequestAsk              string
 	RequestWaitsOnAgent     bool
 	ReviewedBy              dispatch.Actor
+	Basis                   *record.GateBasis
+	ViewOf                  string
 }
 
 func (GateRegistered) isFact() {}

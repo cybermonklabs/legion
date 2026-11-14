@@ -176,6 +176,10 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 		{name: "a child whose parent is in another tree", issue: "LEGION-5", owner: "LEGION-1"},
 		{name: "the close of a child whose parent is not recorded", issue: "LEGION-4", kind: "child-closed", owner: "LEGION-1"},
 		{name: "the close of a child whose parent is in another tree", issue: "LEGION-5", kind: "child-status", owner: "LEGION-1"},
+		// A resting-root notice is keyed by the ancestor (dispatch://INFRA-3320, R8), so an
+		// ancestor that is a member of a tree is told through its sub-architect where one runs.
+		{name: "an ancestor's resting-root notice under its running sub-architect", issue: "LEGION-2", kind: "resting-root", subArchitect: supervise.StateWorking, owner: "LEGION-2"},
+		{name: "an ancestor's resting-root notice with no sub-architect", issue: "LEGION-2", kind: "resting-root", owner: "LEGION-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			states := map[claim.Token]supervise.ClaimState{

@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr4017
+body: The plugin declares daemon API contract 126, which lets a root's design-gate step stand open on an ancestor's approval or wait on an ancestor's approval request (`open_on_basis`, `pending_on_basis` and `basis` on `gatedSteps`), adds each root's `treeRuns` to `GET /legion/v1/state`, and adds `basisArtifactId`, `basisVersion` and `reason` to the gate registration.

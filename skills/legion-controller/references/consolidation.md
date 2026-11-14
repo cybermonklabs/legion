@@ -47,7 +47,10 @@ descendants all go in one call. The read names both: a `child_of` row under `Lin
 issue's own parent, read again on that parent for the next ancestor up, and each `child_of` row
 under `Referenced by:` is a child, read again on each child for the next level down. Ask each
 agent for, per issue, every related item that is an issue with the reason it looks like the same
-work and the records that show it, and nothing else: no comment, no close, no message.
+work and the records that show it, and nothing else: no comment, no close, no message. Ask it
+also for the issue's approved root, where the issue has no `child_of` link to it. That is a related
+class root whose class holds the issue, or the root of a running tree whose unfinished work holds
+it (`skill://legion-controller/references/finding-asks.md#link-an-issue-to-its-approved-root`).
 
 A pair is settled, and is skipped rather than proposed, when the two issues already say so: one
 was closed as a duplicate of the other, one was reopened after such a close, or one was made a
@@ -61,6 +64,10 @@ issue with the spec, copy to it what only the other has, and close the other
 (`--status done --reason 'Duplicate of dispatch://KEY.'`). An issue carrying the `legion` label,
 or another holder's claim, is not yours to close: comment the kept issue's name on it instead. A
 pair inside a Legion tree goes to that tree's architect with `envoy_publish`, which decides it.
+
+An issue and the approved root it belongs to are not duplicates. Where the issue has no
+`child_of` link to that root, check the finding against its records, then link the issue as
+`finding-asks.md`, "Link an issue to its approved root", says.
 
 The record (below) lists every pair you judged the same work, with what you did about it, and
 every pair you skipped with what settles it: the event, or the parent link.
@@ -95,9 +102,10 @@ of the group and the shared evidence, and carries the `Filed for` line of `findi
 the person who asked for this pass: `Filed for <them> at their request:
 dispatch://INFRA-460/comment/67cf2b86-5c76-41a9-a53a-7bf2dce03602`. It takes the `legion` label
 only when the fix needs no choice a person must make (that procedure's step 1); otherwise it waits
-in triage for a person, and the reply is still `Filed dispatch://<KEY>`. Then comment on each
-issue of the group the cause's issue, or the root of the tree it went to. Close no issue of the
-group: each needs its own change as well.
+in triage for a person, and the reply is still `Filed dispatch://<KEY>`. Where the cause belongs
+to an approved root, the issue goes under that root with no label, as `finding-asks.md`, "Link an
+issue to its approved root", says. Then comment on each issue of the group the cause's issue, or
+the root of the tree it went to. Close no issue of the group: each needs its own change as well.
 
 ## The record
 
@@ -107,8 +115,9 @@ no message from that day. Add at the top of the record you read, or of a new one
 `## Consolidation pass <block start>` with three counts, each with its keys: the issues read; the
 pairs folded (closed, commented or sent to an architect); and the causes rooted (issues commented,
 handed or filed for a recurring cause). Then every pair and group you skipped, with what settles
-it. Drop sections older than eight days, which the artifact's earlier versions keep, and upload
-the whole record, which makes its next version:
+it, and each issue you linked to its approved root, with that root. Drop sections older than
+eight days, which the artifact's earlier versions keep, and upload the whole record, which makes
+its next version:
 
 ```bash
 dispatch artifact --issue <REPORT KEY> --name consolidation.md --path <the record file>

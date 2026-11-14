@@ -1585,4 +1585,67 @@ package api
 // main's 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118
 // (#3659), 119 (#3712), 120 (#3993), 121 (#3519) and 122 (#2230); 123 is the lowest number above
 // them all.)
-const DaemonAPIVersion = 123
+//
+// 126: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
+// move.
+// `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
+// come together or not at all: `basisArtifactId`, the same step's document of an ancestor on the
+// issue's Dispatch `child_of` chain; `basisVersion`, the version of it a person approved or an
+// open approval request asks a person to approve; and `reason`, 1 to 1,000 characters with no
+// decision block, which the daemon posts on the root's issue. A call with a basis is refused
+// with a code that names what Dispatch shows (`BASIS_INCOMPLETE`, `BASIS_NOT_ON_CHAIN`,
+// `BASIS_NOT_NEAREST`, `BASIS_NOT_IN_LEGION`, `BASIS_ACCEPTED`, `BASIS_NOT_APPROVED`,
+// `BASIS_VERSION_MISMATCH`, `BASIS_NOT_BY_PERSON`, `BASIS_REQUEST_NOT_OPEN`,
+// `BASIS_NO_REQUIREMENTS`, `ROOT_VERSION_NOT_LATEST`, `ROOT_CHANGES_REQUESTED`, the six
+// `VIEW_` codes, `REASON_INVALID` and `REASON_HOLDS_DECISION_BLOCK`) and records nothing. The
+// answer is unchanged, and a call that names none of the three fields is the call it was.
+// Every root issue record of `GET /legion/v1/state` — the record `read_record` reads — gains
+// two things. Its `gatedSteps` entries take two status words beside the four of 55:
+// `open_on_basis`, a step its architect registered on a person's approval of the ancestor's
+// document, whose `approvedVersion` is the root's version registered, which no person approved;
+// and `pending_on_basis`, a step that waits, closed, on the ancestor's open approval request.
+// Each such entry carries `basis`: the ancestor `issue`, its document's `artifactId`, the
+// `version` approved or asked for, and `approver` and `approvedAt` for an approval or `askId`
+// for a request. `designGate.approvedVersion` of a step open on a basis is that same version
+// registered, so a reader that names a person's approval reads `gatedSteps`. And every root of
+// the daemon's project carries `treeRuns`, whether its tree runs under the workflow by the
+// daemon's own rule (`record.TreeRuns`): its lifecycle stands open under the workflow, the root
+// does not linger, and it does not wait in the line for its tree to be opened. The record held
+// no field that decided it in every case: a root a re-admission left at `todo` runs nothing
+// whatever its architect's claim reads.
+// The architect's `catch-up` notice states a step on a basis too: each entry of its `gates` may
+// carry `pending` and `basis` (`issue`, `artifact`, `version`, `approver`, `approved_at`, `ask`),
+// and a step open on a basis reads `open` with no `approved`, since no person approved the
+// version its root registered. No plugin decodes the notice: it reaches the architect's session
+// as the daemon writes it, so it needs no narrowing.
+// `POST /legion/v1/signoff` and `POST /legion/v1/roots/close` answer two more refusals, after
+// `SIGNOFF_CHILD_IN_WORKFLOW` and in this order: `SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, while a root
+// whose step rests on the issue's approval is still in the workflow, and `SIGNOFF_CHILD_OPEN`,
+// while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
+// hold it; the refusal's shape is the one every refusal has.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 126 is served every issue without `treeRuns`, and without `gatedSteps` on an
+// issue any step of which reads either new word (api's stateFor, withoutGateBasis), as a caller
+// below 111 is served the issues without the tree quiet time, the entry of 111 above
+// (withoutQuietTime), and so on down the bands that entry lists; the seventeen compose. The
+// strip of `gatedSteps` is not for the key's sake: every plugin from 55 on reads `status` with a
+// strict enum of the four words and refuses the whole body for a fifth, and no word of the four
+// is true of such a step — `waiting` would send its architect to ask a person for an approval of
+// its own, and `approved` names a person's approval no person gave — so such a caller is served
+// no entry of that issue at all rather than a wrong one. Every reader from 126 on takes
+// `treeRuns` and `basis` as optional and reads the six words
+// (`packages/contracts/src/legion-api.ts`).
+// The change ships store migrations `20261114064234_design_gate_basis` and
+// `20261114064235_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
+// admit the two outbox kinds that read it; they move the daemon's own record and are no part of
+// this number. Nor are the new notice kinds `basis-ended`, `basis-changes-requested` and
+// `resting-root`, which reach an architect's session as text, as every notice kind does.
+// (This change took 126 against the base 50bfbb0dec73, which carried 111, when the open pull
+// requests held 112 to 125 as read on 2026-11-14: 126 was the lowest number above the base's
+// that none of them declared. It keeps 126 at the forward merge of 2026-11-14 that brought main
+// in at d24093cef77a, which lands #3793's INFRA-3146 at 123, the entry right above, and is the
+// number the base now carries. 126 is still above it, and the open pull requests hold 112 to 125
+// but 123, so nothing was renumbered. Read the base's own number and every open head again at
+// the next forward merge rather than from this line.)
+const DaemonAPIVersion = 126

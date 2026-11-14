@@ -34,7 +34,10 @@ it out without getting stuck? You find blockers, not improvements.
 3. **Contradictions.** No two steps contradict each other, and no step contradicts a `check` block
    of the issue's Verification document or a `requirement` block of its spec.
 4. **Every requirement is served.** Each `requirement` block the spec marks is named in the
-   `serves` of at least one `plan_task`, and each `check` has a task that makes it pass.
+   `serves` of at least one `plan_task`, and each `check` has a task that makes it pass. A
+   requirement whose text starts `Delivered by` and names a root needs no task and no check in this
+   issue's own documents, since that root's checks serve it, and a view's requirements are the parts
+   of its ancestor's requirements that its `Delivers:` line names.
 5. **A check that waits too long.** A check marked `after_merge` that could be run before the
    merge is a blocking issue: it moves the proof past the gate that would have caught it.
 6. **The goal and the requirements.** The plan delivers the issue's goal and every requirement of

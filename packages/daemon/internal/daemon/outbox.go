@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/dispatchblocks"
+
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
@@ -143,6 +145,10 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
+	// hold answers whether a claimed row is put back unrun for now, due again outboxHoldRecheck
+	// later (runRow): a test's seam alone (overrides.holdOutbox), nil in production and in every
+	// outbox a test builds by hand, which holds nothing.
+	hold func(record.OutboxRow) bool
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
@@ -648,6 +654,10 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.settleKept(ctx, row, value, false)
 	case record.GateSeed:
 		return r.seedGate(ctx, row, value)
+	case record.PendingBasisSeed:
+		return r.seedPendingBasis(ctx, row, value)
+	case record.ReparentSeed:
+		return r.seedReparent(ctx, row, value)
 	case record.LingerClose:
 		return r.linger(ctx, row, value)
 	case record.IssueSuspend:
@@ -2608,10 +2618,27 @@ func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Reposi
 	return nil
 }
 
+// seedGate reads the document a gate was registered on and applies what Dispatch shows there
+// (seedGateDocument), then, for a step an ancestor's approval opened, the ancestor's reviews of the
+// version that approval is of (seedGateBasis). The root's own document is read first: a newer
+// version of it closes the step and ends its basis, and a step that no longer stands on a basis
+// reads no ancestor. Neither read moves a step that stands open on an ancestor's approval except
+// as the root's own document moves it (dispatch://INFRA-3320, R3): the read of the registered
+// version returns at it, and a person's changes request on the ancestor's version, made after the
+// approval, is passed on with the step left open.
 func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload record.GateSeed) error {
 	if r.dispatch == nil {
 		return errors.New("gate seed executor has no Dispatch client")
 	}
+	if err := r.seedGateDocument(ctx, row, payload); err != nil {
+		return err
+	}
+	return r.seedGateBasis(ctx, row, payload)
+}
+
+// seedGateDocument reads the approval of the document the gate seed names and applies what it
+// finds as the event that would have carried it.
+func (r *outbox) seedGateDocument(ctx context.Context, row record.OutboxRow, payload record.GateSeed) error {
 	approval, err := r.dispatch.Approval(ctx, payload.ArtifactID)
 	if err != nil {
 		return fmt.Errorf("read Dispatch approval %s: %w", payload.ArtifactID, err)
@@ -2661,6 +2688,195 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 		return fmt.Errorf("apply approved gate seed for %s: %w", row.Issue, err)
 	}
 	return nil
+}
+
+// seedGateBasis reads, for the step of the row's issue the seed names when it stands open on an
+// ancestor's approval (record.DesignGate.OnBasis) on the document the seed names, the ancestor's
+// reviews of the version the basis names, and applies each person's changes request on it that
+// Dispatch recorded after the approval the step opened on, oldest first, with the reason the person
+// gave, as a fact of its own (intake.BasisChangesRead): a changes request whose event came between
+// register_gate's read and the registration's commit, or never came, still reaches the root's
+// architect and the ancestor's, naming that reason. The workflow tells each review once, whatever
+// else carried it, and leaves the step open. A step on no basis, or on a basis no such review
+// stands on, reads nothing more. The document's approval is read as well, for the sequence of the
+// newest review, which the review list does not carry.
+func (r *outbox) seedGateBasis(ctx context.Context, row record.OutboxRow, payload record.GateSeed) error {
+	step := payload.Step.OrSpec()
+	var gate *record.DesignGate
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		gates, err := r.records.GatesOf(ctx, tx, row.Issue)
+		if held, ok := gates[step]; ok {
+			gate = &held
+		}
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the design gate of %s: %w", row.Issue, err)
+	}
+	if gate == nil || !gate.OnBasis() || gate.ArtifactID != payload.ArtifactID {
+		return nil
+	}
+	basis := *gate.Basis
+	reviews, err := r.dispatch.Reviews(ctx, basis.ArtifactID)
+	if err != nil {
+		return fmt.Errorf("read Dispatch reviews of %s, the basis of %s: %w", basis.ArtifactID, row.Issue, err)
+	}
+	var asked []dispatch.Review
+	for i := len(reviews) - 1; i >= 0; i-- {
+		review := reviews[i]
+		if review.Version == basis.Version && review.State == "changes_requested" && review.Actor.Person() &&
+			(record.EventMark{At: review.At}).After(basis.Approval) {
+			asked = append(asked, review)
+		}
+	}
+	if len(asked) == 0 {
+		return nil
+	}
+	approval, err := r.dispatch.Approval(ctx, basis.ArtifactID)
+	if err != nil {
+		return fmt.Errorf("read Dispatch approval %s, the basis of %s: %w", basis.ArtifactID, row.Issue, err)
+	}
+	for _, review := range asked {
+		read := basisReview(review, approval)
+		id := fmt.Sprintf("basis-changes:%s:%d:%s:%s:%d:%d", row.Issue, payload.Generation, step, basis.ArtifactID, basis.Version, read.Mark.ID())
+		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.BasisChangesRead{Issue: row.Issue, Step: step, Generation: payload.Generation,
+			BasisArtifactID: basis.ArtifactID, BasisVersion: basis.Version, Changes: read}, r.handlers...); err != nil {
+			return fmt.Errorf("apply the gate seed's read of the basis of %s: %w", row.Issue, err)
+		}
+	}
+	return nil
+}
+
+// basisReview is review as a seed's fact carries it (intake.BasisReview): its time, who gave it
+// and the reason it gave, and, where it is the review the document's approval shows, that
+// approval's sequence, which the review list does not carry.
+func basisReview(review dispatch.Review, approval dispatch.Approval) intake.BasisReview {
+	read := intake.BasisReview{Mark: record.EventMark{At: review.At}, Actor: review.Actor, Reason: review.Reason}
+	if approval.Version != nil && *approval.Version == review.Version && approval.State == review.State && approval.At.Equal(review.At) {
+		read.Mark.Seq = approval.Seq
+	}
+	return read
+}
+
+// seedPendingBasis reads, for the row's issue, a root whose step waits, closed, on an ancestor's
+// approval request (record.PendingBasisSeed), the ancestor's document's approval and its reviews,
+// and applies what it finds at the version the step waits on as a fact of its own
+// (intake.PendingBasisRead), never the gate seed's, so the read reaches the root's step alone and
+// not the ancestor's own gate. The reviews of that version are taken in the order they were given:
+// a first one that is a person's approval opens the step, and a changes request after it is passed
+// on as well, as the two events in order give live; with no such approval, a changes request on
+// that version, a newer version of the document, or the request no longer open ends the wait. A
+// request still open on that version with no review changes nothing, and applies no fact. The
+// workflow applies the fact only while the step still waits on that request in that generation,
+// so a read of a wait that has opened or ended since changes nothing. The fact's id is the step,
+// the request and what the read found, so the same read again is a duplicate, and a later read
+// that finds more is a fact of its own.
+func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, payload record.PendingBasisSeed) error {
+	if r.dispatch == nil {
+		return errors.New("pending-basis seed executor has no Dispatch client")
+	}
+	approval, err := r.dispatch.Approval(ctx, payload.BasisArtifactID)
+	if err != nil {
+		return fmt.Errorf("read Dispatch approval %s: %w", payload.BasisArtifactID, err)
+	}
+	reviews, err := r.dispatch.Reviews(ctx, payload.BasisArtifactID)
+	if err != nil {
+		return fmt.Errorf("read Dispatch reviews of %s: %w", payload.BasisArtifactID, err)
+	}
+	fact := intake.PendingBasisRead{Issue: row.Issue, Step: payload.Step, Generation: payload.Generation, ArtifactID: payload.ArtifactID,
+		BasisArtifactID: payload.BasisArtifactID, BasisVersion: payload.BasisVersion, Ask: payload.Ask, LatestVersion: approval.LatestVersion,
+		RequestOpen: approval.State == "awaiting" && approval.AskID == payload.Ask}
+	// Dispatch lists the reviews newest first.
+	for i := len(reviews) - 1; i >= 0; i-- {
+		review := reviews[i]
+		if review.Version != payload.BasisVersion {
+			continue
+		}
+		read := basisReview(review, approval)
+		switch {
+		case review.State == "approved" && review.Actor.Person() && fact.Approval == nil && fact.Changes == nil:
+			fact.Approval = &read
+		case review.State == "changes_requested" && (fact.Approval != nil || fact.Changes == nil):
+			fact.Changes = &read
+		}
+	}
+	var found string
+	switch {
+	case fact.Approval != nil && fact.Changes != nil:
+		found = fmt.Sprintf("approved:%d:changes:%d", fact.Approval.Mark.ID(), fact.Changes.Mark.ID())
+	case fact.Approval != nil:
+		found = fmt.Sprintf("approved:%d", fact.Approval.Mark.ID())
+	case fact.Changes != nil:
+		found = fmt.Sprintf("changes:%d", fact.Changes.Mark.ID())
+	case fact.LatestVersion > fact.BasisVersion:
+		found = fmt.Sprintf("newer:%d", fact.LatestVersion)
+	case !fact.RequestOpen:
+		found = "closed"
+	default:
+		r.log.Info("pending-basis seed: the ancestor's request still waits on the person", "issue", row.Issue, "basis", payload.BasisArtifactID,
+			"basis_version", payload.BasisVersion, "ask", payload.Ask)
+		return nil
+	}
+	id := fmt.Sprintf("pending-basis:%s:%d:%s:%s:%s:%d:%s", row.Issue, payload.Generation, payload.Step, payload.Ask, payload.BasisArtifactID, payload.BasisVersion, found)
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...); err != nil {
+		return fmt.Errorf("apply the pending-basis seed of %s: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// seedReparent reads, for the row's issue, a root that ran as a tree of its own and that a person
+// made a child of a live tree (record.ReparentSeed), whether R1's path is open on its new parent
+// (dispatch://INFRA-3320, R1 and R2; reparentBasisVersion), and applies what it read as a fact
+// (intake.ReparentRead), whose workflow handler posts the message on the root and tells the
+// architect of the parent's tree. The read decides only the words: a parent R1's path is closed
+// on gets today's words. The fact's id is the row's, so a run of the same row again is a
+// duplicate, and the seed of a later move is a fact of its own.
+func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload record.ReparentSeed) error {
+	if r.dispatch == nil {
+		return errors.New("re-parent seed executor has no Dispatch client")
+	}
+	version, err := r.reparentBasisVersion(ctx, payload.Parent)
+	if err != nil {
+		return err
+	}
+	id := fmt.Sprintf("reparent-seed:%s:%d", row.Issue, row.ID)
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.ReparentRead{Issue: row.Issue, Parent: payload.Parent, Tree: payload.Tree,
+		Ran: payload.Ran, BasisVersion: version}, r.handlers...); err != nil {
+		return fmt.Errorf("apply the re-parent seed of %s: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// reparentBasisVersion is the version of parent's primary document that R1's path can rest a
+// child root on, 0 where the path is closed: parent carries the legion label, Dispatch shows it
+// neither retro nor done, a person approved the latest version of its primary document, and that
+// version marks a requirement block that names an id, as register_gate reads one
+// (api's requirementsOf).
+func (r *outbox) reparentBasisVersion(ctx context.Context, parent string) (int, error) {
+	issue, err := r.dispatch.GetIssue(ctx, parent)
+	if err != nil {
+		return 0, fmt.Errorf("read Dispatch issue %s, a new parent: %w", parent, err)
+	}
+	if !dispatch.CarriesLegionLabel(issue.Labels) || issue.Status == "retro" || issue.Status == "done" || issue.PrimaryArtifactID == "" {
+		return 0, nil
+	}
+	approval, err := r.dispatch.Approval(ctx, issue.PrimaryArtifactID)
+	if err != nil {
+		return 0, fmt.Errorf("read Dispatch approval %s, the primary document of %s: %w", issue.PrimaryArtifactID, parent, err)
+	}
+	version := approval.ApprovedLatest()
+	if version == 0 || !approval.By.Person() {
+		return 0, nil
+	}
+	markdown, err := r.dispatch.DocumentVersion(ctx, issue.PrimaryArtifactID, version)
+	if err != nil {
+		return 0, fmt.Errorf("read version %d of %s, the primary document of %s: %w", version, issue.PrimaryArtifactID, parent, err)
+	}
+	for _, block := range dispatchblocks.Read(markdown) {
+		if block.Type == "requirement" && block.ID != "" {
+			return version, nil
+		}
+	}
+	return 0, nil
 }
 
 func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload record.LingerClose) error {

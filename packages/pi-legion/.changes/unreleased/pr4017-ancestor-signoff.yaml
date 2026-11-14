@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The `sign_off` operation says that the daemon also refuses an issue while a root that rests on
+  its approval is still in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`) and while a Dispatch
+  child of it is open (`SIGNOFF_CHILD_OPEN`), after `SIGNOFF_CHILD_IN_WORKFLOW` and in that order.
+custom:
+    Issue: pr4017

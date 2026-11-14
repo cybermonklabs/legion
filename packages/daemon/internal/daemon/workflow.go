@@ -93,6 +93,9 @@ type workflowRuntime struct {
 	// to the workflow engine (applyTerminal), which holds neither the claim nor the configuration
 	// and so has no other way to read them.
 	limits supervise.Limits
+	// dropConsumedEvent is overrides.dropConsumedEvent, taken at attach: the facts of the intake
+	// consumers the workflow's handlers skip (consumerHandlers). nil, in production, skips none.
+	dropConsumedEvent func(intake.Fact) bool
 	// bootID disambiguates this boot's synthetic Dispatch consumer position facts from another
 	// boot's, or another project's daemon: processed_events is keyed only on (source, event_id),
 	// shared by every project's daemon in the database, and a stream recreated by a later boot
@@ -464,6 +467,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err := w.queueRecordedGatesPublish(ctx); err != nil {
 		return nil, err
 	}
+	if err := w.queuePendingBasisSeeds(ctx); err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -543,6 +549,66 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 	if r := w.outboxWake.Load(); r != nil {
 		r.wake(issue, kind)
 	}
+}
+
+// queuePendingBasisSeeds queues one pending-basis seed (record.PendingBasisSeed) for each step of
+// the project that waits, closed, on an ancestor's approval request
+// (record.DesignGate.PendingOnBasis), whatever phase its root stands in, since the boot's catch-up
+// reads no root in a phase of its tree (catchesUp) and the ancestor's events may have come while
+// the daemon was down or been dropped: each seed reads the ancestor's approval and reviews at the
+// version the step waits on, so the person's approval opens it and a changes request, a newer
+// version or the request's close ends it (dispatch://INFRA-3320, R1). The rows run on each root's
+// lifecycle lane once the outbox attaches. An issue Dispatch shows done is left out by the read
+// (record.GatedIssues), as its gates are left out of the publication. A restart loop that queues
+// a second seed beside one still waiting costs one more read of Dispatch: the seed's fact is the
+// step, the request and what the read found, so it applies once.
+func (w *workflowRuntime) queuePendingBasisSeeds(ctx context.Context) error {
+	now := time.Now().UTC()
+	scoped, committed := intake.WithCommitHooks(ctx)
+	queued := 0
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		gated, err := w.records.GatedIssues(scoped, tx, w.dispatchProject)
+		if err != nil {
+			return err
+		}
+		gates, err := w.records.Gates(scoped, tx, gated)
+		if err != nil {
+			return err
+		}
+		for _, key := range gated {
+			var root *record.Issue
+			for _, gate := range gates[key] {
+				if !gate.PendingOnBasis() {
+					continue
+				}
+				if root == nil {
+					if root, err = w.records.Issue(scoped, tx, key); err != nil {
+						return err
+					}
+					if root == nil {
+						break
+					}
+				}
+				row, err := record.NewOutboxRow(key, record.PendingBasisSeed{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID,
+					BasisArtifactID: gate.Basis.ArtifactID, BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: root.Generation}, now)
+				if err != nil {
+					return err
+				}
+				if err := w.records.Enqueue(scoped, tx, row); err != nil {
+					return err
+				}
+				queued++
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("queue the pending-basis seeds of %s: %w", w.dispatchProject, err)
+	}
+	committed()
+	if queued > 0 {
+		w.log.Info("legion workflow boot queued a pending-basis seed for each step waiting on an ancestor's request", "steps", queued)
+	}
+	return nil
 }
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
@@ -707,8 +773,12 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // stay, in the order the task named them, and the text is written again from them
 // (workflow.KeptDecisionsTask), which is the wording the start that queued the task used. An issue
 // the record does not hold is kept rather than dropped: a person's decision is never lost, and
-// this answer drops one only where the record says another tree is owed it. A task left naming
-// nothing is retired rather than sent, and its delivery's write releases whatever it still held.
+// this answer drops one only where the record says another tree is owed it. The start task names
+// the roots that rest on the root's approval apart from its decisions
+// (workflow.ArchitectStartTask, dispatch://INFRA-3320 R8), so a task written again names them
+// again, as the record shows them now (workflow.RestingRootsTask), and a task left naming no
+// decision still names them. A task left naming nothing at all is retired rather than sent, and
+// its delivery's write releases whatever it still held.
 //
 // It is the machine that asks, because the machine owns the pending delivery: the hand-over that
 // moved the issue commits in a transaction of its own, with no lock on this claim, and a task
@@ -725,6 +795,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
 	var left []record.DecisionMark
+	resting := ""
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
@@ -759,6 +830,11 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			}
 			stays.Decisions = append(stays.Decisions, mark)
 		}
+		if len(stays.Decisions) != len(named.Decisions) {
+			if resting, err = workflow.RestingRootsTask(scoped, tx, w.records, c.Tree); err != nil {
+				return err
+			}
+		}
 		if len(left) == 0 {
 			return nil
 		}
@@ -774,9 +850,14 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	if len(stays.Decisions) == len(named.Decisions) {
 		return d.Task, d.Kept, nil
 	}
-	task := workflow.KeptDecisionsTask(c.Tree, stays)
+	task := workflow.ArchitectTask(workflow.KeptDecisionsTask(c.Tree, stays), resting)
 	if task == "" {
 		return "", nil, nil
+	}
+	if len(stays.Decisions) == 0 && stays.Approved == 0 {
+		// The task names the roots that rest on the root's approval and no decision: it holds no
+		// row, and so carries nothing of what the root keeps.
+		return task, nil, nil
 	}
 	kept, err := keptJSON(&stays)
 	if err != nil {
@@ -1064,6 +1145,8 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, w.log)
+	w.outbox.hold = supervision.plan.holdOutbox
+	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outbox.readPullRequest = func(ctx context.Context, pr record.PullRequest) (githubPullRequest, error) {
 		_, pull, err := w.readPullRequest(ctx, pr)
 		return pull, err
@@ -1299,6 +1382,44 @@ func terminalEventID(c supervise.Claim, state supervise.ClaimState) string {
 	return fmt.Sprintf("supervise:%s:%d:%s", c.Token, c.Generation, state)
 }
 
+// consumerHandlers are the handlers the intake consumers apply each fact they deliver with: the
+// workflow's own, or, under a test's dropConsumedEvent, one handler that asks it once of each fact
+// and runs the workflow's own unless it drops the fact. A dropped fact is still applied as a fact —
+// acknowledged, and its processed_events row written in its transaction — with no handler acting
+// on it, which is how a test reads what the daemon does with an event it missed.
+func (w *workflowRuntime) consumerHandlers() []intake.Handler {
+	if w.dropConsumedEvent == nil {
+		return w.handlers
+	}
+	return []intake.Handler{droppingHandlers{handlers: w.handlers, drop: w.dropConsumedEvent}}
+}
+
+// droppingHandlers runs handlers on each fact drop does not drop, in order, and combines their
+// results as intake.ApplyFact combines those of the handlers it is given: the first refusal, and
+// whether any left the fact unspent.
+type droppingHandlers struct {
+	handlers []intake.Handler
+	drop     func(intake.Fact) bool
+}
+
+func (h droppingHandlers) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	var result intake.Result
+	if h.drop(fact) {
+		return result, nil
+	}
+	for _, handler := range h.handlers {
+		applied, err := handler.Apply(ctx, tx, fact)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if result.Refusal == nil {
+			result.Refusal = applied.Refusal
+		}
+		result.Unspent = result.Unspent || applied.Unspent
+	}
+	return result, nil
+}
+
 // run drains intake and the outbox until ctx ends. Intake ending, or a terminal fact that could not
 // be applied, returns its error so serve stops the daemon: a daemon that answers its API while it
 // reads no events or has lost a held or worker-died fact looks healthy and does nothing.
@@ -1311,7 +1432,7 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	// one (store.ErrNestedAcquire). The intake marks each message it hands a loop of its own
 	// (intake's consumeMessage), and the outbox each of its lanes (outbox.runLane).
 	group.Go(func() error {
-		if err := w.consumers.Run(store.ForConcurrentWorker(running), w.handlers...); err != nil {
+		if err := w.consumers.Run(store.ForConcurrentWorker(running), w.consumerHandlers()...); err != nil {
 			// A terminal close's cause is the connection's alone (natsauth.WithLastError).
 			return fmt.Errorf("workflow intake stopped: %w", natsauth.WithLastError(err, w.conn.Load()))
 		}

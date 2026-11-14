@@ -1797,6 +1797,159 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
+// Contract 126: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
+// wait, closed, on an ancestor's open approval request (`pending_on_basis`), each with the `basis`
+// that names the approval or the request, and every root the daemon records says whether its
+// tree runs (`treeRuns`). The state golden carries LEGION-207's step open on LEGION-200's
+// approval, LEGION-214's waiting on LEGION-200's request, and `treeRuns` on every root and on no
+// child. What a caller below the contract is served — no `treeRuns`, and no `gatedSteps` on an
+// issue with a step on a basis — still parses, and a word no step reads, a basis that names no
+// version and a `treeRuns` that is no boolean are refused.
+test("the state golden carries a step on an ancestor's basis and whether each root's tree runs", () => {
+  const state = LegionStateResponse.parse(fixture("state.json"));
+  expect(state.issues["LEGION-207"]?.gatedSteps).toEqual([
+    {
+      step: "spec",
+      artifactId: "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
+      currentVersion: 4,
+      approvedVersion: 4,
+      status: "open_on_basis",
+      basis: {
+        issue: "LEGION-200",
+        artifactId: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+        version: 5,
+        approver: "user:alice",
+        approvedAt: "2026-09-20T15:02:41Z",
+      },
+    },
+  ]);
+  expect(state.issues["LEGION-214"]?.gatedSteps).toEqual([
+    {
+      step: "spec",
+      artifactId: "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
+      currentVersion: 2,
+      approvedVersion: null,
+      status: "pending_on_basis",
+      basis: {
+        issue: "LEGION-200",
+        artifactId: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+        version: 6,
+        askId: "c81e5d3a-7f42-4b96-a0d8-3e6f9b1c2a75",
+      },
+    },
+  ]);
+  const runs = Object.fromEntries(
+    Object.entries(state.issues).map(([key, issue]) => [key, issue.treeRuns])
+  );
+  expect(runs).toEqual({
+    "LEGION-207": false,
+    "LEGION-208": true,
+    "LEGION-209": undefined,
+    "LEGION-210": true,
+    "LEGION-211": false,
+    "LEGION-212": true,
+    "LEGION-214": false,
+  });
+  expect("treeRuns" in (state.issues["LEGION-209"] ?? {})).toBeFalse();
+
+  type Served = {
+    issues: Record<string, { treeRuns?: unknown; gatedSteps?: Record<string, unknown>[] }>;
+  };
+  const served = () => fixture("state.json") as Served;
+  const issueOf = (body: Served, key: string) => {
+    const issue = body.issues[key];
+    if (issue === undefined) {
+      throw new Error(`state fixture lacks ${key}`);
+    }
+    return issue;
+  };
+  const stepOf = (body: Served, key: string) => {
+    const step = issueOf(body, key).gatedSteps?.[0];
+    if (step === undefined) {
+      throw new Error(`state fixture lacks a gated step of ${key}`);
+    }
+    return step;
+  };
+
+  // A daemon before the contract, and a caller below it (`api`'s `withoutGateBasis`).
+  const older = served();
+  for (const issue of Object.values(older.issues)) {
+    delete issue.treeRuns;
+    if (issue.gatedSteps?.some((step) => step.basis !== undefined)) {
+      delete issue.gatedSteps;
+    }
+  }
+  expect(LegionStateResponse.safeParse(older).error?.issues ?? []).toEqual([]);
+
+  const unknownWord = served();
+  stepOf(unknownWord, "LEGION-207").status = "approved_on_basis";
+  expect(LegionStateResponse.safeParse(unknownWord).success).toBeFalse();
+  const noVersion = served();
+  delete (stepOf(noVersion, "LEGION-214").basis as Record<string, unknown>).version;
+  expect(LegionStateResponse.safeParse(noVersion).success).toBeFalse();
+  const notBoolean = served();
+  issueOf(notBoolean, "LEGION-208").treeRuns = "yes";
+  expect(LegionStateResponse.safeParse(notBoolean).success).toBeFalse();
+});
+
+// `legionGatedStepView`'s status as contracts 55 to 125 hold it: four words, in an enum. Every
+// plugin parses the state with the schema of the contract it was built at, so this reader is live
+// in every pod still on an image before 126. It reads every step of the golden that stands on no
+// basis, and refuses the two words of 126 — and with them the whole state body, since
+// `gatedSteps` is an array it parses whole — which is why the state route serves a pod below 126
+// no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis`, pinned on the
+// Go side): neither `waiting` nor `approved` is true of such a step, so it serves no entry of that
+// issue rather than a wrong one.
+const gatedStepStatusBefore126 = z.object({
+  status: z.enum(["unregistered", "waiting", "approved", "changes_requested"]),
+});
+
+test("a reader before the basis words reads every gated step but those on a basis", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { gatedSteps?: { status: string }[] }>;
+  };
+  const steps = Object.values(state.issues).flatMap((issue) => issue.gatedSteps ?? []);
+  const words = new Set(["open_on_basis", "pending_on_basis"]);
+  const older = steps.filter((step) => !words.has(step.status));
+  const onBasis = steps.filter((step) => words.has(step.status));
+  expect(older.length).toBeGreaterThan(1);
+  expect(onBasis.length).toBe(2);
+  for (const step of older) {
+    expect(gatedStepStatusBefore126.safeParse(step).error?.issues ?? []).toEqual([]);
+  }
+  for (const step of onBasis) {
+    const refused = gatedStepStatusBefore126.safeParse(step);
+    expect(refused.success).toBeFalse();
+    expect(refused.error?.issues[0]?.path).toEqual(["status"]);
+  }
+});
+
+// The architect's registration on an ancestor's basis (contract 126): the three fields come
+// together, the document is a UUID, the version positive and the reason a sentence; a request
+// that names none of them is the request it was.
+test("a gate registration names a basis by its document, its version and a reason", () => {
+  const request = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+    version: 7,
+    step: "spec",
+    basisArtifactId: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+    basisVersion: 5,
+    reason: "LEGION-208 delivers r1 of LEGION-200 in this repository.",
+  };
+  expect(LegionGateRegisterRequest.safeParse(request).error?.issues ?? []).toEqual([]);
+  expect(
+    LegionGateRegisterRequest.safeParse({ ...request, basisArtifactId: "spec" }).success
+  ).toBeFalse();
+  expect(LegionGateRegisterRequest.safeParse({ ...request, basisVersion: 0 }).success).toBeFalse();
+  expect(LegionGateRegisterRequest.safeParse({ ...request, reason: "" }).success).toBeFalse();
+  const { grantId, issue, artifactId, version } = request;
+  expect(
+    LegionGateRegisterRequest.safeParse({ grantId, issue, artifactId, version }).success
+  ).toBeTrue();
+});
+
 /** The responses an operator's bearer opens, the only ones that may name a suspension. */
 const operatorSchemas: Record<string, true> = {
   LegionOperatorClaimResponse: true,

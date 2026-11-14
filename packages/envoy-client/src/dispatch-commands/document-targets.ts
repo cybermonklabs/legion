@@ -149,16 +149,26 @@ export async function documentTargets(
   };
 }
 
-/** The id of the document an issue carries under `reference`: its artifact id, slug, or filename,
- * or `spec` for its primary document, resolved as the Dispatch tools resolve an issue's `artifact`
- * argument. A reference that names no document, or a filename two documents share, throws the
- * same hint the Dispatch tools give. */
+/** The document an issue carries under `reference`: its artifact id, slug, or filename, or `spec`
+ * for its primary document, resolved as the Dispatch tools resolve an issue's `artifact` argument,
+ * with the issue as Dispatch shows it. A reference that names no document, or a filename two
+ * documents share, throws the same hint the Dispatch tools give. */
+export async function resolveIssueDocument(
+  client: DispatchClient,
+  issue: string,
+  reference: string
+): Promise<ResolvedArtifact> {
+  return await resolveArtifact(client, { kind: "issue", issue }, reference);
+}
+
+/** The id of the document an issue carries under `reference`, as `resolveIssueDocument` resolves
+ * it. */
 export async function resolveIssueDocumentId(
   client: DispatchClient,
   issue: string,
   reference: string
 ): Promise<string> {
-  return (await resolveArtifact(client, { kind: "issue", issue }, reference)).artifact.id;
+  return (await resolveIssueDocument(client, issue, reference)).artifact.id;
 }
 const documentHintLimit = 8;
 

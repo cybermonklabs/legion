@@ -50,6 +50,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
+		PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100", Generation: 2},
+		ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300", Ran: "it ran as a tree of its own from 2026-11-01"},
+		Notice{Kind: "basis-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-100/spec", Reason: "name the rollback path"},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
@@ -217,7 +220,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 // list it: a kind on neither lane would be queued and never run, one on both would run twice over.
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
-		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
+		OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval}
@@ -266,6 +269,14 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
 		{name: "an actor on a phase-finished notice", payload: Notice{Kind: "phase-finished", Actor: "user:a"}, reason: "only a spec decision's does"},
 		{name: "a ref on a child-status notice", payload: Notice{Kind: "child-status", Ref: "dispatch://LEGION-1/spec"}, reason: "only a spec decision's does"},
+		{name: "a decision on a basis notice", payload: Notice{Kind: "basis-ended", Ref: "dispatch://LEGION-100/spec", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
+		{name: "a pending-basis seed of no step", payload: PendingBasisSeed{ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100", Generation: 2}, reason: "a pending-basis seed names"},
+		{name: "a pending-basis seed of no request", payload: PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Generation: 2}, reason: "a pending-basis seed names"},
+		{name: "a pending-basis seed of no version", payload: PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", Ask: "ask-100", Generation: 2}, reason: "a pending-basis seed names"},
+		{name: "a pending-basis seed of no generation", payload: PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100"}, reason: "a pending-basis seed names"},
+		{name: "a re-parent seed of no parent", payload: ReparentSeed{Tree: "LEGION-300", Ran: "it ran as a tree of its own"}, reason: "a re-parent seed names"},
+		{name: "a re-parent seed of no tree", payload: ReparentSeed{Parent: "LEGION-301", Ran: "it ran as a tree of its own"}, reason: "a re-parent seed names"},
+		{name: "a re-parent seed of no reason", payload: ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300"}, reason: "a re-parent seed names"},
 		{name: "a decision on an architect's notice", payload: Notice{Kind: "design-approved", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
 		{name: "a root on an architect's notice", payload: Notice{Kind: "design-approved", Root: "LEGION-1"}, reason: "only a parked-decision controller notice does"},
 		{name: "a parked decision with no root", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a"}, reason: "a parked-decision notice needs"},
@@ -430,6 +441,10 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a merge-queue removal of no pull request", row: OutboxRow{ID: 60, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"head":"c0de"}`)}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal naming a role", row: OutboxRow{ID: 61, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"role":"merger","number":42,"head":"c0de"}`)}, reason: "unknown field"},
 		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
+		{name: "a pending-basis seed with an unknown field", row: OutboxRow{ID: 60, Kind: OutboxKindPendingBasisSeed, Payload: json.RawMessage(`{"step":"spec","artifactId":"artifact-208","basisArtifactId":"artifact-100","basisVersion":3,"ask":"ask-100","generation":2,"approver":"user:alice"}`)}, reason: "unknown field"},
+		{name: "a pending-basis seed of no request", row: OutboxRow{ID: 61, Kind: OutboxKindPendingBasisSeed, Payload: json.RawMessage(`{"step":"spec","artifactId":"artifact-208","basisArtifactId":"artifact-100","basisVersion":3,"generation":2}`)}, reason: "a pending-basis seed names"},
+		{name: "a re-parent seed with an unknown field", row: OutboxRow{ID: 62, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","tree":"LEGION-300","ran":"it ran as a tree of its own","told":true}`)}, reason: "unknown field"},
+		{name: "a re-parent seed of no tree", row: OutboxRow{ID: 63, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","ran":"it ran as a tree of its own"}`)}, reason: "a re-parent seed names"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := DecodeOutboxPayload(tc.row)
@@ -624,7 +639,9 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 	}
 }
 
-// SpecDecision names the three notice kinds a person's spec decision writes, and no other.
+// SpecDecision names the three notice kinds a person's spec decision writes, and no other: the
+// three basis notices carry an actor and a ref too, and are no spec decision, so the backlog relay
+// passes none of them on.
 func TestSpecDecisionNamesTheThreeKindsAPersonsSpecDecisionWrites(t *testing.T) {
 	for kind, want := range map[NoticeKind]DecisionKind{
 		"design-approved":          DecisionDesignApproved,
@@ -633,6 +650,9 @@ func TestSpecDecisionNamesTheThreeKindsAPersonsSpecDecisionWrites(t *testing.T) 
 		"child-status":             "",
 		"worker-died":              "",
 		ParkedDecisionNotice:       "",
+		"basis-ended":              "",
+		"basis-changes-requested":  "",
+		"resting-root":             "",
 	} {
 		got, ok := SpecDecision(kind)
 		if got != want || ok != (want != "") {
@@ -806,8 +826,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	answered := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	paced := answered.Add(time.Minute)
 	// One notice per kind, each as its own kind's requirements have it: a catch-up carries its
-	// account of the tree, the three spec decisions the person who decided and the reference,
-	// and no other kind carries either of those.
+	// account of the tree, the three spec decisions and the three basis notices the person who
+	// acted and the reference, and no other kind carries either of those.
 	// The pacing's two moments are a catch-up's alone (Notice.PacedAt), so that row alone carries
 	// them; the re-hold's restore of them below is a no-op on the rest, as it is in the daemon.
 	//
@@ -849,6 +869,12 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec"},
 		{Kind: "design-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "name the rollback path"},
 		{Kind: "carried-gate-opened", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "the gate came with the hand-over"},
+		{Kind: "basis-ended", Role: claim.RoleArchitect, Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-100/spec",
+			Reason: "a person requested changes on version 3 of LEGION-100's spec, so the spec step of LEGION-208 no longer waits on it"},
+		{Kind: "basis-changes-requested", Role: claim.RoleArchitect, Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-100/spec",
+			Reason: "name the rollback path"},
+		{Kind: "resting-root", Role: claim.RoleArchitect, Version: 3, Ref: "dispatch://LEGION-100/spec",
+			Reason: "the spec step of LEGION-208 rests on version 3 of LEGION-100's spec"},
 		{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-209 is done"},
 		{Kind: "child-status", Role: claim.RoleArchitect, Reason: "LEGION-209 is todo; it runs again under LEGION-208"},
 		{Kind: "children-first", Role: claim.RoleArchitect, Reason: "LEGION-208 starts no phase of its own while LEGION-209 is open under it"},
@@ -857,7 +883,15 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: answered,
 			Reason: "the tree of LEGION-208 at generation 3 as the daemon records it now; start or resume it as your role says",
 			CatchUp: &CatchUp{Generation: 3, Launch: 2,
-				Gates:  []CatchUpGate{{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true}},
+				// The spec step on a person's approval, and two steps on an ancestor's basis, one
+				// open on its approval and one waiting on its request (dispatch://INFRA-3320, R2).
+				Gates: []CatchUpGate{
+					{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true},
+					{Step: DesignStepCriteria, Gated: true, Artifact: "artifact-208-verification", Version: 2, Open: true,
+						Basis: &CatchUpBasis{Issue: "LEGION-100", Artifact: "artifact-100-verification", Version: 4, Approver: "user:alice", ApprovedAt: answered}},
+					{Step: DesignStepDecisions, Gated: true, Artifact: "artifact-208-decisions", Version: 1, Pending: true,
+						Basis: &CatchUpBasis{Issue: "LEGION-100", Artifact: "artifact-100-decisions", Version: 2, Ask: "ask-100"}},
+				},
 				Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}},
 		{Kind: "checks-red", Role: claim.RoleArchitect, Phase: phase.Testing, Reason: "CI is red at head: pytest"},
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",

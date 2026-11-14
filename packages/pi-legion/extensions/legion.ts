@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
-import { resolveIssueDocumentId } from "@legion/envoy-client/dispatch-execute";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state";
@@ -937,30 +936,17 @@ export default function legionExtension(pi: PiApi): void {
             currentSessionID()
           )(phase, role),
         branchHead: () => findPushedBranchHead({ env: process.env }),
-        resolveDocument: async (issue, reference) => {
-          // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
+        // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
+        dispatch: () => {
           const config = activeDispatchSettings(
             sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
               cwd: process.cwd(),
               session: currentSessionID,
             }).dispatch
           );
-          if (config === null) {
-            throw new Error(
-              `register_gate cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
-            );
-          }
-          try {
-            return await resolveIssueDocumentId(
-              new DispatchClient(config.url, config.credential, fetch),
-              issue,
-              reference
-            );
-          } catch (error) {
-            throw new Error(
-              `register_gate could not look up document "${reference}" on ${issue} in Dispatch: ${messageFor(error)}`
-            );
-          }
+          return config === null
+            ? undefined
+            : new DispatchClient(config.url, config.credential, fetch);
         },
       })
     );

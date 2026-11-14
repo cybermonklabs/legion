@@ -410,7 +410,24 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are the same roots record.LiveRoots is read from above — live is wider than running,
 	// and a parked root's tree is neither.
-	whyStates(&projected, own, record.RunningRoots(own, facts), stranded, rows, facts.ChildWaits)
+	running := record.RunningRoots(own, facts)
+	whyStates(&projected, own, running, stranded, rows, facts.ChildWaits, facts.Gates)
+	// Every root of this project's own records carries whether its tree runs (`treeRuns`), read
+	// from the same running roots, so the state serves the daemon's own rule (record.TreeRuns)
+	// rather than leaving a reader to rebuild it from the fields beside it, which decide it in no
+	// case alone: a root a re-admission left waiting in the line runs nothing whatever its
+	// architect's claim reads, and a root a person answered runs while it waits there for its
+	// resume (dispatch://INFRA-3320, R4). Another project's root carries none, since this pass
+	// reads the lifecycles of this daemon's project alone.
+	for _, issue := range own {
+		if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+			continue
+		}
+		_, runs := running[issue.Key]
+		view := projected.Issues[issue.Key]
+		view.TreeRuns = &runs
+		projected.Issues[issue.Key] = view
+	}
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the

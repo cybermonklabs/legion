@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -35,6 +36,13 @@ type outboxLane struct {
 	key  record.LaneKey
 	wake chan struct{}
 }
+
+// outboxHoldRecheck is how soon a row the test's hold put back (outbox.hold) is due again, and
+// errOutboxRowHeld the last error such a row records. Neither is reached in production, where
+// nothing holds a row.
+const outboxHoldRecheck = 100 * time.Millisecond
+
+var errOutboxRowHeld = errors.New("held by the outbox's test hold until it lets the row through")
 
 // timers is the clock the lanes' timers are armed on: the outbox's, or the wall clock for an outbox
 // a test built by hand without one.
@@ -298,6 +306,12 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 		cause := fmt.Errorf("deferred until %s behind row %d's GitHub rate limit: %w", limit.until.Format(time.RFC3339), limit.row, limit.err)
 		if err := r.retryAt(ctx, row, limit.until, cause); err != nil {
 			r.log.Error("outbox row deferral not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
+		}
+		return nil
+	}
+	if r.hold != nil && r.hold(row) {
+		if err := r.retryAt(ctx, row, r.now().UTC().Add(outboxHoldRecheck), errOutboxRowHeld); err != nil {
+			r.log.Error("outbox row hold not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
 		}
 		return nil
 	}

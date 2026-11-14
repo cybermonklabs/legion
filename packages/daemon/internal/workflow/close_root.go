@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -24,7 +23,12 @@ import (
 // still in the workflow (OpenBeneath): the close lingers the whole tree, which would suspend
 // those issues mid-turn and lose their work, and the order a tree keeps is that its children
 // finish first. A root at admitted with children running is exactly the shape children-first
-// creates, so this is the common case rather than a corner of it.
+// creates, so this is the common case rather than a corner of it. Past that, it is refused as the
+// sign-off is, in the same order (acceptanceHeld, dispatch://INFRA-3320 R8), while a root whose
+// step rests on the root's approval is still in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW),
+// and then while a Dispatch child of the root is open (SIGNOFF_CHILD_OPEN). A child filed and never
+// released is open, so a root at admitted with only such children closes once each of them is
+// closed or in icebox, which the refusal says.
 //
 // A root waiting on a person (phase.AwaitingPerson) closes the same way, because it has started
 // no phase either: a root reaches that phase only from admitted, and it is where the answer
@@ -42,13 +46,20 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	if !closableAtPhase(root.Phase) || root.Lingers() || record.OutOfWorkflow(root.Status) {
 		return refused("CLOSE_AFTER_PHASE_STARTED", fmt.Sprintf("%s is in phase %s with status %s; close_root ends a tree only while its root has started no phase — holding its slot at admitted, or waiting on a person — and a tree past that, or one already leaving, ends through its workflow or a human", root.Key, root.Phase, root.Status)), nil
 	}
-	open, err := e.openBeneath(ctx, tx, *root)
+	held, err := e.acceptanceHeld(ctx, tx, *root)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. Closing it would linger the tree and stop them mid-turn; run each one to done, and close the tree again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the close until they answer",
-			root.Key, strings.Join(open, ", "))), nil
+	switch held.code {
+	case signOffChildInWorkflow:
+		return refused(held.code, fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. Closing it would linger the tree and stop them mid-turn; run each one to done, and close the tree again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the close until they answer",
+			root.Key, held.names)), nil
+	case signOffRestingRoot:
+		return refused(held.code, fmt.Sprintf("%s is not closed while these roots that rest on its approval are still in the workflow: %s. The design-gate step of each rests on an approval of %s, so %s closes after them. Each is a tree of its own: its own architect, or a person, moves it. Close the tree again once each one is done or out of the workflow",
+			root.Key, held.names, root.Key, root.Key)), nil
+	case signOffChildOpen:
+		return refused(held.code, fmt.Sprintf("%s is not closed while these Dispatch children of it are open: %s. A parent closes after its children. Close or icebox each child that was never released "+parkRule+", say in a comment which of those it is, and close the tree again. A child that runs as a tree of its own is moved by its own architect or a person. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the close until they answer",
+			root.Key, held.names)), nil
 	}
 	if err := e.enqueue(ctx, tx, root.Key, record.CloseStatusWrite("done", root.Status, fact.Message(), root.Generation)); err != nil {
 		return intake.Result{}, err

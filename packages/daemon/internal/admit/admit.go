@@ -1333,17 +1333,21 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 			}
 		}
 		// Every root a hand-over created is recorded as one, so its architect's catch-up says it was
-		// handed over and decomposes nothing anew; it is marked as carrying a gate, which tells the
-		// architect never to register its own spec, only when its old root had one. The carry takes
-		// every step's row, each keeping its own step, so a tree gated on several steps arrives
-		// approved on each of them as the old root was. A root reopened in its linger has its gate
-		// cleared with the generation, so a second close hands its children over with none: such a
-		// child keeps its phase and pull request, and its architect registers its spec as a fresh
-		// root's does, the gate every member of its tree starts behind.
+		// handed over and decomposes nothing anew; it is marked as carrying a gate when its old root
+		// had one, and its architect then registers, on this issue's own document, each step the
+		// carry brought no row for. The carry takes every step's row, each keeping its own step, so a
+		// tree gated on several steps arrives approved on each of them as the old root was; only a
+		// step that rests on an ancestor's approval can arrive otherwise (carriedGate). A root
+		// reopened in its linger has its gate cleared with the generation, so a second close hands
+		// its children over with none: such a child keeps its phase and pull request, and its
+		// architect registers its spec as a fresh root's does, the gate every member of its tree
+		// starts behind.
 		//
 		// An old root that recorded no gate is the common case, and there the carry writes nothing:
 		// the orphan's own pairs stand as the hand-over left them, so neither the read of them nor
-		// the comparison against them is made.
+		// the comparison against them is made. The carry writes no view fact either: the old root's
+		// (record.Issue.ViewOf) is what its own spec registration read of its own documents, and
+		// this issue's stands as it is until its own architect registers its spec.
 		if len(gates) > 0 {
 			// The pairs the orphan itself holds before the carry: a member of a gated tree holds
 			// the copy its hand-over carried to it, and the carry writes the old root's rows over
@@ -1353,8 +1357,14 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 				return fmt.Errorf("read the gates of re-admitted orphan %s: %w", stored.Key, err)
 			}
 			for _, gate := range gates {
-				gate.Issue = stored.Key
-				if err := a.store.PutGate(ctx, tx, gate); err != nil {
+				carried, err := a.carriedGate(ctx, tx, stored.Key, gate)
+				if err != nil {
+					return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)
+				}
+				if carried == nil {
+					continue
+				}
+				if err := a.store.PutGate(ctx, tx, *carried); err != nil {
 					return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)
 				}
 			}
@@ -1384,6 +1394,80 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	return a.store.ClearTreeGeneration(ctx, tx, stored.Tree, a.now())
 }
 
+// carriedGate is gate, a step of the old root's gate, as the carry writes it onto key, the orphan
+// that becomes a root of its own, or nil where the carry brings no row for that step
+// (dispatch://INFRA-3320, R2 and R8):
+//
+//   - A step an ancestor's approval opened (record.DesignGate.OnBasis) arrives with its basis, the
+//     person's approval it keeps apart, and the ancestor it rests on, so key reads the step as open
+//     on that basis, and the ancestor's sign-off waits for key as it waited for the old root. A
+//     basis is only on an ancestor that is not accepted (R1), so where the ancestor is done or
+//     accepted (ancestorAccepted), no row comes: key's catch-up reports the step unregistered, and
+//     its architect registers key's own document for it.
+//   - A step that waits on an ancestor's open approval request (PendingOnBasis) arrives closed and
+//     registered on the old root's document with no basis (record.EndPendingBasis): the wait was
+//     the old root's registration on one request, and key's architect registers again.
+//   - Every other step arrives as the old root held it, open on a person's approval or closed.
+//
+// key rests on an ancestor from then on as the old root did (record.DesignGate.RestsOn): the old
+// root rests on the ancestor a basis first opened the step on until its generation ends, open or
+// closed later, and so does the step it carries, but only while that ancestor is neither done nor
+// accepted. A rest on an ancestor that is either does not come with the step, which still comes
+// as above.
+func (a *Admission) carriedGate(ctx context.Context, tx pgx.Tx, key string, gate record.DesignGate) (*record.DesignGate, error) {
+	gate.Issue = key
+	standing := ""
+	if gate.OnBasis() {
+		standing = gate.Basis.Issue
+		accepted, err := a.ancestorAccepted(ctx, tx, standing)
+		if err != nil {
+			return nil, err
+		}
+		if accepted != "" {
+			a.log.Info("admission carry: no row for a step whose basis is on an accepted ancestor", "issue", key,
+				"step", gate.Step.OrSpec(), "ancestor", standing, "accepted", accepted)
+			return nil, nil
+		}
+	}
+	gate = record.EndPendingBasis(gate)
+	if gate.RestsOn != "" && gate.RestsOn != standing {
+		accepted, err := a.ancestorAccepted(ctx, tx, gate.RestsOn)
+		if err != nil {
+			return nil, err
+		}
+		if accepted != "" {
+			a.log.Info("admission carry: no rest on an accepted ancestor", "issue", key, "step", gate.Step.OrSpec(),
+				"ancestor", gate.RestsOn, "accepted", accepted)
+			gate.RestsOn = ""
+		}
+	}
+	return &gate, nil
+}
+
+// ancestorAccepted says why ancestor no longer meets R1's first condition for a basis, as
+// register_gate reads it, or "" where it still does: the daemon's mirror of Dispatch shows it done
+// or retro, or the daemon records it in retro or merging (record.Accepted). Where neither the
+// mirror nor the record knows the ancestor, nothing the daemon holds says that it is accepted.
+func (a *Admission) ancestorAccepted(ctx context.Context, tx pgx.Tx, ancestor string) (string, error) {
+	mirrored, err := a.store.DispatchIssuesOf(ctx, tx, a.project, []string{ancestor})
+	if err != nil {
+		return "", fmt.Errorf("read the Dispatch mirror of ancestor %s: %w", ancestor, err)
+	}
+	for _, row := range mirrored {
+		if row.Key == ancestor && (row.Status == record.DoneStatus || row.Status == "retro") {
+			return "Dispatch shows it " + row.Status, nil
+		}
+	}
+	recorded, err := a.store.Issue(ctx, tx, ancestor)
+	if err != nil {
+		return "", fmt.Errorf("read the record of ancestor %s: %w", ancestor, err)
+	}
+	if recorded != nil && record.Accepted(*recorded) {
+		return "the daemon records it in " + string(record.StandsAt(*recorded)), nil
+	}
+	return "", nil
+}
+
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the
 // person's approval a gate of its holds of a version its document has since moved past: the new
 // generation's architect registers each step again on a cleared gate, and its start task
@@ -1391,6 +1475,12 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 // approval is kept, read from the first required step whose approved version sits below its
 // latest, because readmitted_approvals keeps one row for each root; it carries that step, so the
 // task names the document the person reviewed rather than the spec of every deployment.
+//
+// The approval read is the person's own (record.DesignGate.ApprovedByPerson), never the version
+// an ancestor's approval opened the step at (dispatch://INFRA-3320, R2 and R3): a step that stands
+// open on a basis at its latest version keeps the person's approval of an earlier version apart,
+// and that is the approval kept, so the re-admission neither loses it nor names the basis as a
+// person's approval.
 //
 // Where the deployment gates no step, which asks no person, nothing is kept and any pair an
 // earlier re-admission kept is dropped: no start names one there, so no delivery would forget
@@ -1410,12 +1500,13 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 	unregistered := false
 	for _, step := range steps {
 		gate, ok := gates[step]
-		switch {
-		case !ok:
+		if !ok {
 			unregistered = true
-		case gate.ApprovedVersion != nil && *gate.ApprovedVersion < gate.LatestVersion:
+			continue
+		}
+		if approved := gate.ApprovedByPerson(); approved != nil && approved.Version < gate.LatestVersion {
 			return a.store.KeepReadmittedApproval(ctx, tx, key, record.KeptApproval{
-				Step: step, Approved: *gate.ApprovedVersion, Latest: gate.LatestVersion})
+				Step: step, Approved: approved.Version, Latest: gate.LatestVersion})
 		}
 	}
 	if unregistered {
@@ -1812,9 +1903,13 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}, now); err != nil {
 					return admitted, released, err
 				}
-				task, kept, err := a.engine.ParkedDecisionTask(ctx, tx, issue)
+				// The task names what was kept for the root while nobody in its tree could hear
+				// it, and each root that rests on its approval and is still in the workflow
+				// (dispatch://INFRA-3320, R8), which is how an ancestor the daemon recorded in no
+				// live tree when such a root registered learns of that root.
+				task, kept, err := a.engine.ArchitectStartTask(ctx, tx, issue)
 				if err != nil {
-					return admitted, released, fmt.Errorf("name the decisions on %s while nobody in its tree could hear them: %w", issue.Key, err)
+					return admitted, released, fmt.Errorf("name the decisions on %s while nobody in its tree could hear them, and the roots that rest on it: %w", issue.Key, err)
 				}
 				// The architect start is not one of the starts that wait for a slot: this very
 				// transaction grants the tree whatever slot it needs, and an architect starts no

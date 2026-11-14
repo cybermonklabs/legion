@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `LegionStateResponse` reads a gated step's two new status words, `open_on_basis` and
+  `pending_on_basis`, and the `basis` beside them (`issue`, `artifactId`, `version`, and `approver`
+  and `approvedAt` or `askId`), and each root's `treeRuns`. `LegionGateRegisterRequest` takes the
+  optional `basisArtifactId`, `basisVersion` and `reason`. Daemon API contract 126.
+custom:
+    Issue: pr4017

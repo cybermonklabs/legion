@@ -1,7 +1,8 @@
 # Decomposing a tree
 
 Part of `skill://legion-architect`, section 1. Read it before you read a child's handoff, create or
-adopt children, split a change across repositories, or attach architecture components.
+adopt children, split a change across repositories, set a parent link, or attach architecture
+components.
 
 ## Reading the tree
 
@@ -123,6 +124,42 @@ would never end. The root's implementer then pushes one empty commit
 (`jj new -m '<KEY>: the root of its children; no code of its own'`, with no trailer) and opens the
 pull request on it, as its role prompt says; that push starts the required checks like any other.
 Plan no code for the root in that case, and do not create a child only to give the root a commit.
+
+## Class members and links
+
+A class root is an issue whose spec states a class of work, so that each issue of that class is
+its child. A class root that must take new members is a Legion root with no code of its own, as
+dispatch://INFRA-3118 and dispatch://INFRA-3418 are ([A root with no code of its own](#a-root-with-no-code-of-its-own)).
+It is never an issue that holds only a design. The controller's intake takes no issue under an
+ancestor that is not `done`, so a member under such an issue never runs.
+
+- **A new member of your root's class**, or new work inside your tree's unfinished work, is a
+  child of your tree. File it as [Creating children](#creating-children) says. A child of a
+  running tree needs no gate of its own. A defect that the controller sends you because your
+  root's class or unfinished work holds it becomes such a child, or part of an open issue's work
+  (`skill://legion-controller/references/finding-asks.md#link-an-issue-to-its-approved-root`).
+- **A mention of the class in a spec's prose is not a link.** Only a Dispatch `child_of` link is
+  one, which `--parent` makes.
+- **An issue already filed** that belongs to your root's class or unfinished work gets the link to
+  your root. Set it once a person approved your root's spec:
+
+  ```bash
+  dispatch issue-update --issue <KEY> --parent <your root>
+  ```
+
+  One that has not run joins your tree: release it as [Adopting children](#adopting-children)
+  says. One that runs as a root of its own stays a tree of its own, and `release_children`
+  refuses it (`CHILD_NOT_ADOPTABLE`). Tell its architect with `envoy_publish` to
+  `notifications.role.legion-<project>-<key>-architect`, the role token that
+  [Creating children](#creating-children) spells: your root's key, and that
+  `skill://legion-architect/references/design-gate.md#a-root-that-is-a-view-on-an-approved-ancestor`
+  now applies to it.
+- **A link has a cost.** An open child under a parent holds the parent's first phase. It also
+  holds every later phase start of the parent, and it stops a phase of the parent under way at the
+  next admission pass. So each issue you link holds your root's own phases while it is open. A
+  class root with no code of its own loses nothing by it.
+- **Work outside your tree that another approved root holds** is a finding. Send it to the
+  controller (`skill://legion-worker/references/findings.md`), which files or links it.
 
 ## Architecture components
 

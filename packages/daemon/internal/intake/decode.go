@@ -374,13 +374,16 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		}
 		closed := DispatchAskClosed{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), State: strings.TrimPrefix(event.Type, "ask."),
 			Actor: dispatch.Actor(event.Actor), Mark: event.mark()}
-		// A person's decline is the one resolution the daemon acts on: it resumes the root's
-		// architect with Dispatch's own words and the person's note (workflow's resumeTask), so
-		// both travel as data from Dispatch rather than as a copy of four sentences here. Any
-		// other resolution kind, and a close whose payload carries none, is the close alone.
+		// A person's decline is the one resolution the daemon resumes a root with: it resumes the
+		// root's architect with Dispatch's own words and the person's note (workflow's
+		// resumeTask), so both travel as data from Dispatch rather than as a copy of four
+		// sentences here. The withdrawal an issue's close records names that close as what
+		// closed the ask (DispatchAskClosed.Withdrawn). Any other resolution kind, and a close
+		// whose payload carries none, is the close alone.
 		if ask.Resolution != nil && ask.Resolution.Kind == ResolutionDeclined {
 			closed.Decline = &record.AskDecline{Note: ask.Resolution.Reason, Words: ask.Resolution.DispatchWords}
 		}
+		closed.Withdrawn = ask.Resolution != nil && ask.Resolution.Kind == ResolutionWithdrawn
 		return closed, nil
 	case "ask.handed_back":
 		// An approval request its asker returned to the person (Dispatch's handBackApprovalAsk):

@@ -140,6 +140,9 @@ export interface LegionDaemonClient {
   readonly freshSession: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionFreshSessionResponse>>;
+  /** The root architect's `register_gate`: its document for a design-gate step at a version and,
+   * on a basis, the ancestor's document id (`basisArtifactId`), its `basisVersion` and the
+   * architect's `reason` (contract 126), which the daemon takes together or not at all. */
   readonly gateRegister: (
     input: z.input<typeof LegionGateRegisterRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
@@ -303,8 +306,9 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * is answered HANDOFF_ALREADY_RECORDED, or, once the completion moved the issue, refused as no
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
  * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
- * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again) and
+ * version and Dispatch sequence, and by its basis's document and version where it names one; a
+ * repeat after the sequence moved is a new fact, which the gate takes as a re-registration of the
+ * same document and tells no one again) and
  * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive

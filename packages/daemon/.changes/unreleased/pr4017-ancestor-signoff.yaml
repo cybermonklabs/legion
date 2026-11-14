@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  An issue's `sign_off` and `close_root` wait for the roots whose design-gate step rests on its
+  approval and for its open Dispatch children. After `SIGNOFF_CHILD_IN_WORKFLOW`, the daemon
+  refuses with `SIGNOFF_RESTING_ROOT_IN_WORKFLOW` while such a root is still in the workflow, and
+  then with `SIGNOFF_CHILD_OPEN` while a Dispatch child is open, a child that runs as a tree of its
+  own included. The ancestor's architect gets a `resting-root` notice when a root starts to rest on
+  it, when a root's wait on its approval request starts or ends, and when a resting root closes or
+  leaves the workflow. Its start task and each catch-up name the roots that rest on it.
+custom:
+    Issue: pr4017

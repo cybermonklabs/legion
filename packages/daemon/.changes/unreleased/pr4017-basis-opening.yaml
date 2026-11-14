@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  A root whose spec is a view on an approved ancestor opens its design-gate step on that
+  ancestor's approval. The daemon posts one message on the root whose first line is `Design gate
+  opened on an ancestor's approval.`, and that message names the ancestor, its document, the
+  approved version, the person, the served requirements, the session and the reason. The
+  `design-approved` notice names the basis. A step that waits on the ancestor's open approval
+  request opens on the person's approval of that version. Each other end of that wait sends a
+  `basis-ended` notice that names what ended it, and a boot read and a seed find an event the
+  daemon missed. A person's changes request on the version an open step rests on keeps the step
+  open and sends `basis-changes-requested` to the root's architect and to the ancestor's. Each
+  phase task of a view names the ancestor's requirements, and a linger's hand-over carries a basis
+  step to the child.
+custom:
+    Issue: pr4017

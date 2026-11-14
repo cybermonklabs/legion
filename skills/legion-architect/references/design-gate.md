@@ -1,7 +1,8 @@
 # The root spec and the design gate
 
 Part of `skill://legion-architect`, section 1. Read it before you write the root spec, before any
-edit to an approved root spec, and on `design-approved` or `design-changes-requested`.
+edit to an approved root spec, and on `design-approved`, `design-changes-requested`, `basis-ended`,
+`basis-changes-requested` or `resting-root`.
 
 ## Writing the root spec
 
@@ -27,6 +28,10 @@ and the tester record a result against each check with no `ci_check`, and the
 reviewer approves only once a pass stands for every `before_merge` check at the head, which is the
 check's own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a
 pass recorded under an older wording of the check or a retracted one.
+
+A root under an approved ancestor can be a view on that ancestor instead: it marks no requirement
+block, and its checks serve the ancestor's requirements. "A root that is a view on an approved
+ancestor" below says when, and how its gate opens on the ancestor's approval.
 
 On your first pass over the spec, cut each requirement carried over from an earlier issue's spec or
 decisions that no source of this issue states: those were decided for that issue. This issue's
@@ -164,6 +169,9 @@ your decomposition filed before step 4, since the gate's opening starts the root
 phase unless Dispatch shows an open child under it. One approval request covers the `criteria`
 and the `spec` step together (step 4), and each of them is registered on its own document
 (step 5); the `decisions` step is a request of its own.
+A root that is a view on an approved ancestor runs steps 1 to 3, then registers on the ancestor's
+approval in place of steps 4 and 5, with every child filed before that registration ("A root that
+is a view on an approved ancestor", below).
 
 1. Extend the primary document in place:
 
@@ -272,9 +280,10 @@ Each of those four refusals is given before anything is recorded, so the gate is
 A `design-approved` or `design-changes-requested` notice carries a version and a reason and names
 no step. Read your own issue record with the `legion` tool's `read_record` to see which step the
 review was of: `gatedSteps` carries one entry for each gated step, with its `artifactId`, its
-`currentVersion`, its `approvedVersion`, its `status` (`unregistered`, `waiting`, `approved` or
-`changes_requested`) and the `changesReason` of a step whose reviewer asked for changes. That
-list, and not the notice, says which steps are open and which still hold the tree's work.
+`currentVersion`, its `approvedVersion`, its `status` (`unregistered`, `waiting`, `approved`,
+`changes_requested`, `open_on_basis` or `pending_on_basis`), the `changesReason` of a step whose
+reviewer asked for changes, and the `basis` of a step on an ancestor's approval. That list, and not
+the notice, says which steps are open and which still hold the tree's work.
 
 Then end your turn. The registrations hand those documents to the human: when nothing else of the
 tree is at work, the root moves to `awaiting_person` and waits on its design gate, keeping the
@@ -300,8 +309,9 @@ resume task says what answered the wait, and you act on neither your place nor y
 because the daemon starts you again by itself on that pass.
 Release no child until every gated step is open: a delivered wake shows
 `design-approved` on the root, or a task says its design gate is open, and under more than one
-step `gatedSteps` in your record shows each one `approved`. The daemon sends a root waiting on a
-person no `design-approved` notice, and "this resume is your design-approved wake" is that wake.
+step `gatedSteps` in your record shows each one `approved` or `open_on_basis`. The daemon sends a
+root waiting on a person no `design-approved` notice, and
+"this resume is your design-approved wake" is that wake.
 On `design-changes-requested`: revise the document that step records as the human's reason asks,
 run step 3's two reviews on the new version, resolve every finding, request approval again and
 end your turn. A
@@ -327,9 +337,11 @@ it was decided since), request approval again with steps 3 to 5.
 So edit an approved root spec only when its Summary, a requirement it marks, a check of its
 Verification document, the tree's scope or a settled decision changes. Such a change is a point
 the human has not agreed to: put the problem behind it to them as its own decision block, with
-its evidence, at the end of the section it changes, and add nothing else. If you edit the block before
-the human answers, the gate closes like any new version, but their answer still carries the approval
-to the version it writes. Once they have answered:
+its evidence, at the end of the section it changes, and add nothing else. The route that adds a
+root's requirement to an approved ancestor is the exception: there the approval request is the
+person's decision ("A root that is a view on an approved ancestor", below). If you edit the block
+before the human answers, the gate closes like any new version, but their answer still carries the
+approval to the version it writes. Once they have answered:
 
 - When the answer is the whole change, request nothing: the document's chip reads Approved at the
   new version and the `design-approved` the daemon sent opens nothing new. Carry on; release no
@@ -362,6 +374,326 @@ is the record and the tree carries on; otherwise change the root spec and reques
 Later children and re-scoping open children toward the same requirements need no spec edit and no
 new approval. A child issue's spec is never gated, and its architect writes the child's own
 Verification document.
+
+## A root that is a view on an approved ancestor
+
+A root with a Dispatch parent can open a gated step on an ancestor's approval, with no approval of
+its own. Its spec is then a view on the ancestor: it holds no requirement of its own, and each of
+its checks proves a requirement of the ancestor. The children of an approved issue together do all
+of what it states, and only that. So a requirement that the root needs and the ancestor does not
+state goes into the ancestor's spec, never into the root's. This section is the whole rule, for the
+root's architect and for the ancestor's architect.
+
+### When the root is a view
+
+The ancestor is the nearest issue on the root's Dispatch `child_of` chain whose document for the
+step has a review or an open approval request. Read the chain upward with
+`dispatch read --issue <KEY>`. Its `Links:` list names the `child_of` parent of each issue. For the
+`spec` step, its `Spec approval:` line shows the review or the request. An issue farther up never
+counts while a nearer issue has a review or a request.
+
+Write the root as a view when each of these is true:
+
+1. The ancestor carries the `legion` label.
+2. The ancestor is not accepted: Dispatch shows it neither `retro` nor `done`, and its record, where
+   the daemon has one, is not in `retro` or `merging`. Every other status counts, `backlog` and
+   `icebox` included.
+3. A person approved the latest version of the ancestor's document for the step. An approval that
+   Dispatch writes in a person's name is that person's. The one other case is a version that waits
+   on the person on the route of "A requirement the ancestor does not state", below.
+4. The ancestor's primary document marks `requirement` blocks.
+5. The newest review of the root's own document for the step, at any version, is not a changes
+   request. A root with no review can be a view. So can a root whose newest review approved an
+   earlier version.
+
+In every other case, ask for the root's own approval, as "When the root asks for its own approval"
+below says. `register_gate` reads each condition again. It refuses a call that fails one and
+records nothing, and its code and message name what Dispatch shows.
+
+### How to write the view
+
+- The spec says what the root builds and how, in its Summary, Problem and Design. No document of
+  the root holds a `requirement` block: not its spec, its Verification document or its decisions
+  document.
+- One line of the spec, under `## Requirements`, starts `Delivers:`. It names each requirement block
+  of the ancestor that the root delivers, by its reference pinned to the version you register on:
+  `Delivers: dispatch://<ANCESTOR>/spec#b-<id>@v<N>`.
+- Where the root delivers only part of a requirement, the line says which part, for example
+  `dispatch://<ANCESTOR>/spec#b-<id>@v<N>, the part in <owner>/<repository>`.
+- The root's Verification document holds at least one check, and no other document of the root
+  holds a check. Each check names in `serves` the ancestor's requirements that it proves, and no
+  other block.
+- A check that the deployment's instructions ask of every change, such as an after-merge production
+  check, serves the requirement whose change it deploys.
+- A requirement that the root needs and the ancestor does not state never goes into the root. Send
+  it up, as "A requirement the ancestor does not state" says.
+- A root that already runs with requirements of its own becomes a view at its next spec change.
+  Each of its requirements that the ancestor states becomes checks that serve the ancestor's
+  requirement. Each one that the ancestor does not state goes up.
+- When you take work out of the spec, take its check out of the Verification document too. A check
+  that serves a block the ancestor no longer holds makes the registration refuse
+  (`VIEW_SERVES_OUTSIDE_BASIS`).
+
+Every phase task that the daemon gives a view says that its requirements are the parts of the
+ancestor's requirements that its `Delivers:` line names. Your own acceptance reads them the same
+way, and the view's empty requirement list is no gap
+(`skill://legion-architect/references/acceptance.md`).
+
+### Registering on the ancestor's approval
+
+These steps take the place of steps 4 and 5 of "The armed gate":
+
+1. Run steps 1 to 3 of "The armed gate", the two fresh reviews included. Also give the fresh
+   `plan-reviewer` the ancestor's approved version. Tell it to say whether the way the root
+   delivers each requirement brings in anything that version does not state: a new service, a new
+   credential, a new outside dependency, or a cost over a bound that the version sets. Each such
+   thing is a requirement that the ancestor does not state, so send it up.
+2. Register each gated step's own document, with the ancestor's document for the same step as its
+   basis. For the `spec` step:
+
+   ```ts
+   legion({
+     op: "register_gate",
+     issue: "<root issue>",
+     step: "spec",
+     artifactId: "<UUID>", // the root's own primary document
+     version: <N>, // its latest version
+     basis: "dispatch://<ANCESTOR>/spec", // the ancestor's document for the same step
+     basisVersion: <M>, // the version a person approved, or the version a request of the route asks about
+     reason: "<the ancestor's requirements that the checks serve, and the reviews' result>",
+   })
+   ```
+
+   The reason names the ancestor's requirements that the root's checks serve, and the result of the
+   two reviews. It has 1 to 1,000 characters and holds no decision block. The `legion` tool refuses
+   the call while the root's own document holds an open decision block.
+3. If you have an open approval request of the root's own document for that step, resolve it in
+   the same turn, after the registration:
+   `dispatch resolve-ask --ask <id> --kind retracted --reason '<the step is registered on the ancestor's approval>'`.
+   The registration comes first, so that the resume of a root that waits on a person reads the step
+   as the registration left it.
+
+A registration on an approved version opens the step. The daemon posts a message on the root whose
+first line is `Design gate opened on an ancestor's approval.` It sends you `design-approved` with
+the ancestor's document and version as its basis. A root that waits on a person gets its resume
+task instead. `gatedSteps` in your record shows the step `open_on_basis`, with its `basis`. Go on as
+after any `design-approved`.
+
+A registration on a version that waits on the person is a pending basis. The step stays closed and
+shows `pending_on_basis`, with the request it waits on. The root keeps its slot and its phase. End
+your turn. The person's approval of that version opens the step with `design-approved`. Every other
+end of the wait comes as `basis-ended`.
+
+A step that opened on a basis is registered. A relaunched architect does not register it again in
+the same generation: its catch-up shows the step with its `basis`.
+
+A condition that the deployment's instructions put on an approval request holds for a registration
+on a basis too. For example, where a request waits for an owner's approval link in the spec, the
+registration waits for that link too.
+
+### When the root asks for its own approval
+
+Request a person's approval of the root's own document, as "The armed gate" says, and register that
+version with no basis, in each of these cases:
+
+- The ancestor marks no requirement block.
+- The ancestor's approved text says that the root's kind asks for its own approval.
+- The ancestor's approval request is open, and its summary names no root and no requirement that a
+  root sent up.
+- The ancestor's newest review is a changes request, or its approval is of an older version, and no
+  request of the route waits on the person.
+- No person gave the ancestor's approval.
+- The ancestor is `done` or accepted, or it carries no `legion` label.
+- The person kept a requirement that the root needs out of the ancestor's spec.
+- A changes request is the newest review of the root's own spec.
+- A person asked for the root's own approval.
+
+The root's spec then says which of these holds. When a person asks on the issue for the root's own
+approval, request that approval first, then register that version with no basis. A person's request
+for the root's own approval wins over the basis.
+
+### A requirement the ancestor does not state
+
+Send it, with why the root needs it, to the architect that owns the ancestor's issue. Find that
+architect and whether its tree runs:
+
+1. Read the ancestor's record with the `legion` tool's `read_record` (`issue` the ancestor), then
+   the record of each issue above it. The owner is the nearest claim on an issue in Legion's
+   workflow whose `architect.state` reads neither `failed` nor `retired`.
+2. A claim that the daemon suspended when it released an idle pod reads `suspended` and still owns
+   the issue. A message on its role topic wakes it. A claim that the operator suspended reads the
+   same, and a message to it waits until the operator starts it again.
+3. Read `treeRuns` on the record of the root that the ancestor's `tree` field names. `true` means
+   the ancestor's tree runs, and `false` means it does not. An ancestor that the daemon does not
+   record has no `treeRuns`, and its tree does not run. A root that a re-admission left at `todo`
+   runs nothing, whatever its architect claim reads.
+
+While the ancestor's tree runs, send the requirement on the role topic of the ancestor's
+architect: `envoy_publish` to `notifications.role.<token>`, the token that `roleToken` computes for
+that issue and `architect`. Three messages follow:
+
+1. The ancestor's architect adds the requirement and tells you the block's reference and version.
+2. You write the `Delivers:` line and the check of that block, pinned to that version, and tell the
+   ancestor's architect.
+3. The ancestor's architect requests the person's approval and tells you that the request is open.
+   Then run the two fresh reviews, register on that version as a pending basis, and end your turn.
+
+Where the ancestor's tree does not run, make each change to the ancestor's document yourself, as
+"For the ancestor's architect" says, and request each approval yourself. Add the requirement block,
+then write the `Delivers:` line and the check. Run the two fresh reviews of the ancestor's new
+version, and request the person's approval of it with the summary that section names. Register no
+gate of the ancestor: its own architect registers it at its start, where it reads your changes.
+Then run the two fresh reviews of the root's spec, register on that version as a pending basis,
+and end your turn.
+
+Where the ancestor is on the backlog, tell the project's controller that the root rests on it, on
+the controller topic your addressing line names. Do this whether or not you send a requirement up.
+
+A version of the route is a version that adds, revises or restores a requirement that a root sent
+up, put to the person for approval. Its request's summary names the roots and the requirement, so a
+root that reads the request can tell it is one. Any other root under the ancestor whose
+registration finds that version waiting on the person may register on it as a pending basis too.
+While a request of the route waits on the person, a second requirement waits for that answer. It
+then goes into the next version.
+
+### For the ancestor's architect
+
+When a root's architect sends you a requirement:
+
+1. Add it to the ancestor's primary document as a `requirement` block. After its number, its text
+   starts with the root that delivers it: `Delivered by dispatch://<ROOT>.`
+2. Tell the root's architect the block's reference and the version.
+3. Wait until the root's architect tells you that its `Delivers:` line and its check are written.
+   The ancestor's Spec tab then shows the requirement with its check when the person reads it.
+4. Run the two fresh reviews of step 3 of "The armed gate" on the new version.
+5. Request the person's approval of that version:
+   `dispatch request-approval --issue <ANCESTOR> --summary '<the roots, the requirement, the cost> Reviews: <gap result>, <claim result>; <what they do not show>.'`.
+6. Where the ancestor is its tree's root, register its gate at that version, as step 5 of "The
+   armed gate" says.
+7. Tell the root's architect that the request is open.
+
+The summary of each request of the route names each root and the requirement, and it states the
+cost. Its last sentence gives the two reviews' result, as for every approval request. The roots,
+the requirement and the cost are part of what the person approves. So they go in the summary,
+although `dispatch request-approval --help` asks for one sentence that names what changed. State
+the cost so:
+
+- Where the ancestor is its tree's root, the new version closes its gate. Say that its tree merges
+  nothing and starts no newly released child until the person approves.
+- Where the ancestor is a Legion root on the backlog with no parent, say that the approval
+  re-admits its tree. The new generation waits at `todo` for a slot. It takes a slot to start its
+  architect, and it holds none once it waits on its open children.
+- Where a person's approval re-admitted the ancestor already and it waits in the line, say that its
+  tree, once it starts, waits for this approval.
+
+Roots whose steps already rest on the ancestor stay open through the new version. "After approval"
+puts each change to an approved spec to the person as a decision block. On this route, the approval
+request is the person's decision instead.
+
+More rules for the ancestor's architect:
+
+- At your start, read the ancestor's document and any open approval request of it. Do this before
+  you act on an older `basis-changes-requested` or `resting-root` notice. A root's architect may
+  have changed both while your tree did not run.
+- A start task can ask you to request approval of the latest version while a request of the route
+  is already open on it. Leave that request alone, and register the version that it asks about.
+- A new version of the ancestor's document ends each pending basis on it, whoever wrote it. When
+  you hand such a version back to the person, tell each root whose pending basis it ended.
+- A requirement that starts `Delivered by` is that root's. The ancestor's own plan gives it no task,
+  and the ancestor's own Verification document holds no check of it. The root's checks serve it,
+  and your acceptance reads them (`skill://legion-architect/references/acceptance.md`).
+- Where the root that a `Delivered by` requirement names leaves the workflow without delivering it,
+  rewrite the requirement without that name. Request the person's approval of that version, and
+  let the ancestor's own plan give the requirement a task. That version is not a version of the
+  route: its summary names no root, and a sibling root that finds its request open asks for its own
+  approval.
+- The daemon refuses the ancestor's `sign_off` and `close_root` while a root that rests on its
+  approval is in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`). That root's own architect, or a
+  person, moves it.
+
+### A changes request on the route
+
+After a changes request, Dispatch carries no approval to a restored text. It carries an approval
+only when the newest review is an approval. So an exact undo after a changes request needs a new
+approval request. A requirement that the person keeps out, or asks to revise, costs a second
+approval.
+
+On a person's changes request on a version of the route, the ancestor's architect:
+
+1. Revises the version as the person says. Where the person keeps the requirement out, it undoes the
+   edit exactly.
+2. Runs the two fresh reviews, requests the person's approval of that version again, and registers
+   the ancestor's gate at it where the ancestor is its tree's root.
+3. Tells each root whose pending basis the changes request ended, and each root whose step opened
+   on the version the person now asks to change. The `resting-root` and `basis-changes-requested`
+   notices name them.
+4. Also tells each root that sent the requirement. A changes request that came before a root
+   registered makes its call fail (`BASIS_NOT_APPROVED`, which names the changes request), so no
+   notice names that root.
+
+Where the ancestor's tree does not run, the root's architect makes those changes and requests each
+approval itself. A review after an approval reaches it as `basis-changes-requested`. When it
+revises a requirement that another root delivers, it finds that root by the block's `Delivered by`
+name and by the ancestor's coverage. The coverage (`GET /api/v1/issues/<ANCESTOR>/coverage`)
+counts the checks of the issues under the ancestor that serve each block. It tells that root on
+its role topic.
+
+A root acts only where the person's reason touches a requirement that its `Delivers:` line names.
+Every other root keeps its spec and its step as they are. While the ancestor's tree runs, the root
+waits until the ancestor's architect tells it the new version and that its request is open. Then:
+
+- A root whose pending basis the changes request ended registers again on the next version, where
+  that version still states its requirement.
+- A root whose step opened on the version sent back changes its work and its check to the revised
+  requirement by a new version of its spec. It registers on the revised version as a pending basis.
+- Where the person keeps the requirement out and the root can do without it, the root takes that
+  work and its check out by a new version of its spec. It registers on the restored version as a
+  pending basis.
+- Where the person keeps out a requirement that the root still needs, the root follows the
+  person's words and asks for its own approval.
+- A root that is told of a later revision of a requirement it delivers follows it by the same steps.
+
+Each registration on another version of the ancestor first pins the `Delivers:` line to that
+version, and runs the two fresh reviews of the root's new version.
+
+### The notices
+
+- `design-approved` that names an ancestor's document as its basis: an ancestor's approval opened
+  the step, at your registration or at the person's approval of the version you waited on.
+  `gatedSteps` shows it `open_on_basis`, and no person approved your own version. Go on as after any
+  `design-approved`.
+- `basis-ended`: your pending basis ended without opening. The step stays closed and is registered
+  on your own document with no basis. The reason names what ended it. Read the ancestor's document
+  and its open request before you act.
+  - A newer version of the ancestor's document: register on it again when it is a version of the
+    route.
+  - A changes request: act as "A changes request on the route" says.
+  - A person's approval of your own document: the step opened on that approval, so go on.
+  - A new version or a changes request of your own document: register again after the two fresh
+    reviews, or ask for your own approval.
+  - Any other end: ask for your own approval where "When the root asks for its own approval" names
+    the case.
+- `basis-changes-requested`: a person asked for changes on the version that a step rests on, after
+  its approval, and the step stays open. A root's architect and the ancestor's architect each act
+  as "A changes request on the route" says.
+- `resting-root`, to the ancestor's architect: a root's step rests on the ancestor's approval or
+  waits on its request, that wait ended, or a resting root closed or left the workflow. It names
+  the root, its step and the requirements that its checks serve. Where a wait ended on a new version
+  or a changes request, tell that root of the next version once its request is open. Where a root
+  that a `Delivered by` requirement names left the workflow, rewrite the requirement as above.
+  Otherwise it asks nothing of you.
+
+A root that waits on a person gets no `design-approved` and no `basis-ended` for its step. Its
+resume task names the opening or the end.
+
+### Later changes to a root on a basis
+
+- A new version of the root's own spec closes the step, as a new version of an approved spec does.
+  Then run the two fresh reviews and register again with the basis, or request a person's approval.
+- A person's changes request on the root's own document closes the step, as on any step.
+- A person's approval of the root's own document opens the step on that approval.
+- Nothing else that is done to the ancestor's document moves an open step. Only a person's changes
+  request on the version it rests on reaches you, as `basis-changes-requested`.
 
 ## A decision block for a read no pod can make
 

@@ -73,6 +73,16 @@
       "jj": true
     },
     {
+      "script": "register-gate-basis.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "evidence_variable": "REGISTER_GATE_BASIS_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, bun (after bun install) and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/register-gate-basis.sh; CI's pgvector service is the server it needs, the rig builds and starts a scratch Dispatch and the daemon itself, the lib installs the nats-server it needs with go install, and it starts no container; a measured run in a pod took 45 seconds",
+      "jj": true
+    },
+    {
       "script": "stage1-skeleton.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["tmux"],

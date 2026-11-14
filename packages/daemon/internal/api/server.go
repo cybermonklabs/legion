@@ -256,6 +256,11 @@ type Options struct {
 	// claim route `POST /legion/v1/claims/activity` writes. Nil answers that route 500 and
 	// changes nothing else.
 	ClaimActivity ClaimActivityStore
+	// GateRegistrationRead is told of each register_gate call once every Dispatch read it makes
+	// is made and before its fact is applied: the issue it registers, on the route's own context
+	// and goroutine, so the registration waits for it to return. It is a test's seam alone, to act
+	// on Dispatch between a registration's reads and its commit; nil, the daemon's, tells no one.
+	GateRegistrationRead func(ctx context.Context, issue string)
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -351,6 +356,8 @@ type server struct {
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
+	// gateRead is Options.GateRegistrationRead.
+	gateRead func(ctx context.Context, issue string)
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
 	readiness func() bool
@@ -418,6 +425,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		capabilityReported: opts.CapabilityReported,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
+		gateRead:           opts.GateRegistrationRead,
 		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
@@ -791,19 +799,23 @@ func statementBound(bound time.Duration) int64 {
 // entry the issue's current phase stands on and the entry its role was given, is served it
 // without `phaseEntry` and `givenEntry` (withoutPhaseEntries); a caller below heldContract, the
 // contract that named the issues the daemon's record holds in the workflow and queues nowhere,
-// is served it without `admission.held` (withoutHeld); and a caller below quietTimeContract, the
+// is served it without `admission.held` (withoutHeld); a caller below quietTimeContract, the
 // contract that added each issue's measure of its tree's quiet time, is served it without
-// `treeMovedAt` and `quietHours` (withoutQuietTime).
-// The sixteen compose: each is applied when the state carries something of its own, so a
+// `treeMovedAt` and `quietHours` (withoutQuietTime); and a caller below gateBasisContract, the
+// contract that let a root's gated step stand open on an ancestor's approval or wait on an
+// ancestor's approval request and served each root whether its tree runs, is served it without
+// `treeRuns` and without the `gatedSteps` of an issue any step of which reads `open_on_basis` or
+// `pending_on_basis` (withoutGateBasis).
+// The seventeen compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
-// carrying none of the thirty keys, the line's own fields being fields of a view such a
+// carrying none of the thirty-one keys, the line's own fields being fields of a view such a
 // caller is served none of at all, each of them absent rather than empty, since a strict reader
 // before the contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes all thirty keys as
+// retired entry under `strandedClaims`. Every later reader takes all thirty-one keys as
 // optional and all three states — `packages/contracts/src/legion-api.ts` marks
 // `admission.trees`, `admission.held`, `wakesWaiting`, `claimsToRefresh`, the issues'
-// `gatedSteps`, `waitingLine`, `why`, `phaseEntry`, `givenEntry`, `treeMovedAt` and
-// `quietHours`, the workers' counts of the moves back, the claim views' `step` and
+// `gatedSteps`, `waitingLine`, `why`, `phaseEntry`, `givenEntry`, `treeMovedAt`,
+// `quietHours` and `treeRuns`, the workers' counts of the moves back, the claim views' `step` and
 // `leakCheckCause`, each of the nine the decided record added and `contract` itself optional
 // for exactly these bodies. Any other caller — a pod at this contract, the operator's `legion
 // state`, a tmux pane — is served the state as this contract writes it.
@@ -871,7 +883,7 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 // (TestANarrowedBodySaysSo).
 const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
 
-// stateNarrowing is one of the sixteen narrowings stateFor applies: the contract that added the
+// stateNarrowing is one of the seventeen narrowings stateFor applies: the contract that added the
 // keys to this route, whether a state carries anything of it, the body served without it, and
 // what the log line names as dropped. Each arm carries its own `dropped` rather than the
 // contract number alone, because a reader of the log who is told only a number has to find out
@@ -883,20 +895,21 @@ type stateNarrowing struct {
 	dropped  string
 }
 
-// stateNarrowings are the sixteen, lowest contract first, which is the order stateFor applies
+// stateNarrowings are the seventeen, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
 // order is the history of the route and nothing a strip depends on, so a row added at the end
-// needs no reading of the rows before it. One pair does touch one key, and it is the reason
-// this sentence names a pair rather than claiming none: waitingLineContract's row drops the
+// needs no reading of the rows before it. Two pairs do touch one key, and they are the reason
+// this sentence names pairs rather than claiming none: waitingLineContract's row drops the
 // issues' `waitingLine` whole, and whyAndLineFieldsContract's takes the members that contract
-// added from inside that same field. They still do not depend on their order, because a caller
-// below both is served no `waitingLine` at all whichever runs first — the later one then finds
-// the key gone and does nothing — and a caller below only the higher one keeps the field with
-// its `place` and its `length`, which is what the lower row's own contract describes. A
-// seventeenth row that takes something out of a field an earlier row drops whole is sound on
-// those same terms; one that puts a key back, or reads what an earlier row left, is not, and
-// this table is the wrong shape for it. The order is kept beyond that so a reader of this
-// table and a reader of version.go walk the contracts the same way.
+// added from inside that same field; gatedStepsContract's row drops the issues' `gatedSteps`
+// whole, and gateBasisContract's takes it off the issues one of whose steps stands on an
+// ancestor's basis. They still do not depend on their order, because a caller below both rows of
+// a pair is served no such field at all whichever runs first — the later one then finds the key
+// gone and does nothing — and a caller below only the higher one keeps what the lower row's own
+// contract describes. An eighteenth row that takes something out of a field an earlier row drops
+// whole is sound on those same terms; one that puts a key back, or reads what an earlier row
+// left, is not, and this table is the wrong shape for it. The order is kept beyond that so a
+// reader of this table and a reader of version.go walk the contracts the same way.
 var stateNarrowings = []stateNarrowing{
 	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
 	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},
@@ -917,6 +930,8 @@ var stateNarrowings = []stateNarrowing{
 	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry"},
 	{heldContract, carriesHeld, withoutHeld, "admission.held"},
 	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours"},
+	{gateBasisContract, carriesGateBasis, withoutGateBasis, "the issues' treeRuns, and the gatedSteps " +
+		"of every issue with a step open or pending on an ancestor's basis"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1054,9 +1069,25 @@ const phaseEntriesContract = 94
 // strips them instead, so the strip is what keeps the pair from a caller that did not ask for
 // it rather than what keeps such a caller reading at all. The two are one gate because they are
 // one measure: a caller served the movement without the quiet time beside it, or the other way
-// about, would hold half of what one read of the tree said. It is the highest of the sixteen
-// bands, this daemon's own contract, so the only caller served the measure is one at it.
+// about, would hold half of what one read of the tree said. It is the band below
+// gateBasisContract's band, so a caller in a pod at 111 through 125 is served the measure and
+// neither `treeRuns` nor the gated steps of an issue a step of which stands on a basis.
 const quietTimeContract = 111
+
+// gateBasisContract is the daemon contract that let a root's gated step stand open on an
+// ancestor's approval or wait on an ancestor's approval request (version.go's 126,
+// dispatch://INFRA-3320, R1 and R2), and served each root whether its tree runs. It added the
+// gated step's `basis` and the two status words `open_on_basis` and `pending_on_basis`, and each
+// root's `treeRuns`. A plugin before it is served the state without `treeRuns`, which one built
+// before sjawhar/legion#2788 would refuse the whole body for and one built after strips; and
+// without the `gatedSteps` of every issue any step of which reads one of the two words, since a
+// plugin of any contract from gatedStepsContract on reads `status` with an enum of the four words
+// before them and refuses the whole body for a fifth, and no word of those four is true of such a
+// step: `waiting` would send its architect to ask a person for an approval of its own, and
+// `approved` names a person's approval no person gave. The issue keeps every other key, and its
+// `designGate` among them. It is the highest of the seventeen bands, this daemon's own contract,
+// so the only caller served the basis and `treeRuns` is one at it.
+const gateBasisContract = 126
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1088,8 +1119,8 @@ func carriesMemory(state State) bool {
 // issue's `tree`. It carries `admission.trees` whatever the daemon holds, since the admission
 // block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
-// is true of every state the route writes; it is asked beside the other fifteen all the same,
-// because stateFor puts the same question to the sixteen and because a later contract that
+// is true of every state the route writes; it is asked beside the other sixteen all the same,
+// because stateFor puts the same question to the seventeen and because a later contract that
 // stops writing `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
@@ -1098,8 +1129,8 @@ func carriesTrees(State) bool { return true }
 // carries that key whatever the daemon holds, since the admission block writes it on every body,
 // empty rather than null (Admission.MarshalJSON), and the strict reader before the contract
 // refuses the empty key as surely as one naming an issue. So this is true of every state the
-// route writes; it is asked beside the other fifteen all the same, because stateFor puts the
-// same question to the sixteen and because a later contract that stops writing `held` on every
+// route writes; it is asked beside the other sixteen all the same, because stateFor puts the
+// same question to the seventeen and because a later contract that stops writing `held` on every
 // body answers it here.
 func carriesHeld(State) bool { return true }
 
@@ -1107,8 +1138,8 @@ func carriesHeld(State) bool { return true }
 // the wakes the pacing holds. It carries that key whatever the daemon holds, since the state
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
-// every state the route writes; it is asked beside the other fifteen all the same, because
-// stateFor puts the same question to the sixteen and because a later contract that stops
+// every state the route writes; it is asked beside the other sixteen all the same, because
+// stateFor puts the same question to the seventeen and because a later contract that stops
 // writing `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
@@ -1117,8 +1148,8 @@ func carriesWakesWaiting(State) bool { return true }
 // whatever the daemon holds, since the state writes the number on every body, 0 rather than
 // absent (State.MarshalJSON), and the strict reader before the contract refuses the key when it
 // is 0 as surely as when it names a number. So this is true of every state the route writes, as
-// carriesWakesWaiting is; it is asked beside the other fifteen all the same, because stateFor
-// puts the same question to the sixteen and because a later contract that stops writing
+// carriesWakesWaiting is; it is asked beside the other sixteen all the same, because stateFor
+// puts the same question to the seventeen and because a later contract that stops writing
 // `claimsToRefresh` on every body answers it here.
 func carriesClaimsToRefresh(State) bool { return true }
 
@@ -1146,8 +1177,8 @@ func carriesStallRecord(state State) bool {
 // `heldFrom`, `lingerUntil` or `ancestry`. It carries the mark whatever the daemon holds, since
 // stateFor writes it on every body before it narrows one (ContractView), and the strict reader
 // before the contract refuses that key as surely as the nine. So this is true of every state the
-// route puts the question to; it is asked beside the other fifteen all the same, because
-// stateFor puts the same question to the sixteen and because a later contract that stops
+// route puts the question to; it is asked beside the other sixteen all the same, because
+// stateFor puts the same question to the seventeen and because a later contract that stops
 // writing the mark on every body answers it here, as carriesTrees answers for
 // `admission.trees`. The question the mark pre-empts is issueCarriesRecordFields, which that
 // contract would ask of every issue here and which the strip below reads one issue at a time.
@@ -1314,6 +1345,46 @@ func withoutQuietTime(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.TreeMovedAt, issue.QuietHours = nil, nil
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesGateBasis is whether any issue of state carries `treeRuns` or a gated step on an
+// ancestor's basis (issueStandsOnBasis), the two things gateBasisContract added. The projection
+// writes `treeRuns` on every root it records, so this is all but always true; it is asked
+// rather than answered true so that a state with no root is served as it is.
+func carriesGateBasis(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.TreeRuns != nil || issueStandsOnBasis(issue) {
+			return true
+		}
+	}
+	return false
+}
+
+// issueStandsOnBasis is whether any gated step of issue reads `open_on_basis` or
+// `pending_on_basis`. It is what both the question asked of the whole state and the strip below
+// read, so the two never part company over which issue loses its gated steps.
+func issueStandsOnBasis(issue Issue) bool {
+	return slices.ContainsFunc(issue.GatedSteps, func(step GatedStepView) bool {
+		return step.Status == GatedStepOpenOnBasis || step.Status == GatedStepPendingOnBasis
+	})
+}
+
+// withoutGateBasis is state with no issue carrying `treeRuns`, and no issue carrying
+// `gatedSteps` whose steps stand on an ancestor's basis (issueStandsOnBasis), which is everything
+// gateBasisContract added to the route: a step's `basis` rides only on a step of those two words.
+// Every other issue keeps its gated steps whole. The issue map is copied, so the state the source
+// answered is left as it was.
+func withoutGateBasis(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.TreeRuns = nil
+		if issueStandsOnBasis(issue) {
+			issue.GatedSteps = nil
+		}
 		issues[key] = issue
 	}
 	state.Issues = issues
