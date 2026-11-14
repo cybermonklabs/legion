@@ -34,6 +34,23 @@ REPO = Path.cwd().resolve()
 SHOWN = 20  # uncovered files printed per gate
 
 
+def escape_message(value: str) -> str:
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def escape_property(value: str) -> str:
+    return escape_message(value).replace(":", "%3A").replace(",", "%2C")
+
+
+def print_annotation(annotation: str) -> None:
+    command, _, message = annotation[2:].partition("::")
+    level, separator, file = command.partition(" file=")
+    if separator:
+        print(f"::{level} file={escape_property(file)}::{escape_message(message)}")
+    else:
+        print(f"::{command}::{escape_message(message)}")
+
+
 @dataclass(frozen=True)
 class Read:
     """A file or glob a gate reads, and why."""
@@ -351,7 +368,7 @@ def repo_files() -> list:
     for extra in ([], ["--others", "--exclude-standard"]):
         result = subprocess.run(["git", "ls-files", "-z", *extra], cwd=REPO, capture_output=True, text=True)
         if result.returncode != 0:
-            raise SystemExit(f"::error::git ls-files failed in {REPO}: {result.stderr.strip()}")
+            raise SystemExit("::error::" + escape_message(f"git ls-files failed in {REPO}: {result.stderr.strip()}"))
         out += result.stdout.split("\0")
     return sorted({f for f in out if f and (REPO / f).is_file()})
 
@@ -1283,12 +1300,12 @@ def main() -> int:
     report += check_push_workflows(data, filters, problems)
     report += check_tag_runs(document, data, filters, quantifiers, files, problems)
     for line in report:
-        print(line)
+        print(escape_message(line))
     problems = list(dict.fromkeys(problems))
     for problem in problems:
-        print(problem)
+        print_annotation(problem)
     if problems:
-        print(f"::error::{len(problems)} CI filter problem(s)")
+        print("::error::" + escape_message(f"{len(problems)} CI filter problem(s)"))
         return 1
     print(f"every ci.yaml filter matches every file its job reads ({len(data.GATES)} gates), and every "
           f"PUSH_WORKFLOWS workflow's on.push.paths equals its filter ({len(data.PUSH_WORKFLOWS)})")

@@ -243,6 +243,21 @@ check "holds the push workflow's paths to its filter" \
   "$(contains "$out" '^.github/workflows/site.yaml: on.push.paths equals filter site (3 patterns)$')"
 check "says what it checked" "$(contains "$out" 'every ci.yaml filter matches every file its job reads (1 gates)')"
 
+echo "case: an annotation escapes an unsafe file name"
+root=$(fixture annotation-escape)
+unsafe=$'unsafe%\n:,.txt'
+printf 'unsafe\n' > "$root/$unsafe"
+cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+GATES[0] = gate("app", "app", runs=GATES[0].runs, reads=GATES[0].reads + (
+    Read("unsafe%\n:,.txt", "the unsafe path"),
+))
+PY
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+expected='::error file=unsafe%25%0A%3A%2C.txt::app reads unsafe%25%0A:,.txt, which its filter app does not match, so a change to it skips the job: the unsafe path'
+check "emits exactly one annotation with escaped file and message data" \
+  "$(is "$(grep -Fxc -- "$expected" <<<"$out" || true)" 1)"
+
 echo "case: an import of a package outside the filter"
 root=$(fixture new-import)
 printf 'package lib\n\nimport _ "example.com/m/other"\n\nfunc Hello() {}\n' > "$root/mod/lib/lib.go"
