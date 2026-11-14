@@ -17,6 +17,7 @@ import type { Agent, GraphReferences, IssueReferenceSummary } from "../../api/ty
 import { agentsQuery } from "./agent-registry";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import {
+  artifactAtAddress,
   blockQuery,
   documentSummaryQuery,
   issueSummaryQuery,
@@ -487,6 +488,25 @@ test("an artifact reference finds its document by slug or by its current name, a
   expect(read("launch-notes")).toEqual({ missing: false, title: "launch-notes" });
   expect(read("shot-png")).toEqual({ missing: false, title: "shot" });
   expect(read("shot")).toEqual({ missing: true, title: undefined });
+});
+
+// The one lookup the reference and the page it opens share, over any list of artifacts. A slug
+// wins over another document whose name it is - a pair the server never lets a rename make
+// (`renameArtifact`), and which its read route would answer the same way; a name finds a
+// document alone; an address naming neither finds nothing.
+test("artifactAtAddress finds an artifact by slug first, then a document by its name, and nothing else", () => {
+  const artifacts = [
+    { id: "notes", kind: "doc", name: "launch-notes", slug: "notes-md" },
+    { id: "shot", kind: "image", name: "shot", slug: "shot-png" },
+    { id: "plan", kind: "doc", name: "notes-md", slug: "plan" },
+  ];
+  expect(artifactAtAddress(artifacts, "notes-md")?.id).toBe("notes");
+  expect(artifactAtAddress(artifacts, "launch-notes")?.id).toBe("notes");
+  expect(artifactAtAddress(artifacts, "shot-png")?.id).toBe("shot");
+  expect(artifactAtAddress(artifacts, "shot")).toBeUndefined();
+  expect(artifactAtAddress(artifacts, "missing")).toBeUndefined();
+  expect(artifactAtAddress(undefined, "notes-md")).toBeUndefined();
+  expect(artifactAtAddress(null, "notes-md")).toBeUndefined();
 });
 
 test("a session the registry lists reads as its title trimmed, and one it lists untitled links in its words", () => {

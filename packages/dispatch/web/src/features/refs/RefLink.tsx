@@ -41,7 +41,7 @@ export interface ReferenceAnchor {
   readonly addressed: boolean;
   /** The stretches of `text` the server marked as matching a search, in order and apart, each
    *  under a mark inside the anchor (`collectReferenceAnchors`); none where the anchor's words
-   *  held no mark, or where a mark around the anchor already covers all it draws. */
+   *  held no mark. */
   readonly marked: readonly WordStretch[];
 }
 
@@ -118,6 +118,16 @@ export function RefLink({
   // The address that failed, not a flag: a plain reference names the latest version, so a version
   // uploaded since gets its own load instead of inheriting the last one's failure.
   const [failedPicture, setFailedPicture] = useState<string>();
+  // An issue reads as its key then its title, as the project's issues table writes a key beside
+  // one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the thing`.
+  const named =
+    route.kind === "issue" ? (
+      <>
+        <span className="font-semibold whitespace-nowrap">{route.key}</span> {title}
+      </>
+    ) : (
+      title
+    );
   return (
     <>
       {picture === undefined || picture === failedPicture ? null : (
@@ -131,22 +141,14 @@ export function RefLink({
           />{" "}
         </>
       )}
-      {/* An issue reads as its key then its title, as the project's issues table writes a key
-          beside one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the
-          thing`. Until the title resolves, for an issue the reader cannot read, and for a target
-          that does not exist, the words the author wrote stand. */}
+      {/* Until the title resolves, for an issue the reader cannot read, and for a target that
+          does not exist, the words the author wrote stand. */}
       {!addressed || missing || title === undefined ? (
         markedWords(text, marked)
+      ) : marked.length > 0 ? (
+        <SearchMark>{named}</SearchMark>
       ) : (
-        <MarkedWhole marked={marked.length > 0}>
-          {route.kind === "issue" ? (
-            <>
-              <span className="font-semibold whitespace-nowrap">{route.key}</span> {title}
-            </>
-          ) : (
-            title
-          )}
-        </MarkedWhole>
+        named
       )}
     </>
   );
@@ -165,11 +167,6 @@ function SearchMark({ children }: { children: ReactNode }): ReactNode {
       {children}
     </mark>
   );
-}
-
-/** `children` under one search mark where `marked`, else as they are. */
-function MarkedWhole({ children, marked }: { children: ReactNode; marked: boolean }): ReactNode {
-  return marked ? <SearchMark>{children}</SearchMark> : children;
 }
 
 /** `text` with each of the `marked` stretches under a search mark of its own. */
@@ -553,8 +550,7 @@ export function collectReferenceAnchors(
 }
 
 /** The stretches of `anchor`'s words (its `textContent`) that sit under a search mark inside it,
- *  in order, with stretches that touch merged into one. A mark around the anchor covers every
- *  character it draws, title or words alike, so it is no stretch of the anchor's own. */
+ *  in order, with stretches that touch merged into one. */
 function markedStretches(anchor: HTMLElement): readonly WordStretch[] {
   if (anchor.querySelector(SEARCH_HIGHLIGHT_SELECTOR) === null) {
     return NO_STRETCHES;
@@ -566,7 +562,7 @@ function markedStretches(anchor: HTMLElement): readonly WordStretch[] {
     const start = offset;
     offset += node.textContent?.length ?? 0;
     const mark = node.parentElement?.closest(SEARCH_HIGHLIGHT_SELECTOR);
-    if (offset === start || mark === null || mark === undefined || !anchor.contains(mark)) {
+    if (offset === start || mark === null || mark === undefined) {
       continue;
     }
     const last = stretches.at(-1);

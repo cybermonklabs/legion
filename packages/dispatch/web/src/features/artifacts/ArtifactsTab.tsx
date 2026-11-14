@@ -20,6 +20,7 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
+import { artifactAtAddress } from "../refs/reference-target";
 import {
   buildIssuePath,
   buildProjectPath,
@@ -287,6 +288,12 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
             artifact.name.toLocaleLowerCase().includes(filterQuery) ||
             artifact.kind.toLocaleLowerCase().includes(filterQuery)
         );
+  // The artifact a route names by its slug or, for a document, its current name, found as the
+  // page that opens it finds it.
+  const highlightedId =
+    highlightedSlug === undefined
+      ? undefined
+      : artifactAtAddress(orderedArtifacts, highlightedSlug)?.id;
 
   if (issueKey === undefined) {
     return (
@@ -341,7 +348,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
             {visibleArtifacts.map((artifact) => (
               <ArtifactRow
                 artifact={artifact}
-                highlighted={artifact.slug === highlightedSlug}
+                highlighted={artifact.id === highlightedId}
                 isClosed={isClosed}
                 issueKey={issueKey}
                 key={artifact.id}

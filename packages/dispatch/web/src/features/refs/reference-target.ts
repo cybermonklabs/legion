@@ -253,21 +253,23 @@ export function summarySpec(
   return (summary?.documents ?? []).find((document) => document.primary);
 }
 
-/** The document an issue summary lists under the name an `artifact/<name>` reference writes, as
- *  the server's read route finds it (`resolveDocumentReference`): the artifact whose slug it is,
- *  else the document whose name it is. A document renamed to a slug-shaped name keeps the slug
- *  its first name gave it, so a reference written with its current name opens it and is drawn as
- *  it. An owner's names and slugs never name two artifacts (`renameArtifact`), and only a
- *  document, never a file or an image, is found by its name. Undefined until the summary is read,
- *  and once it answers without it. */
-function summaryDocument(
-  summary: IssueReferenceSummary | undefined,
-  slug: string
-): IssueReferenceSummaryDocument | undefined {
-  const documents = summary?.documents ?? [];
+/** The artifact among `artifacts` that an address names - the `<name>` of an `artifact/<name>`
+ *  reference or of an issue's `/artifacts/<name>` page - found as the server's read route finds it
+ *  (`resolveDocumentReference`): the artifact whose slug it is, else the document whose name it
+ *  is. A document renamed to a slug-shaped name keeps the slug its first name gave it, so an
+ *  address written with its current name opens it and is drawn as it. An owner's names and slugs
+ *  never name two artifacts (`renameArtifact`), and only a document, never a file or an image, is
+ *  found by its name. One rule for every list that answers it - an issue summary's documents, an
+ *  issue's artifacts - so a link drawn from a reference and the page it opens find the same
+ *  artifact. Undefined until the list is read, and once it is read without it. */
+export function artifactAtAddress<T extends Pick<Artifact, "kind" | "name" | "slug">>(
+  artifacts: readonly T[] | null | undefined,
+  address: string
+): T | undefined {
+  const listed = artifacts ?? [];
   return (
-    documents.find((candidate) => candidate.slug === slug) ??
-    documents.find((candidate) => candidate.kind === "doc" && candidate.name === slug)
+    listed.find((candidate) => candidate.slug === address) ??
+    listed.find((candidate) => candidate.kind === "doc" && candidate.name === address)
   );
 }
 
@@ -308,7 +310,7 @@ export interface ReferenceData {
   /** Whether Dispatch answered that the target does not exist: the read of the record behind the
    *  reference answered 404 (a project with no architecture among them), or the read that lists
    *  it came back without it - an issue's artifacts with neither the slug nor, for a document, the
-   *  name an artifact reference writes (`summaryDocument`), a project's architecture without the
+   *  name an artifact reference writes (`artifactAtAddress`), a project's architecture without the
    *  component, Dispatch's record of sessions without the session (one the registry lists, and
    *  one that ended, are both known). False while loading and for any other failure, so a
    *  reference that names a real target never loses its link to a slow or dropped read. The
@@ -392,7 +394,7 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
       const query = issueSummaryQuery(route.key);
       void queryClient.prefetchQuery(query).then(() => {
         warmText(
-          summaryDocument(queryClient.getQueryData(query.queryKey), route.slug),
+          artifactAtAddress(queryClient.getQueryData(query.queryKey)?.documents, route.slug),
           route.version
         );
       });
@@ -539,7 +541,7 @@ export function useReferenceData(
       : agentArtifact !== undefined
         ? sessionArtifact.data
         : route?.kind === "artifact"
-          ? summaryDocument(issue.data, route.slug)
+          ? artifactAtAddress(issue.data?.documents, route.slug)
           : undefined;
   const text = useQuery({
     ...artifactTextQuery(artifact?.id, version),
@@ -645,7 +647,7 @@ export function useBlockDocument(
     case "spec":
       return summarySpec(issue.data);
     case "artifact":
-      return summaryDocument(issue.data, named.slug);
+      return artifactAtAddress(issue.data?.documents, named.slug);
     default:
       return undefined;
   }
@@ -851,7 +853,7 @@ export function watchPicturePath(
     return observePicturePath(
       queryClient,
       issueSummaryQuery(route.key),
-      (summary) => summaryDocument(summary, route.slug),
+      (summary) => artifactAtAddress(summary.documents, route.slug),
       named,
       onPicture
     );

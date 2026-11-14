@@ -216,9 +216,12 @@ test("a document its issue does not hold, a component of a project with no archi
 // The read route finds a document by its name when no slug is it (`resolveDocumentReference`),
 // and a correction of a document's title moves no slug (`renameArtifact`), so a document renamed
 // to a slug-shaped name opens at `artifact/<its name>`. The reference written so names it: it
-// links and reads as that name, in a comment and in the document editor alike.
-// SLOW(>=2s): two page loads, each waiting for the reference to draw the document's name.
-test("a document's address written with its current name, which is not its slug, links and reads as that name, in a comment as in a document", async ({
+// links and reads as that name, in a comment and in the document editor alike, and its link opens
+// the page at that name, which finds the document as the read route does (`artifactAtAddress`)
+// rather than answering that the issue holds no such artifact.
+// SLOW(>=2s): four page loads, each waiting for the reference to draw the document's name or for
+// the document it opens to draw.
+test("a document's address written with its current name, which is not its slug, links, reads as that name and opens the document, in a comment as in a document", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -255,14 +258,29 @@ test("a document's address written with its current name, which is not its slug,
       await expect(scope.getByRole("link", { exact: true, name: renamed })).toHaveCount(1);
       await expect(scope.getByRole("link", { exact: true, name: address })).toHaveCount(0);
     };
+    // The link's page is the document's: the Artifacts tab open on it, its name as the heading
+    // and its text drawn.
+    const openAndExpectDocument = async (scope: Locator) => {
+      await scope.getByRole("link", { exact: true, name: renamed }).click();
+      await expect(page).toHaveURL(`/issues/${target.key}/artifacts/${renamed}`);
+      await expect(page.getByRole("tab", { name: "Artifacts" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+      const panel = page.locator("#issue-artifacts-panel");
+      await expect(panel.getByRole("heading", { exact: true, name: renamed })).toBeVisible();
+      await expect(panel).toContainText("The cache warms first.");
+      await expect(page.getByText(`No artifact ${renamed} on ${target.key}.`)).toHaveCount(0);
+    };
 
     await page.goto(`/issues/${host.key}/conversation`);
-    await expectDocumentName(
-      (await expandedComment(page, comment.id)).locator(RENDERED_BODY).first()
-    );
+    const commentBody = (await expandedComment(page, comment.id)).locator(RENDERED_BODY).first();
+    await expectDocumentName(commentBody);
+    await openAndExpectDocument(commentBody);
 
     await page.goto(`/issues/${host.key}/spec`);
     await expectDocumentName(documentEditor(page));
+    await openAndExpectDocument(documentEditor(page));
   } finally {
     await alice.close();
   }
