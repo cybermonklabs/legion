@@ -162,6 +162,11 @@ type overrides struct {
 	// that came due (workflowRuntime.idleTick, both ticks); zero is the production minute. A test
 	// of release and wake shortens it, so it waits out its own period rather than the daemon's.
 	idleTick time.Duration
+	// mergeStateRetry is how long the merge-state ladder and the merge-queue read wait between two
+	// reads of GitHub (workflowRuntime.mergeStateRetry, read through mergeStateWait); zero is the
+	// production mergeStateLadderWait. A whole-daemon test of those reads shortens it, so it waits
+	// out its own wait rather than half a minute a read.
+	mergeStateRetry time.Duration
 	// entrySweep is how often the daemon converges the phase entries with no fact arriving
 	// (workflowRuntime.entrySweep); zero is the production minute, entrySweepInterval. A test of
 	// the sweep shortens it, so it waits out its own period rather than the daemon's.
@@ -356,7 +361,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// mapping read nor the App mint above.
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
-		workflow.controllerFirstWake, workflow.idleTick, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.entrySweep
+		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
@@ -459,8 +464,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// unreachable Postgres refuses earlier, at store.Open
 		// (TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword, scripts/e2e/stage1-skeleton.sh).
 		plan.nats.log(log)
-		// The three probes run one after another on this goroutine, so they share one hold mark
-		// (a sequential flow); whether the daemon is stopping is still read from ctx.
+		// The three probes, and the cutover repair after them, run one after another on this
+		// goroutine, so they share one hold mark (a sequential flow); whether the daemon is stopping
+		// is still read from ctx.
 		probing := store.WithTransactionTracking(ctx)
 		err := bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
 			readinessAttempt(func(attempt context.Context) error {
@@ -480,6 +486,18 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		if err == nil {
 			err = bootprobe.Run(probing, "catch up the roots that run or wait on a person", readinessRetry, log,
 				readinessAttempt(workflow.catchUpAwaiting, catchUpAttemptBound, dispatch.Unreachable))
+		}
+		// The repair of the mergers the `awaiting_merge` cutover left stopped is a boot step of its
+		// own (repairCutoverMergers, dispatch://INFRA-3274/spec R2): after the listing's reconcile,
+		// which is the boot's first admission pass, and after the roots' catch-up, and before attach
+		// and the consumers, so no consumer's fact and no wake of this boot comes before it. It is
+		// one Postgres transaction, and a failure of it stops the boot as the reconcile's own
+		// transaction's does; its bound is its own, so a database that stops answering cannot hang
+		// the boot.
+		if err == nil {
+			repair, cancelRepair := context.WithTimeout(probing, bootTimeout)
+			err = workflow.repairCutoverMergers(repair)
+			cancelRepair()
 		}
 		if err != nil {
 			s.stop()
@@ -1515,7 +1533,6 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
-		PodUpdateRetask:    cfg.PodUpdateRetask,
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
@@ -1788,10 +1805,10 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // launch budget fails the claim. The contract decides nothing: a claim at this release's own
 // contract is as unreachable by an install as one below it, and the next bump would walk exactly
 // that claim to failed. Nothing here can move such a worker's plugin; a new image can, which is
-// what the pod round replaces the pod for. So it is left running and answers its round like any
-// other worker, with the op or by ending the turn the round's task starts (supervise's
-// turnEnded). staleRegistration accepts such a registration and charges it nothing, for the same
-// reason (supervise.Deps.NoPluginInstall).
+// what the pod round replaces the pod for. So it is left running and is asked its round like any
+// other worker, on its role's own Envoy topic (supervision.openPodUpdate). staleRegistration
+// accepts such a registration and charges it nothing, for the same reason
+// (supervise.Deps.NoPluginInstall).
 //
 // A claim in a pod round is passed over and a claim in a plugin round is not. That term is the
 // lane's own rather than this pass's: staleForTheLane holds it and says what each kind of round

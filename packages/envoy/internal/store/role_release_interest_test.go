@@ -121,7 +121,7 @@ func TestASecondProcessThatTookALapsedClaimKeepsItThroughTheFirstsRelease(t *tes
 	// 1. The first process holds the role, and its registration renews the claim.
 	since := beat
 	advance(since)
-	if err := reg.RenewRoleClaims(ctx, session, roleClaimInstance); err != nil {
+	if _, err := renewRoleClaims(t, reg, session, roleClaimInstance); err != nil {
 		t.Fatalf("the first process's registration: %v", err)
 	}
 	if renewed := storedRoleClaim(t, reg, role); renewed.RenewedAt != claimed+since.Milliseconds() {
@@ -157,7 +157,7 @@ func TestASecondProcessThatTookALapsedClaimKeepsItThroughTheFirstsRelease(t *tes
 	for window := range 3 {
 		since += liveWindow
 		advance(since)
-		if err := reg.RenewRoleClaims(ctx, session, roleClaimSecondInstance); err != nil {
+		if _, err := renewRoleClaims(t, reg, session, roleClaimSecondInstance); err != nil {
 			t.Fatalf("the second process's registration in window %d: %v", window+1, err)
 		}
 		renewed := storedRoleClaim(t, reg, role)

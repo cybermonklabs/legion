@@ -2,7 +2,7 @@
 // and the daemon's worker stream. The shim always dials the daemon — the stream is the daemon's
 // listener, never the shim's — authenticates with the pane's boot token, and spawns OMP only
 // once the daemon has acked it. From then on it carries OMP's stdio NDJSON to the stream and
-// back, answers the frames that are its own (`shutdown`, `adopt-working-copy`, `rescue-unpushed`, a repeated
+// back, answers the frames that are its own (`shutdown`, `adopt-working-copy`, a repeated
 // delivery), and outlives any one connection: a dropped stream is redialled, and what OMP says
 // meanwhile waits in a bounded backlog.
 //
@@ -213,7 +213,7 @@ type shim struct {
 	started time.Time
 
 	// commands is what every git and jj the shim starts builds its budget on (runAdoption,
-	// runBundle, rescue), each keeping a budget of its own on top of it. Each of those commands
+	// runBundle), each keeping a budget of its own on top of it. Each of those commands
 	// runs in a process group of its own now (internal/procgroup), which is a group the SIGHUP a
 	// tmux kill-pane gives every process of the pane does not reach, so the shim's own end is what
 	// passes that stop on: a command left on context.Background() runs on against a clone every
@@ -363,7 +363,7 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeRescueUnpushed, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -380,9 +380,6 @@ func (s *shim) fromDaemon(line []byte) {
 		return
 	case shimwire.BundleWorkspace:
 		s.answer(func() { s.bundleWorkspace(f) })
-		return
-	case shimwire.RescueUnpushed:
-		s.answer(func() { s.rescue(f) })
 		return
 	case shimwire.AgentSecretsEnrollment:
 		s.enroll(f)
@@ -439,14 +436,12 @@ func (s *shim) toDaemon(frame shimwire.Frame) {
 // harness is started after it, so no turn of the agent reaches a write path before the check its
 // environment names is known to be in place. And connect calls spawnOnce on the daemon's hello
 // ack and reads the next frame only once it has returned, so nothing the daemon asks of this shim
-// — the rescue helper that pushes a dying pod's work among them (fromDaemon's rescue-unpushed) —
 // runs before the read either. A role whose check is not in place runs no agent at all: every
-// write path would refuse anyway, and a rescue refused at the end of a dying pod would lose that
-// pod's work for a reason nobody would see.
+// write path would refuse anyway.
 //
 // PUBLIC_LEAK_CHECK is set from the install only where the environment names none of its own,
-// and the name is added to the shim's own environment, which is what the wrapped process, the
-// rescue helper and everything else this shim runs start from. A runtime that names the check
+// and the name is added to the shim's own environment, which is what the wrapped process and
+// everything else this shim runs start from. A runtime that names the check
 // (sandbox's mainEnvironment) therefore decides; where it names none, the install is what the
 // role's writes are checked against rather than none at all.
 func (s *shim) spawnOnce() bool {
@@ -682,8 +677,7 @@ func (s *shim) finish(code int, err error) {
 
 // toDaemonChunked sends a frame that may be larger than one line: under the limit it is one line,
 // and over it the rpc_chunk sequence the daemon's reader reassembles (shimwire.SplitChunks). The
-// bundle result and the push check's result, whose report names every commit of each branch with
-// no bound on their number, are this shim's frames that can be: everything else fits a line.
+// bundle result is this shim's one frame that can be: everything else fits a line.
 func (s *shim) toDaemonChunked(frame shimwire.Frame) {
 	line, err := json.Marshal(frame)
 	if err != nil {

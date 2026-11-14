@@ -1107,12 +1107,13 @@ export const LegionTurnOutcomeResponse = z.object({
 export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
 
 /** `claim.ReadyForUpdateRequest`, the body of `POST /legion/v1/claims/ready-for-update`: the
- * worker's answer to its pod's update task, which says it has pushed everything it wants kept and
- * its process may be replaced. `round` is the round the worker answers for, as the update task it
- * read named it: the daemon takes the answer only for the round its claim stands in, and refuses
- * one naming any other round with 409 and a sentence naming both. `head` is the commit the worker
- * reports as the head of `legion/<issue>@origin`, empty or absent when the branch is not there (a
- * planner before its first push); the daemon records it and verifies nothing of it. */
+ * worker's answer to its pod's update message, which says it has pushed everything it wants kept
+ * and its process may be replaced. `round` is the round the worker answers for, as the update
+ * message it read named it: the daemon takes the answer only for the round its claim stands in,
+ * and refuses one naming any other round with 409 and a sentence naming both. `head` is the
+ * commit the worker reports as the head of `legion/<issue>@origin`, empty or absent when the
+ * branch is not there (a planner before its first push); the daemon records it and verifies
+ * nothing of it. */
 export const LegionReadyForUpdateRequest = z.strictObject({
   claimToken: nonEmptyString,
   sessionId: nonEmptyString,
@@ -1478,10 +1479,17 @@ export const LegionControllerGrantRequest = z.strictObject({
  * Dispatch and refuses when it is missing (`HANDOFF_RECORD_REQUIRED`), unknown
  * (`HANDOFF_RECORD_NOT_FOUND`), unreadable (`DISPATCH_READ_FAILED`), of another issue, phase or
  * version (`HANDOFF_RECORD_MISMATCH`), or written by another session than the claim's
- * (`HANDOFF_SESSION_MISMATCH`). `commit` is the implementer's (its pushed tip for an implementing
- * round, the commit it stands on for retro) and the head the merger merged; the planner, the tester
- * and the reviewer report none, and a check report carries neither (the look pushed nothing), so
- * all three are optional here, and the daemon requires each where it applies. `verdict` is `pass`
+ * (`HANDOFF_SESSION_MISMATCH`). `commit` on such a completion is the head that record's body
+ * names (`head`, the 40-character lower-case commit the work the handoff reports was done
+ * against), which is what a completion of an earlier phase entry is taken at. The plugin refuses
+ * the implementer's completion before it goes when its `implement` record names no head, when the
+ * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
+ * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
+ * the reviewer's completion without one. Retro and every completion of a phase its
+ * role does not work report the commit the workspace stands on instead, the merger's reports the
+ * head the merger merged, and a check report carries neither commit nor record (the look pushed
+ * nothing), so all three are optional here, and the daemon requires each where it applies.
+ * `verdict` is `pass`
  * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
  * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
  * on the wire, as the Go field is. `wakeAt` is the check report's alone (contract 54): when the

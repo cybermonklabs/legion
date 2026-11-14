@@ -350,3 +350,16 @@ export const ArchitectureSyncFailedEventPayloadSchema = z
 export type ArchitectureSyncFailedEventPayload = z.output<
   typeof ArchitectureSyncFailedEventPayloadSchema
 >;
+
+/** `priority.updated`: one write of one priority committed - a create, a PATCH of its title,
+ *  description, owner or place in the order, or a delete, which writes the state gone. It names
+ *  the priority and which of the three writes it was, and carries no row: a reader refetches its
+ *  priorities reads on every write, and on a delete also the work under that priority, the work
+ *  under none and every issue read or listing whose rows advance it.
+ *  A priority belongs to no project, so the event names no owner (`issue_key` null, `project`
+ *  empty), wakes nobody (`notify` false) and the outbox publishes it on no subject. */
+export const PriorityUpdatedEventPayloadSchema = z
+  .strictObject({ id: z.string(), change: z.enum(["created", "updated", "deleted"]) })
+  .readonly();
+
+export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPayloadSchema>;
