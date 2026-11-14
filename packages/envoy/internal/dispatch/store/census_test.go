@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
@@ -198,6 +199,76 @@ func TestCensusReadsItsStringLiteralsWithStandardConformingStrings(t *testing.T)
 	}
 	if got := refusals(report); len(got) != 0 {
 		t.Errorf("refusals = %v, want none: the census read '\\\\' as one backslash", got)
+	}
+}
+
+// The census reads every pending migration with standard_conforming_strings on, and the runner
+// applies each one on a connection of its pool, which keeps a session setting from the migration
+// before (inMigrationLockTx gives the connection back with its settings as they are). After a
+// pending set standard_conforming_strings = off, a backslash escapes the quote after it in a later
+// migration's plain literal, so a text the census reads as one alter table with a constant default
+// the server reads as that alter table and an update of every row. The census must not exempt
+// from the size limit a migration the runner then applies as a statement it never read: either it
+// refuses 0003 on size, or the runner applies 0003 as the census read it and updates no row. The
+// control shows that the census exempts 0003 when no pending migration sets the strings off, so
+// a refusal of the pair is the setting's doing. The runner's pool holds one connection, so 0003
+// runs on the connection 0002 set.
+func TestCensusExemptsNoMigrationTheRunnerReadsAsOtherStatements(t *testing.T) {
+	ctx := context.Background()
+	store, url := migratedToOne(t)
+	if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'good'), (2, 'good'), (3, 'good')"); err != nil {
+		t.Fatal(err)
+	}
+	note := &fstest.MapFile{Data: []byte(`alter table things add column note text default 'a\'';update things set id = -id;--'`)}
+	noteOf := func(set fstest.MapFS) pgmigrate.MigrationCensus {
+		t.Helper()
+		report, err := census(ctx, url, set, pgmigrate.CensusOptions{TableLimit: 1})
+		if err != nil {
+			t.Fatalf("census: %v", err)
+		}
+		for _, entry := range report.Pending {
+			if entry.Migration.Name == "0003_things_note.up.sql" {
+				return entry
+			}
+		}
+		t.Fatalf("the census has no entry for 0003_things_note.up.sql:\n%s", reportText(report))
+		return pgmigrate.MigrationCensus{}
+	}
+	control := fstest.MapFS{"migrations/0003_things_note.up.sql": note}
+	for name, file := range censusBase {
+		control[name] = file
+	}
+	if entry := noteOf(control); entry.TableSizeExemption == "" || len(entry.Refusals) > 0 {
+		t.Fatalf("control: 0003 alone is not exempt (exemption %q, refusals %v), so the pair proves nothing", entry.TableSizeExemption, entry.Refusals)
+	}
+	set := fstest.MapFS{"migrations/0002_strings_off.up.sql": {Data: []byte("set standard_conforming_strings = off")}}
+	for name, file := range control {
+		set[name] = file
+	}
+	entry := noteOf(set)
+	if len(entry.Refusals) > 0 {
+		return
+	}
+	config, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	runner := &Store{Pool: NewPool(pool)}
+	if err := runner.migrate(ctx, set); err != nil {
+		t.Fatalf("migrate the set the census exempted: %v", err)
+	}
+	var updated int
+	if err := store.Pool.QueryRow(ctx, "select count(*) from things where id < 0").Scan(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated != 0 {
+		t.Errorf("the census exempted 0003 as %q, and the runner then updated %d rows of things: it read 0003 with standard_conforming_strings off, as an update the census never read", entry.TableSizeExemption, updated)
 	}
 }
 
