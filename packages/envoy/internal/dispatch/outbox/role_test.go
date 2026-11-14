@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleHolder is the session heldRoles names as every role's holder.
@@ -2194,7 +2195,15 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 				held.attempts, held.settled, held.published)
 		}
 		want := contracts.AgentSendDedupeKey(second, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
-		handed := handedNow(t, recv, "the copy kept for a role the comment's second mentioned session claimed under the keep")
+		var handed contracts.Envelope
+		testwait.Eventually(t, "the copy kept for a role the comment's second mentioned session claimed under the keep to reach its holder", func() bool {
+			select {
+			case handed = <-recv.arrived:
+				return true
+			default:
+				return false
+			}
+		})
 		if handed.DedupeKey != want {
 			t.Fatalf("the handover carried %q to %s, whose own mention of the comment settled, want that mention's own key %q, which its host drops",
 				handed.DedupeKey, second, want)
