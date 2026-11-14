@@ -44,7 +44,7 @@ Most write routes send that phase as one pipelined batch;
 the delivery replies (`POST /api/v1/comments/{id}/reply`, `POST /api/v1/messages/{id}/reply`) and the results write (`POST /api/v1/issues/{key}/results`) send theirs a statement at a time, still with no document work inside it.
 Some writers do not yet hold the rule: they make a write or take a row lock before they wait on the owner lock of the event they append, so they hold an id while another writer's document work holds that lock.
 dispatch://INFRA-3397 converts them and keeps the list of them;
-at commit `2d721710` of sjawhar/legion#2468 it was `keepDecision`, `putArchitectureSource`, `deleteArchitectureSource`, `putAskSnooze`, `deleteAskSnooze`, `markInboxReadThreads`, `dismissInboxThreads`, and the architecture importer's `Importer.project` and `Importer.recordFailure`.
+at commit `9e578bcc` of sjawhar/legion#2468 it was `keepDecision`, `putArchitectureSource`, `deleteArchitectureSource`, `putAskSnooze`, `deleteAskSnooze`, `markInboxReadThreads`, `dismissInboxThreads`, the architecture importer's `Importer.project` and `Importer.recordFailure`, and delivery's `UpsertPullRequestHead`, which locks and upserts the pull request's head row before it locks the issues the head moved between.
 A pending observation older than five seconds logs the oldest holder.
 A live event stream that resumes from an id opens at once and heartbeats while the horizon is held, a cold one opens once its subscription is in place, and shutdown ends a stream still waiting.
 A cold stream starts at the relay's published cursor.
