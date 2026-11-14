@@ -382,9 +382,10 @@ func orDash(s string) string {
 // method takes the secret's name under the prefix (secretName's slug); the full store-side name
 // (each backend's own id) is each backend's own concern.
 type secretBackend interface {
-	// requireAccount refuses, before any read, a sign-in whose account does not hold the agent
-	// secrets: a read there would list another account's secrets as if they were the agent
-	// secrets. AWS only: GCP needs no equivalent (gcpBackend.requireAccount says why).
+	// requireAccount refuses, before any read or write, a sign-in whose account does not hold the
+	// agent secrets: a read there would list another account's secrets as if they were the agent
+	// secrets. AWS only: GCP needs no equivalent (gcpBackend.requireAccount says why). AWS keeps
+	// the sign-in it read for personEmail and identity.
 	requireAccount(ctx context.Context) error
 	// personEmail answers, for --owner me alone, the lowercased email of the person the sign-in
 	// names: AWS reads an Identity Center sign-in's session name, GCP asks Google's userinfo
