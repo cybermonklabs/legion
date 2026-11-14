@@ -581,7 +581,13 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheCredentialWentAwayUnderTheRene
 // woken by a login alone leaves the renew unsent until the backoff comes round, and the
 // launcher gate spends its wait on a backoff this confirmation has no part in.
 func TestANameTakenDuringAnEnrollRetryConfirmsItsInheritedEnrollmentAtOnce(t *testing.T) {
-	r, _, _, release := reclaimedIdentityRig(t)
+	// At the production enroll backoff, one second doubling to a minute: the rig's own 20 ms to
+	// 100 ms retry would try again every 100 ms through the delay below, and any of those tries
+	// after the rename answers the register inside the second with no wake at all.
+	r, _, _, release := reclaimedIdentityRig(t, func(r *rig) {
+		r.srv.EnrollRetryMin = time.Second
+		r.srv.EnrollRetryMax = time.Minute
+	})
 	release() // nothing holds the confirming renew here: this fake answers it as a healthy broker does
 
 	// The unnamed register, which starts the enroll loop. Every enroll fails at once for want

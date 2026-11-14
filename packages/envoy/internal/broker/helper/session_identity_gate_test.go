@@ -457,16 +457,17 @@ func parkedRecord(t *testing.T, state string) *ecdsa.PrivateKey {
 // The gate is taken after the rig starts, as testGate asks: the open it registers for cleanup
 // then runs before the fake server's own Close, which waits for any request still held at the
 // gate.
-func reclaimedIdentityRig(t *testing.T) (*rig, *ecdsa.PrivateKey, string, func()) {
+func reclaimedIdentityRig(t *testing.T, tune ...func(*rig)) (*rig, *ecdsa.PrivateKey, string, func()) {
 	t.Helper()
-	return reclaimedIdentityRigAmending(t, nil)
+	return reclaimedIdentityRigAmending(t, nil, tune...)
 }
 
 // reclaimedIdentityRigAmending is reclaimedIdentityRig's body, with amend — when it is not nil
 // — changing the parked record after parkedRecord has written it and before the rig recovers
 // it. It is how a variant gets a record parkedRecord does not write, such as one carrying a
-// lapsed enrollment beside the one to reclaim.
-func reclaimedIdentityRigAmending(t *testing.T, amend func(*Record)) (*rig, *ecdsa.PrivateKey, string, func()) {
+// lapsed enrollment beside the one to reclaim. tune is passed to newRig, so a row sets a Server
+// field, such as the production enroll backoff, before the rig recovers the record.
+func reclaimedIdentityRigAmending(t *testing.T, amend func(*Record), tune ...func(*rig)) (*rig, *ecdsa.PrivateKey, string, func()) {
 	t.Helper()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	key := parkedRecord(t, state)
@@ -478,7 +479,7 @@ func reclaimedIdentityRigAmending(t *testing.T, amend func(*Record)) (*rig, *ecd
 		amend(&recs[0])
 		writeRecords(t, state, recs)
 	}
-	r := newRig(t, state)
+	r := newRig(t, state, tune...)
 	gate, release := testGate(t)
 	// The confirming renew this gate holds is a FIRST confirmation, so the helper bounds it
 	// (Server.FirstConfirmBound, DefaultFirstConfirmBound = 3 s in production). The rows here
