@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -1309,8 +1310,12 @@ def main() -> int:
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
     report += check_tag_runs(document, data, filters, quantifiers, files, problems)
-    for line in report:
-        print("report: " + escape_message(line))
+    if report:
+        report_token = secrets.token_hex(16)
+        print(f"::stop-commands::{report_token}")
+        for line in report:
+            print("report: " + escape_message(line))
+        print(f"::{report_token}::")
     problems = list(dict.fromkeys(problems))
     for problem in problems:
         print_annotation(problem)

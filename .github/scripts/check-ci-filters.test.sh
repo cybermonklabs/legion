@@ -234,6 +234,31 @@ replace() {
   printf '%s\n' "${text/"$old"/"$new"}" > "$file"
 }
 
+check_report_section() {
+  local token outside line in_report=false
+  token=$(grep -E '^::stop-commands::[0-9a-f]{32}$' <<<"$out" || true)
+  check "starts the report section with one token" \
+    "$(is "$(grep -Ecx '^::stop-commands::[0-9a-f]{32}$' <<<"$out" || true)" 1)"
+  token=${token#::stop-commands::}
+  check "ends the report section with its token" \
+    "$(is "$(grep -Fxc -- "::$token::" <<<"$out" || true)" 1)"
+  outside=
+  while IFS= read -r line; do
+    if [[ $line == "::stop-commands::$token" ]]; then
+      in_report=true
+      continue
+    fi
+    if [[ $line == "::$token::" ]]; then
+      in_report=false
+      continue
+    fi
+    if [[ $in_report == false ]] && { [[ $line == report:* ]] || [[ $line =~ (::[a-z-]+|##\[) ]]; }; then
+      outside+="$line"$'\n'
+    fi
+  done <<<"$out"
+  check "keeps report lines and command syntax inside the pair" "$(is "$outside" "")"
+}
+
 echo "case: the filter matches the job's closure, its test's read and its module files"
 root=$(fixture green)
 run_check "$root"
@@ -242,6 +267,7 @@ check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 unco
 check "holds the push workflow's paths to its filter" \
   "$(contains "$out" '^report: .github/workflows/site.yaml: on.push.paths equals filter site (3 patterns)$')"
 check "says what it checked" "$(contains "$out" 'every ci.yaml filter matches every file its job reads (1 gates)')"
+check_report_section
 
 echo "case: an annotation escapes an unsafe file name"
 root=$(fixture annotation-escape)
@@ -285,7 +311,7 @@ run_check "$root"
 check "passes" "$(is "$status" 0)"
 expected="report: $unsafe: on.push.paths equals filter site (3 patterns)"
 check "prefixes the report line" "$(is "$(grep -Fxc -- "$expected" <<<"$out" || true)" 1)"
-check "does not emit a command" "$(is "$(grep -E '^(::|##\[)' <<<"$out" || true)" "")"
+check_report_section
 
 echo "case: a report path beginning with ##[ is not a command"
 root=$(fixture report-legacy-prefix)
@@ -298,7 +324,20 @@ run_check "$root"
 check "passes" "$(is "$status" 0)"
 expected="report: $unsafe: on.push.paths equals filter site (3 patterns)"
 check "prefixes the report line" "$(is "$(grep -Fxc -- "$expected" <<<"$out" || true)" 1)"
-check "does not emit a command" "$(is "$(grep -E '^(::|##\[)' <<<"$out" || true)" "")"
+check_report_section
+
+echo "case: a report path with ##[ in the middle is not a command"
+root=$(fixture report-legacy-middle)
+unsafe='plain ##[warning]forged.yaml'
+cp "$root/.github/workflows/site.yaml" "$root/$unsafe"
+cat >> "$root/.github/scripts/ci_job_reads.py" <<PY
+PUSH_WORKFLOWS = {"site": "$unsafe"}
+PY
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+expected="report: $unsafe: on.push.paths equals filter site (3 patterns)"
+check "prefixes the report line" "$(is "$(grep -Fxc -- "$expected" <<<"$out" || true)" 1)"
+check_report_section
 echo "case: an import of a package outside the filter"
 root=$(fixture new-import)
 printf 'package lib\n\nimport _ "example.com/m/other"\n\nfunc Hello() {}\n' > "$root/mod/lib/lib.go"
