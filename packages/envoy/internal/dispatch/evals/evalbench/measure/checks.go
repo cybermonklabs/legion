@@ -90,8 +90,9 @@ func (c *headChecks) captured(ctx context.Context, name, marker string, fn func(
 
 // k13 reads the named-jobs statement through delivery.ListRunJobsForRuns over the deploy runs of
 // the 84-day window and the production jobs the settings judge a deploy by, and the count of P0
-// issues with no owner through delivery.ListUnownedP0: the first must carry the job names in its
-// index condition, the second read issues_open_p0 and scan no table of issues.
+// issues with no owner through delivery.CountUnownedP0, the unowned-p0 eval's own read: the first
+// must carry the job names in its index condition, the second read issues_open_p0 and scan no
+// table of issues.
 func (c *headChecks) k13() {
 	ctx := context.Background()
 	settings, err := delivery.GetSettings(ctx, c.pool)
@@ -127,9 +128,8 @@ func (c *headChecks) k13() {
 		}
 	}
 	var unowned int
-	for _, plan := range c.captured(ctx, "k13-unowned-p0", "claimed_by is null and route is null", func() error {
-		issues, err := delivery.ListUnownedP0(ctx, c.pool, c.o.project)
-		unowned = len(issues)
+	for _, plan := range c.captured(ctx, "k13-unowned-p0", "claimed_by is null and route is null", func() (err error) {
+		unowned, err = delivery.CountUnownedP0(ctx, c.pool, c.o.project)
 		return err
 	}) {
 		index, scans := usesIndex(plan, "issues_open_p0"), seqScanned(plan, "issues")

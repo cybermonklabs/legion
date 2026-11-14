@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// TestReadClosedInReadsTheClosedFactsIndex: ReadClosedIn's statement, as it sends it (rowsSelect
+// TestReadClosedInReadsTheClosedFactsIndex: ReadClosedIn's statement, as it sends it (wideSelect
 // and closedInWhere), reads one project's issues closed in a window through issue_facts_closed
 // (migration 20261113082157) and never scans issue_facts, on an analyzed store of five projects of
 // 4,000 stored facts each, nine in ten closed, one a day back over a year: enough rows that the
@@ -35,7 +35,7 @@ func TestReadClosedInReadsTheClosedFactsIndex(t *testing.T) {
 		t.Fatalf("ReadClosedIn: %v", err)
 	}
 	var raw []byte
-	if err := pool.QueryRow(ctx, "explain (format json) "+rowsSelect+closedInWhere, "FC", from, now).Scan(&raw); err != nil {
+	if err := pool.QueryRow(ctx, "explain (format json) "+wideSelect+closedInWhere, "FC", from, now).Scan(&raw); err != nil {
 		t.Fatalf("explain ReadClosedIn: %v", err)
 	}
 	plan := explaintest.OnePlan(t, raw)

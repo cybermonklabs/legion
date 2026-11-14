@@ -1,15 +1,18 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -208,6 +211,122 @@ func TestALegionItemShowsTheRepositoryItIsFilteredBy(t *testing.T) {
 		}
 		if strings.Join(shown, ", ") != strings.Join(want, ", ") {
 			t.Errorf("the items read with repo %q answer %v, want %v", read.filter, shown, want)
+		}
+	}
+}
+
+// TestALegionItemsPageIsThatPageOfTheWholeRead: legion-splitting's issue rows, its filings and
+// then its closed issues, read a page of two at a time from every offset, are the rows the whole
+// read answers at those positions, field by field, under the same total: unfiltered, kept to the
+// repository every issue resolves to, and kept to one no issue resolves to, which answers none.
+// The pages cross from the filings to the closed issues.
+func TestALegionItemsPageIsThatPageOfTheWholeRead(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	ctx := t.Context()
+	actor := `{"kind":"user","id":"alice"}`
+	if _, err := database.Pool.Exec(ctx, `insert into repo_projects (repo, project, created_by, is_default) values ('acme/web', 'EVL', $1, true)`, actor); err != nil {
+		t.Fatalf("map EVL's default repository: %v", err)
+	}
+	day := measures.Midnight(time.Now()).AddDate(0, 0, -1)
+	var rows []legionfacts.Row
+	var filings []legionfacts.Filing
+	for number := 1; number <= 7; number++ {
+		key := fmt.Sprintf("EVL-%d", number)
+		if _, err := database.Pool.Exec(ctx, `insert into issues (key, project_key, number, title, status, rank, created_by) values ($1, 'EVL', $2, $3, 'done', $4, $5)`,
+			key, number, "Issue "+key, fmt.Sprintf("U%03d", number), actor); err != nil {
+			t.Fatalf("write %s: %v", key, err)
+		}
+		at := day.Add(time.Duration(number) * time.Hour)
+		if number <= 3 {
+			filings = append(filings, legionfacts.Filing{Project: "EVL", Issue: key, FiledAt: at, FilerRole: "architect", FilerIssue: "EVL-4",
+				FilerPhase: "implementing", Class: "in_tree_at_design", RootKey: key})
+			continue
+		}
+		rows = append(rows, legionfacts.Row{Project: "EVL", Issue: key, OpenedAt: at.Add(-time.Hour), ClosedAt: &at, RootKey: key, WorkHours: float64(number),
+			HoursByPhase: map[string]float64{}, Bars: map[string]metrics.BarPart{}, IdleByRole: map[string]float64{}, Repo: "acme/web"})
+	}
+	if _, err := legionfacts.WriteProject(ctx, database.Pool, legionfacts.ProjectWrite{Project: "EVL", Whole: true, Rows: rows}); err != nil {
+		t.Fatalf("write the facts: %v", err)
+	}
+	if err := legionfacts.WriteFilings(ctx, database.Pool, legionfacts.FilingsWrite{Project: "EVL", Whole: true, Filings: filings}); err != nil {
+		t.Fatalf("write the filings: %v", err)
+	}
+	read := func(repo string, limit, offset int) evalItemsResponse {
+		t.Helper()
+		query := url.Values{"row_kind": {"issue"}, "from": {day.Format(time.RFC3339)}, "to": {day.AddDate(0, 0, 1).Format(time.RFC3339)},
+			"limit": {fmt.Sprint(limit)}, "offset": {fmt.Sprint(offset)}}
+		if repo != "" {
+			query.Set("repo", repo)
+		}
+		return evalGet[evalItemsResponse](t, handler, "/api/v1/projects/EVL/evals/legion-splitting/items?"+query.Encode())
+	}
+	for _, repo := range []string{"", "acme/web", "acme/other"} {
+		whole := read(repo, 200, 0)
+		if want := map[string]int{"": 7, "acme/web": 7, "acme/other": 0}[repo]; whole.Total != want || len(whole.Items) != want {
+			t.Fatalf("the whole read with repo %q answers %d rows of %d, want %d", repo, len(whole.Items), whole.Total, want)
+		}
+		for offset := 0; offset <= whole.Total; offset++ {
+			page := read(repo, 2, offset)
+			want := whole.Items[min(offset, len(whole.Items)):min(offset+2, len(whole.Items))]
+			got, err := json.Marshal(page.Items)
+			if err != nil {
+				t.Fatalf("encode the page: %v", err)
+			}
+			wanted, err := json.Marshal(want)
+			if err != nil {
+				t.Fatalf("encode the whole read's rows: %v", err)
+			}
+			if page.Total != whole.Total || string(got) != string(wanted) {
+				t.Errorf("repo %q, offset %d: the page answers %s of %d, want %s of %d", repo, offset, got, page.Total, wanted, whole.Total)
+			}
+		}
+	}
+}
+
+// TestTheCrossProjectListPagesAcrossTheProjectsInTheirNamedOrder: GET /api/v1/evals over three
+// projects named out of key order answers their evals by project in the order named and then by
+// slug, and a page of seven read from any offset is the slice of the whole read at that offset
+// under the same total, for every kind and for one kind: the page runs across the projects, so a
+// page holds the end of one project's evals and the start of the next one's.
+func TestTheCrossProjectListPagesAcrossTheProjectsInTheirNamedOrder(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	for _, project := range []string{"EVA", "EVB", "EVC"} {
+		createTestProject(t, handler, project)
+	}
+	named := []string{"EVC", "EVA", "EVB"}
+	for _, kind := range []string{"", evals.KindDelivery} {
+		query := url.Values{"project": named}
+		if kind != "" {
+			query.Set("kind", kind)
+		}
+		whole := evalGet[evalListResponse](t, handler, "/api/v1/evals?limit=200&"+query.Encode())
+		var order []string
+		for _, item := range whole.Items {
+			order = append(order, item.Definition.ProjectKey+"/"+item.Definition.Slug)
+		}
+		want := slices.SortedFunc(slices.Values(order), func(a, b string) int {
+			projectA, slugA, _ := strings.Cut(a, "/")
+			projectB, slugB, _ := strings.Cut(b, "/")
+			if byProject := slices.Index(named, projectA) - slices.Index(named, projectB); byProject != 0 {
+				return byProject
+			}
+			return strings.Compare(slugA, slugB)
+		})
+		if whole.Total != len(whole.Items) || whole.Total < 3 || !slices.Equal(order, want) {
+			t.Fatalf("kind %q: the whole read answers %d of %d evals in the order %v, want them by project as named and then by slug", kind, len(whole.Items), whole.Total, order)
+		}
+		for offset := 0; offset <= whole.Total; offset += 3 {
+			query.Set("limit", "7")
+			query.Set("offset", fmt.Sprint(offset))
+			page := evalGet[evalListResponse](t, handler, "/api/v1/evals?"+query.Encode())
+			var got []string
+			for _, item := range page.Items {
+				got = append(got, item.Definition.ProjectKey+"/"+item.Definition.Slug)
+			}
+			if wanted := order[min(offset, len(order)):min(offset+7, len(order))]; page.Total != whole.Total || !slices.Equal(got, wanted) {
+				t.Errorf("kind %q, offset %d: the page answers %v of %d, want %v of %d", kind, offset, got, page.Total, wanted, whole.Total)
+			}
 		}
 	}
 }

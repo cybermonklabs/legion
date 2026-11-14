@@ -42,7 +42,7 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the project's population: %v", err)
 	}
-	computed := metrics.ProjectFacts(population)
+	computed := metrics.ProjectFacts(population, nil)
 	computedScope := population.Project
 	computedWindow := independent.Window{From: population.From, To: population.To}
 

@@ -125,7 +125,7 @@ func windowOf(population *Population, cut Scope) window {
 	dayOf := func(at time.Time) time.Time { return at.UTC().Truncate(24 * time.Hour) }
 	closedOn := map[time.Time][]IssueFacts{}
 	filedOn := map[time.Time][]IssueFiling{}
-	facts := ProjectFacts(population)
+	facts := ProjectFacts(population, nil)
 	for _, key := range population.Keys {
 		issue, held := facts[key]
 		if !held || issue.ClosedAt == nil || issue.ClosedAt.Before(population.From) || !issue.ClosedAt.Before(population.To) {

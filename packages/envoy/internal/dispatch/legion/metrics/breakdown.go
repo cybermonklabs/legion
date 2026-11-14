@@ -156,10 +156,18 @@ type IssueFacts struct {
 // no hours is left out of PhaseHours, which is `{}` for an issue whose work took no measured
 // time; the entry itself is there, so "has an entry" is the same question as "Legion worked it"
 // (Population.hasPhaseWork).
-func ProjectFacts(population *Population) map[string]IssueFacts {
+//
+// wanted, where it is not nil, names the issues whose facts are computed, and no other issue's
+// are: a read of some issues (ReadIssues) holds a wider population than those issues, their
+// trees and their filings' filers, whose own facts the caller keeps none of. Each issue's facts
+// are the same whichever others are computed beside them.
+func ProjectFacts(population *Population, wanted map[string]bool) map[string]IssueFacts {
 	c := newComputation(population)
 	out := map[string]IssueFacts{}
 	for _, key := range population.Keys {
+		if wanted != nil && !wanted[key] {
+			continue
+		}
 		issue := population.Issues[key]
 		if issue == nil || !population.hasPhaseWork(issue) {
 			continue

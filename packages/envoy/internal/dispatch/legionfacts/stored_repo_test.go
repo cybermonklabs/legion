@@ -38,7 +38,7 @@ func TestEachStoredRowNamesTheRepositoryTheIssuePageResolves(t *testing.T) {
 	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts of %s: %v", project, err)
 	}
-	stored, err := Read(t.Context(), seeded.database.Pool, project)
+	stored, err := readWhole(t.Context(), seeded.database.Pool, project)
 	if err != nil {
 		t.Fatalf("read the facts of %s: %v", project, err)
 	}

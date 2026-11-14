@@ -178,7 +178,7 @@ func seededEntries(t *testing.T, registry *evals.Store, project string) []evals.
 	if _, err := registry.Ensure(t.Context(), project); err != nil {
 		t.Fatalf("seed the evals of %s: %v", project, err)
 	}
-	page, err := registry.Current(t.Context(), project, "", 200, 0)
+	page, err := registry.Current(t.Context(), []string{project}, "", 200, 0)
 	if err != nil {
 		t.Fatalf("read the evals of %s: %v", project, err)
 	}
@@ -354,7 +354,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 	days := pipelineWindowBetween(from, to).days()
 	query := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}
 	read := func(repos []string) map[string][]measures.DayPart {
-		rows, err := registry.DayWindow(t.Context(), fixture.Project, entries, repos, evals.Range{From: from, To: to}, nil)
+		rows, err := registry.DayWindow(t.Context(), []string{fixture.Project}, entries, repos, evals.Range{From: from, To: to}, nil)
 		if err != nil {
 			t.Fatalf("read the day rows of %s..%s for %v: %v", from.Format(time.DateOnly), to.Format(time.DateOnly), repos, err)
 		}
@@ -589,7 +589,7 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		entries = slices.DeleteFunc(entries, func(entry evals.Entry) bool {
 			return entry.Definition.EvalID != evals.EvalID(project, evals.SlugDeployFrequency)
 		})
-		rows, err := registry.DayWindow(ctx, project, entries, nil, evals.Range{From: from, To: to}, nil)
+		rows, err := registry.DayWindow(ctx, []string{project}, entries, nil, evals.Range{From: from, To: to}, nil)
 		if err != nil {
 			t.Fatalf("read the deploy-frequency rows of %s: %v", project, err)
 		}

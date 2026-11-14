@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -213,7 +214,7 @@ func TestTwoFirstWritesOfOneSlugRegisterItOnce(t *testing.T) {
 	if sections != 1 {
 		t.Errorf("evals-md holds %d sections for %s, want 1", sections, slug)
 	}
-	page, err := r.registry.Current(t.Context(), r.project, "", 10, 0)
+	page, err := r.registry.Current(t.Context(), []string{r.project}, "", 10, 0)
 	if err != nil {
 		t.Fatalf("read the registry: %v", err)
 	}
@@ -302,6 +303,56 @@ func TestACorrectionSupersedesTheReadingItReplacesAndMovesItsDayRow(t *testing.T
 	if standing := r.count(t, `select count(*) from eval_readings where eval_id = $1 and superseded_at is null`, evalID); standing != 2 {
 		t.Errorf("%d readings of the eval stand, want 2 of its 4", standing)
 	}
+}
+
+// TestAWriteThatEmptiesADayRowWritesItsZeroRowBesideTheRowsItFills: one write's day rows are
+// written together, each with its own parts and samples. A correction that moves a reading to
+// another day empties the day it left, which stands as the zero row (n 0, a zero sum, numerator
+// and denominator, the empty sample list, no maximum and no last value) between a day before it
+// and a day after it that the same write adds to, each of which holds its own samples alone.
+func TestAWriteThatEmptiesADayRowWritesItsZeroRowBesideTheRowsItFills(t *testing.T) {
+	r := newRig(t)
+	minutes := func(key string, value float64, n int, measured time.Time, extra map[string]any) json.RawMessage {
+		fields := map[string]any{"series": "minutes", "row_kind": "run", "row_key": key, "value": value, "n": n, "measured_at": measured}
+		maps.Copy(fields, extra)
+		return row(t, fields)
+	}
+	written := r.write(t, "build-minutes", alice,
+		minutes("a", 4, 1, at(4, 10, 0), nil), minutes("b", 6, 3, at(5, 10, 0), nil), minutes("c", 8, 1, at(6, 10, 0), nil))
+	evalID := written.Definition.EvalID
+	r.write(t, "build-minutes", alice,
+		minutes("d", 1, 1, at(4, 12, 0), nil),
+		minutes("b", 9, 2, at(6, 9, 0), map[string]any{"replaces": written.Readings[1].ID}),
+		minutes("e", 2, 1, at(4, 8, 0), nil))
+
+	for _, want := range []struct {
+		day            time.Time
+		samples        []float64
+		sum, num, den  float64
+		max, lastValue *float64
+		lastAt         *time.Time
+	}{
+		{day: at(4, 0, 0), samples: []float64{4, 1, 2}, sum: 7, num: 7, den: 3, max: new(4.0), lastValue: new(1.0), lastAt: new(at(4, 12, 0))},
+		{day: at(5, 0, 0), samples: []float64{}, sum: 0, num: 0, den: 0},
+		{day: at(6, 0, 0), samples: []float64{8, 9}, sum: 17, num: 26, den: 3, max: new(9.0), lastValue: new(8.0), lastAt: new(at(6, 10, 0))},
+	} {
+		got := r.day(t, evalID, "minutes", "", want.day)
+		shown := fmt.Sprintf("n=%d samples=%v sum=%s num=%s den=%s max=%s last=%s at %v", got.N, got.Samples, showValue(got.Sum),
+			showValue(got.Num), showValue(got.Den), showValue(got.Max), showValue(got.LastValue), got.LastAt)
+		t.Logf("%s: %s", want.day.Format(time.DateOnly), shown)
+		sameTime := (got.LastAt == nil) == (want.lastAt == nil) && (got.LastAt == nil || got.LastAt.Equal(*want.lastAt))
+		if got.N != len(want.samples) || got.Samples == nil || !slices.Equal(got.Samples, want.samples) ||
+			got.Sum == nil || *got.Sum != want.sum || got.Num == nil || *got.Num != want.num || got.Den == nil || *got.Den != want.den ||
+			!sameValue(got.Max, want.max) || !sameValue(got.LastValue, want.lastValue) || !sameTime {
+			t.Errorf("the day row of %s is %s, want samples %v, sum %v, num %v, den %v, max %s, last %s at %v", want.day.Format(time.DateOnly),
+				shown, want.samples, want.sum, want.num, want.den, showValue(want.max), showValue(want.lastValue), want.lastAt)
+		}
+	}
+}
+
+// sameValue reports whether two optional values are both absent or both the same value.
+func sameValue(got, want *float64) bool {
+	return (got == nil) == (want == nil) && (got == nil || *got == *want)
 }
 
 // TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow: a reading logged under a computed

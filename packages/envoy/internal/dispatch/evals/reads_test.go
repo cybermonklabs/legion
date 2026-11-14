@@ -33,7 +33,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 	window := Range{From: at(4, 0, 0), To: at(7, 0, 0)}
 	compare := Range{From: at(1, 0, 0), To: at(4, 0, 0)}
 
-	days, err := r.registry.DayWindow(t.Context(), r.project, r.entries(t, evalID), nil, window, &compare)
+	days, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), nil, window, &compare)
 	if err != nil {
 		t.Fatalf("read the window and the compare range: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 		t.Errorf("the read answers %v, want %v", got, want)
 	}
 
-	repoDays, err := r.registry.DayWindow(t.Context(), r.project, r.entries(t, evalID), []string{"acme/web"}, window, &compare)
+	repoDays, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), []string{"acme/web"}, window, &compare)
 	if err != nil {
 		t.Fatalf("read acme/web's window and compare range: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 		t.Errorf("the repository's read answers %v, want %v", got, want)
 	}
 
-	windowOnly, err := r.registry.DayWindow(t.Context(), r.project, []Entry{{Definition: Definition{EvalID: "EVAL/no-such-eval"}}}, nil, window, nil)
+	windowOnly, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{{Definition: Definition{EvalID: "EVAL/no-such-eval"}}}, nil, window, nil)
 	if err != nil {
 		t.Fatalf("read another eval's window: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("fold visits as a quantile: %v", err)
 	}
-	quantiles, err := r.registry.DayWindow(t.Context(), r.project, r.entries(t, evalID), []string{"acme/web"}, window, &compare)
+	quantiles, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), []string{"acme/web"}, window, &compare)
 	if err != nil {
 		t.Fatalf("read acme/web's rows of a quantile: %v", err)
 	}

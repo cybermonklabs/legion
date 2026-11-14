@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The delivery and CI evals' day rows (dispatch://INFRA-2916, R12, R15, R16 and D1). One UTC day's
@@ -243,36 +244,51 @@ type DeliveryDay struct {
 // delivery.Deploys.ShippedBy's, the rule the routes count with_prs by; the pull requests merged
 // before the day are read for them alone.
 func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time) (DeliveryDay, error) {
-	return s.readDeliveryDay(ctx, settings, day, nil)
+	return s.readDeliveryDay(ctx, settings, day, nil, nil)
 }
 
 // readDeliveryDay is ReadDeliveryDay, its deploy runs created from the day's start on taken from
 // applyRows where it is not nil (delivery.MergedRowsWith): rows a walk read once from the first of
 // its days, which every later day of the walk takes its part of rather than reading every run
-// created from its own start to now again.
-func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time, applyRows *delivery.ApplyRows) (DeliveryDay, error) {
+// created from its own start to now again; and its repo_projects taken from repos where it is not
+// nil, a read the refresher makes once a page (refresh.repos). The deploys, the merged rows and the
+// CI runs depend on none of each other, and are read side by side.
+func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time, applyRows *delivery.ApplyRows, repos *repoProjects) (DeliveryDay, error) {
 	pool := s.database.Pool
 	day = measures.Midnight(day)
 	end := day.AddDate(0, 0, 1)
 	production := settings.Production()
 	read := DeliveryDay{Day: day, cards: measures.DeployCards(settings)}
 
-	deploys, err := delivery.ReadDeploys(ctx, pool, settings, day, end)
-	if err != nil {
-		return DeliveryDay{}, fmt.Errorf("read the deploys of %s: %w", day.Format(time.DateOnly), err)
-	}
+	var deploys delivery.Deploys
 	var merged delivery.MergedRows
-	if applyRows != nil {
-		merged, err = delivery.MergedRowsWith(ctx, pool, *applyRows, day, end)
-	} else {
-		merged, err = delivery.ReadMergedRows(ctx, pool, settings, day, end, false)
-	}
-	if err != nil {
-		return DeliveryDay{}, fmt.Errorf("read the pull requests of %s: %w", day.Format(time.DateOnly), err)
-	}
-	ci, err := delivery.ReadCIRows(ctx, pool, settings.DeployRepo, day, end, measures.DeployCardJobNames(read.cards))
-	if err != nil {
-		return DeliveryDay{}, fmt.Errorf("read the CI runs of %s: %w", day.Format(time.DateOnly), err)
+	var ci delivery.CIRows
+	if err := store.ReadSideBySide(ctx,
+		func(ctx context.Context) (err error) {
+			if deploys, err = delivery.ReadDeploys(ctx, pool, settings, day, end); err != nil {
+				return fmt.Errorf("read the deploys of %s: %w", day.Format(time.DateOnly), err)
+			}
+			return nil
+		},
+		func(ctx context.Context) (err error) {
+			if applyRows != nil {
+				merged, err = delivery.MergedRowsWith(ctx, pool, *applyRows, day, end)
+			} else {
+				merged, err = delivery.ReadMergedRows(ctx, pool, settings, day, end, false)
+			}
+			if err != nil {
+				return fmt.Errorf("read the pull requests of %s: %w", day.Format(time.DateOnly), err)
+			}
+			return nil
+		},
+		func(ctx context.Context) (err error) {
+			if ci, err = delivery.ReadCIRows(ctx, pool, settings.DeployRepo, day, end, measures.DeployCardJobNames(read.cards)); err != nil {
+				return fmt.Errorf("read the CI runs of %s: %w", day.Format(time.DateOnly), err)
+			}
+			return nil
+		},
+	); err != nil {
+		return DeliveryDay{}, err
 	}
 	var issueKeys []string
 	for _, prs := range [][]delivery.DeliveryPullRequest{merged.PullRequests, deploys.Earlier.PullRequests} {
@@ -286,9 +302,12 @@ func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 	if err != nil {
 		return DeliveryDay{}, err
 	}
-	repos, err := readRepoProjects(ctx, s)
-	if err != nil {
-		return DeliveryDay{}, err
+	if repos == nil {
+		mapped, err := readRepoProjects(ctx, s)
+		if err != nil {
+			return DeliveryDay{}, err
+		}
+		repos = &mapped
 	}
 
 	attribute := func(pr delivery.DeliveryPullRequest) counted {
@@ -754,14 +773,15 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 }
 
 // WriteUnownedP0Day writes project's unowned-p0 row of the UTC day day is on: the count of its
-// open P0 issues with no owner now (delivery.ListUnownedP0, by the issues_open_p0 index) as the
-// row's one value and its last_value, last_at the moment the count last moved, so the day's row is
-// the count at its last refresh and the `last` fold of a window reads its newest day's. A write
-// that counts what the row holds keeps the row's time, so it rewrites nothing (built_by aside) and
-// logs no change: the refresher writes the row on every change that can move the count, most of
-// which move nothing. builtBy is the running build.
+// open P0 issues with no owner now (delivery.CountUnownedP0, the rule delivery.ListUnownedP0 lists
+// by, read through the issues_open_p0 index) as the row's one value and its last_value, last_at
+// the moment the count last moved, so the day's row is the count at its last refresh and the
+// `last` fold of a window reads its newest day's. A write that counts what the row holds keeps the
+// row's time, so it rewrites nothing (built_by aside) and logs no change: the refresher writes the
+// row on every change that can move the count, most of which move nothing. builtBy is the running
+// build.
 func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.Time, builtBy string) error {
-	issues, err := delivery.ListUnownedP0(ctx, s.database.Pool, project)
+	unowned, err := delivery.CountUnownedP0(ctx, s.database.Pool, project)
 	if err != nil {
 		return fmt.Errorf("count the unowned P0 issues of %s: %w", project, err)
 	}
@@ -782,7 +802,7 @@ func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.
 	`, project, evalID, SeriesUnownedP0, date).Scan(&now, &stored, &storedAt); err != nil {
 		return fmt.Errorf("read the unowned-p0 row of %s: %w", project, err)
 	}
-	count, at := float64(len(issues)), now.UTC()
+	count, at := float64(unowned), now.UTC()
 	if stored != nil && *stored == count && storedAt != nil {
 		at = storedAt.UTC()
 	}

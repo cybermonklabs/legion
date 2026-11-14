@@ -86,11 +86,17 @@ func TestListUnownedP0(t *testing.T) {
 	if want := want[:2]; !slices.Equal(acme, want) {
 		t.Fatalf("ListUnownedP0 of ACME = %+v, want %+v (its open P0 issues neither claimed nor routed, by number)", acme, want)
 	}
+	// The count the unowned-p0 eval records is the length of that list.
+	for project, want := range map[string]int{"ACME": 2, "ACMEB": 1} {
+		if count, err := CountUnownedP0(ctx, pool, project); err != nil || count != want {
+			t.Errorf("CountUnownedP0 of %s = %d, %v; want %d, the length of its list", project, count, err, want)
+		}
+	}
 }
 
 // Of four P0 issues, one done, one claimed, one routed and one none of these, the unowned P0
-// count is 1: the rule of ListUnownedP0, which the delivery measures' P0 card and the unowned-p0
-// eval answer (dispatch://INFRA-2916, R13).
+// count is 1: the rule of ListUnownedP0, which the delivery measures' P0 card answers, and of
+// CountUnownedP0, which the unowned-p0 eval records (dispatch://INFRA-2916, R13).
 func TestOfFourP0IssuesOnlyTheOneNeitherDoneClaimedNorRoutedIsUnowned(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	p0 := 0
@@ -109,17 +115,20 @@ func TestOfFourP0IssuesOnlyTheOneNeitherDoneClaimedNorRoutedIsUnowned(t *testing
 	if want := []UnownedIssue{{Key: "PZERO-4", Title: "none of these"}}; !slices.Equal(unowned, want) {
 		t.Fatalf("the unowned P0 issues of done, claimed, routed and none of these = %+v, want %+v: a count of 1", unowned, want)
 	}
+	if count, err := CountUnownedP0(ctx, pool, "PZERO"); err != nil || count != 1 {
+		t.Fatalf("CountUnownedP0 of done, claimed, routed and none of these = %d, %v; want 1", count, err)
+	}
 }
 
-// Both reads of ListUnownedP0, one project's and every project's, read issues through
-// issues_open_p0 (migration 20261113082158), the partial index of the open P0 issues, with the
-// claim and the route a filter over it, and never scan issues: `EXPLAIN (ANALYZE, BUFFERS)` of each
-// statement as ListUnownedP0 sends it. The project read is keyed by the index's project_key; the
-// read of every project is the whole of an index that holds the open P0 issues alone. The
-// fixture's project holds 200 issues, one of them an unowned P0, and issues is analyzed before the
-// plans: unanalyzed, the planner takes the table for a few rows, and reads one project's in number
-// order through issues_project_key_number_key, filtering each, as cheaply as it reads the partial
-// index and sorts, which says nothing about the statement.
+// The reads of ListUnownedP0, one project's and every project's, and CountUnownedP0's count of one
+// project's read issues through issues_open_p0 (migration 20261113082158), the partial index of
+// the open P0 issues, with the claim and the route a filter over it, and never scan issues:
+// `EXPLAIN (ANALYZE, BUFFERS)` of each statement as it is sent. A project's read is keyed by the
+// index's project_key; the read of every project is the whole of an index that holds the open P0
+// issues alone. The fixture's project holds 200 issues, one of them an unowned P0, and issues is
+// analyzed before the plans: unanalyzed, the planner takes the table for a few rows, and reads one
+// project's in number order through issues_project_key_number_key, filtering each, as cheaply as
+// it reads the partial index and sorts, which says nothing about the statement.
 func TestTheUnownedP0ReadsReadTheirPartialIndex(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	p0, p2 := 0, 2
@@ -139,6 +148,7 @@ func TestTheUnownedP0ReadsReadTheirPartialIndex(t *testing.T) {
 	}{
 		{"every project's", unownedP0Query, nil},
 		{"one project's", projectUnownedP0Query, []any{"PINDEX"}},
+		{"one project's count", projectUnownedP0Count, []any{"PINDEX"}},
 	} {
 		plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, read.statement, read.arguments...)
 		if explaintest.SeqScansRelation(t, plan, "issues") {

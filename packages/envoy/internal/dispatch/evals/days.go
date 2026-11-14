@@ -82,9 +82,9 @@ func dayKeysOf(reading Reading) ([]dayKey, dayPart, bool) {
 // writeDays keeps the day rows of definition, a logged eval, for the readings a write added and
 // the readings it replaced, in the write's transaction: it makes sure each touched row exists,
 // locks the rows in key order (so two writes of overlapping days wait on each other rather than
-// deadlock), and writes each row's new parts, recording builtBy as the build that wrote them. It
-// runs after the write's readings are inserted and its replaced readings superseded, so a read
-// of the newest standing reading sees both.
+// deadlock), and writes every row's new parts in one statement, recording builtBy as the build
+// that wrote them. It runs after the write's readings are inserted and its replaced readings
+// superseded, so a read of the newest standing reading sees both.
 func writeDays(ctx context.Context, w *writeTx, definition Definition, series map[string]Series, added, removed []Reading, builtBy string) error {
 	changes := map[dayKey]*dayChange{}
 	change := func(key dayKey) *dayChange {
@@ -155,8 +155,19 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 	if len(rows) != len(keys) {
 		return fmt.Errorf("the write touches %d day rows of %s and locked %d", len(keys), definition.EvalID, len(rows))
 	}
-	batch := &pgx.Batch{}
-	for _, row := range rows {
+	// One statement writes every row, so the statement-level trigger of eval_days logs this eval's
+	// change once (20261113082202) rather than rewriting its change row once a row. Each row's key
+	// and values go at its index among the locked rows, the key's arrays above filled again in that
+	// order. An array parameter holds no arrays of differing lengths, so the rows' samples go as one
+	// flat list, each row's the n of them from its first's position on.
+	counts, firsts := make([]int, len(rows)), make([]int, len(rows))
+	sums, nums, dens, maxes := make([]*float64, len(rows)), make([]*float64, len(rows)), make([]*float64, len(rows)), make([]*float64, len(rows))
+	lastValues, lastAts := make([]*float64, len(rows)), make([]*time.Time, len(rows))
+	// Empty rather than nil, which pgx would send as null, and a slice of null is null where a row
+	// with no value holds the empty list.
+	samples := []float64{}
+	for index, row := range rows {
+		seriesNames[index], repos[index], days[index] = row.Series, row.Repo, row.Day
 		key := dayKey{series: row.Series, repo: row.Repo, day: row.Day}
 		next, restore := applyParts(row, *changes[key])
 		if restore {
@@ -164,14 +175,21 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 				return err
 			}
 		}
-		batch.Queue(`
-			update eval_days set listed = $6, n = $7, sum = $8, num = $9, den = $10, max = $11, samples = $12,
-				last_value = $13, last_at = $14, built_by = $15, updated_at = now()
-			where project_key = $1 and eval_id = $2 and series = $3 and repo = $4 and day = $5
-		`, row.ProjectKey, row.EvalID, row.Series, row.Repo, row.Day, series[row.Series].Listed, next.N, next.Sum,
-			next.Num, next.Den, next.Max, next.Samples, next.LastValue, next.LastAt, builtBy)
+		listed[index], counts[index], firsts[index] = series[row.Series].Listed, next.N, len(samples)+1
+		sums[index], nums[index], dens[index], maxes[index] = next.Sum, next.Num, next.Den, next.Max
+		lastValues[index], lastAts[index] = next.LastValue, next.LastAt
+		samples = append(samples, next.Samples...)
 	}
-	if err := w.SendBatch(ctx, batch).Close(); err != nil {
+	if _, err := w.Exec(ctx, `
+		update eval_days d set listed = given.listed, n = given.n, sum = given.sum, num = given.num, den = given.den,
+			max = given.max, samples = ($14::float8[])[given.first : given.first + given.n - 1],
+			last_value = given.last_value, last_at = given.last_at, built_by = $3, updated_at = now()
+		from unnest($4::text[], $5::text[], $6::date[], $7::bool[], $8::int[], $9::float8[], $10::float8[],
+			$11::float8[], $12::float8[], $13::float8[], $15::timestamptz[], $16::int[])
+			as given(series, repo, day, listed, n, sum, num, den, max, last_value, last_at, first)
+		where d.project_key = $1 and d.eval_id = $2 and d.series = given.series and d.repo = given.repo and d.day = given.day
+	`, definition.ProjectKey, definition.EvalID, builtBy, seriesNames, repos, days, listed, counts, sums, nums, dens,
+		maxes, lastValues, samples, lastAts, firsts); err != nil {
 		return fmt.Errorf("write the day rows of %s: %w", definition.EvalID, err)
 	}
 	return nil

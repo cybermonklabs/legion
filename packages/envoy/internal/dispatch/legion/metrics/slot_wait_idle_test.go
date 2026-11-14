@@ -36,7 +36,7 @@ func TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife(t *tes
 		statusAt(hour(-1), "todo").
 		statusAt(hour(0), "in_progress")
 
-	facts := ProjectFacts(fixture(hour(-24), hour(24), waited, held, unseen))
+	facts := ProjectFacts(fixture(hour(-24), hour(24), waited, held, unseen), nil)
 	for _, want := range []struct {
 		key      string
 		slotWait float64
@@ -97,7 +97,7 @@ func TestIdleByRoleCountsTheHoursAnIssueHeldItsOwnSlotInARolesBarWithThatRoleOut
 		observeString(legion.FieldPhase, hour(5), "done").
 		observeString(legion.ClaimFieldPrefix+"implementer", hour(1), "idle")
 
-	facts := ProjectFacts(fixture(hour(-24), hour(24), root, child))
+	facts := ProjectFacts(fixture(hour(-24), hour(24), root, child), nil)
 	for _, want := range []struct {
 		key  string
 		idle map[string]float64

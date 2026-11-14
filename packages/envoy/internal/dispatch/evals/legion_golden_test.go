@@ -318,7 +318,7 @@ func compareLegionWindows(t *testing.T, r rig, project string, windows []goldenR
 	}
 	check := &legionCheck{}
 	for _, window := range windows {
-		read, err := r.registry.DayWindow(ctx, project, entries, nil, Range{From: window.Window.From, To: window.Window.To}, nil)
+		read, err := r.registry.DayWindow(ctx, []string{project}, entries, nil, Range{From: window.Window.From, To: window.Window.To}, nil)
 		if err != nil {
 			t.Fatalf("read the day rows of %s: %v", window.Window.Name, err)
 		}

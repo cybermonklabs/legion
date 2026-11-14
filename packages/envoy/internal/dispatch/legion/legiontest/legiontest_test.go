@@ -30,7 +30,7 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the project: %v", err)
 	}
-	facts := metrics.ProjectFacts(population)
+	facts := metrics.ProjectFacts(population, nil)
 	if len(facts) < 200 {
 		t.Fatalf("the facts hold %d issues of the %d seeded, want at least the 200 the checks count",
 			len(facts), len(fixture.Keys))

@@ -19,11 +19,13 @@ import (
 // Store is the registry over one Dispatch database. Its writes join the document service's
 // transaction (docs.API.Join), so the sections they write to `evals-md` commit with their rows,
 // and append the documents' events through the server's broker, which publishes them once the
-// transaction has committed.
+// transaction has committed. refused is the projects whose seed was refused for their `evals-md`
+// (seedRefusals), which the boot seed and the refresher's seed share.
 type Store struct {
 	database  *store.Store
 	documents docs.API
 	events    *events.Broker
+	refused   seedRefusals
 }
 
 // New is the registry over database, writing `evals-md` through documents and its events

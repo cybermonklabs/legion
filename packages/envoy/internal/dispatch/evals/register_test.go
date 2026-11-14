@@ -34,10 +34,7 @@ func TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward(t *testin
 	if err != nil {
 		t.Fatalf("set the same target again: %v", err)
 	}
-	_, versions, _, err := r.registry.EvalVersions(t.Context(), first.Definition.EvalID)
-	if err != nil {
-		t.Fatalf("read the versions: %v", err)
-	}
+	versions := r.versionsOf(t, first.Definition.EvalID)
 	t.Logf("%d versions; v1 %+v; v2 %+v", len(versions), first.Definition, second.Definition)
 	if len(versions) != 2 || versions[0].Version != 2 || versions[1].Version != 1 {
 		t.Fatalf("the eval holds versions %v, want 2 then 1", versionNumbers(versions))
@@ -100,10 +97,7 @@ func TestTwoRegisterWritesAtOnceLandAsTheNextTwoVersions(t *testing.T) {
 			t.Errorf("register write %d: %v", index, err)
 		}
 	}
-	_, versions, _, err := r.registry.EvalVersions(t.Context(), first.Definition.EvalID)
-	if err != nil {
-		t.Fatalf("read the versions: %v", err)
-	}
+	versions := r.versionsOf(t, first.Definition.EvalID)
 	if len(versions) != 3 || versions[0].Version != 3 || versions[1].Version != 2 || versions[0].Target == nil {
 		t.Fatalf("the eval holds versions %v, want 3, 2 and 1, the newest with a target", versionNumbers(versions))
 	}
@@ -238,4 +232,15 @@ func versionNumbers(versions []Definition) []int {
 		numbers[index] = version.Version
 	}
 	return numbers
+}
+
+// versionsOf is every version of evalID, newest first: one page of EvalVersions that holds them
+// all, failing the test where the eval holds more than the page or none.
+func (r rig) versionsOf(t *testing.T, evalID string) []Definition {
+	t.Helper()
+	_, versions, found, err := r.registry.EvalVersions(t.Context(), evalID, 200, 0)
+	if err != nil || !found || versions.Total != len(versions.Items) {
+		t.Fatalf("read the versions of %s: found %t, %d of %d, %v", evalID, found, len(versions.Items), versions.Total, err)
+	}
+	return versions.Items
 }

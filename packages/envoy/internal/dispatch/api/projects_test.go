@@ -76,7 +76,7 @@ func TestCreatingAProjectSeedsItsEvalsAndItsEvalsDocument(t *testing.T) {
 			Markdown string                `json:"markdown"`
 			Blocks   []model.ArtifactBlock `json:"blocks"`
 		}](t, response)
-		page, err := evals.New(database, nil, nil).Current(t.Context(), "SEED", "", 100, 0)
+		page, err := evals.New(database, nil, nil).Current(t.Context(), []string{"SEED"}, "", 100, 0)
 		if err != nil {
 			t.Fatalf("read the project's evals: %v", err)
 		}

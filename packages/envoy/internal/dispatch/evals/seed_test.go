@@ -3,19 +3,26 @@ package evals
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // documentID is the id of project's evals-md, failing the test when it has none.
@@ -65,7 +72,7 @@ func (r rig) seededState(t *testing.T, project string) seededState {
 func (r rig) requireSeeded(t *testing.T, project string) seededState {
 	t.Helper()
 	state := r.seededState(t, project)
-	page, err := r.registry.Current(t.Context(), project, "", 100, 0)
+	page, err := r.registry.Current(t.Context(), []string{project}, "", 100, 0)
 	if err != nil {
 		t.Fatalf("read the evals of %s: %v", project, err)
 	}
@@ -182,10 +189,7 @@ func TestEnsureAddsTheSectionsAProjectsDocumentLacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed %s after the delete: %v", r.project, err)
 	}
-	_, newest, _, err := r.registry.EvalVersions(t.Context(), evalID)
-	if err != nil {
-		t.Fatalf("read the versions of %s: %v", evalID, err)
-	}
+	newest := r.versionsOf(t, evalID)
 	state = r.seededState(t, r.project)
 	if restored.Sections != 1 || restored.Versions != 1 || newest[0].Version != 3 || newest[0].DocBlock == block ||
 		!hasBlock(state.blocks, newest[0].DocBlock) || newest[0].Target == nil || *newest[0].Target != target {
@@ -233,7 +237,7 @@ func withCatalogue(t *testing.T, change func(entries []catalogueEntry)) {
 // none.
 func (r rig) currentOf(t *testing.T, slug string) (Definition, map[string]Series) {
 	t.Helper()
-	page, err := r.registry.Current(t.Context(), r.project, "", 100, 0)
+	page, err := r.registry.Current(t.Context(), []string{r.project}, "", 100, 0)
 	if err != nil {
 		t.Fatalf("read the evals of %s: %v", r.project, err)
 	}
@@ -292,10 +296,7 @@ func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed %s with the release's catalogue: %v", r.project, err)
 	}
-	_, versions, _, err := r.registry.EvalVersions(ctx, EvalID(r.project, SlugDeployFrequency))
-	if err != nil {
-		t.Fatalf("read the versions: %v", err)
-	}
+	versions := r.versionsOf(t, EvalID(r.project, SlugDeployFrequency))
 	newest, series := r.currentOf(t, SlugDeployFrequency)
 	deploys := series[measures.SeriesDeploys]
 	t.Logf("the release's seed wrote %+v; versions %v; newest name %q unit %q target %s person %q links %d doc block %s; series %+v",
@@ -361,6 +362,106 @@ func TestTheBootPassSeedsProjectsMadeBySQL(t *testing.T) {
 	for _, project := range []string{"BYSQL", r.project} {
 		state := r.requireSeeded(t, project)
 		t.Logf("the boot pass seeded %s: %d versions, %d series versions, %d blocks of %s", project, state.versions, state.series, len(state.blocks), DocumentSlug)
+	}
+}
+
+// seedsOpened counts, by project, the seed transactions a traced registry opens: each opens with
+// the read of its project (openWrite).
+type seedsOpened struct {
+	mu    sync.Mutex
+	byKey map[string]int
+}
+
+func (s *seedsOpened) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "select name, now() from projects where key = $1") && len(data.Args) == 1 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.byKey[fmt.Sprint(data.Args[0])]++
+	}
+	return ctx
+}
+
+func (s *seedsOpened) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (s *seedsOpened) of(project string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.byKey[project]
+}
+
+// TestASeedRefusedForItsDocumentIsTriedAgainOnceItIsOne: a project whose evals-md is a file is
+// refused EVALS_DOCUMENT_NOT_A_DOCUMENT by its seed, which is no failure the boot pass seeds
+// again as one. While the file stands, neither the boot pass nor the refresher's pass opens a
+// seed of it again, and the boot pass answers no failure for it; once the file is gone, the next
+// pass of either seeds it. FILED is first refused by the boot pass, and BYPASS, made by SQL with
+// a file of its own, by the refresher's pass.
+func TestASeedRefusedForItsDocumentIsTriedAgainOnceItIsOne(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	for _, project := range []string{"FILED", "BYPASS"} {
+		for _, statement := range []string{
+			`insert into projects (key, name) values ($1, $1)`,
+			`insert into artifacts (project_key, slug, name, kind, created_by) values ($1, 'evals-md', 'evals.md', 'file', '{"kind":"user","id":"alice"}')`,
+		} {
+			if _, err := r.database.Pool.Exec(ctx, statement, project); err != nil {
+				t.Fatalf("make %s with a file for its evals-md: %v", project, err)
+			}
+		}
+	}
+	opened := &seedsOpened{byKey: map[string]int{}}
+	registry := New(storetest.TracedStore(t, r.database, opened), r.documents, events.NewBroker())
+	load := func() {
+		t.Helper()
+		if err := registry.newRefresh(testBuild, time.Now(), walkBatch).load(ctx); err != nil {
+			t.Fatalf("the refresher's load: %v", err)
+		}
+	}
+	removeFile := func(project string) {
+		t.Helper()
+		if _, err := r.database.Pool.Exec(ctx, `delete from artifacts where project_key = $1 and slug = 'evals-md'`, project); err != nil {
+			t.Fatalf("remove the file of %s: %v", project, err)
+		}
+	}
+
+	failed, err := registry.seedEveryProject(ctx, []string{"FILED"})
+	var refusal *Error
+	if !errors.As(err, &refusal) || refusal.Code != CodeDocumentNotDocument || len(failed) != 0 || opened.of("FILED") != 1 {
+		t.Fatalf("the boot pass of FILED answered %v and the failures %v after %d seeds, want one seed refused %s and no failure to seed again",
+			err, failed, opened.of("FILED"), CodeDocumentNotDocument)
+	}
+	load()
+	if opened.of("BYPASS") != 1 {
+		t.Fatalf("the refresher's first load opened %d seeds of BYPASS, want 1", opened.of("BYPASS"))
+	}
+	if failed, err := registry.seedEveryProject(ctx, registry.refused.held()); err != nil || len(failed) != 0 {
+		t.Errorf("a boot pass while the files stand answered %v and the failures %v, want neither", err, failed)
+	}
+	load()
+	if opened.of("FILED") != 1 || opened.of("BYPASS") != 1 {
+		t.Errorf("while the files stand the passes opened %d seeds of FILED and %d of BYPASS, want the one of each that was refused",
+			opened.of("FILED"), opened.of("BYPASS"))
+	}
+
+	removeFile("BYPASS")
+	load()
+	if opened.of("BYPASS") != 2 || opened.of("FILED") != 1 {
+		t.Errorf("after BYPASS's file went the refresher's load opened %d seeds of BYPASS and %d of FILED, whose file stands; want a second of BYPASS alone",
+			opened.of("BYPASS"), opened.of("FILED"))
+	}
+	removeFile("FILED")
+	if failed, err := registry.seedEveryProject(ctx, registry.refused.held()); err != nil || len(failed) != 0 {
+		t.Fatalf("the boot pass after FILED's file went answered %v and the failures %v", err, failed)
+	}
+	if opened.of("FILED") != 2 || len(registry.refused.held()) != 0 {
+		t.Errorf("after FILED's file went the boot pass opened %d seeds of it and %v are held refused, want a second seed and none held",
+			opened.of("FILED"), registry.refused.held())
+	}
+	for _, project := range []string{"FILED", "BYPASS"} {
+		state := r.requireSeeded(t, project)
+		t.Logf("%s was seeded once its file went: %d versions", project, state.versions)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // deliveryPipelineResponse is GET /api/v1/delivery/pipeline: the Pipeline page's UTC days (the
@@ -146,15 +147,22 @@ type pipelinePopulation struct {
 // end, by delivery.ReadCIRows, the read the CI evals' day rows make: the PR-checks runs with every
 // job, which their job timings and failing jobs tally whatever their names (measures.PRChecks),
 // and the deploy runs with the jobs the deploy cards follow and no other (measures.DeployJobs
-// reads none else).
+// reads none else). The runs and the pull requests depend on none of each other, and are read
+// side by side.
 func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.DeliverySettings, window pipelineWindow) (pipelinePopulation, error) {
 	from, to := window.start(), window.readTo()
-	ci, err := delivery.ReadCIRows(ctx, s.deps.Store.Pool, settings.DeployRepo, from, to, measures.DeployCardJobNames(measures.DeployCards(settings)))
-	if err != nil {
-		return pipelinePopulation{}, err
-	}
-	pop := pipelinePopulation{checks: ci.Checks, deploys: ci.Deploys}
-	if pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false); err != nil {
+	var pop pipelinePopulation
+	if err := store.ReadSideBySide(ctx,
+		func(ctx context.Context) error {
+			ci, err := delivery.ReadCIRows(ctx, s.deps.Store.Pool, settings.DeployRepo, from, to, measures.DeployCardJobNames(measures.DeployCards(settings)))
+			pop.checks, pop.deploys = ci.Checks, ci.Deploys
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false)
+			return err
+		},
+	); err != nil {
 		return pipelinePopulation{}, err
 	}
 	return pop, nil

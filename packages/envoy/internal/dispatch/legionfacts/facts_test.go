@@ -1,6 +1,7 @@
 package legionfacts
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -203,8 +204,10 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	}
 }
 
-// TestTheStoredRowsReadBackFieldByField: Read answers what WriteProject wrote, every field of
-// every row, read out of its map by issue key.
+// TestTheStoredRowsReadBackFieldByField: the rows read with every column (readWhole, the read
+// ReadClosedIn makes of a window's rows) answer what WriteProject wrote, every field of every row,
+// and the board's Read answers the columns the board shows of each, every other field left at its
+// zero value, each read out of its map by issue key.
 func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 	seeded := seed(t, 4)
 	project := seeded.fixture.Project
@@ -216,20 +219,54 @@ func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
-	whole, err := Read(t.Context(), seeded.database.Pool, project)
+	whole, err := readWhole(t.Context(), seeded.database.Pool, project)
 	if err != nil {
 		t.Fatalf("read the project's facts: %v", err)
 	}
+	board, err := Read(t.Context(), seeded.database.Pool, project)
+	if err != nil {
+		t.Fatalf("read the project's facts as the board does: %v", err)
+	}
 
-	if len(whole) != len(rows) {
-		t.Fatalf("the project holds %d stored rows, want the %d written", len(whole), len(rows))
+	if len(whole) != len(rows) || len(board) != len(rows) {
+		t.Fatalf("the project holds %d stored rows and the board reads %d, want the %d written", len(whole), len(board), len(rows))
 	}
 	for _, want := range rows {
 		if got := whole[want.Issue]; !sameRow(got, want) {
 			t.Errorf("%s reads back as\n%s\nwant\n%s", want.Issue, show(got), show(want))
 		}
+		shown := boardColumnsOf(want)
+		if got := board[want.Issue]; !sameRow(got, shown) {
+			t.Errorf("%s reads back to the board as\n%s\nwant\n%s", want.Issue, show(got), show(shown))
+		}
 	}
 	t.Logf("%d rows read back by key, field by field", len(whole))
+}
+
+// boardColumnsOf is row as the board's Read answers it: the fields of the columns the board shows
+// (boardColumns), and every other field at its zero value.
+func boardColumnsOf(row Row) Row {
+	return Row{
+		Project: row.Project, Issue: row.Issue, OpenedAt: row.OpenedAt, ClosedAt: row.ClosedAt,
+		HoursByPhase: row.HoursByPhase, WorkHours: row.WorkHours, ReviewRounds: row.ReviewRounds,
+		RootKey: row.RootKey, TreeDepth: row.TreeDepth, SlotHours: row.SlotHours, WaitingReason: row.WaitingReason,
+		WorkFirstAt: row.WorkFirstAt, WorkLastAt: row.WorkLastAt, UpdatedAt: row.UpdatedAt,
+	}
+}
+
+// readWhole is every column of the project's stored rows, by issue key, as ReadClosedIn reads a
+// row (readRows, wide): what a check of every value a pass wrote reads, where the board's Read
+// reads the columns the board shows alone.
+func readWhole(ctx context.Context, q Querier, project string) (map[string]Row, error) {
+	read, err := readRows(ctx, q, project, true, `where project_key = $1`, project)
+	if err != nil {
+		return nil, err
+	}
+	rows := make(map[string]Row, len(read))
+	for _, row := range read {
+		rows[row.Issue] = row
+	}
+	return rows, nil
 }
 
 // sameRow is whether two rows hold the same facts, each field compared as its own type: the times

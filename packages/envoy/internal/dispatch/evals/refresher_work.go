@@ -72,10 +72,13 @@ type refresh struct {
 	// writes a day once, from one read of it, and a change to that day committed after the read
 	// is on a later page, which must read and write the day again. Kept for the whole pass, they
 	// would let that page skip the day while its cursor moved past the change, and the day would
-	// stand stale until another change named it.
+	// stand stale until another change named it. repos is the page's one read of repo_projects,
+	// which every delivery day it reads attributes by, and which a page that reads a change of a
+	// mapping (a settings change) reads after loading that change, since it starts empty.
 	reads   map[time.Time]DeliveryDay
 	done    map[builtDay]bool
 	unowned map[string]bool
+	repos   *repoProjects
 	// walkApplies is the deploy runs the delivery walk's batch read once from walkAppliesFrom on
 	// (deliveryWalkDay), for the pass's walk alone.
 	walkApplies     *delivery.ApplyRows
@@ -100,15 +103,21 @@ type lowered struct {
 
 // load seeds every project no seed has reached (UnseededProjects, Ensure: a project a command or
 // a fixture wrote by SQL while the server ran) and reads the projects and the delivery settings.
-// A project whose seed fails is logged and seeded again by the next pass; its day rows are written
-// all the same, since a day row needs no definition.
+// A project whose seed fails is logged and seeded again by the next pass, but one whose seed was
+// refused for its `evals-md` only once that artifact is a document (seedRefusals); its day rows
+// are written all the same, since a day row needs no definition.
 func (r *refresh) load(ctx context.Context) error {
 	unseeded, err := r.store.UnseededProjects(ctx)
 	if err != nil {
 		return err
 	}
+	if unseeded, err = r.store.refused.pending(ctx, r.store.database.Pool, unseeded); err != nil {
+		return err
+	}
 	for _, project := range unseeded {
-		if _, err := r.store.Ensure(ctx, project); err != nil {
+		_, err := r.store.Ensure(ctx, project)
+		r.store.refused.note(project, err)
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -257,7 +266,7 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 // have passed over changes it never read (changesLost): the cursor moves to the log's head and
 // every walk begins again, which covers every change the log ever held.
 func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error) {
-	r.reads, r.done, r.unowned = map[time.Time]DeliveryDay{}, map[builtDay]bool{}, map[string]bool{}
+	r.reads, r.done, r.unowned, r.repos = map[time.Time]DeliveryDay{}, map[builtDay]bool{}, map[string]bool{}, nil
 	cursors, err := r.store.readRefresherCursors(ctx)
 	if err != nil {
 		return false, err
@@ -539,12 +548,20 @@ func (r *refresh) rewriteDelivery(ctx context.Context, items []deliveryItem, fol
 }
 
 // readDelivery is the delivery rows of day (ReadDeliveryDay), read once a page (refresh.reads),
-// its deploy runs taken from applies where it is not nil (readDeliveryDay).
+// its deploy runs taken from applies where it is not nil and its repo_projects from the page's
+// one read of them (refresh.repos), made by the first day the page reads (readDeliveryDay).
 func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies *delivery.ApplyRows) (DeliveryDay, error) {
 	if read, ok := r.reads[day]; ok {
 		return read, nil
 	}
-	read, err := r.store.readDeliveryDay(ctx, *r.settings, day, applies)
+	if r.repos == nil {
+		repos, err := readRepoProjects(ctx, r.store)
+		if err != nil {
+			return DeliveryDay{}, err
+		}
+		r.repos = &repos
+	}
+	read, err := r.store.readDeliveryDay(ctx, *r.settings, day, applies, r.repos)
 	if err != nil {
 		return DeliveryDay{}, err
 	}

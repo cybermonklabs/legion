@@ -230,23 +230,30 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 	}
 	page.full = count == limit
 	named := slices.Sorted(maps.Keys(sessions))
-	worked, err := sessionIssues(ctx, q, named, slices.Sorted(maps.Keys(titles)))
+	worked, filed, err := sessionIssues(ctx, q, named, slices.Sorted(maps.Keys(titles)))
 	if err != nil {
 		return feed{}, err
 	}
 	page.touches = append(page.touches, worked...)
-	if page.filings, err = sessionFilings(ctx, q, named); err != nil {
+	if page.filings, err = sessionFilings(ctx, q, filed); err != nil {
 		return feed{}, err
 	}
 	return page, nil
 }
 
-// sessionFilings is every filing the sessions made that their newest titles say is stored wrong:
-// each issue one of them wrote an `issue.created` event of, beside the issue_filings row that
-// holds it, where the session's newest title (read by primary key, delivery.ResolveSessionTitles,
-// because that title and not the one the event carried is what metrics classifies a filing by)
-// is a Legion title and no row holds the filing, or a row holds it under another project, another
-// role or another filer's issue than that title names, or under any project once the title is no
+// sessionFiling is one issue a session of the page filed, as sessionIssues reads it: the issue
+// whose `issue.created` event the session wrote, the session, and the issue_filings row that
+// holds the filing (its project, the filer's role and the filer's issue), each "" where no row
+// does.
+type sessionFiling struct {
+	issue, session, project, role, filer string
+}
+
+// sessionFilings is every filing of filed that its session's newest title says is stored wrong:
+// where the session's newest title (read by primary key, delivery.ResolveSessionTitles, because
+// that title and not the one the event carried is what metrics classifies a filing by) is a
+// Legion title and no row holds the filing, or a row holds it under another project, another role
+// or another filer's issue than that title names, or under any project once the title is no
 // Legion title. A filing whose row already names the filer the newest title names is left out:
 // its project and its filer stand, and the pass recomputes it with its filer's issue
 // (filingsToCompute) whenever that issue's own inputs move.
@@ -256,40 +263,17 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 // the session on the page that carries it, so the page's sessions are every session that can
 // have moved one.
 //
-// It scans events_session_actor_created_at_idx (migration 0026) once for each session, over the
-// events that session wrote, as sessionIssues scans it for the same sessions, keeping the
-// `issue.created` ones, and reads issue_filings by its primary key for each. A broad session, a
-// controller's, has filed many issues, and the read answers them all on every page it writes on,
-// while the pass computes only the ones its newest title moved.
-func sessionFilings(ctx context.Context, q Querier, sessions []string) ([]filing, error) {
-	if len(sessions) == 0 {
-		return nil, nil
-	}
-	rows, err := q.Query(ctx, `
-		select event.issue_key, event.actor ->> 'id', coalesce(filing.project_key, ''),
-		       coalesce(filing.filer_role, ''), coalesce(filing.filer_issue, '')
-		from events event
-		left join issue_filings filing on filing.issue_key = event.issue_key
-		where event.actor ->> 'id' = any($1::text[]) and event.actor ->> 'kind' = 'session'
-		  and event.type = 'issue.created' and event.issue_key is not null
-		order by event.issue_key, event.id
-	`, sessions)
-	if err != nil {
-		return nil, fmt.Errorf("read the filings of %d sessions: %w", len(sessions), err)
-	}
-	type made struct{ issue, session, project, role, filer string }
-	var filed []made
-	filers := map[string]bool{}
-	var one made
-	if _, err := pgx.ForEachRow(rows, []any{&one.issue, &one.session, &one.project, &one.role, &one.filer}, func() error {
-		filed = append(filed, one)
-		filers[one.session] = true
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the filings of %d sessions: %w", len(sessions), err)
-	}
+// filed is every filing the page's sessions made, which sessionIssues reads in the scan of those
+// sessions' events it makes for the issues they worked. A broad session, a controller's, has
+// filed many issues, and the read answers them all on every page it writes on, while the pass
+// computes only the ones its newest title moved.
+func sessionFilings(ctx context.Context, q Querier, filed []sessionFiling) ([]filing, error) {
 	if len(filed) == 0 {
 		return nil, nil
+	}
+	filers := map[string]bool{}
+	for _, one := range filed {
+		filers[one.session] = true
 	}
 	titles, err := delivery.ResolveSessionTitles(ctx, q, slices.Sorted(maps.Keys(filers)))
 	if err != nil {
@@ -311,7 +295,9 @@ func sessionFilings(ctx context.Context, q Querier, sessions []string) ([]filing
 // sessionIssues is what one page of events can have moved through the titles its sessions
 // carry: of the issues those sessions wrote an event on, the ones that hold a stored row, and
 // the issues the titles on that page name. Each comes with the project it belongs to. sessions
-// is every session the page's events name and titles every session title they carry.
+// is every session the page's events name and titles every session title they carry. Beside
+// them it answers every issue those sessions filed (sessionFiling), in key order, which
+// sessionFilings judges.
 //
 // It reads nothing where both inputs are empty, and it answers no issue. A page of events is
 // not known to reach that state, because a title is read off an event whose actor is a session
@@ -349,12 +335,15 @@ func sessionFilings(ctx context.Context, q Querier, sessions []string) ([]filing
 // events the page already holds. It scans events_session_actor_created_at_idx (migration 0026),
 // the partial index on ((actor->>'id'), created_at desc) for a session actor, once for each
 // session the page named, over every event that session ever wrote, because the read has no
-// order and no limit. Each issue it finds is joined to the row issue_facts holds under that
-// project and key, which is that table's primary key. The index bounds the read to the sessions
-// the page named and not to the events the page read, which is the trap delivery/agents.go
-// documents of the same index. legion.PhaseWorkKeys would answer the same pairs and reads the
-// session half of the whole log to do it, which is why a page does not call it.
-func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([]touch, error) {
+// order and no limit; the scan is materialized once and read twice, for the issues worked and
+// for the `issue.created` events, which is why the filings take no scan of their own. Each issue
+// it finds is joined to the row issue_facts holds under that project and key, which is that
+// table's primary key, and each filed issue to its issue_filings row by that table's primary
+// key. The index bounds the read to the sessions the page named and not to the events the page
+// read, which is the trap delivery/agents.go documents of the same index. legion.PhaseWorkKeys
+// would answer the same pairs and reads the session half of the whole log to do it, which is why
+// a page does not call it.
+func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([]touch, []sessionFiling, error) {
 	named := make([]string, 0, len(titles))
 	for _, title := range titles {
 		if worked, worker := legion.WorkerTitle(title); worker {
@@ -362,36 +351,52 @@ func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([
 		}
 	}
 	if len(sessions) == 0 && len(named) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	rows, err := q.Query(ctx, `
-		select issue.project_key, issue.key
-		from events event
-		join issues issue on issue.key = event.issue_key
+		with written as materialized (
+			select event.id, event.type, event.issue_key, event.actor ->> 'id' as session
+			from events event
+			where event.actor ->> 'id' = any($1::text[])
+			  and event.actor ->> 'kind' = 'session'
+			  and event.issue_key is not null
+		)
+		select false as filed, issue.project_key, issue.key, '' as session, '' as role, '' as filer, 0::bigint as id
+		from written
+		join issues issue on issue.key = written.issue_key
 		join issue_facts fact on fact.project_key = issue.project_key and fact.issue_key = issue.key
-		where event.actor ->> 'id' = any($1::text[])
-		  and event.actor ->> 'kind' = 'session'
 		union
-		select issue.project_key, issue.key
+		select false, issue.project_key, issue.key, '', '', '', 0
 		from issues issue
 		where issue.key = any($2::text[])
+		union all
+		select true, coalesce(filing.project_key, ''), written.issue_key, written.session,
+		       coalesce(filing.filer_role, ''), coalesce(filing.filer_issue, ''), written.id
+		from written
+		left join issue_filings filing on filing.issue_key = written.issue_key
+		where written.type = 'issue.created'
+		order by filed, key, id
 	`, sessions, named)
 	if err != nil {
-		return nil, fmt.Errorf("read the issues %d sessions can have moved: %w", len(sessions), err)
+		return nil, nil, fmt.Errorf("read the issues %d sessions can have moved: %w", len(sessions), err)
 	}
-	defer rows.Close()
 	worked := []touch{}
-	for rows.Next() {
-		var touched touch
-		if err := rows.Scan(&touched.project, &touched.issue); err != nil {
-			return nil, fmt.Errorf("read the issues %d sessions can have moved: %w", len(sessions), err)
+	var filed []sessionFiling
+	var isFiling bool
+	var touched touch
+	var one sessionFiling
+	if _, err := pgx.ForEachRow(rows, []any{&isFiling, &touched.project, &touched.issue, &one.session, &one.role, &one.filer, new(int64)}, func() error {
+		if !isFiling {
+			worked = append(worked, touched)
+			return nil
 		}
-		worked = append(worked, touched)
+		one.project, one.issue = touched.project, touched.issue
+		filed = append(filed, one)
+		return nil
+	}); err != nil {
+		return nil, nil, fmt.Errorf("read the issues %d sessions can have moved: %w", len(sessions), err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the issues %d sessions can have moved: %w", len(sessions), err)
-	}
-	return worked, nil
+	return worked, filed, nil
 }
 
 // readObservationPage is the page of the daemon's observations after the cursor: up to limit

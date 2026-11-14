@@ -263,7 +263,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 			return nil
 		}
 		if work[project] == nil {
-			work[project] = &projectWork{keys: map[string]bool{}, moved: map[string]bool{}, filed: map[string]bool{}}
+			work[project] = &projectWork{keys: map[string]bool{}, open: map[string]bool{}, moved: map[string]bool{}, filed: map[string]bool{}}
 		}
 		return work[project]
 	}
@@ -304,12 +304,20 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		if err != nil {
 			return nil, false, err
 		}
-		for _, swept := range []map[string][]string{open, stale} {
-			for project, keys := range swept {
-				if work := needed(project); work != nil {
-					for _, key := range keys {
-						work.keys[key] = true
-					}
+		// The open rows are kept apart: the sweep adds them because their hours move with the
+		// clock, which moves no filing (rowsToCompute). A stale row is added for a loss no feed
+		// carried, which can move a filing as well, so it joins the feeds' keys.
+		for project, keys := range open {
+			if work := needed(project); work != nil {
+				for _, key := range keys {
+					work.open[key] = true
+				}
+			}
+		}
+		for project, keys := range stale {
+			if work := needed(project); work != nil {
+				for _, key := range keys {
+					work.keys[key] = true
 				}
 			}
 		}
@@ -348,12 +356,13 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	return changed, read.more, nil
 }
 
-// projectWork is what one page owes one project: the issues its feeds named, those of them a
-// row moved between trees (touch), the filings its events moved that the project owes, the ones
-// it joined and the ones it left (feed.filings), and whether the project is to be computed whole
-// (a backfill).
+// projectWork is what one page owes one project: the issues its feeds named and the stale rows its
+// sweep adds, the open rows its sweep adds, those of the feeds' issues a row moved between trees
+// (touch), the filings its events moved that the project owes, the ones it joined and the ones it
+// left (feed.filings), and whether the project is to be computed whole (a backfill).
 type projectWork struct {
 	keys     map[string]bool
+	open     map[string]bool
 	moved    map[string]bool
 	filed    map[string]bool
 	backfill bool
@@ -372,8 +381,9 @@ type projectPass struct {
 // project (ComputeProject) and the keys its feeds named are left out of the call, because the
 // whole project already holds them: its stated set is the project itself, and its filings are
 // every filing a Legion session of the project made. Every other project is computed over the
-// rows its changes touch (rowsToCompute) and the filings those rows and its moved filings name
-// (filingsToCompute), and no row or filing outside those sets is written or deleted.
+// rows its changes and its sweep touch (rowsToCompute) and the filings named by its moved filings
+// and by the rows its keys touch, the open rows the sweep adds left out (filingsToCompute), and no
+// row or filing outside those sets is written or deleted.
 func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (projectPass, error) {
 	if work.backfill {
 		rows, filings, err := ComputeProject(ctx, pool, project, now)
@@ -389,11 +399,11 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 	if err != nil {
 		return projectPass{}, err
 	}
-	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, above)
+	keys, fed, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), slices.Sorted(maps.Keys(work.open)), work.moved, above)
 	if err != nil {
 		return projectPass{}, err
 	}
-	filed, err := filingsToCompute(ctx, pool, project, keys, work.filed)
+	filed, err := filingsToCompute(ctx, pool, project, fed, work.filed)
 	if err != nil {
 		return projectPass{}, err
 	}

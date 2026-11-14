@@ -373,37 +373,36 @@ func (r *refresh) insertZeroRows(ctx context.Context, rows []DayRow) error {
 // wrote. A series' first day is its first stored row's, which a readings write made (its
 // increment, days.go), and the zero row is the row that write leaves where every value is taken
 // away: n 0, a zero sum, numerator and denominator, no sample, no maximum and no last value, so a
-// later reading of that day adds to it as to any row. A day that holds a row keeps it.
+// later reading of that day adds to it as to any row. A day that holds a row keeps it. The zero
+// row takes the listing of the series' newest row.
+//
+// The days it writes are the gaps between a series' stored rows, each row followed by the days up
+// to the next one's (lead), and after its newest row the days up to today: so it generates and
+// probes the missing days alone, where the whole span from the first day would cost a probe of
+// every day the series holds on every readings write that reaches it.
 func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []string) (int64, error) {
-	rows, err := r.store.database.Pool.Query(ctx, `select eval_id from evals_current where project_key = $1 and source = $2 order by eval_id`,
-		project, SourceLogged)
-	if err != nil {
-		return 0, fmt.Errorf("read the logged evals of %s: %w", project, err)
-	}
-	logged, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return 0, fmt.Errorf("read the logged evals of %s: %w", project, err)
-	}
+	logged := `select eval_id from evals_current where project_key = $1 and source = $2`
+	args := []any{project, SourceLogged, r.today, r.build}
 	if ids != nil {
-		logged = slices.DeleteFunc(logged, func(id string) bool { return !slices.Contains(ids, id) })
-	}
-	if len(logged) == 0 {
-		return 0, nil
+		logged += ` and eval_id = any($5)`
+		args = append(args, ids)
 	}
 	tag, err := r.store.database.Pool.Exec(ctx, `
 		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, num, den, samples, built_by)
-		select first.project_key, first.eval_id, first.series, '', day::date, first.listed, 0, 0, 0, 0, '{}', $4
+		select stored.project_key, stored.eval_id, stored.series, '', gap.day::date, stored.listed, 0, 0, 0, 0, '{}', $4
 		from (
-			select project_key, eval_id, series, min(day) as first_day,
-			       (array_agg(listed order by day desc))[1] as listed
+			select project_key, eval_id, series, day,
+			       lead(day) over series_days as next_day,
+			       last_value(listed) over (series_days rows between unbounded preceding and unbounded following) as listed
 			from eval_days
-			where project_key = $1 and eval_id = any($2) and repo = ''
-			group by project_key, eval_id, series
-		) first
-		cross join generate_series(first.first_day::timestamp, $3::date::timestamp, interval '1 day') as day
-		order by first.eval_id, first.series, day
+			where project_key = $1 and eval_id = any(array(`+logged+`)) and repo = ''
+			window series_days as (partition by eval_id, series order by day)
+		) stored
+		cross join generate_series((stored.day + 1)::timestamp,
+			least(coalesce(stored.next_day - 1, $3::date), $3::date)::timestamp, interval '1 day') as gap(day)
+		order by stored.eval_id, stored.series, gap.day
 		on conflict (project_key, eval_id, series, repo, day) do nothing
-	`, project, logged, r.today, r.build)
+	`, args...)
 	if err != nil {
 		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
 	}

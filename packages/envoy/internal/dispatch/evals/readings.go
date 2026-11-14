@@ -82,7 +82,7 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 		if all := append(rowErrors, replaceErrors...); len(all) > 0 {
 			return rowsRefusal(all)
 		}
-		definition, registered, series, err := s.registerMissing(ctx, w, batch, rows)
+		definition, registered, series, byName, err := s.registerMissing(ctx, w, batch, rows)
 		if err != nil {
 			return err
 		}
@@ -106,10 +106,6 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 			}
 		}
 		if !definition.Computed() {
-			byName, err := currentSeries(ctx, w.Tx, evalID)
-			if err != nil {
-				return err
-			}
 			folded, err := foldedReadings(ctx, w.Tx, removed)
 			if err != nil {
 				return err
@@ -160,25 +156,26 @@ func foldedReadings(ctx context.Context, tx pgx.Tx, replaced []Reading) ([]Readi
 
 // registerMissing answers the eval's definition, registering the eval and every series of the
 // batch no version holds yet, under the eval's lock, which it takes only when one is missing.
-// It answers whether it registered the eval and the series it registered, in the batch's order.
-func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, rows []Reading) (Definition, bool, []Series, error) {
+// It answers whether it registered the eval, the series it registered, in the batch's order, and
+// the newest version of every series of the eval by name, those it registered among them.
+func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, rows []Reading) (Definition, bool, []Series, map[string]Series, error) {
 	evalID := EvalID(batch.Project, batch.Slug)
 	definition, found, err := newestDefinition(ctx, w.Tx, evalID)
 	if err != nil {
-		return Definition{}, false, nil, err
+		return Definition{}, false, nil, nil, err
 	}
 	series, err := currentSeries(ctx, w.Tx, evalID)
 	if err != nil {
-		return Definition{}, false, nil, err
+		return Definition{}, false, nil, nil, err
 	}
 	if found && !slices.ContainsFunc(rows, func(row Reading) bool { _, has := series[row.Series]; return !has }) {
-		return definition, false, nil, nil
+		return definition, false, nil, series, nil
 	}
 	if err := lockEval(ctx, w.Tx, evalID); err != nil {
-		return Definition{}, false, nil, err
+		return Definition{}, false, nil, nil, err
 	}
 	if definition, found, err = newestDefinition(ctx, w.Tx, evalID); err != nil {
-		return Definition{}, false, nil, err
+		return Definition{}, false, nil, nil, err
 	}
 	registered := false
 	if !found {
@@ -187,20 +184,20 @@ func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, ro
 		first.DocBlock = uuid.NewString()
 		stored, inserted, err := insertDefinition(ctx, w.Tx, first, true)
 		if err != nil {
-			return Definition{}, false, nil, err
+			return Definition{}, false, nil, nil, err
 		}
 		if inserted {
 			sentence := registrationSentence(ViaReading, batch.Caller, w.now)
 			if err := s.writeMethod(ctx, w, first.Slug, "", first.DocBlock, sentence, RegistryActor); err != nil {
-				return Definition{}, false, nil, err
+				return Definition{}, false, nil, nil, err
 			}
 			definition, registered = stored, true
 		} else if definition, _, err = newestDefinition(ctx, w.Tx, evalID); err != nil {
-			return Definition{}, false, nil, err
+			return Definition{}, false, nil, nil, err
 		}
 	}
 	if series, err = currentSeries(ctx, w.Tx, evalID); err != nil {
-		return Definition{}, false, nil, err
+		return Definition{}, false, nil, nil, err
 	}
 	var added []Series
 	for _, row := range rows {
@@ -209,15 +206,15 @@ func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, ro
 		}
 		stored, inserted, err := insertSeries(ctx, w.Tx, firstSeries(evalID, row.Series, len(series) == 0, !definition.Computed(), row.Unit))
 		if err != nil {
-			return Definition{}, false, nil, err
+			return Definition{}, false, nil, nil, err
 		}
 		if !inserted {
-			return Definition{}, false, nil, fmt.Errorf("series %s of %s was registered by a write that holds no lock of the eval", row.Series, evalID)
+			return Definition{}, false, nil, nil, fmt.Errorf("series %s of %s was registered by a write that holds no lock of the eval", row.Series, evalID)
 		}
 		series[stored.Series] = stored
 		added = append(added, stored)
 	}
-	return definition, registered, added, nil
+	return definition, registered, added, series, nil
 }
 
 // lockReplaced reads, and locks for the rest of tx, every reading a row of the batch replaces,

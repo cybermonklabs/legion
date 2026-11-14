@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The seed writes the catalogue into a project (dispatch://INFRA-2916, R1 and R5): every computed
@@ -134,18 +137,35 @@ func (s *Store) UnseededProjects(ctx context.Context) ([]string, error) {
 // SeedEveryProject is the boot pass: Ensure for every project, under SeedLease, which covers a
 // project made by SQL and a catalogue the release changed. Another process that holds the lease
 // is seeding with its own build's catalogue, so a pass that finds it held tries again after
-// seedRetry until a pass of its own runs, and so does a pass in which a project's seed failed. It
-// returns when ctx is done.
+// seedRetry until a pass of its own runs. A pass in which a project's seed failed is followed
+// after seedRetry by one that seeds again the projects that failed, and those alone; a project
+// whose seed was refused for its `evals-md` is seeded again once that artifact is a document
+// (seedRefusals), which each such pass reads. It returns when ctx is done.
 func (s *Store) SeedEveryProject(ctx context.Context, leases duty.Leases) {
+	var owed []string
+	first := true
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Lease:  SeedLease,
 		Leases: leases,
 		MinGap: seedRetry,
 		Pass: func(ctx context.Context) time.Time {
-			if err := s.seedEveryProject(ctx); err != nil {
-				if ctx.Err() == nil {
-					slog.Warn("dispatch: the eval seed failed; it runs again", "error", err, "after", seedRetry)
+			projects := owed
+			if first {
+				every, err := s.Projects(ctx)
+				if err != nil {
+					if ctx.Err() == nil {
+						slog.Warn("dispatch: the eval seed failed; it runs again", "error", err, "after", seedRetry)
+					}
+					return time.Now().Add(seedRetry)
 				}
+				projects = every
+			}
+			failed, err := s.seedEveryProject(ctx, slices.Concat(projects, s.refused.held()))
+			first, owed = false, failed
+			if err != nil && ctx.Err() == nil {
+				slog.Warn("dispatch: the eval seed failed; it runs again", "error", err, "after", seedRetry)
+			}
+			if len(owed) > 0 || len(s.refused.held()) > 0 {
 				return time.Now().Add(seedRetry)
 			}
 			return time.Time{}
@@ -153,20 +173,30 @@ func (s *Store) SeedEveryProject(ctx context.Context, leases duty.Leases) {
 	})
 }
 
-// seedEveryProject is one pass of the boot seed: Ensure of each project in turn, each in a
-// transaction of its own, so one project's failure leaves the others seeded.
-func (s *Store) seedEveryProject(ctx context.Context) error {
-	projects, err := s.Projects(ctx)
+// seedEveryProject is one pass of the boot seed: Ensure of each of projects in turn, each in a
+// transaction of its own, so one project's failure leaves the others seeded, passing over each
+// whose seed was refused for its `evals-md` while that artifact is still no document
+// (seedRefusals.pending). It answers the projects whose seed failed otherwise, which the next pass
+// seeds again, and every failure joined. A project no row holds any more is no failure to seed
+// again: its seed is refused PROJECT_NOT_FOUND, and so is every later one.
+func (s *Store) seedEveryProject(ctx context.Context, projects []string) ([]string, error) {
+	projects, err := s.refused.pending(ctx, s.database.Pool, projects)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var failed []error
+	var failures []error
+	var failed []string
 	var total Seeded
 	written := 0
 	for _, project := range projects {
 		seeded, err := s.Ensure(ctx, project)
+		s.refused.note(project, err)
 		if err != nil {
-			failed = append(failed, fmt.Errorf("seed the evals of %s: %w", project, err))
+			failures = append(failures, fmt.Errorf("seed the evals of %s: %w", project, err))
+			var refusal *Error
+			if !errors.As(err, &refusal) {
+				failed = append(failed, project)
+			}
 			continue
 		}
 		if seeded.wrote() {
@@ -175,8 +205,86 @@ func (s *Store) seedEveryProject(ctx context.Context) error {
 		total.Versions, total.Series, total.Sections = total.Versions+seeded.Versions, total.Series+seeded.Series, total.Sections+seeded.Sections
 	}
 	slog.Info("dispatch: the eval seed ran", "projects", len(projects), "projects_written", written,
-		"versions", total.Versions, "series", total.Series, "sections", total.Sections, "failed", len(failed))
-	return errors.Join(failed...)
+		"versions", total.Versions, "series", total.Series, "sections", total.Sections, "failed", len(failures))
+	return failed, errors.Join(failures...)
+}
+
+// seedRefusals is the projects whose seed was refused because their `evals-md` artifact is no
+// document (CodeDocumentNotDocument). The seed reads that artifact whatever else it writes
+// (ensure, existingDocument), so it refuses such a project again for as long as the artifact
+// stands, and only a person's write of the artifact moves it. A seed of such a project is
+// therefore not tried again while one read says the artifact is still no document (pending),
+// rather than once a minute by the boot pass and once a pass by the refresher, each a
+// transaction of about ten statements. The zero value holds none.
+type seedRefusals struct {
+	mu       sync.Mutex
+	projects map[string]bool
+}
+
+// note records what a seed of project answered: a refusal for its document is held, and any other
+// answer lets go of one.
+func (r *seedRefusals) note(project string, err error) {
+	var refusal *Error
+	refused := errors.As(err, &refusal) && refusal.Code == CodeDocumentNotDocument
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !refused {
+		delete(r.projects, project)
+		return
+	}
+	if r.projects == nil {
+		r.projects = map[string]bool{}
+	}
+	r.projects[project] = true
+}
+
+// held is every project whose refusal is held, in key order.
+func (r *seedRefusals) held() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Sorted(maps.Keys(r.projects))
+}
+
+// pending is projects, each once and in their order, less each whose refusal is held and whose
+// `evals-md` is still no document, which one statement reads for all of them. A held project
+// whose artifact is a document now, or gone, is let go of and kept, so its seed runs again.
+func (r *seedRefusals) pending(ctx context.Context, pool *store.Pool, projects []string) ([]string, error) {
+	seen := make(map[string]bool, len(projects))
+	var unique, held []string
+	r.mu.Lock()
+	for _, project := range projects {
+		if seen[project] {
+			continue
+		}
+		seen[project] = true
+		unique = append(unique, project)
+		if r.projects[project] {
+			held = append(held, project)
+		}
+	}
+	r.mu.Unlock()
+	if len(held) == 0 {
+		return unique, nil
+	}
+	rows, err := pool.Query(ctx, `
+		select project_key from artifacts
+		where project_key = any($1) and issue_key is null and session_id is null and slug = $2 and kind <> 'doc'
+	`, held, DocumentSlug)
+	if err != nil {
+		return nil, fmt.Errorf("read the %s artifacts of the projects whose seed was refused: %w", DocumentSlug, err)
+	}
+	still, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the %s artifacts of the projects whose seed was refused: %w", DocumentSlug, err)
+	}
+	r.mu.Lock()
+	for _, project := range held {
+		if !slices.Contains(still, project) {
+			delete(r.projects, project)
+		}
+	}
+	r.mu.Unlock()
+	return slices.DeleteFunc(unique, func(project string) bool { return slices.Contains(still, project) }), nil
 }
 
 // seedWrite is one eval's write of a seed: the version of its definition and the versions of its

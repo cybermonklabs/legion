@@ -142,7 +142,8 @@ func ComputeProject(ctx context.Context, pool *store.Pool, project string, now t
 }
 
 // rowsOf turns the population's facts into rows, in key order. wanted names the issues to keep,
-// and a nil wanted keeps every issue with facts.
+// whose facts alone are computed (metrics.ProjectFacts), and a nil wanted keeps every issue with
+// facts.
 //
 // The waiting reason is the one card rule (legion.CardWaiting), read through the one waiting
 // line (legion.WaitingLine), which the board builds from its own cards. The daemon's admission
@@ -158,13 +159,8 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 		Issue:     func(key string) (legion.LineIssue, bool) { return lineIssue(population, key) },
 		Tree:      population.TreeNode,
 	})
-	facts := metrics.ProjectFacts(population)
-	keys := make([]string, 0, len(facts))
-	for _, key := range slices.Sorted(maps.Keys(facts)) {
-		if wanted == nil || wanted[key] {
-			keys = append(keys, key)
-		}
-	}
+	facts := metrics.ProjectFacts(population, wanted)
+	keys := slices.Sorted(maps.Keys(facts))
 	repos, err := ReadRepos(ctx, q, keys)
 	if err != nil {
 		return nil, err

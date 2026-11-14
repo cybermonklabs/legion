@@ -129,26 +129,41 @@ type evalItemsRange struct {
 }
 
 // evalItemsRead is what a reader of one row kind reads for one range: the eval, the request and
-// the range, and the delivery settings the delivery and CI rows are read under, nil where the
-// deployment has set none, which leaves no such row to read.
+// the range, the delivery settings the delivery and CI rows are read under, nil where the
+// deployment has set none, which leaves no such row to read, and the reads the range's readers
+// share (evalRangeReads).
 type evalItemsRead struct {
 	project  string
 	entry    evals.Entry
 	request  evalItemsRequest
 	rng      evalItemsRange
 	settings *delivery.DeliverySettings
+	shared   *evalRangeReads
 }
 
-// evalItemKind is one row kind a computed eval answers, and its reader.
+// evalRangeReads is the reads two readers of one range make alike, each made once a range and
+// kept for the other: change-fail-rate's pull requests and deploys both read the items the
+// delivery family's day rows of the range counted and the pull requests merged in it, and pr-ci's
+// jobs and its day rows both read the eval's day rows of the range.
+type evalRangeReads struct {
+	counted map[string]map[string]bool
+	merged  *delivery.MergedRows
+	days    []evals.DayRow
+	read    bool
+}
+
+// evalItemKind is one row kind a computed eval answers, and its reader: read answers the kind's
+// rows whole, or source, set in its place, answers them a page at a time.
 type evalItemKind struct {
-	kind string
-	read func(s *server, ctx context.Context, read evalItemsRead) ([]evalItemRow, error)
+	kind   string
+	read   func(s *server, ctx context.Context, read evalItemsRead) ([]evalItemRow, error)
+	source func(s *server, ctx context.Context, read evalItemsRead) (evalItemSource, error)
 }
 
 var (
-	pullRequestItems = evalItemKind{evalRowPullRequest, (*server).pullRequestItemRows}
-	deployItems      = evalItemKind{evalRowDeploy, (*server).deployItemRows}
-	legionItems      = evalItemKind{evalRowIssue, (*server).legionItemRows}
+	pullRequestItems = evalItemKind{kind: evalRowPullRequest, read: (*server).pullRequestItemRows}
+	deployItems      = evalItemKind{kind: evalRowDeploy, read: (*server).deployItemRows}
+	legionItems      = evalItemKind{kind: evalRowIssue, source: (*server).legionItemSource}
 )
 
 // evalComputedItems is the row kinds each computed eval answers beside its readings and its day
@@ -160,8 +175,8 @@ var evalComputedItems = map[string][]evalItemKind{
 	evals.SourceFoldReworkShare:       {pullRequestItems},
 	evals.SourceFoldTimeToRestore:     {pullRequestItems},
 	evals.SourceFoldChangeFailureRate: {pullRequestItems, deployItems},
-	evals.SourceFoldTiming:            {{evalRowRun, (*server).runItemRows}, {evalRowJob, (*server).jobItemRows}},
-	evals.SourceListUnownedP0:         {{evalRowIssue, (*server).unownedItemRows}},
+	evals.SourceFoldTiming:            {{kind: evalRowRun, read: (*server).runItemRows}, {kind: evalRowJob, read: (*server).jobItemRows}},
+	evals.SourceListUnownedP0:         {{kind: evalRowIssue, read: (*server).unownedItemRows}},
 	evals.SourceFoldWorkTime:          {legionItems},
 	evals.SourceFoldPhaseTime:         {legionItems},
 	evals.SourceFoldIdleTime:          {legionItems},
@@ -251,10 +266,18 @@ func (s *server) evalItemSources(ctx context.Context, project string, entry eval
 	definition := entry.Definition
 	var sources []evalItemSource
 	for _, rng := range ranges {
-		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, settings: settings}
+		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, settings: settings, shared: &evalRangeReads{}}
 		if definition.Computed() {
 			for _, kind := range evalComputedItems[definition.Source] {
 				if !kept(kind.kind) {
+					continue
+				}
+				if kind.source != nil {
+					source, err := kind.source(s, ctx, read)
+					if err != nil {
+						return nil, err
+					}
+					sources = append(sources, source)
 					continue
 				}
 				rows, err := kind.read(s, ctx, read)
@@ -284,7 +307,7 @@ func (s *server) evalItemSources(ctx context.Context, project string, entry eval
 			return rows, page.Total, nil
 		})
 		if kept(evalRowDay) {
-			days, err := registry.EvalDays(ctx, project, definition.EvalID, request.series, request.repos, rng.days)
+			days, err := s.evalDaysOf(ctx, read)
 			if err != nil {
 				return nil, err
 			}
@@ -299,6 +322,34 @@ func (s *server) evalItemSources(ctx context.Context, project string, entry eval
 		}
 	}
 	return sources, nil
+}
+
+// evalDaysOf is the eval's day rows of read's range (evals.Store.EvalDays, of the request's series
+// and repositories), read once a range (evalRangeReads): the day-row source and pr-ci's job rows
+// both read them.
+func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.DayRow, error) {
+	if !read.shared.read {
+		days, err := s.registry().EvalDays(ctx, read.project, read.entry.Definition.EvalID, read.request.series, read.request.repos, read.rng.days)
+		if err != nil {
+			return nil, err
+		}
+		read.shared.days, read.shared.read = days, true
+	}
+	return read.shared.days, nil
+}
+
+// mergedRowsOf is the pull requests merged in read's range with the deploy runs created from its
+// start on (delivery.ReadMergedRows, as the day builder reads them), read once a range
+// (evalRangeReads): change-fail-rate's pull requests and its deploys both read them.
+func (s *server) mergedRowsOf(ctx context.Context, read evalItemsRead) (delivery.MergedRows, error) {
+	if read.shared.merged == nil {
+		merged, err := delivery.ReadMergedRows(ctx, s.deps.Store.Pool, *read.settings, read.rng.days.From, read.rng.days.To, false)
+		if err != nil {
+			return delivery.MergedRows{}, err
+		}
+		read.shared.merged = &merged
+	}
+	return *read.shared.merged, nil
 }
 
 // evalDeliverySettings is the deployment's delivery settings, nil where it has set none.
@@ -377,16 +428,22 @@ func evalItemsPath(project, slug string) string {
 	return "/api/v1/projects/" + url.PathEscape(project) + "/evals/" + url.PathEscape(slug) + "/items"
 }
 
-// legionItemRows is the issues a Legion eval counts in the range: the issues of the project that
+// legionItemSource is the issues a Legion eval counts in the range: the issues of the project that
 // closed in it (legionfacts.ReadClosedIn), and for legion-splitting the filings its sessions made
-// in it (legionfacts.ReadFilingsIn); a `filed:<class>` series reads the filings of that class
-// alone, and any other series of legion-splitting the closed issues alone. A series' cut keeps
-// the issues of that cut, by the stored root (metrics.InCut). The repository each issue resolves
-// to now is read once (legionfacts.ReadRepos, the repository the day rows cut by): a closed
-// issue's row shows it, and repo keeps the issues that resolve to one of the repositories named,
-// so a row never shows one repository while it is kept by another. Each row carries its issue's
-// title and priority (legionfacts.WithIssues).
-func (s *server) legionItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
+// in it (legionfacts.ReadFilingsIn), the filings first; a `filed:<class>` series reads the filings
+// of that class alone, and any other series of legion-splitting the closed issues alone. A series'
+// cut keeps the issues of that cut, by the stored root (metrics.InCut), and row keeps the issue it
+// names. The repository each issue resolves to now (legionfacts.ReadRepos, the repository the day
+// rows cut by) is what a closed issue's row shows and what repo keeps the issues by, so a row
+// never shows one repository while it is kept by another. Each row carries its issue's title and
+// priority (legionfacts.WithIssues).
+//
+// The source answers a page at a time: the stored rows of the range are read whole, since every
+// one of them is counted in the total, but the repositories are resolved (a walk of each issue's
+// parent chain) and the titles read for the page's issues alone, and the page's rows alone are
+// built, where a read of every page made all three over every issue of the range. A repo filter
+// resolves every issue's repository, which the total then counts by.
+func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (evalItemSource, error) {
 	pool := s.deps.Store.Pool
 	base, cut := metrics.SplitCutSeries(read.request.series)
 	class, filedSeries := strings.CutPrefix(base, metrics.FilingSeriesPrefix)
@@ -399,7 +456,8 @@ func (s *server) legionItemRows(ctx context.Context, read evalItemsRead) ([]eval
 			return nil, err
 		}
 		filings = slices.DeleteFunc(filed, func(filing legionfacts.Filing) bool {
-			return (filedSeries && filing.Class != class) || !metrics.InCut(cut, filing.RootKey == filing.Issue)
+			return (filedSeries && filing.Class != class) || !metrics.InCut(cut, filing.RootKey == filing.Issue) ||
+				(read.request.row != "" && filing.Issue != read.request.row)
 		})
 	}
 	if !filedSeries {
@@ -407,35 +465,57 @@ func (s *server) legionItemRows(ctx context.Context, read evalItemsRead) ([]eval
 		if err != nil {
 			return nil, err
 		}
-		closed = slices.DeleteFunc(stored, func(row legionfacts.Row) bool { return !metrics.InCut(cut, row.RootKey == row.Issue) })
+		closed = slices.DeleteFunc(stored, func(row legionfacts.Row) bool {
+			return !metrics.InCut(cut, row.RootKey == row.Issue) || (read.request.row != "" && row.Issue != read.request.row)
+		})
 	}
-	keys := make([]string, 0, len(filings)+len(closed))
-	for _, filing := range filings {
-		keys = append(keys, filing.Issue)
-	}
-	for _, row := range closed {
-		keys = append(keys, row.Issue)
-	}
-	repos, err := legionfacts.ReadRepos(ctx, pool, keys)
-	if err != nil {
-		return nil, err
-	}
-	items := append(legionfacts.FilingItemRows(filings), legionfacts.ItemRows(closed, repos)...)
-	if len(read.request.repos) > 0 {
-		items = slices.DeleteFunc(items, func(item legionfacts.ItemRow) bool { return !slices.Contains(read.request.repos, repos[item.RowKey]) })
-	}
-	issues, err := legionfacts.ReadItemIssues(ctx, pool, keys)
-	if err != nil {
-		return nil, err
-	}
-	rows := make([]evalItemRow, len(items))
-	for index, item := range legionfacts.WithIssues(items, issues) {
-		rows[index] = evalItemRow{
-			RowKey: item.RowKey, RowKind: item.RowKind, Cols: item.Columns, MeasuredAt: item.MeasuredAt,
-			Source: item.Source, Href: item.Href, Links: []evals.Link{}, Range: read.rng.label,
+	keysOf := func(filings []legionfacts.Filing, closed []legionfacts.Row) []string {
+		keys := make([]string, 0, len(filings)+len(closed))
+		for _, filing := range filings {
+			keys = append(keys, filing.Issue)
 		}
+		for _, row := range closed {
+			keys = append(keys, row.Issue)
+		}
+		return keys
 	}
-	return rows, nil
+	var repos map[string]string
+	if len(read.request.repos) > 0 {
+		var err error
+		if repos, err = legionfacts.ReadRepos(ctx, pool, keysOf(filings, closed)); err != nil {
+			return nil, err
+		}
+		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.request.repos, repos[filing.Issue]) })
+		closed = slices.DeleteFunc(closed, func(row legionfacts.Row) bool { return !slices.Contains(read.request.repos, repos[row.Issue]) })
+	}
+	total := len(filings) + len(closed)
+	return func(ctx context.Context, skip, want int) ([]evalItemRow, int, error) {
+		start := min(skip, total)
+		end := start + min(want, total-start)
+		pageFilings := filings[min(start, len(filings)):min(end, len(filings))]
+		pageClosed := closed[max(start-len(filings), 0):max(end-len(filings), 0)]
+		keys := keysOf(pageFilings, pageClosed)
+		pageRepos := repos
+		if pageRepos == nil {
+			var err error
+			if pageRepos, err = legionfacts.ReadRepos(ctx, pool, keys); err != nil {
+				return nil, 0, err
+			}
+		}
+		issues, err := legionfacts.ReadItemIssues(ctx, pool, keys)
+		if err != nil {
+			return nil, 0, err
+		}
+		items := append(legionfacts.FilingItemRows(pageFilings), legionfacts.ItemRows(pageClosed, pageRepos)...)
+		rows := make([]evalItemRow, len(items))
+		for index, item := range legionfacts.WithIssues(items, issues) {
+			rows[index] = evalItemRow{
+				RowKey: item.RowKey, RowKind: item.RowKind, Cols: item.Columns, MeasuredAt: item.MeasuredAt,
+				Source: item.Source, Href: item.Href, Links: []evals.Link{}, Range: read.rng.label,
+			}
+		}
+		return rows, total, nil
+	}, nil
 }
 
 // unownedItemRows is unowned-p0's issues: the project's open P0 issues with no owner now
@@ -462,8 +542,13 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 }
 
 // counted is the row keys of the items family's day rows of the project counted on the days of
-// days, those of the repositories the request names where it names any.
+// days, those of the repositories the request names where it names any. Those of the range's own
+// days are read once a range (evalRangeReads), since two readers of change-fail-rate read them.
 func (s *server) counted(ctx context.Context, read evalItemsRead, family string, days evals.Range) (map[string]bool, error) {
+	ranged := days == read.rng.days
+	if keys, held := read.shared.counted[family]; ranged && held {
+		return keys, nil
+	}
 	items, err := s.registry().CountedIn(ctx, read.project, family, read.request.repos, days)
 	if err != nil {
 		return nil, err
@@ -471,6 +556,12 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 	keys := make(map[string]bool, len(items))
 	for _, item := range items {
 		keys[item.RowKey] = true
+	}
+	if ranged {
+		if read.shared.counted == nil {
+			read.shared.counted = map[string]map[string]bool{}
+		}
+		read.shared.counted[family] = keys
 	}
 	return keys, nil
 }
@@ -489,7 +580,7 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 	if err != nil {
 		return nil, err
 	}
-	merged, err := delivery.ReadMergedRows(ctx, s.deps.Store.Pool, settings, read.rng.days.From, read.rng.days.To, false)
+	merged, err := s.mergedRowsOf(ctx, read)
 	if err != nil {
 		return nil, err
 	}
@@ -550,7 +641,7 @@ func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]eval
 	if err != nil {
 		return nil, err
 	}
-	merged, err := delivery.ReadMergedRows(ctx, pool, settings, read.rng.days.From, read.rng.days.To, false)
+	merged, err := s.mergedRowsOf(ctx, read)
 	if err != nil {
 		return nil, err
 	}
@@ -668,7 +759,7 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	if read.request.sort == evalSortFailures {
 		return s.failingJobRows(ctx, read)
 	}
-	days, err := s.registry().EvalDays(ctx, read.project, read.entry.Definition.EvalID, read.request.series, read.request.repos, read.rng.days)
+	days, err := s.evalDaysOf(ctx, read)
 	if err != nil {
 		return nil, err
 	}

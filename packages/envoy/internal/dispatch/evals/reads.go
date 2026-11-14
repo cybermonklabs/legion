@@ -43,39 +43,42 @@ func (s *Store) Projects(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
-// Current reads one page of a project's evals through evals_current, ordered by slug, with each
-// eval's current series: every eval of the project, or those of one kind where kind is not "".
-// Its three statements (the count, the page and the page's series) read one snapshot, in a
-// read-only repeatable-read transaction: a write that commits between two of them, such as a
-// reading that registers its eval, would otherwise answer a page holding the new eval under the
-// total counted before it, which a live view's delta would send as it stands.
-func (s *Store) Current(ctx context.Context, project, kind string, limit, offset int) (Page[Entry], error) {
+// Current reads one page of the evals of projects through evals_current, ordered by project in
+// projects' order and then by slug, with each eval's current series: every eval of those projects,
+// or those of one kind where kind is not "". The page runs across the projects: Total is every
+// project's count, and offset counts from the first project's first eval. Its three statements
+// (the count, the page and the page's series) read one snapshot, in a read-only repeatable-read
+// transaction: a write that commits between two of them, such as a reading that registers its
+// eval, would otherwise answer a page holding the new eval under the total counted before it,
+// which a live view's delta would send as it stands. Each statement reads every project at once,
+// so a read of many projects costs what a read of one does.
+func (s *Store) Current(ctx context.Context, projects []string, kind string, limit, offset int) (Page[Entry], error) {
 	if err := checkPage(limit, offset); err != nil {
 		return Page[Entry]{}, err
 	}
 	tx, err := s.beginSnapshot(ctx)
 	if err != nil {
-		return Page[Entry]{}, fmt.Errorf("begin the read of the evals of %s: %w", project, err)
+		return Page[Entry]{}, fmt.Errorf("begin the read of the evals of %v: %w", projects, err)
 	}
 	defer tx.Rollback(ctx)
-	filter, args := `project_key = $1`, []any{project}
+	filter, args := `project_key = any($1::text[])`, []any{projects}
 	if kind != "" {
 		filter, args = filter+` and kind = $2`, append(args, kind)
 	}
 	var total int
 	if err := tx.QueryRow(ctx, `select count(*) from evals_current where `+filter, args...).Scan(&total); err != nil {
-		return Page[Entry]{}, fmt.Errorf("count the evals of %s: %w", project, err)
+		return Page[Entry]{}, fmt.Errorf("count the evals of %v: %w", projects, err)
 	}
 	limitAt, offsetAt := strconv.Itoa(len(args)+1), strconv.Itoa(len(args)+2)
 	rows, err := tx.Query(ctx, `
 		select `+definitionColumns+` from evals_current where `+filter+`
-		order by slug limit $`+limitAt+` offset $`+offsetAt, append(args, limit, offset)...)
+		order by array_position($1::text[], project_key), slug limit $`+limitAt+` offset $`+offsetAt, append(args, limit, offset)...)
 	if err != nil {
-		return Page[Entry]{}, fmt.Errorf("read the evals of %s: %w", project, err)
+		return Page[Entry]{}, fmt.Errorf("read the evals of %v: %w", projects, err)
 	}
 	definitions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Definition, error) { return scanDefinition(row) })
 	if err != nil {
-		return Page[Entry]{}, fmt.Errorf("read the evals of %s: %w", project, err)
+		return Page[Entry]{}, fmt.Errorf("read the evals of %v: %w", projects, err)
 	}
 	entries := make([]Entry, len(definitions))
 	ids := make([]string, len(definitions))
@@ -91,11 +94,11 @@ func (s *Store) Current(ctx context.Context, project, kind string, limit, offset
 			order by eval_id, is_primary desc, series
 		`, ids)
 		if err != nil {
-			return Page[Entry]{}, fmt.Errorf("read the series of the evals of %s: %w", project, err)
+			return Page[Entry]{}, fmt.Errorf("read the series of the evals of %v: %w", projects, err)
 		}
 		series, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Series, error) { return scanSeries(row) })
 		if err != nil {
-			return Page[Entry]{}, fmt.Errorf("read the series of the evals of %s: %w", project, err)
+			return Page[Entry]{}, fmt.Errorf("read the series of the evals of %v: %w", projects, err)
 		}
 		for _, one := range series {
 			entry := &entries[position[one.EvalID]]
@@ -105,30 +108,39 @@ func (s *Store) Current(ctx context.Context, project, kind string, limit, offset
 	return Page[Entry]{Items: entries, Total: total}, nil
 }
 
-// EvalVersions reads one eval as Eval does and every version of its definition, newest first, in
-// one read-only repeatable-read transaction, as Current reads its statements: a register write
-// committing between the reads would otherwise answer a newest version that is not the definition
-// read, which the eval's read states the window's values for. found is false where no version
-// holds evalID.
-func (s *Store) EvalVersions(ctx context.Context, evalID string) (Entry, []Definition, bool, error) {
+// EvalVersions reads one eval as Eval does and one page of the versions of its definition, newest
+// first, with how many versions it holds, in one read-only repeatable-read transaction, as
+// Current reads its statements: a register write committing between the reads would otherwise
+// answer a newest version that is not the definition read, which the eval's read states the
+// window's values for. The count and the page are one round trip, and the page reads the
+// versions it answers alone. found is false where no version holds evalID.
+func (s *Store) EvalVersions(ctx context.Context, evalID string, limit, offset int) (Entry, Page[Definition], bool, error) {
+	if err := checkPage(limit, offset); err != nil {
+		return Entry{}, Page[Definition]{}, false, err
+	}
 	tx, err := s.beginSnapshot(ctx)
 	if err != nil {
-		return Entry{}, nil, false, fmt.Errorf("begin the read of eval %s: %w", evalID, err)
+		return Entry{}, Page[Definition]{}, false, fmt.Errorf("begin the read of eval %s: %w", evalID, err)
 	}
 	defer tx.Rollback(ctx)
 	entry, found, err := readEval(ctx, tx, evalID)
 	if err != nil || !found {
-		return Entry{}, nil, found, err
+		return Entry{}, Page[Definition]{}, found, err
 	}
-	rows, err := tx.Query(ctx, `
-		select `+definitionColumns+` from eval_versions where eval_id = $1 order by version desc
-	`, evalID)
-	if err != nil {
-		return Entry{}, nil, false, fmt.Errorf("read the versions of %s: %w", evalID, err)
-	}
-	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Definition, error) { return scanDefinition(row) })
-	if err != nil {
-		return Entry{}, nil, false, fmt.Errorf("read the versions of %s: %w", evalID, err)
+	versions := Page[Definition]{Items: []Definition{}}
+	batch := &pgx.Batch{}
+	batch.Queue(`select count(*) from eval_versions where eval_id = $1`, evalID).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&versions.Total)
+	})
+	batch.Queue(`
+		select `+definitionColumns+` from eval_versions where eval_id = $1 order by version desc limit $2 offset $3
+	`, evalID, limit, offset).Query(func(rows pgx.Rows) error {
+		page, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Definition, error) { return scanDefinition(row) })
+		versions.Items = append(versions.Items, page...)
+		return err
+	})
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return Entry{}, Page[Definition]{}, false, fmt.Errorf("read the versions of %s: %w", evalID, err)
 	}
 	return entry, versions, true, nil
 }
@@ -175,37 +187,41 @@ func readEval(ctx context.Context, tx pgx.Tx, evalID string) (Entry, bool, error
 	return Entry{Definition: definition, Series: nonNil(series)}, true, nil
 }
 
-// FirstDays reads, for each series of evalIDs (evals of project) that holds a day row of all the
-// project's repositories (repo the empty string), the first day it holds one, by eval id and then
-// by series: the day its input begins. From that day on a series has a row of every day the
+// FirstDays reads, for each series of entries' evals that holds a day row of all its project's
+// repositories (repo the empty string), the first day it holds one, by eval id and then by
+// series: the day its input begins. From that day on a series has a row of every day the
 // refresher has written, an explicit zero row on a day with no input, so a range that starts
 // before it reads "no data" and names it (R12). Each series is one probe of eval_days' primary
-// key, its first day.
-func (s *Store) FirstDays(ctx context.Context, project string, evalIDs []string) (map[string]map[string]time.Time, error) {
+// key, its first day, under its own eval's project, so the evals of many projects are one read.
+func (s *Store) FirstDays(ctx context.Context, entries []Entry) (map[string]map[string]time.Time, error) {
 	firsts := map[string]map[string]time.Time{}
-	if len(evalIDs) == 0 {
+	if len(entries) == 0 {
 		return firsts, nil
 	}
+	projects, evalIDs := make([]string, len(entries)), make([]string, len(entries))
+	for index, entry := range entries {
+		projects[index], evalIDs[index] = entry.Definition.ProjectKey, entry.Definition.EvalID
+	}
 	rows, err := s.database.Pool.Query(ctx, `
-		select s.eval_id, s.series, first.day
-		from eval_series_current s
+		select given.eval_id, s.series, first.day
+		from unnest($1::text[], $2::text[]) as given(project_key, eval_id)
+		cross join lateral (select series from eval_series_current s where s.eval_id = given.eval_id) s
 		cross join lateral (
 			select d.day from eval_days d
-			where d.project_key = $1 and d.eval_id = s.eval_id and d.series = s.series and d.repo = ''
+			where d.project_key = given.project_key and d.eval_id = given.eval_id and d.series = s.series and d.repo = ''
 			order by d.day
 			limit 1
 		) first
-		where s.eval_id = any($2)
-	`, project, evalIDs)
+	`, projects, evalIDs)
 	if err != nil {
-		return nil, fmt.Errorf("read the first days of the evals of %s: %w", project, err)
+		return nil, fmt.Errorf("read the first days of %d evals: %w", len(evalIDs), err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var evalID, series string
 		var day time.Time
 		if err := rows.Scan(&evalID, &series, &day); err != nil {
-			return nil, fmt.Errorf("read the first days of the evals of %s: %w", project, err)
+			return nil, fmt.Errorf("read the first days of %d evals: %w", len(evalIDs), err)
 		}
 		if firsts[evalID] == nil {
 			firsts[evalID] = map[string]time.Time{}
@@ -213,7 +229,7 @@ func (s *Store) FirstDays(ctx context.Context, project string, evalIDs []string)
 		firsts[evalID][series] = day.UTC()
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the first days of the evals of %s: %w", project, err)
+		return nil, fmt.Errorf("read the first days of %d evals: %w", len(evalIDs), err)
 	}
 	return firsts, nil
 }
@@ -286,19 +302,20 @@ func (s *Store) CountedIn(ctx context.Context, project, family string, repos []s
 	return items, nil
 }
 
-// DayWindow reads the listed day rows of entries, evals of project, for a window of days and,
+// DayWindow reads the listed day rows of entries, evals of projects, for a window of days and,
 // where compare is not nil, for a compare range too, as one statement: the `union all` of one read
-// of each range, each an index range of eval_days_window, so the compare range is a second
-// windowed read of the same rows and never one read with two windows (R2, R12). Each row says
-// which range it answers for (RangeWindow, RangeCompare). A range's days are the UTC dates d with
-// From's date <= d < To's date. repos empty reads the project's own rows (repo is the empty
-// string); repos named reads those repositories' rows, a repository filter's fold.
+// of each range, each an index range of eval_days_window for each project, so the compare range is
+// a second windowed read of the same rows and never one read with two windows (R2, R12), and the
+// evals of many projects are one statement. Each row says which range it answers for
+// (RangeWindow, RangeCompare). A range's days are the UTC dates d with From's date <= d < To's
+// date. repos empty reads the projects' own rows (repo is the empty string); repos named reads
+// those repositories' rows, a repository filter's fold.
 //
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
 // read costs is the bytes it sends: no project, repository, listing or build, and a sample list
 // only for a series whose fold reads one (readsSamples), so a logged series folded by anything but
 // a quantile, whose rows keep every value of their day, sends none.
-func (s *Store) DayWindow(ctx context.Context, project string, entries []Entry, repos []string, window Range, compare *Range) ([]WindowRow, error) {
+func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entry, repos []string, window Range, compare *Range) ([]WindowRow, error) {
 	if len(repos) == 0 {
 		repos = []string{""}
 	}
@@ -317,22 +334,22 @@ func (s *Store) DayWindow(ctx context.Context, project string, entries []Entry, 
 				case when (eval_id, series) in (select * from unnest($4::text[], $5::text[])) then samples end,
 				last_value, last_at, nullif(counts, '{}'), via_repository, updated_at
 			from eval_days
-			where project_key = $1 and repo = any($2) and listed and eval_id = any($3)
+			where project_key = any($1::text[]) and repo = any($2) and listed and eval_id = any($3)
 			  and day >= $` + strconv.Itoa(from) + `::date and day < $` + strconv.Itoa(to) + `::date`
 	}
 	query := ranged("true", 6, 7)
-	args := []any{project, repos, evalIDs, sampledEvals, sampledSeries, window.From.UTC(), window.To.UTC()}
+	args := []any{projects, repos, evalIDs, sampledEvals, sampledSeries, window.From.UTC(), window.To.UTC()}
 	if compare != nil {
 		query += "\n\t\tunion all\n\t\t" + ranged("false", 8, 9)
 		args = append(args, compare.From.UTC(), compare.To.UTC())
 	}
 	rows, err := s.database.Pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("read the day rows of %s: %w", project, err)
+		return nil, fmt.Errorf("read the day rows of %v: %w", projects, err)
 	}
 	days, err := pgx.CollectRows(rows, scanWindowRow)
 	if err != nil {
-		return nil, fmt.Errorf("read the day rows of %s: %w", project, err)
+		return nil, fmt.Errorf("read the day rows of %v: %w", projects, err)
 	}
 	return days, nil
 }

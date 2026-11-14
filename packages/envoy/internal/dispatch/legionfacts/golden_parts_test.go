@@ -77,12 +77,12 @@ const goldenHoursTolerance = 0.1
 
 // TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead: for the history the golden
 // file was recorded over, every per-issue value the facts store, written by WriteProject and read
-// back by Read, equals the part the base head's window aggregation took from that issue: the
-// work-time row, each of the seven bars with its five segments, the rework row, the children and
-// the tree. A part that moves when the code that computes it is split out of the aggregation
-// fails here, whichever of the stored columns it lands in, wherever the recorded history holds a
-// value other than 0 for it: a column the history holds 0 for in every issue (as it does for
-// several segments) shows only that the stored value is 0 there too.
+// back with every column (readWhole), equals the part the base head's window aggregation took
+// from that issue: the work-time row, each of the seven bars with its five segments, the rework
+// row, the children and the tree. A part that moves when the code that computes it is split out
+// of the aggregation fails here, whichever of the stored columns it lands in, wherever the
+// recorded history holds a value other than 0 for it: a column the history holds 0 for in every
+// issue (as it does for several segments) shows only that the stored value is 0 there too.
 func TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead(t *testing.T) {
 	raw, err := os.ReadFile(goldenPartsFile)
 	if err != nil {
@@ -107,7 +107,7 @@ func TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead(t *testing.
 	if _, err := WriteProject(t.Context(), database.Pool, ProjectWrite{Project: fixture.Project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts of %s: %v", fixture.Project, err)
 	}
-	stored, err := Read(t.Context(), database.Pool, fixture.Project)
+	stored, err := readWhole(t.Context(), database.Pool, fixture.Project)
 	if err != nil {
 		t.Fatalf("read the facts of %s: %v", fixture.Project, err)
 	}

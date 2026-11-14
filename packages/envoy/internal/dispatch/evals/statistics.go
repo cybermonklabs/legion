@@ -42,8 +42,8 @@ var computedFolds = map[string]seriesFold{
 	SourceFoldChangeFailureRate: changeFailureRateStatistics,
 	SourceFoldTimeToRestore:     oneSeries(measures.SeriesMinutes, timeToRestoreStatistics),
 	SourceFoldTiming:            oneSeries(measures.SeriesMinutes, timingStatistics),
-	// unowned-p0's day row is the count at the day's last refresh, which delivery.ListUnownedP0
-	// counts; a window reads its newest day's, the `last` fold.
+	// unowned-p0's day row is the count at the day's last refresh, which delivery.CountUnownedP0
+	// counts by delivery.ListUnownedP0's rule; a window reads its newest day's, the `last` fold.
 	SourceListUnownedP0: oneSeries(SeriesUnownedP0, func(parts []measures.DayPart, _ Range) Statistics {
 		return aggStatistics(AggLast, parts, SeriesUnownedP0)
 	}),

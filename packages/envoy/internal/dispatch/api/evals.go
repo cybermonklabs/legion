@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The eval routes (dispatch://INFRA-2916, R3 to R5, R7, R9, R11, R12 and R16): every number a
@@ -573,83 +574,83 @@ func (s *server) evalProjects(ctx context.Context, named []string) ([]string, er
 // order given and then by slug (evals.Store.Current, through evals_current), each with its values
 // over the window and the compare range (evalItemsOf). The page runs across the projects: total is
 // every project's count, and offset counts from the first project's first eval. It is the body of
-// both list routes, which the live hub's view of the evals reads too.
+// both list routes, which the live hub's view of the evals reads too. Each of its reads reads
+// every project at once, so a read of many projects makes as many statements as a read of one.
 func (s *server) readEvalList(ctx context.Context, request evalListRequest, now time.Time) (evalListResponse, error) {
 	registry := s.registry()
 	answer := evalListResponse{
 		Items: []evalListItem{}, Limit: request.limit, Offset: request.offset,
 		Window: newEvalRange(request.ranges.window), Compare: evalCompareRange(request.ranges.compare),
 	}
-	var oldest *time.Time
-	skip, want := request.offset, request.limit
-	for _, project := range request.projects {
-		// A page of the project's evals from skip on, of at most want; with want spent, a page of
-		// one is read for the project's count alone.
-		page, err := registry.Current(ctx, project, request.kind, max(want, 1), skip)
-		if err != nil {
-			return evalListResponse{}, err
-		}
-		answer.Total += page.Total
-		skip = max(0, skip-page.Total)
-		entries := page.Items[:min(len(page.Items), want)]
-		want -= len(entries)
-		if len(entries) == 0 {
-			continue
-		}
-		items, folded, err := s.evalItemsOf(ctx, registry, project, entries, request.repos, request.ranges)
-		if err != nil {
-			return evalListResponse{}, err
-		}
-		for _, item := range items {
-			answer.Items = append(answer.Items, evalListItem{ID: item.Definition.EvalID, evalItem: item})
-		}
-		oldest = olderOf(oldest, folded)
-	}
-	freshness, err := s.evalFreshness(ctx, registry, oldest, now)
+	page, err := registry.Current(ctx, request.projects, request.kind, request.limit, request.offset)
 	if err != nil {
 		return evalListResponse{}, err
+	}
+	answer.Total = page.Total
+	items, freshness, err := s.evalItemsAndFreshness(ctx, registry, page.Items, request.repos, request.ranges, now)
+	if err != nil {
+		return evalListResponse{}, err
+	}
+	for _, item := range items {
+		answer.Items = append(answer.Items, evalListItem{ID: item.Definition.EvalID, evalItem: item})
 	}
 	answer.Freshness = freshness
 	return answer, nil
 }
 
-// olderOf is the older of two moments, either of which may be none.
-func olderOf(a, b *time.Time) *time.Time {
-	if a == nil || (b != nil && b.Before(*a)) {
-		return b
+// evalItemsAndFreshness states each of entries with its values (evalItemsOf), none where entries
+// holds none, and the answer's freshness: the oldest updated_at of the rows it folded and the
+// refresher's age at now. The refresher's age is read side by side with the day rows, which it
+// does not depend on.
+func (s *server) evalItemsAndFreshness(ctx context.Context, registry *evals.Store, entries []evals.Entry, repos []string, ranges evalRanges, now time.Time) ([]evalItem, evalFreshness, error) {
+	var items []evalItem
+	var oldest *time.Time
+	var age time.Duration
+	var found bool
+	reads := []func(context.Context) error{func(ctx context.Context) (err error) {
+		age, found, err = registry.RefresherAge(ctx, now)
+		return err
+	}}
+	if len(entries) > 0 {
+		reads = append(reads, func(ctx context.Context) (err error) {
+			items, oldest, err = s.evalItemsOf(ctx, registry, entries, repos, ranges)
+			return err
+		})
 	}
-	return a
-}
-
-// evalFreshness is an answer's freshness: oldest, the oldest updated_at of the rows it folded,
-// and the refresher's age at now.
-func (s *server) evalFreshness(ctx context.Context, registry *evals.Store, oldest *time.Time, now time.Time) (evalFreshness, error) {
+	if err := store.ReadSideBySide(ctx, reads...); err != nil {
+		return nil, evalFreshness{}, err
+	}
 	freshness := evalFreshness{RowsUpdatedAt: oldest}
-	age, found, err := registry.RefresherAge(ctx, now)
-	if err != nil {
-		return evalFreshness{}, err
-	}
 	if found {
 		freshness.RefresherAgeSeconds = new(int(age / time.Second))
 	}
-	return freshness, nil
+	return items, freshness, nil
 }
 
-// evalItemsOf states each of entries, evals of project, with its values: one read of the day rows
-// of the page's evals over the window and the compare range (evals.Store.DayWindow, the rows of
-// repos where it names any), and one read of each series' first day (evals.Store.FirstDays). It
-// answers the items, in entries' order, and the oldest updated_at of the rows it folded.
-func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, project string, entries []evals.Entry, repos []string, ranges evalRanges) ([]evalItem, *time.Time, error) {
-	ids := make([]string, len(entries))
-	for index, entry := range entries {
-		ids[index] = entry.Definition.EvalID
+// evalItemsOf states each of entries with its values: one read of the day rows of the page's
+// evals over the window and the compare range (evals.Store.DayWindow, the rows of repos where it
+// names any) and one read of each series' first day (evals.Store.FirstDays), side by side, each
+// of every project the entries are evals of. It answers the items, in entries' order, and the
+// oldest updated_at of the rows it folded.
+func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries []evals.Entry, repos []string, ranges evalRanges) ([]evalItem, *time.Time, error) {
+	var projects []string
+	for _, entry := range entries {
+		if !slices.Contains(projects, entry.Definition.ProjectKey) {
+			projects = append(projects, entry.Definition.ProjectKey)
+		}
 	}
-	rows, err := registry.DayWindow(ctx, project, entries, repos, ranges.window, ranges.compare)
-	if err != nil {
-		return nil, nil, err
-	}
-	firsts, err := registry.FirstDays(ctx, project, ids)
-	if err != nil {
+	var rows []evals.WindowRow
+	var firsts map[string]map[string]time.Time
+	if err := store.ReadSideBySide(ctx,
+		func(ctx context.Context) (err error) {
+			rows, err = registry.DayWindow(ctx, projects, entries, repos, ranges.window, ranges.compare)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			firsts, err = registry.FirstDays(ctx, entries)
+			return err
+		},
+	); err != nil {
 		return nil, nil, err
 	}
 	byEval := map[string][]evals.WindowRow{}
@@ -831,10 +832,11 @@ func evalVerdictOf(entry evals.Entry, series []evalSeriesValues) *evalVerdict {
 
 // getProjectEval answers GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,
 // newest first, read with its current definition and series in one snapshot
-// (evals.Store.EvalVersions), the newest stating the window's values as the list read states
-// them, and the method its section of the project's `evals-md` holds (evals.Store.Method). A query
-// key the route does not take is 400 INVALID_QUERY (undeclaredQueryKey), 404 PROJECT_NOT_FOUND for
-// a project no row holds, 404 EVAL_NOT_FOUND for a slug no eval of it holds.
+// (evals.Store.EvalVersions, which reads the page's versions alone), the newest stating the
+// window's values as the list read states them, and the method its section of the project's
+// `evals-md` holds (evals.Store.Method), the values and the method read side by side. A query key
+// the route does not take is 400 INVALID_QUERY (undeclaredQueryKey), 404 PROJECT_NOT_FOUND for a
+// project no row holds, 404 EVAL_NOT_FOUND for a slug no eval of it holds.
 func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -851,7 +853,7 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	registry := s.registry()
-	entry, versions, found, err := registry.EvalVersions(ctx, evals.EvalID(project, slug))
+	entry, versions, found, err := registry.EvalVersions(ctx, evals.EvalID(project, slug), read.limit, read.offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -861,36 +863,38 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answer := evalDetailResponse{
-		Items: []evalItem{}, Total: len(versions), Limit: read.limit, Offset: read.offset,
+		Items: []evalItem{}, Total: versions.Total, Limit: read.limit, Offset: read.offset,
 		Window: newEvalRange(read.ranges.window), Compare: evalCompareRange(read.ranges.compare),
 	}
-	// The page's bounds, clamped before they are added: an offset up to math.MaxInt is valid, and
-	// offset+limit would overflow.
-	start := min(read.offset, len(versions))
-	end := start + min(read.limit, len(versions)-start)
-	var oldest *time.Time
-	for _, version := range versions[start:end] {
+	// The newest version states the window's values where the page holds it.
+	var stated []evals.Entry
+	if slices.ContainsFunc(versions.Items, func(version evals.Definition) bool { return version.Version == entry.Definition.Version }) {
+		stated = []evals.Entry{entry}
+	}
+	var newest []evalItem
+	var method string
+	var held bool
+	if err := store.ReadSideBySide(ctx,
+		func(ctx context.Context) (err error) {
+			newest, answer.Freshness, err = s.evalItemsAndFreshness(ctx, registry, stated, read.repos, read.ranges, time.Now().UTC())
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			method, held, err = registry.Method(ctx, project, entry.Definition.DocBlock)
+			return err
+		},
+	); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	for _, version := range versions.Items {
 		if version.Version != entry.Definition.Version {
 			answer.Items = append(answer.Items, evalItem{Definition: version, Owner: evalOwnerOf(version)})
 			continue
 		}
-		newest, folded, err := s.evalItemsOf(ctx, registry, project, []evals.Entry{entry}, read.repos, read.ranges)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		answer.Items, oldest = append(answer.Items, newest...), folded
+		answer.Items = append(answer.Items, newest...)
 	}
-	if answer.Freshness, err = s.evalFreshness(ctx, registry, oldest, time.Now().UTC()); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	method, found, err := registry.Method(ctx, project, entry.Definition.DocBlock)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if found {
+	if held {
 		answer.DocText = &method
 	}
 	WriteJSON(w, http.StatusOK, answer)

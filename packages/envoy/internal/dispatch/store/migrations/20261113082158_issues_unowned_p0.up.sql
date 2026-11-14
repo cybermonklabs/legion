@@ -4,13 +4,13 @@
 -- The index behind the reads of the open P0 issues (dispatch://INFRA-2916, R13): the count of P0
 -- issues with no owner, which the unowned-p0 eval and the delivery measures route answer (an
 -- issue with priority 0, a status other than done, no claim and no route, the rule of
--- delivery.ListUnownedP0), and the delivery live hub's set of every open P0 issue's key
--- (delivery.OpenP0Keys), which the hub reads each time it stands up its event feed and which marks
--- the views a P0 issue's change moves. No index of issues holds priority, so each of those reads,
--- over every project at once, scanned the whole table, and the read of one project's (`select key,
--- title from issues where project_key = $1 and priority = 0 and status <> 'done' and claimed_by is
--- null and route is null order by number`, which ListUnownedP0 counts the rows of) could at best
--- read every issue of that project.
+-- delivery.ListUnownedP0 and delivery.CountUnownedP0), and the delivery live hub's set of every
+-- open P0 issue's key (delivery.OpenP0Keys), which the hub reads each time it stands up its event
+-- feed and which marks the views a P0 issue's change moves. No index of issues holds priority, so
+-- each of those reads, over every project at once, scanned the whole table, and the count of one
+-- project's (`select count(*) from issues where project_key = $1 and priority = 0 and status <>
+-- 'done' and claimed_by is null and route is null`, CountUnownedP0's) could at best read every
+-- issue of that project.
 --
 -- The predicate is the clauses the two reads share, `priority = 0 and status <> 'done'`, so the
 -- planner proves it from either read's own clauses and the index holds the open P0 issues alone:

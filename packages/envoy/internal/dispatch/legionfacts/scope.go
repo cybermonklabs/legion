@@ -221,21 +221,34 @@ func staleStoredRows(ctx context.Context, pool *store.Pool) (map[string][]string
 }
 
 // rowsToCompute is the whole set one pass computes for a project, sorted: the rows the changes
-// touch through the issues' links now (rowsTouchedBy) and the rows of the tree a moved issue
-// left (leftTrees). It is the set the pass states before it writes, and it writes no row
-// outside it.
+// and the sweep touch through the issues' links now (rowsTouchedBy) and the rows of the tree a
+// moved issue left (leftTrees). It is the set the pass states before it writes, and it writes no
+// row outside it. keys is the issues the feeds named and the stale rows the sweep adds
+// (staleStoredRows), and open the open rows the sweep adds (openStoredRows), which it recomputes
+// because their hours move with the clock. It answers beside the whole set the part of it keys
+// state (fed), which the filings are stated over (filingsToCompute): a filing moves with no input
+// the clock moves, so a row only the open rows' sweep states names no filing the pass need
+// compute.
 //
 // moved names the issues a row of a feed took out of one tree and into another (touch). Only
 // the tree such an issue left is read from it: the links as they stand now answer for every
 // other issue a change can move, the issues below a key among them (rowsTouchedBy).
-func rowsToCompute(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, above map[string]string) ([]string, error) {
-	touched := rowsTouchedBy(keys, above)
+func rowsToCompute(ctx context.Context, q Querier, project string, keys, open []string, moved map[string]bool, above map[string]string) ([]string, []string, error) {
 	left, err := leftTrees(ctx, q, project, keys, moved)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	fed := withRows(rowsTouchedBy(keys, above), left)
+	if len(open) == 0 {
+		return fed, fed, nil
+	}
+	return withRows(rowsTouchedBy(slices.Concat(keys, open), above), left), fed, nil
+}
+
+// withRows is touched, sorted, with the keys of left that it does not hold yet, in one sorted set.
+func withRows(touched, left []string) []string {
 	if len(left) == 0 {
-		return touched, nil
+		return touched
 	}
 	whole := make(map[string]bool, len(touched)+len(left))
 	for _, key := range touched {
@@ -244,15 +257,15 @@ func rowsToCompute(ctx context.Context, q Querier, project string, keys []string
 	for _, key := range left {
 		whole[key] = true
 	}
-	return slices.Sorted(maps.Keys(whole)), nil
+	return slices.Sorted(maps.Keys(whole))
 }
 
 // filingsToCompute is the set of filed issues one pass computes the project's filings over,
 // sorted: the filings the page's sessions moved that the project owes, the ones it joined and the
 // ones it left (filed, from feed.filings, passPage), and the project's stored filings whose filed
-// issue or filer's issue is in keys, the set the pass states for the rows (rowsToCompute). It is
-// the set the pass states for the filings, and it writes or deletes no filing outside it
-// (deleteStaleFilings).
+// issue or filer's issue is in keys, the part of the set the pass states for the rows that the
+// feeds' issues and the stale rows state (rowsToCompute's fed). It is the set the pass states for
+// the filings, and it writes or deletes no filing outside it (deleteStaleFilings).
 //
 // A stored filing moves with the inputs of the rows that set already holds. The filed issue's
 // tree root moves with a move of that issue or of an issue above it, and rowsTouchedBy puts the
@@ -260,7 +273,9 @@ func rowsToCompute(ctx context.Context, q Querier, project string, keys []string
 // own events and observations and with its tree, which name the filer's issue. A filing session
 // that writes under a new title moves its filings itself, which the page reads of that session
 // (sessionFilings). The stored filing is read back from the table because the event that made it
-// is long past the cursor, as leftTrees reads a moved issue's old tree from the stored rows.
+// is long past the cursor, as leftTrees reads a moved issue's old tree from the stored rows. None
+// of those inputs moves with the clock, so the open rows the sweep adds, which it recomputes for
+// the hours the clock moves, are no keys here.
 func filingsToCompute(ctx context.Context, q Querier, project string, keys []string, filed map[string]bool) ([]string, error) {
 	set := make(map[string]bool, len(filed))
 	maps.Copy(set, filed)

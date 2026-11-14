@@ -362,10 +362,11 @@ func storedMap[V any](values map[string]V) map[string]V {
 }
 
 // Read answers the stored rows of a project, by issue key. It is the board's read of the facts:
-// rows, and no computation. The evals read the rows of a window's closed issues instead
-// (ReadClosedIn).
+// rows, and no computation, and of each row the columns the board shows (boardColumns), every
+// other field of the Row it answers left at its zero value. The evals read every column of the
+// rows of a window's closed issues instead (ReadClosedIn).
 func Read(ctx context.Context, q Querier, project string) (map[string]Row, error) {
-	read, err := readRows(ctx, q, project, `where project_key = $1`, project)
+	read, err := readRows(ctx, q, project, false, `where project_key = $1`, project)
 	if err != nil {
 		return nil, err
 	}
@@ -379,9 +380,10 @@ func Read(ctx context.Context, q Querier, project string) (map[string]Row, error
 // ReadClosedIn answers the stored rows of the project's issues that closed from from up to to,
 // newest close first, through issue_facts_closed (migration 20261113082157): the issues an eval
 // of the Legion measures counts in that window, every one with Legion phase work since every
-// stored row is one. The Legion evals' day rows are built from one day's (evals.ReadLegionDay).
+// stored row is one, each with every column. The Legion evals' day rows are built from one day's
+// (evals.ReadLegionDay).
 func ReadClosedIn(ctx context.Context, q Querier, project string, from, to time.Time) ([]Row, error) {
-	return readRows(ctx, q, project, closedInWhere, project, from, to)
+	return readRows(ctx, q, project, true, closedInWhere, project, from, to)
 }
 
 // closedInWhere is ReadClosedIn's clause: a range of issue_facts_closed, (project_key, closed_at
@@ -390,28 +392,37 @@ const closedInWhere = `
 	where project_key = $1 and closed_at >= $2 and closed_at < $3
 	order by closed_at desc, issue_key`
 
-// rowsSelect is the read of every column of issue_facts scanRow reads, in its order, which a
-// where clause completes.
-const rowsSelect = `
-	select issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
+// boardColumns is the columns of issue_facts the board shows (Read), which every read of the rows
+// reads first, in scanRow's order. wideColumns is every other column scanRow reads, which the
+// evals read and the board shows none of: two of them are JSON (bars and idle_by_role, beside
+// hours_by_phase) that a read decodes for every row. boardSelect and wideSelect are the reads of
+// the two, which a where clause completes.
+const (
+	boardColumns = `issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 	       root_key, tree_depth, slot_hours, coalesce(waiting_reason, ''),
-	       work_first_at, work_last_at, updated_at,
-	       parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
+	       work_first_at, work_last_at, updated_at`
+	wideColumns = `parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 	       slot_wait_hours, sent_back, implementing_after_first_review,
-	       testing_after_first_review, children, coalesce(repo, '')
-	from issue_facts `
+	       testing_after_first_review, children, coalesce(repo, '')`
+	boardSelect = `select ` + boardColumns + ` from issue_facts `
+	wideSelect  = `select ` + boardColumns + `, ` + wideColumns + ` from issue_facts `
+)
 
 // readRows is the stored rows of project that where (a where clause, with its order) selects,
-// whose arguments args are.
-func readRows(ctx context.Context, q Querier, project, where string, args ...any) ([]Row, error) {
-	result, err := q.Query(ctx, rowsSelect+where, args...)
+// whose arguments args are: the board's columns of each, and every column where wide.
+func readRows(ctx context.Context, q Querier, project string, wide bool, where string, args ...any) ([]Row, error) {
+	selected := boardSelect
+	if wide {
+		selected = wideSelect
+	}
+	result, err := q.Query(ctx, selected+where, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the Legion facts of %s: %w", project, err)
 	}
 	defer result.Close()
 	var rows []Row
 	for result.Next() {
-		row, err := scanRow(result, project)
+		row, err := scanRow(result, project, wide)
 		if err != nil {
 			return nil, err
 		}
@@ -423,27 +434,34 @@ func readRows(ctx context.Context, q Querier, project, where string, args ...any
 	return rows, nil
 }
 
-// scanRow reads one row of readRows' columns.
-func scanRow(result pgx.Rows, project string) (Row, error) {
+// scanRow reads one row of readRows' columns: the board's, and the rest where wide.
+func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	row := Row{Project: project}
 	// opened_at is a nullable column, which a row this package wrote always fills.
 	var opened *time.Time
 	var hours, bars, idle []byte
-	if err := result.Scan(&row.Issue, &opened, &row.ClosedAt, &hours, &row.WorkHours,
+	into := []any{&row.Issue, &opened, &row.ClosedAt, &hours, &row.WorkHours,
 		&row.ReviewRounds, &row.RootKey, &row.TreeDepth, &row.SlotHours, &row.WaitingReason,
-		&row.WorkFirstAt, &row.WorkLastAt, &row.UpdatedAt,
-		&row.ParkedHours, &row.QueuedHours, &row.StartedAt, &row.MergedAt, &bars, &idle,
-		&row.SlotWaitHours, &row.SentBack, &row.ImplementingAfterFirstReview,
-		&row.TestingAfterFirstReview, &row.Children, &row.Repo); err != nil {
+		&row.WorkFirstAt, &row.WorkLastAt, &row.UpdatedAt}
+	if wide {
+		into = append(into, &row.ParkedHours, &row.QueuedHours, &row.StartedAt, &row.MergedAt, &bars, &idle,
+			&row.SlotWaitHours, &row.SentBack, &row.ImplementingAfterFirstReview,
+			&row.TestingAfterFirstReview, &row.Children, &row.Repo)
+	}
+	if err := result.Scan(into...); err != nil {
 		return Row{}, fmt.Errorf("read the Legion facts of %s: %w", project, err)
 	}
 	if opened != nil {
 		row.OpenedAt = *opened
 	}
-	for _, column := range []struct {
+	decoded := []struct {
 		stored []byte
 		into   any
-	}{{hours, &row.HoursByPhase}, {bars, &row.Bars}, {idle, &row.IdleByRole}} {
+	}{{hours, &row.HoursByPhase}, {bars, &row.Bars}, {idle, &row.IdleByRole}}
+	if !wide {
+		decoded = decoded[:1]
+	}
+	for _, column := range decoded {
 		if err := json.Unmarshal(column.stored, column.into); err != nil {
 			return Row{}, fmt.Errorf("read the Legion facts of %s: %w", row.Issue, err)
 		}
