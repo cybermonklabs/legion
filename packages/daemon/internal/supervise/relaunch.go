@@ -71,6 +71,10 @@ func relaunchSentence(ended EndedWork, task bool) string {
 	if ended.Cause != "" {
 		because = process + " ended because " + ended.Cause + "."
 	}
+	// A record of the task's turn with no turn running is one whose let-go's own decision took the
+	// task back while the claim was in no turn, as from a turn that ended before its prompt's result
+	// came (recordEnd): the task's turn is the one cut off, and it is told as one, as a task's
+	// interruption always was (interruptedTask).
 	turn := ended.Turn || ended.TaskTurn
 	var said []string
 	switch {

@@ -1385,9 +1385,12 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // second interruption of the same task for another reason clears a note that no longer
 // describes it.
 // The task is neither retired nor its run marked served, since the turn never finished. A task
-// with no turn running is left as it is: the relaunch sends it as it was. An older daemon's ask
-// of an update round is the one task the relaunch never sends: it keeps its round across the new
-// id (rotateTaskID), and sendPending drops it.
+// whose turn ended while its prompt's result was still to come, which leaves the claim idle with
+// the task confirmed, is taken back as one whose turn still runs: no result has said that turn was
+// the task's (resultPending), and the process that would send it is going. A task no turn has
+// confirmed is left as it is: the relaunch sends it as it was. An older daemon's ask of an update
+// round is the one task the relaunch never sends: it keeps its round across the new id
+// (rotateTaskID), and sendPending drops it.
 //
 // The taken-back task becomes the claim's only once its write has landed. A write that fails
 // leaves the task confirmed in memory as in the store, and the process is still recorded, so the
@@ -1406,8 +1409,11 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // did land leaves the task unconfirmed, which settle retires in no state at all.
 //
 // A take-back that lands also marks the task, under its new id, as taken from a turn of the
-// process the claim records (Machine.cutTurnOf): the confirmation it clears is what the let-go
-// that follows would otherwise read that from, and that let-go records it (recordEnd).
+// process the claim records (Machine.cutTurnOf), and the let-go that follows records from that
+// mark that the task's turn was cut off, whatever the claim's state (recordEnd): the confirmation
+// it clears is what that let-go would otherwise read, and it reads that only where a turn still
+// runs. A decision that records its let-go before this take-back marks the task first, under the
+// id it holds (recordGoneEnd), and this moves the mark to the new id.
 //
 // What the confirmation it clears told stays told (confirm) where the result of the prompt it
 // confirmed has come: that result says a turn ran the prompt, so the agent read the sentence the

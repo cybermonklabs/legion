@@ -1050,3 +1050,110 @@ func TestARelaunchRecordsNoTurnForAHoldThatLandsAtTheTurnsEnd(t *testing.T) {
 		})
 	}
 }
+
+// idleWithItsResultToCome is an idle claim holding its task confirmed: the agent's turn on the
+// task it was handed ended before Oh My Pi said which turn that prompt's was, so settle retired
+// nothing (turnEndsWithItsResultToCome). Its process's own report, read after that turn began,
+// names background work of the kinds given, or none running when it names none. task is the text
+// the task was queued with.
+func idleWithItsResultToCome(t *testing.T, kinds ...string) (h *harness, task string) {
+	t.Helper()
+	h = newHarness(t)
+	h.reach(StateIdle)
+	h.turnEndsWithItsResultToCome(h.taskTheAgentTook())
+	h.advance(time.Second)
+	h.reportActivity(kinds...)
+	return h, h.pending().Task
+}
+
+// A let-go whose own decision takes back the task the claim holds confirmed records that the
+// task's turn was cut off, whatever the claim's state. The claim is idle with its task confirmed,
+// that turn's prompt's result still to come, and its report of that turn names a subagent or says
+// nothing runs (idleWithItsResultToCome). A death, a repoint, a stale-plugin relaunch and a
+// displacement each take that task back (interrupted: died, and replaceNow for the other three),
+// and each records its own cause, the task's turn and no running turn, with what the report named
+// (EndedWork.TaskTurn without Turn: recordEnd, recordGoneEnd). Where the report says nothing
+// runs, that take-back is the whole of what the record holds, and the record is written all the
+// same. The relaunched process is then sent the task behind that record's sentence: its turn on
+// the task was interrupted, why, and the subagent where the report named one. It is never told
+// that the daemon has no report of that turn, nor that no cause was recorded, which is what a task
+// taken back with no record of its own let-go is told (interruptedTask under an older record's
+// cause, or none).
+func TestARelaunchRecordsTheTaskTakenBackFromATurnWhoseResultWasStillToCome(t *testing.T) {
+	for _, report := range []struct {
+		name  string
+		kinds []string
+		// says and saysNot are what the relaunched process's prompt says of that background work,
+		// and does not say.
+		says, saysNot []string
+	}{
+		{name: "its report names a subagent", kinds: []string{"subagent"}, says: []string{saysSubagentStopped}},
+		{name: "its report says nothing runs", saysNot: []string{"stopped with that process"}},
+	} {
+		for _, tc := range []struct {
+			name  string
+			end   func(h *harness)
+			cause string
+		}{
+			{name: "a death", end: func(h *harness) { h.observe(runtime.Gone) },
+				cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))},
+			{name: "a repoint", end: func(h *harness) { h.observe(runtime.StaleAddress) }, cause: endRepointed},
+			{name: "a stale-plugin relaunch", end: func(h *harness) {
+				// The harness's register() walk records h.deps's contract, so the relaunched
+				// process comes up on the contract this daemon now speaks.
+				h.deps.PluginContract, h.m.deps.PluginContract = 25, 25
+				h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+			}, cause: endStalePlugin},
+			{name: "a displacement", end: func(h *harness) { h.observeDisplaced(runtime.Gone) }, cause: endDisplaced},
+		} {
+			t.Run(tc.name+": "+report.name, func(t *testing.T) {
+				h, task := idleWithItsResultToCome(t, report.kinds...)
+				cutOff, at := h.generation(), h.clock.Now()
+
+				tc.end(h)
+
+				h.wantState(StateLaunching)
+				if p := h.pending(); !p.Interrupted || !p.ConfirmedAt.IsZero() {
+					t.Fatalf("the task after the let-go is %+v, want it taken back", p)
+				}
+				h.wantEnded(EndedWork{At: at, Cause: tc.cause, Generation: cutOff, TaskTurn: true,
+					Background: len(report.kinds) > 0, Kinds: report.kinds, Reported: true})
+				sent := len(h.prompts())
+				h.relaunched()
+				h.m.Wait()
+				told := h.wantPrompts(sent + 1)[sent]
+				if told.DeliveryID != h.pending().ID || !strings.HasSuffix(told.Message, "\n\n"+task) {
+					t.Fatalf("the relaunched claim was sent %+v, want the task taken back, %q, behind the sentence of its let-go", told, task)
+				}
+				wantSays(t, told.Message, append([]string{saysTaskTurn, "Your process ended because " + tc.cause + ".", saysTurnGone},
+					report.says...)...)
+				wantSaysNot(t, told.Message, append([]string{saysNoReport, "the daemon recorded no cause"}, report.saysNot...)...)
+				h.wantEndedLine(tc.cause)
+			})
+		}
+	}
+}
+
+// The control: an operator's suspension of the same idle claim, its report naming a subagent, is
+// decided at once, with no turn to hold it for (suspend, suspendNow), and its let-go takes no task
+// back. So the record names the suspension, the subagent and the report, and neither a turn nor
+// the task's turn; the task the turn confirmed is retired once the let-go has ended the wait for
+// its prompt's result (settle); and the record is told as that of a process that was in no turn.
+func TestARelaunchRecordsNoTaskTurnForAnIdleClaimsSuspensionThatTakesNothingBack(t *testing.T) {
+	h, _ := idleWithItsResultToCome(t, "subagent")
+	stopped, at := h.generation(), h.clock.Now()
+
+	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator, Reason: "the operator is draining the daemon"})
+
+	h.wantState(StateSuspended)
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("the suspended claim holds %+v, want the task its turn confirmed retired rather than taken back", p)
+	}
+	cause := endSuspended(SuspendedByOperator)
+	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: stopped,
+		Background: true, Kinds: []string{"subagent"}, Reported: true})
+	h.wantEndedLine(cause)
+	sentence := RelaunchSentence(h.claim().EndedWork)
+	wantSays(t, sentence, saysNoTurn, saysSubagentStopped)
+	wantSaysNot(t, sentence, saysTaskTurn, saysTurnCut)
+}

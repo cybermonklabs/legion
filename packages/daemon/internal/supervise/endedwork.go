@@ -39,10 +39,15 @@ type EndedWork struct {
 	// one the agent's busy answer said it was in (recordBusyTurn). A claim working for nothing
 	// that runs is in no turn (endState): one whose compaction has no turn under it (compactStart
 	// puts the claim in working in no turn), and one whose held suspension runs at the end of its
-	// turn or its compaction (suspendHeldAtEnd). TaskTurn is whether the pending task was in the
-	// turn cut off: confirmed by it, or taken back from it by the decision that let the process
-	// go (interrupted, Machine.cutTurnOf). A task whose turn had ended is not, so recordEnd never
-	// sets TaskTurn without Turn.
+	// turn or its compaction (suspendHeldAtEnd). TaskTurn is whether the pending task's turn was
+	// cut off: the decision that let the process go took the task back from it (interrupted,
+	// Machine.cutTurnOf), whatever the claim's state, or a turn was running and had confirmed the
+	// task. So TaskTurn can stand without Turn: a turn that ended while its prompt's result was
+	// still to come leaves the claim idle with the task confirmed, and a death, a displacement, a
+	// repoint, a stale-plugin relaunch or a paced wake's turn takes that task back, to be sent
+	// again as interrupted (Delivery.message). A confirmed task no decision takes back is in no
+	// turn cut off: that of the held stop at a turn's end, which settle retires, and that of an
+	// idle claim whose let-go takes nothing back (suspendNow).
 	Turn     bool `json:"turn,omitempty"`
 	TaskTurn bool `json:"taskTurn,omitempty"`
 	// Background is whether the process's own last activity report of its launch said background
@@ -148,25 +153,29 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 
 // recordEnd records what letting the claim's process go ends, for cause, before anything of the
 // process is cleared: letGo calls it first, and so do the two decisions that find the process
-// already gone (died, displaced), before they take its task back, since what they find is the
-// whole of what that process's end did and the let-go they lead to can be a wake's turn away.
+// already gone (died, displaced), through recordGoneEnd, before they take its task back, since
+// what they find is the whole of what that process's end did and the let-go they lead to can be
+// a wake's turn away.
 //
 // It records nothing for a claim that records no process, for noEnd, and for a launch whose end
 // is recorded already (EndedWork.Generation). Otherwise it reads what it decides on: whether a
-// turn was running (the claim is working for one: endState), whether the pending task was in
-// that turn (confirmed, or taken back from it by this let-go's own decision: cutTurnOf), and the
-// launch's own activity report from the store (launchActivity), read here because the machine's
-// claim holds only what it read at its own boot and because the launch that follows clears it
-// (store's putClaim). Of a process that ran a turn, a report read before that turn began
-// (Claim.LastTurnStart) is no report of that turn, as the idle rule holds
-// (pods.IdleClaim.Reported): the record is not Reported, rather than reading the turn before's
-// "nothing runs" as this one's. It still takes that report's background work, which the report saw
-// running in this process, so the sentence of a turn cut off names that work and then says that
-// the daemon has no report of what the turn started (relaunchSentence). Nothing is written when no
-// turn was running and a report of the last turn says nothing runs, or when no turn was running
-// and none had run in this process, which can have started no background work; a process that ran
-// a turn and left no report of it is recorded as unreported rather than as having ended nothing. A
-// record still untold is replaced as the union of the two (joined).
+// turn was running (the claim is working for one: endState), whether the pending task's turn was
+// cut off (this let-go's own decision took the task back, whatever the claim's state: cutTurnOf;
+// or the turn that was running had confirmed it), and the launch's own activity report from the
+// store (launchActivity), read here because the machine's claim holds only what it read at its
+// own boot and because the launch that follows clears it (store's putClaim). Of a process that
+// ran a turn, a report read before that turn began (Claim.LastTurnStart) is no report of that
+// turn, as the idle rule holds (pods.IdleClaim.Reported): the record is not Reported, rather than
+// reading the turn before's "nothing runs" as this one's. It still takes that report's background
+// work, which the report saw running in this process, so the sentence of a turn cut off names
+// that work and then says that the daemon has no report of what the turn started
+// (relaunchSentence). Nothing is written when no turn was running, no task was taken back and a
+// report of the last turn says nothing runs, or when no turn was running, no task was taken back
+// and none had run in this process, which can have started no background work; a process that
+// ran a turn and left no report of it is recorded as unreported rather than as having ended
+// nothing. A take-back always leaves a record of its let-go, since the task it took is sent again
+// behind that record's sentence (Delivery.message). A record still untold is replaced as the
+// union of the two (joined).
 //
 // A claim stored working is in a turn, except where it is working for nothing that runs
 // (endState): while a compaction runs with no turn started under it, since compactStart puts the
@@ -174,9 +183,10 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // (compactionLostProcess), until the let-go, which a parked relaunch makes a wake's turn after the
 // death or the displacement that calls this first; and while a held suspension runs at the end of
 // the turn or the compaction the claim was working for (suspendHeldAtEnd). The let-go there cuts
-// off no turn: the record is not Turn, its task is in no turn, and whether the process ran a turn
-// is read from the state that compaction or that end gives the claim back in, ready or idle. A
-// turn Oh My Pi started under the compaction (compacting.inTurn) is a turn as any other.
+// off no turn: the record is not Turn, its task is in no turn cut off unless the let-go's own
+// decision takes it back (above), and whether the process ran a turn is read from the state that
+// compaction or that end gives the claim back in, ready or idle. A turn Oh My Pi started under
+// the compaction (compacting.inTurn) is a turn as any other.
 //
 // A record written here is new words, so a prompt that carried the sentence of the record it
 // replaces carried none of this one: the mark of such a prompt goes (Machine.carried), and only a
@@ -200,11 +210,16 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	}
 	state := m.endState()
 	ended := EndedWork{Cause: cause, Generation: m.claim.Generation, Turn: state == StateWorking}
-	// The pending task was cut off in its turn only where a turn was running. A confirmed task
-	// whose turn had ended when the process was let go — the turn whose end runs a held
-	// suspension (suspendHeldAtEnd), or one that ended before its prompt's result came — is not.
-	if p := m.claim.Pending; p != nil && ended.Turn {
-		ended.TaskTurn = !p.ConfirmedAt.IsZero() || (m.cutTurnOf != "" && p.ID == m.cutTurnOf)
+	// The pending task's turn was cut off where this let-go's own decision takes the task back
+	// (interrupted, cutTurnOf), whatever the claim's state: a turn that ended before its prompt's
+	// result came leaves the claim idle with the task confirmed, and a take-back from there sends
+	// it again as interrupted, behind this record's sentence (Delivery.message). Where a turn was
+	// running, a task it confirmed was in it. A confirmed task no decision takes back is in no
+	// turn cut off: the turn whose end runs a held suspension (suspendHeldAtEnd), whose task
+	// settle retires instead, and an idle claim's let-go that takes nothing back (suspendNow).
+	if p := m.claim.Pending; p != nil {
+		taken := m.cutTurnOf != "" && p.ID == m.cutTurnOf
+		ended.TaskTurn = taken || (ended.Turn && !p.ConfirmedAt.IsZero())
 	}
 	// A claim idle or working has run a turn in this process: idle is reached only by a turn's
 	// end, and a relaunched process comes up through ready. A claim working for a compaction in
@@ -222,7 +237,7 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	// idle claim in working (sendPending's askFirst branch, answerAskFirstAfterDrop). A daemon
 	// restarted under a working claim reads the one the daemon before it stored.
 	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
-	if !ended.Turn && !ended.Background && (ended.Reported || !ranTurn) {
+	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) {
 		return
 	}
 	ended.At = m.deps.Clock.Now()
@@ -234,6 +249,22 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 		ended = held.joined(ended)
 	}
 	m.claim.EndedWork, m.carried.ended = ended, false
+}
+
+// recordGoneEnd is recordEnd for the two decisions that find the claim's process already gone and
+// record its end before they take its task back (died, displaced). Each takes a confirmed task
+// back whatever the claim's state — died at once, displaced first thing in its replacement
+// (replaceProcess, replaceNow) — so the task is marked here as taken by this decision
+// (Machine.cutTurnOf), under the id it still holds, and the record says its turn was cut off as
+// the record of a let-go that follows its take-back says it. The take-back then moves the mark to
+// the id it gives the task (interrupted), and letGo clears it with the process. A take-back the
+// store refuses leaves the mark on the task it left confirmed, which no later let-go of this
+// process reads: the record of this launch already stands (EndedWork.Generation).
+func (m *Machine) recordGoneEnd(ctx context.Context, cause string) {
+	if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() {
+		m.cutTurnOf = p.ID
+	}
+	m.recordEnd(ctx, cause)
 }
 
 // endState is the claim's state as a let-go reads it for the turn it cuts off (recordEnd): the

@@ -1136,13 +1136,18 @@ type Machine struct {
 	// no delivery" for both a turn that is no task's and a turn this daemon never saw begin, and
 	// both are lines a reader can trust.
 	turnsDelivery string
-	// cutTurnOf is the id interrupted gave the pending task when it took that task back from a
-	// turn of the process the claim records, and "" when it has taken none back from it. The
-	// take-back clears the task's confirmation, so this is what tells the let-go that follows —
-	// in the same decision, or at the turn of a wake the replacement parked — that the task was
-	// in a turn of the process it lets go (recordEnd, EndedWork.TaskTurn). letGo clears it with
-	// the process. It is memory only: a daemon restarted inside such a park records the end
-	// without it, from what the claim still holds.
+	// cutTurnOf is the id of the pending task the decision that lets the claim's process go takes
+	// back from that process (interrupted), and "" while no decision has taken one back from it.
+	// interrupted sets it to the id it gives the task. The two decisions that record the end of a
+	// process they found gone before they take its task back (died, displaced) set it first to the
+	// id the confirmed task still holds, since the take-back follows in either whatever the claim's
+	// state (recordGoneEnd), and the take-back then moves it to the new id. The take-back clears
+	// the task's confirmation, and it takes back a task whose turn ended while its prompt's result
+	// was still to come as it takes back one whose turn runs, so this, rather than the confirmation
+	// or the claim's state, is what tells the let-go that follows — in the same decision, or at the
+	// turn of a wake the replacement parked — that the task's turn was cut off (recordEnd,
+	// EndedWork.TaskTurn). letGo clears it with the process. It is memory only: a daemon
+	// restarted inside such a park records the end without it, from what the claim still holds.
 	cutTurnOf string
 	// carried is which of the claim's two untold records a prompt this machine sent to the claim's
 	// current process carried the sentence of (sentences, Delivery.message): the session the claim
@@ -2597,10 +2602,13 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // exactly what the daemon before it charged (Claim.DeathCharged).
 //
 // What the death ended is recorded first, before the take-back changes the task it finds
-// (recordEnd): the process is gone whatever this decision goes on to do, every fact the record
-// reads is still as the death left it, and the relaunch that lets the process go can be a
-// wake's turn away. The let-go that follows — the launch, the held suspension's or the
-// failure's — finds this launch's record standing and adds none.
+// (recordGoneEnd, recordEnd): the process is gone whatever this decision goes on to do, every fact
+// the record reads is still as the death left it, and the relaunch that lets the process go can be
+// a wake's turn away. The take-back follows whatever the claim's state, an idle claim's task whose
+// prompt's result is still to come included, so a confirmed task is marked as taken by this
+// decision before the record is read (Machine.cutTurnOf), and the record says its turn was cut
+// off. The let-go that follows — the launch, the held suspension's or the failure's — finds this
+// launch's record standing and adds none.
 //
 // This is the judgement that the agent behind the claim's Envoy session has ended, so it is where
 // the session's clean stop is sent (sessionGone): a connection closing is not — a daemon restart
@@ -2612,7 +2620,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		"detail", observation.Detail, "chargedBefore", m.claim.DeathCharged)
 	m.claim.LastDeathCause = deathCause(observation)
 	ended := endDied(m.claim.LastDeathCause)
-	m.recordEnd(ctx, ended)
+	m.recordGoneEnd(ctx, ended)
 	m.sessionGone()
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err

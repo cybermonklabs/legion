@@ -60,7 +60,9 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 //
 // What the displacement ended is recorded first, as a death's is (died): the process is gone
 // whatever the replacement goes on to do, and the take-back it begins with changes the task the
-// record reads (recordEnd, endDisplaced).
+// record reads (recordGoneEnd, endDisplaced). That take-back comes whatever the claim's state, so
+// a confirmed task is marked as taken by this decision before the record is read
+// (Machine.cutTurnOf), and the record says its turn was cut off.
 func (m *Machine) displaced(ctx context.Context, observation runtime.Observation) error {
 	// Guarded as repoint's own read is, and for the reason its comment gives
 	// (backstopStalledTurn, noProcessRecorded).
@@ -70,7 +72,7 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 	}
 	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged",
 		"incarnation", incarnation, "process", process, "observed", string(observation.Kind), "detail", observation.Detail)
-	m.recordEnd(ctx, endDisplaced)
+	m.recordGoneEnd(ctx, endDisplaced)
 	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon or it another runtime's process this daemon takes over", observation.OutOfMemory, endDisplaced)
 	return err
 }
