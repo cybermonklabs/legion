@@ -33,7 +33,8 @@
 -- carries no news, which is every delivery the release before this one queued.
 --
 -- The outbox kind design_changes is the row that runs that reconcile for one tree. The check is
--- one list, so it is rewritten whole naming every kind, as 20261110235320 did.
+-- one list, so it is rewritten whole naming every kind, as 20261110235320 did: the list of
+-- 20261113082214, which stands below this one and added update_ask, with design_changes added.
 --
 -- Rolling the image back needs no restore of the schema. The release before this one names
 -- neither table nor the new column in any statement, its pending_task_deliveries insert names its
@@ -72,7 +73,8 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
-  'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'design_changes'));
+  'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
+  'design_changes'));
 
 -- The seed. Each tree root holding gate rows, with the approved version of each row that holds
 -- one (versions) and whether it holds any (approved). A row whose approval a changes request

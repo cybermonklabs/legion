@@ -119,6 +119,12 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 				// daemon answered a shape it does not read (INFRA-1048): the phrase pinned is the
 				// plugin's own refusal text, which survives a rewording of the clauses around it.
 				"the daemon API contract does not describe",
+				// Every role is told the update round's terms (dispatch://INFRA-2981): its ask comes
+				// as a message on the role's own topic, the end of a turn answers nothing, and the
+				// round ends at the moment the ask names whatever the role answers.
+				"The daemon can send an update message to your role topic.",
+				"The end of a turn is no answer",
+				"The round ends at the moment the message names, whether or not you answer.",
 			}, tc.contains...) {
 				if !strings.Contains(text.String(), requirement) {
 					t.Errorf("the composed %s prompt omits %q", tc.name, requirement)

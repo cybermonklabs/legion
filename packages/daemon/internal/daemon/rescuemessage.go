@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // rescuedBranch is one rescue branch of the check as the shim reports it, the repository of the
@@ -137,6 +138,10 @@ func rescueArtifactName(round string) string {
 // with what this check pushed to it or the commits only that branch holds, and has an item of its
 // own (rescueBranchSummary). An older shim's per-pod branches, which that shim reports as it
 // always did (runtime.RescuedBranch), are told together: how many there are, and the first listed.
+// Such a shim pushed every local branch, visible head, tag, stash entry and other worktree of the
+// pod that the remote lacked, so its branches can hold another session's commits and another
+// issue's: the summary tells the reader to take only the commits it needs from them, and gives
+// the warning the round's ask gives too (supervise.RescueBranchWarning).
 func rescueSummary(round string, branches []rescuedBranch, link string, listed int) string {
 	var carried, older []rescuedBranch
 	for _, b := range branches {
@@ -160,7 +165,7 @@ func rescueSummary(round string, branches []rescuedBranch, link string, listed i
 		fmt.Fprintf(&text, "\n\nWhen this work is necessary, merge %s into the issue branch. The branch keeps each earlier rescue of this issue.", rescueJoin(names, len(names)))
 	}
 	if len(older) > 0 {
-		fmt.Fprintf(&text, "\n\nThe pod's shim is older than this daemon. It reported %s of this pod. It did not report their commits.", rescueCount(len(older), "rescue branch", "rescue branches"))
+		fmt.Fprintf(&text, "\n\nThe pod's shim is from before the daemon used one rescue branch for each issue. It reported %s of this pod. It did not report their commits.", rescueCount(len(older), "rescue branch", "rescue branches"))
 		if listed > 0 {
 			text.WriteString("\n")
 			for _, b := range older[:min(listed, len(older))] {
@@ -170,7 +175,7 @@ func rescueSummary(round string, branches []rescuedBranch, link string, listed i
 				fmt.Fprintf(&text, "\n- and %d more", more)
 			}
 		}
-		text.WriteString("\n\nMerge each of these branches into the issue branch, or delete the branch if its work is not necessary.")
+		text.WriteString("\n\nTake the commits that you need from each of these branches into the issue branch, or delete the branch if its work is not necessary.\n\n" + supervise.RescueBranchWarning)
 	}
 	text.WriteString("\n\nThe full list of branches and commits is in this document: " + link)
 	return text.String()
@@ -256,7 +261,7 @@ func rescueList(issue, round string, branches []rescuedBranch) string {
 		switch b.kind {
 		case olderShimBranch:
 			// Such a shim reports no commits, so there are none to count or to list.
-			lines = append(lines, "tip before: not reported, because the pod's shim is older than the daemon")
+			lines = append(lines, "tip before: not reported, because the pod's shim is from before the daemon used one rescue branch for each issue")
 			continue
 		case heldBranch:
 			lines = append(lines, "tip before: the push check pushed nothing, and these commits are only on this branch")

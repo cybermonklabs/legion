@@ -160,7 +160,8 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261113212423(t 
 		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
-		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "design_changes",
+		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
+		"design_changes",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)

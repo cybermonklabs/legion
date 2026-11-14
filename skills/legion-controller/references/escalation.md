@@ -84,19 +84,21 @@ person's yes:
 `{kind: "update-stalled", reason, update: {round, pod?, reasons, waiting}}`, on the issue whose
 pod it is. The daemon must replace the pod that runs an issue's roles, because the configuration
 the pod was built from has moved. It never replaces a live pod where it stands: every role of the
-issue works on that pod's disk, so the daemon opens an update round instead and tasks each worker
-in the pod to push its work and answer `ready_for_update` first. This wake says that round is not
-finishing.
+issue works on that pod's disk, so the daemon opens an update round instead. It publishes one
+message to each role's own topic, the architect's included, which asks the role to push its work
+and answer `ready_for_update`. The round ends at its bound, `pod_update_grace_minutes` after it
+opened (30 by default), whatever the roles answer. It ends earlier when every role it asked has
+answered and no turn runs. The end of a turn is no answer. This wake says that the bound has
+passed and that something still holds the round. A round that waits for its roles before its
+bound is no stall, and the daemon tells nobody of it.
 
 It names the round (`round`: `pod:<pod uid>`, the one kind a daemon of this release opens, since
 the stale-plugin lane replaces a stale process at a paced wake and asks its worker nothing), the
 pod it was opened over (`pod`, absent while no claim of the issue records a pod), the drift the
-task states (`reasons`), the one line that says why it is stuck (`reason`), and every claim the
-round is blocked on (`waiting`, each with its `claim` token, `role`, `state`
-and `answered`). Every worker is asked alike. The end of the turn the daemon's task started is
-that worker's answer whatever plugin it runs, so a worker whose `legion` tool has no
-`ready_for_update` operation needs nothing of you: its turn ending answers the round, and no
-drain is asked of anybody. A `failed` claim is never in a pod round's `waiting`: it runs no turn
+round's message states (`reasons`), the one line that says what holds the round (`reason`), and
+every claim the round asked (`waiting`, each with its `claim` token, `role`, `state` and
+`answered`). Past the bound no answer holds the round, so `answered` tells you what each role
+said, not whom to prompt. A `failed` claim is never in a pod round's `waiting`: it runs no turn
 on the pod, so the round does not wait for it. Its retry is the architect's or the operator's as
 for any failed role, and yours once the architect escalates the hold
 ([An escalated hold](#an-escalated-hold)). A retried claim is asked like any other.
@@ -106,24 +108,30 @@ own work the remote lacks, a failed claim's included, and pushes it to the issue
 branch, `legion/<KEY>-rescue`, which only moves forward. When it found work the issue branch
 does not have, it writes the issue a message: a short summary of each branch and its commits,
 and a link to an artifact of the issue with the full list, for the issue's roles to merge into
-the issue branch; that message asks nothing of you. A pod of an older image pushes to branches
-of its own, `legion/<KEY>-rescue-<pod>-<n>`, and its message says so in the same shape. When
-the check or a push fails for any workspace, the daemon does not replace the pod, and this
-wake's `reason` says that the check for unpushed work failed and names the claim the check ran
-through, each workspace and its error. Everything else of the pod's disk goes with the pod: the
-round's task tells each worker to put any scratch evidence it still needs on Dispatch before it
+the issue branch. A pod of an older image pushes to branches of its own,
+`legion/<KEY>-rescue-<pod>-<n>`, which can hold commits of another session and of another
+issue. Its message says so in the same shape, and tells the issue's roles to read each commit
+on such a branch and take only the commits they need into the issue branch. That message asks
+nothing of you. A pod whose shim is older than the check is replaced unchecked, and the daemon
+writes that on the issue. Everything else of the pod's disk goes with the pod: the round's
+message tells each role to put any scratch evidence it still needs on Dispatch before it
 answers.
 One round wakes you once, however many sweeps find it open, so handle it when it arrives.
 Read `read_state` and the issue first, as for every wake: a round that finished since needs
 nothing.
 
-Take each `waiting` entry by its shape:
+Take the wake by what its `reason` names:
 
-| Entry | What it is | What you do |
+| `reason` names | What holds the round | What you do |
 |---|---|---|
-| `answered: true` | It has already answered this round. The round is blocked on the daemon's own side: a turn that has not ended, a check for unpushed work that fails, or a pod replacement the cluster keeps refusing. `reason` names which. | Send it nothing. A message to it starts a turn. How the worker answered decides what that turn does: it takes back an answer the worker gave with the `ready_for_update` call, which puts the round further from finishing, and it leaves standing an answer the end of the task's own turn gave. Open a finding ask naming the issue, the round and `reason`, with the turn, the workspace and its push error, or the `ReplacePod` error it names, so an operator reads the pod. |
-| `state: "suspended"` | An operator's own suspension holds it: the daemon revives a suspension of its own for the task. The claim already holds the task and takes it on the resume. | Open a finding ask naming the issue and the role, so the operator resumes it. |
-| any other state | Its worker holds the task and has not answered. The daemon asks it again every `pod_update_retask_hours`. | `envoy_publish` to `notifications.role.<claim>` with the issue and the update task's three steps (push every commit to keep to the issue branch and put any scratch evidence still needed on Dispatch, call the `legion` tool with `op: "ready_for_update"` and the `round` this notice names, which is the id the worker's own task carries, end the turn), and say in the same message that a worker whose `legion` tool has no `ready_for_update` operation does step 1 and step 3 alone. Name it in your summary. Your publish starts a turn of its own, which answers nothing: only the end of the turn the daemon's own task started is that worker's answer, so what your message buys is the next ask. |
+| an operator's suspension | An operator suspended a role the round asked. The daemon does not replace the pod until the operator resumes each such role, whatever the bound. | Open a finding ask naming the issue and each suspended role, so the operator resumes it. |
+| a failed check for unpushed work | The check or a push failed for a workspace, so the daemon did not replace the pod. `reason` names the claim the check ran through, each workspace and its error. | Open a finding ask naming the issue, the round and `reason`, with each workspace and its error, so an operator reads the pod. |
+| a refused pod replacement | The runtime refused `ReplacePod`. The daemon tries again at each sweep. | Open a finding ask naming the issue, the round and the `ReplacePod` error, so an operator reads the pod. |
+| no process in the pod | No claim of the issue records a process in the round's pod, or in any pod, so the daemon has nothing to replace the pod through. The round waits for a role of the issue to run again. | Open a finding ask naming the issue, the round and `reason`, so an operator reads the pod. |
+| two pods | The claims of the issue record two pods, so a replacement is in flight, and the round waits for it. | Open a finding ask naming the issue, the round and `reason`, so an operator reads the pod. |
+| anything no row above names | An earlier release can send a `reason` that no row above names, for example that the round waited for its workers to answer. | Open a finding ask naming the issue, the round and `reason`, so an operator reads it. |
 
-Park nothing and write no status for this wake. The issue's workflow runs on while the round
-waits, and replacing the pod is the daemon's own move once every worker has answered.
+Send no role a message about the round. The daemon published the round's message itself, and a
+message from you starts a turn that answers nothing. Park nothing and write no status for this
+wake. The issue's workflow runs on while the round waits, and replacing the pod is the daemon's
+own move once the hold that `reason` names clears.
