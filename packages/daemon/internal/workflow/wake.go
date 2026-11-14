@@ -70,6 +70,11 @@ type Pods interface {
 	// outbox row, so a notice held for an absent architect has still spent its count.
 	VolumeNoticeCounts(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int) (store.VolumeNoticeCounts, error)
 	RecordVolumeNotice(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int, at time.Time) (int, error)
+	// OpenPodBackstop is whether issue's role has a backstop armed and not yet fired: a release
+	// that left the role with its phase open armed it, so the backstop brings the pod back. The
+	// cutover's repair reads it to pass over a merger something will still wake
+	// (cutoverMergerRepair).
+	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current

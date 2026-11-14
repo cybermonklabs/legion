@@ -10,20 +10,19 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
-	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The commands the daemon asks this shim for: the working copy's adoption and the rescue of a
-// dying pod's unpushed work, each answered in a goroutine of its own (answer), and the context
-// all of them run on, which the shim ends at its own end and waits out before Run returns
-// (endCommands, drainCommands). The release's save is a command of this kind too and lives in
-// bundle.go, which is long enough to be a file of its own.
+// The commands the daemon asks this shim for: the working copy's adoption, answered in a
+// goroutine of its own (answer), and the context every such command runs on, which the shim ends
+// at its own end and waits out before Run returns (endCommands, drainCommands). The release's save
+// is a command of this kind too and lives in bundle.go, which is long enough to be a file of its
+// own.
 
-// answer runs one frame's answer — the adoption, the release's save, the rescue — in a goroutine
-// of its own, so the connection's reader never waits on the git and jj it starts, and counts it so
-// that Run waits for it before it returns (drainCommands). Every one of them is dispatched from
+// answer runs one frame's answer — the adoption, the release's save — in a goroutine of its own,
+// so the connection's reader never waits on the git and jj it starts, and counts it so that Run
+// waits for it before it returns (drainCommands). Every one of them is dispatched from
 // fromDaemon, which the reader calls one frame at a time, so a command is counted before the
 // frame after it is read. Two counts are kept: commandRuns, which the drain waits on, and
 // commandsInFlight, which says whether there is anything to wait for at all. The second is
@@ -129,38 +128,6 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 		result.OK, result.Error = false, err.Error()
 	}
 	s.toDaemon(result)
-}
-
-// rescue answers `rescue-unpushed`: every workspace on the pod's disk is checked for the issue's
-// own work its remote lacks, and that work is pushed to the issue's one rescue branch, as this
-// role and with its own credential (internal/rescue). The disk is the one the shim's
-// LEGION_WORKSPACE is on; a shim without one (the project controller's) has no workspace and
-// refuses. The timeout runs on the shim's command context (s.commands), so the shim's own end — a
-// signal or the `shutdown` the daemon stops a pane with — ends the git and jj of the rescue with
-// it. The report names every commit each branch carries, so the result crosses the lane as an
-// rpc_chunk sequence when it is larger than one line.
-func (s *shim) rescue(request shimwire.RescueUnpushed) {
-	result := shimwire.RescueUnpushedResult{ID: request.ID, OK: true}
-	workspace := envValue(s.cfg.Env, "LEGION_WORKSPACE")
-	if err := request.Validate(); err != nil {
-		if request.ID == "" {
-			s.log.Printf("[worker-shim] refusing a rescue-unpushed frame: %v", err)
-			return
-		}
-		result.OK, result.Error = false, err.Error()
-	} else if workspace == "" {
-		result.OK, result.Error = false, "worker-shim: LEGION_WORKSPACE is not set; no disk to check"
-	} else {
-		timeout := time.Duration(request.TimeoutMs) * time.Millisecond
-		ctx, cancel := context.WithTimeout(s.commands, timeout)
-		result.Workspaces = rescue.Run(ctx, rescue.Request{
-			StateDir: rescue.StateDirOf(workspace), Branch: request.Branch, Target: request.Target, Env: s.cfg.Env,
-			WorkspaceTimeout: time.Duration(request.WorkspaceTimeoutMs) * time.Millisecond,
-			Deadline:         time.Now().Add(timeout),
-		})
-		cancel()
-	}
-	s.toDaemonChunked(result)
 }
 
 // adoptionArgs is the one adoption command both executors run (adoptWorkingCopyCommand,

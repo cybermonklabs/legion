@@ -12,13 +12,14 @@ import (
 // A merged issue's close waits for the issues beneath it and happens once the last of them
 // leaves. The wait is no longer a tree root's alone: openBeneath reads record.Beneath, the
 // descendants of any issue, where the rule it replaced (openBeside) returned nothing for a
-// non-root. So an intermediate parent can now stand in awaiting_merge waiting for a grandchild,
-// and what must follow is the close when that grandchild goes.
+// non-root. So an intermediate parent can now stand in merging after its merge, waiting for a
+// grandchild, and what must follow is the close when that grandchild goes.
 //
-// It matters beyond the one issue: an issue in awaiting_merge is in the workflow, so while it
-// stands there its tree's root cannot be accepted (SIGNOFF_CHILD_IN_WORKFLOW) or closed, and the
-// issue itself holds no admission slot and stands in no part of the waiting line, so nothing
-// else brings it back.
+// It matters beyond the one issue: a merged issue in merging is in the workflow, so while it
+// stands there its tree's root cannot be accepted (SIGNOFF_CHILD_IN_WORKFLOW) or closed. The
+// issue itself holds no admission slot, since merging is past its review (record.KeepsSlot), and
+// stands in no part of the waiting line. Its merging phase is finished (PhaseFinished), so nothing
+// but this close moves it on.
 func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)

@@ -434,8 +434,8 @@ func newBundleFixture(t *testing.T) *bundleFixture {
 	// guard. The guard refuses a push it can resolve no shared public leak check for (leakguard's
 	// Resolve), and Isolated drops PUBLIC_LEAK_CHECK with the rest of what reaches past the test,
 	// so the fixture carries a stand-in of its own that clears every write — as every other
-	// fixture that pushes does (rescuetest's disk) — and the pushes below behave here as they do
-	// on a runner whose git is the real one.
+	// fixture that pushes does — and the pushes below behave here as they do on a runner whose
+	// git is the real one.
 	home := filepath.Join(root, "home")
 	f := &bundleFixture{
 		t: t, root: root, remote: filepath.Join(root, "remote"), clone: filepath.Join(root, "clone"), ws: filepath.Join(root, "ws"),
