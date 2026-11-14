@@ -369,10 +369,13 @@ recorded_hit() {
     "$questions_file" >/dev/null
 }
 # a16_pattern prints A16's own search pattern: the questions file's a16.phrases joined with `|`,
-# an extended regular expression. A phrase may carry a word boundary (`never give\b`), which is
-# what keeps the search off `is never given up`, a sentence about the outbox retry and not about
-# the loop. a16_hit TEXT: TEXT holds one of the phrases, case-insensitively, as a line of the
-# search does; no text at all is no hit, and no run of its own ends here.
+# an extended regular expression. Each phrase says the meaning, not a bare word: the absence of
+# tools said of the loop or an agent within one clause (`no tools`, `without tools` or `tool-less`
+# and `loop` or `agent`, either order, with no `.` and at most 60 characters between), or `never
+# give(s)`/`hand(s)` with `tool(s)` in one clause. A bare `never give` hit rules about labels and
+# peers' fields, and `no tools` an eval's arms; a word boundary keeps `never given up`, the outbox
+# retry's sentence, out. a16_hit TEXT: TEXT holds one of the phrases, case-insensitively, as a
+# line of the search does; no text at all is no hit, and no run of its own ends here.
 a16_pattern() { jq -r '.a16.phrases | join("|")' "$questions_file"; }
 a16_hit() {
   local pattern
@@ -572,10 +575,13 @@ tree_claims_parked() {
 # its dedupe key, its trace id and the time it was issued), which no two calls can share. A role
 # topic whose holder record has lapsed answers 404 with a body of its own; one whose record has
 # aged out of the bus altogether answers 202 with a fresh event's, and both stacks answer the same
-# way on the same snapshot.
+# way on the same snapshot. Both captures must exist and hold bytes before any comparison: `cmp`
+# reads two empty files, or two missing ones, as the same, so a probe that captured nothing on
+# either stack would pass.
 a13_minted='del(.event_id, .source_event_id, .dedupe_key, .trace_id, .issued_at)'
 a13_same() {
   local branch=$evidence/a13/branch/$store/$1 base=$evidence/a13/base/$store/$1 left right
+  [ -s "$branch" ] && [ -s "$base" ] || return 1
   cmp -s "$branch" "$base" && return 0
   [ "$1" = publish.body ] || return 1
   left=$(jq -S "$a13_minted" "$branch") && right=$(jq -S "$a13_minted" "$base") || return 1

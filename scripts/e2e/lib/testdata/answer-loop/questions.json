@@ -17,7 +17,11 @@
     }
   ],
   "a16": {
-    "phrases": ["no tools", "tool-less", "never give\\b"],
+    "phrases": [
+      "\\b(no tools|without tools|tool-?less)\\b[^.]{0,60}\\b(loop|agent)s?\\b",
+      "\\b(loop|agent)s?\\b[^.]{0,60}\\b(no tools|without tools|tool-?less)\\b",
+      "\\bnever (give|hand)s?\\b[^.]{0,60}\\btools?\\b"
+    ],
     "unrelated_hits": [
       {
         "file": "skills/envoy/SKILL.md",

@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,37 +98,73 @@ func TestTwoQuestionsToOneConversationAreAnsweredInOrder(t *testing.T) {
 }
 
 // The questions to one conversation never overlap, and no more conversations are answered at once
-// than bounds.concurrent.
+// than bounds.concurrent. Each answer is held at a barrier until bound answers are in flight
+// together, or, past the last full group, until every conversation with an answer still to start
+// has one in flight, so none can start before one ends. The loop must fill the bound for any answer
+// to end, so the most seen is the bound however the goroutines are scheduled; a loop that never
+// fills it fails at the barrier's deadline rather than passing.
 func TestNoMoreConversationsAreAnsweredAtOnceThanTheBound(t *testing.T) {
+	const deadline = 5 * time.Second
 	for _, bound := range []int{1, 2} {
 		r := newRig(t)
+		unstarted := map[string]int{}
 		for _, session := range []string{"ses_a", "ses_b", "ses_c"} {
 			r.conversation(session, testerToken, 0)
 			r.receive(messageHandoff(session, "m-"+session, 1, "Q?"))
+			unstarted[session]++
 		}
 		r.receive(messageHandoff("ses_a", "m-a2", 1, "Q2?"))
+		unstarted["ses_a"]++
 		r.cfg.Answers.Bounds.Concurrent = bound
-		var inFlight, most atomic.Int32
 		var mu sync.Mutex
+		inFlight, most := 0, 0
 		bySession := map[string]bool{}
-		r.answer = func(req answer.Request) (answer.Reply, error) {
-			mu.Lock()
-			if bySession[req.Agent.Session] {
-				t.Errorf("two answers of %s at once", req.Agent.Session)
+		// started is closed, and replaced, each time an answer starts: what a held answer waits on.
+		started := make(chan struct{})
+		released := func() bool {
+			if inFlight >= bound {
+				return true
 			}
-			bySession[req.Agent.Session] = true
-			mu.Unlock()
-			now := inFlight.Add(1)
-			for {
-				seen := most.Load()
-				if now <= seen || most.CompareAndSwap(seen, now) {
-					break
+			for session, n := range unstarted {
+				if n > 0 && !bySession[session] {
+					return false
 				}
 			}
-			time.Sleep(50 * time.Millisecond)
-			inFlight.Add(-1)
+			return true
+		}
+		r.answer = func(req answer.Request) (answer.Reply, error) {
+			session := req.Agent.Session
+			timeout := time.NewTimer(deadline)
+			defer timeout.Stop()
 			mu.Lock()
-			bySession[req.Agent.Session] = false
+			if bySession[session] {
+				t.Errorf("two answers of %s at once", session)
+			}
+			bySession[session] = true
+			unstarted[session]--
+			inFlight++
+			most = max(most, inFlight)
+			if inFlight > bound {
+				t.Errorf("bound %d: %d answers in flight at once", bound, inFlight)
+			}
+			close(started)
+			started = make(chan struct{})
+		held:
+			for !released() {
+				next := started
+				mu.Unlock()
+				select {
+				case <-next:
+					mu.Lock()
+				case <-timeout.C:
+					mu.Lock()
+					t.Errorf("bound %d: the answer of %s waited %s for %d answers in flight together, or for no other conversation able to start one; %d in flight, answers still to start %v",
+						bound, session, deadline, bound, inFlight, unstarted)
+					break held
+				}
+			}
+			inFlight--
+			bySession[session] = false
 			mu.Unlock()
 			return answered(req, "A."), nil
 		}
@@ -140,7 +175,10 @@ func TestNoMoreConversationsAreAnsweredAtOnceThanTheBound(t *testing.T) {
 		testwait.Eventually(t, "every question answered", func() bool { return r.answerCount() == 4 })
 		cancel()
 		<-done
-		if got := most.Load(); got != int32(bound) {
+		mu.Lock()
+		got := most
+		mu.Unlock()
+		if got != bound {
 			t.Fatalf("bound %d: at most %d answers ran at once; want %d", bound, got, bound)
 		}
 	}
