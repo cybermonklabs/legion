@@ -59,7 +59,7 @@ func newReportingRig(t *testing.T, args ...string) *reportingRig {
 		"LEGION_DAEMON_URL=" + daemon.URL,
 		"LEGION_BOOT_TOKEN_FILE=" + tokenFile,
 		"LEGION_GENERATION=4",
-	}, args...)
+	}, daemonCalls{}, args...)
 	return r
 }
 

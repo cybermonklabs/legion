@@ -84,6 +84,8 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     },
   })
   const broker = new FakeNatsServer()
+  // The inbox's deliveries; the claim's task lines (`kind: "task"`), which the bridge takes and
+  // writes nothing of into the conversation, are answered and kept apart.
   const inboxLines: { id: string; content: string }[] = []
   const inboxPath = join(root, "inbox.sock")
   const inbox = createServer((socket: Socket) => {
@@ -92,9 +94,13 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     socket.on("data", (chunk: string) => {
       buffered += chunk
       for (let end = buffered.indexOf("\n"); end >= 0; end = buffered.indexOf("\n")) {
-        const line = JSON.parse(buffered.slice(0, end)) as { id: string; content: string }
+        const line = JSON.parse(buffered.slice(0, end)) as {
+          id: string
+          content: string
+          kind?: string
+        }
         buffered = buffered.slice(end + 1)
-        inboxLines.push(line)
+        if (line.kind !== "task") inboxLines.push(line)
         socket.write(`${JSON.stringify({ id: line.id, ok: true })}\n`)
       }
     })

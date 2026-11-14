@@ -295,9 +295,9 @@ export interface ConsumerDeliveryHost {
    * message of the session's consumer: it is never answered, never counted in the ledger, never
    * ordered with the frames `deliver` takes, and it moves neither the stream nor the resume point,
    * so it comes here at once, ahead of any frame still held. A host that serves no Legion claim
-   * leaves this out, and a task frame reaching it is dropped.
+   * drops it here.
    */
-  onTaskValue?(value: RelayTaskValue): void;
+  onTaskValue(value: RelayTaskValue): void;
 }
 
 export interface ConsumerDeliveryOptions {
@@ -687,9 +687,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       log(`dropping an undecodable task frame: ${decoded.error}`);
       return;
     }
-    const { onTaskValue } = host;
-    if (onTaskValue === undefined) return;
-    safely("task value", () => onTaskValue.call(host, decoded.value));
+    safely("task value", () => host.onTaskValue(decoded.value));
   };
 
   const receive = (message: RelayMessage) => {

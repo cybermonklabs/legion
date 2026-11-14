@@ -35,10 +35,10 @@ export interface LegionClaimHost {
    * Takes the claim's task value as the daemon reads it now (`claims/task`): at each regain of
    * the role, and at each read the host asks for (`LegionClaimBoot.readTask`) when its relay
    * begins a new epoch — a value the listener relayed while the session did not hold its role,
-   * or was not subscribed, is lost, so it is read rather than waited for. A host that takes no
-   * task value leaves it out, and nothing is read.
+   * or was not subscribed, is lost, so it is read rather than waited for. Oh My Pi's claim hands
+   * it to its take (`src/task-take.ts`), and claude-envoy's to the Claude bridge.
    */
-  readonly taskValue?: (reading: LegionTask) => void;
+  readonly taskValue: (reading: LegionTask) => void;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
   readonly onRoleRegained: (listener: (role: string, reason: string) => Promise<void>) => void;
@@ -99,7 +99,6 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
   const { taskValue } = host;
   // The claim's value read now and handed to the host; whether the read answered.
   const readTask = async (why: string): Promise<boolean> => {
-    if (taskValue === undefined) return false;
     try {
       taskValue(
         await daemon.task({

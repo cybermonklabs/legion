@@ -2,15 +2,18 @@ import { readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
+import type { LegionTask } from "@legion/contracts/legion-api"
+import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery"
 import { messageFor } from "@legion/envoy-client/errors"
 import { readSecretFile } from "@legion/envoy-client/secret-file"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client"
-import { bootLegionClaim } from "@legion/pi-shared/legion-claim-core"
+import { bootLegionClaim, type LegionClaimBoot } from "@legion/pi-shared/legion-claim-core"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { legion } from "../package.json" with { type: "json" }
 import { configuredValue } from "./claude-session"
 import type { ChannelSession } from "./envoy-channel-server"
+import type { InboxTaskValue } from "./legion-inbox"
 
 /**
  * A Claude Code phase worker's claim on the Legion daemon, made by the MCP server Claude Code runs
@@ -180,6 +183,14 @@ export interface LegionClaim {
    * reported and the pane stopped, or a boot that never reached a registration logged. Never
    * rejects. */
   readonly booted: Promise<void>
+  /** A claim's task value a task frame relayed (`onTaskValue`, the channel session's
+   * `taskValues`): handed to the bridge when it is this claim's. */
+  readonly relayed: (value: RelayTaskValue) => void
+  /** Reads the claim's task value from the daemon (`claims/task`) and hands it to the bridge: at
+   * a new epoch of the session's relay, which lost whatever the listener relayed while the
+   * session was not subscribed. Reads nothing before the boot has claimed the role, and never
+   * rejects. */
+  readonly readTask: () => Promise<void>
 }
 
 /**
@@ -187,10 +198,20 @@ export interface LegionClaim {
  * transcript, and in a pod whose launcher keeps it (`launcherSaves`) for the launcher's first save
  * of it too, registers with it as the session file (`agentId` is the session id,
  * `pluginContract` this package's `legion.daemonApiVersion`), sends `claims/ready` with no
- * capability report, and claims the claim token's Envoy role soft right after it, recording it
- * with the channel session, whose heartbeat re-asserts it. A failure the core stops on ends the
- * pane through `stop`; a failure before a registration is logged and leaves the pane to the
- * daemon's registration deadline.
+ * capability report, and claims the claim token's Envoy role soft right after it (decision 15 of
+ * INFRA-2811's plan), recording it with the channel session, whose heartbeat re-asserts it. A
+ * failure the core stops on ends the pane through `stop`; a failure before a registration is
+ * logged and leaves the pane to the daemon's registration deadline.
+ *
+ * The claim hands the bridge every task value it is handed (`task`, the inbox's task line): the
+ * registration's, a `claims/task` read at a regain of the role or at a new epoch of the relay
+ * (`readTask`), and each one a task frame relays (`relayed`). The bridge, which knows whether
+ * Claude Code is in a turn, reports each seen and takes the task
+ * (`packages/daemon/internal/claudebridge/take.go`). A value naming a task the daemon says the
+ * claim finished is owed nothing and is not handed over. The values are held, the newest kept,
+ * until the ready has answered, since the daemon refuses a take before it, and the newest is
+ * handed over right then, before the role is claimed: every card the role's kept lane hands over
+ * then waits behind the take, so the task's turn starts ahead of it.
  *
  * A claim the listener refuses naming this very session is waited out rather than stopped on:
  * the pane the daemon relaunched with `--resume` meets the standing claim of the process it
@@ -211,6 +232,8 @@ export function startLegionClaim(deps: {
    *  claim names as the process holding the role. */
   readonly clientInstanceID: string
   readonly session: Pick<ChannelSession, "rememberRole" | "onRoleRegained">
+  /** Hands the bridge the claim's task value (`LegionInbox.task`). */
+  readonly task: (value: InboxTaskValue) => void
   readonly signal: AbortSignal
   /** Writes one line to the pane's log, the server's stderr. */
   readonly log: (line: string) => void
@@ -229,6 +252,30 @@ export function startLegionClaim(deps: {
   const { sessionID } = deps
   const roleWaitMs = deps.roleWaitMs ?? ROLE_CLAIM_WAIT_MS
   const roleRetryMs = deps.roleRetryMs ?? ROLE_CLAIM_RETRY_MS
+  let claimBoot: LegionClaimBoot | undefined
+  // The number of the last task the daemon said the claim finished; whether the claim's ready
+  // has answered; and the newest value handed to the claim before it did.
+  let finished = 0
+  let ready = false
+  let early: InboxTaskValue | undefined
+
+  /** Hands `value` to the bridge once the ready has answered, and keeps the newest until then. */
+  const offer = (value: InboxTaskValue): void => {
+    if (ready) {
+      deps.task(value)
+      return
+    }
+    if (early === undefined || early.epoch !== value.epoch || value.revision > early.revision) {
+      early = value
+    }
+  }
+
+  /** A reading of the claim's value (the registration's answer, a `claims/task` read): its value,
+   * where it names a task the claim did not finish. */
+  const read = (reading: Pick<LegionTask, "task" | "finished">): void => {
+    finished = Math.max(finished, reading.finished)
+    if (reading.task !== null && reading.task.number > finished) offer(reading.task)
+  }
 
   const boot = async (): Promise<void> => {
     const transcript = await waitForTranscript(
@@ -240,7 +287,7 @@ export function startLegionClaim(deps: {
     if (deps.pane.launcherSaves) {
       await waitForSavedTranscript(transcript, deps.signal, deps.pollMs)
     }
-    await bootLegionClaim({
+    claimBoot = await bootLegionClaim({
       daemon: deps.daemon,
       registration: {
         bootToken: deps.pane.bootToken,
@@ -249,10 +296,20 @@ export function startLegionClaim(deps: {
         agentId: sessionID,
         pluginContract: legion.daemonApiVersion,
       },
+      afterRegister: async (registered) => read(registered),
+      taskValue: read,
       setCapability: (registered) => {
         capability = registered
       },
       claimRole: async (role) => {
+        // The ready has answered, so the bridge may take the task now. The newest value goes to
+        // it before the role is claimed: the role's kept lane is handed over at the claim, and
+        // every card of it then waits behind the take.
+        ready = true
+        if (early !== undefined) {
+          deps.task(early)
+          early = undefined
+        }
         // Soft, so a role another live session holds is left with it, and naming this process,
         // so the listener records the claim as this process's: a second `claude` that resumed
         // this session id can then neither be taken for the holder nor release what it holds.
@@ -318,5 +375,14 @@ export function startLegionClaim(deps: {
   return {
     capability: () => capability,
     booted,
+    relayed: (value) => {
+      if (value.claim !== capability?.claimToken) return
+      const at = { epoch: value.epoch, revision: value.revision }
+      if (value.op === "delete") offer({ number: 0, ...at })
+      else if (value.task > finished) offer({ number: value.task, ...at })
+    },
+    readTask: async () => {
+      await claimBoot?.readTask()
+    },
   }
 }

@@ -390,23 +390,12 @@ describe("task frames", () => {
     ]);
   });
 
-  test("a closed delivery hands over no task value, and a host without a handler drops one", () => {
+  test("a closed delivery hands over no task value", () => {
     const closed = setup();
     closed.delivery.close();
     closed.delivery.receive(taskFrame({ revision: 12, task: 4 }));
     expect(closed.taskValues).toEqual([]);
     expect(closed.replies).toEqual([]);
-
-    const replies: Array<readonly [string, RelayReply]> = [];
-    const bare = createConsumerDelivery({
-      sessionID: SESSION,
-      host: { deliver: () => undefined, gap: () => undefined, log: () => undefined },
-      publish: (reply, body) => replies.push([reply, body]),
-      ledger: { delivered: () => false, liveFailed: async () => true },
-      persist: () => true,
-    });
-    bare.receive(taskFrame({ revision: 12, task: 4 }));
-    expect(replies).toEqual([]);
   });
 });
 

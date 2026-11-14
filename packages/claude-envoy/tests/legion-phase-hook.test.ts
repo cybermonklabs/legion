@@ -520,6 +520,29 @@ test("a prompt carrying anything else is the daemon's assignment and opens the p
   }
 })
 
+// A task's turn starts with the text its accepted take answered, which the bridge writes to Claude
+// Code itself (`packages/daemon/internal/claudebridge/take.go`): it is no line this server wrote,
+// so its prompt is the assignment, a note the daemon put in front of the text included. A card
+// this server wrote while the take was pending is that turn's next step, an inbound event of it.
+test("a taken task's prompt is the assignment, with a card waiting behind it and a note in front of it", async () => {
+  const card = "Envoy delivery from the architect: the architect asks for a status"
+  const taken =
+    "Your previous turn on this task stopped because of a provider error (HTTP 529). Your work did not cause it.\n\nImplement INFRA-220."
+  const { endpoint, record, close } = await harness({
+    record: recorded("closed", 0),
+    claim: implementer,
+  })
+  try {
+    endpoint.deliveryWritten(card)
+    expect(await endpoint.handle({ event: "UserPromptSubmit", prompt: taken })).toEqual({})
+    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+    expect(await endpoint.handle({ event: "UserPromptSubmit", prompt: card })).toEqual({})
+    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+  } finally {
+    await close()
+  }
+})
+
 test("a helper agent's tool call is not the worker working, and does not reset the count", async () => {
   const { endpoint, record, close } = await harness({
     record: recorded("open", 2),

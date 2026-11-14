@@ -17,6 +17,7 @@ import {
   gapNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
+  type RelayTaskValue,
   registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery"
 import {
@@ -297,8 +298,9 @@ export interface ChannelSession {
    * Sets the one hook the heartbeat runs after it re-establishes this session as its held role's
    * live holder: `"reclaimed"` when the listener had stopped naming this session and a soft claim
    * took the role back, `"reregistered"` on the first healthy tick after a failed registration,
-   * when the listener may have answered "no holder" meanwhile. The Legion claim sends its daemon
-   * ready again from it. The hook runs detached from the heartbeat; a rejection is logged.
+   * when the listener may have answered "no holder" meanwhile. The Legion claim reads its task
+   * value again from it (`claims/task`). The hook runs detached from the heartbeat; a rejection is
+   * logged.
    */
   onRoleRegained(hook: RoleRegainHook): void
   /**
@@ -397,6 +399,24 @@ export interface ChannelSessionOptions {
    * or `source` for a bundle outside its plugin cache).
    */
   readonly pluginVersion: string
+  /**
+   * Where the claim's task values go (`ChannelTaskValues`): a Legion pane's claim, which hands
+   * them to the bridge. A session that serves no Legion claim leaves it out, and a task frame
+   * reaching it is dropped.
+   */
+  readonly taskValues?: ChannelTaskValues
+}
+
+/**
+ * What the session's relay tells a Legion pane's claim of its task value (dispatch://INFRA-2811):
+ * each value a task frame relays (`relayed`, the relay's `onTaskValue`), and the relay beginning a
+ * new epoch (`epoch`, the first registration answer of each), after which a frame the listener
+ * relayed while the session was not subscribed is lost, so the claim reads its value from the
+ * daemon instead.
+ */
+export interface ChannelTaskValues {
+  readonly relayed: (value: RelayTaskValue) => void
+  readonly epoch: () => void
 }
 
 // The shared tool contract builds schemas from each host's Zod API. Claude's
@@ -820,6 +840,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     /** The id's state file, which also holds the relay's snapshot. */
     readonly state: ReplayStateWriter
     subscription: ChannelTopicSubscription | undefined
+    /** The epoch whose first registration answer the session's task values were told of
+     *  (`takeDeliveryAnswer`), undefined before any. */
+    answeredEpoch: string | undefined
   }
   let relay: Relay | undefined
 
@@ -908,6 +931,13 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
             `envoy-channel: ${message}${error === undefined ? "" : ` — ${messageFor(error)}`}\n`,
           )
         },
+        // A claim's task value, which the listener relays to the session holding the claim's
+        // role: a Legion pane's claim hands it to the bridge. A relay this session has closed, or
+        // one draining in while the session shuts down, hands over nothing.
+        onTaskValue: (value) => {
+          if (shuttingDown || relay !== owner) return
+          options.taskValues?.relayed(value)
+        },
       },
       publish: (reply, body) => options.connection.publish(reply, encoder.encode(body)),
       persist: (snapshot) => {
@@ -926,6 +956,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       delivery: consumer,
       state,
       subscription: undefined,
+      answeredEpoch: undefined,
     }
     relay = owner
     const subscription = options.connection.subscribe(consumer.subject)
@@ -977,10 +1008,20 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * What a registration's answer says of consumer delivery, for the id it registered and the
    * relay it asked for. An answer for an id this process has left, or for a relay since closed,
    * changes nothing.
+   *
+   * The first answer of each epoch of the relay (its first subscription, a NATS reconnect) tells
+   * the session's task values that the relay began again: a task frame the listener relayed while
+   * the session was not subscribed is lost, so a Legion pane's claim reads its value from the
+   * daemon. It goes once the listener has answered, which is when it relays to this session's
+   * subject again.
    */
   const takeDeliveryAnswer = (sessionID: string, asked: Relay, result: SubscribeResult): void => {
     if (sessionID !== identity.id || relay !== asked) return
     asked.delivery.answered(result.delivery)
+    const epoch = asked.delivery.epoch().id
+    if (asked.answeredEpoch === epoch) return
+    asked.answeredEpoch = epoch
+    options.taskValues?.epoch()
   }
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and
@@ -2292,6 +2333,15 @@ export async function runEnvoyChannelServer(): Promise<void> {
         ...(stamping ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
+        // A Legion pane's claim, which starts further down, hands each value to the bridge.
+        ...(pane === undefined
+          ? {}
+          : {
+              taskValues: {
+                relayed: (value) => claim?.relayed(value),
+                epoch: () => void claim?.readTask(),
+              },
+            }),
       })
       // INFRA-1026: the Agents page's live view, once this session's mod has a link to bind to.
       // It needs the bus as well as the link, so it starts here rather than beside the bind; a
@@ -2353,6 +2403,19 @@ export async function runEnvoyChannelServer(): Promise<void> {
         daemon,
         client,
         clientInstanceID,
+        task: (value) => {
+          if (inbox === undefined) {
+            logLegion(
+              `task ${value.number}'s value reaches no bridge: this pane names no ${INBOX_VARIABLE}`,
+            )
+            return
+          }
+          inbox.task(value).catch((error: unknown) => {
+            logLegion(
+              `the bridge did not take task ${value.number}'s value at revision ${value.revision}: ${messageFor(error)}`,
+            )
+          })
+        },
         session,
         signal: booting.signal,
         log: logLegion,

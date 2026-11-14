@@ -26,12 +26,11 @@ const registration = {
 
 /** A host over a stub daemon whose `register`, `ready` and `task` answer as given, recording
  * every step it is asked for, in order, beside the daemon's requests, and every task value it is
- * handed. `taskValue: false` is a host that takes none. */
+ * handed. */
 function claimHost(options: {
   readonly register?: () => Response;
   readonly ready?: () => Response;
   readonly task?: () => Response;
-  readonly taskValue?: false;
   readonly overrides?: Partial<LegionClaimHost>;
 }) {
   const steps: string[] = [];
@@ -56,14 +55,10 @@ function claimHost(options: {
     claimRole: async (role) => {
       steps.push(`claimRole ${role}`);
     },
-    ...(options.taskValue === false
-      ? {}
-      : {
-          taskValue: (reading: LegionTask) => {
-            steps.push("taskValue");
-            values.push(reading);
-          },
-        }),
+    taskValue: (reading) => {
+      steps.push("taskValue");
+      values.push(reading);
+    },
     onRoleRegained: (listener) => {
       steps.push("onRoleRegained");
       regain = listener;
@@ -142,15 +137,6 @@ test("reads the claim's value at the host's ask, at a new epoch of its relay, an
   expect(lines).toEqual([
     "claims/task at the relay's new epoch failed; the claim's value reaches this session with the daemon's next write of it: POST /legion/v1/claims/task failed with 503: the daemon is restarting",
   ]);
-});
-
-test("a host that takes no task value reads none, at a regain or at its ask", async () => {
-  const { host, steps, regain } = claimHost({ taskValue: false });
-  const boot = await bootLegionClaim(host);
-
-  await regain()?.(claimToken, "reclaimed");
-  await boot?.readTask();
-  expect(steps.some((step) => step.startsWith("claims/task"))).toBe(false);
 });
 
 for (const status of [400, 403, 409]) {
