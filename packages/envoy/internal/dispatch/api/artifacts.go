@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -2181,8 +2182,9 @@ func newArtifactKeyRefusal(target artifactTarget, slug string) error {
 // the rest of tx, as lockAgentArtifacts does a conversation's. A project's upload otherwise locks
 // no row before it looks its artifact up by name or slug and takes a new slug, so two uploads at
 // once - `plan.md` and `plan-md` - could each miss the other and leave two documents that one
-// reference names. Only these uploads take the lock, and they take it before any row or room, so
-// it joins no lock cycle.
+// reference names. These uploads take it, and so does a project document's rename or removal
+// (beginArtifactWrite); each takes it before any row, room or the document's owner lock, which
+// comes after it in every taker, so it joins no lock cycle.
 func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('project-artifacts:' || $1))`, project); err != nil {
 		return fmt.Errorf("lock the project's documents: %w", err)
@@ -2238,7 +2240,19 @@ func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx
 		}
 	case artifact.Project != "":
 		target = artifactTarget{Project: artifact.Project}
+		// A project's document is its own owner (ownerForArtifact), and its event's append takes
+		// that owner's lock (store.ArtifactOwner) and then advances the document row's last_seq.
+		// Every other writer of the document takes that lock in its read phase and then appends
+		// the same way (lockCommentOwner, docs' lockArtifactOwner), so a correction that met the
+		// lock only at its append, after its update of the row, held the row such a writer waits
+		// on while it waited on the lock that writer holds: a deadlock. The lock is taken here,
+		// before any write, and after the project's upload lock, in the order a project upload
+		// takes the two (storeArtifact: lockProjectArtifacts, then the document's owner), so the
+		// correction and an upload of the same project wait on the upload lock holding neither.
 		if err := lockProjectArtifacts(ctx, tx, artifact.Project); err != nil {
+			return refused(err)
+		}
+		if err := store.LockOwner(ctx, tx, store.ArtifactOwner(artifact.ID)); err != nil {
 			return refused(err)
 		}
 	}

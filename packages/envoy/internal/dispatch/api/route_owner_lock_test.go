@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -68,6 +69,7 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 	{name: "the review route", route: "POST /api/v1/artifacts/{id}/reviews (createArtifactReview)", ready: readyArtifactReview},
 	{name: "the plan review route", route: "POST /api/v1/artifacts/{id}/plan-reviews (createArtifactPlanReview)", ready: readyPlanReview},
 	{name: "the title correction route", route: "PATCH /api/v1/artifacts/{id} (renameArtifact)", ready: readyArtifactRename},
+	{name: "the title correction route on a project document", route: "PATCH /api/v1/artifacts/{id} on a project document (renameArtifact)", ready: readyProjectDocumentRename},
 	{name: "the document removal route", route: "DELETE /api/v1/artifacts/{id} (removeArtifact)", ready: readyArtifactRemoval},
 	{name: "the named version route", route: "POST /api/v1/artifacts/{id}/versions (createNamedVersion)", ready: readyNamedVersion},
 	{name: "the document edit route", route: "POST /api/v1/artifacts/{id}/edits (editArtifact)", ready: readyDocumentEdit},
@@ -162,6 +164,32 @@ func readyArtifactRename(t *testing.T, base routeFixture) lockedItemWrite {
 				t.Fatalf("the document's title = %q, want %q", name, corrected)
 			}
 		})
+}
+
+// readyProjectDocumentRename drives PATCH /api/v1/artifacts/{id} on a project document no issue
+// holds, whose owner is the document itself: beginArtifactWrite takes the project's upload lock
+// and then the document's owner lock before the title's update (renameArtifact), so the update
+// and the artifact.renamed append run under the lock every other writer of the document takes
+// first (artifact_rename_project_document_test.go).
+func readyProjectDocumentRename(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Project document rename")
+	document := projectDesignNotes(t, fixture, cmp.Or(base.spec, "# Design notes\n"))
+	const corrected = "Outbox design notes"
+	write := fixture.routeWrite(t, "the project document's corrected title",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return correctTitle(t, handler, document.ID, corrected)
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("correct the project document's title: status=%d body=%s", answer.Code, answer.Body.String())
+			}
+			if name := decodeBody[model.Artifact](t, answer).Name; name != corrected {
+				t.Fatalf("the project document's title = %q, want %q", name, corrected)
+			}
+		})
+	write.owner = store.ArtifactOwner(document.ID)
+	return write
 }
 
 // readyArtifactRemoval drives DELETE /api/v1/artifacts/{id} on an untouched document of the
