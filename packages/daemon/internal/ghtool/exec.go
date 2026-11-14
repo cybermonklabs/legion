@@ -108,11 +108,11 @@ func targetRepo(target ghroute.Target) string {
 // What is changed in it is what the guard's two children need:
 //
 //   - PATH with the real gh's directory, and the host's git's, in front of the daemon's own. The
-//     guard's visibility read is a plain `gh api … repos/<slug> --jq .visibility` resolved on
-//     this PATH (leakguard's program), so the gh that answers it is the boot this tool runs and
-//     never the answer's GH_PATH wrapper, which runs `legion gh` and would call a guard of its
-//     own over the read. The daemon's own PATH stays behind them, so the check finds the shell,
-//     the engine and everything else it runs.
+//     guard's visibility read is a plain `gh api … repos/<slug> --include --jq .visibility`
+//     resolved on this PATH (leakguard's program), so the gh that answers it is the boot this
+//     tool runs and never the answer's GH_PATH wrapper, which runs `legion gh` and would call a
+//     guard of its own over the read. The daemon's own PATH stays behind them, so the check
+//     finds the shell, the engine and everything else it runs.
 //   - GH_CONFIG_DIR the routed owner's, the directory the call itself runs with, so that read
 //     reaches GitHub as the agent's App — the one identity this call is made under — and sees
 //     what that App sees of the repository.

@@ -199,9 +199,12 @@ func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 		Credential: appauth.GitHubCredential(f.tokens, servedRepositories, ghrepo.Renames{}, nil, slog.New(slog.DiscardHandler)),
 		// The guard's own two seams, as the daemon fills them: the check a stand-in of this
 		// test's, since the real one is a script no clone of this repository holds, and the
-		// environment this process's own with the record file the stand-in writes to added.
+		// environment this process's own with the record file the stand-in writes to added, and
+		// a state home of this fixture's, where the guard keeps the public answers it read
+		// (leakguard's visibility cache), so no answer another run kept stands in for this one's
+		// read.
 		LeakCheck: leakguardtest.Write(t, f.check, checkPasses),
-		Environ:   append(os.Environ(), "LEAK_CHECK_RECORD="+f.record),
+		Environ:   append(os.Environ(), "LEAK_CHECK_RECORD="+f.record, "XDG_STATE_HOME="+filepath.Join(root, "daemon-state")),
 	}
 	answer, err := Open(context.Background(), f.host, agent, question)
 	if err != nil {
@@ -1209,7 +1212,7 @@ func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
 			t.Fatalf("the guard made %d visibility reads, want the one of the call's repository: %+v", len(reads), reads)
 		}
 		read := reads[0]
-		if want := leakguard.VisibilityReadArgs("sjawhar/legion"); !slices.Equal(read.Argv, want) {
+		if want := leakguard.VisibilityReadWithHeadersArgs("sjawhar/legion"); !slices.Equal(read.Argv, want) {
 			t.Errorf("the guard read %q, want the visibility of the repository the call targets, %q", read.Argv, want)
 		}
 		values := map[string]string{}

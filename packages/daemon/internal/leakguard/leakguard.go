@@ -47,16 +47,21 @@ const (
 	Internal Visibility = "internal"
 )
 
-// Options are the guard's three seams, each of them a field a test fills and a call site leaves
-// alone. The engine needs no seam: its rules are embedded in this package and it is linked into
-// this binary, so there is no copy of it for a test to stand in for.
+// Options are the guard's seams, each of them a field a test fills and a call site leaves alone.
+// The engine needs no seam: its rules are embedded in this package and it is linked into this
+// binary, so there is no copy of it for a test to stand in for.
 type Options struct {
 	// Check is the shared public leak check's path. Empty is the ordinary case, where every call
 	// resolves the check for itself (Resolve); a test fills it with a stand-in of its own.
 	Check string
-	// Visibility reads what GitHub reports a repository slug ("owner/name") as. Nil is the
-	// ordinary case, the gh read the shared check itself makes (Guard.ghVisibility).
+	// Visibility reads what GitHub reports a repository slug ("owner/name"). Nil is the ordinary
+	// case, the gh read the shared check itself makes (Guard.ghVisibility).
 	Visibility func(ctx context.Context, slug string) (Visibility, error)
+	// Clock supplies the time and bounded wait of a rate-limited visibility read. Nil is wall time.
+	Clock Clock
+	// OnVisibility observes the source of a successful visibility answer. A caller uses it for
+	// audit logging and leaves it nil when it has no audit record of its own.
+	OnVisibility func(VisibilitySource)
 	// Env is the environment every child process starts from: the shared check, that gh read, and
 	// the git commands a push's records are read with. Nil means this process's own
 	// (os.Environ()). The guard adds to it the names that make a credential prompt fail closed
