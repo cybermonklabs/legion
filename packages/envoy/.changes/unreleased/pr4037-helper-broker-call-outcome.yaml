@@ -1,6 +1,6 @@
 kind: Fixed
 body: |-
-    `agent-secrets-helper` now answers `agent-secrets enroll --helper`, `agent-secrets unenroll --helper` and the login call of `agent-secrets machine login` with the broker's outcome, or with a code that says the outcome is unknown.
+    `agent-secrets-helper` now answers `agent-secrets enroll --helper`, `agent-secrets unenroll --helper` and the login call of `agent-secrets machine login` with the broker's outcome, or with an answer that says the outcome is unknown.
     Before, the helper closed the connection after 5 s while its call to the broker went on, so `enroll --helper` could exit 1 with an empty reply while the broker made the enrollment.
     The helper now ends each of these broker calls at 20 s, answers by 21 s, and keeps the connection open for 25 s.
     These three commands wait 30 s for the helper's answer, where `machine login` waited 10 s.

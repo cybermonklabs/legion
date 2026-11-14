@@ -1296,10 +1296,10 @@ func (b *Broker) EnrollIdentity(ctx context.Context, cur identity) (string, time
 }
 
 // EnrollSessionKey registers a key the helper does not hold, one a launcher enrolls for a session
-// on this machine (a box's, a container's): a pass-through broker call with no registry Session,
-// so it takes the key's runtime_id, thumbprint and optional session_id directly. Otherwise it is
-// Enroll: the same fail-closed check when there is no machine credential yet, the same launcher
-// proof, the same 200/201 handling and the same 401 LAUNCHER_INVALID handling.
+// on this machine (a box's, a container's): a broker call with no registry Session, so it takes
+// the key's runtime_id, thumbprint and optional session_id directly. Otherwise it is Enroll: the
+// same fail-closed check when there is no machine credential yet, the same launcher proof, the
+// same 200/201 handling and the same 401 LAUNCHER_INVALID handling.
 func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string) (string, time.Time, error) {
 	return b.enroll(ctx, runtimeID, thumbprint, sessionID, "box")
 }

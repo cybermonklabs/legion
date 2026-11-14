@@ -109,8 +109,8 @@ func (s *Server) doneCall() {
 }
 
 // peerOps are the ops judged on who the caller is: each resolves the peer's session from its
-// pid, through an ancestry walk the pinned pidfd holds still. Every other op is a pass-through
-// broker call or a question about the helper itself (see the switch below), and the socket's
+// pid, through an ancestry walk the pinned pidfd holds still. Every other op is a broker-call op
+// (brokerCallOps) or a question about the helper itself (see the switch below), and the socket's
 // own mode — 0600, this user's — is the whole of what guards it, which is why the peer is
 // pinned for these and for nothing else: a kernel that cannot pin one (SO_PEERPIDFD is Linux
 // 6.5) still enrols a box's key and still logs this machine in.
@@ -257,8 +257,11 @@ func (s *Server) brokerCallBound() time.Duration {
 //   - The op returns before B, with any result: that result is the answer, with its code (an
 //     unknown outcome among them: enrollSessionKey, unenrollSessionKey, login).
 //   - An HTTP request of the op is in flight at B: the op's context ends at B, the transport ends
-//     the request, the op returns, and its result is the answer: unknown when the request was
-//     sent, a known failure when it was not (requestReach.settle).
+//     the request, the op returns, and its result is the answer (requestReach.settle). It is
+//     unknown when the request was sent (written whole, or the broker began to answer), and when
+//     the transport held a connection for it, written or not, since HTTP/2's round trip can
+//     return for an ended context before its write of the request ends. It is a known failure
+//     when the context ended before the transport held a connection.
 //   - The op waits past B + 1 s on a lock that is held across an HTTP request and does not watch
 //     the op's context (a sign-in's trade, a login in progress, a refresh of the machine login
 //     that clearOnInvalid waits for): the timer ends the wait, and the answer is unknown.
@@ -267,12 +270,10 @@ func (s *Server) brokerCallBound() time.Duration {
 //   - The helper is stopping (ctx ends): the op's context ends with it, and then as above; Serve
 //     returns only after the answer is written.
 //
-// So when the answer is written, no HTTP request of the op is in flight and none can start: the
-// op's context ends at B or earlier, the answer comes at the op's result or at B + 1 s, every
+// So when the answer is written, no HTTP round trip of the op is in flight and none can start:
+// the op's context ends at B or earlier, the answer comes at the op's result or at B + 1 s, every
 // request the op makes carries that context (Login's device authorization through
 // Broker.contextClient), and net/http's Transport sends nothing on a context that has ended.
-// HTTP/2 can still be finishing the write of a request when its round trip returns for an ended
-// context, and requestReach.settle reads that request's failure as unknown.
 //
 // The timer's answer is unknown and not failed because the timer cannot see which requests the
 // op has made.

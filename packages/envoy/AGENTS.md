@@ -5939,7 +5939,7 @@ After the transport wrote the whole request, or the broker began to answer, thes
 a transport error, a 5xx (a front door's 502 or 504 can come after the broker wrote), and a 2xx that the helper cannot read (a body that does not decode, an enrollment with no `enrollment_id`, a device authorization with no `device_code` or `user_code`).
 A request whose context ended while the transport held a connection for it is unknown, even when the trace did not see the write end:
 HTTP/2 returns at once on an ended context, and its write of the request can still be running.
-The retries inside an op (`400 INVALID_KIND`, `401 LAUNCHER_INVALID`) follow only a 4xx, so an unknown outcome always ends the op.
+The retries inside an op (`400 INVALID_KIND` and `401 LAUNCHER_INVALID` on an enroll, `403` on a revoke) follow only a 4xx, so an unknown outcome always ends the op.
 A known failure answers `ENROLL_FAILED`, `UNENROLL_FAILED` or `LOGIN_FAILED`, with the failure as it came: the broker refused, or the helper never asked it, so this request made or revoked nothing.
 An unknown outcome answers `ENROLL_OUTCOME_UNKNOWN` (`helper.CodeEnrollUnknown`) or `UNENROLL_OUTCOME_UNKNOWN` (`helper.CodeUnenrollUnknown`).
 A login whose outcome is unknown answers `LOGIN_FAILED`, with an error that starts `the outcome is unknown:` (`loginUnknown`).

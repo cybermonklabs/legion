@@ -124,6 +124,7 @@ type brokerEnrollment struct {
 // enrollmentsOf reads rig's enrollments of runtimeID, oldest first.
 func enrollmentsOf(t *testing.T, rig *brokertest.Rig, runtimeID string) []brokerEnrollment {
 	t.Helper()
+	// Query's error comes back from the rows, and CollectRows returns it (pgx's Query doc allows this).
 	rows, _ := rig.Store.Pool.Query(context.Background(),
 		`select id::text, revoked_at is null and lease_expires_at > now() from enrollments where runtime_id = $1 order by created_at`, runtimeID)
 	got, err := pgx.CollectRows(rows, pgx.RowToStructByPos[brokerEnrollment])
