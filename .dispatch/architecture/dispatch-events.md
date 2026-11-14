@@ -39,7 +39,12 @@ so it also waits for transactions that began after it committed, and for id hold
 A read whose own observation proved itself publishes in that same read (`Horizon.Gap` reports `GapNone`), so a read taken while nothing on the instance holds a transaction id costs one observation, not two;
 otherwise a reader (the relay, `Horizon.Await`) whose read leaves only its own observation unproven (`GapUnproven`) observes again at once, which proves it unless an older transaction id still runs;
 a gap an older transaction holds (`GapHeld`) is read again on the next commit notification, without that window, or after a fallback of 10 ms doubling to 250 ms for a holder that ends without notifying, which runs only while such a gap is open, so an idle process observes nothing.
-A Dispatch write transaction holds its id only in its write phase, one pipelined batch of statements before its commit, so its document work and write advice never delay a live event.
+A Dispatch write transaction is to hold its id only in its write phase, the statements from its first write to its commit, so its document work and write advice never delay a live event.
+Most write routes send that phase as one pipelined batch;
+the delivery replies (`POST /api/v1/comments/{id}/reply`, `POST /api/v1/messages/{id}/reply`) and the results write (`POST /api/v1/issues/{key}/results`) send theirs a statement at a time, still with no document work inside it.
+Some writers do not yet hold the rule: they make a write or take a row lock before they wait on the owner lock of the event they append, so they hold an id while another writer's document work holds that lock.
+dispatch://INFRA-3397 converts them and keeps the list of them;
+at commit `2d721710` of sjawhar/legion#2468 it was `keepDecision`, `putArchitectureSource`, `deleteArchitectureSource`, `putAskSnooze`, `deleteAskSnooze`, `markInboxReadThreads`, `dismissInboxThreads`, and the architecture importer's `Importer.project` and `Importer.recordFailure`.
 A pending observation older than five seconds logs the oldest holder.
 A live event stream that resumes from an id opens at once and heartbeats while the horizon is held, a cold one opens once its subscription is in place, and shutdown ends a stream still waiting.
 A cold stream starts at the relay's published cursor.
