@@ -2,6 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,18 +133,28 @@ func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
 // that names no such pair is passed over, so a later text in another file is covered the moment
 // it names the two together.
 //
-// What it does not catch: a number more than 220 bytes from either field's name. A passage that
-// states the boundary a paragraph away from the words `treeMovedAt` and `quietHours` is outside
-// every window this reads, and it is read by nothing else here. No count of bytes is right for
-// every layout a later text may take.
+// What the window does not catch: a number more than 220 bytes from either field's name. A
+// passage that states the boundary a paragraph away from the words `treeMovedAt` and
+// `quietHours` is outside every window this reads, and no count of bytes is right for every
+// layout a later text may take. The two comments that document the fields where they are
+// declared are such passages: Issue's in state.go names the fields `TreeMovedAt` and
+// `QuietHours`, which no window looks for, and the schema's in legion-api.ts states its boundary
+// first more than 220 bytes above its `treeMovedAt` key. So the scan names the two as its
+// declarations, and the scanner reads each of those comments whole beside the windows: every
+// contract number it names must be this one, and it must name one. The cases after the scan
+// hold that reading to each number those comments name: each is put back in memory as another
+// contract's, in the comment the scan itself found, and the scanner, handed that one text and
+// that one declaration alone so that no window refuses the number in the comment's place, must
+// refuse it.
 //
 // What to do when it fires on a sentence that is true — a passage that names another contract
 // beside these fields: correct that sentence, or widen the exclusions until they take in the
-// word that marks the other contract, which is what makes this pass such a passage over.
+// word that marks the other contract, which is what makes this pass such a passage over; a
+// field's own comment names no other contract, so one that does is the sentence to correct.
 // Changing the number is never the answer: the number is the daemon's own, and the test above is
 // what holds it.
 func TestTheShippedTextsNameTheQuietTimesOwnContract(t *testing.T) {
-	checked := scanContractTexts(t, contractScan{
+	scan := contractScan{
 		fields:   []string{TreeMovedAtField, QuietHoursField},
 		without:  []string{WaitingLineField, "memoryGroup", "gatedSteps"},
 		contract: quietTimeContract,
@@ -150,12 +165,47 @@ func TestTheShippedTextsNameTheQuietTimesOwnContract(t *testing.T) {
 			"packages/daemon/internal/projection/project_test.go",
 			"packages/contracts/src/legion-api.ts",
 		},
-	}, func(name, said, near string, want int) {
+		// The two places the tree quiet time is declared under a comment of its own that states
+		// the contract it shipped at: Issue's two fields in state.go and the contract schema's two
+		// keys in legion-api.ts, each found by the line declaring the first of the pair there.
+		declarations: []contractDeclaration{
+			{"packages/daemon/internal/api/state.go", "TreeMovedAt "},
+			{"packages/contracts/src/legion-api.ts", TreeMovedAtField + ":"},
+		},
+	}
+	texts := readContractTexts(t, scan)
+	checked, comments := scanContractTextsIn(t, scan, texts, func(name, said, near string, want int) {
 		t.Errorf("%s says `%s` of the tree quiet time, want the number %d, the contract that added it: %q",
 			name, said, want, near)
 	})
 	if checked == 0 {
-		t.Fatalf("no shipped text names a contract beside %s or %s; this test proves nothing",
+		t.Fatalf("no shipped text names a contract beside %s or %s, or above their declarations; this test proves nothing",
 			TreeMovedAtField, QuietHoursField)
+	}
+
+	// stale is the number a renumber that missed a comment would leave in it: 109 today, and
+	// never this contract.
+	const stale = quietTimeContract - 2
+	for i, place := range scan.declarations {
+		// Each case hands the scanner its renumbered text and this declaration alone, so the
+		// refusal it must make is the comment's reading's, which no window can make in its place.
+		alone := scan
+		alone.files, alone.declarations = nil, []contractDeclaration{place}
+		text, start, end := texts[place.file], comments[i][0], comments[i][1]
+		for _, at := range contractNumbers.FindAllStringSubmatchIndex(text[start:end], -1) {
+			said := text[start+at[0]:start+at[2]] + strconv.Itoa(stale)
+			renumbered := text[:start+at[2]] + strconv.Itoa(stale) + text[start+at[3]:]
+			line := strings.Count(text[:start+at[0]], "\n") + 1
+			t.Run(fmt.Sprintf("%s saying %s on line %d", filepath.Base(place.file), said, line), func(t *testing.T) {
+				var refused []string
+				scanContractTextsIn(t, alone, map[string]string{place.file: renumbered}, func(_, phrase, _ string, _ int) {
+					refused = append(refused, phrase)
+				})
+				if !slices.Contains(refused, said) {
+					t.Errorf("%s with `%s` in its comment on the tree quiet time has %v refused, want that phrase among them",
+						place.file, said, refused)
+				}
+			})
+		}
 	}
 }
