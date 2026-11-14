@@ -417,6 +417,14 @@ func (s *Server) Restart(t testing.TB, config string) {
 // server was started with -DV.
 func (s *Server) Log() string { return s.log.String() }
 
+// StoreDir is the directory of the server's JetStream store, the store_dir every start of it is
+// given (serverOptions), under which nats-server keeps its files in a jetstream subdirectory. It
+// is the same directory across every Stop and Start, as Stop says: a Start recovers the streams
+// and consumers from what it holds. A test may change the files under it, as a test of a stream
+// that lost data truncates a message block, only while the server is stopped: a running server
+// holds them open and writes them on its own schedule.
+func (s *Server) StoreDir() string { return s.store }
+
 // address is where the server listens for clients at this moment, which the relay dials. A stopped
 // server has none, and the relay ends the connection as a refused dial would.
 func (s *Server) address() (string, error) {
