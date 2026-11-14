@@ -96,7 +96,7 @@
 -- nothing. The phase entry's block after it drops the phase entry's columns, and the store then
 -- reports the highest row the two blocks leave standing, a migration of main's that neither
 -- block touches (20261114031356_merge_queue_removal at the forward merge of 2026-11-14).
--- A rollback below contract 111 takes the steps of each release it crosses as well
+-- A rollback below contract 123 takes the steps of each release it crosses as well
 -- (docs/kubernetes.md).
 --
 -- The first drop and the first delete are 20261114061900_phase_entry_verbatim's way back, and the

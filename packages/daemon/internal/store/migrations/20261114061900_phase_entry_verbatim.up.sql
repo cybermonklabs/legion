@@ -27,7 +27,7 @@
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon
 -- stopped and before the one the phase entry's own header carries
--- (20261111225552_phase_entry.up.sql). It is the way back of the four migrations of contract 117:
+-- (20261111225552_phase_entry.up.sql). It is the way back of the four migrations of contract 127:
 -- this one, 20261114020537_claim_entry_handshake, 20261113182000_architect_entry_upgrade and
 -- 20261113181500_architect_stalled_notices, whose headers carry the same block. docs/kubernetes.md
 -- carries it as the step an operator runs before the phase entry's, and the header of

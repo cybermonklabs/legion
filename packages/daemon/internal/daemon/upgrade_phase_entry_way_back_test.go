@@ -29,7 +29,7 @@ import (
 // docs/kubernetes.md, which is where an operator reads it at a rollback. The header is the
 // source — upgradeRecoveryReadsAnswer runs the block that file carries, as the one transaction
 // an operator runs — and the guide's copy is held to it by
-// TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide. The way back of contract 117, which
+// TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide. The way back of contract 127, which
 // an operator runs before it, stands in the headers of its four migrations and in a fenced block
 // of the guide of its own, and
 // TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide holds those copies to
@@ -45,7 +45,7 @@ const (
 	claimHandshakeMigrationFile          = "internal/store/migrations/20261114020537_claim_entry_handshake.up.sql"
 	entryVerbatimMigrationFile           = "internal/store/migrations/20261114061900_phase_entry_verbatim.up.sql"
 	wayBackGuideFile                     = "docs/kubernetes.md"
-	// entryVerbatimMigration is the version of the newest of contract 117's four migrations,
+	// entryVerbatimMigration is the version of the newest of contract 127's four migrations,
 	// whose version row is the first that way back deletes.
 	entryVerbatimMigration = 20261114061900
 	// wayBackHeredoc opens the block in every file and wayBackTerminator closes it. What stands
@@ -229,7 +229,7 @@ func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 	assertOneWayBackText(t, phaseEntryMigrationFile, header, wayBackGuideMark(phaseEntryMigration))
 }
 
-// The way back of contract 117 is one text standing in five files: the headers of its four
+// The way back of contract 127 is one text standing in five files: the headers of its four
 // migrations, 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade,
 // 20261114020537_claim_entry_handshake and 20261114061900_phase_entry_verbatim, and the fenced
 // block of docs/kubernetes.md that an operator runs before the phase entry's. A copy that drifted

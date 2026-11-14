@@ -153,7 +153,7 @@ func TestTheArchitectHandshakeTimesDowngradeBelowTheirContract(t *testing.T) {
 	}
 }
 
-// A root's `architectStalls` arrived with the two times, at contract 117, and leaves with them: a
+// A root's `architectStalls` arrived with the two times, at contract 127, and leaves with them: a
 // caller at that contract is served the arms the daemon names for the root, and one below it is
 // served none. The state here carries no time at all, so the arms alone are what the strip must
 // see as something of that contract to take away (carriesEntryTimes); a strip that looked for
@@ -178,7 +178,7 @@ func TestTheArchitectStallArmsDowngradeWithTheEntryTimes(t *testing.T) {
 // entryTimesContract is the contract whose entry in version.go added the two times, and this
 // daemon's own contract is never below it: a caller at this contract is served them.
 func TestTheArchitectHandshakeTimesContractIsTheOneThatAddedThem(t *testing.T) {
-	const addedEntryTimes = 117
+	const addedEntryTimes = 127
 	if entryTimesContract != addedEntryTimes {
 		t.Fatalf("entryTimesContract = %d, want %d, the contract whose entry in version.go added the issues' entry queued and confirmed times",
 			entryTimesContract, addedEntryTimes)

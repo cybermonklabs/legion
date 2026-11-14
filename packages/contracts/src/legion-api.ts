@@ -689,7 +689,7 @@ const legionIssue = z.object({
    * number is below the entry its row names, on every admission pass and on a sweep of its own
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
    * has still to reach. A root carries them as a child does, since the architect is the role
-   * that works `admitted` (contract 117); both are absent together for a phase no role works —
+   * that works `admitted` (contract 127); both are absent together for a phase no role works —
    * `awaiting_person`, `done` and `held` — and each is absent where it is 0, which is a role no
    * entry has been raised for and one the daemon holds no claim row of; a daemon before contract
    * 94 writes neither, and a caller in a pod whose plugin declares a contract below 94 is served
@@ -698,7 +698,7 @@ const legionIssue = z.object({
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
   /** The two times of a claim's handshake of the last entry it was queued a task of (contract
-   * 117): when a task of that entry was first queued to the claim, and when a turn of that
+   * 127): when a task of that entry was first queued to the claim, and when a turn of that
    * claim's worker first confirmed one. The claim keeps both in a record of its own, so they
    * outlast the task, which the end of the confirming turn retires. A tree's own root carries its
    * architect's handshake whatever phase it stands in — through `awaiting_person` and the phases
@@ -706,15 +706,15 @@ const legionIssue = z.object({
    * the handshake of the role of its current phase. Both are absent where no entry was queued to
    * that claim in the issue's current generation — a role the daemon holds no claim row of, a
    * re-admitted root whose new architect entry is not queued yet, and a root of the release
-   * before contract 117, which carries the two numbers and no handshake — and `entryConfirmedAt`
+   * before contract 127, which carries the two numbers and no handshake — and `entryConfirmedAt`
    * alone is absent while no turn has confirmed a task of the entry. A daemon before contract
-   * 117 writes neither, and a caller in a pod whose plugin declares a contract below 117 is
+   * 127 writes neither, and a caller in a pod whose plugin declares a contract below 127 is
    * served the state with neither (the daemon's `withoutEntryTimes`), which is why a reader takes
    * both as optional. */
   entryQueuedAt: timestamp.optional(),
   entryConfirmedAt: timestamp.optional(),
   /** For a tree's own root, every arm of the daemon's architect-stalled reading that holds for its
-   * architect at this read, in the order the controller is told them (contract 117):
+   * architect at this read, in the order the controller is told them (contract 127):
    * `took-nothing`, the task of its entry was queued to its claim more than ten minutes ago and no
    * turn confirmed it; `claim-unreachable`, the claim is failed or retired, the root is not
    * waiting on a person, and no start of the root's run that has not yet run against the claim
@@ -725,8 +725,8 @@ const legionIssue = z.object({
    * last raised entry. The daemon reads the arms by the predicates its own `architect-stalled`
    * wake uses and serves them whether or not the controller was told, and `legion state`'s plain
    * line prints them. Absent for a root no arm holds for and for every issue that is not a tree's
-   * root; a daemon before contract 117 writes none, and a caller in a pod whose plugin declares a
-   * contract below 117 is served the state without it (the daemon's `withoutEntryTimes`), which is
+   * root; a daemon before contract 127 writes none, and a caller in a pod whose plugin declares a
+   * contract below 127 is served the state without it (the daemon's `withoutEntryTimes`), which is
    * why a reader takes it as optional. */
   architectStalls: z
     .array(z.enum(["took-nothing", "claim-unreachable", "slow-before-gate"]))
@@ -1501,10 +1501,17 @@ export const LegionControllerGrantRequest = z.strictObject({
  * Dispatch and refuses when it is missing (`HANDOFF_RECORD_REQUIRED`), unknown
  * (`HANDOFF_RECORD_NOT_FOUND`), unreadable (`DISPATCH_READ_FAILED`), of another issue, phase or
  * version (`HANDOFF_RECORD_MISMATCH`), or written by another session than the claim's
- * (`HANDOFF_SESSION_MISMATCH`). `commit` is the implementer's (its pushed tip for an implementing
- * round, the commit it stands on for retro) and the head the merger merged; the planner, the tester
- * and the reviewer report none, and a check report carries neither (the look pushed nothing), so
- * all three are optional here, and the daemon requires each where it applies. `verdict` is `pass`
+ * (`HANDOFF_SESSION_MISMATCH`). `commit` on such a completion is the head that record's body
+ * names (`head`, the 40-character lower-case commit the work the handoff reports was done
+ * against), which is what a completion of an earlier phase entry is taken at. The plugin refuses
+ * the implementer's completion before it goes when its `implement` record names no head, when the
+ * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
+ * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
+ * the reviewer's completion without one. Retro and every completion of a phase its
+ * role does not work report the commit the workspace stands on instead, the merger's reports the
+ * head the merger merged, and a check report carries neither commit nor record (the look pushed
+ * nothing), so all three are optional here, and the daemon requires each where it applies.
+ * `verdict` is `pass`
  * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
  * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
  * on the wire, as the Go field is. `wakeAt` is the check report's alone (contract 54): when the

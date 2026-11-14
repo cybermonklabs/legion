@@ -1546,7 +1546,47 @@ package api
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
 //
-// 117: INFRA-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
+// 123: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
+// about, and the completion route judges that head rather than which phase entry the turn began
+// under. Every file-backed handoff record now carries `head`, the commit the work it reports was
+// done against, and the plugin's `handoff_complete` sends that head as the completion's `commit`
+// for the planner, the tester and the reviewer as well as the implementer, read from the record
+// and never from the shared workspace (`packages/pi-shared/src/handoff-record.ts`,
+// findHandoffReport). The route takes a completion of an earlier entry of the same phase when the
+// phase ends with a handoff record this role writes, the completion names a commit and that
+// commit is the head the record holds for the issue's pull request, and refuses it with
+// `HANDOFF_STALE_ENTRY` whatever head it names when the entry the phase stands on was raised by a
+// move back (`record.PhaseRow.EntryMovedBack`, written by the transition that raises the entry,
+// store migration `20261113090512_phase_entry_moved_back.up.sql`, which adds
+// `phases.entry_moved_back` true on every row it finds, so each refuses a behind completion as
+// the daemon before it did until that role's next entry writes what its own move was). The
+// refusal's text names what decided it: the commit given or that none was, the head the record
+// holds, and the move back where there was one. A completion of another entry than its role's
+// phases row names, from a role that does not work the phase the issue stands in, is answered
+// `HANDOFF_NOT_CURRENT_PHASE` in the workflow's words and records nothing, where daemons from 94
+// refused it `HANDOFF_STALE_ENTRY` saying a task of the phase was owed to the claim. No field is
+// added or removed on either side of the wire: `commit` was already optional on
+// `api.HandoffCompleteRequest` and `handoffCommit` on `api.PhaseView`. What moves is what the two
+// sides mean by them, so they move together: a plugin below 123 sends the three roles'
+// completions with no commit, which this daemon refuses behind their entry as every daemon from
+// 94 did, and a plugin at 123 against a daemon below it has a commit recorded for those roles and
+// named in the next role's task (`Handoff commit:`) that the daemon never judges. A plugin at 123
+// also names, on a completion sent after the issue moved on, the role's own record of the phase
+// it left (pi-shared's completedPhase, the mirror of phase.Of), which this daemon reads back
+// against that phase; a plugin below names none there and is answered as every daemon from 94
+// answers it. (Taken at the push that answered the review of 9f1d4789, with main at 922eb1d992a3,
+// whose own number is the 111 above. This entry took 104 at the merge of 8d9d1ff2 (main at 94),
+// 106 at that of 0fde2dcff6e4 (main at 98), 109 at that of 2a6ff6c03269 (main at 98), 111 at that
+// of b601d25b3fa1 (main at 104), 115 at that of 809208573a01 (main at 111), 120 at the push after
+// it and 121 at the merge of 50bfbb0dec73 (main at 111), each declared by another open head before
+// this one landed. The reading behind 123, of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// every open pull request of cybermonklabs/legion at 2026-11-14T06:17Z, made with the
+// `declared_by_open_pull_requests` of `.github/scripts/check-daemon-api-contract.sh`, gives above
+// main's 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118
+// (#3659), 119 (#3712), 120 (#3993), 121 (#3519) and 122 (#2230); 123 is the lowest number above
+// them all.)
+//
+// 127: INFRA-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
 // for, so the two keys contract 94 added carry a root: `phase.RoleFor` answers the architect for
 // `admitted`, the phase a root's own architect works, and each root's view carries the entry its
 // architect's work stands at and the entry its claim was queued, as a child's carries its
@@ -1580,8 +1620,9 @@ package api
 // controller was told of an arm, and the key is absent for a root no arm holds for and for every
 // issue that is not a tree's root.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 117 is served the issues without both times and without `architectStalls`
-// (api's stateFor, withoutEntryTimes),
+// contract below 127 is served the issues without both times and without `architectStalls`
+// (api's stateFor, withoutEntryTimes) — 123, the entry right above, moves no shape of the state
+// and narrows nothing, so a caller at 111 through 126 is served the same body —
 // as a caller below 111 is served the issues without `treeMovedAt` and `quietHours`, one below 98
 // the admission block without `admission.held`, one below 94 the issues without `phaseEntry` and
 // `givenEntry`, one below 87 every claim view without `leakCheckCause`, one below 85 every issue
@@ -1593,7 +1634,7 @@ package api
 // below 55 without the gated steps, one below 53 a body with no wakes waiting, one below 51
 // without the admission's trees and each issue's tree, one below 49 without the memory draw and
 // one below 46 without the claim views' update rounds; the seventeen compose, and every reader
-// from 117 on takes both times and `architectStalls` as optional. The two entry numbers move no
+// from 127 on takes both times and `architectStalls` as optional. The two entry numbers move no
 // further: a plugin at 94 parses them already, and a root carrying them is the same shape the
 // issue beside it carries.
 // `legion state`'s plain line changes with them: it names a tree's own root where the state
@@ -1608,22 +1649,29 @@ package api
 // reading of `const DaemonAPIVersion` in this file at refs/pull/<n>/head at 2026-11-13T18:12Z,
 // for every one of the 41 heads among the 136 open pull requests of this repository whose file
 // list named this file or was cut short, gave above that base's 104: 105 (#3659), 106 (#2731 and
-// #3730), 107 (#3712), 108 (#3519), 109 (#3793) and 110 (#3715 and #3937). It takes 117 at the
-// forward merge of 2026-11-13 that brings main in at 809208573a01, which lands
-// cybermonklabs/legion#3573's INFRA-2560 at 111, the entry right above: 111 is the number this
-// change declared until then, and it is the number the base now carries. A first reading of
-// `const DaemonAPIVersion` in this file at refs/pull/<n>/head between 2026-11-13T22:44Z and
+// #3730), 107 (#3712), 108 (#3519), 109 (#3793) and 110 (#3715 and #3937). It took 117 at the
+// forward merge of 2026-11-13 that brought main in at 809208573a01, which landed
+// cybermonklabs/legion#3573's INFRA-2560 at 111, then the entry right above: 111 was the number
+// this change declared until then, and it was the number the base then carried. A first reading
+// of `const DaemonAPIVersion` in this file at refs/pull/<n>/head between 2026-11-13T22:44Z and
 // 22:48Z, for every one of the 139 open pull requests of this repository other than this
 // change's own #3711, gave above the base's 111: 112 (#2731), 113 (#3575), 114 (#3730) and 115
 // (#3519), so this change took 116. Other heads moved while the merge was resolved, and a second
 // reading between 23:16Z and 23:22Z, for every one of the 138 open pull requests other than
-// #3711, gives above 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3519, #3659 and #3937)
-// and 116 (#3715). 111 itself is declared by #3178, #3793 and #3982, and every other head read
-// declares 110 or below. So this change takes 117, the lowest number above the base's that no
-// open head declares. The reading is of this file at each head and not of a file list: GitHub
-// cuts a pull request's file list short, so every open head is read. Each of those numbers is
-// the number that head declared at that reading and no head's for good. Read the base's own
-// number and every open pull request again at the next merge rather than from this line, as
+// #3711, gave above 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3519, #3659 and #3937)
+// and 116 (#3715). 111 itself was declared by #3178, #3793 and #3982, and every other head read
+// declared 110 or below. So this change took 117, the lowest number above the base's that no
+// open head declared. The reading is of this file at each head and not of a file list: GitHub
+// cuts a pull request's file list short, so every open head is read. It takes 127 at the forward
+// merge of 2026-11-14 that brings main in at 25f3e38a3e29, which lands cybermonklabs/legion#3793's
+// INFRA-3146 at 123, the entry right above and the number the base now carries, so 117 was no
+// longer above it. A reading of the number every open pull request of this repository declares,
+// made between 2026-11-14T12:30:25Z and 12:34:35Z, gave above the base's 123: 124 (#4021), 125
+// (#4030) and 126 (#2230 and #4017), and no head declared a number above 126, so this change
+// takes 127, the lowest number above the base's that no open head declares. Each of those
+// numbers is the number that head declared at that reading and no head's for good. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 117
+const DaemonAPIVersion = 127

@@ -1060,21 +1060,21 @@ const phaseEntriesContract = 94
 // it rather than what keeps such a caller reading at all. The two are one gate because they are
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. It is the band below
-// entryTimesContract's, so a caller in a pod at 111 through 116 is served the measure and not
-// the two times of the entry's task.
+// entryTimesContract's, so a caller in a pod at 111 through 126 is served the measure and not
+// the two times of the entry's task: 123, INFRA-3146's contract, moves no shape of the state.
 const quietTimeContract = 111
 
 // entryTimesContract is the daemon contract that added each issue's `entryQueuedAt` and
 // `entryConfirmedAt`, the time the task of its phase entry was first queued to its role's claim
 // and the time that claim's worker confirmed it, and each root's `architectStalls`, the arms of
-// the architect-stalled reading that hold for its architect (version.go's 117). A plugin before
+// the architect-stalled reading that hold for its architect (version.go's 127). A plugin before
 // it is served the state without the three keys: one built before sjawhar/legion#2788 reads it
 // with a strict schema and would refuse the whole body for a key it does not name, and one built
 // after strips the keys instead, so the strip is what keeps them from a caller that did not ask
 // for them rather than what keeps such a caller reading at all. It is the highest of the
 // seventeen bands, this daemon's own contract, so the only caller served the three keys is one at
 // it.
-const entryTimesContract = 117
+const entryTimesContract = 127
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

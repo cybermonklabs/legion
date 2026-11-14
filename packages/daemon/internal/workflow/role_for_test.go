@@ -72,15 +72,17 @@ type roleForReader struct {
 
 // roleForReaders is every non-test reader of phase.RoleFor and of workflow.RoleFor in the daemon,
 // and the test that holds each one's behaviour. A reader is a call, or the function passed as a
-// value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Two of them
+// value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Three of them
 // have a guard of their own for admitted, the phase RoleFor answers the architect for:
-// noticeFor writes the notice of the move out of admitted with no role (R2), and
-// Engine.leftItsPhase records no worker's completion while the issue stands at admitted. Every
-// other site reaches its answer through a guard that starts, resumes or reports no architect as a
-// phase worker, or names the role an admitted root's entry numbers are of, or names the architect
-// as the role whose turn an issue at admitted is (the stalled-tree notice's reason), or never
-// reads admitted at all because a check before it refuses that phase, which is what each named
-// test holds it to.
+// noticeFor writes the notice of the move out of admitted with no role (R2),
+// Engine.leftItsPhase records no worker's completion while the issue stands at admitted, and the
+// completion route's entryFence answers a completion at admitted as one of a phase its role does
+// not work. Every other site reaches its answer through a guard that starts, resumes or reports
+// no architect as a phase worker, or names the role an admitted root's entry numbers are of, or
+// names the architect as the role whose turn an issue at admitted is (the stalled-tree notice's
+// reason), or answers the issue's own phase for the architect's completion there, as its reader
+// took the issue's phase while RoleFor named no role (phase.Of), or never reads admitted at all
+// because a check before it refuses that phase, which is what each named test holds it to.
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -88,12 +90,13 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "cmd/legion/main.go", fn: "entriesBehind"}:                        {calls: 1, test: "TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor"},
 	{file: "internal/admit/admit.go", fn: "Admission.startMidPhaseMembers"}:  {calls: 1, test: "TestReadmissionStartsTheTreesMidPhaseChildren"},
 	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}:             {calls: 1, test: "TestAWaitByDesignIsNeverToldAsAStall"},
+	{file: "internal/api/handoff.go", fn: "entryFence"}:                      {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                         {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
+	{file: "internal/phase/phase.go", fn: "Of"}:                              {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                  {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:    {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                 {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                    {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},
-	{file: "internal/workflow/engine.go", fn: "Engine.handoff"}:              {calls: 1, test: "TestTheArchitectsCompletionInAcceptingIsRefused"},
 	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}:          {calls: 1, test: "TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice"},
 	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}:         {calls: 1, test: "TestArchitectUnchangedByAWorkersCompletionAtAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:         {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},

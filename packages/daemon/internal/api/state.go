@@ -639,7 +639,7 @@ type Issue struct {
 	// it: the daemon tells each arm once per run and only while a controller is registered. It is
 	// absent for a root no arm holds for and for every issue that is not a tree's root.
 	// `legion state`'s plain line prints it and reads no arm of its own. It arrived with the two
-	// times above (contract 117), and a caller below that contract is served the issues without
+	// times above (contract 127), and a caller below that contract is served the issues without
 	// all three (api's stateFor, withoutEntryTimes).
 	ArchitectStalls []record.ArchitectStallArm `json:"architectStalls,omitempty"`
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
