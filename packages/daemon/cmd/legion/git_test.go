@@ -751,6 +751,55 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 	}
 }
 
+// A -F path that is a FIFO names no descriptor: git alone opens the path itself, so through a host's
+// git that closes every descriptor above 2 git alone still reads the message and commits it. The
+// pane's git must make the same commit through such a host, whether the host is a script or a
+// compiled program: with both lines added, or with none, but never a refusal where git alone
+// commits (R2). A copy that the pane's git hands git as /dev/fd/<n>, n above 2, is a descriptor such
+// a host closes, and git then refuses with `could not read log file`.
+func TestGitWrapperAfterGivesAFifoMessageThroughAHostThatClosesDescriptors(t *testing.T) {
+	git := fixturegit.CompiledGit(t)
+	legion := trailerLegion(t)
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closer, compiledCloser := t.TempDir(), t.TempDir()
+	closing := "#!" + bash + "\n" +
+		"for fd in /proc/self/fd/*; do n=${fd##*/}; if [ \"$n\" -gt 2 ] && [ \"$n\" != 255 ]; then eval \"exec $n>&-\"; fi; done\n" +
+		"exec '" + git + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(closer, "git"), []byte(closing), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	copyExecutable(t, goGitProgram(t, strings.Replace(closingGitSource, "REAL_GIT", strconv.Quote(git), 1)), filepath.Join(compiledCloser, "git"))
+	// The writer has a time limit and holds none of the command's output, so a run where nothing
+	// opens the FIFO ends rather than waits.
+	const command = `mkfifo "$TMPDIR/message" && (timeout 10 sh -c 'printf msg > "$TMPDIR/message"' >/dev/null 2>&1 &) && ` +
+		`git commit -q --allow-empty -F "$TMPDIR/message"`
+	for _, host := range []struct{ name, dir string }{{"a host's script", closer}, {"a compiled host's git", compiledCloser}} {
+		t.Run("-F <a FIFO> through "+host.name+" that closes descriptors", func(t *testing.T) {
+			outcome := func(path string) (code int, stderr, message string) {
+				repo := trailerRepo(t, git)
+				env := trailerEnv(t, path, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=fifo-session", "LEGION_ROLE=implementer")
+				code, _, stderr = trailerRun(t, repo, env, "", bash, "-c", command)
+				if head, _, _ := trailerRun(t, repo, trailerEnv(t, trailerPath(git)), "", git, "rev-parse", "-q", "--verify", "HEAD"); head == 0 {
+					message = trailerMessage(t, git, repo)
+				}
+				return code, stderr, message
+			}
+			aloneCode, aloneErr, alone := outcome(host.dir + ":" + trailerPath(git))
+			if aloneCode != 0 || alone != "msg\n" {
+				t.Fatalf("git alone exited %d (%q) and committed %q, want 0 and %q", aloneCode, aloneErr, alone, "msg\n")
+			}
+			wrappedCode, wrappedErr, wrapped := outcome(trailerWrapperDir(t, legion) + ":" + host.dir + ":" + trailerPath(git))
+			lines := "msg\n\nOmp-Session: fifo-session\nLegion-Role: implementer\n"
+			if wrappedCode != 0 || (wrapped != "msg\n" && wrapped != lines) {
+				t.Fatalf("through the pane's git: exit %d (%q), HEAD %q; git alone commits %q, so want exit 0 and %q or %q", wrappedCode, wrappedErr, wrapped, alone, "msg\n", lines)
+			}
+		})
+	}
+}
+
 // closingGitSource is a compiled host's git wrapper that closes every descriptor from 3 to 255, as
 // Python's subprocess, Node's spawn and sudo do, and then runs the git that REAL_GIT names: the
 // test puts a quoted path there.
