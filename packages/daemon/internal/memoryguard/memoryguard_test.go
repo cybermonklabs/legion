@@ -417,6 +417,9 @@ type fakeSignal struct {
 	killed  []int
 	open    int
 	handles []*fakeHandle
+	// exited holds each pid exit has marked: each handle of it reads exited, those Open builds
+	// later as well.
+	exited map[int]bool
 }
 
 type fakeHandle struct {
@@ -436,7 +439,7 @@ func (s *fakeSignal) Open(pid int) (Handle, error) {
 	if s.onOpen != nil && pid != os.Getpid() {
 		s.onOpen(pid)
 	}
-	h := &fakeHandle{s: s, pid: pid}
+	h := &fakeHandle{s: s, pid: pid, exited: s.exited[pid]}
 	s.handles = append(s.handles, h)
 	return h, nil
 }
@@ -459,10 +462,15 @@ func (s *fakeSignal) held() int {
 	return s.open
 }
 
-// exit marks pid as a process that has exited, as its pidfd would read.
+// exit marks pid as a process that has exited, as its pidfd would read: each handle that holds it,
+// and each that Open builds for it from then on.
 func (s *fakeSignal) exit(pid int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.exited == nil {
+		s.exited = map[int]bool{}
+	}
+	s.exited[pid] = true
 	for _, h := range s.handles {
 		if h.pid == pid {
 			h.exited = true
@@ -1220,6 +1228,54 @@ func TestMemoryGuardDoesNotKillAPidWhoseStartTimeChanged(t *testing.T) {
 	}
 	if held := h.signal.held(); held != 0 {
 		t.Fatalf("the guard still holds %d processes after giving the kill up", held)
+	}
+}
+
+// A process can exit between the scan's read of its stat and the kill, and until its parent reaps
+// it, it keeps its stat and its start time: Open holds it, the start time reads unchanged, and the
+// kill answers no error. In a gVisor pod on 2026-11-14, pidfd_send_signal to a child that had
+// exited and that its parent had not reaped answered no error, and the child's pidfd read readable
+// about 1 ms after its exit. A guard that sent the kill would tell the role it had ended with
+// SIGKILL a process that ended on its own. The guard asks the handle first: it sends no kill, logs
+// no ended line, reports nothing and takes no sequence, and the next reading, whose scan leaves
+// the zombie out, ends the next largest as the first kill it reports.
+func TestMemoryGuardDoesNotKillOrReportAProcessThatExitedBeforeTheKill(t *testing.T) {
+	pod := newFakePod(t)
+	grow := fakeProcess{pid: 810, ppid: 100, start: 7000, args: []string{"python3", "grow.py"}, anon: gib}
+	load := fakeProcess{pid: 811, ppid: 100, start: 7100, args: []string{"python3", "load.py"}, anon: 600 * mib}
+	pod.add(agent(2600*mib), grow, load)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	// Pid 810 exits once the scan has read it: at its Open its stat reads a zombie's, with the
+	// same start time, and its handle reads exited.
+	h.signal.exit(810)
+	h.signal.onOpen = func(pid int) {
+		if pid == 810 {
+			zombie := grow
+			zombie.zombie = true
+			pod.add(zombie)
+		}
+	}
+	h.run()
+	if tried := h.signal.attempts(); len(tried) != 0 {
+		t.Fatalf("the guard tried to kill %v, a process that had exited; the log:\n%s", tried, strings.Join(h.log.all(), "\n"))
+	}
+	h.requireKilled()
+	if lines := h.log.with("ended"); len(lines) != 0 {
+		t.Fatalf("the guard logged a kill it did not send: %q", lines)
+	}
+	if held := h.signal.held(); held != 0 {
+		t.Fatalf("the guard still holds %d processes after giving the kill up", held)
+	}
+
+	// Pid 810's memory went with its exit, and pid 811 grows the pod back to the mark.
+	load.anon = 1100 * mib
+	pod.add(load)
+	pod.setAnon(3700 * mib)
+	h.tick()
+	h.requireKilled(811)
+	if lines := h.log.with("ended"); len(lines) != 1 {
+		t.Fatalf("the ended lines are %q, want pid 811's alone", lines)
 	}
 }
 

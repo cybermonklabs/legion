@@ -512,10 +512,12 @@ func fell(atKill, reading, mark uint64) bool { return reading < atKill || readin
 
 // act ends the largest process the guard may end, or gives the rise up when the processes it may
 // end hold less than the floor between them: ending one of them would free too little to matter.
-// A process that ended, or whose pid another process took, between the scan and the kill is not
-// killed, and the next reading decides again. A process the kill fails on for any other reason is
-// logged once and counted unread from then on (noteKillFailure), and the next reading ends the
-// next largest.
+// A process that ended (exited, whether its parent has reaped it yet or not), or whose pid another
+// process took, between the scan and the kill is not killed and not reported, and the next reading
+// decides again: the scan leaves out a zombie. One that exits in the instant between the handle's
+// Exited and its Kill is still reported, since no read can close that window. A process the kill
+// fails on for any other reason is logged once and counted unread from then on (noteKillFailure),
+// and the next reading ends the next largest.
 func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
 	defer g.releaseSmaps()
 	a, err := g.assess()
@@ -534,6 +536,12 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
 		return
 	}
 	if start, err := readStartTime(g.proc, target.PID); err != nil || start != target.StartTime {
+		_ = h.Close()
+		return
+	}
+	// A process that has exited and is not reaped yet keeps its stat and its start time, and the
+	// kill of it answers no error, so only its handle tells it from a live one.
+	if h.Exited() {
 		_ = h.Close()
 		return
 	}
