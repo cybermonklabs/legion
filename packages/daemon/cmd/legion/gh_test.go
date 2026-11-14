@@ -1294,6 +1294,166 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 	}
 }
 
+// Two wrapped calls to one repository reuse its public visibility answer, and their audit entries
+// identify the call without preserving the text that the command would send.
+func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	record := filepath.Join(t.TempDir(), "gh")
+	stub := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{
+		"GH_CONFIG_DIR":        defaultDir,
+		"GH_STANDIN_RECORD":    record,
+		"LEGION_GH_OWNERS_DIR": root,
+		"LEGION_GH_PATH":       stub,
+		"LEGION_ISSUE":         "issue-9",
+		"LEGION_ROLE":          "tester",
+		"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+		"XDG_STATE_HOME":       state,
+	}
+	args := []string{"pr", "create", "-R", "acme/widgets", "--title", "argument text must not be logged"}
+	for range 2 {
+		if code, _, stderr := legionGhIn(t, t.TempDir(), env, "", args...); code != 0 {
+			t.Fatalf("legion gh %q = exit %d, stderr %q; want success", args, code, stderr)
+		}
+	}
+	if got := strings.Count(readRecord(t, record), "visibility "); got != 1 {
+		t.Errorf("the visibility read reached gh %d times, want once", got)
+	}
+	log, err := os.ReadFile(filepath.Join(state, "legion-gh", "calls.log"))
+	if err != nil {
+		t.Fatalf("read the call log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
+	if len(lines) != 2 {
+		t.Errorf("the call log has %d lines, want two: %q", len(lines), log)
+	}
+	for i, line := range lines {
+		wants := []string{"tester", "issue-9", "acme/widgets", "pr create", "status=0"}
+		if i == 0 {
+			wants = append(wants, `visibility="github"`)
+		} else {
+			wants = append(wants, `visibility="kept"`)
+		}
+		for _, want := range wants {
+			if !strings.Contains(line, want) {
+				t.Errorf("the call log line %q does not name %q", line, want)
+			}
+		}
+	}
+	if strings.Contains(string(log), "argument text must not be logged") {
+		t.Errorf("the call log holds command argument text: %q", log)
+	}
+}
+
+// Concurrent processes share one log and rotate it as one operation, so no appended line that
+// fits after the oversized prior content is lost.
+func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
+	if repository := os.Getenv("LEGION_TEST_GH_CALL_LOG_REPOSITORY"); repository != "" {
+		appendGhCallLog(map[string]string{"XDG_STATE_HOME": os.Getenv("LEGION_TEST_GH_CALL_LOG_STATE")}, repository, "api", "", 0)
+		return
+	}
+
+	const calls = 128
+	state := t.TempDir()
+	dir := filepath.Join(state, "legion-gh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "calls.log")
+	if err := os.WriteFile(path, append(bytes.Repeat([]byte{'x'}, ghCallLogBytes), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, calls)
+	for i := range calls {
+		repository := fmt.Sprintf("repo-%03d", i)
+		go func() {
+			command := exec.Command(os.Args[0], "-test.run=^TestAppendGhCallLogKeepsConcurrentLinesThatFit$")
+			command.Env = append(os.Environ(),
+				"LEGION_TEST_GH_CALL_LOG_REPOSITORY="+repository,
+				"LEGION_TEST_GH_CALL_LOG_STATE="+state,
+			)
+			errs <- command.Run()
+		}()
+	}
+	for range calls {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range calls {
+		want := fmt.Sprintf(`repository="repo-%03d"`, i)
+		if got := strings.Count(string(content), want); got != 1 {
+			t.Errorf("the call log records %q %d times, want once", want, got)
+		}
+	}
+}
+
+// The rate-limit endpoint is a read with no repository content, so it bypasses the guard; a
+// method that writes or another endpoint still reaches the guard.
+func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on this machine")
+	}
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := t.TempDir()
+	fixture := fixturegit.Isolated(t, t.TempDir())
+	for _, args := range [][]string{
+		fixturegit.InitWorkTree("", "")[1:],
+		{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
+	} {
+		fixture.Run(repository, append([]string{"git"}, args...)...)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	script := strings.Replace(ghStandInPrefix(help), "  echo public\n  exit 0\n", "  echo unavailable >&2\n  exit 1\n", 1) + "exit 0\n"
+	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, defaultDir := gitCredentialBundle(t)
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		check     string
+		wantCode  int
+		wantReads int
+	}{
+		{"the GET", []string{"api", "rate_limit"}, ghCheckPasses, 0, 0},
+		{"a POST", []string{"api", "rate_limit", "--method", "POST"}, ghCheckRefuses, 2, 0},
+		{"another endpoint", []string{"api", "user"}, ghCheckRefuses, 2, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := filepath.Join(t.TempDir(), "gh")
+			env := map[string]string{
+				"GH_CONFIG_DIR":        defaultDir,
+				"GH_STANDIN_RECORD":    record,
+				"LEGION_GH_OWNERS_DIR": root,
+				"LEGION_GH_PATH":       stub,
+				"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), tc.check),
+			}
+			if code, _, stderr := legionGhIn(t, repository, env, "", tc.args...); code != tc.wantCode {
+				t.Fatalf("legion gh %q = exit %d, stderr %q; want exit %d", tc.args, code, stderr, tc.wantCode)
+			}
+			if reads := strings.Count(readRecord(t, record), "visibility "); reads != tc.wantReads {
+				t.Errorf("the visibility read reached gh %d times, want %d", reads, tc.wantReads)
+			}
+		})
+	}
+}
+
 // A SIGTERM or a SIGHUP sent to `legion gh`'s own pid reaches the gh it is waiting for, which is
 // what an exec'd gh — the shape this replaced — ended on. Neither signal reaches gh by itself:
 // the child is given no process group of its own on purpose, so a terminal's SIGINT reaches it
@@ -1486,7 +1646,7 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	visibility := []string{"api", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".visibility"}
+	visibility := leakguard.VisibilityReadArgs("sjawhar/legion")
 	for _, tc := range []struct {
 		name   string
 		signal syscall.Signal

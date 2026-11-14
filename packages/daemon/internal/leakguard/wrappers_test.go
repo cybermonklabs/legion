@@ -2,12 +2,14 @@ package leakguard
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 )
@@ -45,12 +47,13 @@ func wrapperCopy(t *testing.T, dir, name string, repointed ...[2]string) string 
 	return path
 }
 
-// logging is a stand-in for the real tool at path: it appends each of its arguments to log, one
-// to a line, and exits 0. What the wrapper handed the real tool is the whole of what it records,
-// in order, which is what these tests read.
+// logging is a stand-in for the real tool at path: it appends each of its arguments to log, each
+// ended by a NUL byte, and exits 0. What the wrapper handed the real tool is the whole of what it
+// records, in order, which is what these tests read; the NUL, which no argument can hold, is what
+// lets an argument holding a newline be read back whole.
 func logging(t *testing.T, path, log string) string {
 	t.Helper()
-	script := "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> '" + log + "'; done\nexit 0\n"
+	script := "#!/bin/sh\nprintf '%s\\0' \"$@\" >> '" + log + "'\nexit 0\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +67,7 @@ func ranAs(t *testing.T, log string) []string {
 	if err != nil {
 		t.Fatalf("the wrapper ran the real tool with nothing, or not at all: %v", err)
 	}
-	return strings.Split(strings.TrimSuffix(string(read), "\n"), "\n")
+	return strings.Split(strings.TrimSuffix(string(read), "\x00"), "\x00")
 }
 
 // The git wrapper's own `-c core.hooksPath` goes after the caller's own arguments and
@@ -115,6 +118,97 @@ func TestTheGitWrapperPassesANonPushThroughByteForByte(t *testing.T) {
 	}
 	if got := ranAs(t, log); !slices.Equal(got, want) {
 		t.Fatalf("the wrapper ran git with %q, want the arguments it was given, %q", got, want)
+	}
+}
+
+// A command that is no push reaches the real git with its arguments as they came, however many
+// there are, because the wrapper does not rebuild the list of one: in dash a rebuild costs time
+// that grows with the square of the argument count, and a leak check's `git rev-list` with one
+// `^<sha>` for each commit a remote holds is about 4,970 arguments long for a clone of this
+// repository. Among the 20,000 here are the ones a rebuild could get wrong: a space, a newline, a
+// leading `-`, a `--no-verify`, which only a push loses, and a `push` that is no subcommand. The
+// arguments alone would pass through a rebuild as well, so the run is also held to 10 s: without
+// a rebuild it takes milliseconds, and the rebuild the wrapper made before took four minutes in a
+// pod.
+func TestTheGitWrapperPassesTwentyThousandArgumentsOfANonPushThroughWithoutARebuild(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "argv")
+	script := wrapperCopy(t, dir, "git", [2]string{
+		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), log),
+	})
+	run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
+	const count, bound = 20_000, 10 * time.Second
+	want := []string{"rev-list", "an argument with a space", "an argument with\na newline", "-c", "--no-verify", "push"}
+	for len(want) < 1+count {
+		want = append(want, fmt.Sprintf("^%040x", len(want)))
+	}
+	started := time.Now()
+	if out, err := run.Try(dir, append([]string{script}, want...)...); err != nil {
+		t.Fatalf("the wrapper failed: %v\n%s", err, out)
+	}
+	if took := time.Since(started); took > bound {
+		t.Fatalf("the wrapper took %s to pass %d arguments through, want under %s: it rebuilt the list of a command that is no push",
+			took.Round(time.Millisecond), count, bound)
+	}
+	if got := ranAs(t, log); !slices.Equal(got, want) {
+		same := 0
+		for same < len(got) && same < len(want) && got[same] == want[same] {
+			same++
+		}
+		t.Fatalf("the wrapper ran git with %d arguments, want the %d it was given; the first %d are as given, then %q, want %q",
+			len(got), len(want), same, got[same:min(same+3, len(got))], want[same:min(same+3, len(want))])
+	}
+}
+
+// A push and a send-pack still get the wrapper's `-c core.hooksPath` after the caller's own
+// global options and their values and immediately before the subcommand, and lose the
+// `--no-verify` that follows the subcommand, while a `--no-verify` that is a global option's value
+// stays that value. `--shallow-file` takes the next word as its value, as git reads it: a wrapper
+// that read that value as the subcommand would run the push with no hooks path of its own.
+func TestTheGitWrapperPutsItsHooksPathAfterTheCallersGlobalOptions(t *testing.T) {
+	const hooksPath = "core.hooksPath=/opt/legion/githooks"
+	repo := filepath.Join(t.TempDir(), "repo")
+	gitDir := filepath.Join(repo, ".git")
+	shallow := filepath.Join(gitDir, "shallow")
+	for _, tc := range []struct {
+		name       string
+		args, want []string
+	}{
+		{
+			name: "a push",
+			args: []string{"-C", repo, "-c", "a=b", "--git-dir", gitDir, "push", "--no-verify", "origin", "x"},
+			want: []string{"-C", repo, "-c", "a=b", "--git-dir", gitDir, "-c", hooksPath, "push", "origin", "x"},
+		},
+		{
+			name: "a send-pack",
+			args: []string{"-C", repo, "-c", "a=b", "--git-dir", gitDir, "send-pack", "--no-verify", "origin", "x"},
+			want: []string{"-C", repo, "-c", "a=b", "--git-dir", gitDir, "-c", hooksPath, "send-pack", "origin", "x"},
+		},
+		{
+			name: "a push after --shallow-file",
+			args: []string{"--shallow-file", shallow, "push"},
+			want: []string{"--shallow-file", shallow, "-c", hooksPath, "push"},
+		},
+		{
+			name: "a --no-verify that is a global option's value",
+			args: []string{"--git-dir", "--no-verify", "push", "--no-verify"},
+			want: []string{"--git-dir", "--no-verify", "-c", hooksPath, "push"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			log := filepath.Join(dir, "argv")
+			script := wrapperCopy(t, dir, "git", [2]string{
+				"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), log),
+			})
+			run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
+			if out, err := run.Try(dir, append([]string{script}, tc.args...)...); err != nil {
+				t.Fatalf("the wrapper failed: %v\n%s", err, out)
+			}
+			if got := ranAs(t, log); !slices.Equal(got, tc.want) {
+				t.Fatalf("the wrapper ran git with %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -525,7 +525,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     "an empty one when your work is complete",
     "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-    "The push you make to answer an update task is the exception: that task has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
+    "The push you make to answer an update message is the exception: that message has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
     "the empty commit that carries the pull request onto the commit you pushed",
   ];

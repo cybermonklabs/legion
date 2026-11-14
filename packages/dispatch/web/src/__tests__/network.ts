@@ -79,6 +79,21 @@ const shellHandlers: RequestHandler[] = [
   // on the schema it already had. A test that wants another schema spies `api.getBlockSchema`
   // above this seam and never reaches this handler.
   http.get("/api/v1/schema/blocks", () => Response.json(serverBlockSchema)),
+  // The navigation rail reads the two fault counts on every page it is drawn on
+  // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
+  // rail or the shell around it makes this read without being about priorities. The answer is
+  // the server's own for a deployment that has written no priority: both counts zero and the
+  // sentence that says why, which is the case where the rail draws no number at all. A test
+  // that asserts on a count spies `api.listPriorities` above MSW.
+  http.get("/api/v1/priorities", () =>
+    Response.json({
+      empty:
+        "No priority is live now, so the list is empty. Write one, then say which work advances it.",
+      priorities: [],
+      priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+      work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+    })
+  ),
 ];
 
 const network = defineNetwork({
