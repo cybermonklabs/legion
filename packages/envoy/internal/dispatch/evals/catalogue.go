@@ -78,7 +78,9 @@ func methodBody(slug string) string {
 
 // method is the text of the eval's method block: its question and the decision it changes, the
 // embedded body, and its failure modes, each with its guard. The question, the decision and the
-// failure modes are the definition's own fields, so the row and its section say the same.
+// failure modes are the definition's own fields, so the row and its section say the same when the
+// seed writes them; a register write that changes one of those fields, or the method's doc_text,
+// changes one side alone.
 func (e catalogueEntry) method() string {
 	var text strings.Builder
 	text.WriteString("**Question.** " + e.definition.Question + "\n\n")

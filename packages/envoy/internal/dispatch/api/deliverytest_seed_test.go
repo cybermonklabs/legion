@@ -13,11 +13,12 @@ import (
 // TestTheDeliveryHistoryAnswersTheDeliveryRoutes: a deliverytest history, read back through
 // GET /api/v1/delivery/measures and GET /api/v1/delivery/pipeline over the last 28 days of it,
 // answers the deploys, the pull requests and the lead times the fixture says it wrote, counted by
-// the base's own containment over the fixture's own rows; PR-check cells, ranked slowest jobs and
-// a failing-jobs list; every Pipeline card's three kinds of result; each repository's own pull
-// requests under its facet; and pull requests still waiting at the end and deploys that shipped
-// none. The test lives in api rather than beside deliverytest because the routes' test handler is
-// this package's.
+// the base's own containment over the fixture's own rows, with some deploys shipping pull requests
+// and some none; PR-check cells of every outcome and ranked slowest jobs with their timed results;
+// the production card's three kinds of result and every other card's timed results; and each
+// repository's own pull requests under its facet. The fixture is held to holding pull requests
+// still waiting at the end; its failing-jobs list is logged, not checked. The test lives in api
+// rather than beside deliverytest because the routes' test handler is this package's.
 func TestTheDeliveryHistoryAnswersTheDeliveryRoutes(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{})

@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -48,28 +49,76 @@ func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySett
 			return err
 		},
 		func(ctx context.Context) error {
-			runs, err := listRunsCreated(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
-			if err != nil {
-				return err
-			}
-			runIDs := make([]int64, len(runs))
-			for i, run := range runs {
-				runIDs[i] = run.RunID
-			}
-			var jobs map[int64][]DeliveryRunJob
-			if everyJob {
-				jobs, err = ListEveryRunJobForRuns(ctx, pool, settings.DeployRepo, runIDs)
-			} else {
-				jobs, err = ListRunJobsForRuns(ctx, pool, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
-			}
-			if err != nil {
-				return err
-			}
-			rows.ApplyRuns, rows.ApplyJobs = runs, jobs
-			return nil
+			applies, err := readApplyRows(ctx, pool, settings, from, createdBefore, everyJob)
+			rows.ApplyRuns, rows.ApplyJobs = applies.Runs, applies.Jobs
+			return err
 		})
 	if err != nil {
 		return MergedRows{}, err
+	}
+	return rows, nil
+}
+
+// ApplyRows is MergedRows' apply runs and their jobs read once from a moment on (ReadApplyRows),
+// for a reader of many windows that start at or after it, each of which takes its own part
+// (MergedRowsWith): the refresher's walk over the days, whose every day's read would otherwise
+// read every deploy run created from that day to now again.
+type ApplyRows struct {
+	from time.Time
+	Runs []DeliveryRun
+	Jobs map[int64][]DeliveryRunJob
+}
+
+// ReadApplyRows reads the apply runs and their production jobs (the jobs a deploy is judged by)
+// of every window starting at or after from: MergedRows.ApplyRuns and ApplyJobs as ReadMergedRows
+// reads them for a window from from.
+func ReadApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time) (ApplyRows, error) {
+	return readApplyRows(ctx, pool, settings, from, nil, false)
+}
+
+// readApplyRows is ReadApplyRows, with createdBefore and everyJob as readMergedRows takes them.
+func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time, createdBefore *time.Time, everyJob bool) (ApplyRows, error) {
+	runs, err := listRunsCreated(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
+	if err != nil {
+		return ApplyRows{}, err
+	}
+	runIDs := make([]int64, len(runs))
+	for i, run := range runs {
+		runIDs[i] = run.RunID
+	}
+	var jobs map[int64][]DeliveryRunJob
+	if everyJob {
+		jobs, err = ListEveryRunJobForRuns(ctx, pool, settings.DeployRepo, runIDs)
+	} else {
+		jobs, err = ListRunJobsForRuns(ctx, pool, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
+	}
+	if err != nil {
+		return ApplyRows{}, err
+	}
+	return ApplyRows{from: from, Runs: runs, Jobs: jobs}, nil
+}
+
+// MergedRowsWith is ReadMergedRows of [from, to), its production jobs alone, with the apply rows
+// taken from applies, read from from or earlier: the runs GitHub created at or after from, oldest
+// creation first, and their jobs, the rows ReadMergedRows reads itself. Only the pull requests
+// are read.
+func MergedRowsWith(ctx context.Context, pool *store.Pool, applies ApplyRows, from, to time.Time) (MergedRows, error) {
+	if from.Before(applies.from) {
+		return MergedRows{}, fmt.Errorf("apply rows read from %s hold no run of a window from %s", applies.from.Format(time.RFC3339), from.Format(time.RFC3339))
+	}
+	prs, err := ListPullRequestsInWindow(ctx, pool, from, to)
+	if err != nil {
+		return MergedRows{}, err
+	}
+	rows := MergedRows{PullRequests: prs, ApplyRuns: []DeliveryRun{}, ApplyJobs: map[int64][]DeliveryRunJob{}}
+	for _, run := range applies.Runs {
+		if run.Created().Before(from) {
+			continue
+		}
+		rows.ApplyRuns = append(rows.ApplyRuns, run)
+		if jobs, held := applies.Jobs[run.RunID]; held {
+			rows.ApplyJobs[run.RunID] = jobs
+		}
 	}
 	return rows, nil
 }

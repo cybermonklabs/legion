@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -383,8 +385,13 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if head := r.latestSeq(t); cursors[changesCursor] != head {
-		t.Errorf("the changes cursor stands at %d, want the log's head %d", cursors[changesCursor], head)
+	head := r.latestSeq(t)
+	headAt, err := delivery.ChangeAt(t.Context(), r.database.Pool, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cursors[changesCursor]; got.position != head || got.at == nil || headAt == nil || !got.at.Equal(*headAt) {
+		t.Errorf("the changes cursor stands at %d recorded %v, want the log's head %d recorded %v", got.position, got.at, head, headAt)
 	}
 	age, found, err := r.registry.RefresherAge(t.Context(), r.now.Add(time.Minute))
 	if err != nil || !found || age != time.Minute {
@@ -427,8 +434,10 @@ func TestANewBuildRewritesEveryRowOfAFamily(t *testing.T) {
 
 // TestTheTickPrunesChangesOlderThanTheirRetention: a pass deletes every delivery change older
 // than delivery.ChangeRetention by the database's clock and keeps a newer one, and asks for its
-// next pass when the oldest change it kept passes its retention or at the next UTC midnight,
-// whichever is first, so the log keeps its 24 hours with no GitHub App's reconcile pruning it.
+// next pass pruneSlack after the oldest change it kept passes its retention or at the next UTC
+// midnight, whichever is first, so the log keeps its 24 hours with no GitHub App's reconcile
+// pruning it, and a log changes reach every few seconds is pruned every five minutes rather than
+// every RefresherGap.
 func TestTheTickPrunesChangesOlderThanTheirRetention(t *testing.T) {
 	r := newRefresherRig(t)
 	r.now = time.Now().UTC()
@@ -437,26 +446,25 @@ func TestTheTickPrunesChangesOlderThanTheirRetention(t *testing.T) {
 		insert into delivery_changes (kind, repo, ref, at)
 		values ('session_group', null, '25h', now() - interval '25 hours'),
 		       ('session_group', null, '24h1m', now() - interval '24 hours 1 minute'),
-		       ('session_group', null, '23h', now() - interval '23 hours')`)
+		       ('session_group', null, '23h59m', now() - interval '23 hours 59 minutes')`)
 	_, next := r.pass(t)
 	rows, err := r.database.Pool.Query(t.Context(), `select ref, at from delivery_changes where kind = 'session_group' order by seq`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
 	var kept []string
+	var ref string
 	var keptAt time.Time
-	for rows.Next() {
-		var ref string
-		if err := rows.Scan(&ref, &keptAt); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := pgx.ForEachRow(rows, []any{&ref, &keptAt}, func() error {
 		kept = append(kept, ref)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if !slices.Equal(kept, []string{"23h"}) {
-		t.Errorf("after the pass the log keeps %v of the three changes, want the one 23 hours old", kept)
+	if !slices.Equal(kept, []string{"23h59m"}) {
+		t.Errorf("after the pass the log keeps %v of the three changes, want the one 23 hours 59 minutes old", kept)
 	}
-	want := keptAt.Add(delivery.ChangeRetention + time.Second)
+	want := keptAt.Add(delivery.ChangeRetention + pruneSlack)
 	if midnight := utcMidnight(r.now).AddDate(0, 0, 1); midnight.Before(want) {
 		want = midnight
 	}

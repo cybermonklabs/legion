@@ -197,8 +197,8 @@ type seedWrite struct {
 // last wrote, the current series and the series as the seed last wrote them, and the blocks of
 // `evals-md`; writes the missing sections in one write of the document; and writes the versions.
 // The locks are one batch of statements and the versions another, each sent in one round trip
-// and run in the order it was queued: a project's first seed writes 20 versions and 92 of series,
-// which one statement each would make 112 round trips.
+// and run in the order it was queued: a project's first seed writes 20 versions and 95 of series,
+// which one statement each would make 115 round trips.
 func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	ids := make([]string, len(catalogue))
 	locks := &pgx.Batch{}

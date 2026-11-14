@@ -151,8 +151,8 @@ func TestTheUnownedP0ReadsReadTheirPartialIndex(t *testing.T) {
 	}
 }
 
-// The delivery live hub's read of every open P0 issue's key (OpenP0Keys), which an evals view runs
-// when it is first subscribed, reads issues through issues_open_p0 (migration 20261113082158),
+// The delivery live hub's read of every open P0 issue's key (OpenP0Keys), which the hub makes each
+// time it stands up its event feed, reads issues through issues_open_p0 (migration 20261113082158),
 // the partial index of the open P0 issues, and never scans issues: `EXPLAIN (ANALYZE, BUFFERS)` of
 // the statement as OpenP0Keys sends it. The fixture's project holds 200 issues, two open P0 issues
 // and a done one among them, and issues is analyzed first, as TestTheUnownedP0ReadsReadTheirPartialIndex

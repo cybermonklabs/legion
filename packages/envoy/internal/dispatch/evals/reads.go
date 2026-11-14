@@ -39,7 +39,7 @@ func (s *Store) Current(ctx context.Context, project, kind string, limit, offset
 	if err := checkPage(limit, offset); err != nil {
 		return Page[Entry]{}, err
 	}
-	tx, err := s.database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := s.beginSnapshot(ctx)
 	if err != nil {
 		return Page[Entry]{}, fmt.Errorf("begin the read of the evals of %s: %w", project, err)
 	}
@@ -91,27 +91,55 @@ func (s *Store) Current(ctx context.Context, project, kind string, limit, offset
 	return Page[Entry]{Items: entries, Total: total}, nil
 }
 
-// Versions reads every version of one eval's definition, newest first; none for an eval no
-// version holds.
-func (s *Store) Versions(ctx context.Context, evalID string) ([]Definition, error) {
-	rows, err := s.database.Pool.Query(ctx, `
+// EvalVersions reads one eval as Eval does and every version of its definition, newest first, in
+// one read-only repeatable-read transaction, as Current reads its statements: a register write
+// committing between the reads would otherwise answer a newest version that is not the definition
+// read, which the eval's read states the window's values for. found is false where no version
+// holds evalID.
+func (s *Store) EvalVersions(ctx context.Context, evalID string) (Entry, []Definition, bool, error) {
+	tx, err := s.beginSnapshot(ctx)
+	if err != nil {
+		return Entry{}, nil, false, fmt.Errorf("begin the read of eval %s: %w", evalID, err)
+	}
+	defer tx.Rollback(ctx)
+	entry, found, err := readEval(ctx, tx, evalID)
+	if err != nil || !found {
+		return Entry{}, nil, found, err
+	}
+	rows, err := tx.Query(ctx, `
 		select `+definitionColumns+` from eval_versions where eval_id = $1 order by version desc
 	`, evalID)
 	if err != nil {
-		return nil, fmt.Errorf("read the versions of %s: %w", evalID, err)
+		return Entry{}, nil, false, fmt.Errorf("read the versions of %s: %w", evalID, err)
 	}
 	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Definition, error) { return scanDefinition(row) })
 	if err != nil {
-		return nil, fmt.Errorf("read the versions of %s: %w", evalID, err)
+		return Entry{}, nil, false, fmt.Errorf("read the versions of %s: %w", evalID, err)
 	}
-	return versions, nil
+	return entry, versions, true, nil
 }
 
 // Eval reads one eval as Current reads each: its newest definition, through evals_current, and
-// the newest version of each of its series, the primary series first, then by name. found is
-// false where no version holds evalID.
+// the newest version of each of its series, the primary series first, then by name, the two in
+// one snapshot. found is false where no version holds evalID.
 func (s *Store) Eval(ctx context.Context, evalID string) (Entry, bool, error) {
-	definition, err := scanDefinition(s.database.Pool.QueryRow(ctx, `
+	tx, err := s.beginSnapshot(ctx)
+	if err != nil {
+		return Entry{}, false, fmt.Errorf("begin the read of eval %s: %w", evalID, err)
+	}
+	defer tx.Rollback(ctx)
+	return readEval(ctx, tx, evalID)
+}
+
+// beginSnapshot begins a read-only repeatable-read transaction, whose statements read one
+// snapshot.
+func (s *Store) beginSnapshot(ctx context.Context) (pgx.Tx, error) {
+	return s.database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+}
+
+// readEval is Eval's two reads, in tx.
+func readEval(ctx context.Context, tx pgx.Tx, evalID string) (Entry, bool, error) {
+	definition, err := scanDefinition(tx.QueryRow(ctx, `
 		select `+definitionColumns+` from evals_current where eval_id = $1
 	`, evalID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -120,7 +148,7 @@ func (s *Store) Eval(ctx context.Context, evalID string) (Entry, bool, error) {
 	if err != nil {
 		return Entry{}, false, fmt.Errorf("read eval %s: %w", evalID, err)
 	}
-	rows, err := s.database.Pool.Query(ctx, `
+	rows, err := tx.Query(ctx, `
 		select `+seriesColumns+` from eval_series_current where eval_id = $1 order by is_primary desc, series
 	`, evalID)
 	if err != nil {
@@ -134,10 +162,11 @@ func (s *Store) Eval(ctx context.Context, evalID string) (Entry, bool, error) {
 }
 
 // FirstDays reads, for each series of evalIDs (evals of project) that holds a day row of all the
-// project's repositories (repo ”), the first day it holds one, by eval id and then by series:
-// the day its input begins. From that day on a series has a row of every day the refresher has
-// written, an explicit zero row on a day with no input, so a range that starts before it reads "no
-// data" and names it (R12). Each series is one probe of eval_days' primary key, its first day.
+// project's repositories (repo the empty string), the first day it holds one, by eval id and then
+// by series: the day its input begins. From that day on a series has a row of every day the
+// refresher has written, an explicit zero row on a day with no input, so a range that starts
+// before it reads "no data" and names it (R12). Each series is one probe of eval_days' primary
+// key, its first day.
 func (s *Store) FirstDays(ctx context.Context, project string, evalIDs []string) (map[string]map[string]time.Time, error) {
 	firsts := map[string]map[string]time.Time{}
 	if len(evalIDs) == 0 {

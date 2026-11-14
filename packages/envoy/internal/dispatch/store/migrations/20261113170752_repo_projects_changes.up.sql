@@ -17,17 +17,23 @@
 -- delivery settings move those two alone. ref, t_old and t_new are null, as a settings change's
 -- are.
 --
--- An update that changes nothing logs nothing, as every other trigger of the log. Its own
--- migration, as 0101 to 0106 each add one table's trigger: the transaction holds repo_projects's
--- lock alone, for milliseconds. The release before this one never reads a settings change's repo,
--- and a settings change is one it already reads, so the two roll together.
+-- An update that changes nothing the mapping decides logs nothing, as every other trigger of the
+-- log logs no write that leaves a row's content as it was. The row's created_by and created_at say
+-- who wrote the mapping and when, and decide no day row, and the settings route's upsert
+-- (api/repo_projects.go) sets created_by on every write: an unchanged mapping saved again by
+-- another person would otherwise log a change that begins every walk of the day rows again. So an
+-- update logs one only where the row moved in a column other than those two. Its own migration, as
+-- 0101 to 0106 each add one table's trigger: the transaction holds repo_projects's lock alone, for
+-- milliseconds. The release before this one never reads a settings change's repo, and a settings
+-- change is one it already reads, so the two roll together.
 --
 -- The census answers 0: one function and one trigger, reading and rewriting no row.
 create function repo_projects_changed() returns trigger language plpgsql as $$
 begin
   if tg_op = 'DELETE' then
     perform delivery_change_log('settings', null, old.repo, null, null, null);
-  elsif tg_op = 'INSERT' or to_jsonb(old) is distinct from to_jsonb(new) then
+  elsif tg_op = 'INSERT'
+     or (to_jsonb(old) - 'created_by' - 'created_at') is distinct from (to_jsonb(new) - 'created_by' - 'created_at') then
     perform delivery_change_log('settings', null, new.repo, null, null, null);
   end if;
   return null;

@@ -265,10 +265,7 @@ func filingsToCompute(ctx context.Context, q Querier, project string, keys []str
 	set := make(map[string]bool, len(filed))
 	maps.Copy(set, filed)
 	if len(keys) > 0 {
-		rows, err := q.Query(ctx, `
-			select issue_key from issue_filings
-			where project_key = $1 and (issue_key = any($2::text[]) or filer_issue = any($2::text[]))
-		`, project, keys)
+		rows, err := q.Query(ctx, storedFilingsOfQuery, project, keys)
 		if err != nil {
 			return nil, fmt.Errorf("read the stored filings of %d issues of %s: %w", len(keys), project, err)
 		}
@@ -286,6 +283,16 @@ func filingsToCompute(ctx context.Context, q Querier, project string, keys []str
 	}
 	return slices.Sorted(maps.Keys(set)), nil
 }
+
+// storedFilingsOfQuery is filingsToCompute's read of the stored filings of a project whose filed
+// issue or filer's issue is among $2: the filed issue through the primary key, and the filer's
+// issue through issue_filings_filer (migration 20261113082155), whose predicate (a filer issue
+// that is not the empty string) the statement carries, since `filer_issue = any($2)` implies it
+// only for the values it runs with and pgx's cached statement settles on a generic plan.
+const storedFilingsOfQuery = `
+	select issue_key from issue_filings
+	where project_key = $1 and (issue_key = any($2::text[]) or (filer_issue = any($2::text[]) and filer_issue <> ''))
+`
 
 // leftTrees is every stored row of the tree a moved issue left, sorted. An issue a move took
 // out of one tree and into another takes its own hours with it, so the old tree's root goes on

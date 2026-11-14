@@ -1,6 +1,0 @@
-kind: Removed
-body: |-
-  `GET /api/v1/legion/metrics` is gone. It answered one project, with a default of the first
-  project naming a daemon. Its numbers are the eval routes' now, and the Delivery page's Legion
-  section draws one block for every project with Legion settings from `GET /api/v1/evals`, with
-  the roots and children cuts as series and no toggle.

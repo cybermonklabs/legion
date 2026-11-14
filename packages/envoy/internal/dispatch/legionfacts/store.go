@@ -61,8 +61,8 @@ func WriteProject(ctx context.Context, q Querier, write ProjectWrite) ([]string,
 // FilingsWrite is one project's computed filings and the set the pass that computed them
 // stated: what WriteFilings writes in one call, beside the same pass's ProjectWrite. Stated is
 // the filed issues the pass computed filings over, inside which it may delete a stale filing,
-// and Whole says the pass read every filing a Legion session of the project made
-// (ComputeProject's population), whose Stated is therefore empty.
+// and Whole says the pass read every filing a Legion session of the project made (a whole read
+// of the project, computeWhole), whose Stated is therefore empty.
 type FilingsWrite struct {
 	Project string
 	Filings []Filing
@@ -361,9 +361,9 @@ func storedMap[V any](values map[string]V) map[string]V {
 	return values
 }
 
-// Read answers the stored rows of a project, by issue key. It is the read every consumer of the
-// facts makes: rows, and no computation. A read of the rows of named issues comes with the
-// eval's own route (dispatch://INFRA-2916), which brings that read with its caller.
+// Read answers the stored rows of a project, by issue key. It is the board's read of the facts:
+// rows, and no computation. The evals read the rows of a window's closed issues instead
+// (ReadClosedIn).
 func Read(ctx context.Context, q Querier, project string) (map[string]Row, error) {
 	read, err := readRows(ctx, q, project, `where project_key = $1`, project)
 	if err != nil {
@@ -381,22 +381,30 @@ func Read(ctx context.Context, q Querier, project string) (map[string]Row, error
 // of the Legion measures counts in that window, every one with Legion phase work since every
 // stored row is one. The Legion evals' day rows are built from one day's (evals.ReadLegionDay).
 func ReadClosedIn(ctx context.Context, q Querier, project string, from, to time.Time) ([]Row, error) {
-	return readRows(ctx, q, project, `
-		where project_key = $1 and closed_at >= $2 and closed_at < $3
-		order by closed_at desc, issue_key`, project, from, to)
+	return readRows(ctx, q, project, closedInWhere, project, from, to)
 }
+
+// closedInWhere is ReadClosedIn's clause: a range of issue_facts_closed, (project_key, closed_at
+// desc), read in its order.
+const closedInWhere = `
+	where project_key = $1 and closed_at >= $2 and closed_at < $3
+	order by closed_at desc, issue_key`
+
+// rowsSelect is the read of every column of issue_facts scanRow reads, in its order, which a
+// where clause completes.
+const rowsSelect = `
+	select issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
+	       root_key, tree_depth, slot_hours, coalesce(waiting_reason, ''),
+	       work_first_at, work_last_at, updated_at,
+	       parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
+	       slot_wait_hours, sent_back, implementing_after_first_review,
+	       testing_after_first_review, children, coalesce(repo, '')
+	from issue_facts `
 
 // readRows is the stored rows of project that where (a where clause, with its order) selects,
 // whose arguments args are.
 func readRows(ctx context.Context, q Querier, project, where string, args ...any) ([]Row, error) {
-	result, err := q.Query(ctx, `
-		select issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
-		       root_key, tree_depth, slot_hours, coalesce(waiting_reason, ''),
-		       work_first_at, work_last_at, updated_at,
-		       parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
-		       slot_wait_hours, sent_back, implementing_after_first_review,
-		       testing_after_first_review, children, coalesce(repo, '')
-		from issue_facts `+where, args...)
+	result, err := q.Query(ctx, rowsSelect+where, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the Legion facts of %s: %w", project, err)
 	}

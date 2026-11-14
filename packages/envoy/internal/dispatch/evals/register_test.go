@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -33,7 +34,7 @@ func TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward(t *testin
 	if err != nil {
 		t.Fatalf("set the same target again: %v", err)
 	}
-	versions, err := r.registry.Versions(t.Context(), first.Definition.EvalID)
+	_, versions, _, err := r.registry.EvalVersions(t.Context(), first.Definition.EvalID)
 	if err != nil {
 		t.Fatalf("read the versions: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestTwoRegisterWritesAtOnceLandAsTheNextTwoVersions(t *testing.T) {
 			t.Errorf("register write %d: %v", index, err)
 		}
 	}
-	versions, err := r.registry.Versions(t.Context(), first.Definition.EvalID)
+	_, versions, _, err := r.registry.EvalVersions(t.Context(), first.Definition.EvalID)
 	if err != nil {
 		t.Fatalf("read the versions: %v", err)
 	}
@@ -146,6 +147,88 @@ func TestDocTextReplacesTheSectionsMethodAndNamesTheNewBlock(t *testing.T) {
 	}
 	if n := headings(text, "rework"); n != 1 {
 		t.Errorf("evals-md holds %d headings of rework, want 1", n)
+	}
+}
+
+// TestARegisterWriteOfTheMethodTheSectionHoldsWritesNothing: a register write whose doc_text is the
+// method the eval's section of evals-md holds, as it was sent or with white space around it,
+// writes no version of the eval, keeps its method block and writes no version of evals-md; a
+// doc_text that differs writes the next version, naming a new block.
+func TestARegisterWriteOfTheMethodTheSectionHoldsWritesNothing(t *testing.T) {
+	r := newRig(t)
+	method := "Counts the rounds after the first review.\n\n:::callout{title=\"Why\"}\nThe first review always happens.\n:::"
+	register := func(text string) Registered {
+		t.Helper()
+		registered, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "rework", Caller: alice, DocText: Set(text)})
+		if err != nil {
+			t.Fatalf("register the method %q: %v", text, err)
+		}
+		return registered
+	}
+	first := register(method)
+	documentVersions := func() int {
+		return r.count(t, `select count(*) from artifact_versions where artifact_id = $1::uuid`, r.documentID(t, r.project))
+	}
+	before := documentVersions()
+	for _, again := range []string{method, "\n" + method + "\n\n"} {
+		repeat := register(again)
+		if repeat.Wrote || repeat.Definition.Version != first.Definition.Version || repeat.Definition.DocBlock != first.Definition.DocBlock {
+			t.Errorf("the method sent again (%q) wrote %t, standing at version %d naming %s; want nothing written, version %d naming %s",
+				again, repeat.Wrote, repeat.Definition.Version, repeat.Definition.DocBlock, first.Definition.Version, first.Definition.DocBlock)
+		}
+	}
+	if after := documentVersions(); after != before {
+		t.Errorf("evals-md went from %d versions to %d on the method sent again, want none written", before, after)
+	}
+	changed := register("Counts every review round.")
+	if !changed.Wrote || changed.Definition.Version != first.Definition.Version+1 || changed.Definition.DocBlock == first.Definition.DocBlock {
+		t.Errorf("a new method wrote %t at version %d naming %s, want version %d naming a new block",
+			changed.Wrote, changed.Definition.Version, changed.Definition.DocBlock, first.Definition.Version+1)
+	}
+	t.Logf("method sent three times: versions %d, %d; evals-md versions %d before the repeats, %d after the change",
+		first.Definition.Version, changed.Definition.Version, before, documentVersions())
+}
+
+// TestARegisterWriteThatChangesASeriesAloneWritesAVersion: a register write that changes one
+// series of an eval and no field of its definition stores the series' next version, answers that
+// it wrote, and logs one eval_versions change of the eval, so a live view of the eval wakes; the
+// same write again stores nothing, answers so, and logs nothing.
+func TestARegisterWriteThatChangesASeriesAloneWritesAVersion(t *testing.T) {
+	r := newRig(t)
+	minutes := []SeriesChange{{Series: "minutes", Agg: Set(AggQuantile)}}
+	if _, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "review-time", Caller: alice, Name: Set("Review time"), Series: minutes}); err != nil {
+		t.Fatalf("register the eval: %v", err)
+	}
+	evalID := EvalID(r.project, "review-time")
+	head := func() int64 {
+		t.Helper()
+		seq, err := delivery.LatestChangeSeq(t.Context(), r.database.Pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return seq
+	}
+	versionChanges := func(after int64) int {
+		return r.count(t, `select count(*) from delivery_changes where seq > $1 and kind = 'eval_versions' and repo = $2 and ref = $3`, after, r.project, evalID)
+	}
+	minN := 5
+	for _, write := range []struct {
+		what    string
+		wrote   bool
+		changes int
+	}{{"min_n set", true, 1}, {"min_n set again", false, 0}} {
+		seq := head()
+		registered, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "review-time", Caller: alice,
+			Series: []SeriesChange{{Series: "minutes", MinN: Set(&minN)}}})
+		if err != nil {
+			t.Fatalf("%s: %v", write.what, err)
+		}
+		logged := versionChanges(seq)
+		if registered.Wrote != write.wrote || logged != write.changes || registered.Definition.Version != 1 {
+			t.Errorf("%s answered wrote %t and logged %d eval_versions changes, the definition at version %d; want wrote %t, %d changes, version 1",
+				write.what, registered.Wrote, logged, registered.Definition.Version, write.wrote, write.changes)
+		}
+		t.Logf("%s: wrote %t, the series at version %d, %d eval_versions changes", write.what, registered.Wrote, registered.Series[0].Version, logged)
 	}
 }
 

@@ -80,7 +80,9 @@ const goldenHoursTolerance = 0.1
 // back by Read, equals the part the base head's window aggregation took from that issue: the
 // work-time row, each of the seven bars with its five segments, the rework row, the children and
 // the tree. A part that moves when the code that computes it is split out of the aggregation
-// fails here, whichever of the stored columns it lands in.
+// fails here, whichever of the stored columns it lands in, wherever the recorded history holds a
+// value other than 0 for it: a column the history holds 0 for in every issue (as it does for
+// several segments) shows only that the stored value is 0 there too.
 func TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead(t *testing.T) {
 	raw, err := os.ReadFile(goldenPartsFile)
 	if err != nil {

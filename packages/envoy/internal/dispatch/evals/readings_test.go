@@ -255,7 +255,8 @@ func TestACorrectionSupersedesTheReadingItReplacesAndMovesItsDayRow(t *testing.T
 	replaced := written.Readings[1]
 	day := at(5, 0, 0)
 	before := r.day(t, evalID, "minutes", "", day)
-	t.Logf("before: n=%d sum=%v samples=%v max=%v last=%v at %v num=%v den=%v", before.N, *before.Sum, before.Samples, *before.Max, *before.LastValue, *before.LastAt, *before.Num, *before.Den)
+	t.Logf("before: n=%d sum=%s samples=%v max=%s last=%s at %v num=%s den=%s", before.N, showValue(before.Sum), before.Samples,
+		showValue(before.Max), showValue(before.LastValue), before.LastAt, showValue(before.Num), showValue(before.Den))
 
 	corrected := r.write(t, "build-minutes", alice, row(t, map[string]any{
 		"series": "minutes", "row_kind": "run", "row_key": "b", "value": 5, "measured_at": at(5, 11, 0),
@@ -334,4 +335,37 @@ func TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow(t *testing.T) {
 	if len(written.Series) != 1 || written.Series[0].Listed || written.Series[0].Role != RoleControl {
 		t.Errorf("the reading registered %+v, want manual-count as an unlisted control series", written.Series)
 	}
+}
+
+// TestACorrectionOfAReadingNeverFoldedTakesNothingFromItsDayRow: a reading logged while its eval
+// was computed is stored and folded into no day row; once a register write makes the eval logged,
+// a reading of the same value is folded into that day's row, and a correction of the first,
+// unfolded reading adds its own value and takes nothing away, so the day holds the second
+// reading's value and the correction's.
+func TestACorrectionOfAReadingNeverFoldedTakesNothingFromItsDayRow(t *testing.T) {
+	r := newRig(t)
+	register := func(source string) {
+		t.Helper()
+		if _, err := r.registry.Register(t.Context(), Registration{
+			Project: r.project, Slug: "review-load", Caller: alice, Kind: Set(KindExperiment), Source: Set(source),
+			Series: []SeriesChange{{Series: "minutes", Agg: Set(AggQuantile)}},
+		}); err != nil {
+			t.Fatalf("register review-load as %s: %v", source, err)
+		}
+	}
+	register("computed:evals.ComputedForTheTest")
+	unfolded := r.write(t, "review-load", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 7, "measured_at": at(5, 9, 0)})).Readings[0]
+	register(SourceLogged)
+	r.write(t, "review-load", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "b", "value": 7, "measured_at": at(5, 10, 0)}))
+	evalID := EvalID(r.project, "review-load")
+	before := r.day(t, evalID, "minutes", "", at(5, 0, 0))
+	r.write(t, "review-load", alice, row(t, map[string]any{
+		"series": "minutes", "row_kind": "run", "row_key": "a", "value": 2, "measured_at": at(5, 9, 0), "replaces": unfolded.ID,
+	}))
+	after := r.day(t, evalID, "minutes", "", at(5, 0, 0))
+	samples := slices.Sorted(slices.Values(after.Samples))
+	if after.N != 2 || !slices.Equal(samples, []float64{2, 7}) {
+		t.Errorf("after the correction of the unfolded reading the day holds n %d, samples %v; want 2, [2 7]", after.N, samples)
+	}
+	t.Logf("the day held samples %v before the correction and %v after it", before.Samples, samples)
 }

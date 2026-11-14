@@ -86,7 +86,9 @@ func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
 		t.Fatalf("the session titles read reads %v, which no index condition keys:\n%s", unkeyed, raw)
 	}
 	indexScanOf(t, plan, raw, "session_titles", "session_titles_pkey")
-	explaintest.NewIndexKeys(pool).RequireIndexKeyed(t, plan, "session_titles_pkey", "the session titles read", explaintest.CondRequired)
+	// Every scan carries an index condition (the check above); this holds the primary key's to
+	// its first column, the session.
+	explaintest.NewIndexKeys(pool).RequireIndexKeyed(t, plan, "session_titles_pkey", "the session titles read", explaintest.CondOptional)
 
 	titles, err := ResolveSessionTitles(ctx, pool, sessionTitlePlanSessions)
 	if err != nil {

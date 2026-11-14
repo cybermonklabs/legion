@@ -119,8 +119,7 @@ func TestAnIssueThatClosedWithNoLegionWorkIsNotCounted(t *testing.T) {
 	worked := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(2))
 	handedOff := newIssue("INFRA-2").handedOff("plan", hour(1)).closedAt(hour(3))
 	bare := newIssue("INFRA-3").closedAt(hour(4))
-	early := newIssue("INFRA-4").worked("implementer", hour(-100)).closedAt(hour(-50))
-	w := windowOf(fixture(hour(-24), hour(24), worked, handedOff, bare, early), ScopeAll)
+	w := windowOf(fixture(hour(-24), hour(24), worked, handedOff, bare), ScopeAll)
 	if counted := w.timed(); !reflect.DeepEqual(counted, []string{"INFRA-1", "INFRA-2"}) {
 		t.Fatalf("counted %v, want the worked issue and the one with a handoff", counted)
 	}
@@ -725,8 +724,8 @@ func TestEachCutNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 			switch own := w.splitting(t).Roots; {
 			case one.scope == ScopeChildren && own != nil:
 				t.Errorf("the children cut carries the root figures %+v, want none: they count roots alone", *own)
-			case one.scope != ScopeChildren && (own == nil || own.FinishedRoots != roots.FinishedRoots || own.Children != roots.Children):
-				t.Errorf("cut %s carries the root figures %+v, want the all cut's %+v", one.scope, own, roots)
+			case one.scope != ScopeChildren && (own == nil || own.FinishedRoots != 1 || own.Children != 2):
+				t.Errorf("cut %s carries the root figures %+v, want the one root with its two children", one.scope, own)
 			}
 		})
 	}

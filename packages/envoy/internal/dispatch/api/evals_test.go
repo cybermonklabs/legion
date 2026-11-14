@@ -155,11 +155,35 @@ func TestEveryEvalRouteAnswersTheEnvelope(t *testing.T) {
 	}
 	for _, what := range slices.Sorted(maps.Keys(answers)) {
 		held := checkEvalEnvelope(t, what, answers[what])
-		if held == 0 {
-			t.Errorf("%s holds no item, want the eval or the reading the writes made", what)
+		if !holdsPRSize(t, answers[what]) {
+			t.Errorf("%s holds no item of pr-size, want the eval or the reading the writes made", what)
 		}
 		t.Logf("%s: the envelope, %d items", what, held)
 	}
+}
+
+// pageItem is what holdsPRSize reads of an item of any eval route's page: an eval's definition, or
+// a row's key.
+type pageItem struct {
+	Definition *struct {
+		Slug string `json:"slug"`
+	} `json:"definition"`
+	RowKey string `json:"row_key"`
+}
+
+// holdsPRSize reports whether an eval route's page holds an item of the pr-size eval the envelope
+// check writes: an eval whose definition is pr-size's, or its reading, row run-120.
+func holdsPRSize(t *testing.T, body []byte) bool {
+	t.Helper()
+	var page struct {
+		Items []pageItem `json:"items"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		t.Fatalf("decode a page: %v", err)
+	}
+	return slices.ContainsFunc(page.Items, func(item pageItem) bool {
+		return (item.Definition != nil && item.Definition.Slug == "pr-size") || item.RowKey == "run-120"
+	})
 }
 
 // TestTheEvalRoutesRefuseWithStableCodes (k7, k4, k9): each bad request is refused with its stable
@@ -337,9 +361,10 @@ func TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce(t *testing.T) {
 	now := time.Now().UTC()
 	today := utcDayOf(now)
 	window := url.Values{"from": {today.Format(time.RFC3339)}, "to": {today.AddDate(0, 0, 1).Format(time.RFC3339)}}.Encode()
+	// Each reading is measured at today's start, in the window whatever the minute of the day.
 	for index, value := range []float64{0.8, 0.9} {
 		response := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/cache-hits/readings",
-			map[string]any{"readings": []any{reading("share", value, now.Add(-time.Minute))}}, fmt.Sprintf("cache-%d", index))
+			map[string]any{"readings": []any{reading("share", value, today)}}, fmt.Sprintf("cache-%d", index))
 		if response.Code != http.StatusCreated {
 			t.Fatalf("reading %d: status %d, body %s", index, response.Code, response.Body.String())
 		}
@@ -394,7 +419,7 @@ func TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce(t *testing.T) {
 	}
 	before := value()
 	logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/deploy-frequency/readings",
-		map[string]any{"readings": []any{reading("deploys", 500, now.Add(-time.Minute))}}, "computed-reading")
+		map[string]any{"readings": []any{reading("deploys", 500, today)}}, "computed-reading")
 	if logged.Code != http.StatusCreated || decodeBody[evalReadingsResponse](t, logged).Registered {
 		t.Fatalf("a reading under deploy-frequency: status %d, body %s, want 201 registering nothing", logged.Code, logged.Body.String())
 	}
@@ -436,7 +461,7 @@ func TestAnEvalsVersionsAreAnsweredNewestFirst(t *testing.T) {
 	now := time.Now().UTC()
 	today := utcDayOf(now)
 	logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/review-time/readings", map[string]any{
-		"readings": []any{reading("minutes", 10, now.Add(-time.Minute)), reading("minutes", 15, now.Add(-time.Minute)), reading("minutes", 40, now.Add(-time.Minute))},
+		"readings": []any{reading("minutes", 10, today), reading("minutes", 15, today), reading("minutes", 40, today)},
 	}, "minutes")
 	if logged.Code != http.StatusCreated {
 		t.Fatalf("log readings: status %d, body %s", logged.Code, logged.Body.String())
@@ -496,7 +521,7 @@ func TestAProjectScopedCredentialWritesNoOtherProjectsEval(t *testing.T) {
 		{"/api/v1/projects/OTH/evals/scoped-hits/readings", body},
 		{"/api/v1/projects/OTH/evals", map[string]any{"slug": "scoped-hits", "name": "Scoped hits"}},
 	} {
-		refused := send(http.MethodPost, write.path, write.body, "scoped-"+write.path)
+		refused := send(http.MethodPost, write.path, write.body, "scoped-"+strings.ReplaceAll(strings.Trim(write.path, "/"), "/", "-"))
 		if refusal := decodeBody[evalRefusal](t, refused); refused.Code != http.StatusForbidden || refusal.Code != codeProjectScope {
 			t.Fatalf("POST %s: status %d, body %s, want 403 %s", write.path, refused.Code, refused.Body.String(), codeProjectScope)
 		}
@@ -548,8 +573,8 @@ type goldenLegionWindow struct {
 	} `json:"reports"`
 }
 
-// readGoldenLegionWindows reads every golden file of legion/metrics (golden_record_test.go
-// recorded them at the base head 02a7b3c6, one legiontest history).
+// readGoldenLegionWindows reads every golden file of legion/metrics (recorded at the base head
+// 02a7b3c6 over one legiontest history; legion_golden_test.go in internal/dispatch/evals says how).
 func readGoldenLegionWindows(t *testing.T) []goldenLegionWindow {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join("..", "legion", "metrics", "testdata", "golden_compute", "*.json"))
@@ -839,7 +864,7 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 		"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)},
 		"compare_from": {fixture.From.Format(time.RFC3339)}, "compare_to": {from.Format(time.RFC3339)},
 	}
-	kinds := map[string]map[string]bool{}
+	kinds := map[string]bool{}
 	rangesSeen := map[string]bool{}
 	measuredRules := map[string]string{}
 	for _, read := range []struct {
@@ -878,16 +903,13 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 			if err := json.Unmarshal(row["row_kind"], &kind); err != nil {
 				t.Fatalf("decode a row kind of %s: %v", read.slug, err)
 			}
-			_ = json.Unmarshal(row["range"], &rng)
-			rangesSeen[rng] = true
-			if kinds[kind] == nil {
-				kinds[kind] = map[string]bool{}
+			if err := json.Unmarshal(row["range"], &rng); err != nil {
+				t.Fatalf("decode a range of %s: %v", read.slug, err)
 			}
+			rangesSeen[rng] = true
+			kinds[kind] = true
 			if names := slices.Sorted(maps.Keys(row)); !slices.Equal(names, evalItemFields) {
 				t.Errorf("a %s row of %s carries %v, want %v", kind, read.slug, names, evalItemFields)
-			}
-			for name := range row {
-				kinds[kind][name] = true
 			}
 			var got time.Time
 			if err := json.Unmarshal(row["measured_at"], &got); err != nil {
@@ -906,14 +928,10 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 		}
 		t.Logf("%s items ?%s: %d rows, the first %.300s", read.slug, read.query, len(page.Items), mustJSON(t, page.Items[0]))
 	}
-	if len(kinds) < 6 || !rangesSeen[evals.RangeWindow] || !rangesSeen[evals.RangeCompare] {
-		t.Errorf("the items answered the row kinds %v and the ranges %v, want issue, pull_request, deploy, run, job, day and a reading's, of both ranges",
-			slices.Sorted(maps.Keys(kinds)), slices.Sorted(maps.Keys(rangesSeen)))
-	}
-	for kind, fields := range kinds {
-		if names := slices.Sorted(maps.Keys(fields)); !slices.Equal(names, evalItemFields) {
-			t.Errorf("the %s rows carry %v, want %v", kind, names, evalItemFields)
-		}
+	wantKinds := []string{"day", "deploy", "issue", "job", "pull_request", "run", "sample"}
+	if got := slices.Sorted(maps.Keys(kinds)); !slices.Equal(got, wantKinds) || !rangesSeen[evals.RangeWindow] || !rangesSeen[evals.RangeCompare] {
+		t.Errorf("the items answered the row kinds %v and the ranges %v, want %v and both ranges",
+			got, slices.Sorted(maps.Keys(rangesSeen)), wantKinds)
 	}
 	t.Logf("%d row kinds %v, each with the fields %v, of the ranges %v", len(kinds), slices.Sorted(maps.Keys(kinds)), evalItemFields,
 		slices.Sorted(maps.Keys(rangesSeen)))

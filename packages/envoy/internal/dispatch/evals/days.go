@@ -184,8 +184,8 @@ func applyParts(row DayRow, change dayChange) (DayRow, bool) {
 	lastValue, lastAt := row.LastValue, row.LastAt
 	var replacedLast *time.Time
 	for _, part := range change.removed {
-		// The row holds the part only once its reading was added to it; a part it never held
-		// (a reading stored before its eval's rows were kept) has nothing to take away.
+		// change.removed holds only readings the row was given (foldedReadings), so its value is
+		// among the samples; equal values are one value to a sample list, so any one is its own.
 		index := slices.Index(samples, part.value)
 		if index < 0 {
 			continue

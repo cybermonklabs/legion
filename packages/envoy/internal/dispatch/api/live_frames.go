@@ -366,14 +366,16 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// One project's evals: the body of GET /api/v1/projects/{key}/evals, read by the route's own
 	// function (readEvalList). Its items are sent eval by eval, by id, since a write moves one
 	// eval's rows at a time (a reading, a version of its definition, the refresher's rewrite of
-	// its day rows); every other field is sent whole. The window and the compare range are whole
-	// UTC days, which move only when a day turns, so a page holding them is sent them only then.
-	// The freshness's refresher age is measured at the moment of the read, so its revision leaves
-	// that age out: it goes with the freshness when the folded rows' own age moves.
+	// its day rows); every other field is sent whole. The window is whole UTC days, which for a
+	// preset move only when a day turns, so a page holding it is sent it only then; the compare
+	// range is the one the view's query names, which never moves. The freshness's refresher age is
+	// measured at the moment of the read, so its revision leaves that age out: it goes with the
+	// freshness when the folded rows' own age moves.
 	//
-	// It shows the unowned-p0 eval, the count of open P0 issues with no owner, so a P0 issue's
-	// event marks it as it marks the Delivery views that show that count; the refresher's rewrite
-	// of the project's unowned-p0 row of today, which the same event wakes, marks it again.
+	// It shows the unowned-p0 eval, whose count the list reads from the project's stored row of
+	// today alone, so a P0 issue's event, which moves no stored row, marks no evals view: the
+	// refresher's rewrite of that row, which the same event wakes, logs the eval_days change that
+	// marks the views of that project alone.
 	evalsView: {
 		body:  reflect.TypeFor[evalListResponse](),
 		lists: []string{"items"},
@@ -382,7 +384,6 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 			"freshness": {"refresher_age_seconds"},
 		},
 		project:             true,
-		unownedP0:           true,
 		unconfigured:        errEvalsNoProject,
 		unconfiguredCode:    evalsNoProjectCode,
 		unconfiguredMessage: evalsNoProjectMessage,

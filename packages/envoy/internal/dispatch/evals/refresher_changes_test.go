@@ -73,28 +73,19 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	main, other := deliveries.Project, deliveries.SecondProject
 	days := r.deliveryDays(t)
 
-	// A pull request of the main project, through its issue, that a deploy ships; one of another
-	// repository, which no deploy tracks, so only the day eval_day_members holds names the day it
-	// leaves; and one through its repository, after the history's first day.
-	var moved, undeployed, redated dayPR
-	var movedDay, undeployedDay, redatedDay time.Time
+	// A pull request of the main project, through its issue, of another repository, which no
+	// deploy tracks, so only the day eval_day_members holds names the day it leaves.
+	var undeployed dayPR
+	var undeployedDay time.Time
 	for _, day := range days {
 		for _, pr := range day.prs {
-			switch {
-			case pr.project != main:
-			case pr.deploy == nil && !pr.via && pr.repo != deliveries.DeployRepo && undeployed.member == "":
+			if pr.project == main && pr.deploy == nil && !pr.via && pr.repo != deliveries.DeployRepo && undeployed.member == "" {
 				undeployed, undeployedDay = pr, day.Day
-			case pr.deploy == nil:
-			case !pr.via && moved.member == "":
-				moved, movedDay = pr, day.Day
-			case pr.via && redated.member == "" && day.Day.After(refresherToday.AddDate(0, 0, -4)):
-				redated, redatedDay = pr, day.Day
 			}
 		}
 	}
-	if moved.member == "" || redated.member == "" || undeployed.member == "" {
-		t.Fatalf("the history holds no deployed pull request of %s through an issue (%q), none through its repository after its first day (%q), or no undeployed one through an issue (%q)",
-			main, moved.member, redated.member, undeployed.member)
+	if undeployed.member == "" {
+		t.Fatalf("the history holds no undeployed pull request of %s through an issue", main)
 	}
 
 	// The history as the cases move it, which each case's oracle reads: every pull request's issue
@@ -145,7 +136,8 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	// deploy ships: once the first counts for the other project that deploy counts for both, and
 	// the second's earlier merge moves it to an earlier deploy, so the deploy it leaves is written
 	// in the other project only because it shipped the second (eval_day_members.shipped_by).
-	moved.member, redated.member = "", ""
+	var moved, redated dayPR
+	var movedDay, redatedDay time.Time
 	historyStart := refresherToday.AddDate(0, 0, -5)
 	for _, a := range prs {
 		deployA := shipper(a)

@@ -19,10 +19,11 @@ import (
 // had a pass in which to move.
 const pollEvery = 15 * time.Second
 
-// lagPolls is how many polls back the head a cursor is held to stood. The Legion facts consumer
-// sweeps every open issue once every legionfacts.SweepEvery (30 s) and the rows it writes log
-// changes after its own cursor, so its cursor reaches a head only on its next sweep; three polls
-// is 45 s, more than a sweep and a poll.
+// lagPolls is how many polls old the heads a cursor is held to are: each cursor must stand at or
+// past where its feed stood lagPolls polls before. The Legion facts consumer sweeps every open
+// issue once every legionfacts.SweepEvery (30 s) and the rows it writes log changes after its own
+// cursor, so its cursor reaches a head only on its next sweep; three polls is 45 s, a sweep and a
+// poll.
 const lagPolls = 3
 
 // heads is where each feed the consumers read stands.

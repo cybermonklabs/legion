@@ -182,7 +182,7 @@ func TestEnsureAddsTheSectionsAProjectsDocumentLacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed %s after the delete: %v", r.project, err)
 	}
-	newest, err := r.registry.Versions(t.Context(), evalID)
+	_, newest, _, err := r.registry.EvalVersions(t.Context(), evalID)
 	if err != nil {
 		t.Fatalf("read the versions of %s: %v", evalID, err)
 	}
@@ -292,14 +292,14 @@ func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed %s with the release's catalogue: %v", r.project, err)
 	}
-	versions, err := r.registry.Versions(ctx, EvalID(r.project, SlugDeployFrequency))
+	_, versions, _, err := r.registry.EvalVersions(ctx, EvalID(r.project, SlugDeployFrequency))
 	if err != nil {
 		t.Fatalf("read the versions: %v", err)
 	}
 	newest, series := r.currentOf(t, SlugDeployFrequency)
 	deploys := series[measures.SeriesDeploys]
-	t.Logf("the release's seed wrote %+v; versions %v; newest name %q unit %q target %v person %q links %d doc block %s; series %+v",
-		released, versionNumbers(versions), newest.Name, newest.Unit, *newest.Target, newest.Person, len(newest.Links), newest.DocBlock, deploys)
+	t.Logf("the release's seed wrote %+v; versions %v; newest name %q unit %q target %s person %q links %d doc block %s; series %+v",
+		released, versionNumbers(versions), newest.Name, newest.Unit, showValue(newest.Target), newest.Person, len(newest.Links), newest.DocBlock, deploys)
 	if released.Versions != 1 || released.Series != 1 || released.Sections != 0 || len(versions) != 3 || newest.WrittenVia != ViaSeed {
 		t.Fatalf("the release's seed wrote %+v and the eval holds versions %v, want one version and one series version by the seed", released, versionNumbers(versions))
 	}

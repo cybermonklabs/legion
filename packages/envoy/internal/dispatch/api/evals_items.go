@@ -356,7 +356,8 @@ func readingItemRow(reading evals.Reading, label string) evalItemRow {
 
 // dayItemRow is a stored day row as an items row: keyed `<series>@<day>`, and `@<repo>` after
 // that for a repository's row; its columns the row's parts but its sample list; measured on its
-// day, the day its parts are of; and as its address the items of that day of that series.
+// day, the day its parts are of; and as its address the items of that day of that series, of that
+// repository for a repository's row.
 func dayItemRow(project, slug string, day evals.DayRow, label string) evalItemRow {
 	date := day.Day.Format(time.DateOnly)
 	key := day.Series + "@" + date
@@ -367,6 +368,9 @@ func dayItemRow(project, slug string, day evals.DayRow, label string) evalItemRo
 		"from":   {date + "T00:00:00Z"},
 		"to":     {day.Day.AddDate(0, 0, 1).Format(time.DateOnly) + "T00:00:00Z"},
 		"series": {day.Series},
+	}
+	if day.Repo != "" {
+		behind["repo"] = []string{day.Repo}
 	}
 	return evalItemRow{
 		RowKey:  key,
@@ -715,13 +719,14 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	var cells []jobCell
 	for _, name := range slices.Sorted(maps.Keys(byJob)) {
 		cell := measures.FoldTiming(byJob[name])
-		if read.request.sort == evalSortMedian && cell.N < minN {
+		// A ranked job has min_n timed results and at least one: N counts the timed results, so a
+		// job with none, which a min_n of 0 would keep, has no median to rank by.
+		if read.request.sort == evalSortMedian && (cell.N < minN || cell.MedianMinutes == nil) {
 			continue
 		}
 		cells = append(cells, jobCell{name, cell})
 	}
 	if read.request.sort == evalSortMedian {
-		// A ranked job has min_n timed results, at least one, so its median is set.
 		slices.SortStableFunc(cells, func(a, b jobCell) int { return cmp.Compare(*b.cell.MedianMinutes, *a.cell.MedianMinutes) })
 	}
 	rows := make([]evalItemRow, len(cells))
@@ -729,6 +734,9 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 		behind := url.Values{
 			"from": {read.rng.days.From.Format(time.RFC3339)}, "to": {read.rng.days.To.Format(time.RFC3339)},
 			"series": {measures.JobSeriesPrefix + job.name}, "row_kind": {evalRowDay},
+		}
+		if len(read.request.repos) > 0 {
+			behind["repo"] = read.request.repos
 		}
 		rows[position] = evalItemRow{
 			RowKey:  job.name,

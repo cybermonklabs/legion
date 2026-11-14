@@ -526,7 +526,7 @@ func compareTables(check *legionCheck, closed []legionfacts.Row, filed []legionf
 		check.hours(issue.Key+"'s parked hours", &row.ParkedHours, issue.ParkedHours)
 		check.hours(issue.Key+"'s queued hours", &row.QueuedHours, issue.QueuedHours)
 	}
-	check.exact("rework rows", len(report.Rework.Issues), len(rows))
+	check.exact("rework rows", len(rows), len(report.Rework.Issues))
 	for _, issue := range report.Rework.Issues {
 		row, held := rows[issue.Key]
 		if !held {

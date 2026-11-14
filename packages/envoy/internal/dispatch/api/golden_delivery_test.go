@@ -49,10 +49,18 @@ type deliveryOracleFixture struct {
 // dispatch://INFRA-2916's plan): over the deliverytest history of
 // testdata/golden_delivery/fixture.json, every request each window file holds (GET
 // /api/v1/delivery/measures with no facet and with repo= each repository, and GET
-// /api/v1/delivery/pipeline) answers, value for value, what the base head answered when
-// golden_delivery_record_test.go recorded it, the recorder's stripped fields left out. Integers
-// and strings must be equal; floats within deliveryOracleTolerance of each other, relative to the
-// larger.
+// /api/v1/delivery/pipeline) answers, value for value, what the base head answered when it was
+// recorded, the recorder's stripped fields left out. Integers and strings must be equal; floats
+// within deliveryOracleTolerance of each other, relative to the larger.
+//
+// The files were recorded once, on a checkout of the base head 02a7b3c6 that a recorder test and
+// the delivery/deliverytest package it seeds through were copied into (that head holds neither),
+// with `go test -count=1 -tags goldenrecord -run TestRecordDeliveryGolden ./internal/dispatch/api/`
+// from packages/envoy against a database of its own: it seeded the history fixture.json names
+// and drew its 20 windows from a math/rand/v2 PCG source of seed 18 (counting from 1, the first
+// seed whose 20 draws hold a window of one day, one ending at the history's end and one of 80 days
+// or more). The recorder is gone: run at any later head it would record that head's own answers,
+// and the oracle would compare the code with itself.
 //
 // The two named exceptions are rules INFRA-2916 changed. A deploy's with_prs: a deploy is one with
 // pull requests when it ships any pull request, whenever that pull request merged, where the base

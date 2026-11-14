@@ -5,14 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
-	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // evalProject is the project every eval below belongs to, and evalID the eval whose rows the
@@ -246,27 +243,77 @@ func TestAWriteOfReadingsLogsOneChangePerEval(t *testing.T) {
 }
 
 // TestANewVersionLogsOneEvalVersionsChange: one version of a definition logs one eval_versions
-// change, naming the project and the eval, with no span.
+// change, naming the project and the eval, with no span, and so does one version of one of its
+// series, which changes how every window of the eval reads as much.
 func TestANewVersionLogsOneEvalVersionsChange(t *testing.T) {
 	ctx := context.Background()
 	store := migratedEvalStore(t)
 
-	head := changeLogHead(t, store)
-	if _, err := store.Pool.Exec(ctx, `
-		insert into eval_versions (eval_id, version, project_key, slug, name, kind, source, written_via, written_by)
-		values ($1, 1, $2, 'merge-to-production', 'Merge to production', 'delivery',
-		        'computed:delivery/measures.Compute', 'seed', $3::jsonb)
-	`, evalID, evalProject, evalRecorder); err != nil {
-		t.Fatalf("write the version: %v", err)
+	for _, write := range []struct {
+		what, statement string
+		args            []any
+	}{
+		{"a version of the definition", `
+			insert into eval_versions (eval_id, version, project_key, slug, name, kind, source, written_via, written_by)
+			values ($1, 1, $2, 'merge-to-production', 'Merge to production', 'delivery',
+			        'computed:delivery/measures.Compute', 'seed', $3::jsonb)`, []any{evalID, evalProject, evalRecorder}},
+		{"a version of a series", `
+			insert into eval_series (eval_id, series, version, unit, role, is_primary, listed, agg)
+			values ($1, 'minutes', 1, 'minutes', 'headline', true, true, 'quantile')`, []any{evalID}},
+	} {
+		head := changeLogHead(t, store)
+		if _, err := store.Pool.Exec(ctx, write.statement, write.args...); err != nil {
+			t.Fatalf("write %s: %v", write.what, err)
+		}
+		changes := changesAfter(t, store, head)
+		t.Logf("%s of %s logged %d change rows: %+v", write.what, evalID, len(changes), changes)
+		if len(changes) != 1 {
+			t.Fatalf("%s logged %d changes; want one", write.what, len(changes))
+		}
+		logged := changes[0]
+		if logged.kind != "eval_versions" || logged.repo != evalProject || logged.ref != evalID || logged.tOld != nil || logged.tNew != nil {
+			t.Fatalf("the change of %s = %+v; want kind eval_versions, repo %s, ref %s and no span", write.what, logged, evalProject, evalID)
+		}
 	}
-	changes := changesAfter(t, store, head)
-	t.Logf("one version of %s logged %d change rows: %+v", evalID, len(changes), changes)
-	if len(changes) != 1 {
-		t.Fatalf("one version logged %d changes; want one", len(changes))
-	}
-	logged := changes[0]
-	if logged.kind != "eval_versions" || logged.repo != evalProject || logged.ref != evalID || logged.tOld != nil || logged.tNew != nil {
-		t.Fatalf("the change = %+v; want kind eval_versions, repo %s, ref %s and no span", logged, evalProject, evalID)
+}
+
+// TestAMappingSavedAgainByAnotherPersonLogsNoChange: a repository's mapping in repo_projects logs a
+// settings change naming the repository when it is made, when a column the mapping decides moves
+// and when it is deleted, and none when the settings route's upsert saves it again unchanged as
+// another person, which rewrites created_by alone.
+func TestAMappingSavedAgainByAnotherPersonLogsNoChange(t *testing.T) {
+	ctx := context.Background()
+	store := migratedEvalStore(t)
+	const save = `
+		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
+		values ('acme/web', $1, $2::jsonb, $3, null)
+		on conflict (repo) do update set project = excluded.project, created_by = excluded.created_by,
+			is_default = excluded.is_default, renamed_to = excluded.renamed_to`
+	for _, write := range []struct {
+		what      string
+		statement string
+		args      []any
+		changes   int
+	}{
+		{"the mapping made by alice", save, []any{evalProject, `{"kind":"user","id":"alice"}`, false}, 1},
+		{"the same mapping saved by bob", save, []any{evalProject, `{"kind":"user","id":"bob"}`, false}, 0},
+		{"the mapping made the project's default", save, []any{evalProject, `{"kind":"user","id":"bob"}`, true}, 1},
+		{"the mapping deleted", `delete from repo_projects where repo = 'acme/web'`, nil, 1},
+	} {
+		head := changeLogHead(t, store)
+		if _, err := store.Pool.Exec(ctx, write.statement, write.args...); err != nil {
+			t.Fatalf("%s: %v", write.what, err)
+		}
+		changes := changesAfter(t, store, head)
+		t.Logf("%s logged %v", write.what, changes)
+		if len(changes) != write.changes {
+			t.Errorf("%s logged %d changes, want %d", write.what, len(changes), write.changes)
+		}
+		for _, change := range changes {
+			if change.kind != "settings" || change.repo != "acme/web" {
+				t.Errorf("%s logged %v, want a settings change naming acme/web", write.what, change)
+			}
+		}
 	}
 }
 
@@ -355,110 +402,4 @@ func TestAnUpsertOfDayRowsLogsOneChangeSpanningItsDays(t *testing.T) {
 	}
 	oneChangeOver("a write moving one day's last_value and last_at alone", changesAfter(t, store, head),
 		[]string{"2026-11-06"})
-}
-
-// explainedPlan is statement's plan with args, as `EXPLAIN (FORMAT JSON)` answers it, and as
-// text for the test's log.
-func explainedPlan(t *testing.T, store *Store, statement string, args ...any) (plan []byte, text string) {
-	t.Helper()
-	ctx := context.Background()
-	if err := store.Pool.QueryRow(ctx, "explain (format json) "+statement, args...).Scan(&plan); err != nil {
-		t.Fatalf("explain %s: %v", statement, err)
-	}
-	rows, err := store.Pool.Query(ctx, "explain "+statement, args...)
-	if err != nil {
-		t.Fatalf("explain %s: %v", statement, err)
-	}
-	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("explain %s: %v", statement, err)
-	}
-	return plan, strings.Join(lines, "\n")
-}
-
-// requireIndexRead holds plan to reading relation through index and never by a sequential scan.
-func requireIndexRead(t *testing.T, plan []byte, text, relation, index string) {
-	t.Helper()
-	tree := explaintest.OnePlan(t, plan)
-	if explaintest.SeqScansRelation(t, tree, relation) {
-		t.Fatalf("the plan scans %s sequentially; want a read through %s:\n%s", relation, index, text)
-	}
-	read := []string{}
-	for _, scan := range explaintest.IndexScans(t, tree) {
-		read = append(read, scan.Index)
-	}
-	if !slices.Contains(read, index) {
-		t.Fatalf("the plan reads through %v; want %s:\n%s", read, index, text)
-	}
-}
-
-// TestTheUnownedP0CountAndTheClosedFactsReadTheirIndexes: on an analyzed store holding enough rows
-// that the planner prices a scan of the whole table above an index read (6,000 issues, 20,000
-// stored facts), the count of a project's P0 issues with no owner and the live hub's read of every
-// open P0 issue's key (delivery.OpenP0Keys) read issues_open_p0, the read of a project's issues
-// closed in a window reads issue_facts_closed, and none scans its table.
-func TestTheUnownedP0CountAndTheClosedFactsReadTheirIndexes(t *testing.T) {
-	ctx := context.Background()
-	store := migratedEvalStore(t)
-
-	// Every fiftieth issue is P0 with no owner; the three after it are P0 and done, claimed or
-	// routed, which the rule leaves out; every other issue is P2.
-	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name) values ('PZERO', 'Zero'), ('PONE', 'One')`); err != nil {
-		t.Fatalf("seed the projects: %v", err)
-	}
-	if _, err := store.Pool.Exec(ctx, `
-		insert into issues (key, project_key, number, title, created_by, rank, priority, status,
-		                    claimed_by, claimed_at, route)
-		select project || '-' || n, project, n, 'Issue ' || n, '{"kind":"user","id":"alice"}',
-		       lpad(n::text, 8, '0'),
-		       case when n % 50 < 4 then 0 else 2 end,
-		       case when n % 50 = 1 then 'done' else 'todo' end,
-		       case when n % 50 = 2 then '{"kind":"session","id":"ses_claimer"}'::jsonb end,
-		       case when n % 50 = 2 then now() end,
-		       case when n % 50 = 3 then 'session:ses_router' end
-		from unnest(array['PZERO', 'PONE']) as project, generate_series(1, 3000) as n
-	`); err != nil {
-		t.Fatalf("seed the issues: %v", err)
-	}
-	const p0Count = `select count(*) from issues where project_key = $1 and priority = 0 and status <> 'done' and claimed_by is null and route is null`
-	var unowned int
-	if err := store.Pool.QueryRow(ctx, p0Count, "PZERO").Scan(&unowned); err != nil {
-		t.Fatalf("count the unowned P0 issues: %v", err)
-	}
-	if unowned != 60 {
-		t.Fatalf("the count answers %d unowned P0 issues of PZERO; want 60, one in fifty of its 3,000", unowned)
-	}
-
-	// Five projects of 4,000 stored facts each, nine in ten closed, one a day back over a year.
-	now := evalAt(13, 0)
-	if _, err := store.Pool.Exec(ctx, `
-		insert into issue_facts (project_key, issue_key, opened_at, closed_at)
-		select project, project || '-' || n, $1::timestamptz - make_interval(days => n % 365 + 10),
-		       case when n % 10 <> 0 then $1::timestamptz - make_interval(days => n % 365) end
-		from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project, generate_series(1, 4000) as n
-		order by n % 365 desc, project
-	`, now); err != nil {
-		t.Fatalf("seed the facts: %v", err)
-	}
-	if _, err := store.Pool.Exec(ctx, `analyze issues, issue_facts`); err != nil {
-		t.Fatalf("analyze: %v", err)
-	}
-
-	plan, text := explainedPlan(t, store, p0Count, "PZERO")
-	t.Logf("the unowned P0 count of one project plans as:\n%s", text)
-	requireIndexRead(t, plan, text, "issues", "issues_open_p0")
-	const openP0Keys = `select key from issues where priority = 0 and status <> 'done'`
-	plan, text = explainedPlan(t, store, openP0Keys)
-	t.Logf("every open P0 issue's key plans as:\n%s", text)
-	requireIndexRead(t, plan, text, "issues", "issues_open_p0")
-
-	const closedWindow = `select issue_key, closed_at, work_hours from issue_facts where project_key = $1 and closed_at >= $2 and closed_at < $3`
-	from, to := now.AddDate(0, 0, -28), now
-	var closed int
-	if err := store.Pool.QueryRow(ctx, `select count(*) from (`+closedWindow+`) window_read`, "FC", from, to).Scan(&closed); err != nil {
-		t.Fatalf("read the closed window: %v", err)
-	}
-	plan, text = explainedPlan(t, store, closedWindow, "FC", from, to)
-	t.Logf("the read of one project's %d issues closed in 28 days plans as:\n%s", closed, text)
-	requireIndexRead(t, plan, text, "issue_facts", "issue_facts_closed")
 }

@@ -65,9 +65,9 @@ type NewArtifact struct {
 // two uploads at once - `plan.md` and `plan-md` - could each miss the other and leave two
 // documents that one reference names; the eval registry's create of `evals-md` takes the same
 // lock, so it and an upload of `evals.md` cannot both create one. Only those writes take it. An
-// upload takes it before any row or room, and the registry takes it after its own eval rows and
-// before any artifact row or room, which no holder of this lock waits on, so it joins no lock
-// cycle.
+// upload takes it before any row or room, and the registry takes it after the eval's own lock
+// (evals' lockEval) and before its version rows, any artifact row or room, which no holder of
+// this lock waits on, so it joins no lock cycle.
 func LockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('project-artifacts:' || $1))`, project); err != nil {
 		return fmt.Errorf("lock the project's documents: %w", err)
@@ -169,9 +169,10 @@ func CreateDocument(ctx context.Context, documents API, row NewArtifact, markdow
 	return artifact, written, nil
 }
 
-// WriteDocumentVersion stores the document-version row an upload writes directly, returning the
-// same decoded version the upload route returns to its caller. Uploads keep this separate from
-// writeVersionTx because they own their artifact event and approval move.
+// WriteDocumentVersion stores the document-version row a new document's write makes directly (an
+// upload, and the eval registry's creation of `evals-md` through CreateDocument), returning the
+// same decoded version the upload route returns to its caller. Those writes keep this separate
+// from writeVersionTx because each writes its own artifact event, and an upload its approval move.
 func WriteDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string) (model.Version, error) {
 	encodedAuthors, err := json.Marshal(authors)
 	if err != nil {

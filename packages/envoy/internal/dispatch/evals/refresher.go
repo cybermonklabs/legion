@@ -2,7 +2,6 @@ package evals
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -38,13 +37,14 @@ import (
 //     that issue and every issue below it, whose repository it moves.
 //
 // Beside the feeds, each pass makes the walks (eval_days_walks): one over every day of the delivery
-// and CI rows, one per project over its Legion days, and one per project filling its logged evals'
-// zero rows. A walk builds every day from the first input day of what it walks to today, a batch
-// of days a pass (walkBatch), then the day of each new UTC day as it comes, which is what writes
-// the zero rows of a day nothing happened on. A walk recorded by another build is begun again, so
-// a release rebuilds every row of each family the build before it wrote, and while two builds run
-// each rebuilds in turn, as issue_facts_computed makes the Legion facts consumer read each project
-// whole again.
+// and CI rows, one per project over its Legion days, one per project filling its logged evals'
+// zero rows, and one per project writing its unowned-p0 row of today, which reads issues alone and
+// so is written whether or not delivery settings exist. A walk builds every day from the first
+// input day of what it walks to today, a batch of days a pass (walkBatch), then the day of each new
+// UTC day as it comes, which is what writes the zero rows of a day nothing happened on. A walk
+// recorded by another build is begun again, so a release rebuilds every row of each family the
+// build before it wrote, and while two builds run each rebuilds in turn, as issue_facts_computed
+// makes the Legion facts consumer read each project whole again.
 //
 // A day written is every row of its project's family of that day, upserted where a value moved
 // (upsertDays), the rows the day no longer builds written as zero rows (zeroStaleDays: each had
@@ -76,9 +76,10 @@ const refresherPage = 1000
 
 // walkBatch is how many days one pass builds of each walk. A walk of INFRA's history (a year of
 // days, each one read of the day's delivery rows and one write per project) is many passes, each
-// started at once after the one before it, so the changes that arrive meanwhile are answered
-// between two batches rather than after the whole rebuild, and no pass holds the lease for the
-// whole of it. Every day is a transaction of its own per project (WriteProjectDay).
+// started RefresherGap after the one before it began (the loop's MinGap holds a pass asked for at
+// once to that), so the changes that arrive meanwhile are answered between two batches rather than
+// after the whole rebuild, and no pass holds the lease for the whole of it. Every day is a
+// transaction of its own per project (WriteProjectDay).
 const walkBatch = 28
 
 // The cursors, one row of eval_days_cursor each, named for the feed they are read by.
@@ -91,11 +92,13 @@ const (
 var refresherCursors = []string{changesCursor, eventsCursor}
 
 // The walks of eval_days_walks, by family: the delivery and CI rows of every project (one walk,
-// project ”), the Legion rows of one project, and the zero rows of one project's logged evals.
+// whose project is the empty string), the Legion rows of one project, the zero rows of one
+// project's logged evals, and one project's unowned-p0 row of today.
 const (
 	walkDelivery = "delivery"
 	walkLegion   = "legion"
 	walkLogged   = "logged"
+	walkUnowned  = "unowned"
 )
 
 // RefresherDeps is what RunRefresher needs of the server.
@@ -138,11 +141,12 @@ var serverRefresherSchedule = refresherSchedule{
 }
 
 // RunRefresher keeps every project's day rows true to their inputs (the refresher's rules above)
-// until ctx is done: one pass at start, a pass on each wake, a pass at once after one that left a
-// walk unfinished, and a pass at the earliest of the next UTC midnight, which begins a day every
-// walk builds, and the moment the oldest delivery change passes delivery.ChangeRetention, which
-// the pass then prunes (delivery.PruneChanges), so the change log keeps its retention where no
-// GitHub App runs the reconcile that prunes it too.
+// until ctx is done: one pass at start, a pass on each wake, a pass asked for at once after one
+// that left a walk unfinished (which the loop's MinGap, RefresherGap, holds to ten seconds after
+// the last began), and a pass at the earliest of the next UTC midnight, which begins a day every
+// walk builds, and pruneSlack after the oldest delivery change passes delivery.ChangeRetention,
+// which the pass then prunes (delivery.PruneChanges), so the change log keeps its retention where
+// no GitHub App runs the reconcile that prunes it too.
 func (s *Store) RunRefresher(ctx context.Context, deps RefresherDeps) {
 	s.runRefresher(ctx, deps, serverRefresherSchedule)
 }
@@ -202,13 +206,7 @@ func (r refreshed) sorted() []string {
 // feeds until one comes back short and writes the days each names, makes a batch of each walk,
 // prunes the change log, and answers what it wrote and when the loop should run again.
 func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresherSchedule) (refreshed, time.Time, error) {
-	now := sched.now().UTC()
-	r := &refresh{
-		store: s, build: deps.Build, now: now, today: utcMidnight(now), batch: sched.batch,
-		report: refreshed{days: map[builtDay]bool{}},
-		first:  map[walkKey]map[string]time.Time{}, since: map[string]LegionSince{},
-		reads: map[time.Time]DeliveryDay{}, unowned: map[string]bool{},
-	}
+	r := s.newRefresh(deps.Build, sched.now().UTC(), sched.batch)
 	if err := r.load(ctx); err != nil {
 		return r.report, time.Time{}, err
 	}
@@ -241,6 +239,15 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 	return r.report, next, nil
 }
 
+// newRefresh is the state of one pass that builds as build, as of now, batch days of each walk.
+func (s *Store) newRefresh(build string, now time.Time, batch int) *refresh {
+	return &refresh{
+		store: s, build: build, now: now, today: utcMidnight(now), batch: batch,
+		report: refreshed{days: map[builtDay]bool{}},
+		first:  map[walkKey]map[string]time.Time{}, since: map[string]LegionSince{},
+	}
+}
+
 // safeHorizon is the highest event id at or below which every event is final (events.Horizon). A
 // safe of 0 is a horizon that has proven nothing yet, which is every first pass of a process, since
 // one snapshot never proves its own newest id: such a pass takes a horizon with Await instead of
@@ -259,9 +266,17 @@ func safeHorizon(ctx context.Context, horizon *events.Horizon) (int64, error) {
 	return safe, nil
 }
 
-// nextPass is when the loop should run again with no wake: at once while a walk has days left, and
+// pruneSlack is how long after the oldest change passes its retention the loop runs the pass that
+// prunes it, with no wake: the log keeps its 24 hours within these five minutes, the reconcile's
+// prune period, and the passes that prune a log changes reach every few seconds run every five
+// minutes rather than once each MinGap, each pruning what expired since the one before it.
+const pruneSlack = 5 * time.Minute
+
+// nextPass is when the loop should run again with no wake: now while a walk has days left (which
+// the loop's MinGap, RefresherGap, holds until RefresherGap after the last pass began), and
 // otherwise at the earlier of the next UTC midnight, the first moment of a day every walk builds,
-// and the moment the oldest change the log holds passes its retention, which the pass then prunes.
+// and pruneSlack after the oldest change the log holds passes its retention, which the pass then
+// prunes.
 func (r *refresh) nextPass(ctx context.Context, pending bool) (time.Time, error) {
 	if pending {
 		return r.now, nil
@@ -272,25 +287,34 @@ func (r *refresh) nextPass(ctx context.Context, pending bool) (time.Time, error)
 		return time.Time{}, fmt.Errorf("read the oldest delivery change: %w", err)
 	}
 	if oldest != nil {
-		if expires := oldest.Add(delivery.ChangeRetention + time.Second); expires.Before(next) {
+		if expires := oldest.Add(delivery.ChangeRetention + pruneSlack); expires.Before(next) {
 			next = expires
 		}
 	}
 	return next, nil
 }
 
+// feedCursor is where one feed stands: the position the last committed pass read through and,
+// for the change cursor, when the change at that position was recorded (delivery_changes.at),
+// which tells a change pruned in its time from one lost (changesLost); nil for the event cursor
+// and for a position no change holds.
+type feedCursor struct {
+	position int64
+	at       *time.Time
+}
+
 // readRefresherCursors is where each feed stands, by cursor name; no row at all is a database no
 // refresher pass has committed on.
-func (s *Store) readRefresherCursors(ctx context.Context) (map[string]int64, error) {
-	rows, err := s.database.Pool.Query(ctx, `select name, position from eval_days_cursor where name = any($1)`, refresherCursors)
+func (s *Store) readRefresherCursors(ctx context.Context) (map[string]feedCursor, error) {
+	rows, err := s.database.Pool.Query(ctx, `select name, position, at from eval_days_cursor where name = any($1)`, refresherCursors)
 	if err != nil {
 		return nil, fmt.Errorf("read the eval day-row refresher's cursors: %w", err)
 	}
-	cursors := map[string]int64{}
+	cursors := map[string]feedCursor{}
 	var name string
-	var position int64
-	if _, err := pgx.ForEachRow(rows, []any{&name, &position}, func() error {
-		cursors[name] = position
+	var cursor feedCursor
+	if _, err := pgx.ForEachRow(rows, []any{&name, &cursor.position, &cursor.at}, func() error {
+		cursors[name] = cursor
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("read the eval day-row refresher's cursors: %w", err)
@@ -298,25 +322,42 @@ func (s *Store) readRefresherCursors(ctx context.Context) (map[string]int64, err
 	return cursors, nil
 }
 
+// changesHead is the change cursor at the newest change the log holds, with the time it was
+// recorded; position 0 where the log is empty.
+func (s *Store) changesHead(ctx context.Context) (feedCursor, error) {
+	head, err := delivery.LatestChangeSeq(ctx, s.database.Pool)
+	if err != nil {
+		return feedCursor{}, fmt.Errorf("read the head of the delivery changes: %w", err)
+	}
+	if head == 0 {
+		return feedCursor{}, nil
+	}
+	at, err := delivery.ChangeAt(ctx, s.database.Pool, head)
+	if err != nil {
+		return feedCursor{}, fmt.Errorf("read the delivery change at %d: %w", head, err)
+	}
+	return feedCursor{position: head, at: at}, nil
+}
+
 // commitPage moves the two cursors to the positions a page read, stamped with the moment the pass
 // ran as of, and begins again each walk the page's changes call for, in one transaction: the days
 // the page named are written before it, so a crash between the two reads the same changes again,
 // and a walk the changes begin again is recorded with the cursor that passed them.
-func (s *Store) commitPage(ctx context.Context, positions map[string]int64, restarts []walkKey, build string, now time.Time) error {
+func (s *Store) commitPage(ctx context.Context, cursors map[string]feedCursor, restarts []walkKey, build string, now time.Time) error {
 	tx, err := s.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	at := make([]int64, len(refresherCursors))
+	positions, ats := make([]int64, len(refresherCursors)), make([]*time.Time, len(refresherCursors))
 	for i, name := range refresherCursors {
-		at[i] = positions[name]
+		positions[i], ats[i] = cursors[name].position, cursors[name].at
 	}
 	if _, err := tx.Exec(ctx, `
-		insert into eval_days_cursor (name, position, updated_at)
-		select name, position, $3 from unnest($1::text[], $2::bigint[]) as given(name, position)
-		on conflict (name) do update set position = excluded.position, updated_at = excluded.updated_at
-	`, refresherCursors, at, now); err != nil {
+		insert into eval_days_cursor (name, position, at, updated_at)
+		select name, position, at, $4 from unnest($1::text[], $2::bigint[], $3::timestamptz[]) as given(name, position, at)
+		on conflict (name) do update set position = excluded.position, at = excluded.at, updated_at = excluded.updated_at
+	`, refresherCursors, positions, ats, now); err != nil {
 		return fmt.Errorf("move the eval day-row refresher's cursors: %w", err)
 	}
 	if len(restarts) > 0 {
@@ -340,7 +381,7 @@ func (s *Store) commitPage(ctx context.Context, positions map[string]int64, rest
 	return nil
 }
 
-// walkKey names one walk: its family and its project (” for the delivery walk).
+// walkKey names one walk: its family and its project (the empty string for the delivery walk).
 type walkKey struct {
 	family  string
 	project string
@@ -397,8 +438,7 @@ func (s *Store) recordWalk(ctx context.Context, key walkKey, build string, next,
 // process's reads a negative age, as it would of any moment another process stamped.
 func (s *Store) RefresherAge(ctx context.Context, now time.Time) (time.Duration, bool, error) {
 	var oldest *time.Time
-	err := s.database.Pool.QueryRow(ctx, `select min(updated_at) from eval_days_cursor`).Scan(&oldest)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if err := s.database.Pool.QueryRow(ctx, `select min(updated_at) from eval_days_cursor`).Scan(&oldest); err != nil {
 		return 0, false, fmt.Errorf("read the age of the eval day-row refresher's cursors: %w", err)
 	}
 	if oldest == nil {

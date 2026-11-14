@@ -23,13 +23,17 @@ import (
 // The three eval kinds hold none either: Repo carries the project key and Ref the eval id
 // (migrations 20261113082200 to 20261113082202). An eval_readings row is one statement's readings
 // of one eval, spanning their measured_at; an eval_versions row is one new version of a
-// definition and carries no span, since it changes how every window of the eval reads; an
-// eval_days row is one transaction's writes of one eval's day rows, spanning midnight UTC of the
-// first and the last day written.
+// definition or of one of its series and carries no span, since it changes how every window of
+// the eval reads; an eval_days row is one transaction's writes of one eval's day rows, spanning
+// midnight UTC of the first and the last day written.
 //
 // An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
 // key (migration 20261113170751). TOld and TNew are the filing's filed_at before and after: an
 // insert carries TNew alone, a delete TOld alone.
+//
+// A settings row is a write of the delivery settings, whose Repo is empty, or of a repository's
+// mapping in repo_projects, whose Repo is that repository (migration 20261113170752); Ref, TOld
+// and TNew are empty for both.
 type Change struct {
 	Seq     int64
 	At      time.Time

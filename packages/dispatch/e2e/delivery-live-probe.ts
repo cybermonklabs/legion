@@ -8,7 +8,8 @@
  * applied. The watch ends after `--minutes`, on Ctrl-C, or when Dispatch refuses the view.
  *  Then `--body-file` writes the body it holds, and `--compare` reads the matching GET routes for
  *  the last window it applied and writes, for each, whether the pull request ids, run ids and every
- *  measure are equal (for an evals view, every eval and every field of the list read).
+ *  measure are equal (for an evals view, every eval and every field of the list read but the
+ *  refresher's age, which the route measures at the moment of its read).
  *
  *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
  *      --view '{"kind":"timeline","window":{"preset":28},"query":""}' --minutes 10 --compare

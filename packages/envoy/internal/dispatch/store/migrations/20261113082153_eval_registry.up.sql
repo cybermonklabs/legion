@@ -70,8 +70,10 @@
 --                   (dispatch://INFRA-979/artifact/review-storage-measured-md, section 2), and
 --                   being partial on superseded_at is null it is also the index of the readings
 --                   that stand.
--- No index is keyed (eval_id, series, measured_at): every read carries a row kind, the planner
--- never chose that index in the measurement, and it cost a write on every insert.
+-- No index is keyed (eval_id, series, measured_at): the planner never chose that index in the
+-- measurement, and it cost a write on every insert. Two reads carry no row kind and so key
+-- eval_readings_row by eval_id alone: a readings write's read of a day row's newest standing
+-- reading (evals' newestStanding) and the items route asked for no row_kind.
 --
 -- Three new tables, two views and their indexes, all empty: nothing existing is read or rewritten,
 -- and the release before this one neither reads nor writes any of them, so the two builds roll

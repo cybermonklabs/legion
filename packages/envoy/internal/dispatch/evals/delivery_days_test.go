@@ -164,6 +164,9 @@ func (r rig) members(t *testing.T, project string) []string {
 		}
 		members = append(members, member)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the members of %s: %v", project, err)
+	}
 	return members
 }
 
@@ -433,8 +436,8 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 		t.Fatalf("write the unowned-p0 row again: %v", err)
 	}
 	second := r.day(t, EvalID("EVAL", SlugUnownedP0), SeriesUnownedP0, "", attributionDay)
-	if second.LastValue == nil || *second.LastValue != 2 || !second.LastAt.After(*first.LastAt) {
-		t.Errorf("the rewritten row = last_value %v at %v, want 2 after %v", second.LastValue, second.LastAt, first.LastAt)
+	if second.LastValue == nil || *second.LastValue != 2 || second.LastAt == nil || !second.LastAt.After(*first.LastAt) {
+		t.Fatalf("the rewritten row = last_value %s at %v, want 2 after %v", showValue(second.LastValue), second.LastAt, first.LastAt)
 	}
 	t.Logf("unowned-p0 of EVAL on %s: %g at %s, then %g at %s", attributionDay.Format(time.DateOnly),
 		*first.LastValue, first.LastAt.Format(time.RFC3339Nano), *second.LastValue, second.LastAt.Format(time.RFC3339Nano))

@@ -30,12 +30,13 @@ import (
 // in, built from that repository's alone. An issue's repository, and a filing's, is the one the
 // issue (the filed issue) resolves to by the rule that fills issue_facts.repo
 // (legionfacts.ReadRepos), resolved when the day is built rather than read from the stored row:
-// the rule falls back to the project's default mapping in repo_projects, a change of which moves
-// no stored row, and the refresher rebuilds every Legion day when a mapping changes, so the rows
-// follow the mapping within that one pass. An issue or a filing that resolves to no repository is
-// in the all-repositories row alone, so the repositories' rows add up to that row only where every
-// input resolves to one. Every Legion row reached its project through its own issue, so its
-// via_repository is 0.
+// the rule falls back to the project's default mapping in repo_projects, whose change the Legion
+// facts consumer carries into the stored column in a pass of its own, while the refresher rebuilds
+// every Legion day when a mapping changes, so the rows follow the mapping within that one pass
+// rather than from a column not yet rewritten. An issue or a filing that resolves to no
+// repository is in the all-repositories row alone, so the repositories' rows add up to that row
+// only where every input resolves to one. Every Legion row reached its project through its own
+// issue, so its via_repository is 0.
 //
 // legion-splitting has input on a day with a closed issue or a filing, and the other five on a
 // day with a closed issue. legion-idle-time has none on a day before the first UTC midnight at or
@@ -292,9 +293,9 @@ func ZeroLegionDay(project string, day time.Time, slugs ...string) ProjectDay {
 // writes a delivery day: each row upserted, recording builtBy, the running build; the project's
 // rows of that day of the Legion evals (legionDaySlugs) that day does not hold written as zero
 // rows (zeroStaleDays); and its issues recorded in eval_day_members on its day under the family
-// `legion`, whose items recorded
-// on that day that it does not hold are deleted. A row of another project, another day or an eval
-// that is not a Legion one, and an item of another family, is refused before anything is written.
+// `legion`, whose items recorded on that day that it does not hold are deleted. A row of another
+// project, another day or an eval that is not a Legion one, and an item of another family, is
+// refused before anything is written.
 func (s *Store) WriteLegionProjectDay(ctx context.Context, day ProjectDay, builtBy string) error {
 	return s.writeProjectDay(ctx, "Legion", day, legionDaySlugs, legionDayFamilies, builtBy)
 }

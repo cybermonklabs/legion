@@ -449,7 +449,10 @@ func shippingRunJoin(repo, jobNames, applyStep string) string {
 // latestShipBefore is the SQL of the latest creation (runCreatedAt) among the deploy runs on main
 // whose production job succeeded, by shippingRunJoin's judgement, before at: a pull request merged
 // before it had shipped by at, since that run was created after the merge and its job succeeded
-// before at. repo, jobNames, applyStep and at are the placeholders of the query that embeds it.
+// before at. A run's job completes after the run is created, so every such run was created before
+// at too, which the statement says: the read of delivery_runs_kind_created newest first starts at
+// at rather than at the newest run, whose jobs every later run would make it probe. repo,
+// jobNames, applyStep and at are the placeholders of the query that embeds it.
 // ListPullRequestsWaitingAt and readLatestShipBefore both embed it.
 func latestShipBefore(repo, jobNames, applyStep, at string) string {
 	return `select ` + runCreatedAt + `
@@ -457,7 +460,7 @@ func latestShipBefore(repo, jobNames, applyStep, at string) string {
 			join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id and j.name = any(` + jobNames + `)
 			where r.repo = ` + repo + ` and r.kind = 'deploy' and r.head_branch = 'main' and j.conclusion = 'success'
 				and (` + applyStep + `::text is null or j.apply_step is distinct from ` + applyStep + ` or j.apply_step_conclusion = 'success')
-				and j.completed_at < ` + at + `
+				and j.completed_at < ` + at + ` and ` + runCreatedAt + ` < ` + at + `
 			order by ` + runCreatedAt + ` desc
 			limit 1`
 }
@@ -815,7 +818,7 @@ func RunJobsUnfetchable(ctx context.Context, pool *store.Pool, repo string, runI
 // window found, instead of reconcileRun's own RunJobsUnfetchable point query running once per
 // completed run on every pass: the overwhelming majority of runs are never marked unfetchable,
 // the same bulk-then-loop shape ListPartialPullRequests already gives reconcilePartialPullRequests
-// and ListRunJobsForRuns gives the timeline handler.
+// and ListRunJobsForRuns and ListEveryRunJobForRuns give the delivery reads of a window's runs.
 func ListUnfetchableRunIDs(ctx context.Context, pool *store.Pool, repo string, runIDs []int64) (map[int64]bool, error) {
 	unfetchable := make(map[int64]bool, len(runIDs))
 	if len(runIDs) == 0 {
@@ -903,9 +906,9 @@ const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jo
 const everyRunJobForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2)`
 
 // ListRunJobsForRuns lists the jobs named names of every run in runIDs on repo in one query (not
-// one query per run): the timeline handler's own lookback window can hold hundreds of runs, and
-// this package's other many-id reads pass their whole list as one array parameter for the same
-// reason, as IssueAncestors (below) seeds its walk with `key = any($1)`. A caller that judges a
+// one query per run): a window's apply runs can number hundreds, and this package's other many-id
+// reads pass their whole list as one array parameter for the same reason, as IssueAncestors
+// (below) seeds its walk with `key = any($1)`. A caller that judges a
 // run by some of its jobs reads those alone: the production jobs containment and the measures
 // judge a deploy by (Production.JudgedJobNames) and the Pipeline's deploy cards' jobs. A run of
 // the deploy workflow holds a handful of jobs and a pull-request run dozens, and the read with no
@@ -964,18 +967,19 @@ func runJobsByRun(ctx context.Context, pool *store.Pool, runIDs []int64, query s
 	return byRun, nil
 }
 
-// ListRuns lists every run of kind on repo that GitHub created at since or later (runCreatedAt),
-// oldest creation first, narrowed to one head branch when branch is non-empty (a null head_branch
-// never matches it): the containment algorithm's input (population.go/containment.go), which the
-// timeline and the measures read with "main", since a production job on another branch ships no
-// pull request. It reads by creation rather than by head commit time because creation decides what
-// a run ships, and a run that ships a pull request merged in the window was created after that
-// merge, while its head commit, which a merge queue writes before the merge is recorded, can be
-// timed before the window's start. delivery_runs_kind_created indexes (repo, kind, runCreatedAt)
-// to match this exact filter/order. Bounded by maxRunsPerWindow for the same reason
-// ListPullRequestsInWindow is: an unbounded caller should fail loudly rather than exhaust memory.
+// maxRunsPerWindow bounds ListRuns' read for the same reason ListPullRequestsInWindow is bounded:
+// an unbounded caller should fail loudly rather than exhaust memory.
 const maxRunsPerWindow = 50_000
 
+// ListRuns lists every run of kind on repo that GitHub created at since or later (runCreatedAt),
+// oldest creation first, narrowed to one head branch when branch is non-empty (a null head_branch
+// never matches it): the containment algorithm's input (containment.go), which ReadMergedRows
+// reads with "main", since a production job on another branch ships no pull request. It reads by
+// creation rather than by head commit time because creation decides what a run ships, and a run
+// that ships a pull request merged in the window was created after that merge, while its head
+// commit, which a merge queue writes before the merge is recorded, can be timed before the
+// window's start. delivery_runs_kind_created indexes (repo, kind, runCreatedAt) to match this
+// exact filter/order.
 func ListRuns(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch string, since time.Time) ([]DeliveryRun, error) {
 	return listRunsCreated(ctx, pool, repo, kind, branch, since, nil)
 }
@@ -1051,7 +1055,8 @@ type RunsWithJobs struct {
 
 // ListRunsWithJobsStartedIn is ListRunsStartedIn's runs with ListRunJobsForRuns' jobs named names
 // of them: the Pipeline page's deploy runs of its shown days, read for the jobs its deploy cards
-// follow (measures.DeployJobs reads no other).
+// follow (measures.DeployJobs reads no other), and the measures' deploys of a window, read for the
+// jobs a deploy is judged by (ReadDeploys).
 func ListRunsWithJobsStartedIn(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time, names []string) (RunsWithJobs, error) {
 	return runsWithJobsStartedIn(ctx, pool, repo, kind, branch, event, from, to, func(runIDs []int64) (map[int64][]DeliveryRunJob, error) {
 		return ListRunJobsForRuns(ctx, pool, repo, runIDs, names)

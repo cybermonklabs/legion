@@ -14,8 +14,9 @@
 // its items alone.
 //
 // The package serves no request (the routes are api's) and makes none: a link is stored as its
-// caller wrote it and its far side is never fetched, so the package imports no HTTP client
-// (imports_test.go).
+// caller wrote it and its far side is never fetched, so the package's own files import no HTTP
+// client (imports_test.go reads their import lists; packages they import, such as delivery for
+// its GitHub reads, do import one).
 package evals
 
 import (

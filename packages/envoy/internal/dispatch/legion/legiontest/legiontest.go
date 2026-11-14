@@ -113,7 +113,7 @@ type Spec struct {
 	Parked bool
 	// Merged gives each issue the merger closes (each root and its implemented and reviewed
 	// children) a merged pull request naming it, merged an hour before its close, so the facts
-	// read its merge (metrics' Population.MergedAt) and store it.
+	// read its merge (metrics' Issue.MergedAt) and store it.
 	Merged bool
 	// Filings has each tree's Legion sessions file one issue of each class metric 4 counts besides
 	// the architect's own at design (metrics.ClassInTreeAtDesign): the implemented child's
@@ -245,7 +245,8 @@ type seeding struct {
 	observed  bool
 }
 
-// rows is the four tables one seed writes, each held as the columns of one batched insert.
+// rows is the five tables one seed writes beside its project's row (issues, the pull requests,
+// events, handoffs and observations), each held as the columns of one batched insert.
 type rows struct {
 	issueKeys       []string
 	issueNumbers    []int32
@@ -661,8 +662,9 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 }
 
 // write stores everything the trees built, one statement per table. Each statement takes its
-// table's columns as arrays and unnests them, so a history of thousands of rows costs four round
-// trips rather than thousands. The project's row is kept where it exists already.
+// table's columns as arrays and unnests them, so a history of thousands of rows costs six round
+// trips (the project's row and the five tables) rather than thousands. The project's row is kept
+// where it exists already.
 func (s *seeding) write(ctx context.Context, q Execer) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := q.Exec(ctx, statement, args...); err != nil {

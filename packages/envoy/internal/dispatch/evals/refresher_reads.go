@@ -187,15 +187,22 @@ func (s *Store) heldMembers(ctx context.Context, projects, families, members []s
 	return collectHeld(rows, fmt.Sprintf("where %d items were counted", len(members)))
 }
 
+// shippedMembersQuery is shippedMembers' statement. It carries eval_day_members_shipped's predicate
+// (migration 20261113082154: shipped_by is not the empty string), which `shipped_by = any($2)`
+// implies only for the values it is executed with: under the generic plan pgx's cached statement
+// settles on, which knows no value of $2, the planner proves the partial index from that clause
+// alone, as delivery/unowned.go's statements carry issues_open_p0's.
+const shippedMembersQuery = `
+	select project_key, row_key, day, shipped_by from eval_day_members
+	where project_key = any($1) and shipped_by = any($2) and shipped_by <> '' and family = $3
+	order by project_key, row_key, day
+`
+
 // shippedMembers is where each pull request that one of runs shipped when it was last counted was
 // counted, in each of projects (eval_day_members_shipped): the merge days whose rows hold a run's
 // completion as their deploy time.
 func (s *Store) shippedMembers(ctx context.Context, projects, runs []string) ([]heldMember, error) {
-	rows, err := s.database.Pool.Query(ctx, `
-		select project_key, row_key, day, shipped_by from eval_day_members
-		where project_key = any($1) and shipped_by = any($2) and family = $3
-		order by project_key, row_key, day
-	`, projects, runs, KindDelivery)
+	rows, err := s.database.Pool.Query(ctx, shippedMembersQuery, projects, runs, KindDelivery)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull requests %d runs shipped: %w", len(runs), err)
 	}

@@ -84,7 +84,7 @@ func askWhoami(t *testing.T, handler http.Handler) whoamiAnswer {
 }
 
 // createProject creates the project key through the router's API, as alice@d.example, which
-// appends one event, project.created.
+// appends two events: project.created, and the artifact.created of its seeded evals-md.
 func createProject(t *testing.T, handler http.Handler, key string) {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "http://dispatch.test/api/v1/projects", strings.NewReader(`{"key":"`+key+`","name":"`+key+` project"}`))
@@ -98,7 +98,8 @@ func createProject(t *testing.T, handler http.Handler, key string) {
 }
 
 // GET /auth/whoami carries event_head, the decimal id of the newest committed event, read after the
-// sign-in check: "0" on an empty log, and the third event's id once three have committed.
+// sign-in check: "0" on an empty log, and the last event's id once three projects' six have
+// committed.
 func TestWhoamiCarriesTheNewestEventID(t *testing.T) {
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)

@@ -436,7 +436,8 @@ func FailingJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.Del
 	return failing
 }
 
-// DeployJobCardID identifies one Pipeline card within a DeployJobs call.
+// DeployJobCardID identifies one Pipeline deploy card: the key DeployJobsDay answers a card's
+// parts under, and the card a deploy card's eval is of (evals.CardOf).
 type DeployJobCardID string
 
 // DeployJobCard is one Pipeline card, identified by CardID. Its embedded production rule gives every

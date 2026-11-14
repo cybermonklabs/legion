@@ -49,7 +49,11 @@ func TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife(t *tes
 		{"INFRA-11", 0, 0, "admitted holding its own slot throughout"},
 		{"INFRA-12", 0, 0, "never observed, so no observed phase"},
 	} {
-		got := facts[want.key]
+		got, held := facts[want.key]
+		if !held {
+			t.Errorf("%s (%s): no facts computed, want slot wait %g h and queued %g h", want.key, want.why, want.slotWait, want.queued)
+			continue
+		}
 		if got.SlotWaitHours != want.slotWait || got.QueuedHours != want.queued {
 			t.Errorf("%s (%s): slot wait %g h and queued %g h, want %g and %g",
 				want.key, want.why, got.SlotWaitHours, got.QueuedHours, want.slotWait, want.queued)

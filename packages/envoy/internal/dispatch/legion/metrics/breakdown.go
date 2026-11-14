@@ -119,9 +119,9 @@ type IssueFacts struct {
 	WorkLastAt  *time.Time `json:"work_last_at"`
 
 	// ParkedHours and QueuedHours are what the work time took out of the issue's life, and
-	// StartedAt and MergedAt are its first worker event and its pull request's merge: the rest of
-	// metric 1's row. StartedAt is nil for an issue with no work time, and MergedAt for one whose
-	// merge Dispatch holds none of.
+	// StartedAt and MergedAt are its first worker event and the earliest merge of the pull
+	// requests Dispatch holds for it: the rest of metric 1's row. Both are nil for an issue with no
+	// work time, and MergedAt for one whose merge Dispatch holds none of.
 	ParkedHours float64    `json:"parked_hours"`
 	QueuedHours float64    `json:"queued_hours"`
 	StartedAt   *time.Time `json:"started_at"`

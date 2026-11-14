@@ -30,11 +30,11 @@ const fillSessionTitlesCursorQuery = `select session_id from session_titles_back
 // last batch stopped instead of counting past it as an `offset` would. It takes every session,
 // one that never stamped a title included, because only a read of its events can tell.
 //
-// `latest` is the rule ResolveSessionTitles read from events before 20261113082156 (its
-// statement is held in delivery/session_titles_plan_test.go): each session's newest event whose
-// origin stamps a non-empty title, one ordered read a session of the same index, and no row for
-// a session that never stamped one. `e.id` breaks the tie 20261113090412's trigger breaks, two
-// titled events at one created_at: the first one inserted keeps the title.
+// `latest` is the rule ResolveSessionTitles read from events before 20261113082156 (its statement
+// is held as eventsSessionTitlesQuery in store/session_titles_fill_test.go): each session's newest
+// event whose origin stamps a non-empty title, one ordered read a session of the same index, and
+// no row for a session that never stamped one. `e.id` breaks the tie 20261113090412's trigger
+// breaks, two titled events at one created_at: the first one inserted keeps the title.
 //
 // `filled` writes under that trigger's own guard, `where excluded.titled_at >
 // session_titles.titled_at`, so a row the trigger wrote while the pass runs, which names a newer

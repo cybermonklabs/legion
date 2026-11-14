@@ -552,7 +552,7 @@ func FoldChangeFailureRate(parts []DayPart) *ChangeFailureRate {
 }
 
 // FoldTimeToRestore is failed-deploy-recovery over parts: the median of every part's minutes
-// (dora.ts:206-213, 251); nil when no part holds a sample.
+// (dora.ts:206-213, 251), whose MedianMinutes is nil when no part holds a sample.
 func FoldTimeToRestore(parts []DayPart) TimeToRestore {
 	sorted := mergedSamples(parts, SeriesMinutes)
 	if len(sorted) == 0 {

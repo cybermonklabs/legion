@@ -1,15 +1,17 @@
 // Package legionfacts computes one issue's stored Legion facts and writes them to issue_facts
 // (dispatch://INFRA-2915), with the issues Legion sessions filed, which it writes to
 // issue_filings (dispatch://INFRA-2916). The facts are computed once and stored as rows, so a
-// reader of them reads rows and computes nothing. The board is one reader of them here; the issue
-// table and the evals read them under dispatch://INFRA-2916.
+// reader of them reads rows and computes nothing: the board reads a project's (Read), and the
+// evals' Legion day rows and items read the issues closed in a window (ReadClosedIn) and the
+// filings made in one (ReadFilingsIn).
 //
-// The computation holds no loop and no lease: facts.go answers the rows of a key set (Compute)
-// or of a whole project (ComputeProject), and store.go writes them (WriteProject). Run is the
-// loop that decides when to call either, under one lease and woken by the feeds a row is
-// computed from (consumer.go).
+// The computation holds no loop and no lease: facts.go answers the rows and the filings of a key
+// set (computeKeys) or of a whole project (computeWhole), and store.go writes them (WriteProject,
+// WriteFilings). Run is the loop that decides when to call either, under one lease and woken by
+// the feeds a row is computed from (consumer.go). Compute and ComputeProject answer the rows of
+// the same two reads for one call.
 //
-// The numbers are the metrics package's: Compute and ComputeProject read a population and call
+// The numbers are the metrics package's: each computation reads a population and calls
 // metrics.ProjectFacts, which is the one computation of the per-issue facts, and the filings are
 // metrics.ProjectFilings over the same population. Nothing here states a rule of its own, so a
 // stored row can never disagree with the number a page computes. Both readers pass a nil GitHub
@@ -288,7 +290,7 @@ func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string
 // (ReadRepos) and rewrites the repo of each row whose repository moved, in tx, answering their
 // keys. It is what a change of a repository's mapping owes the stored rows (readChangePage): the
 // rule falls back to the project's default mapping, so a mapping change moves the repository of
-// rows whose issue no feed names, and the eval items route reads each row's repo. The rows' other
+// rows whose issue no feed names, and the eval items route shows each row's repo. The rows' other
 // columns and their updated_at stand, since nothing they were computed from moved. It reads every
 // stored row and resolves them all in one statement: a mapping is an operator's setting, written
 // rarely beside every other change this loop reads.

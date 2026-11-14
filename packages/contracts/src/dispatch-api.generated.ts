@@ -2502,7 +2502,7 @@ export interface paths {
     /** @description The project's evals, one page {items, total, limit, offset} by slug (limit 1-200, default 50), each its current definition (every field of eval_versions, read through evals_current), its owner, each listed series with its statistics over the window [from, to) (RFC3339, default the last 7 days, at most 84) and over compare_from..compare_to (both or neither, at most 84 days; the two need not be of one length), the change between them, data_since (the series' first day; a range that starts before it reads every statistic null, "no data", never 0), the count of rows that reached the project through a repository, and for a headline series a per-day array; and the verdict of its target (null where the target is off). Every figure is folded from the stored day rows of the UTC days the range covers, through the one fold the eval's source names, or its series' agg for a logged eval; window and compare state those days, freshness the oldest row folded and the day-row refresher's age. ?kind= (delivery, legion, ci, experiment) keeps one kind; ?repo=, repeated, folds those repositories' rows in place of the project's. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project. */
     get: operations["getApiV1ProjectsByKeyEvals"];
     put?: never;
-    /** @description Register an eval or change its definition {slug, actor?, name?, question?, number_rule?, decision?, doc_block?, doc_text?, failure_modes?, unit?, direction?, target?, target_inclusive?, target_judges?, owner_role?, person?, issue_key?, kind?, source?, state?, replaced_by?, links?, series?}: the next version, written in one transaction with every field the body leaves out copied from the newest version (target: null turns the target off); a series named in series is registered or changed the same way. doc_text replaces the eval's method in its section of the project's evals-md document (not with doc_block). Each link {rel, href, label} is stored with the server's recorded_at, and its far side is never fetched. Answers 201 {items, total, limit, offset} with the one version written, or 200 with the version that stands where the body changed nothing; 400 with a stable code (EVAL_SLUG_INVALID, EVAL_FIELD_INVALID, EVAL_SERIES_INVALID, EVAL_DOC_TEXT_EMPTY, LINK_HREF_NOT_ABSOLUTE, LINK_REL_MISSING), 404 PROJECT_NOT_FOUND. */
+    /** @description Register an eval or change its definition {slug, actor?, name?, question?, number_rule?, decision?, doc_block?, doc_text?, failure_modes?, unit?, direction?, target?, target_inclusive?, target_judges?, owner_role?, person?, issue_key?, kind?, source?, state?, replaced_by?, links?, series?}: the next version, written in one transaction with every field the body leaves out copied from the newest version (target: null turns the target off); a series named in series is registered or changed the same way. doc_text replaces the eval's method in its section of the project's evals-md document (not with doc_block) unless that section holds it already. Each link {rel, href, label} is stored with the server's recorded_at, and its far side is never fetched. Answers 201 {items, total, limit, offset} with what it wrote, a version of the definition or of a series, or 200 with the versions that stand where the body changed nothing; 400 with a stable code (EVAL_SLUG_INVALID, EVAL_FIELD_INVALID, EVAL_SERIES_INVALID, EVAL_DOC_TEXT_EMPTY, LINK_HREF_NOT_ABSOLUTE, LINK_REL_MISSING), 404 PROJECT_NOT_FOUND, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT where the project's evals-md slug names a file. */
     post: operations["postApiV1ProjectsByKeyEvals"];
     delete?: never;
     options?: never;
@@ -2553,7 +2553,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Log one batch of readings of one eval {readings, actor?}, each reading {series, row_kind, measured_at, value or value_absent_reason, row_key?, col?, unit?, n?, n_unit?, ci_low?, ci_high?, ci_level?, attributes?, links?, source?, note?, replaces?}: stored in one transaction or not at all, under an Idempotency-Key the write requires (400 IDEMPOTENCY_KEY_REQUIRED), a repeat under the key answered the first write's answer. A slug no eval holds registers its eval with the caller as owner, no target and state active; a reading under a computed eval's slug is stored and answered by its items, never folded into its value. A correction is a new reading naming the one it replaces. The server sets recorded_by and recorded_at, and refuses a row carrying either. A refused batch stores nothing and answers 400 {code, error, rows}, rows naming each refused row by its index with its own code (READING_INVALID, READING_VALUE_OR_REASON, READING_FIELD_SERVER_SET, READING_SERIES_INVALID, READING_REPLACES_UNKNOWN, READING_ALREADY_REPLACED, LINK_HREF_NOT_ABSOLUTE, LINK_REL_MISSING). The write takes no query key but session: any other is 400 INVALID_QUERY naming it. Answers 201 {items, total, limit, offset, definition, registered}. */
+    /** @description Log one batch of readings of one eval {readings, actor?}, each reading {series, row_kind, measured_at, value or value_absent_reason, row_key?, col?, unit?, n?, n_unit?, ci_low?, ci_high?, ci_level?, attributes?, links?, source?, note?, replaces?}: stored in one transaction or not at all, under an Idempotency-Key the write requires (400 IDEMPOTENCY_KEY_REQUIRED), a repeat under the key answered the first write's answer. A slug no eval holds registers its eval with the caller as owner, no target and state active; a reading under a computed eval's slug is stored and answered by its items, never folded into its value. A correction is a new reading naming the one it replaces. The server sets recorded_by and recorded_at, and refuses a row carrying either. A refused batch stores nothing and answers 400 {code, error, rows}, rows naming each refused row by its index with its own code (READING_INVALID, READING_VALUE_OR_REASON, READING_FIELD_SERVER_SET, READING_SERIES_INVALID, READING_REPLACES_UNKNOWN, READING_ALREADY_REPLACED, LINK_HREF_NOT_ABSOLUTE, LINK_REL_MISSING); a slug that is no slug is 400 EVAL_SLUG_INVALID, a batch of no reading 400 READINGS_EMPTY, an unknown project 404 PROJECT_NOT_FOUND, and a project whose evals-md slug names a file 409 EVALS_DOCUMENT_NOT_A_DOCUMENT. The write takes no query key but session: any other is 400 INVALID_QUERY naming it. Answers 201 {items, total, limit, offset, definition, registered}. */
     post: operations["postApiV1ProjectsByKeyEvalsBySlugReadings"];
     delete?: never;
     options?: never;
@@ -12611,6 +12611,33 @@ export interface operations {
           "application/json": components["schemas"]["EvalRegisterResponse"];
         };
       };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12740,6 +12767,24 @@ export interface operations {
       };
       /** @description Bad Request */
       400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
+      /** @description Conflict */
+      409: {
         headers: {
           [name: string]: unknown;
         };

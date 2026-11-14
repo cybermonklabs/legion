@@ -26,8 +26,8 @@ const (
 // so the seven bars of an issue add up to its work time (barPartsOf).
 const barNoRole = "no_role"
 
-// bars are the seven stacked bars in the order the card draws them. The merger's three phases
-// are the one declaration of that grouping (legion.MergerPhases).
+// bars are the seven stacked bars of metric 2, each with the phases it holds. The merger's three
+// phases are the one declaration of that grouping (legion.MergerPhases).
 var bars = []struct {
 	Role   string
 	Phases []string

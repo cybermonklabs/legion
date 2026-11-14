@@ -44,7 +44,7 @@ func (w window) String() string {
 	return w.from.Format(time.DateOnly) + ".." + w.to.Format(time.DateOnly)
 }
 
-// liveWindow is the window as a live view names one.
+// live is the window as a live view names one.
 func (w window) live() map[string]string {
 	return map[string]string{"from": w.from.Format(time.RFC3339), "to": w.to.Format(time.RFC3339)}
 }

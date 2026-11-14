@@ -286,7 +286,7 @@ func TestMergePRMergesOnePullRequestAtTheMomentNamed(t *testing.T) {
 	}
 	if !stored.Equal(at) || merged.MergeDay != at.Format(time.DateOnly) || merged.WasMergeDay == nil ||
 		!slices.Contains(merged.DaysAffected, *merged.WasMergeDay) || !slices.Contains(merged.DaysAffected, merged.MergeDay) {
-		t.Errorf("%s merged at %s, the result %+v, want %s and both of its days", written.Newest, stored, merged, at)
+		t.Fatalf("%s merged at %s, the result %+v, want %s and both of its days", written.Newest, stored, merged, at)
 	}
 	if after := count(t, database, changes); after <= before {
 		t.Errorf("the merge logged %d pull-request changes, want one at least", after-before)

@@ -262,7 +262,8 @@ func executionTime(plan string) float64 {
 	return ms
 }
 
-// scanned is every relation a plan reads, by name, each with how it reads it.
+// scannedRelation matches each scan of a relation in a plan: the scan, the index it uses if any,
+// and the relation's name.
 var scannedRelation = regexp.MustCompile(`((?:Parallel )?(?:Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan|Tid Scan|Tid Range Scan|Sample Scan))(?: Backward)?(?: using (\S+))? on (\S+)`)
 
 // relations is each relation a plan scans, with the scans of it.

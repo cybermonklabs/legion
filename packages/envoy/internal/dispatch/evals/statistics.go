@@ -92,11 +92,20 @@ func FoldStatistics(definition Definition, series []Series, parts []measures.Day
 	return folded
 }
 
-// HeadlineStatistic is the statistic a series of fold agg is stated by where nothing names one:
-// the figure its fold leads with. An eval's target with no judges judges its primary series'
-// headline statistic.
-func HeadlineStatistic(agg string) string {
-	switch agg {
+// HeadlineStatistic is the statistic series, one of definition's, is stated by where nothing
+// names one: the figure its fold leads with. A computed eval's fold names its own
+// (computedHeadlines), since each fold states statistics of its own, which its series' agg need
+// not name (deploy-frequency's `deploys` sums its days and states per_day, deploys, with_prs and
+// with_prs_per_day, no `sum`); a logged series' agg names it. An eval's target with no judges
+// judges its primary series' headline statistic.
+func HeadlineStatistic(definition Definition, series Series) string {
+	if definition.Computed() {
+		if headline, held := computedHeadlines[definition.Source]; held {
+			base, _ := SplitCut(series.Series)
+			return headline(base)
+		}
+	}
+	switch series.Agg {
 	case AggSum:
 		return "sum"
 	case AggRatio:
@@ -109,6 +118,41 @@ func HeadlineStatistic(agg string) string {
 		return "mean"
 	}
 	return "value"
+}
+
+// computedHeadlines is each computed fold's headline statistic of a series, by the fold's source
+// and the series' name before its cut: a statistic the fold states of that series
+// (TestEveryCatalogueSeriesIsStatedByItsHeadline holds each to it).
+var computedHeadlines = map[string]func(series string) string{
+	SourceComputedPrefix + "delivery/measures.FoldDeployFrequency":   stated("per_day"),
+	SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess":  stated("rate"),
+	SourceComputedPrefix + "delivery/measures.FoldLeadTime":          stated("median"),
+	SourceComputedPrefix + "delivery/measures.FoldReworkShare":       stated("rate"),
+	SourceComputedPrefix + "delivery/measures.FoldChangeFailureRate": stated("rate"),
+	SourceComputedPrefix + "delivery/measures.FoldTimeToRestore":     stated("median"),
+	SourceComputedPrefix + "delivery/measures.FoldTiming":            stated("median"),
+	SourceComputedPrefix + "delivery.ListUnownedP0":                  stated("value"),
+	SourceComputedPrefix + "legion/metrics.FoldWorkTime":             stated("median"),
+	SourceComputedPrefix + "legion/metrics.FoldPhaseTime":            stated("median_per_issue"),
+	SourceComputedPrefix + "legion/metrics.FoldIdleTime":             stated("median"),
+	SourceComputedPrefix + "legion/metrics.FoldSlotWait":             stated("median"),
+	SourceComputedPrefix + "legion/metrics.FoldRework": func(series string) string {
+		if series == metrics.SeriesSentBack {
+			return "share"
+		}
+		return "median"
+	},
+	SourceComputedPrefix + "legion/metrics.FoldSplitting": func(series string) string {
+		if series == metrics.SeriesHoursWithChildren || series == metrics.SeriesHoursWithoutChildren {
+			return "median"
+		}
+		return "issues"
+	},
+}
+
+// stated is the headline of a fold that leads every series with one statistic.
+func stated(statistic string) func(string) string {
+	return func(string) string { return statistic }
 }
 
 // oneSeries is the fold of an eval stated by one series alone: each other name answers no figure.

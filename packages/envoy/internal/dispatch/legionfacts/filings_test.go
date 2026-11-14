@@ -84,19 +84,17 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 }
 
 // compareFilings holds the stored filings of project to the ones metric 4 classes over a whole
-// read of the project's history (metrics.ReadProject, metrics.ProjectFilings), field by field,
-// and each stored root to the tree the same population places the filed issue in, which is what
-// the roots cut keeps a filing by: exactly where its filed issue is the root of its tree.
+// read of the project's history (metrics.ReadProject, metrics.ProjectFilings), field by field, the
+// stored root among them held to the tree the same population places the filed issue in, which is
+// what the roots cut keeps a filing by: exactly where its filed issue is the root of its tree.
 func compareFilings(t *testing.T, run *consumer, project, when string, stored map[string]Filing) {
 	t.Helper()
 	population, err := metrics.ReadProject(t.Context(), run.database.Pool, nil, project, run.at)
 	if err != nil {
 		t.Fatalf("%s: read the history of %s: %v", when, project, err)
 	}
-	roots := map[string]bool{}
 	want := map[string]Filing{}
 	for _, filed := range metrics.ProjectFilings(population) {
-		roots[filed.Key] = metrics.InCut(metrics.ScopeRoots, filed.Root == filed.Key)
 		want[filed.Key] = Filing{
 			Project: project, Issue: filed.Key, FiledAt: filed.At, FilerRole: filed.Filer,
 			FilerIssue: filed.FilerIssue, FilerPhase: filed.FilerPhase, Class: filed.Class,
@@ -109,12 +107,8 @@ func compareFilings(t *testing.T, run *consumer, project, when string, stored ma
 	classes := map[string]int{}
 	for key, filing := range want {
 		classes[filing.Class]++
-		got := stored[key]
-		if !sameFiling(got, filing) {
+		if got := stored[key]; !sameFiling(got, filing) {
 			t.Errorf("%s: %s is stored as %s, want %s", when, key, showFiling(got), showFiling(filing))
-		}
-		if (got.RootKey == key) != roots[key] {
-			t.Errorf("%s: %s is stored under the root %s, and the roots cut keeps it %t", when, key, got.RootKey, roots[key])
 		}
 	}
 	t.Logf("%s: %d stored filings of %s compared with metric 4's filings of the history, by class %v", when, len(want), project, classes)

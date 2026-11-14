@@ -191,7 +191,7 @@ func deliveryTimelineCompute(settings delivery.DeliverySettings, pop deliveryPop
 		})
 	}
 	// Listed by head commit time, then id, which the page's live merge mirrors
-	// (applyDelta.ts's ORDERS); applyRuns itself is in ListRuns' creation order.
+	// (applyDelta.ts's ORDERS); applyRuns itself is in delivery.ReadMergedRows' creation order.
 	slices.SortFunc(runViews, func(a, b delivery.DeliveryRunView) int {
 		return cmp.Or(a.HeadAt.Compare(b.HeadAt), cmp.Compare(a.ID, b.ID))
 	})
@@ -242,9 +242,9 @@ type deliveryPopulation struct {
 	withWaiting bool
 	waiting     []delivery.WaitingPullRequest
 	// applyRuns is every deploy run on main GitHub created at or after the window's start
-	// (delivery.ListRuns), oldest creation first, and jobsByRun their jobs: every job of each in
-	// the timeline's read (withWaiting), which lists the runs with their failed jobs, and the
-	// production jobs alone in every other (readDeliveryRows).
+	// (delivery.ReadMergedRows), oldest creation first, and jobsByRun their jobs: every job of
+	// each in the timeline's read (withWaiting), which lists the runs with their failed jobs, and
+	// the production jobs alone in every other (readDeliveryRows).
 	applyRuns []delivery.DeliveryRun
 	jobsByRun map[int64][]delivery.DeliveryRunJob
 	// windowRuns is every deploy run on main started in the window, oldest start first, and
@@ -629,10 +629,10 @@ func runsWhere(runs []delivery.DeliveryRun, jobs map[int64][]delivery.DeliveryRu
 // nextExpiry is the first moment after now at which a preset window of length n, ending at the
 // present, loses something the population holds or its daily series moves: just past the oldest
 // row's merge + n, the oldest run start (each list that filters on starts) + n, the oldest creation
-// among the runs ListRuns read + n, and each waiting entry's ship time + n; and the next UTC
-// midnight (measures.DailySeries's days, measures.go:211), where a whole-day window's first and
-// last days move together. Nothing else in the timeline or the measures reads the present (the
-// LEGION-690 PR's Task 0 checks, Step 17).
+// among the apply runs delivery.ReadMergedRows read + n, and each waiting entry's ship time + n;
+// and the next UTC midnight (measures.DailySeries's days, which measures' windowDays lays out),
+// where a whole-day window's first and last days move together. Nothing else in the timeline or
+// the measures reads the present (the LEGION-690 PR's Task 0 checks, Step 17).
 func nextExpiry(pop deliveryPopulation, n time.Duration, now time.Time) time.Time {
 	next := nextUTCMidnight(now)
 	consider := func(leaves time.Time) {

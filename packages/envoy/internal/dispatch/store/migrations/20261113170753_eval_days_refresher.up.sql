@@ -1,12 +1,16 @@
 -- 20261113170753_eval_days_refresher.up.sql
 --
--- The day-row refresher's own state (dispatch://INFRA-2916, R12; evals.RunRefresher), which keeps
--- every project's eval_days true to its inputs: where it stands in the two feeds it reads, and how
--- far each of its walks over the days has come.
+-- The day-row refresher's own state (dispatch://INFRA-2916, R12; evals.Store.RunRefresher), which
+-- keeps every project's eval_days true to its inputs: where it stands in the two feeds it reads,
+-- and how far each of its walks over the days has come.
 --
 -- eval_days_cursor holds one row per feed the refresher reads, by name: `delivery_changes` (the
 -- seq of the last change a committed pass read) and `events` (the id of the last event, at or
--- below the event log's safe horizon, a committed pass read). updated_at is the moment the pass
+-- below the event log's safe horizon, a committed pass read). at is, on the `delivery_changes`
+-- row, when the change at that seq was recorded (its delivery_changes.at), and null on the
+-- `events` row and for a seq no change holds: a pass that finds the change at its cursor gone from
+-- the log reads it to tell a change pruned after its 24 hours (delivery.PruneChanges), which loses
+-- nothing, from a log that lost changes the cursor never read. updated_at is the moment the pass
 -- that last wrote the row ran as of, which every pass stamps whether or not its feed held anything
 -- new, so evals.Store.RefresherAge reads how long ago the last pass committed. It is a table of
 -- its own rather than rows of issue_facts_cursor: legionfacts.CursorAge reads that table's oldest
@@ -14,8 +18,9 @@
 --
 -- eval_days_walks holds one row per walk the refresher makes over a span of days: the delivery and
 -- CI rows of every project (family `delivery`, project_key ''), since one read of a day's delivery
--- rows builds every project's; the Legion rows of one project (family `legion`); and the zero rows
--- of one project's logged evals (family `logged`).
+-- rows builds every project's; the Legion rows of one project (family `legion`); the zero rows of
+-- one project's logged evals (family `logged`); and one project's unowned-p0 row of today (family
+-- `unowned`), a walk of one day at a time that stands at tomorrow once today's row is written.
 --   built_by   the build whose walk this is. A walk whose build is not the running one is begun
 --              again by that build, which is how a release rebuilds every row of a family an
 --              older build wrote, and while two builds run, each rebuilds in turn.
@@ -32,11 +37,12 @@
 create table eval_days_cursor (
     name text primary key,
     position bigint not null default 0,
+    at timestamptz,
     updated_at timestamptz not null default now()
 );
 
 create table eval_days_walks (
-    family text not null check (family in ('delivery', 'legion', 'logged')),
+    family text not null check (family in ('delivery', 'legion', 'logged', 'unowned')),
     project_key text not null default '',
     built_by text not null,
     next_day date,

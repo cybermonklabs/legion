@@ -386,7 +386,8 @@ func (h *deliveryHub) recheckHeardLocked(g *hubGeneration, view *deliveryView, n
 // showsIssue is whether a write to the issue key, a P0 before or after it when p0, can move the
 // view's answer: the view's population, or its ancestors, names the issue, or the view shows the
 // unowned P0 list and the issue is a P0. A Legion board names its own issues and shows no P0
-// list, so only the first rule reaches it; an evals view names no issue, so only the second does.
+// list, so only the first rule reaches it; an evals view does neither, so no issue write reaches
+// it (its unowned-p0 count is a stored row, whose rewrite the change log carries).
 func (view *deliveryView) showsIssue(key string, p0 bool) bool {
 	_, named := view.issues[key]
 	_, ancestor := view.ancestors[key]
@@ -474,11 +475,11 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		return true
 	case "pull_request":
 		switch view.spec.kind {
-		case deliveryLiveTimeline:
-			// The waiting line reads merges before the window, so every merge before its end can move it.
+		case deliveryLiveTimeline, deliveryLiveMeasures:
+			// The timeline's waiting line reads merges before the window, and the measures'
+			// deploys_with_prs counts a deploy of the window that ships a pull request merged before
+			// it (delivery.Deploys.ShippedBy), so every merge before the window's end can move either.
 			return len(times) == 0 || some(func(t time.Time) bool { return t.Before(to) })
-		case deliveryLiveMeasures:
-			return len(times) == 0 || some(func(t time.Time) bool { return !t.Before(from) && t.Before(to) })
 		default:
 			return some(atOrAfterFrom)
 		}

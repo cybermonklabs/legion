@@ -342,7 +342,8 @@ type evalRegisterInput struct {
 }
 
 // evalRegistered is what a register write left: the eval's newest definition, the newest version
-// of each of its series, and whether the write stored a new version of the definition.
+// of each of its series, and whether the write stored a new version of the definition or of a
+// series.
 type evalRegistered struct {
 	Definition evals.Definition `json:"definition"`
 	Series     []evals.Series   `json:"series"`
@@ -796,7 +797,7 @@ func evalVerdictOf(entry evals.Entry, series []evalSeriesValues) *evalVerdict {
 	if len(judges) == 0 {
 		if index := slices.IndexFunc(entry.Series, func(one evals.Series) bool { return one.IsPrimary }); index >= 0 {
 			primary := entry.Series[index]
-			judges = []string{primary.Series + "." + evals.HeadlineStatistic(primary.Agg)}
+			judges = []string{primary.Series + "." + evals.HeadlineStatistic(definition, primary)}
 		}
 	}
 	target := *definition.Target
@@ -839,10 +840,11 @@ func evalVerdictOf(entry evals.Entry, series []evalSeriesValues) *evalVerdict {
 }
 
 // getProjectEval answers GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,
-// newest first (evals.Store.Versions), the newest stating the window's values as the list read
-// states them, and the method its section of the project's `evals-md` holds (evals.Store.Method).
-// A query key the route does not take is 400 INVALID_QUERY (undeclaredQueryKey), 404
-// PROJECT_NOT_FOUND for a project no row holds, 404 EVAL_NOT_FOUND for a slug no eval of it holds.
+// newest first, read with its current definition and series in one snapshot
+// (evals.Store.EvalVersions), the newest stating the window's values as the list read states
+// them, and the method its section of the project's `evals-md` holds (evals.Store.Method). A query
+// key the route does not take is 400 INVALID_QUERY (undeclaredQueryKey), 404 PROJECT_NOT_FOUND for
+// a project no row holds, 404 EVAL_NOT_FOUND for a slug no eval of it holds.
 func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -869,23 +871,30 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	project, slug := r.PathValue("key"), r.PathValue("slug")
-	entry, err := s.loadEval(ctx, project, slug)
-	if err != nil {
+	if _, err := s.loadProject(ctx, s.deps.Store.Pool, project); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	registry := s.registry()
-	versions, err := registry.Versions(ctx, entry.Definition.EvalID)
+	entry, versions, found, err := registry.EvalVersions(ctx, evals.EvalID(project, slug))
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if !found {
+		s.writeHandlerError(w, evalNotFound(project, slug))
 		return
 	}
 	answer := evalDetailResponse{
 		Items: []evalItem{}, Total: len(versions), Limit: limit, Offset: offset,
 		Window: newEvalRange(ranges.window), Compare: evalCompareRange(ranges.compare),
 	}
+	// The page's bounds, clamped before they are added: an offset up to math.MaxInt is valid, and
+	// offset+limit would overflow.
+	start := min(offset, len(versions))
+	end := start + min(limit, len(versions)-start)
 	var oldest *time.Time
-	for _, version := range versions[min(offset, len(versions)):min(offset+limit, len(versions))] {
+	for _, version := range versions[start:end] {
 		if version.Version != entry.Definition.Version {
 			answer.Items = append(answer.Items, evalItem{Definition: version, Owner: evalOwnerOf(version)})
 			continue
@@ -923,9 +932,14 @@ func (s *server) loadEval(ctx context.Context, project, slug string) (evals.Entr
 		return evals.Entry{}, err
 	}
 	if !found {
-		return evals.Entry{}, errorf(http.StatusNotFound, codeEvalNotFound, "project %s holds no eval %q", project, slug)
+		return evals.Entry{}, evalNotFound(project, slug)
 	}
 	return entry, nil
+}
+
+// evalNotFound is the 404 EVAL_NOT_FOUND of a slug no eval of project holds.
+func evalNotFound(project, slug string) error {
+	return errorf(http.StatusNotFound, codeEvalNotFound, "project %s holds no eval %q", project, slug)
 }
 
 // writeEvalError answers err: a registry refusal (*evals.Error) as its own body, {code, error}
@@ -1010,9 +1024,10 @@ func (s *server) refuseReadingChange(w http.ResponseWriter, r *http.Request) {
 
 // registerEval answers POST /api/v1/projects/{key}/evals: the next version of one eval's
 // definition, and of the series the body names, written in one transaction with every field the
-// body leaves out copied forward (evals.Store.Register). doc_text, when given, replaces the
-// method in the eval's section of the project's `evals-md`. It answers 201 with the version it
-// wrote, or 200 with the version that stands where the body changed no field of the definition.
+// body leaves out copied forward (evals.Store.Register). doc_text, when given and not the method
+// the eval's section of the project's `evals-md` holds already, replaces that method. It answers
+// 201 with what it wrote, a version of the definition or of a series, and 200 with the versions
+// that stand where the body changed no field of the definition or of a series it names.
 func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

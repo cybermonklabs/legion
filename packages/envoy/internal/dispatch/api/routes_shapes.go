@@ -67,7 +67,9 @@ type routeShape struct {
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
 	// object rather than nesting it, write_advice.go:471-517); nil for an answer that carries none.
 	Advice any
-	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
+	// Refusals are this route's refusal answers beyond the errorBody ones every route can give,
+	// each with its status: a body richer than errorBody, or a status the route answers in place
+	// of a success (the 405 of a reading's change).
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
 	// its bytes rather than modelling them; empty for every other route.
@@ -82,13 +84,23 @@ type routeShape struct {
 // --- the query-parameter structs -------------------------------------------------------------
 //
 // One struct per route, or per set of routes reading the same keys, each field carrying the key
-// it is read from. They are declarations: the handlers keep their own reads. Two keys of the API
-// are named by no struct here. `session` is read by actingPerson (server.go) on every route that
-// resolves a person, so it belongs to the whole API rather than to any one operation and the
-// emitter adds it everywhere; the delivery facet of the same name is left out with it. `cursor`
-// on GET /api/v1/issues is read only to refuse it (400 INVALID_QUERY, issue_page.go), and naming
-// it would offer a client a parameter that cannot work. No struct here is ever a request body,
-// and the emitter reads only each field's `query` and `enum` tags and the Go type it carries.
+// it is read from. The handlers keep their own reads of the values; the eval routes read their
+// struct's tags alone, the keys it declares (queryKeysOf, evals.go), to refuse any other key. Two
+// keys of the API are named by no struct here. `session` is read by actingPerson (server.go) on
+// every route that resolves a person, so it belongs to the whole API rather than to any one
+// operation and the emitter adds it everywhere; the delivery facet of the same name is left out
+// with it. `cursor` on GET /api/v1/issues is read only to refuse it (400 INVALID_QUERY,
+// issue_page.go), and naming it would offer a client a parameter that cannot work. No struct here
+// is ever a request body, and the emitter reads only each field's `query` and `enum` tags and the
+// Go type it carries.
+
+// evalRefusals are the eval writes' refusals that carry the registry's own body (evals.Error,
+// writeEvalError): 400, 404 PROJECT_NOT_FOUND and 409 EVALS_DOCUMENT_NOT_A_DOCUMENT.
+var evalRefusals = []routeAnswer{
+	{Status: http.StatusBadRequest, Body: evals.Error{}},
+	{Status: http.StatusNotFound, Body: evals.Error{}},
+	{Status: http.StatusConflict, Body: evals.Error{}},
+}
 
 // projectArtifactsQuery is GET /api/v1/projects/{key}/artifacts's query.
 type projectArtifactsQuery struct {
@@ -593,8 +605,13 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/projects/{key}/evals": {
 		Status: http.StatusCreated, Response: evalRegisterResponse{}, Request: evalRegisterInput{},
-		// A body that changes no field of the definition answers the version that stands, 200.
+		// A body that changes no field of the definition or of a series answers the versions that
+		// stand, 200.
 		Also: []routeAnswer{{Status: http.StatusOK, Body: evalRegisterResponse{}}},
+		// The registry's refusals (writeEvalError): a field the tables would refuse, 400; a
+		// project no row holds, 404 PROJECT_NOT_FOUND; a project whose evals-md slug names a
+		// file, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT.
+		Refusals: evalRefusals,
 	},
 	"GET /api/v1/projects/{key}/evals/{slug}": {
 		Status: http.StatusOK, Response: evalDetailResponse{}, Params: evalDetailQuery{},
@@ -604,9 +621,11 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/projects/{key}/evals/{slug}/readings": {
 		Status: http.StatusCreated, Response: evalReadingsResponse{}, Request: evalReadingsInput{},
-		// A refused batch names every refused row by its index beside the code of the first
-		// (evals.Error); every other refusal is errorBody's.
-		Refusals: []routeAnswer{{Status: http.StatusBadRequest, Body: evals.Error{}}},
+		// A refused batch names every refused row by its index beside the code of the first; a
+		// slug that is no slug and an empty batch are 400 too, a project no row holds 404 and a
+		// project whose evals-md slug names a file 409, each the registry's own body
+		// (writeEvalError); every other refusal is errorBody's.
+		Refusals: evalRefusals,
 	},
 	// The two rows that refuse every change of a reading answer no success: 204 is the shape a
 	// success with no body would take, and the one answer either gives is the 405.

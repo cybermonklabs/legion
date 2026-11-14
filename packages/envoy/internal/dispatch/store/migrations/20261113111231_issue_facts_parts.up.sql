@@ -30,8 +30,9 @@
 --   children         how many issues of the project have it as their tree root.
 --   repo             the repository the issue resolves to by the server's one rule (its own,
 --                    the nearest one up its parent chain, else its project's default mapping,
---                    refs.IssueRepoTerms), and null where none resolves: the repository an
---                    eval's per-repository day rows count the issue for.
+--                    refs.IssueRepoTerms), and null where none resolves, as of the pass that
+--                    wrote the row: an eval item shows it, while the day rows and the items
+--                    route's repo filter resolve the issue again when they read it.
 --
 -- Twelve columns in one statement, so issue_facts is locked once. Each is nullable or carries a
 -- constant default, which Postgres records in the catalog and writes into no stored row; the

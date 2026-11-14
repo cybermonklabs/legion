@@ -222,9 +222,10 @@ func TestTheTriggerStoresTheTitleTheEventsReadAnswered(t *testing.T) {
 
 // The boot's fill (FillSessionTitles) stores, for the events stored before the trigger existed,
 // the titles the read of events it replaces answered, over more sessions than two of its batches
-// take, and leaves a title the trigger wrote for a later event in place. Once it has finished it
-// owes nothing: the progress row is gone, and a second fill reads one empty table. A fill run again
-// over the filled table writes no row.
+// take, and writes no row where the trigger already stored the title of the session's newest
+// event: it writes one row fewer than the titled sessions. Once it has finished it owes nothing:
+// the progress row is gone, and a second fill reads one empty table. A fill run again over the
+// filled table writes no row.
 func TestTheFillStoresTheTitleTheEventsReadAnswered(t *testing.T) {
 	store := migratedTitlesStore(t)
 	ctx := context.Background()
@@ -239,8 +240,8 @@ func TestTheFillStoresTheTitleTheEventsReadAnswered(t *testing.T) {
 	if stored := storedTitles(t, store); len(stored) != 0 {
 		t.Fatalf("session_titles holds %v before the fill; want nothing, the events having been stored before the trigger", stored)
 	}
-	// A retitle once the trigger is live, which the fill must not replace with the title it reads
-	// from the older events.
+	// A retitle once the trigger is live: the trigger stores its title, which is the newest event's
+	// and so the one the fill reads too, and the fill finds that row naming its event already.
 	if _, err := store.Pool.Exec(ctx, `
 		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
 		values ($1, 100000, 'comment.created', $2::jsonb, '{}', false, '2026-09-02T09:00:00Z')

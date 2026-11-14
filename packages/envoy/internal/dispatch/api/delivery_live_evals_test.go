@@ -150,11 +150,12 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 		filingMarks, len(views), len(others), evalsMarks)
 }
 
-// TestAnEvalsViewIsMarkedByAP0WriteAndNotByTheSampler: an evals view shows the unowned-p0 eval,
-// so an event of a P0 issue marks it, as it marks the timeline; an event of an issue that is no
-// P0 marks neither. The sampler's read of the project's daemon, once a minute, marks the
+// TestAP0WriteAndTheSamplerMarkNoEvalsView: an evals view shows the unowned-p0 eval, whose count
+// it reads from the project's stored row, so an event of a P0 issue, which moves no stored row,
+// marks the timeline, which lists the open P0 issues, and no evals view; an event of an issue that
+// is no P0 marks neither. The sampler's read of the project's daemon, once a minute, marks the
 // project's Legion board and leaves its evals view.
-func TestAnEvalsViewIsMarkedByAP0WriteAndNotByTheSampler(t *testing.T) {
+func TestAP0WriteAndTheSamplerMarkNoEvalsView(t *testing.T) {
 	hub := &deliveryHub{clock: newStillHubClock()}
 	board, list, timeline := boardViewShowing("INFRA", "INFRA-7"), evalsViewOf("INFRA", 28, time.Time{}, time.Time{}),
 		deliveryViewShowing(deliveryLiveTimeline)
@@ -190,7 +191,7 @@ func TestAnEvalsViewIsMarkedByAP0WriteAndNotByTheSampler(t *testing.T) {
 		return dirty()
 	}
 
-	if got, want := apply(issueEvent("INFRA-9", 0)), map[string]bool{"board": false, "evals": true, "timeline": true}; !reflect.DeepEqual(got, want) {
+	if got, want := apply(issueEvent("INFRA-9", 0)), map[string]bool{"board": false, "evals": false, "timeline": true}; !reflect.DeepEqual(got, want) {
 		t.Errorf("a P0's write marks %v, want %v", got, want)
 	}
 	if got, want := apply(issueEvent("INFRA-10", 2)), map[string]bool{"board": false, "evals": false, "timeline": false}; !reflect.DeepEqual(got, want) {
@@ -207,7 +208,10 @@ func TestAnEvalsViewIsMarkedByAP0WriteAndNotByTheSampler(t *testing.T) {
 // recomputes the evals views of its project and no other view: a reading (of a computed eval, so
 // the write logs its reading alone), a register write (a version), and a day row. A pull request
 // recomputes the timeline and no evals view; the day row the refresher then writes for the pull
-// request's day is what recomputes them, and sends them the eval it moved.
+// request's day is what recomputes them, and sends them the eval it moved. So it is for a P0
+// issue: its event recomputes the timeline alone, and the unowned-p0 row of today the refresher
+// writes for it (evals.Store.WriteUnownedP0Day) recomputes INFRA's evals views and sends them the
+// new count.
 //
 // Each step reads the kinds its write logged, so the step exercises the kind it names and no
 // other, and counts every recompute that began after it, of any view.
@@ -338,6 +342,23 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 		}
 	}, []string{"eval_days"}, []string{"a", "b"})
 	sent("the day row", map[string][]string{"a": {"INFRA/deploy-frequency"}, "b": {"INFRA/deploy-frequency"}})
+
+	step("a P0 issue of INFRA opened", func() {
+		response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues",
+			map[string]any{"project": "INFRA", "title": "Production is down", "priority": 0}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("open the P0 issue: status %d, body %s", response.Code, response.Body.String())
+		}
+	}, nil, []string{"t"})
+	conns["t"].delta(t, 5*time.Second, "t")
+	sent("the P0 issue's event", nil)
+
+	step("the unowned-p0 row the refresher writes for the P0 issue", func() {
+		if err := rig.hub.server.registry().WriteUnownedP0Day(t.Context(), "INFRA", today, testServerBuild); err != nil {
+			t.Fatalf("write INFRA's unowned-p0 row of today: %v", err)
+		}
+	}, []string{"eval_days"}, []string{"a", "b"})
+	sent("the unowned-p0 row", map[string][]string{"a": {"INFRA/unowned-p0"}, "b": {"INFRA/unowned-p0"}})
 }
 
 // TestAnEvalsViewsSnapshotIsTheListRead: an evals view's snapshot is, byte for byte, the body

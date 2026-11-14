@@ -1631,8 +1631,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/legion/metrics/*'
-              # The base head's golden answers the Legion folds and stored parts are held to
-              # (evals/legion_golden_test.go, legionfacts/golden_parts_test.go).
+              # The soak compiles legion/metrics, so this filter takes its testdata as it takes
+              # every compiled package's (the rule above), though no test of the soak reads it.
               - 'packages/envoy/internal/dispatch/legion/metrics/testdata/**'
               - 'packages/envoy/internal/dispatch/legionfacts/*'
               - 'packages/envoy/internal/dispatch/model/*'

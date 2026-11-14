@@ -296,7 +296,8 @@ const (
 // It names no issue and no session, and reads no delivery settings: what moves it is a write of
 // its project's readings, versions or day rows, each of which the change log carries (touchedBy).
 // It sets no expiry, so no expire narrows it: a window is whole UTC days, which move at midnight,
-// and the refresher's pass at midnight writes the new day's rows, whose change marks the view.
+// and the refresher's pass at midnight writes every project's rows of the new day, its
+// unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose change marks the view.
 func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	from, to := spec.from, spec.to
 	if spec.preset > 0 {

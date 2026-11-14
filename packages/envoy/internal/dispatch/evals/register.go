@@ -83,8 +83,9 @@ type SeriesChange struct {
 
 // Registered is what a register write left: the eval's newest definition, the newest version of
 // each of its series (sorted by name), and whether the write stored a new version of the
-// definition. A write that changes no field of the definition stores none, and one that changes
-// no field of a series stores no version of that series.
+// definition or of any series. A write that changes no field of the definition stores none of it,
+// and one that changes no field of a series stores no version of that series; a write that stores
+// neither wrote nothing.
 type Registered struct {
 	Definition Definition
 	Series     []Series
@@ -121,9 +122,17 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 		next.WrittenVia, next.WrittenBy = via, change.Caller.Recorded()
 		switch {
 		case change.DocText.Set:
-			next.DocBlock = uuid.NewString()
-			if err := s.writeMethod(ctx, w, next.Slug, current.DocBlock, next.DocBlock, change.DocText.Value, change.Caller); err != nil {
+			held, err := s.holdsMethod(ctx, w, current.DocBlock, change.DocText.Value)
+			if err != nil {
 				return err
+			}
+			// A method the eval's section holds already is no change: its block and the
+			// definition stand as they are.
+			if !held {
+				next.DocBlock = uuid.NewString()
+				if err := s.writeMethod(ctx, w, next.Slug, current.DocBlock, next.DocBlock, change.DocText.Value, change.Caller); err != nil {
+					return err
+				}
 			}
 		case !found && next.DocBlock == "":
 			next.DocBlock = uuid.NewString()
@@ -162,7 +171,7 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			if !inserted {
 				return fmt.Errorf("version %d of series %s of %s was written by a write that holds no lock of the eval", nextSeries.Version, nextSeries.Series, evalID)
 			}
-			series[stored.Series] = stored
+			series[stored.Series], answer.Wrote = stored, true
 		}
 		answer.Series = sortedSeries(series)
 		return nil

@@ -231,8 +231,8 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 		unwritten++
 	}
 	for _, slug := range legionDaySlugs {
-		if got, want := slices.Sorted(slices.Values(LegionSeries(slug))), slices.Sorted(slices.Values(built[slug])); !slices.Equal(got, want) {
-			t.Errorf("%s: LegionSeries is %v, the builders and the root figures' rule %v", slug, got, want)
+		if got, want := slices.Sorted(slices.Values(LegionSeries(slug))), seriesNames(entryOf(t, slug)); !slices.Equal(got, want) {
+			t.Errorf("%s: LegionSeries is %v, the catalogue's series %v", slug, got, want)
 		}
 	}
 	settings := delivery.DeliverySettings{StagingE2EJobName: new("e2e"), StagingApplyJobName: new("staging-apply")}
@@ -267,6 +267,30 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 	}
 	t.Logf("%d series of %d evals are the series the day builders build, %d of them the root figures' children cut no day row holds",
 		compared, len(catalogue)-2, unwritten)
+}
+
+// TestEveryCatalogueSeriesIsStatedByItsHeadline: each listed series of each catalogue eval states
+// its headline statistic (HeadlineStatistic) among the statistics its fold answers, so a target
+// written with no judges, which judges the primary series' headline, judges a figure the read
+// states rather than one no read can give a value.
+func TestEveryCatalogueSeriesIsStatedByItsHeadline(t *testing.T) {
+	days := Range{From: time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)}
+	checked := 0
+	for _, entry := range catalogue {
+		folded := FoldStatistics(entry.definition, entry.series, nil, days)
+		for _, series := range entry.series {
+			if !series.Listed {
+				continue
+			}
+			checked++
+			headline := HeadlineStatistic(entry.definition, series)
+			if _, stated := folded[series.Series][headline]; !stated {
+				t.Errorf("%s's %s (%s) is stated by %q, which its fold does not state: %v", entry.definition.Slug, series.Series,
+					series.Agg, headline, slices.Sorted(maps.Keys(folded[series.Series])))
+			}
+		}
+	}
+	t.Logf("%d listed series of %d evals each state their headline statistic", checked, len(catalogue))
 }
 
 // TestTheRequiredMethodsSayWhatTheSpecRequires: slot wait's method states flow analysis version

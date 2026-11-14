@@ -45,13 +45,13 @@ import (
 // (issues.project_key). One that names no issue, or an issue no row holds, counts for the project
 // its repository is mapped to in repo_projects. A deploy run counts for every project the pull
 // requests it ships count for, once in each however many of a project's it ships; a run that ships
-// none (one that did not reach production, or a deploy that shipped nothing) counts for the
-// project of its own repository. A CI run counts for the project of its repository, and so does
-// each of its jobs. A repository is mapped by its name compared case-insensitively, or by the name
-// its mapping says it was renamed to (refs.CanonicalRepoSQL's rule). A row whose project resolves
-// to nothing (it names no issue, and repo_projects maps no repository of that name) counts for no
-// project and is in no project's day rows; the delivery routes, which follow no project, still
-// count it.
+// none (one that did not reach production, or a deploy that shipped nothing), or whose every
+// shipped pull request counts for no project, counts for the project of its own repository. A CI
+// run counts for the project of its repository, and so does each of its jobs. A repository is
+// mapped by its name compared case-insensitively, or by the name its mapping says it was renamed
+// to (refs.CanonicalRepoSQL's rule). A row whose project resolves to nothing (it names no issue,
+// and repo_projects maps no repository of that name) counts for no project and is in no project's
+// day rows; the delivery routes, which follow no project, still count it.
 //
 // A row that reached its project through repo_projects rather than through an issue counts in the
 // via_repository of every day row that counts it: a pull request that names no issue (or an
@@ -249,6 +249,14 @@ func utcMidnight(t time.Time) time.Time {
 // delivery.Deploys.ShippedBy's, the rule the routes count with_prs by; the pull requests merged
 // before the day are read for them alone.
 func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time) (DeliveryDay, error) {
+	return s.readDeliveryDay(ctx, settings, day, nil)
+}
+
+// readDeliveryDay is ReadDeliveryDay, its deploy runs created from the day's start on taken from
+// applyRows where it is not nil (delivery.MergedRowsWith): rows a walk read once from the first of
+// its days, which every later day of the walk takes its part of rather than reading every run
+// created from its own start to now again.
+func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time, applyRows *delivery.ApplyRows) (DeliveryDay, error) {
 	pool := s.database.Pool
 	day = utcMidnight(day)
 	end := day.AddDate(0, 0, 1)
@@ -259,7 +267,12 @@ func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 	if err != nil {
 		return DeliveryDay{}, fmt.Errorf("read the deploys of %s: %w", day.Format(time.DateOnly), err)
 	}
-	merged, err := delivery.ReadMergedRows(ctx, pool, settings, day, end, false)
+	var merged delivery.MergedRows
+	if applyRows != nil {
+		merged, err = delivery.MergedRowsWith(ctx, pool, *applyRows, day, end)
+	} else {
+		merged, err = delivery.ReadMergedRows(ctx, pool, settings, day, end, false)
+	}
 	if err != nil {
 		return DeliveryDay{}, fmt.Errorf("read the pull requests of %s: %w", day.Format(time.DateOnly), err)
 	}

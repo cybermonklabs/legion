@@ -110,7 +110,11 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 			if err != nil {
 				return err
 			}
-			if err := writeDays(ctx, w, definition, byName, readings, removed, batch.BuiltBy); err != nil {
+			folded, err := foldedReadings(ctx, w.Tx, removed)
+			if err != nil {
+				return err
+			}
+			if err := writeDays(ctx, w, definition, byName, readings, folded, batch.BuiltBy); err != nil {
 				return err
 			}
 		}
@@ -121,6 +125,37 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 		return Written{}, err
 	}
 	return written, nil
+}
+
+// foldedReadings is each of replaced that its eval's day rows hold: one written while the eval
+// was logged (the version in force at its recorded_at, which is the write's own transaction time
+// as a version's created_at is, has source logged). A reading written while the eval was computed
+// was stored and never folded (WriteReadings), so a correction of it after a register write made
+// the eval logged takes nothing away from a day row, where taking its value away would take
+// another reading's equal sample.
+func foldedReadings(ctx context.Context, tx pgx.Tx, replaced []Reading) ([]Reading, error) {
+	if len(replaced) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, len(replaced))
+	for index, reading := range replaced {
+		ids[index] = reading.ID
+	}
+	rows, err := tx.Query(ctx, `
+		select r.id::text from eval_readings r
+		where r.id = any($1::text[]::uuid[])
+		  and (select v.source from eval_versions v
+		       where v.eval_id = r.eval_id and v.created_at <= r.recorded_at
+		       order by v.version desc limit 1) = $2
+	`, ids, SourceLogged)
+	if err != nil {
+		return nil, fmt.Errorf("read which corrected readings were folded: %w", err)
+	}
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read which corrected readings were folded: %w", err)
+	}
+	return slices.DeleteFunc(slices.Clone(replaced), func(reading Reading) bool { return !slices.Contains(held, reading.ID) }), nil
 }
 
 // registerMissing answers the eval's definition, registering the eval and every series of the

@@ -129,9 +129,8 @@ type Filed struct {
 	Ancestors []string
 }
 
-// Population is every fact one computation of the facts reads. From and To are the window it
-// covers: From is the zero time for both reads, which run from the project's beginning, and To is
-// the moment an open issue's hours run to.
+// Population is every fact one computation of the facts reads, from the project's beginning
+// (From, the zero time for both reads) to To, the moment an open issue's hours run to.
 type Population struct {
 	Project string
 	From    time.Time
@@ -196,9 +195,9 @@ func ReadIssues(ctx context.Context, pool *store.Pool, github *githubapp.Client,
 	})
 }
 
-// read is the body the two readers share, over the window from the beginning to `to`. filed
-// reads the population's filings, before the scope is chosen because the scope holds each
-// filer's issue, and scope names which issues the seven detail reads cover.
+// read is the body the two readers share, from the beginning to `to`. filed reads the
+// population's filings, before the scope is chosen because the scope holds each filer's issue,
+// and scope names which issues the seven detail reads cover.
 func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, to time.Time, filed func(ctx context.Context, p *Population) error, scope func(*Population) []string) (*Population, error) {
 	population := &Population{Project: project, To: to, Issues: map[string]*Issue{}}
 	if err := population.readIssues(ctx, pool, project); err != nil {
@@ -256,10 +255,9 @@ func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 	return population, nil
 }
 
-// readIssues reads the project's issues. It reads all of them rather than the window's: the window
-// names which issues finished, while the rules read their whole trees (a child that finished in
-// the window belongs to a root that may not have) and each issue's whole life (the work time runs
-// from its first worker event, which is older than the window whenever the issue is).
+// readIssues reads the project's issues, all of them: the rules read each issue's whole tree (a
+// child that finished belongs to a root that may not have) and its whole life (the work time runs
+// from its first worker event).
 func (p *Population) readIssues(ctx context.Context, pool *store.Pool, project string) error {
 	rows, err := pool.Query(ctx, `
 		select key, title, priority, parent_key, created_at, closed_at
@@ -289,7 +287,7 @@ func (p *Population) readIssues(ctx context.Context, pool *store.Pool, project s
 	return nil
 }
 
-// readFiled reads every `issue.created` event of the window a session wrote, whatever project
+// readFiled reads every `issue.created` event before `to` a session wrote, whatever project
 // the new issue belongs to — an issue filed out of the filer's tree is one of metric 4's
 // classes — and keeps the ones a Legion session of this project filed.
 func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project string, from, to time.Time) error {

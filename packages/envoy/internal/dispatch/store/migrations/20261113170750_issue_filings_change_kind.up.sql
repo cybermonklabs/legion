@@ -2,7 +2,7 @@
 --
 -- The delivery change log admits one more kind, issue_filings (dispatch://INFRA-2916, R12). A
 -- write of a stored filing (issue_filings, 20261113082155) logs a change under it, so the day-row
--- refresher (evals.RunRefresher) rewrites the splitting rows of the filing's day. The Legion facts
+-- refresher (evals.Store.RunRefresher) rewrites the splitting rows of the filing's day. The Legion facts
 -- consumer writes a filing when its `issue.created` event reaches it, and rewrites it when the
 -- filing's class, its filer's phase or the filed issue's tree root moves. None of those writes
 -- moves an issue_facts row, so without a kind of their own no change would say that a filing day's

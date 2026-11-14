@@ -22,7 +22,12 @@
 --                   rewrites when that tree moves, as it does issue_facts.root_key, so the roots
 --                   and children cuts read the tree of today and not the tree at the filing.
 -- issue_filings_day, (project_key, filed_at), is the read of one project's filings of one day,
--- which is what a day row of the splitting eval counts.
+-- which is what a day row of the splitting eval counts. issue_filings_filer, (project_key,
+-- filer_issue) over the filings a phase worker made (a filer issue that is not the empty string;
+-- the controller's name none), is the Legion facts consumer's read of the stored filings whose
+-- filer's issue a pass recomputes (legionfacts' filingsToCompute), which a filing's class and
+-- phase move with; that read carries the same predicate, so its plan proves the index without
+-- the values it runs with.
 --
 -- One new table: nothing existing is read or rewritten, and the release before this one neither
 -- reads nor writes it, so the two builds roll together (cmd/dispatch/README.md, "Database
@@ -40,3 +45,4 @@ create table issue_filings (
     root_key text not null default ''
 );
 create index issue_filings_day on issue_filings (project_key, filed_at);
+create index issue_filings_filer on issue_filings (project_key, filer_issue) where filer_issue <> '';

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -140,6 +141,53 @@ func (s *Store) writeMethod(ctx context.Context, w *writeTx, slug, oldBlock, blo
 	return s.editDocument(ctx, w, document, ops, actor)
 }
 
+// holdsMethod reports whether the method block docBlock names in the project's `evals-md`
+// document holds method already (sameMethod): a register write whose doc_text is the method its
+// eval's section holds writes no new block, and so no new version. It is false where docBlock is
+// empty, or the project has no such document or the document no such block.
+func (s *Store) holdsMethod(ctx context.Context, w *writeTx, docBlock, method string) (bool, error) {
+	if docBlock == "" {
+		return false, nil
+	}
+	document, found, err := findDocument(ctx, w)
+	if err != nil || !found {
+		return false, err
+	}
+	markdown, blocks, err := s.documents.TextWithBlocks(ctx, document.id)
+	if err != nil {
+		return false, fmt.Errorf("read the %s document of %s: %w", DocumentSlug, w.project, err)
+	}
+	held, found := blockMethod(markdown, blocks, docBlock)
+	return found && sameMethod(held, method), nil
+}
+
+// sameMethod reports whether a method a section holds and a method a register write sends read
+// the same. The document keeps a method in its canonical markdown, each typed block in it given an
+// id and its attributes their defaults, so the two are compared as that markdown with every
+// block's id set aside (canonicalMethod); either failing to parse is no match.
+func sameMethod(held, sent string) bool {
+	heldCanonical, heldErr := canonicalMethod(held)
+	sentCanonical, sentErr := canonicalMethod(sent)
+	return heldErr == nil && sentErr == nil && heldCanonical == sentCanonical
+}
+
+// canonicalMethod is method as the document's markdown writes it (pmdoc.Parse, then
+// pmdoc.Render), with every block's id the same placeholder, since a typed block is written with
+// one.
+func canonicalMethod(method string) (string, error) {
+	tree, err := pmdoc.Parse(method)
+	if err != nil {
+		return "", err
+	}
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if _, held := node.Attrs[pmdoc.BlockIDAttr]; held {
+			node.Attrs[pmdoc.BlockIDAttr] = "block"
+		}
+		return true
+	})
+	return pmdoc.Render(tree)
+}
+
 // lockDocumentOwner locks the document's owner row before an edit takes its room, as the edit
 // route locks it (requireOpenOwnerStatus), so a registry write takes the two in the order every
 // other writer of the document does.
@@ -237,11 +285,18 @@ func (s *Store) Method(ctx context.Context, project, docBlock string) (string, b
 	if err != nil {
 		return "", false, fmt.Errorf("read the %s document of %s: %w", DocumentSlug, project, err)
 	}
-	index := slices.IndexFunc(blocks, func(block model.ArtifactBlock) bool { return block.ID == docBlock })
+	method, found := blockMethod(markdown, blocks, docBlock)
+	return method, found, nil
+}
+
+// blockMethod is the method the block id names holds among blocks, the blocks of markdown
+// (methodText of its markdown), found false where markdown holds no block of that id.
+func blockMethod(markdown string, blocks []model.ArtifactBlock, id string) (string, bool) {
+	index := slices.IndexFunc(blocks, func(block model.ArtifactBlock) bool { return block.ID == id })
 	if index < 0 || blocks[index].From < 0 || blocks[index].To > len(markdown) || blocks[index].From > blocks[index].To {
-		return "", false, nil
+		return "", false
 	}
-	return methodText(markdown[blocks[index].From:blocks[index].To]), true, nil
+	return methodText(markdown[blocks[index].From:blocks[index].To]), true
 }
 
 // methodText is a method block's markdown without its fence: the lines between the line that

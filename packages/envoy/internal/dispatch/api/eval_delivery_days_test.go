@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -331,9 +333,8 @@ type evalDaysWindow struct {
 // route's whole answer, since every run is the deploy repository's (every other repository's cut
 // reads no data for them). Every value of those answers is compared, the failure-flag measures'
 // no value on both sides and deploys_with_prs and with_prs_per_day included: a deploy with pull
-// requests is one
-// that ships any, whenever it merged, on both sides (delivery.Deploys.ShippedBy). It answers the
-// window's tally and every difference found.
+// requests is one that ships any, whenever it merged, on both sides (delivery.Deploys.ShippedBy).
+// It answers the window's tally and every difference found.
 func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *evals.Store, fixture deliverytest.Fixture, settings delivery.DeliverySettings, entries []evals.Entry, stored []evals.DayRow, from, to time.Time) (evalDaysWindow, []string) {
 	t.Helper()
 	tally := evalDaysWindow{from: from, to: to}
@@ -365,9 +366,6 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		}
 		return decodeDeliveryOracleTree(t, response.Body.Bytes())
 	}
-	// The failure-flag measures read no value on both sides while no failure source exists: no
-	// day row of their evals, and no part the route builds, so both fold to no value.
-	var measuresDropped []string
 	pipelineDropped := []string{"computed_at", "freshness", "targets", "pr_checks.failing_jobs"}
 
 	wholeMeasures := route("/api/v1/delivery/measures", query)
@@ -376,7 +374,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 	if folded, missing := foldedMeasures(all, window); missing != "" {
 		differ("all repositories: %s", missing)
 	} else {
-		compare("the measures of all repositories", subtree(oracleTree(t, folded), "", measuresDropped...), subtree(wholeMeasures, "measures", measuresDropped...))
+		compare("the measures of all repositories", oracleTree(t, folded), subtree(wholeMeasures, "measures"))
 		tally.withPRs = folded.DeployFrequency.DeploysWithPRs
 	}
 	compare("the pipeline of all repositories",
@@ -412,8 +410,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 			continue
 		}
 		for _, field := range []string{"deploy_frequency", "deploy_run_success", "daily"} {
-			compare("the "+field+" of "+repo, subtree(oracleTree(t, folded), field, dropBelow(field, measuresDropped)...),
-				subtree(wholeMeasures, "measures."+field, dropBelow(field, measuresDropped)...))
+			compare("the "+field+" of "+repo, subtree(oracleTree(t, folded), field), subtree(wholeMeasures, "measures."+field))
 		}
 		cutPipeline := subtree(oracleTree(t, foldedPipeline(cut, jobParts(fixture.Project, stored, repo, from, to), settings, days)), "", pipelineDropped...)
 		for _, field := range []string{"pr_checks", "staging_e2e", "staging_apply", "production_apply"} {
@@ -421,17 +418,6 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		}
 	}
 	return tally, differences
-}
-
-// dropBelow is the paths of dropped below field, relative to it.
-func dropBelow(field string, dropped []string) []string {
-	var below []string
-	for _, path := range dropped {
-		if rest, found := strings.CutPrefix(path, field+"."); found {
-			below = append(below, rest)
-		}
-	}
-	return below
 }
 
 // TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer: over a deliverytest history whose every
@@ -629,15 +615,10 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 	if err != nil {
 		t.Fatalf("read the items of run %d: %v", target, err)
 	}
-	var counted []string
-	for rows.Next() {
-		var where string
-		if err := rows.Scan(&where); err != nil {
-			t.Fatalf("read the items of run %d: %v", target, err)
-		}
-		counted = append(counted, where)
+	counted, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the items of run %d: %v", target, err)
 	}
-	rows.Close()
 	day := startedAt[target].UTC().Format(time.DateOnly)
 	if want := []string{fixture.Project + " " + day, fixture.SecondProject + " " + day}; !slices.Equal(counted, want) {
 		t.Errorf("run %d is counted in %v, want once in each of %v", target, counted, want)

@@ -54,9 +54,9 @@ func RunWoken(ctx context.Context, loop WokenLoop) {
 }
 
 // MergeWakes is the one wake a WokenLoop reads, signalled by any of wakes: a loop woken by more
-// than one channel (legionfacts.Run, evals.RunRefresher). It keeps the shape a pglisten.Hub wake
-// has: a buffer of one and a send that never blocks, so any number of changes collapse into one
-// signal and a change that arrives while a pass runs earns a pass after it. A nil wake is left out,
+// than one channel (legionfacts.Run, evals.Store.RunRefresher). It keeps the shape a pglisten.Hub
+// wake has: a buffer of one and a send that never blocks, so any number of changes collapse into
+// one signal and a change that arrives while a pass runs earns a pass after it. A nil wake is left out,
 // and only nil wakes answer nil, which is a loop that runs at start and at each due time alone.
 // The goroutines that forward the wakes end when ctx is done.
 func MergeWakes(ctx context.Context, wakes ...<-chan struct{}) <-chan struct{} {
