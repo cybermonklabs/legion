@@ -220,9 +220,27 @@ func preReleaseStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
+	withheld := make([]migrations.Migration, 0, len(all))
+	for _, migration := range all {
+		if migration.Version != issueSlotsMigration {
+			withheld = append(withheld, migration)
+		}
+	}
+	applyMigrationsByHand(t, st, withheld)
+	return st
+}
+
+// applyMigrationsByHand applies each migration of set to st, in the order set holds them, as
+// Store.Migrate applies one: the migration's SQL, the widening of schema_version the first time a
+// timestamped version is recorded, and the version row, all in one transaction per migration. A
+// test that needs a database some earlier set of migrations left takes it from here, so the record
+// it seeds stands on exactly that schema and Store.Migrate later finds exactly the versions the set
+// left out (store.migrate and store.apply read each version, not max(version)).
+func applyMigrationsByHand(t *testing.T, st *store.Store, set []migrations.Migration) {
+	t.Helper()
+	ctx := context.Background()
 	widened := false
-	apply := func(migration migrations.Migration) {
-		t.Helper()
+	for _, migration := range set {
 		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
@@ -239,12 +257,6 @@ func preReleaseStore(t *testing.T) *store.Store {
 			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
 	}
-	for _, migration := range all {
-		if migration.Version != issueSlotsMigration {
-			apply(migration)
-		}
-	}
-	return st
 }
 
 // A7's first boot on the release. A store carrying what a pre-release daemon left — one slot per
@@ -316,8 +328,9 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 		t.Fatalf("migrate the pre-release store onto the release: %v", err)
 	}
 	granted := slotHolders(t, pool)
-	// Merging is a worker's phase on this release — the merger merges the pull request itself — so
-	// the two issues standing in it are at work and hold slots like the rest.
+	// The migration was written for the rule where merging held a slot — the merger merges the
+	// pull request itself, so its phase is work — so it grants the two issues standing in it a
+	// slot like the rest. The boot's first pass below takes those rows back (record.KeepsSlot).
 	if want := []string{spec, running, building, testing, heldReady, merging, lingering}; !reflect.DeepEqual(granted, want) {
 		t.Fatalf("the slots the migration left = %v, want %v: every issue of a live tree at work, and the roots that already held one",
 			granted, want)
@@ -399,7 +412,8 @@ func finish(t *testing.T, pool *store.Pool, records record.Store, key string) {
 			return err
 		}
 		// Its work is over, which on this release is the phase the merge leaves: merging is the
-		// merger's own phase, and it holds no slot, since its work is past its review.
+		// merger's own phase, which holds no slot, since it is past the issue's review
+		// (record.PhaseKeepsSlot), and the merge's close is what ends the issue.
 		issue.Phase, issue.Status, issue.DispatchStatus = phase.Done, "done", "done"
 		return records.PutIssue(ctx, tx, *issue)
 	}); err != nil {

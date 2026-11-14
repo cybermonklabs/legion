@@ -58,8 +58,8 @@ func xdgHome(stateDir string) string { return filepath.Join(stateDir, "home") }
 // The daemon resolves it because a pane cannot: PUBLIC_LEAK_CHECK is no allow-listed name
 // (paneEnvAllowList), a pane's XDG_CONFIG_HOME is the daemon's own rather than the operator's
 // (xdgHome, deliberately), and the check's installer puts its files on no PATH a pane has — so
-// all three places are closed in a pane, and every `legion gh` and every rescue push from one
-// would be refused with the setup error naming the missing check. A launch resolves again rather
+// all three places are closed in a pane, and every `legion gh` from one would be refused with the
+// setup error naming the missing check. A launch resolves again rather
 // than reading an answer taken at boot: the check is installed, moved and republished on an
 // operator's machine while the daemon runs, and the pane is told where it is now.
 //

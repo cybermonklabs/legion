@@ -102,18 +102,10 @@ on the pod, so the round does not wait for it. Its retry is the architect's or t
 for any failed role, and yours once the architect escalates the hold
 ([An escalated hold](#an-escalated-hold)). A retried claim is asked like any other.
 
-Before it replaces the pod, the daemon checks every workspace on the pod's disk for the issue's
-own work the remote lacks, a failed claim's included, and pushes it to the issue's one rescue
-branch, `legion/<KEY>-rescue`, which only moves forward. When it found work the issue branch
-does not have, it writes the issue a message: a short summary of each branch and its commits,
-and a link to an artifact of the issue with the full list, for the issue's roles to merge into
-the issue branch. A pod of an older image pushes to branches of its own,
-`legion/<KEY>-rescue-<pod>-<n>`, which can hold commits of another session and of another
-issue. Its message says so in the same shape, and tells the issue's roles to read each commit
-on such a branch and take only the commits they need into the issue branch. That message asks
-nothing of you. A pod whose shim is older than the check is replaced unchecked, and the daemon
-writes that on the issue. Everything else of the pod's disk goes with the pod: the round's
-message tells each role to put any scratch evidence it still needs on Dispatch before it
+Before it replaces the pod, the daemon reads nothing of the pod's disk. A role's own push is
+what keeps its work: work a role did not push before the pod goes, a failed claim's included,
+goes with the pod, and its agent does it again in the new one. The round's message tells each
+role to push its work and to put any scratch evidence it still needs on Dispatch before it
 answers.
 One round wakes you once, however many sweeps find it open, so handle it when it arrives.
 Read `read_state` and the issue first, as for every wake: a round that finished since needs
@@ -124,7 +116,6 @@ Take the wake by what its `reason` names:
 | `reason` names | What holds the round | What you do |
 |---|---|---|
 | an operator's suspension | An operator suspended a role the round asked. The daemon does not replace the pod until the operator resumes each such role, whatever the bound. | Open a finding ask naming the issue and each suspended role, so the operator resumes it. |
-| a failed check for unpushed work | The check or a push failed for a workspace, so the daemon did not replace the pod. `reason` names the claim the check ran through, each workspace and its error. | Open a finding ask naming the issue, the round and `reason`, with each workspace and its error, so an operator reads the pod. |
 | a refused pod replacement | The runtime refused `ReplacePod`. The daemon tries again at each sweep. | Open a finding ask naming the issue, the round and the `ReplacePod` error, so an operator reads the pod. |
 | no process in the pod | No claim of the issue records a process in the round's pod, or in any pod, so the daemon has nothing to replace the pod through. The round waits for a role of the issue to run again. | Open a finding ask naming the issue, the round and `reason`, so an operator reads the pod. |
 | two pods | The claims of the issue record two pods, so a replacement is in flight, and the round waits for it. | Open a finding ask naming the issue, the round and `reason`, so an operator reads the pod. |

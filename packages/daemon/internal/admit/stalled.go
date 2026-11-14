@@ -638,6 +638,13 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 // which nothing but that architect does. Such a waiter is answered false here and read by
 // waitsByDesign as every other wait of the daemon's is, so a project that fails every term of
 // lineCanMove names its tree (the architect's ruling on cybermonklabs/legion#3715).
+//
+// An issue standing in held — held from a phase up to its review, which gave its slot back
+// because it waits on work outside its tree as above — is such a waiter too. What its tree can do
+// (the architect's retry_or_escalate) ends the hold, but the issue still waits on its blocker and
+// still holds no slot, so a stall notice would name a tree whose own act cannot move it. The hold
+// reaches its architect and the controller through its own held notice, and this measure reads
+// the tree again once the blocker closes.
 func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 	entry, stands := h.line[issue.Key]
 	if !stands || entry.Kind != record.LineWaitingOnIssue || len(entry.Waits) == 0 {
@@ -776,13 +783,14 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 // a message queued for a role is no hold of the daemon's at all: a notice queued to a suspended
 // role waits for a role nothing brings back, so an issue with one in the outbox has stopped
 // like any other, and nothing of the outbox reaches the walk. An issue in `held` is no wait
-// either — it waits for its architect, which is the tree's own work — and it holds its slot in
-// a phase already started, so it waits for nothing of the daemon's and its tree is told like
-// any other stall. An issue whose merge is still to land stands in `merging`, where the merger
-// works, and is read the same way: it holds no slot and stands in no line, past its review
-// (at_work), silences nothing, and its tree is named once every claim of the tree is
-// at rest and nothing of it has moved inside the bound. A merger at work is what keeps such a
-// tree unnamed, and that is read from the claim and never from the phase
+// either — it waits for its architect, which is the tree's own work — and it stands in a phase
+// already started, so it waits for nothing of the daemon's and its tree is told like any other
+// stall, save where it gave its slot back to wait on another issue (waitsOnWorkOutsideItsTree
+// says which of those waits leave a tree unnamed). An issue whose merge is still to land stands
+// in `merging`, where the merger works, and is read the same way: it holds no slot and stands in
+// no line, past its review (at_work), silences nothing, and its tree is named once every claim of
+// the tree is at rest and nothing of it has moved inside the bound. A merger at work is what
+// keeps such a tree unnamed, and that is read from the claim and never from the phase
 // (record.TreeQuiet.AtWork, which the caller asks before this walk).
 func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHolds, canMove bool) bool {
 	for _, issue := range members {

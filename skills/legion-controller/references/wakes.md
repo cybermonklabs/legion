@@ -146,8 +146,8 @@ work of the project starts again by itself.
 When the issue a waiting issue waits on is in your project and its own tree has stopped, you are
 told of that tree.
 A wait on a blocker no tree runs (parked, never admitted, or in `icebox`) brings no stall notice:
-the waiting issue shows only under `admission.blocked` and in the tick notice's `blocked` list,
-which the day's report names.
+the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`, under
+`admission.blocked` and in the tick notice's `blocked` list, which the day's report names.
 
 The
 `reason` says the root has stopped and how many hours the tree has been quiet. It then gives one
@@ -427,8 +427,7 @@ records you were sent in it.
 ## `update-stalled on <KEY>` (`{kind: "update-stalled", reason, update}`)
 
 The update round over the issue's pod has passed its bound, and something still holds it: an
-operator's suspension, a failed check for unpushed work, a refused pod replacement, no process in
-the pod, or two pods. Handle it as
+operator's suspension, a refused pod replacement, no process in the pod, or two pods. Handle it as
 `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
 says.
 

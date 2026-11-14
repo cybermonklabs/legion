@@ -1259,6 +1259,29 @@ func TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped(t *testing.T) {
 			}
 		}
 	})
+
+	// The waiter held from implementing, on the same link to another project: a held issue up to
+	// its review holds its slot (record.KeepsSlot reads the phase it was held from), so it gives
+	// that slot back for the wait like any started issue, and the wait on work outside its tree
+	// leaves its tree unnamed whatever the hold says (the held sentence of
+	// everyIssueWaitsByDesign's doc).
+	t.Run("held-waiter", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 4)
+		admission.UseStalledTreeNotice(bound)
+		registerController(t, pool)
+		records := claimStore(t, pool)
+		seedQuietRoot(t, pool, waiter, "A", phase.Held)
+		seedMirror(t, pool, waiter, "in_progress", otherIssue)
+		seedClaim(t, records, waiter, waiter, claim.RoleImplementer, supervise.StateIdle)
+		seedMirrorIn(t, pool, "OTHER", otherIssue, "in_progress")
+		for pass, roots := range waitPasses(t, pool, admission, []string{waiter}, waiter) {
+			if roots != nil {
+				t.Fatalf("pass %d told the controller of %v, want nothing: a held issue that gave its slot back to wait on %s waits on work outside its tree",
+					pass+1, roots, otherIssue)
+			}
+		}
+	})
 }
 
 // waitPasses runs the release pass at the settled movement of keys and then three passes, each

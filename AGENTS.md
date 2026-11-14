@@ -371,6 +371,10 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   and the command's own repository whenever gh resolves it, because no argument names it, or whatever names it for `repo set-default`:
   GH_REPO for a command that reads it, gh api's `{owner}`/`:owner` placeholders among them, and otherwise every github.com remote and gh-resolved setting of the working directory, read with gh's own URL parser), at the issue owner's when the command names no repository at all and the working directory names none;
   the real gh runs with GH_PATH at that wrapper, so the git gh runs itself (a clone, a fork's parent, `pr checkout`) asks `legion gh auth git-credential`, which answers as `legion git-credential` does, and with gh's update check and prompts off;
+  the guard keeps public repository visibility answers for the pod and reads private or internal visibility on every call;
+  where GitHub says its rate limit is spent, it waits once only when the stated reset is at most two minutes away, otherwise refusing with that reset in UTC;
+  the exact `gh api rate_limit` read bypasses that guard, while a different endpoint or any option remains guarded;
+  each user-initiated wrapped call appends a line to a 1 MiB-bounded log in that directory, serializing append and rotation across processes, with its time, role, issue, resolved repository, command path, visibility source and exit status, never argument text or a response body;
   it sends nothing when only gh's help or `gh --version` alone runs;
   it fails closed, refusing with exit 2 and naming the argument, and sending nothing, a command it cannot read for certain (an option the leaf's help does not list or names a repository with in a way it does not know, a subcommand gh does not know, a first word gh's own help does not list, anything before the command other than -R or --help, an argument the leaf's usage has no place for or names in a way it does not know, a search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot`, `gh extension exec`), one naming two owners (an option or another repository naming one owner while gh acts on another's repository among them), one naming an owner the bundle holds no directory for, every command run where PATH's first gh is not Legion's wrapper (a script that execs `legion gh` by its absolute path), and every command under a GH_HOST other than github.com or a set GH_TOKEN or GITHUB_TOKEN (docs/deployment.md "What a pane's gh, git and jj are")
 
@@ -647,7 +651,7 @@ Each item below names a task and where its code is, then notes on it.
 
   The one guard every Legion write passes before it writes:
   the shared public leak check, resolved again at each call, and this repository's own four private-name rules in `private-names.toml`, which the `legion` binary embeds and the gitleaks engine linked into it reads in process.
-  Its call sites are the worker image's `git` and `jj` wrappers through the pre-push hook and `legion leak-check` (`packages/daemon/docker/`), `legion gh`, the rescue helper's push, the daemon's branch create, and the release lane's six writes (`.github/scripts/release-push.sh`).
+  Its call sites are the worker image's `git` and `jj` wrappers through the pre-push hook and `legion leak-check` (`packages/daemon/docker/`), `legion gh`, the daemon's branch create, and the release lane's six writes (`.github/scripts/release-push.sh`).
   See `docs/kubernetes.md`;
   the live proof of the image's half is `scripts/e2e/leak-guard-image-job.sh`
 
@@ -1162,6 +1166,8 @@ on a base with a merge queue it enqueues the pull request with GraphQL `enqueueP
 Merging at a named head is how bors and Prow's Tide merge only what they tested.
 The merger never turns auto-merge on, and the daemon submits no merge and changes no merge setting of any pull request.
 When a merge fails, the merger decides what to do: wait for what GitHub waits for, try again at the head it re-reads, send the issue back, or tell the architect what only a person can change.
+When GitHub reports that the pull request of an issue in `merging` left the merge queue without a merge, the daemon tells the merger, and the merger reads the reason on GitHub, since the event names none.
+The daemon's message wakes the merger's pod if the idle release took it, but not while the root's design gate is closed: the message then waits for the gate to open.
 The merge queue taking the pull request out is the merger's to read, and no end in itself: a removal for a conflict (`merge_conflict`) is decided by the pull request's merge state, which GitHub computes once the entry is no longer queued.
 A head GitHub still merges (every state but dirty and unknown) conflicted with an entry ahead of it in the queue rather than with the base, so the merger enqueues that head once more, spends that one further enqueue, records what it did on the Dispatch issue, and leaves the issue in `merging` with nothing told to the architect.
 A dirty head conflicts with the base itself, which sends the issue back to `implementing` and tells the architect; an unknown merge state is asked again on the merger's own backoff for up to five minutes and then read the same way; and a second conflict removal of the same head, its one further enqueue already spent, sends the issue back too.
@@ -1170,6 +1176,8 @@ The repository's required reviews and checks decide when a pull request merges; 
 The merge carries a message the merger writes itself, `--subject '<pull request title> (#<n>)' --body ''`, because GitHub's default squash message (`squash_merge_commit_message` of `COMMIT_MESSAGES`) joins every commit message of the branch and would put the tree's Dispatch keys and its `Omp-Session:` trailers on the default branch;
 `enqueuePullRequest` can pass no message, so on a merge-queue base whose setting reads `COMMIT_MESSAGES` the merger enqueues nothing and tells the architect, since only a person can change that setting.
 The merger's completion records its phase row and moves nothing; what closes the issue is the daemon's own reading of the merged pull request.
+The first boot of this release queues, once, a start for each merger that the `awaiting_merge` cutover left stopped, whose pod the idle release of a build before `legion-v20.5.0` took while its issue waited in `awaiting_merge`.
+That merger starts when its tree's design gate allows it, since `merging` holds no admission slot.
 A head that starts conflicting with its base (GitHub computes no merge ref for such a head and runs no checks on it at all) sends the issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging` alike, and its architect is told with a `checks-red` notice.
 A red check sends nothing back from anywhere: the daemon names every check GitHub reported, with the conclusion GitHub gave it, in one message to the tree's architect, the worker of the issue's current phase and the implementer, and judges none of them.
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.

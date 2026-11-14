@@ -599,8 +599,9 @@ What each part is for:
   daemon has released. A wait on a child its architect has not released is no such wait. Where
   the issue waited on is in this project and its own tree has stopped, that tree is told; a
   wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
-  and the waiting issue shows only under `admission.blocked` and in the tick notice's `blocked`
-  list. No value turns the notice off,
+  and the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`,
+  under `admission.blocked` and in the tick notice's `blocked` list.
+  No value turns the notice off,
   so a deployment that wants fewer notices raises the number, to 596 at most),
   `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`
