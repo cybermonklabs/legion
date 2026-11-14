@@ -317,13 +317,14 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 // sentence away. So a number is weighed rather than exempted by the sight of the other field: it
 // belongs to whichever of the two field names stands nearer to it, counted in bytes in either
 // direction, and a number nearer the merge wait's name is that contract's to state and is passed
-// over here. Presence alone exempted the line's own sentences along with the merge wait's — the
-// sentence of `packages/pi-legion/AGENTS.md` that names the waiting line's contract and the
-// `waitingLine` field's own comment in `packages/contracts/src/legion-api.ts` each stand within
-// the window of a sentence about the merge wait — and a guard that passes over the sentences it
-// was written for is no guard. A name is read in either spelling, the wire `waitingLine` and
-// `mergeWait` and the words a sentence writes them in, "waiting line" and "merge wait", since
-// half of these texts are prose and name the field in words as readily as in code (nearestName).
+// over here. Exempting a window for the mere sight of the other name would pass over the line's own
+// sentences whenever a sentence about the merge wait stands within reach of them, and a guard that
+// passes over the sentences it was written for is no guard. No shipped text puts the two within one
+// window today, so the rule decides nothing yet: it is what holds the line's numbers, and passes
+// over the merge wait's, once a later text brings the two together. A name is read in either
+// spelling, the wire `waitingLine` and `mergeWait` and the words a sentence writes them in,
+// "waiting line" and "merge wait", since half of these texts are prose and name the field in words
+// as readily as in code (nearestName).
 //
 // What it does not catch: a number more than 220 bytes from the field's name. A passage that
 // states the boundary a paragraph away from the word `waitingLine` is outside every window this
