@@ -1869,6 +1869,39 @@ func TestRunMarksIssueLessTargetedMessagesPublishedWithoutRepublishing(t *testin
 	}
 }
 
+// A priority's write appends an event with no owner (api/priorities.go priorityEvent): the outbox
+// finds no destination for it, sends nothing, and settles it published.
+func TestRunSettlesAPriorityEventPublishedWithoutASend(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	created := appendEvent(t, database, broker, model.Event{
+		Type: "priority.updated", Actor: alice,
+		Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityCreated},
+	})
+	deleted := appendEvent(t, database, broker, model.Event{
+		Type: "priority.updated", Actor: alice,
+		Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityDeleted},
+	})
+	for _, event := range []model.Event{created, deleted} {
+		if event.Notify || event.IssueKey != nil || event.ArtifactID != nil || event.ProjectKey != nil {
+			t.Fatalf("priority event %d = notify %t owner %v/%v/%v, want no owner and no wake",
+				event.ID, event.Notify, event.IssueKey, event.ArtifactID, event.ProjectKey)
+		}
+	}
+	publisher := &recordingPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+
+	waitFor(t, eventWait, "ownerless priority event publication settlement", func() bool {
+		return publishedAt(t, database, created.ID) != nil && publishedAt(t, database, deleted.ID) != nil
+	})
+	if items := publisher.all(); len(items) != 0 {
+		t.Fatalf("priority events published %d NATS envelopes, want 0: %#v", len(items), items)
+	}
+}
+
 // outboxOn is the outbox run builds: database's store, publisher, broker and LISTEN connection,
 // with every role route resolved to a live holder (withHeldRoles). A test that must arm the
 // outbox's hooks, which are read as Run starts, builds it with this, arms them and starts it

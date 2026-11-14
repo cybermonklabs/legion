@@ -125,7 +125,7 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 			script := `echo answered; echo refused >&2; sleep 30 & echo $! >"$1"; exit ` + strconv.Itoa(testCase.exit)
 
 			started := time.Now()
-			out, err := RunCommand(ctx, testCase.budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile})
+			out, err := RunCommand(ctx, nil, testCase.budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile})
 			elapsed := time.Since(started)
 
 			if elapsed < procgroup.WaitDelay {
@@ -152,7 +152,7 @@ func TestRunCommandReportsABudgetSpentBeforeItStartedAsATimeout(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	_, err := RunCommand(ctx, time.Second, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", "exit 0"})
+	_, err := RunCommand(ctx, nil, time.Second, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", "exit 0"})
 
 	if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 		t.Errorf("RunCommand under a spent budget = %v, want \"Command timed out after 1 s …\"", err)
@@ -170,7 +170,7 @@ func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T)
 	defer cancel()
 	go cancelOnceExists(ctx, cancel, marker)
 
-	_, err := RunCommand(ctx, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
+	_, err := RunCommand(ctx, nil, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
 
 	if err == nil || strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "Command failed (exit -1)") {
 		t.Errorf("RunCommand = %v, want \"Command failed (exit -1)\": the caller's context ended the command inside its minute", err)

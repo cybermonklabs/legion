@@ -26,11 +26,11 @@ type AfterFunc func(d time.Duration, f func()) Timer
 
 // WithAfterFunc sets how the watcher arms its waits, time.AfterFunc by default: the unrepairedDelay
 // wait for a repair, the wait before a bucket is read again (rereadDelay after a timed-out scan or
-// a re-read that failed to start, none after a recreate a stream read found), the wait before the
-// next stream probe, and a read's scan idle wait (the idle timeout, ScanIdleTimeout by default, and
-// what remains of it when it is armed again: idleExpired). The production waits are a minute and
-// seconds, so a test hands in its own, keeps each callback and fires it itself rather than sleeping
-// for it.
+// a re-read that failed to start, none after a recreate a stream read found), the wait before a
+// scheduled read (WithScheduledRead), the wait before the next stream probe, and a read's scan idle
+// wait (the idle timeout, ScanIdleTimeout by default, and what remains of it when it is armed
+// again: idleExpired). The production waits are a minute and seconds, so a test hands in its own,
+// keeps each callback and fires it itself rather than sleeping for it.
 func WithAfterFunc(after AfterFunc) Option {
 	return func(w *Watcher) { w.after = after }
 }
@@ -58,6 +58,20 @@ func WithScanIdleTimeout(idle time.Duration) Option {
 // spaces its own reads by the 2-second default (confirmInterval).
 func WithStreamProbeInterval(interval time.Duration) Option {
 	return func(w *Watcher) { w.probeInterval = interval }
+}
+
+// WithScheduledRead has the watcher read its bucket whole again interval after each read that
+// completed, as the re-read a timed-out scan gets (reread): a read of every record, which repairs a
+// copy drifted from its bucket in either direction, a record the copy lost or one it keeps that the
+// bucket no longer holds. The wait counts from the last read that completed, and none is armed while
+// a read is under way. 0, the default, arms none, so a cache that does not ask for it is read only
+// when a watch installs and when the watcher reads it again itself (a timed-out scan, a recreated
+// bucket, a stream it could not confirm). It is an option of its own, and not
+// WithStreamProbeInterval, because the probe times a read of the bucket's stream, which finds a
+// bucket deleted or recreated and reads none of its records, while this times a read of the records
+// themselves.
+func WithScheduledRead(interval time.Duration) Option {
+	return func(w *Watcher) { w.scheduledInterval = interval }
 }
 
 // WithStaleBound sets the longest stale episode served, in place of the 2-minute default, for

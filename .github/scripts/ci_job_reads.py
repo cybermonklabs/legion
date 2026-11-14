@@ -458,9 +458,9 @@ def json_stream_script(command: str, stream: str) -> str:
     """A test step whose one go command writes its `go test -json` stream to a file under
     $RUNNER_TEMP/go-test-json and replays it to the log: the package result lines of a green run,
     the whole stream of a red one (ci.yaml's envoy-go unit step says why). The race lane's
-    envoy-go-race and envoy-go-race-api, and envoy-go-checks' display-tree fixture check, are the
-    steps of this shape; envoy-go's unit step runs eight calls and builds its own
-    (UNIT_TEST_SCRIPT)."""
+    envoy-go-race and envoy-go-race-api, and envoy-go-checks' architecture-note tests and
+    display-tree fixture check, are the steps of this shape; envoy-go's unit step runs eight calls
+    and builds its own (UNIT_TEST_SCRIPT)."""
     return f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json"
 s=0
@@ -476,10 +476,11 @@ exit $s"""
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks' pack
 # step, envoy-smoke's schema step, the tag steps below, and every step that writes a `go test
 # -json` stream - envoy-go's unit step, which writes the streams of seven of its eight calls,
-# envoy-go-checks' display-tree fixture check, and the race lane's envoy-go-race and
-# envoy-go-race-api - since neither -json nor the redirect that keeps the stream is a form the
-# check reduces. envoy-go-race-docs is pinned for a reason of its own: its two lines make a
-# directory and run the package under .github/scripts/race_memory.py (RACE_DOCS_SCRIPT below).
+# envoy-go-checks' architecture-note tests and display-tree fixture check, and the race lane's
+# envoy-go-race and envoy-go-race-api - since neither -json nor the redirect that keeps the stream
+# is a form the check reduces. envoy-go-race-docs is pinned for a reason of its own: its two lines
+# make a directory and run the package under .github/scripts/race_memory.py (RACE_DOCS_SCRIPT
+# below).
 PACK_STEP = "Pack envoy binaries"
 PACK_SCRIPT = """\
 pids=()
@@ -498,6 +499,13 @@ for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
   tar czf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz" -C "$out" envoy-listener THIRD_PARTY_NOTICES
   tar tzvf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz"
 done"""
+# The architecture-note tests write a `go test -json` stream (json_stream_script) too. Its
+# -timeout is the call's own, from the step's measured time (ci.yaml's comment on the step).
+ARCHITECTURE_TESTS_STEP = "Test the architecture-note rules and their command"
+ARCHITECTURE_TESTS_PKGS = ["./internal/dispatch/architecture/notes/", "./cmd/architecture-check/"]
+ARCHITECTURE_TESTS_SCRIPT = json_stream_script(
+    "go test -json -count=1 -timeout 1m " + " ".join(ARCHITECTURE_TESTS_PKGS),
+    "architecture-notes.json")
 # The fixture check writes a `go test -json` stream (json_stream_script), and its `-run` and its
 # `-args --check` are not flags the simple form reduces either. None of them moves the closure:
 # the whole pmdoc package compiles, whichever test the run selects. Its -timeout is the call's
@@ -1231,6 +1239,10 @@ GATES = [
         ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,125; scripts/pi-plugin-prepack.sh:93,96 (packed by promptreferences_omp_test.go)"),
         ("scripts/semantic-line-breaks.test.ts", at("test", "Test the semantic line-break checker")),
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6 spawns it"),
+        ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
+        ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:3 imports it"),
+        ("scripts/priorities-seed-check.test.sh", at("test", "Test the priorities seed check (a stand-in Dispatch)")),
+        ("scripts/priorities-seed-check.sh", "scripts/priorities-seed-check.test.sh:13"),
         ("scripts/sessions-import-pods.test.sh", at("test", "Test the session import pods script (a stand-in kubectl)")),
         ("scripts/sessions-import-pods.sh", "scripts/sessions-import-pods.test.sh:11"),
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:101-104 scans scripts/e2e/*.sh and lib/*); "
@@ -1604,7 +1616,9 @@ GATES = [
 
     # envoy-go's fast half: its format and generated-code checks, the eleven shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
-    # they are split out). Its gofmt step reads the whole module, so no closure stands for it.
+    # they are split out), with the tests of the architecture-note rules and their command and the
+    # note check over this repository's notes through the composite action. Its gofmt step reads
+    # the whole module, so no closure stands for it.
     gate("envoy_go_checks", "envoy-go-checks", runs=[
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
@@ -1622,6 +1636,10 @@ GATES = [
             (ENVOY, ["./cmd/listener"], f"GOOS=linux GOARCH={arch} go build ./cmd/listener",
              {"mode": "build", "env": {"GOOS": "linux", "GOARCH": arch}})
             for arch in targets(GO_TARGETS, "envoy")
+        ]),
+        # The architecture-note tests: the notes package and the command, each compiled whole.
+        pinned_step("envoy-go-checks", ARCHITECTURE_TESTS_STEP, ENVOY, ARCHITECTURE_TESTS_SCRIPT, [
+            (ENVOY, ARCHITECTURE_TESTS_PKGS, "go test " + " ".join(ARCHITECTURE_TESTS_PKGS), {}),
         ]),
         # The display-tree fixture check: one test of pmdoc, which compiles that package.
         pinned_step("envoy-go-checks", FIXTURE_STEP, ENVOY, FIXTURE_SCRIPT, [
@@ -1647,6 +1665,18 @@ GATES = [
         (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh and run-series.sh source it"),
         (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
         (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
+        # The action builds cmd/architecture-check with GOWORK=off, so it reads packages/envoy's
+        # go.mod and go.sum and the command's packages, all under the packages/envoy/** read; what
+        # is outside packages/envoy is the action itself and the notes it judges.
+        (".github/actions/architecture-check/action.yml",
+         f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
+        (".github/actions/architecture-check/check.sh",
+         f"{at('envoy-go-checks', './.github/actions/architecture-check')}: "
+         ".github/actions/architecture-check/action.yml:95 and :121 run it"),
+        (".dispatch/architecture/**",
+         f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
+         "(.github/actions/architecture-check/action.yml:16), which check.sh:82 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:92 reads"),
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks") + CI_SELF),
 
 

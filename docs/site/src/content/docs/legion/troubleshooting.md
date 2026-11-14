@@ -348,8 +348,9 @@ person closed the question), `turn` (a session handed it back to the agent's tur
 (Dispatch's settlement), and `approved` also when the spec's gate stands open with nobody's
 approval on a deployment that gates no step, or when the last gated step was taken out of
 `gates.design` while the root waited on it. The root is in `admission.active` throughout, since an
-issue keeps its admission slot from the moment the daemon starts it
-until it is done or leaves the workflow;
+issue holds one of the cap's slots from the moment the daemon starts it until its work is past its
+review — `accepting`, `retro` and `merging` hold none — or until it is done or
+Dispatch takes it out of the workflow;
 once it is answered it stands in `admission.waiting` too,
 among the issues whose work came back, oldest first, until the pass that resumes it. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
@@ -481,10 +482,9 @@ too: a credential error is the fleet's rather than this claim's work, so it clim
 any other and the controller's notice at six is what tells a person. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
-waits for the compaction's end instead, as everything the claim is owed does. An update round's
-question waits behind the owed task, as any other task does: the question needs a turn of the
-worker's own, and that turn would fail the way the task's did, so the pod's round waits until a
-turn of the owed task ends with no provider error.
+waits for the compaction's end instead, as everything the claim is owed does. An update round
+waits for none of this: the daemon publishes the round's message to the role's own topic, and the
+round ends at its bound whether or not a turn of that role succeeds.
 
 **One provider error does hold the issue**, for its architect: one whose HTTP status is a client
 error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
@@ -550,9 +550,9 @@ listing alone. What follows the colon says where to look:
 - `the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra`, or `the daemon
   could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
   configuration, and the implement App's installation on theorem-labs.
-- `GitHub refused to narrow the daemon's implement App token to theorem-labs/agent-infra alone, …`:
-  the implement App's installation must reach theorem-labs/agent-infra. The daemon asks for no
-  wider token in its place.
+- `GitHub refused the daemon's implement App the reading permissions on theorem-labs, …`: what the
+  account grants the implement App's installation on theorem-labs. The read lease needs contents,
+  pull requests and metadata read. The daemon asks for no wider token in its place.
 - `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
   tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
   in that repository and holds its `leak-check` directory.
@@ -1049,8 +1049,8 @@ On such a daemon, an update round or a message wake can take the author of the c
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
   reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
-  issue that only waits keeps both its slot and its pod,
-  so keep the pods a deployment's open trees run within what the pool's limits
+  issue keeps its pod past its slot — through its acceptance, its retro and its merge, on to its
+  own close — so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
   deleted with it, so a replacement brings a disk of its own. The image probe pod,
@@ -1294,18 +1294,35 @@ These arrive as messages on the Dispatch issue:
   worked toward the merge. The daemon ends no turn, so the turn reporting the completion is of
   an entry behind the one the role's phases row names, and nothing is recorded. The refusal
   names the issue, the role and the phase, the entry the completion is of and the entry the
-  role's phases row is on, and, when the task of that entry already waits on the claim, that the
-  turn began before it reached the session. It then tells the worker what to do in the same
-  words the `legion` tool's description gives for the code
+  role's phases row is on, and then what decided it, which is one of four readings: the
+  completion is at another commit than the head the record holds, or the record holds no pull
+  request for the issue; it names no commit at all, so it says nothing about any head; the phase
+  ends with no handoff record this role writes — retro and merging — so nothing the completion
+  names says which entry's work it is, and no head it reports on answers for it; or the move
+  that handed the phase out again moved the issue back, which asks for this phase's work to be
+  done again whatever head the completion names. When the task of that entry already waits on
+  the claim, the refusal says the turn began before it reached the session. It then tells the
+  worker what to do in the same words the `legion` tool's description gives for the code
   (`packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two equal): end the turn
   without completing; the task of the entry the phase is on is owed to the claim and the daemon
   sends it by itself, which it does on every admission pass and on a sweep each minute; and that
   task is work of its own, done at the head it names and completed with a handoff of its own,
   never the refused completion's record, commit or verdict. A testing entry after such a move is
   for the head the fix pushed, and the verdict on the head before it answers for nothing there.
-  The same code on a completion of an entry above the one the phases row names is one the
-  record never produces, since the daemon raises the row in the transaction that composes the
-  entry's task; that refusal tells the worker to end the turn and tell the architect.
+  A completion at the head the record holds is taken rather than refused, where the phase ends
+  with a handoff record this role writes and no move back raised the entry it is behind: the
+  phase was handed out again at that same head, so the work the new entry's task asks for is the
+  work that turn did. The same code on a completion of an entry above the one the phases row
+  names is one the record never produces, since the daemon raises the row in the transaction
+  that composes the entry's task; that refusal tells the worker to end the turn and tell the
+  architect. Either refusal comes only while the role works the phase the issue stands in. A
+  completion of another entry than the role's phases row names, from a role that no longer
+  works the issue's phase — a taken completion sent again once it has moved the issue on, or one
+  naming a newer record — is answered `HANDOFF_NOT_CURRENT_PHASE` instead, in the words the
+  workflow answers that code with, `the <role> does not run phase <phase> of <KEY>; this
+  completion changed nothing`, and nothing is recorded: the task of that role's entry was
+  queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
+  none.
 
 An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
 GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
@@ -1314,12 +1331,17 @@ the issue back to the implementer with the base to merge forward and told the ar
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
 workspace is the implementer's now. The implementer's retro completion after the move reports the
-entry retro handed it while its phases row is on the implementing one, so it is refused
-(`HANDOFF_STALE_ENTRY`), and the implementer merges the base forward in the implementing
-task's own turn and completes that work with a handoff of its own, never retro's commit; the
-merger's phases row still names the entry merging gave it, so a completion it sends for the phase
-it lost is refused (`HANDOFF_NOT_CURRENT_PHASE`). The work comes back through testing, review,
-acceptance and retro to a new merge. A red check sends nothing back from anywhere.
+entry retro handed it while its phases row is on the implementing one. The issue is in
+`implementing` by then, so the `legion` tool sends it as the implementer's completion of
+implementing, with the newest `implement` record and the head that record names, which can be the
+head the record holds; it is refused (`HANDOFF_STALE_ENTRY`) because retro back to `implementing`
+is a move back, which raised the entry the phase stands on, and the refusal names that move. The
+implementer merges the base forward in the implementing task's own turn and completes that work
+with a handoff of its own, never retro's commit; the merger's phases row still names the entry
+merging gave it, so a completion it sends for the phase it lost is refused
+(`HANDOFF_NOT_CURRENT_PHASE`).
+The work comes back through testing, review, acceptance and retro to a new merge. A red check
+sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 

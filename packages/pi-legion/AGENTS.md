@@ -94,15 +94,18 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 104's claim recoveries
-(dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no process stands
-behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming `fresh_session`, and no
-shape the plugin parses moves), after contract 98's held list
+number is the one `DaemonAPIVersion` declares, last bumped by contract 111 (dispatch://INFRA-2560:
+every issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`,
+how long it has been still, which a caller below 111 is served without), after contract 104's
+claim recoveries (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no
+process stands behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming
+`fresh_session`, and no shape the plugin parses moves), after contract 98's held list
 (dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
 each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
-the daemon reads in one order, of which `at_work` names no issue today (see
-`record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where no issue holds the one
+the daemon reads in one order, of which `at_work` names the issues past their review from
+contract 111 on (see `record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where
+no issue holds the one
 that waits; the strict reader this plugin parses the state through takes the key as optional,
 because a caller from a pod whose claims record a contract under 98 is served the admission
 block without it (`api.stateFor`,
@@ -217,7 +220,8 @@ command (`legion controller start` ends the operator's Oh My Pi command line wit
 command, never from `session_start`; "The controller's start turn" below), after contract 40's
 `awaiting_person` phase and strict `waitingOn` issue view on `GET /legion/v1/state` (a root whose
 architect waits on a person, and what it waits on; such a root holds its admission slot, as every
-issue does from the moment the daemon starts it until it is done or leaves the workflow;
+issue does from the moment the daemon starts it until its work is past its review, until it is done,
+or until Dispatch takes it out of the workflow;
 a 39 plugin rejects both), after contract 39's one-container issue pod (INFRA-208: a sandbox locator
 of an issue pod's role names container `roles`, and `settings` on `GET /legion/v1/state` gives
 `runtime.kubernetes.resources` as `{issue, controller}`), after contract 38's blocked issues on
@@ -611,13 +615,22 @@ testing, reviewing) ends with a handoff record on the Dispatch issue, which the 
 `$TMPDIR` rather than the workspace, whose every file jj snapshots; no handoff is a commit or a
 push. The operation finds
 what it reports in the pane first (`@legion/pi-shared/handoff-record`): the issue's phase from
-the daemon's state, the role from the session; for a file-backed phase the role works, the newest
+the daemon's state, the role from the session; for a file-backed phase the role works or, once
+the issue has moved on, the one it left, the newest
 record of the phase's word, read from the pane's Dispatch (the envoy.json its session reads),
-refused — posting nothing — when the phase has none (write it, then complete again) or Dispatch
-does not answer (complete again once it does); the implementer's implementing round also reports
-the commit `legion/<issue>@origin` names, refused while `@-` is not on that branch (push it, then
-complete again); retro, the merger and every other phase report the commit the workspace
-stands on, `@-`. It then posts
+refused — posting nothing — when a phase the role works has none (write it, then complete again)
+or Dispatch does not answer (complete again once it does), with the head that record's own `head`
+field names reported as the completion's commit, and none reported for the planner, the tester
+and the reviewer when the body holds no readable head; while the issue stands in implementing,
+the implementer's round is refused
+when its record names no head (record the handoff again, then complete again), when the commit
+the workspace stands on, `@-`, is not on `legion/<issue>@origin` (push it, then complete again),
+and when the record's head is not that pushed `@-` (record the handoff again with `head` set to
+it, then complete again); a phase the role left runs no workspace check, and where it holds a
+record of that phase never reads as its own the `@-` of the workspace every role of the issue
+shares, which is then often a sibling's commit; retro, the merger, a left phase with no
+record and every other phase report the commit the workspace stands on, `@-`, and so does an
+implementer whose left record names no head, which sends `@-` alone, naming no record. It then posts
 `POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,
 `handoffVersion`, `commit` and `wakeAt` where they apply). A
 report on a look of a closed issue's production check is the one call that finds neither: the
@@ -675,7 +688,7 @@ controller, a session with no Legion environment, or a `task` subagent), the pha
 `@legion/pi-shared/phase-stall` tracks the phase: the daemon's assignment (a user message) opens it, the tool's successful
 `handoff_complete` closes it, and its successful `ready_for_update` (`onUpdateAnswered`), which
 closes no phase, moves it to the `waiting` state a WAITING reply buys, so the turn the worker
-answered the daemon's update task in ends with no reminder continuing it: work a continuation did
+answered the daemon's update message in ends with no reminder continuing it: work a continuation did
 would go with the replaced pod, and the daemon would see no turn end.
 A person's direct message the Envoy extension sent in as the user's
 own turn is a user message too (for a `/skill:`, the host's `skill-prompt` custom message), and

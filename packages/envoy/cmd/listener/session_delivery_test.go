@@ -285,7 +285,6 @@ func TestSessionConsumerFiltersOnTheControllerNoticeLaneOfTheRoleItHolds(t *test
 		lane      = "notifications.legion.ACME.controller"
 	)
 	claimRoles(t, rig.harness.registry, sessionID, role)
-	awaitRoles(t, rig.harness.registry, sessionID, role)
 	registration := `{"session_id":"ses_controller","self_subscribed":true,
 		"topics":["notifications.legion.ACME.controller"],"delivery":{"consumer":true,"epoch":"e"}}`
 	rig.subscribe(t, registration)
@@ -306,8 +305,8 @@ func TestSessionConsumerFiltersOnTheControllerNoticeLaneOfTheRoleItHolds(t *test
 }
 
 // A heartbeat that leaves the lane out of its body keeps it in the consumer's filter and in the
-// stored row alike: one read of the session's roles, for the body's topics and the row's
-// together, decides both (store.Registry.PlanInterest, UpsertPlanned). A plugin sends such a
+// stored row alike: one read of the controller's claim record, made for the body's topics and the
+// row's together, decides both (store.Registry.PlanInterest, UpsertPlanned). A plugin sends such a
 // heartbeat whenever its registration carries only what the session subscribed to in this
 // process, and the lane dropped from a filter takes every notice published after it with it.
 func TestSessionConsumerKeepsTheControllerNoticeLaneAHeartbeatOmits(t *testing.T) {
@@ -319,7 +318,6 @@ func TestSessionConsumerKeepsTheControllerNoticeLaneAHeartbeatOmits(t *testing.T
 		lane      = "notifications.legion.ACME.controller"
 	)
 	claimRoles(t, rig.harness.registry, sessionID, role)
-	awaitRoles(t, rig.harness.registry, sessionID, role)
 	rig.subscribe(t, `{"session_id":"ses_controller_heartbeat","self_subscribed":true,
 		"topics":["notifications.legion.ACME.controller"],"delivery":{"consumer":true,"epoch":"e"}}`)
 

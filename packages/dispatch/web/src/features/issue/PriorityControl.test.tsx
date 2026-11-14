@@ -11,6 +11,8 @@ import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
 
 const issue: Issue = {
+  advances: [],
+  advances_revision: 0,
   closed_at: null,
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
@@ -54,6 +56,8 @@ const details: IssueDetails = {
   referenced_by_count: 0,
 };
 const summary: IssueSummary = {
+  advances: [],
+  advances_revision: 0,
   route: null,
   repo: null,
   resolved_repo: null,
