@@ -236,7 +236,7 @@ func refuse(stdout, stderr io.Writer, dir string, held int, problems []error) in
 // fixed text ends in ": ", so it makes no "##[" with the text after it, and printable keeps the
 // rest of the line on it, so no text of an argument or of the directory starts a line.
 func say(w io.Writer, format string, args ...any) {
-	fmt.Fprintln(w, "architecture-check: "+printable(fmt.Sprintf(format, args...)))
+	fmt.Fprintln(w, "architecture-check: "+fmt.Sprintf(format, args...))
 }
 
 // printable is s as the command prints it after a line's fixed text. A file name or a front-matter
