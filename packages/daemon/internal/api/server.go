@@ -256,6 +256,11 @@ type Options struct {
 	// claim route `POST /legion/v1/claims/activity` writes. Nil answers that route 500 and
 	// changes nothing else.
 	ClaimActivity ClaimActivityStore
+	// GateRegistrationRead is told of each register_gate call once every Dispatch read it makes
+	// is made and before its fact is applied: the issue it registers, on the route's own context
+	// and goroutine, so the registration waits for it to return. It is a test's seam alone, to act
+	// on Dispatch between a registration's reads and its commit; nil, the daemon's, tells no one.
+	GateRegistrationRead func(ctx context.Context, issue string)
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -351,6 +356,8 @@ type server struct {
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
+	// gateRead is Options.GateRegistrationRead.
+	gateRead func(ctx context.Context, issue string)
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
 	readiness func() bool
@@ -418,6 +425,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		capabilityReported: opts.CapabilityReported,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
+		gateRead:           opts.GateRegistrationRead,
 		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,

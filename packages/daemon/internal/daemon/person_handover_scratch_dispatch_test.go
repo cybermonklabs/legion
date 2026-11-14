@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -210,27 +212,41 @@ func (e scratchEvent) version() int {
 // factID is the event as the daemon's processed_events names it.
 func (e scratchEvent) factID() string { return fmt.Sprintf("dispatch-%d", e.ID) }
 
-// scratchReview is one review of a document as Dispatch's review routes serve it.
+// scratchReview is one review of a document as Dispatch's review routes serve it, with Dispatch's
+// time of it (created_at), which the approval read's at and the review's event share.
 type scratchReview struct {
-	Version int          `json:"version"`
-	State   string       `json:"state"`
-	Actor   scratchActor `json:"actor"`
-	Reason  *string      `json:"reason"`
+	Version   int          `json:"version"`
+	State     string       `json:"state"`
+	Actor     scratchActor `json:"actor"`
+	Reason    *string      `json:"reason"`
+	CreatedAt time.Time    `json:"created_at"`
 }
 
 // personHandoverRig is one proof's rig: the scratch Dispatch, the daemon's configuration and
 // database, the daemon once booted (boot), the fake runtime it launches on, and the JSON log it
 // writes. The spec document every issue is created with gives its primary document a settled
-// version 1 to approve.
+// version 1 to approve. architects keeps, by tree, the launch and the registered session of each
+// architect admit launched, which ready reports ready; tune, when set, adjusts the daemon's test
+// overrides at each boot, as a proof that holds the outbox or a registration sets them.
 type personHandoverRig struct {
-	t       *testing.T
-	baseURL string
-	cfg     config.Config
-	pool    *store.Pool
-	logs    *syncBuffer
-	github  string
-	rt      *fake.Runtime
-	d       *daemon
+	t          *testing.T
+	baseURL    string
+	cfg        config.Config
+	pool       *store.Pool
+	logs       *syncBuffer
+	github     string
+	rt         *fake.Runtime
+	d          *daemon
+	architects map[string]rigArchitect
+	tune       func(*overrides)
+}
+
+// rigArchitect is one launch of a tree's architect and the session the rig registered for it:
+// what its grants are minted with and what its ready reports.
+type rigArchitect struct {
+	launch  runtime.SpawnSpec
+	session string
+	secret  string
 }
 
 // personHandoverSpec is the spec every issue of these proofs is created with.
@@ -272,7 +288,7 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	}
 	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
-	return &personHandoverRig{t: t, baseURL: baseURL, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t)}
+	return &personHandoverRig{t: t, baseURL: baseURL, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t), architects: map[string]rigArchitect{}}
 }
 
 // boot starts the daemon on the rig's configuration and database, on a fresh fake runtime, its log
@@ -289,6 +305,9 @@ func (r *personHandoverRig) boot() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
 	o.controllerFirstWake = time.Hour
+	if r.tune != nil {
+		r.tune(&o)
+	}
 	r.rt = rt
 	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
@@ -453,6 +472,287 @@ func (r *personHandoverRig) uploadDocument(key, name, content string) string {
 		r.t.Fatalf("Dispatch uploaded %s to %s as %+v; want a second document with an id, not the primary one", name, key, uploaded.Artifact)
 	}
 	return uploaded.Artifact.ID
+}
+
+// requestChanges is the person's request for changes on the latest settled version of artifactID
+// at a browser, with reason: a review of state changes_requested, posted as approve posts an
+// approval, which Dispatch must take and record in the person's name.
+func (r *personHandoverRig) requestChanges(artifactID, reason string) scratchReview {
+	r.t.Helper()
+	status, answer := dispatchAnswerWith(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/reviews",
+		map[string]any{"state": "changes_requested", "reason": reason}, signedInAsThePerson)
+	var review scratchReview
+	if status == http.StatusCreated {
+		if err := json.Unmarshal(answer, &review); err != nil {
+			r.t.Fatalf("decode the changes request on %s from %s: %v", artifactID, answer, err)
+		}
+	}
+	if status != http.StatusCreated || review.State != "changes_requested" || review.Actor != (scratchActor{Kind: "user", ID: "smoke"}) {
+		r.t.Fatalf("the person's changes request on %s = %d %s; want 201 and a changes request in the person's name", artifactID, status, answer)
+	}
+	return review
+}
+
+// requestApproval asks the person to approve the latest version of artifactID, as an architect's
+// session does (`dispatch request-approval`), with summary, and answers the ask Dispatch opened
+// for the request.
+func (r *personHandoverRig) requestApproval(artifactID, summary string) string {
+	r.t.Helper()
+	var requested struct {
+		Ask *struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}
+	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/approval-requests",
+		map[string]any{"summary": summary}, &requested, asSession)
+	if requested.Ask == nil || requested.Ask.ID == "" {
+		r.t.Fatalf("Dispatch opened no ask for the approval request of %s", artifactID)
+	}
+	return requested.Ask.ID
+}
+
+// writeDocument writes content as key's document name, as a session uploads one: a new document,
+// or the next version of the document of that name, whose role Dispatch reads from the name
+// (verification.md, decisions.md). It answers the document's id. Dispatch refuses a check whose
+// `serves` names a block its block index does not hold (CheckBlockPointers), so a refusal naming
+// a block no document holds is asked again while a version written just before is indexed; any
+// other refusal fails the proof.
+func (r *personHandoverRig) writeDocument(key, name, content string) string {
+	t := r.t
+	t.Helper()
+	var uploaded struct {
+		Artifact struct {
+			ID      string `json:"id"`
+			Primary bool   `json:"primary"`
+		} `json:"artifact"`
+	}
+	var last []byte
+	testwait.Eventually(t, "Dispatch to take "+name+" on "+key, func() bool {
+		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts",
+			withSessionActor(t, map[string]any{"name": name, "content": content}), asSession)
+		last = answer
+		switch {
+		case status == http.StatusOK || status == http.StatusCreated:
+			if err := json.Unmarshal(answer, &uploaded); err != nil {
+				t.Fatalf("decode the upload of %s to %s from %s: %v", name, key, answer, err)
+			}
+			return true
+		case strings.Contains(string(answer), "which no document holds"):
+			return false
+		}
+		t.Fatalf("Dispatch refused %s on %s: %d %s", name, key, status, answer)
+		return false
+	})
+	if uploaded.Artifact.ID == "" || uploaded.Artifact.Primary {
+		t.Fatalf("Dispatch took %s on %s as %+v (%s); want a document with an id, not the primary one", name, key, uploaded.Artifact, last)
+	}
+	return uploaded.Artifact.ID
+}
+
+// requirementsMarkdown is a primary document headed title whose requirement blocks are ids, in
+// that order, each with a sentence of its own: the requirements a view's checks serve.
+func requirementsMarkdown(title string, ids ...string) string {
+	var text strings.Builder
+	fmt.Fprintf(&text, "# %s\n\nWhat this issue states, one requirement to a block.\n\n", title)
+	for _, id := range ids {
+		fmt.Fprintf(&text, ":::requirement{#%s}\n**%s.** The change delivers %s.\n:::\n\n", id, id, id)
+	}
+	return text.String()
+}
+
+// rigCheck is one check of a Verification document: its id and the blocks its `serves` names, in
+// Dispatch's reference form; none writes a check that serves nothing.
+type rigCheck struct {
+	id     string
+	serves []string
+}
+
+// checksMarkdown is a Verification document holding checks, in that order.
+func checksMarkdown(checks ...rigCheck) string {
+	var text strings.Builder
+	text.WriteString("# Verification\n\n")
+	for _, check := range checks {
+		if len(check.serves) == 0 {
+			fmt.Fprintf(&text, ":::check{#%s surface=\"api\"}\nThe check %s.\n:::\n\n", check.id, check.id)
+			continue
+		}
+		fmt.Fprintf(&text, ":::check{#%s serves=\"%s\" surface=\"api\"}\nThe check %s.\n:::\n\n", check.id, strings.Join(check.serves, " "), check.id)
+	}
+	return text.String()
+}
+
+// specBlock is the reference to block id of key's primary document, as a check's `serves` names
+// it, the id percent-encoded as a reference carries it (EncodeBlockID: every byte but an ASCII
+// letter, digit or `-`).
+func specBlock(key, id string) string {
+	var encoded strings.Builder
+	for i := range len(id) {
+		c := id[i]
+		if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' {
+			encoded.WriteByte(c)
+			continue
+		}
+		fmt.Fprintf(&encoded, "%%%02X", c)
+	}
+	return "dispatch://" + key + "/spec#b-" + encoded.String()
+}
+
+// scratchAsk is one ask of an issue as Dispatch's ask listing serves it.
+type scratchAsk struct {
+	ID      string  `json:"id"`
+	Kind    string  `json:"kind"`
+	State   string  `json:"state"`
+	BlockID *string `json:"block_id"`
+}
+
+// asks is every ask of key, open or closed.
+func (r *personHandoverRig) asks(key string) []scratchAsk {
+	r.t.Helper()
+	var asks []scratchAsk
+	dispatchCall(r.t, r.baseURL, http.MethodGet, "/api/v1/issues/"+key+"/asks?state=all", nil, &asks)
+	return asks
+}
+
+// messages is the body of every message posted on key, oldest first, from its event log.
+func (r *personHandoverRig) messages(key string) []string {
+	r.t.Helper()
+	var bodies []string
+	for _, event := range r.issueEvents(key) {
+		if event.Type != "message.created" {
+			continue
+		}
+		var payload struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			r.t.Fatalf("decode the message event %+v of %s: %v", event, key, err)
+		}
+		bodies = append(bodies, payload.Body)
+	}
+	return bodies
+}
+
+// notices is every notice of kind the daemon has queued on key, oldest first, still in its
+// outbox: nothing answers the Envoy address the notice runner publishes to, so none is finished.
+func (r *personHandoverRig) notices(key, kind string) []record.Notice {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.t.Context(), `select payload from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3 order by id`,
+		string(record.OutboxKindNotice), key, kind)
+	if err != nil {
+		r.t.Fatalf("read the %s notices queued on %s: %v", kind, key, err)
+	}
+	defer rows.Close()
+	var notices []record.Notice
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			r.t.Fatalf("scan a %s notice queued on %s: %v", kind, key, err)
+		}
+		var notice record.Notice
+		if err := json.Unmarshal(payload, &notice); err != nil {
+			r.t.Fatalf("decode the %s notice %s queued on %s: %v", kind, payload, key, err)
+		}
+		notices = append(notices, notice)
+	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the %s notices queued on %s: %v", kind, key, err)
+	}
+	return notices
+}
+
+// roleMessages is the body of every message the daemon has queued to a role of key, oldest
+// first, still in its outbox, as notices are.
+func (r *personHandoverRig) roleMessages(key string) []string {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.t.Context(), `select payload->>'body' from outbox where kind = $1 and issue = $2 order by id`,
+		string(record.OutboxKindRoleMessage), key)
+	if err != nil {
+		r.t.Fatalf("read the role messages queued on %s: %v", key, err)
+	}
+	defer rows.Close()
+	var bodies []string
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil {
+			r.t.Fatalf("scan a role message queued on %s: %v", key, err)
+		}
+		bodies = append(bodies, body)
+	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the role messages queued on %s: %v", key, err)
+	}
+	return bodies
+}
+
+// record is the daemon's own record of key, which it must hold.
+func (r *personHandoverRig) record(key string) record.Issue {
+	r.t.Helper()
+	return recordOf(r.t, r.pool, record.NewStore(), key)
+}
+
+// gates is every design-gate row the daemon records for key, by step.
+func (r *personHandoverRig) gates(key string) map[record.DesignStep]record.DesignGate {
+	r.t.Helper()
+	var gates map[record.DesignStep]record.DesignGate
+	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+		var err error
+		gates, err = record.NewStore().GatesOf(r.t.Context(), tx, key)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the design gates of %s: %v", key, err)
+	}
+	return gates
+}
+
+// entryTask is the work the daemon raised role's entry of key's current phase with (the phases
+// row's EntryTask): the task its start gave the role.
+func (r *personHandoverRig) entryTask(key string, role claim.Role) string {
+	r.t.Helper()
+	var rows []record.PhaseRow
+	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+		var err error
+		rows, err = record.NewStore().Phases(r.t.Context(), tx, key)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the phases of %s: %v", key, err)
+	}
+	for _, row := range rows {
+		if row.Role == role {
+			return row.EntryTask
+		}
+	}
+	r.t.Fatalf("the daemon records no %s phase of %s among %+v", role, key, rows)
+	return ""
+}
+
+// quiet waits until the daemon has applied the newest event of each of keys among those it always
+// reads as a fact (factEvent), so a record read next stands where every write made so far left
+// it: each later event of the issue is one the daemon applies behind it, in order.
+func (r *personHandoverRig) quiet(keys ...string) {
+	r.t.Helper()
+	for _, key := range keys {
+		events := r.issueEvents(key)
+		for i := len(events) - 1; i >= 0; i-- {
+			if factEvent(events[i].Type) {
+				r.applied(events[i])
+				break
+			}
+		}
+	}
+}
+
+// factEvent says whether an event of kind is one the daemon's Dispatch consumer always applies as
+// a fact, and so records as applied (processed_events): an issue's create, edit and close, a review
+// or a version of one of its documents, and an ask's opening, answer, resolution and hand-back
+// (intake's decodeDispatch). A message, a document's first upload and an ask's edit are not, or
+// not always.
+func factEvent(kind string) bool {
+	switch kind {
+	case "issue.created", "issue.updated", "issue.closed", "artifact.approved", "artifact.changes_requested", "artifact.version",
+		"ask.opened", "ask.answered", "ask.resolved", "ask.handed_back":
+		return true
+	}
+	return false
 }
 
 // personHandoverBlock is the decision block the carried case writes into a spec, and the option
@@ -703,7 +1003,8 @@ func (r *personHandoverRig) notQueued(key, status string, lines int) {
 
 // admit hands key, a labelled root, to Legion as the person's todo and waits for it to take a slot
 // and for Dispatch to show the daemon's in_progress; it answers a minter of the grants its launched
-// architect's registered session holds, as architectGrants does for the blockers proof.
+// architect's registered session holds, as architectGrants does for the blockers proof, and keeps
+// that launch and session for ready.
 func (r *personHandoverRig) admit(key string) func() string {
 	t := r.t
 	t.Helper()
@@ -711,14 +1012,7 @@ func (r *personHandoverRig) admit(key string) func() string {
 	settled(t, r.d, "admit "+key+" into a slot", func(s api.State) bool {
 		return slices.Contains(s.Admission.Active, key)
 	})
-	project, err := claim.ProjectToken(r.cfg.Project)
-	if err != nil {
-		t.Fatalf("the project token of %s: %v", r.cfg.Project, err)
-	}
-	architect, err := claim.NewToken(project, key, claim.RoleArchitect)
-	if err != nil {
-		t.Fatalf("the architect claim token of %s: %v", key, err)
-	}
+	architect := r.architectToken(key)
 	testwait.Eventually(t, "the daemon to launch the architect of "+key, func() bool {
 		for _, call := range r.rt.Calls() {
 			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == architect {
@@ -727,9 +1021,48 @@ func (r *personHandoverRig) admit(key string) func() string {
 		}
 		return false
 	})
-	grant := architectGrants(t, r.d, lastLaunch(t, r.rt, architect), key)
+	launch := lastLaunch(t, r.rt, architect)
+	session, secret := registerLaunch(t, r.d, launch)
+	r.architects[key] = rigArchitect{launch: launch, session: session, secret: secret}
 	awaitDispatchStatus(t, r.baseURL, key, "in_progress")
-	return grant
+	return sessionGrants(t, r.d, session, secret, key)
+}
+
+// architectToken is the claim token of key's architect in the rig's project.
+func (r *personHandoverRig) architectToken(key string) claim.Token {
+	r.t.Helper()
+	return r.roleToken(key, claim.RoleArchitect)
+}
+
+// roleToken is the claim token of role on key in the rig's project.
+func (r *personHandoverRig) roleToken(key string, role claim.Role) claim.Token {
+	r.t.Helper()
+	project, err := claim.ProjectToken(r.cfg.Project)
+	if err != nil {
+		r.t.Fatalf("the project token of %s: %v", r.cfg.Project, err)
+	}
+	token, err := claim.NewToken(project, key, role)
+	if err != nil {
+		r.t.Fatalf("the %s claim token of %s: %v", role, key, err)
+	}
+	return token
+}
+
+// ready reports the architect of key, which admit launched and registered, ready, as its plugin
+// does once its agent has booted: the claim takes it and the daemon answers it with the catch-up
+// of the architect's tree (workflow's claimReady), which a relaunch's ready is answered with too.
+func (r *personHandoverRig) ready(key string) {
+	t := r.t
+	t.Helper()
+	architect, ok := r.architects[key]
+	if !ok {
+		t.Fatalf("no architect of %s was launched and registered by admit", key)
+	}
+	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: architect.launch.Claim, SessionID: architect.session, Secret: architect.secret, Generation: architect.launch.Generation,
+	}, false); status != http.StatusNoContent {
+		t.Fatalf("the ready of the architect of %s = %d; body %s", key, status, body)
+	}
 }
 
 // registerGate registers artifactID, key's primary document, at version 1 as key's architect, as

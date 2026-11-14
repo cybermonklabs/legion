@@ -404,6 +404,9 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if fact.ViewOf != "" {
 		id += ":view-of:" + fact.ViewOf
 	}
+	if s.gateRead != nil {
+		s.gateRead(r.Context(), req.Issue)
+	}
 	s.applyFact(w, r, id, fact, GateRegisterResponse{})
 }
 

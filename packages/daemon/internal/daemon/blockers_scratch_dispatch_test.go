@@ -881,6 +881,13 @@ func childStatusNotices(t *testing.T, pool *store.Pool, issue string) []string {
 func architectGrants(t *testing.T, d *daemon, launch runtime.SpawnSpec, tree string) func() string {
 	t.Helper()
 	session, secret := registerLaunch(t, d, launch)
+	return sessionGrants(t, d, session, secret, tree)
+}
+
+// sessionGrants answers a fresh grant on tree for the registered session and its secret on every
+// call, as the architect's plugin mints one per command.
+func sessionGrants(t *testing.T, d *daemon, session, secret, tree string) func() string {
+	t.Helper()
 	return func() string {
 		t.Helper()
 		status, body := d.request(http.MethodPost, "/legion/v1/grants", api.GrantRequest{

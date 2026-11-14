@@ -93,6 +93,9 @@ type workflowRuntime struct {
 	// to the workflow engine (applyTerminal), which holds neither the claim nor the configuration
 	// and so has no other way to read them.
 	limits supervise.Limits
+	// dropConsumedEvent is overrides.dropConsumedEvent, taken at attach: the facts of the intake
+	// consumers the workflow's handlers skip (consumerHandlers). nil, in production, skips none.
+	dropConsumedEvent func(intake.Fact) bool
 	// bootID disambiguates this boot's synthetic Dispatch consumer position facts from another
 	// boot's, or another project's daemon: processed_events is keyed only on (source, event_id),
 	// shared by every project's daemon in the database, and a stream recreated by a later boot
@@ -1140,6 +1143,8 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, w.log)
+	w.outbox.hold = supervision.plan.holdOutbox
+	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1352,6 +1357,44 @@ func terminalEventID(c supervise.Claim, state supervise.ClaimState) string {
 	return fmt.Sprintf("supervise:%s:%d:%s", c.Token, c.Generation, state)
 }
 
+// consumerHandlers are the handlers the intake consumers apply each fact they deliver with: the
+// workflow's own, or, under a test's dropConsumedEvent, one handler that asks it once of each fact
+// and runs the workflow's own unless it drops the fact. A dropped fact is still applied as a fact —
+// acknowledged, and its processed_events row written in its transaction — with no handler acting
+// on it, which is how a test reads what the daemon does with an event it missed.
+func (w *workflowRuntime) consumerHandlers() []intake.Handler {
+	if w.dropConsumedEvent == nil {
+		return w.handlers
+	}
+	return []intake.Handler{droppingHandlers{handlers: w.handlers, drop: w.dropConsumedEvent}}
+}
+
+// droppingHandlers runs handlers on each fact drop does not drop, in order, and combines their
+// results as intake.ApplyFact combines those of the handlers it is given: the first refusal, and
+// whether any left the fact unspent.
+type droppingHandlers struct {
+	handlers []intake.Handler
+	drop     func(intake.Fact) bool
+}
+
+func (h droppingHandlers) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	var result intake.Result
+	if h.drop(fact) {
+		return result, nil
+	}
+	for _, handler := range h.handlers {
+		applied, err := handler.Apply(ctx, tx, fact)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if result.Refusal == nil {
+			result.Refusal = applied.Refusal
+		}
+		result.Unspent = result.Unspent || applied.Unspent
+	}
+	return result, nil
+}
+
 // run drains intake and the outbox until ctx ends. Intake ending, or a terminal fact that could not
 // be applied, returns its error so serve stops the daemon: a daemon that answers its API while it
 // reads no events or has lost a held or worker-died fact looks healthy and does nothing.
@@ -1364,7 +1407,7 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	// one (store.ErrNestedAcquire). The intake marks each message it hands a loop of its own
 	// (intake's consumeMessage), and the outbox each of its lanes (outbox.runLane).
 	group.Go(func() error {
-		if err := w.consumers.Run(store.ForConcurrentWorker(running), w.handlers...); err != nil {
+		if err := w.consumers.Run(store.ForConcurrentWorker(running), w.consumerHandlers()...); err != nil {
 			// A terminal close's cause is the connection's alone (natsauth.WithLastError).
 			return fmt.Errorf("workflow intake stopped: %w", natsauth.WithLastError(err, w.conn.Load()))
 		}

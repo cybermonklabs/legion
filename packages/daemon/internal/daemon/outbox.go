@@ -135,6 +135,10 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
+	// hold answers whether a claimed row is put back unrun for now, due again outboxHoldRecheck
+	// later (runRow): a test's seam alone (overrides.holdOutbox), nil in production and in every
+	// outbox a test builds by hand, which holds nothing.
+	hold func(record.OutboxRow) bool
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
