@@ -4,6 +4,15 @@ import { type FormEvent, type ReactNode, useState } from "react";
 import { api, apiErrorMessage } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   borderDefault,
@@ -14,9 +23,7 @@ import {
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -25,9 +32,6 @@ import {
   settingsFieldLabel,
   settingsMonoInput,
   settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
 } from "./classes";
 import { ProjectSelect } from "./ProjectSelect";
 
@@ -117,115 +121,94 @@ export function ArchitectureSourcesSection(): ReactNode {
       ) : null}
       {sources.isSuccess && projects.isSuccess ? (
         <>
-          <div className={settingsTableWrapper}>
-            <table className="w-full text-left text-sm">
-              <thead className={settingsTableHead}>
-                <tr>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Project
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Repository
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Branch
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Status
-                  </th>
-                  <th className="px-4 py-3" scope="col">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {sources.data.length === 0 ? (
-                  <tr>
-                    <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={5}>
-                      No architecture sources yet.
-                    </td>
-                  </tr>
-                ) : (
-                  sources.data.map((source) => (
-                    <tr className={settingsTableRow} key={`${source.project} ${source.repo}`}>
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                        {source.project}
-                      </td>
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                        {source.repo}
-                      </td>
-                      <td className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}>
-                        {source.branch}
-                      </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                        {source.last_error !== null ? (
-                          <>
-                            <span className={dangerText}>{source.last_error}</span>
-                            {source.last_commit !== null ? (
-                              <div className={textMutedOnSurface}>
-                                Previous model stays up at{" "}
-                                <span className="font-mono">{source.last_commit.slice(0, 12)}</span>
-                                {` · ${componentCount(source.components)}`}
-                              </div>
-                            ) : null}
-                          </>
-                        ) : source.last_commit !== null ? (
-                          <>
-                            Synced{" "}
-                            <span className="font-mono">{source.last_commit.slice(0, 12)}</span>
-                            {` · ${componentCount(source.components)}`}
-                            {source.last_sync_at !== null ? (
-                              <>
-                                {" "}
-                                <Timestamp
-                                  at={source.last_sync_at}
-                                  className={textMutedOnSurface}
-                                />
-                              </>
-                            ) : null}
-                          </>
-                        ) : (
-                          "Access verified"
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          aria-label={`Refresh architecture source ${source.repo} for ${source.project}`}
-                          className={`mr-4 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText} ${linkHoverText}`}
-                          disabled={
-                            refreshSource.isPending ||
-                            deleteSource.isPending ||
-                            saveSource.isPending
-                          }
-                          onClick={() =>
-                            refreshSource.mutate({ project: source.project, repo: source.repo })
-                          }
-                          type="button"
-                        >
-                          {refreshSource.isPending &&
-                          refreshSource.variables.project === source.project &&
-                          refreshSource.variables.repo === source.repo
-                            ? "Refreshing…"
-                            : "Refresh"}
-                        </button>
-                        <button
-                          aria-label={`Delete architecture source ${source.repo} for ${source.project}`}
-                          className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                          disabled={deleteSource.isPending || saveSource.isPending}
-                          onClick={() =>
-                            deleteSource.mutate({ project: source.project, repo: source.repo })
-                          }
-                          type="button"
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <TableShell className="mt-6" label="Architecture sources">
+            <TableHead>
+              <TableHeadCell>Project</TableHeadCell>
+              <TableHeadCell>Repository</TableHeadCell>
+              <TableHeadCell>Branch</TableHeadCell>
+              <TableHeadCell>Status</TableHeadCell>
+              <TableHeadCell>
+                <span className="sr-only">Actions</span>
+              </TableHeadCell>
+            </TableHead>
+            <TableBody>
+              {sources.data.length === 0 ? (
+                <TableEmpty colSpan={5}>No architecture sources yet.</TableEmpty>
+              ) : (
+                sources.data.map((source) => (
+                  <TableRow key={`${source.project} ${source.repo}`}>
+                    <TableCell mono tone="primary">
+                      {source.project}
+                    </TableCell>
+                    <TableCell mono tone="primary">
+                      {source.repo}
+                    </TableCell>
+                    <TableCell mono tone="secondary">
+                      {source.branch}
+                    </TableCell>
+                    <TableCell tone="secondary">
+                      {source.last_error !== null ? (
+                        <>
+                          <span className={dangerText}>{source.last_error}</span>
+                          {source.last_commit !== null ? (
+                            <div className={textMutedOnSurface}>
+                              Previous model stays up at{" "}
+                              <span className="font-mono">{source.last_commit.slice(0, 12)}</span>
+                              {` · ${componentCount(source.components)}`}
+                            </div>
+                          ) : null}
+                        </>
+                      ) : source.last_commit !== null ? (
+                        <>
+                          Synced{" "}
+                          <span className="font-mono">{source.last_commit.slice(0, 12)}</span>
+                          {` · ${componentCount(source.components)}`}
+                          {source.last_sync_at !== null ? (
+                            <>
+                              {" "}
+                              <Timestamp at={source.last_sync_at} className={textMutedOnSurface} />
+                            </>
+                          ) : null}
+                        </>
+                      ) : (
+                        "Access verified"
+                      )}
+                    </TableCell>
+                    <TableCell align="right">
+                      <button
+                        aria-label={`Refresh architecture source ${source.repo} for ${source.project}`}
+                        className={`mr-4 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText} ${linkHoverText}`}
+                        disabled={
+                          refreshSource.isPending || deleteSource.isPending || saveSource.isPending
+                        }
+                        onClick={() =>
+                          refreshSource.mutate({ project: source.project, repo: source.repo })
+                        }
+                        type="button"
+                      >
+                        {refreshSource.isPending &&
+                        refreshSource.variables.project === source.project &&
+                        refreshSource.variables.repo === source.repo
+                          ? "Refreshing…"
+                          : "Refresh"}
+                      </button>
+                      <button
+                        aria-label={`Delete architecture source ${source.repo} for ${source.project}`}
+                        className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
+                        disabled={deleteSource.isPending || saveSource.isPending}
+                        onClick={() =>
+                          deleteSource.mutate({ project: source.project, repo: source.repo })
+                        }
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </TableShell>
 
           <form
             className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-2 sm:items-end ${borderDefault}`}

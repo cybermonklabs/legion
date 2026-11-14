@@ -360,7 +360,7 @@ inboxTest(
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", scene.askId);
     await row.focus();
     await page.keyboard.press("x");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
 
     const dialog = page.getByRole("dialog", { name: "Search" });

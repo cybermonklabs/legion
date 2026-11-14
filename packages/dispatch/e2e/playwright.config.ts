@@ -345,6 +345,10 @@ const parallelProjects = [
   // its measured failures were in WebKit.
   // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
   // socket the engine reconnects and the paint after it.
+  // A focused control taken away, itself or with a parent, which the HTML spec's focus fixup
+  // does with no `focusout`, so the page's focus rescue sees it only by watching the page:
+  // `table-controls`'s page-own focus row. Not measured here, since WebKit does not launch in
+  // the pod the row was written in; Firefox, measured, fires no `focusout` for it.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
@@ -414,6 +418,9 @@ const parallelProjects = [
   // ask before a tab unloads: eight `keyed-writes` rows and two `keyed-send` rows, whose upload
   // row carries the kept-file question with it.
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
+  // A focused control taken away, itself or with a parent, for which this engine fires no
+  // `focusout`, so the page's focus rescue sees it only by watching the page: `table-controls`'s
+  // page-own focus row.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",

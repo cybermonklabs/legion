@@ -7,15 +7,21 @@ import { projectsQuery } from "../../api/queries";
 import type { RepoProject } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
+import {
   borderDefault,
   dangerHoverText,
   dangerText,
   textMutedOnCanvas,
-  textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { GrantsSection } from "../credentials/GrantsSection";
 import { credentialPendingQuery } from "../credentials/pending";
@@ -31,9 +37,6 @@ import {
   settingsMonoInput,
   settingsSectionGap,
   settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
 } from "./classes";
 import { ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
@@ -225,74 +228,58 @@ export function SettingsPage(): ReactNode {
           ) : null}
           {mappings.isSuccess && projects.isSuccess ? (
             <>
-              <div className={settingsTableWrapper}>
-                <table className="w-full text-left text-sm">
-                  <thead className={settingsTableHead}>
-                    <tr>
-                      <th className="px-4 py-3 font-semibold" scope="col">
-                        Repository
-                      </th>
-                      <th className="px-4 py-3 font-semibold" scope="col">
-                        Project
-                      </th>
-                      <th className="px-4 py-3 font-semibold" scope="col">
-                        Default
-                      </th>
-                      <th className="px-4 py-3" scope="col">
-                        <span className="sr-only">Actions</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {mappings.data.length === 0 ? (
-                      <tr>
-                        <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={4}>
-                          No repository mappings yet.
-                        </td>
-                      </tr>
-                    ) : (
-                      mappings.data.map((mapping) => (
-                        <tr className={settingsTableRow} key={mapping.repo}>
-                          <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                            {mapping.repo}
-                          </td>
-                          <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                            {mapping.project}
-                          </td>
-                          <td className="px-4 py-3">
-                            <input
-                              aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
-                              checked={mapping.default}
-                              className="size-4 cursor-pointer disabled:cursor-not-allowed"
-                              disabled={deleteMapping.isPending || putMapping.isPending}
-                              name={`default-repository-${mapping.project}`}
-                              onChange={() =>
-                                putMapping.mutate({
-                                  default: true,
-                                  project: mapping.project,
-                                  repo: mapping.repo,
-                                })
-                              }
-                              type="radio"
-                            />
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            <button
-                              aria-label={`Delete mapping for ${mapping.repo}`}
-                              className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                              disabled={deleteMapping.isPending || putMapping.isPending}
-                              onClick={() => deleteMapping.mutate(mapping.repo)}
-                              type="button"
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
+              <TableShell className="mt-6" label="Repository mappings">
+                <TableHead>
+                  <TableHeadCell>Repository</TableHeadCell>
+                  <TableHeadCell>Project</TableHeadCell>
+                  <TableHeadCell>Default</TableHeadCell>
+                  <TableHeadCell>
+                    <span className="sr-only">Actions</span>
+                  </TableHeadCell>
+                </TableHead>
+                <TableBody>
+                  {mappings.data.length === 0 ? (
+                    <TableEmpty colSpan={4}>No repository mappings yet.</TableEmpty>
+                  ) : (
+                    mappings.data.map((mapping) => (
+                      <TableRow key={mapping.repo}>
+                        <TableCell mono tone="primary">
+                          {mapping.repo}
+                        </TableCell>
+                        <TableCell tone="secondary">{mapping.project}</TableCell>
+                        <TableCell>
+                          <input
+                            aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
+                            checked={mapping.default}
+                            className="size-4 cursor-pointer disabled:cursor-not-allowed"
+                            disabled={deleteMapping.isPending || putMapping.isPending}
+                            name={`default-repository-${mapping.project}`}
+                            onChange={() =>
+                              putMapping.mutate({
+                                default: true,
+                                project: mapping.project,
+                                repo: mapping.repo,
+                              })
+                            }
+                            type="radio"
+                          />
+                        </TableCell>
+                        <TableCell align="right">
+                          <button
+                            aria-label={`Delete mapping for ${mapping.repo}`}
+                            className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
+                            disabled={deleteMapping.isPending || putMapping.isPending}
+                            onClick={() => deleteMapping.mutate(mapping.repo)}
+                            type="button"
+                          >
+                            Delete
+                          </button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </TableShell>
 
               <form
                 className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end ${borderDefault}`}

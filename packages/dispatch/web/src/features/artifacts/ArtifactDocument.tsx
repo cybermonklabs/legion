@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { Navigate, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact, IDCandidate } from "../../api/types";
+import { AddressRedirect, addressWithParam, usePageAddress } from "../../lib/page-address";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { ItemMatchList } from "../issue/ItemMatchList";
@@ -59,7 +59,7 @@ interface SelectedItemLanding {
  * the page is unambiguous.
  */
 function useSelectedItem(owner: MarginOwner, item: SelectedItem | undefined): SelectedItemLanding {
-  const { hash, pathname, search } = useLocation();
+  const location = usePageAddress();
   const route = item === undefined ? undefined : itemReference(owner, item);
   // Only an id written short is resolved; the hook reads nothing for a route that writes every
   // id whole.
@@ -70,9 +70,7 @@ function useSelectedItem(owner: MarginOwner, item: SelectedItem | undefined): Se
   if (item === undefined || whole === undefined || whole === item.id) {
     return { candidates, id: whole, rewrite: undefined };
   }
-  const params = new URLSearchParams(search);
-  params.set(item.kind, whole);
-  return { candidates, id: whole, rewrite: `${pathname}?${params.toString()}${hash}` };
+  return { candidates, id: whole, rewrite: addressWithParam(location, item.kind, whole) };
 }
 
 export function ArtifactDocument({
@@ -169,7 +167,7 @@ export function ArtifactDocument({
     <>
       {/* The replaced address adds no history entry, so Back still leaves the page the reader
           came from; the document stays mounted through it. */}
-      {landing.rewrite === undefined ? null : <Navigate replace to={landing.rewrite} />}
+      {landing.rewrite === undefined ? null : <AddressRedirect to={landing.rewrite} />}
       <ProofDocument
         artifact={artifact}
         highlight={highlight}

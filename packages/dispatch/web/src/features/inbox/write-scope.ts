@@ -13,8 +13,7 @@ import { INBOX_THREAD_KINDS, type InboxThreadKind } from "@legion/contracts";
 
 import type { InboxReadRequest, MarkInboxReadPriority, MyReplyRow } from "../../api/types";
 import { INBOX_PRIORITY_VALUES, INBOX_URGENCY_VALUES } from "../refs/routes";
-import { inFieldFilter } from "./grouping";
-import type { InboxFilters } from "./InboxBar";
+import { type InboxFilters, inFieldFilter } from "./grouping";
 import { type InboxListRow, rowType } from "./list-row";
 
 /** The four narrowing fields both bodies carry; the assignee filter is not among them, because a

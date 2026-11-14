@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
 import type { MyReplyRow, UserAgentState } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -34,7 +35,7 @@ import { ThreadTitle } from "./ThreadTitle";
  * **Open**, **Mark read**, and the **Dismiss** that takes the row out of the Inbox - **Move to
  * Inbox** in the Dismissed view - which the list it is drawn in provides (`DismissControl`). A
  * thread anchored in a document shows the text it is anchored to rather than the document: a card
- * is no place to open one.
+ * is no place to open one. Mark read is held while its write is out (`heldPress`).
  */
 export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const queryClient = useQueryClient();
@@ -86,8 +87,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         </Link>
         <button
           className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
-          disabled={markRead.isPending}
-          onClick={() => markRead.mutate()}
+          {...heldPress(markRead.isPending, () => markRead.mutate())}
           type="button"
         >
           {markRead.isPending ? "Marking read…" : "Mark read"}

@@ -1,12 +1,14 @@
-import { flexRender, type Row } from "@tanstack/react-table";
+import type { Row } from "@tanstack/react-table";
 import type { ReactNode } from "react";
-import type { LineProps } from "../../components/DataTable";
-import { borderDefault, focusVisibleRing, selectedCardBg, surfaceBg } from "../../theme/classes";
+import { DataTableCells, type LineProps } from "../../components/DataTable";
+import { focusVisibleRing, selectedCardBg } from "../../theme/classes";
 
 /**
- * One row of the priorities table: its cells, and, while the table's order is the reader's to
- * drag, the drop that lands another row here. The row carries `data-issue-row`, which the
- * table's own keys walk it by and its box measures its height from.
+ * One row of the priorities table: the shared cells, and, while the table's order is the
+ * reader's to drag, the drop that lands another row here. The row carries `data-priority-row`
+ * and `data-priority-group` (`PRIORITY_ROW_ATTRIBUTE` and `PRIORITY_GROUP_ATTRIBUTE`), which
+ * the table's own keys walk it by and its box measures its height from. The row being dragged
+ * is painted to its left edge, its pinned cells with it (`DataTableCells`' `highlight`).
  */
 export function TableBodyRow<Row_>({
   dragging,
@@ -30,8 +32,8 @@ export function TableBodyRow<Row_>({
       aria-label={label}
       className={`group align-top outline-none focus-visible:ring-2 ${focusVisibleRing} ${dragged ? selectedCardBg : ""}`}
       data-index={index}
-      data-issue-group={row.getParentRow()?.id ?? "ungrouped"}
-      data-issue-row={row.id}
+      data-priority-group={row.getParentRow()?.id ?? "ungrouped"}
+      data-priority-row={row.id}
       onDragOver={(event) => {
         if (dragging !== undefined) event.preventDefault();
       }}
@@ -41,21 +43,7 @@ export function TableBodyRow<Row_>({
       ref={measure}
       tabIndex={-1}
     >
-      {row.getVisibleCells().map((cell) => {
-        const pinned = cell.column.getIsPinned() === "left";
-        return (
-          <td
-            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""}`}
-            key={cell.id}
-            style={{
-              width: cell.column.getSize(),
-              left: pinned ? cell.column.getStart("left") : undefined,
-            }}
-          >
-            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-          </td>
-        );
-      })}
+      <DataTableCells highlight={dragged ? selectedCardBg : undefined} row={row} />
     </tr>
   );
 }

@@ -3,6 +3,7 @@ import {
   agentGroupToggle,
   agentRow,
   type FakeSession,
+  openAgentFilters,
   openAgents,
   pickAgentFilter,
   setLiveSessions,
@@ -234,6 +235,8 @@ test("a ?machine= no live session reports hides every row honestly, and the Mach
     // live session reports the machine.
     await page.goto("/agents?machine=ended-host");
     await expect(page.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();
+    // The three filters are in the panel the row's one **Filter** trigger opens.
+    await openAgentFilters(page);
     const machine = agentFilter(page, "machine");
     const titles = shownAgentRows(page).locator("h2");
 

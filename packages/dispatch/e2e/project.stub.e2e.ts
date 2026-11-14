@@ -17,7 +17,7 @@ import {
   createProjectDocument,
   patchIssue,
 } from "./api";
-import { filterPicker, pickFilterOption } from "./filters";
+import { chooseDisplay, filterPicker, openFilterPanel, pickFilterOption } from "./filters";
 import { stubbed } from "./stub/stub-test";
 import { assertPageFits } from "./unclipped";
 
@@ -103,8 +103,11 @@ phoneTest(
     await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
     await expectTouchTarget(filterPicker(page, "Status"));
     await expectTouchTarget(filterPicker(page, "Labels"));
-    await expectTouchTarget(page.getByRole("button", { exact: true, name: "Needs you" }));
-    await expectTouchTarget(page.getByRole("button", { name: "Unread" }));
+    // Needs you and Unread are chips in the panel the row's one **Filters** trigger opens.
+    const flags = await openFilterPanel(page);
+    await expectTouchTarget(flags.getByRole("button", { exact: true, name: "Needs you" }));
+    await expectTouchTarget(flags.getByRole("button", { name: "Unread" }));
+    await page.keyboard.press("Escape");
     await filterPicker(page, "Status").click();
     await expectTouchTarget(page.getByRole("option", { name: /^Todo,/ }));
     await page.keyboard.press("Escape");
@@ -217,7 +220,8 @@ bandsTest(
     await expect(shippedLink).toHaveCount(0);
     await pickFilterOption(page, "Status", "Done");
     await expect(shippedLink).toBeVisible();
-    await page.getByRole("combobox", { name: "Group by" }).selectOption("status");
+    await chooseDisplay(page, "Group by", "status");
+    await page.keyboard.press("Escape");
     const done = page.getByRole("button", { name: /Done.*1 issue/ });
     await done.click();
     await expect(shippedLink).toHaveCount(0);

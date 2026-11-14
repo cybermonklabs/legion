@@ -1,8 +1,9 @@
-import { flexRender, type Row } from "@tanstack/react-table";
+import type { Row } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
-import { DataTableGroupRow } from "../../components/DataTable";
+import { DataTableCells, DataTableGroupRow } from "../../components/DataTable";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import {
   borderDefault,
   focusVisibleRing,
@@ -19,10 +20,10 @@ import {
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
 import { issueStatuses, statusLabel } from "./board-model";
-import { Popover } from "./issues-table-controls";
 import { columnFilterSpec, type Item } from "./issues-table-model";
 
-/** One issue's row: its cells, and the Start next the reader reaches by hovering it. */
+/** One issue's row: its cells, and the Start next the reader reaches by hovering it, which is
+ *  held while a table action is out (`busy`) as a `StepButton` is, and for the same reason. */
 export function IssueRow({
   busy,
   index,
@@ -52,33 +53,25 @@ export function IssueRow({
       ref={measure}
       tabIndex={-1}
     >
-      {row.getVisibleCells().map((cell) => {
-        const pinned = cell.column.getIsPinned() === "left";
-        return (
-          <td
-            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
-            key={cell.id}
-            style={{
-              width: cell.column.getSize(),
-              left: pinned ? cell.column.getStart("left") : undefined,
-            }}
-          >
-            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-          </td>
-        );
-      })}
-      <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
-        {queue !== undefined && queue > 1 ? (
-          <button
-            className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
-            disabled={busy}
-            onClick={() => onStartNext(issue.key)}
-            type="button"
-          >
-            Start next
-          </button>
-        ) : null}
-      </td>
+      <DataTableCells
+        cellClass={(cell) => (row.depth > 0 && cell.column.id === "select" ? "pl-6" : "")}
+        highlight={changed ? selectedCardBg : undefined}
+        row={row}
+        trailing={
+          queue !== undefined && queue > 1 ? (
+            <button
+              aria-disabled={busy || undefined}
+              className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
+              onClick={() => {
+                if (!busy) onStartNext(issue.key);
+              }}
+              type="button"
+            >
+              Start next
+            </button>
+          ) : null
+        }
+      />
     </tr>
   );
 }
@@ -215,9 +208,16 @@ function EpicActions({
 }): ReactNode {
   /** The epic the reader has picked to merge into, which no write has been sent for yet. */
   const [target, setTarget] = useState("");
+  const [open, setOpen] = useState(false);
   return (
     <span className="ml-auto">
-      <Popover align="right" label="Epic actions ▾">
+      <PanelTrigger
+        align="right"
+        label="Epic actions ▾"
+        onOpenChange={setOpen}
+        open={open}
+        size="compact"
+      >
         {(close) => (
           <>
             <button
@@ -281,7 +281,7 @@ function EpicActions({
             )}
           </>
         )}
-      </Popover>
+      </PanelTrigger>
     </span>
   );
 }

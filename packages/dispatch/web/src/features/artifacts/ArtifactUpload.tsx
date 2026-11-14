@@ -13,6 +13,7 @@ import {
 
 import { ApiError, type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -350,7 +351,8 @@ export function useArtifactUpload(
 /** The upload control of a strip: its button, and, while a file is staged, that file's name, its
  *  summary and the two presses that store or discard it. `refusalShownBy` is the id of a line the
  *  host already shows the refusal on - the one line a closed issue's strip shows for every control
- *  in it; without it the row shows its own. */
+ *  in it; without it the row shows its own. The two presses are held while the upload is out
+ *  (`heldPress`). */
 export function ArtifactUploadRow({
   refusalShownBy,
   upload,
@@ -396,16 +398,14 @@ export function ArtifactUploadRow({
           />
           <button
             className={`min-h-11 shrink-0 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={upload.isPending}
-            onClick={upload.confirm}
+            {...heldPress(upload.isPending, upload.confirm)}
             type="button"
           >
             Upload
           </button>
           <button
             className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            disabled={upload.isPending}
-            onClick={upload.cancel}
+            {...heldPress(upload.isPending, upload.cancel)}
             type="button"
           >
             Cancel

@@ -51,10 +51,10 @@ test.describe("inbox search", () => {
     await expect(box).toHaveCount(1);
     await expect(box).toHaveValue("");
     await expect(box).toHaveAttribute("placeholder", "Issue, title, question or author");
-    // The cap is said rather than enforced by the field, so the change handler's cut is the
-    // one rule (proved by the address row below).
-    expect(await box.getAttribute("maxlength")).toBeNull();
-    await expect(box).toHaveAttribute("title", `At most ${SEARCH_QUERY_MAX} characters`);
+    // The cap is the shared box's own (`SearchBox`'s `maxLength`), so no reader types a query
+    // the server would refuse; the change handler cuts a paste the field takes whole as well
+    // (proved by the address row below).
+    await expect(box).toHaveAttribute("maxlength", String(SEARCH_QUERY_MAX));
 
     // With the assignee popover open both fields are on the page, and they are not the same
     // control: only one of them is the Inbox's searchbox.
@@ -185,7 +185,7 @@ test.describe("inbox search", () => {
     // Above the bands: the credential request and the summary of what waits on the reader -
     // her four questions and the one request - which the typed text never moves.
     const credentials = page.getByRole("region", { name: "Credential requests" });
-    const blocked = page.getByRole("link", { name: /^Blocked on you: 5 items/ });
+    const blocked = page.getByRole("button", { name: /^Blocked on you: 5 items/ });
     await expect(credentials.getByRole("link")).toHaveCount(1);
     await expect(credentials.getByRole("link")).toContainText("LEDGER_API_KEY");
     await expect(blocked).toBeVisible();
@@ -286,7 +286,7 @@ test.describe("inbox search", () => {
     await selectRow(page, scene.clockAskId);
     await page.keyboard.press("x");
     // INFRA-450's bar serves both kinds of row, so its own name is **Selected rows**.
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await expect(inboxRow(page, scene.clockAskId).getByRole("checkbox")).toBeChecked();
 

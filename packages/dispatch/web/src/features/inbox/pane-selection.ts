@@ -1,7 +1,6 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 
-import { buildInboxPath, type InboxRoute } from "../refs/routes";
+import { type InboxRoute, useInboxRoute } from "../../lib/page-address";
 import { answerDraft } from "./answer-drafts";
 import { ROW_ATTRIBUTE } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
@@ -86,7 +85,7 @@ export function usePaneSelection({
   presented,
   snoozing,
 }: PaneSelectionOptions): PaneSelection {
-  const navigate = useNavigate();
+  const [, goToRoute] = useInboxRoute();
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const selectedNow = useRef<string | undefined>(undefined);
   selectedNow.current = selectedId;
@@ -127,11 +126,12 @@ export function usePaneSelection({
     shownItem.current = id;
     if (id !== filter.item) {
       // Replace, never push: a reader walking the list with `j` would otherwise have to press
-      // Back once per row to leave the page, the rule the assignee filter already holds to.
-      // Selecting nothing clears `?item=` rather than leaving it on the row that has just
-      // left: a reload reads the address, and an address naming a row the reader deferred
-      // would open the folded band and put that question back in front of them.
-      navigate(buildInboxPath({ ...filter, item: id }), { replace: true });
+      // Back once per row to leave the page, the rule the assignee filter already holds to;
+      // `useInboxRoute` is where that rule lives. Selecting nothing clears `?item=` rather than
+      // leaving it on the row that has just left: a reload reads the address, and an address
+      // naming a row the reader deferred would open the folded band and put that question back
+      // in front of them.
+      goToRoute({ ...filter, item: id });
     }
   };
 

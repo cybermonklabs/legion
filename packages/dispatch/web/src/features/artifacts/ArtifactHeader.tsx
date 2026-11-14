@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import type { Artifact, Version } from "../../api/types";
+import { useAddressNavigate } from "../../lib/page-address";
 import {
   borderDefault,
   card,
@@ -88,7 +89,7 @@ export function ArtifactHeader({
   version: number | undefined;
 }): ReactNode {
   const [highlighted, setHighlighted] = useState(highlight);
-  const navigate = useNavigate();
+  const navigate = useAddressNavigate();
   const versions = versionsNewestFirst(toolbar?.versions ?? artifact.versions);
   // An artifact of an agent's conversation (a picture sent in a direct message) belongs to no
   // issue or project; its page is under the agent's session.
@@ -182,6 +183,8 @@ export function ArtifactHeader({
                     // Both path builders read `version: undefined` as the unversioned route.
                     const picked =
                       event.target.value === "" ? undefined : Number(event.target.value);
+                    // Pushed rather than replaced, as picking a version always has been: Back
+                    // returns the reader to the version they came from.
                     navigate(
                       agentSession !== undefined
                         ? buildReferencePath(documentRoute(artifact, picked))
@@ -197,7 +200,8 @@ export function ArtifactHeader({
                               kind: "artifact",
                               slug: artifact.slug,
                               version: picked,
-                            })
+                            }),
+                      { replace: false }
                     );
                   }}
                   value={version ?? ""}
@@ -231,9 +235,11 @@ export function ArtifactHeader({
                       // The route stays on the document the issue no longer holds, so the
                       // artifacts panel's own branch says it is gone rather than failing to
                       // load. A version route is normalised away first: the version the person
-                      // was reading went with the document.
+                      // was reading went with the document. Pushed, as this move always was, so
+                      // Back returns to the address the reader removed the document from.
                       navigate(
-                        buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug })
+                        buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug }),
+                        { replace: false }
                       )
                     }
                     refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}

@@ -1,4 +1,5 @@
 import { createAsk, createIssue, createProject } from "./api";
+import { openFilterPanel } from "./filters";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -64,9 +65,10 @@ test("Escape in a filter inside the inbox peek closes the filter, not the peek",
       .click();
     const peek = page.getByRole("dialog", { name: "Inbox" });
     await expect(peek).toBeVisible();
-    // The bar keeps its filter row folded until the reader asks for it.
-    await peek.locator("[data-inbox-filter]").click();
-    const trigger = peek.getByRole("button", { name: "Filter by assignee" });
+    // The row keeps its five fields in the panel its one **Filter** trigger opens, and that
+    // panel is portalled to the body rather than drawn inside the peek.
+    await openFilterPanel(page, peek);
+    const trigger = page.getByRole("button", { name: "Filter by assignee" });
     await trigger.click();
     const options = page.getByRole("listbox", { name: "Assignee" });
     await expect(options).toBeVisible();

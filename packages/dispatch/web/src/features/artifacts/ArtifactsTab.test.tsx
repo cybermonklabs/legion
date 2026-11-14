@@ -7,7 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, IssueReferences } from "../../api/types";
+import type { Artifact, ArtifactUploadResponse, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
 
@@ -51,14 +51,23 @@ const artifact = {
 
 const noReferences: IssueReferences = { members: [], truncated: false };
 
+/** The tab's own address: its path, and its query, which is where its filter lives. */
 function Location() {
-  return <output data-testid="location">{useLocation().pathname}</output>;
+  const { pathname, search } = useLocation();
+  return (
+    <>
+      <output data-testid="location">{pathname}</output>
+      <output data-testid="location-search">{search}</output>
+    </>
+  );
 }
 
 function renderTab(
   artifacts: Artifact[],
   references: IssueReferences = noReferences,
-  isClosed = false
+  isClosed = false,
+  /** The query the tab is opened at, as a reload or a shared link hands it over. */
+  search = ""
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
   const getIssueReferences = spyOn(api, "getIssueReferences").mockResolvedValue(references);
@@ -66,7 +75,9 @@ function renderTab(
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   const view = render(
-    <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "artifacts" })]}>
+    <MemoryRouter
+      initialEntries={[`${buildIssuePath({ key: "CORE-1", kind: "artifacts" })}${search}`]}
+    >
       <QueryClientProvider client={queryClient}>
         <ArtifactsTab isClosed={isClosed} />
         <Location />
@@ -210,6 +221,91 @@ test("New document on an issue refuses a title the issue already holds", async (
       "An artifact on this issue already holds that title: diagram.png."
     );
     expect(uploadArtifact).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// INFRA-3135. The focus follows the form: New document opens it with the focus in Title, so the
+// title is typed at once, and Cancel closes it with the focus back on New document, the control
+// that opened it, rather than dropped on the page.
+test("New document puts the focus in Title, and Cancel gives it back to New document", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// INFRA-3135. The same by the keyboard alone: Tab reaches the filter box and then New document,
+// and Enter opens the form with the focus in Title; Tab twice reaches Cancel, and Enter closes
+// the form with the focus back on New document, so the next Tab goes on to Upload rather than
+// starting again from the top of the page.
+test("New document by the keyboard: Enter puts the focus in Title, and Cancel gives it back", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.tab();
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+
+    await user.tab();
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Upload" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// A close the reader has moved away from is not the form's to undo. While Create is out they go
+// to the filter box; the write answers, the form closes and the document opens, and the focus
+// stays in the filter box rather than going back to New document.
+test("New document leaves the focus where the reader moved it while Create was out", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+  const answer = Promise.withResolvers<ArtifactUploadResponse>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(answer.promise);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    // The title goes where the opening put the focus.
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalled());
+    const filter = screen.getByRole("searchbox", { name: "Filter artifacts" });
+    await user.click(filter);
+
+    answer.resolve(madeResponse());
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/issues/CORE-1/artifacts/design-notes"
+      )
+    );
+    expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
+    expect(filter).toHaveFocus();
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
@@ -374,6 +470,53 @@ test("the filter input narrows rows by name and kind", async () => {
     view.unmount();
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
+  }
+});
+
+// The tab's filter is part of the address, so a reader who reloads, shares the tab or walks
+// back to it finds the same narrowed list rather than the whole one.
+test("the filter rides in the address: absent until set, and found again after a reload", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = {
+    ...artifact,
+    id: "artifact-notes",
+    kind: "doc",
+    name: "notes.md",
+    slug: "notes-md",
+  };
+  const typed = renderTab([artifact, notes]);
+
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    // Nothing the reader has not asked for: the address holds no `q` until one is typed.
+    expect(screen.getByTestId("location-search").textContent).toBe("");
+
+    const filter = screen.getByRole("searchbox", { name: "Filter artifacts" });
+    await user.click(filter);
+    await user.paste("notes");
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe("?q=notes"));
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+
+    await user.clear(filter);
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+  } finally {
+    typed.view.unmount();
+    typed.listArtifacts.mockRestore();
+    typed.getIssueReferences.mockRestore();
+  }
+
+  // The same address opened afresh, as a reload hands it over: the box holds those words and
+  // the list is already narrowed by them, before anybody types.
+  const reloaded = renderTab([artifact, notes], noReferences, false, "?q=notes");
+
+  try {
+    await screen.findByTestId("artifact-notes-md");
+    expect(screen.getByRole("searchbox", { name: "Filter artifacts" })).toHaveValue("notes");
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+  } finally {
+    reloaded.view.unmount();
+    reloaded.listArtifacts.mockRestore();
+    reloaded.getIssueReferences.mockRestore();
   }
 });
 

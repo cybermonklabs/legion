@@ -6,6 +6,7 @@ import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { issueProject } from "../../lib/issue-key";
+import { copyAddress } from "../../lib/page-address";
 import {
   linkHoverText,
   linkText,
@@ -187,7 +188,7 @@ export function PriorityPage(): ReactNode {
                   <Link
                     className={`mr-3 ${linkText} ${linkHoverText}`}
                     key={project}
-                    to={`/projects/${project}/issues?${selectIssues(new URLSearchParams(), keys, title)}`}
+                    to={`/projects/${project}/issues?${selectIssues(copyAddress(), keys, title)}`}
                   >
                     {project}’s issues table
                   </Link>

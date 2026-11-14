@@ -97,9 +97,15 @@ test("picking an assignee inside the drawer lists that person there, writes noth
     await within(dialog).findByText("Which approach?");
     expect(within(dialog).queryByText("Bob's question?")).not.toBeInTheDocument();
 
-    // The five fields sit behind the bar's one **Filter** button.
+    // The five controls sit behind the row's one **Filter** trigger, in a panel `AnchoredPanel`
+    // portals onto the body: the trigger is the drawer's, the panel it opens is reached from
+    // the screen, as the assignee popover inside it already was.
     await user.click(within(dialog).getByRole("button", { name: "Filter" }));
-    await user.click(within(dialog).getByRole("button", { name: "Filter by assignee" }));
+    await user.click(
+      within(await screen.findByRole("dialog", { name: "Filter" })).getByRole("button", {
+        name: "Filter by assignee",
+      })
+    );
     // The popover is portalled onto the body, so it is reached from the screen, not the drawer,
     // and from its own listbox: every open ask's card carries a people picker of its own (the
     // hand-on control), whose options name the same people.

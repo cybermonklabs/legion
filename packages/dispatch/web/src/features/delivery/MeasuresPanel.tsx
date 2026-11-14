@@ -13,6 +13,15 @@ import { Link } from "react-router-dom";
 import type { DeliveryMeasuresResponse } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+  type TableTone,
+} from "../../components/TableShell";
+import {
   borderDefault,
   dangerText,
   linkText,
@@ -49,6 +58,14 @@ export function failureRateBreakdown(confirmed: number, confirmedOrPending: numb
 function tone(met: boolean | null): string {
   if (met === null) return textMutedOnCanvas;
   return met ? successText : dangerText;
+}
+
+/** The colour a day's figure takes against its target in the per-day table: none while the day
+ *  is still running, since a day that is not over has met nothing yet, and none where there is
+ *  no rate to judge. */
+function dayTone(partial: boolean, met: boolean | null): TableTone {
+  if (partial || met === null) return "default";
+  return met ? "success" : "danger";
 }
 
 function KpiCard(props: {
@@ -440,50 +457,51 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
         <div className={`mb-1 text-xs uppercase ${textMutedOnCanvas}`}>
           Per day (UTC), newest first
         </div>
-        <div className={`max-h-48 overflow-y-auto rounded border ${borderDefault}`}>
-          <table className="w-full text-xs tabular-nums">
-            <thead className={`sticky top-0 ${surfaceBg} ${textMutedOnSurface}`}>
-              <tr>
-                <th className="px-2 py-1 text-left font-normal">Day</th>
-                <th className="px-2 py-1 text-right font-normal">Deploys</th>
-                <th className="px-2 py-1 text-right font-normal">Concluded runs</th>
-                <th className="px-2 py-1 text-right font-normal">Reached production</th>
-                <th className="px-2 py-1 text-right font-normal">Run success</th>
-                <th className="px-2 py-1 text-right font-normal">Cancelled</th>
-              </tr>
-            </thead>
-            <tbody>
-              {newestFirst.map((d) => (
-                <tr
-                  className={`border-t ${borderDefault} ${d.partial ? textMutedOnSurface : textPrimaryOnSurface}`}
-                  key={d.day}
+        <TableShell
+          className="max-h-48"
+          label="Per day (UTC), newest first"
+          size="compact"
+          stickyHead
+        >
+          <TableHead>
+            <TableHeadCell>Day</TableHeadCell>
+            <TableHeadCell align="right">Deploys</TableHeadCell>
+            <TableHeadCell align="right">Concluded runs</TableHeadCell>
+            <TableHeadCell align="right">Reached production</TableHeadCell>
+            <TableHeadCell align="right">Run success</TableHeadCell>
+            <TableHeadCell align="right">Cancelled</TableHeadCell>
+          </TableHead>
+          <TableBody>
+            {newestFirst.map((d) => (
+              <TableRow key={d.day} tone={d.partial ? "muted" : "primary"}>
+                <TableCell>
+                  {d.day}
+                  {d.partial ? " (partial)" : ""}
+                </TableCell>
+                <TableCell
+                  align="right"
+                  tone={dayTone(d.partial, d.deploys >= targets.deploys_per_day)}
                 >
-                  <td className="px-2 py-0.5">
-                    {d.day}
-                    {d.partial ? " (partial)" : ""}
-                  </td>
-                  <td
-                    className={`px-2 py-0.5 text-right ${d.partial ? "" : tone(d.deploys >= targets.deploys_per_day)}`}
-                  >
-                    {d.deploys}
-                  </td>
-                  <td className="px-2 py-0.5 text-right">{d.concluded}</td>
-                  <td className="px-2 py-0.5 text-right">{d.reached_production}</td>
-                  <td
-                    className={`px-2 py-0.5 text-right ${
-                      d.partial || d.run_success_rate === null
-                        ? ""
-                        : tone(d.run_success_rate >= targets.deploy_run_success_rate)
-                    }`}
-                  >
-                    {d.run_success_rate === null ? "n/a" : pct(d.run_success_rate)}
-                  </td>
-                  <td className="px-2 py-0.5 text-right">{d.cancelled}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  {d.deploys}
+                </TableCell>
+                <TableCell align="right">{d.concluded}</TableCell>
+                <TableCell align="right">{d.reached_production}</TableCell>
+                <TableCell
+                  align="right"
+                  tone={dayTone(
+                    d.partial,
+                    d.run_success_rate === null
+                      ? null
+                      : d.run_success_rate >= targets.deploy_run_success_rate
+                  )}
+                >
+                  {d.run_success_rate === null ? "n/a" : pct(d.run_success_rate)}
+                </TableCell>
+                <TableCell align="right">{d.cancelled}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </TableShell>
       </div>
     </>
   );

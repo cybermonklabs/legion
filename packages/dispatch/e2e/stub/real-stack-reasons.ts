@@ -251,6 +251,8 @@ export const realStackReasons: Record<string, string> = {
   "spec-suggestion-decoration.e2e.ts": "reads the decoration's DOM inside the live editor",
   "stored-text-reading.e2e.ts":
     "each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes",
+  "table-controls.e2e.ts":
+    "the Agents page folds a session by its last_seen against the clock and the Delivery page reads a window of dates, both of which a recording freezes; the rest count seeded rows against each other - a filter's count beside each of its values, the number waiting on the reader, the pager's total - and write before they read: a column resize, a reorder and a visibility kept for the reader, a Board disclosure and an Artifacts narrowing read back after a reload, and Mark all read",
   "task-items.e2e.ts": "asserts inside the live document editor",
   "text-typed-blocks.e2e.ts": "the live document editor, including typing a new option",
   "threads-order.e2e.ts":

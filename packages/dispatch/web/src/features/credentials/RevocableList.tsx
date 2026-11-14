@@ -3,6 +3,15 @@ import type { ReactNode } from "react";
 
 import { apiErrorMessage, type WriteBounds } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
@@ -14,11 +23,8 @@ import {
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
-import { settingsTableWrapper } from "../settings/classes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** One column of a `RevocableList`: its header, and what a row shows under it. The first column
@@ -108,64 +114,51 @@ export function RevocableList<Row>({
         </div>
       ) : null}
       {query.isSuccess ? (
-        <div className={settingsTableWrapper}>
-          <table className="w-full text-left text-sm">
-            <thead className={`border-b ${textSecondaryOnSurface}`}>
-              <tr>
-                {columns.map((column) => (
-                  <th className="px-4 py-3 font-semibold" key={column.header} scope="col">
-                    {column.header}
-                  </th>
-                ))}
-                <th className="px-4 py-3" scope="col">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {query.data.length === 0 ? (
-                <tr>
-                  <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={columns.length + 1}>
-                    {empty}
-                  </td>
-                </tr>
-              ) : (
-                query.data.map((row) => (
-                  <tr className="border-b last:border-0" key={rowKey(row)}>
-                    {columns.map((column, index) => (
-                      <td
-                        className={
-                          index === 0
-                            ? `px-4 py-3 font-medium ${textPrimaryOnSurface}`
-                            : `px-4 py-3 ${textSecondaryOnSurface}`
-                        }
-                        key={column.header}
+        <TableShell className="mt-6" label={heading}>
+          <TableHead>
+            {columns.map((column) => (
+              <TableHeadCell key={column.header}>{column.header}</TableHeadCell>
+            ))}
+            <TableHeadCell>
+              <span className="sr-only">Actions</span>
+            </TableHeadCell>
+          </TableHead>
+          <TableBody>
+            {query.data.length === 0 ? (
+              <TableEmpty colSpan={columns.length + 1}>{empty}</TableEmpty>
+            ) : (
+              query.data.map((row) => (
+                <TableRow key={rowKey(row)}>
+                  {columns.map((column, index) => (
+                    <TableCell
+                      key={column.header}
+                      tone={index === 0 ? "primary" : "secondary"}
+                      weight={index === 0 ? "medium" : "normal"}
+                    >
+                      {column.cell(row)}
+                    </TableCell>
+                  ))}
+                  <TableCell align="right">
+                    {unrevocable?.(row) ? (
+                      <span className={`text-xs whitespace-nowrap ${textMutedOnSurface}`}>
+                        {unrevocable(row)}
+                      </span>
+                    ) : (
+                      <button
+                        className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
+                        disabled={mutation.isPending}
+                        onClick={() => press(row)}
+                        type="button"
                       >
-                        {column.cell(row)}
-                      </td>
-                    ))}
-                    <td className="px-4 py-3 text-right">
-                      {unrevocable?.(row) ? (
-                        <span className={`text-xs whitespace-nowrap ${textMutedOnSurface}`}>
-                          {unrevocable(row)}
-                        </span>
-                      ) : (
-                        <button
-                          className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
-                          disabled={mutation.isPending}
-                          onClick={() => press(row)}
-                          type="button"
-                        >
-                          Revoke
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                        Revoke
+                      </button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </TableShell>
       ) : null}
       {mutation.isError ? (
         <p className={`mt-2 ${dangerText}`}>{apiErrorMessage(mutation.error, revokeError)}</p>

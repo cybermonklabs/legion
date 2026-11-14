@@ -219,3 +219,32 @@ test("a row's detail reads after its label and a comma, spoken with its own word
     view.unmount();
   }
 });
+
+test("the compact size changes the trigger's look alone, and the control carries no data-control", async () => {
+  const user = userEvent.setup();
+  const opened: boolean[] = [];
+  const view = render(
+    <MultiSelect
+      emptyMessage="Nothing here."
+      label="Labels"
+      onChange={() => undefined}
+      onOpenChange={(next) => opened.push(next)}
+      open={false}
+      options={["api", "docs"]}
+      searchLabel="Search labels"
+      selected={["api"]}
+      size="compact"
+    />
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Labels · 1" });
+    // The vocabulary's eleven names are the controls a page draws; this one is a part of them,
+    // not one of them, so nothing reads it by that attribute.
+    expect(trigger).not.toHaveAttribute("data-control");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await user.click(trigger);
+    expect(opened).toEqual([true]);
+  } finally {
+    view.unmount();
+  }
+});

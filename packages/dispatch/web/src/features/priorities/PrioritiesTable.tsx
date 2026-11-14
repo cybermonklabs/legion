@@ -3,12 +3,16 @@ import type { PriorityRow } from "../../api/types";
 import {
   DataTable,
   DataTableGroupRow,
+  type DataTableNames,
   type RowNoun,
   useDataTable,
 } from "../../components/DataTable";
+import type { PagerOptions } from "../../components/Pager";
+import { useTableLayout } from "../../components/table-layout";
+import { useAddressUpdate, useTableAddress } from "../../lib/page-address";
 import { textMutedOnSurfaceMuted, textSecondaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
-import { useTableLayout } from "../project/issues-table-layout";
+import { ALL_ROWS, PAGE_SIZES } from "../project/issues-table-model";
 import { NewPriority } from "./NewPriority";
 import { usePriorityColumns } from "./priorities-columns";
 import {
@@ -16,7 +20,10 @@ import {
   matchesPrioritySearch,
   PRIORITY_COLUMNS,
   PRIORITY_COLUMNS_BY_ID,
+  PRIORITY_GROUP_ATTRIBUTE,
   PRIORITY_LAYOUT,
+  PRIORITY_LINK_ATTRIBUTE,
+  PRIORITY_ROW_ATTRIBUTE,
   PRIORITY_SORTING,
   type PriorityItem,
   rankMove,
@@ -24,16 +31,46 @@ import {
 import { TableToolbar } from "./priority-table-controls";
 import { compareHeadings, facetCounts, headingOf } from "./priority-table-model";
 import { TableBodyRow } from "./priority-table-rows";
-import { useTableView } from "./priority-table-view";
+import { priorityTableGrammar } from "./priority-table-view";
 import { usePriorityWrites } from "./priority-writes";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
-/** What a row of this table is, which its pager and its group headings count in. */
-const NOUN: RowNoun = { many: "priorities", one: "priority" };
-/** The layout key of the priorities table: one table, one deployment, one stored layout. */
-const LAYOUT_KEY = "priorities";
-/** The address prefix of this table's own view, so the two fault lists keep their own. */
+/** What a row of this table is, which its filters, its pager and its group headings count in. */
+const NOUN: RowNoun = {
+  group: { one: "group", many: "groups" },
+  line: { one: "row", many: "rows" },
+  many: "priorities",
+  one: "priority",
+};
+/** The priorities table's own words, which the table core reads and never invents: its rows'
+ *  attributes, and the keys that walk them under ids of their own, beside the issue tables'
+ *  `list-*` keys on the same page. */
+const NAMES: DataTableNames = {
+  groupAttribute: PRIORITY_GROUP_ATTRIBUTE,
+  keymap: {
+    next: { id: "priorities-next", keys: "j", label: "Next priority" },
+    open: { id: "priorities-open", keys: "o", label: "Open priority" },
+    openOnEnter: { id: "priorities-open-enter", keys: "Enter", label: "Open the focused priority" },
+    previous: { id: "priorities-previous", keys: "k", label: "Previous priority" },
+    scope: "project",
+    select: { id: "priorities-select", keys: "x", label: "Select or deselect the priority" },
+  },
+  linkAttribute: PRIORITY_LINK_ATTRIBUTE,
+  rowAttribute: PRIORITY_ROW_ATTRIBUTE,
+};
+/** The line under the table: the page sizes the issue tables offer, and its own test id. */
+const PAGER: PagerOptions = {
+  allRows: ALL_ROWS,
+  pageSizes: PAGE_SIZES,
+  testId: "priorities-table-pager",
+};
+/** The whole key the priorities table keeps its layout under: one table, one deployment, one
+ *  stored layout, under the key the page has always written it to. */
+const LAYOUT_KEY = "dispatch.project-table.priorities";
+/** The address prefix of this table's own view, so the two fault lists keep their own. A
+ *  module-level constant, since `useTableAddress` memoizes the view it reads on its identity. */
 const VIEW_PREFIX = "p";
+const VIEW_ADDRESS = priorityTableGrammar(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
 /** The address prefix of the work under an opened row, which is the issues table's own view. */
 const WORK_PREFIX = "w";
 
@@ -52,8 +89,9 @@ export function PrioritiesTable({
   /** Each priority's title by its id, which the opened row's work table names a priority by. */
   titles: ReadonlyMap<string, string>;
 }): ReactNode {
-  const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
-    useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
+  const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
+    useTableAddress(VIEW_ADDRESS);
+  const update = useAddressUpdate();
   const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
   const { attachAbove, boxWidth } = layout;
   const [openId, setOpenId] = useState<string>();
@@ -109,16 +147,12 @@ export function PrioritiesTable({
       // The work under a priority is read by status, as the page's rule says, unless the
       // reader has already grouped that table by something else.
       if (next !== undefined && !params.has(`${WORK_PREFIX}.group`))
-        setParams(
-          (current) => {
-            const changed = new URLSearchParams(current);
-            changed.set(`${WORK_PREFIX}.group`, "status");
-            return changed;
-          },
-          { replace: true }
-        );
+        update((current) => {
+          current.set(`${WORK_PREFIX}.group`, "status");
+          return current;
+        });
     },
-    [openId, params, setParams]
+    [openId, params, update]
   );
   const onRename = useCallback(
     (item: PriorityItem, title: string) => {
@@ -155,6 +189,7 @@ export function PrioritiesTable({
     columns,
     getRowId: (item) => item.priority.id,
     layout,
+    names: NAMES,
     state: {
       sorting: view.sorting,
       grouping: view.grouping,
@@ -214,6 +249,7 @@ export function PrioritiesTable({
         noun={NOUN}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
+        pager={PAGER}
         renderGroup={({ entry: { continued, row, shown }, index, measure }) => {
           const heading = String(row.groupingValue ?? "");
           const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped()).length;

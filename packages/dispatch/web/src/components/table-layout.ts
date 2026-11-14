@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { readLayout, type StoredColumns, writeLayout } from "./issues-table-storage";
+import { readLayout, type StoredColumns, writeLayout } from "./table-storage";
 
 /** The columns a table pins at its left edge while it scrolls sideways, and how they fit the
  *  box it is drawn in. */
@@ -35,6 +35,9 @@ export interface LayoutPins {
 /** Every rule a table's layout follows, from its caller: `useTableLayout` reads no other.
  *  Held in a module constant, since the stored layout is read again whenever it changes. */
 export interface LayoutColumns extends StoredColumns {
+  /** The attribute each drawn row carries, which is the caller's own word for its rows: the
+   *  first few of them are measured to tell how short the box may be. */
+  readonly rowAttribute: string;
   /** Each column's width before the reader drags it. A column it does not name is drawn at its
    *  definition's `size`, and counts as no width where the pins are fitted. */
   readonly sizes?: Readonly<Partial<Record<string, number>>>;
@@ -65,11 +68,22 @@ export interface TableLayoutModel {
   readonly visibility: VisibilityState;
 }
 
+/** The column order a drag leaves behind: `dragged` taken out of `current` and put back
+ *  immediately before `before`. A drop on itself, or on an id the order does not hold, leaves
+ *  the order as it was. */
+export function reorder(current: readonly string[], dragged: string, before: string): string[] {
+  if (dragged === before || !current.includes(dragged) || !current.includes(before))
+    return [...current];
+  const next = current.filter((id) => id !== dragged);
+  next.splice(next.indexOf(before), 0, dragged);
+  return next;
+}
+
 /**
  * How wide the table's columns are, in what order, which are shown, and how big a box it gets
- * in the window. The widths, order and visibility are the reader's, saved under `layoutKey` for
- * the `columns` the table has; the box and the pinned columns follow the window, by the rules
- * `columns` gives.
+ * in the window. The widths, order and visibility are the reader's, saved under `layoutKey` —
+ * the whole key, which the caller names and this prefixes nothing to — for the `columns` the
+ * table has; the box and the pinned columns follow the window, by the rules `columns` gives.
  *
  * Measuring reads layout, so it happens only when something that changes the answer happens: a
  * `ResizeObserver` over the box and over everything drawn above it — which covers the rows the
@@ -89,6 +103,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
   const pagerRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<HTMLDivElement | null>(null);
   const [above, setAbove] = useState<HTMLDivElement | null>(null);
+  const { rowAttribute } = columns;
   /** The box, held as both the ref the rest of the table reads and the state the measurement
    *  observes: it is not in the page on the first render, while the listing is still out. */
   const attachBox = useCallback((node: HTMLDivElement | null) => {
@@ -148,28 +163,25 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     const bounds = box.getBoundingClientRect();
     setBoxWidth(bounds.width);
     const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
-    const firstRows = [...box.querySelectorAll<HTMLElement>("[data-issue-row]")].slice(0, 3);
+    const firstRows = [...box.querySelectorAll<HTMLElement>(`[${rowAttribute}]`)].slice(0, 3);
     const rowsHeight = firstRows.reduce(
       (height, row) => height + row.getBoundingClientRect().height,
       0
     );
-    // The room left over under the pager, which the box takes: the window, less the bottom
-    // padding the section and the page keep for the floating selection bar, less where the
-    // pager's last pixel is now. Measured against the pager's own place rather than the page's
-    // height — which on a page shorter than the window is the window, leaving the box only
-    // able to shrink — so the box grows as well as shrinks, whatever stands above it.
-    const pager = pagerRef.current;
-    if (!pager) return;
+    // The room left over under the table's last line, which the box takes: the window, less the
+    // bottom padding the section and the page keep for the floating selection bar, less where
+    // that line's last pixel is now. Measured against the pager's own place — the box's own
+    // bottom edge where the table has no pager — rather than the page's height, which on a page
+    // shorter than the window is the window, leaving the box only able to shrink; so the box
+    // grows as well as shrinks, whatever stands above it.
+    const foot = pagerRef.current?.getBoundingClientRect().bottom ?? bounds.bottom;
     const padding = (element: Element | null) =>
       element === null ? 0 : Number.parseFloat(getComputedStyle(element).paddingBottom) || 0;
     const slack =
-      window.innerHeight -
-      padding(box.parentElement) -
-      padding(box.closest("main")) -
-      pager.getBoundingClientRect().bottom;
+      window.innerHeight - padding(box.parentElement) - padding(box.closest("main")) - foot;
     const available = bounds.height + slack;
     setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
-  }, []);
+  }, [rowAttribute]);
   useLayoutEffect(() => {
     measure();
     window.addEventListener("resize", measure);

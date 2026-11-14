@@ -172,6 +172,32 @@ test("a refused correction shows the server's own sentence", async () => {
   }
 });
 
+// INFRA-3135. The focus follows the form: Correct title opens it with the focus in Title, and
+// Cancel closes it with the focus back on Correct title. By the keyboard the same: Enter on the
+// button opens it, and Enter in Title with the title as it stands closes it, the focus again on
+// the button that opened it rather than dropped on the page.
+test("Correct title puts the focus in Title, and closing the form gives it back to the button", async () => {
+  const user = userEvent.setup();
+  const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue([document()]);
+  const view = renderPage(documentPath);
+
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    await user.click(screen.getByRole("button", { name: "Correct title" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Correct title" })).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Correct title" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+  }
+});
+
 // The removal leaves the person on the document's own address, which the issue no longer holds,
 // so the artifacts panel's own branch says it is gone. A version route is normalised away: the
 // version the person was reading went with the document.

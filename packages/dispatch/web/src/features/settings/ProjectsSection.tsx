@@ -12,28 +12,28 @@ import {
 } from "../../api/queries";
 import type { CreateProjectInput, ProjectDefaultAssignee } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   borderDefault,
   inputClasses,
   textMutedOnCanvas,
-  textMutedOnSurface,
   textPrimaryOnCanvas,
   textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  settingsFieldLabel,
-  settingsMonoInput,
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-} from "./classes";
+import { settingsFieldLabel, settingsMonoInput, settingsSubmitButton } from "./classes";
 
 /** Lists native projects, lets a human create one, and carries each project's default assignee -
  * the person an issue created with nobody named lands on, and the person a question on an issue
@@ -114,59 +114,43 @@ export function ProjectsSection(): ReactNode {
       ) : null}
       {projects.isSuccess ? (
         <>
-          <div className={settingsTableWrapper}>
-            <table className="w-full text-left text-sm">
-              <thead className={settingsTableHead}>
-                <tr>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Key
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Name
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Default assignee
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Created
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {projects.data.length === 0 ? (
-                  <tr>
-                    <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={4}>
-                      No projects yet.
-                    </td>
-                  </tr>
-                ) : (
-                  projects.data.map((candidate) => (
-                    <tr className={settingsTableRow} key={candidate.key}>
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                        {candidate.key}
-                      </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>{candidate.name}</td>
-                      <td className="px-4 py-3">
-                        <DefaultAssigneeCell
-                          logins={logins}
-                          onReach={() => setWantUsers(true)}
-                          project={candidate.key}
-                          readFailed={defaults.isError}
-                          // A project the defaults read has not answered for - one created since
-                          // that read - reads as not read yet rather than as nobody: every project
-                          // names a person, and the read behind this cell is the one place it is.
-                          stored={defaultAssignees.get(candidate.key)}
-                        />
-                      </td>
-                      <td className={`px-4 py-3 ${textMutedOnSurface}`}>
-                        <Timestamp at={candidate.created_at} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <TableShell className="mt-6" label="Projects">
+            <TableHead>
+              <TableHeadCell>Key</TableHeadCell>
+              <TableHeadCell>Name</TableHeadCell>
+              <TableHeadCell>Default assignee</TableHeadCell>
+              <TableHeadCell>Created</TableHeadCell>
+            </TableHead>
+            <TableBody>
+              {projects.data.length === 0 ? (
+                <TableEmpty colSpan={4}>No projects yet.</TableEmpty>
+              ) : (
+                projects.data.map((candidate) => (
+                  <TableRow key={candidate.key}>
+                    <TableCell mono tone="primary">
+                      {candidate.key}
+                    </TableCell>
+                    <TableCell tone="secondary">{candidate.name}</TableCell>
+                    <TableCell>
+                      <DefaultAssigneeCell
+                        logins={logins}
+                        onReach={() => setWantUsers(true)}
+                        project={candidate.key}
+                        readFailed={defaults.isError}
+                        // A project the defaults read has not answered for - one created since
+                        // that read - reads as not read yet rather than as nobody: every project
+                        // names a person, and the read behind this cell is the one place it is.
+                        stored={defaultAssignees.get(candidate.key)}
+                      />
+                    </TableCell>
+                    <TableCell tone="muted">
+                      <Timestamp at={candidate.created_at} />
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </TableShell>
           <p className={`mt-2 text-sm ${textSecondaryOnCanvas}`}>
             Every project names a default assignee, and it cannot be cleared: an issue created with
             nobody named, and with no person, token owner or assigned parent to take it, goes to

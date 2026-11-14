@@ -4,7 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 
 import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { useCappedSearchParam } from "../../lib/query-param";
+import { useCappedAddressParam } from "../../lib/page-address";
 import {
   borderDefault,
   dangerText,
@@ -84,7 +84,7 @@ function MachineView({ host }: { host: string }): ReactNode {
   // is a link, the back button means something across a window change, and one window is
   // deep-linkable. The server is in the value because tmux numbers windows per server, so a
   // bare `@1` would name a window on every server of the machine at once (`windowChoice`).
-  const [picked] = useCappedSearchParam("window");
+  const [picked] = useCappedAddressParam("window");
   // What the viewer is owed, read once for the page from the two queries the shell already
   // makes - never once per pane - so a pane that needs them reads `needs-you`, the first of
   // the four states, and the page adds no request of its own.

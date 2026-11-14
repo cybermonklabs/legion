@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { readLayout } from "../../components/table-storage";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -14,8 +15,7 @@ import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import type { IssueListing } from "./issues-table-data";
-import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
-import { readLayout } from "./issues-table-storage";
+import { ISSUE_TABLE_COLUMNS, tableStorageKey } from "./issues-table-model";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -77,10 +77,14 @@ afterEach(() => {
   for (const restore of restores.splice(0)) restore();
   localStorage.clear();
 });
+/** Draws the List over `issues`. `full` answers the listing that holds the closed issues, and
+ *  `open` the one that holds the open ones alone, in place of `issues` itself; `props` is what
+ *  a caller other than the project page passes: a listing of its own, the priorities' titles and
+ *  the prefix its view is written under. */
 function table(
   issues: IssueSummary[],
   search = "",
-  full?: Promise<IssueSummary[]>,
+  { full, open }: { full?: Promise<IssueSummary[]>; open?: Promise<IssueSummary[]> } = {},
   props: {
     listing?: IssueListing;
     priorityTitles?: ReadonlyMap<string, string>;
@@ -96,16 +100,16 @@ function table(
   ].map((key) => issue(key, { status: "triage" }));
   // The listing route as the server answers it: `open` leaves the closed rows out, and
   // `advances` keeps the issues that carry that relation, whichever project they are in.
-  const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
-    !options.open && full
-      ? full
-      : [...issues, ...parents].filter(
-          (issue) =>
-            (!options.open || issue.status !== "done") &&
-            (options.advances === undefined ||
-              (issue.advances ?? []).some((relation) => options.advances?.includes(relation.id)))
-        )
-  );
+  const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
+    if (!options.open && full) return full;
+    if (options.open && open) return open;
+    return [...issues, ...parents].filter(
+      (issue) =>
+        (!options.open || issue.status !== "done") &&
+        (options.advances === undefined ||
+          (issue.advances ?? []).some((relation) => options.advances?.includes(relation.id)))
+    );
+  });
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue({
@@ -156,6 +160,14 @@ async function nameTheEpic(user: UserEvent, name: string) {
   await user.clear(field);
   await user.type(field, name);
   await user.click(within(dialog).getByRole("button", { name: /^(Create|Rename) epic$/ }));
+}
+
+/** Picks a grouping in the row's display menu, which is where **Group by** lives: the menu is
+ *  opened if it is shut, and a choice leaves it open for the next one. */
+async function groupRowsBy(user: UserEvent, option: string) {
+  const menu = screen.getByRole("button", { name: "View" });
+  if (menu.getAttribute("aria-expanded") === "false") await user.click(menu);
+  await user.click(screen.getByRole("radio", { name: option }));
 }
 
 test("rows keep parent links, unread marks, asks, progress and route reach, with priority editable", async () => {
@@ -286,9 +298,11 @@ test("an epic creation committed without an answer never sends parent writes to 
     "The selected issues have not been moved"
   );
   expect(send).not.toHaveBeenCalled();
-  expect(
-    screen.getByRole<HTMLButtonElement>("button", { name: "New epic from these" }).disabled
-  ).toBe(true);
+  // Held rather than disabled: the name dialog hands the focus back to it.
+  expect(screen.getByRole("button", { name: "New epic from these" })).toHaveAttribute(
+    "aria-disabled",
+    "true"
+  );
   expect(create.mock.calls.length).toBe(1);
   expect(screen.queryByRole("alert")).toBeNull();
 });
@@ -495,7 +509,9 @@ test("Clear filters also clears Needs you, Unread and the lapsed-claim filter", 
   expect(
     screen.getByRole("button", { name: /^Filter Claimed by/ }).getAttribute("aria-label")
   ).toBe("Filter Claimed by");
-  for (const name of ["Needs you", "Unread"]) {
+  // The flags are behind the row's one filter trigger now, so the reader opens it to read them.
+  await user.click(screen.getByRole("button", { name: /^Filters · \d+$/ }));
+  for (const name of ["Needs you", "Unread", "Unclaimed"]) {
     await waitFor(() =>
       expect(screen.getByRole("button", { name }).getAttribute("aria-pressed")).toBe("false")
     );
@@ -627,7 +643,7 @@ test("a live unseen ancestor keeps the same scroll box and marks unknown ancestr
 
 test("a late Done listing applies the requested URL page instead of clamping it early", async () => {
   const done = Promise.withResolvers<IssueSummary[]>();
-  table([issue("CORE-1")], "?status=done&page=3&size=25", done.promise);
+  table([issue("CORE-1")], "?status=done&page=3&size=25", { full: done.promise });
   await screen.findByText("Loading closed issues…");
   done.resolve(
     Array.from({ length: 80 }, (_, index) => issue(`CORE-${index + 2}`, { status: "done" }))
@@ -832,13 +848,34 @@ test("Claimed by picks the issues nobody is working, and ?unclaimed=1 still open
   table([issue("CORE-1", { claim: held }), issue("CORE-2")], "?unclaimed=1");
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
-  // And no chip of its own: the rule is the Claimed by column's, picked like any other value.
+  // And no chip loose in the control row: the flag sits behind the row's filter trigger, and
+  // the rule is still the Claimed by column's, picked like any other value.
   expect(screen.queryByRole("button", { name: "Unclaimed" })).toBeNull();
   await user.click(screen.getByRole("button", { name: /^Filter Claimed by/ }));
   const picked = screen.getByRole("option", { name: /^Nobody or lapsed/ });
   expect(picked.getAttribute("aria-selected")).toBe("true");
   await user.click(picked);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+});
+
+// R3: a narrowing that is no column of the table sits behind the row's one filter trigger.
+// Unclaimed is `?unclaimed=1` there, which is the Claimed by column's "Nobody or lapsed".
+test("the row's filter panel turns Unclaimed on and the table narrows to it", async () => {
+  const user = userEvent.setup();
+  const held: IssueSummary["claim"] = {
+    actor: { kind: "user", id: "bob" },
+    at: "2026-09-10T00:00:00Z",
+  };
+  table([issue("CORE-1", { claim: held }), issue("CORE-2")]);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await user.click(screen.getByRole("button", { name: "Filters · 0" }));
+  await user.click(screen.getByRole("button", { name: "Unclaimed" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("route-search").textContent).toContain("unclaimed=1")
+  );
+  await waitFor(() => expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull());
+  expect(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "Remove Unclaimed filter" })).toBeDefined();
 });
 
 test("an open epic is an ordinary row, and a group heading only when grouped by Epic", async () => {
@@ -850,7 +887,7 @@ test("an open epic is an ordinary row, and a group heading only when grouped by 
   await screen.findByRole("row", { name: "CORE-1 Platform" });
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-1" }));
   expect(readSelectedIssues()).toEqual(["CORE-1"]);
-  await user.selectOptions(screen.getByRole("combobox", { name: "Group by" }), "epic");
+  await groupRowsBy(user, "Epic");
   await waitFor(() => expect(screen.queryByRole("row", { name: "CORE-1 Platform" })).toBeNull());
   expect(screen.getByRole("link", { name: "CORE-1 · Platform" })).toBeDefined();
 });
@@ -1133,12 +1170,11 @@ test.each([
     search
   );
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  const groupBy = screen.getByRole("combobox", { name: "Group by" });
-  await user.selectOptions(groupBy, "priority");
+  await groupRowsBy(user, "Priority");
   await waitFor(() =>
     expect(headings().map((text) => text.match(/P\d/)?.[0])).toEqual(["P0", "P1", "P2", "P3"])
   );
-  await user.selectOptions(groupBy, "status");
+  await groupRowsBy(user, "Status");
   await waitFor(() =>
     expect(
       headings().map((text) =>
@@ -1147,7 +1183,7 @@ test.each([
     ).toEqual(["Todo", "In progress", "Needs review"])
   );
   // Ungrouped again, the rows follow the reader's sort alone: no grouping order survives it.
-  await user.selectOptions(groupBy, "");
+  await groupRowsBy(user, "Nothing");
   await waitFor(() => expect(headings()).toEqual([]));
   await waitFor(() =>
     expect(
@@ -1313,7 +1349,7 @@ test("the List stores a reader's first layout with Updated hidden and no listing
 // only a corrupt record holds it, and it is dropped like any other name the table has no column for.
 test("a stored width under an inherited name such as toString is dropped", () => {
   localStorage.setItem("dispatch.project-table.CORE", '{"sizing":{"toString":200,"title":360}}');
-  expect(readLayout("CORE", ISSUE_TABLE_COLUMNS).sizing).toEqual({ title: 360 });
+  expect(readLayout(tableStorageKey("CORE"), ISSUE_TABLE_COLUMNS).sizing).toEqual({ title: 360 });
 });
 
 /** Each header cell of the List, left to right, as `<its column's words> <width> <the offset a
@@ -1640,6 +1676,127 @@ test("Clear filters restores the default view rather than loading every closed i
   );
   expect(screen.getByTestId("route-search").textContent).not.toContain("status=");
   expect(listing.mock.calls.every(([options]) => options?.open !== false)).toBe(true);
+});
+
+// The List draws its toolbar while it reads issues it has not loaded, as the Board draws its
+// controls: a press in the toolbar that starts that read leaves the toolbar, the control pressed
+// and the keyboard focus on it where they were, and the skeleton stands in for the table alone.
+test("a press in the toolbar that sends the List off to read its issues keeps the toolbar, and the focus on that control", async () => {
+  const user = userEvent.setup();
+  // Opened on the closed issues, whose listing answers. The open issues' listing is still out
+  // when Clear filters goes back to them.
+  const open = Promise.withResolvers<IssueSummary[]>();
+  table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?status=done", {
+    open: open.promise,
+  });
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const clear = screen.getByRole("button", { name: "Clear filters" });
+  await user.click(clear);
+  expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
+  expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
+  expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "Clear filters" })).toBe(clear);
+  // Not the page's body, from which a keyboard reader would start again at its first link.
+  expect(clear).toHaveFocus();
+  open.resolve([issue("CORE-1")]);
+  expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
+  expect(clear).toHaveFocus();
+});
+
+// A column filter goes with the table it heads when its press sends the List off to read its
+// issues: the focus in its list, a panel of its own, goes to the toolbar's search box.
+test("a column filter press that sends the List off to read its issues leaves the focus on the toolbar", async () => {
+  const user = userEvent.setup();
+  // Opened on Done and Todo, whose listing answers. Unticking Done goes back to the open issues,
+  // whose listing is still out.
+  const open = Promise.withResolvers<IssueSummary[]>();
+  table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?status=done&status=todo", {
+    open: open.promise,
+  });
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
+  expect(await screen.findByRole("combobox", { name: "Search Status" })).toHaveFocus();
+  await user.click(screen.getByRole("option", { name: /^Done/ }));
+  expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
+  expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
+  // Not the page's body, from which a keyboard reader would start again at its first link.
+  expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+  open.resolve([issue("CORE-1")]);
+  expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
+  expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+});
+
+// A notice's button that takes the notice away hands the focus on, never to the page's body
+// (ruling ff1a60f5): to the control now at its place among the List's notices, else the one
+// before it, else the toolbar's search box.
+test.each([
+  "Finish",
+  "Dismiss",
+])("the interrupted action's %s hands its focus to the search box", async (press) => {
+  const user = userEvent.setup();
+  localStorage.setItem(
+    "dispatch.project-table.CORE",
+    JSON.stringify({
+      action: {
+        id: "unfinished",
+        kind: "startNext",
+        project: "CORE",
+        keys: ["CORE-1"],
+        writes: {},
+      },
+    })
+  );
+  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  restores.push(() => send.mockRestore());
+  table([issue("CORE-1")]);
+  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
+  within(recovery).getByRole("button", { name: press }).focus();
+  await user.keyboard("{Enter}");
+  await waitFor(() =>
+    expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull()
+  );
+  expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+});
+
+test.each([
+  "Create anyway",
+  "Cancel new epic",
+])("the possible duplicate's %s hands its focus to the search box", async (press) => {
+  const user = userEvent.setup();
+  const create = spyOn(api, "createIssue").mockImplementation(async (input) => {
+    if (!input.force)
+      throw new ApiError(409, {
+        code: "POSSIBLE_DUPLICATE",
+        error: "Possible duplicate of CORE-9",
+      });
+    return savedIssue("CORE-9");
+  });
+  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
+  const named = nameTheEpic(user, "Existing epic");
+  table([issue("CORE-1")]);
+  restores.push(() => {
+    create.mockRestore();
+    send.mockRestore();
+  });
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("button", { name: "New epic from these" }));
+  await named;
+  const duplicate = await screen.findByRole("alert");
+  within(duplicate).getByRole("button", { name: press }).focus();
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("button", { name: press })).toBeNull();
+  const search = screen.getByRole("searchbox", { name: "Search issues" });
+  expect(search).toHaveFocus();
+  if (press === "Create anyway") {
+    // The write the press sent lands, and the focus stays where it went.
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("region", { name: "Project issues" })).getByRole("status")
+          .textContent
+      ).toContain("Made the epic")
+    );
+    expect(search).toHaveFocus();
+  }
 });
 
 // F3: the sentence a merge posted is kept with the record, so a target renamed or closed before

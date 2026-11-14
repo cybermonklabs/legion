@@ -591,7 +591,9 @@ for (const row of [
     try {
       const page = await alice.newPage();
       // The half-minute below is the provider's own, measured on the page's timers, so the page's
-      // clock spends it rather than the run (`artifacts.e2e.ts:478` drives the same connection).
+      // clock spends it rather than the run (`artifacts.e2e.ts`'s row "a mounted editor does not
+      // reconnect into a document made unreadable while its socket was down" drives the same
+      // connection).
       await page.clock.install();
       const sockets = countDocumentSockets(page, issue.primary_artifact_id);
       await page.goto(`/issues/${issue.key}/spec`);

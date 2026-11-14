@@ -172,11 +172,12 @@ async function topOf(locator: Locator): Promise<number> {
   return box.y;
 }
 
-/** Every row of a table, by the name a reader hears: `P1 <title>` on the priorities table and
- *  `<KEY> <title>` on a fault list. */
+/** Every row of a table, by the name a reader hears: `P1 <title>` on the priorities table, whose
+ *  rows carry `data-priority-row`, and `<KEY> <title>` on a fault list, whose carry
+ *  `data-issue-row`. */
 function rowNames(scope: Locator): Promise<string[]> {
   return scope
-    .locator("tr[data-issue-row]")
+    .locator("tr[data-issue-row], tr[data-priority-row]")
     .evaluateAll((rows) => rows.map((row) => row.getAttribute("aria-label") ?? ""));
 }
 
@@ -215,7 +216,7 @@ async function cellUnder(table: Locator, row: Locator, header: string): Promise<
 async function columnTexts(table: Locator, header: string): Promise<string[]> {
   const at = await columnIndex(table, header);
   return table
-    .locator("tr[data-issue-row]")
+    .locator("tr[data-issue-row], tr[data-priority-row]")
     .evaluateAll(
       (rows, index) =>
         rows.map((row) => row.querySelectorAll("td")[index]?.textContent?.trim() ?? ""),
@@ -456,7 +457,7 @@ test("a priority row opens its work by status, and four writes survive a reload"
     const handle = page.getByRole("button", {
       name: `Move P3 ${seed.titles[2]}: drag it, or press the up and down arrows`,
     });
-    await handle.dragTo(page.locator(`tr[data-issue-row="${seed.ids[1]}"]`));
+    await handle.dragTo(page.locator(`tr[data-priority-row="${seed.ids[1]}"]`));
     await expect(page.getByRole("row", { name: `P2 ${seed.titles[2]}` })).toBeVisible();
 
     // Every one of the four is the store's now, not the page's: read back from the server, and

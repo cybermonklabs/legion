@@ -3,12 +3,12 @@ import { type KeyboardEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
+import { SearchBox } from "../../components/SearchBox";
 import {
   backdrop40,
   card,
   disclosureButtonText,
   dismissButtonText,
-  inputClasses,
   surfaceMutedHoverBg,
   textMutedOnSurface,
 } from "../../theme/classes";
@@ -63,10 +63,10 @@ export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePicker
           role="dialog"
         >
           <div className="flex items-center justify-between gap-2">
-            <input
-              aria-label="Filter issues"
-              className={`flex-1 rounded-lg border px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
-              onChange={(event) => setFilter(event.target.value)}
+            <SearchBox
+              className="flex-1"
+              label="Filter issues"
+              onChange={setFilter}
               onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
                 if (event.key !== "Enter") {
                   return;
@@ -81,7 +81,6 @@ export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePicker
                 }
               }}
               placeholder="Filter issues…"
-              type="text"
               value={filter}
             />
             <button className={`text-sm ${dismissButtonText}`} onClick={onClose} type="button">

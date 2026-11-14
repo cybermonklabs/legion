@@ -7,6 +7,7 @@ import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import type { AuthenticatedUser } from "./api/types";
+import { useFocusRescue } from "./components/focus-place";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
@@ -28,7 +29,6 @@ import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
-  buildInboxPath,
   buildProjectPath,
   liveViewSessionOf,
   parseIssuePath,
@@ -72,6 +72,7 @@ import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
+import { buildInboxPath } from "./lib/page-address";
 import {
   backdrop50,
   badgeBlocking,
@@ -524,6 +525,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
+  // The page's one focus rescue (`focus-place.ts`): after any loss of the focus to the body - a
+  // press, or an update that takes the focused control away - the focus a disabled, hidden or
+  // departed control took with it goes to the control at its place, never to the body, once
+  // every component's own hand-off has had its turn.
+  useFocusRescue(mainRef);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // The status corner floats over the foot of the screen as the composers it sits above do, so
   // it publishes its own reach the same way: a control floating at that foot - the

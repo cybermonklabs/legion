@@ -35,6 +35,7 @@ import type {
   UserAgentStates,
 } from "../../api/types";
 import { AuthGate } from "../../app";
+import { CONTROL } from "../../components/control-names";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
 // The live view is a lazy route of the app. Its module's first compile is not what a wait is
@@ -3560,6 +3561,44 @@ test("the header checkbox follows the filters and its count never hides a select
   }
 });
 
+// A press that takes its own control away hands the focus on, never to the page's body (ruling
+// ff1a60f5): Clear selection goes with the selection it empties, and its focus goes to the
+// select-all checkbox before it, or to the search box while no row matches and that checkbox is
+// disabled.
+test("Clear selection hands its focus to the select-all checkbox, or to the search box while no row matches", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const header = within(region).getByRole("checkbox", { name: "Select all matching agents" });
+    const search = within(region).getByRole("searchbox", { name: "Search agents" });
+    const clear = () => within(region).getByRole("button", { name: "Clear selection" });
+
+    await user.click(header);
+    clear().focus();
+    await user.keyboard("{Enter}");
+    expect(
+      within(region).queryByRole("button", { name: "Clear selection" })
+    ).not.toBeInTheDocument();
+    expect(header).toHaveFocus();
+
+    // Every row selected, then a search that matches none of them: the checkbox is disabled.
+    await user.click(header);
+    await type(user, search, "nothing matches this");
+    await waitFor(() => expect(header).toBeDisabled());
+    clear().focus();
+    await user.keyboard("{Enter}");
+    expect(
+      within(region).queryByRole("button", { name: "Clear selection" })
+    ).not.toBeInTheDocument();
+    expect(search).toHaveFocus();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("the header checkbox selects a row a collapsed group hides, and the group says how many", async () => {
   const user = userEvent.setup();
   // Seen half a minute ago and never heard from by Dispatch: Idle.
@@ -3997,12 +4036,19 @@ test("a link naming a machine opens the page filtered to it, and the filter can 
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
-    const machine = within(region).getByRole("button", { name: /^Filter by machine/u });
-    expect(machine.textContent).toContain("1");
+    // The row's one trigger counts the narrowing, and a chip beside it names the machine it is
+    // on: the three controls themselves are in the panel that trigger opens.
+    expect(within(region).getByRole("button", { name: "Filter · 1" })).toBeTruthy();
+    expect(
+      within(region).getByRole("button", { name: "Remove filter Machine: deploy-host" })
+    ).toBeTruthy();
     expect(screen.getByTestId("location-search").textContent).toBe("?machine=deploy-host");
     expect(
       within(region).queryByRole("heading", { level: 2, name: "Planner" })
     ).not.toBeInTheDocument();
+
+    const machine = await filterTrigger(user, region, "machine");
+    expect(machine.textContent).toContain("1");
 
     await user.click(machine);
     const picked = await screen.findByRole("option", { name: /deploy-host/u });
@@ -4030,11 +4076,23 @@ const deployer: Agent = {
 /** The three filters of the row, by the concept each picks from. */
 const FILTER_LABELS = { group: "Group", machine: "Machine", role: "Role" } as const;
 
-/** A filter's trigger, which says what is picked. */
-function filterTrigger(region: HTMLElement, filter: keyof typeof FILTER_LABELS): HTMLElement {
-  return within(within(region).getByTestId(`agents-filter-${filter}`)).getByRole("button", {
-    name: `Filter by ${filter}`,
-  });
+/** The one row the page's controls sit in, by the mark every such row carries. */
+function controlRow(region: HTMLElement): HTMLElement {
+  const row = region.querySelector<HTMLElement>(`[data-control="${CONTROL.controlRow}"]`);
+  if (row === null) throw new Error("the Agents page drew no control row");
+  return row;
+}
+
+/** A narrowing's control, in the panel the row's one trigger opens: that panel is portalled out
+ *  of the page, so its controls are found in the document rather than in the row. */
+async function filterTrigger(
+  user: UserEvent,
+  region: HTMLElement,
+  filter: keyof typeof FILTER_LABELS
+): Promise<HTMLElement> {
+  const panel = within(region).getByRole("button", { name: /^Filter/u });
+  if (panel.getAttribute("aria-expanded") !== "true") await user.click(panel);
+  return screen.getByRole("button", { name: `Filter by ${filter}` });
 }
 
 /** The options of one filter's open panel, which is portalled out of the page, so it is found
@@ -4064,12 +4122,12 @@ test("the machine filter is a searchable multi-select that keeps the rows of eve
       within(region)
         .getAllByRole("heading", { hidden: false, level: 2 })
         .map((heading) => heading.textContent);
-    // No dropdown in the filter row: the three filters are buttons over panels.
-    expect(within(within(region).getByTestId("agents-filters")).queryAllByRole("combobox")).toEqual(
-      []
-    );
+    // No dropdown in the row: its search box, its one filter trigger and its chips are all it
+    // draws, and the three filters are buttons over panels inside that trigger's panel.
+    const row = controlRow(region);
+    expect(within(row).queryAllByRole("combobox")).toEqual([]);
 
-    const machine = filterTrigger(region, "machine");
+    const machine = await filterTrigger(user, region, "machine");
     expect(machine.textContent).toBe("Machine");
     await user.click(machine);
     // Only the machines the live sessions occupy, in order.
@@ -4108,7 +4166,7 @@ test("the group and role filters are searchable multi-selects of their own", asy
         .getAllByRole("heading", { hidden: false, level: 2 })
         .map((heading) => heading.textContent);
 
-    const group = filterTrigger(region, "group");
+    const group = await filterTrigger(user, region, "group");
     await user.click(group);
     expect(optionTexts("group")).toEqual(["Needs you", "Active", "Idle", "Quiet"]);
     await type(user, screen.getByRole("combobox", { name: "Search groups" }), "act");
@@ -4124,7 +4182,7 @@ test("the group and role filters are searchable multi-selects of their own", asy
     await user.click(screen.getByRole("combobox", { name: "Search groups" }));
     await user.keyboard("{Escape}");
 
-    const role = filterTrigger(region, "role");
+    const role = await filterTrigger(user, region, "role");
     await user.click(role);
     expect(optionTexts("role")).toEqual(["deployer", "planner"]);
     await type(user, screen.getByRole("combobox", { name: "Search roles" }), "plan");
@@ -4132,6 +4190,76 @@ test("the group and role filters are searchable multi-selects of their own", asy
     await user.click(filterOption("role", "planner"));
     expect(role.textContent).toBe("Role · 1");
     expect(titles()).toEqual(["Planner"]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// R5: the group and the role ride in the page's address beside the machine, each absent until
+// the reader picks a value, so what the row shows is what a shared link or a reload opens.
+test("the group and the role are written to the address, and are absent until they are picked", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ listedAgents: [...agents, deployer] });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    expect(screen.getByTestId("location-search").textContent).toBe("");
+
+    const group = await filterTrigger(user, region, "group");
+    await user.click(group);
+    await user.click(filterOption("group", "Active"));
+    await waitFor(() =>
+      expect(screen.getByTestId("location-search").textContent).toBe("?group=active")
+    );
+    await user.keyboard("{Escape}");
+
+    const role = await filterTrigger(user, region, "role");
+    await user.click(role);
+    await user.click(filterOption("role", "deployer"));
+    await waitFor(() =>
+      expect(screen.getByTestId("location-search").textContent).toBe("?group=active&role=deployer")
+    );
+
+    // Unticking the last value of a filter takes its parameter out again, so a reload does not
+    // bring a narrowing back that the reader switched off.
+    await user.click(filterOption("role", "deployer"));
+    await waitFor(() =>
+      expect(screen.getByTestId("location-search").textContent).toBe("?group=active")
+    );
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("a link naming a group and a role opens the page narrowed to them, and its chips take them off", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({
+    initialEntry: "/agents?group=active&role=deployer",
+    listedAgents: [...agents, deployer],
+  });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const titles = () =>
+      within(region)
+        .getAllByRole("heading", { hidden: false, level: 2 })
+        .map((heading) => heading.textContent);
+    // The Deployer alone is active and holds the deployer role; the row says so twice over, in
+    // the count on its one trigger and in a chip for each value.
+    expect(titles()).toEqual(["Deployer"]);
+    expect(within(region).getByRole("button", { name: "Filter · 2" })).toBeTruthy();
+
+    await user.click(within(region).getByRole("button", { name: "Remove filter Group: Active" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("location-search").textContent).toBe("?role=deployer")
+    );
+    expect(titles()).toEqual(["Deployer"]);
+
+    await user.click(within(region).getByRole("button", { name: "Remove filter Role: deployer" }));
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+    expect(titles()).toEqual(["Planner", "Deployer", "Reviewer"]);
   } finally {
     page.view.unmount();
     page.restore();

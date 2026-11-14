@@ -41,7 +41,7 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import type { InboxFilters } from "./InboxBar";
+import type { InboxFilters } from "./grouping";
 import { type InboxListRow, rowId } from "./list-row";
 import { inboxWriteScope, inWriteScope } from "./write-scope";
 

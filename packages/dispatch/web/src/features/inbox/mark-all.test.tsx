@@ -9,8 +9,10 @@ import { answerInboxReads } from "../../__tests__/send-answers";
 import { ApiError } from "../../api/client";
 import { inboxThreadsQuery, myRepliesCountQuery, whoAmIQuery } from "../../api/queries";
 import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
+import { dangerText } from "../../theme/classes";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
-import { InboxBar, type InboxFilters } from "./InboxBar";
+import type { InboxFilters } from "./grouping";
 import type { InboxListRow } from "./list-row";
 import { MARK_ALL_REFUSED_TEXT, markAllReadBody, marksThread, useMarkAllRead } from "./mark-all";
 import { useUnreadThreadCount } from "./useInboxCount";
@@ -23,13 +25,12 @@ function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
   return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
 }
 
-function noop(): void {}
-
 /**
- * The bar over one list, with the one number the sidebar's Inbox count and the compact header's
- * Inbox link both read beside it (`useUnreadThreadCount` over `myRepliesCountQuery`, which is
- * what `Sidebar.tsx` and `app.tsx` each add their Needs-you count to). The bar is the surface
- * the button and its refusal live on; the press itself is the Inbox's own hook.
+ * The row the Inbox draws **Mark all read** in (`Inbox.tsx`), with the one number the sidebar's
+ * Inbox count and the compact header's Inbox link both read beside it (`useUnreadThreadCount`
+ * over `myRepliesCountQuery`, which is what `Sidebar.tsx` and `app.tsx` each add their Needs-you
+ * count to). The row is the surface the button and its refusal live on; the press itself is the
+ * Inbox's own hook, which is what this file is about.
  */
 function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
   const read = useQuery(inboxThreadsQuery());
@@ -44,29 +45,18 @@ function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
       <output data-testid="inbox-count">{count}</output>
       <output data-testid="listed">{rows.length}</output>
       <output data-testid="unread">{(read.data?.rows ?? []).filter((t) => t.unread).length}</output>
-      <InboxBar
-        agentToken={undefined}
-        assignees={undefined}
-        filters={filters}
-        markAll={markAll}
-        onAssigneesChange={noop}
-        onClearAgent={noop}
-        onFiltersChange={noop}
-        onPopoverOpenChange={noop}
-        rows={rows}
-        selection={["alice"]}
-        view={{
-          group: "priority",
-          onGroupChange: noop,
-          onShowChange: noop,
-          onSortChange: noop,
-          onThreadOrderChange: noop,
-          show: "inbox",
-          sort: "newest",
-          threadOrder: "oldest",
-        }}
-        viewer="alice"
-      />
+      <ControlRow>
+        {markAll.offered ? (
+          <button data-inbox-mark-all="" onClick={markAll.markAll} type="button">
+            Mark all read
+          </button>
+        ) : null}
+        {markAll.refused ? (
+          <p className={dangerText} data-inbox-mark-all-refused="" role="alert">
+            {MARK_ALL_REFUSED_TEXT}
+          </p>
+        ) : null}
+      </ControlRow>
     </>
   );
 }

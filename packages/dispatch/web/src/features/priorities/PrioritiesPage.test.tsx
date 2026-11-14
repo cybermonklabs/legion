@@ -572,19 +572,25 @@ test("a grouped table counts each group in the plural its rows are called by", a
     [issue("CORE-1"), issue("CORE-2")]
   );
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  const groupBy = (region: string) =>
-    within(screen.getByRole("region", { name: region })).getByRole("combobox", {
-      name: /^Group by/,
-    });
+  // Group by is a section of each table's own display menu (`components/DisplayMenu.tsx`), the
+  // same one the project List draws.
+  const groupBy = async (region: string, column: string) => {
+    await user.click(
+      within(screen.getByRole("region", { name: region })).getByRole("button", { name: "View" })
+    );
+    await user.click(
+      within(screen.getByRole("dialog", { name: "View" })).getByRole("radio", { name: column })
+    );
+  };
   // No rule makes a plural from a singular: adding "s" to "priority" wrote "2 prioritys", so each
   // table names both words, as its pager does. The priorities table's heading is the one group
   // row every table draws (`DataTableGroupRow`).
-  await user.selectOptions(groupBy("Priorities"), "owner");
+  await groupBy("Priorities", "Owner");
   expect(
     await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
   ).toBeDefined();
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  await user.selectOptions(groupBy("In flight under no priority"), "status");
+  await groupBy("In flight under no priority", "Status");
   expect(
     await screen.findByRole("button", { name: "Collapse In progress, 2 issues" })
   ).toBeDefined();

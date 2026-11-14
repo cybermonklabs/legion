@@ -1,63 +1,32 @@
-import type {
-  ColumnFiltersState,
-  GroupingState,
-  PaginationState,
-  SortingState,
-} from "@tanstack/react-table";
 import { useMemo } from "react";
-import { useSearchParams } from "react-router-dom";
-import { capSearchQuery } from "../../lib/query-param";
+import {
+  type TableAddress,
+  type TableAddressGrammar,
+  useTableAddress,
+} from "../../lib/page-address";
 import { readUrl, type View, writeUrl } from "./issues-table-model";
 
 /**
- * The table's view — what it sorts, groups, filters, searches and pages by — read from and
- * written to the URL, so a shared link opens the same table. Every setter has the shape
- * TanStack's `on…Change` handlers expect, and every change but the page itself returns to the
- * first page: a filter that leaves fewer rows than the page the reader was on would otherwise
- * show nothing. `stateKey` is the prefix the table's own controls are written under
- * (`<stateKey>.sort`), so a page drawing two tables gives each one its own; a table with none
- * keeps the bare `sort`, `q`, `group`, `page` and `size` this page has always published.
+ * The issue table's view — what it sorts, groups, filters, searches and pages by, and the issues
+ * a link names (`only=`) — held in the page address, so a shared link opens the same table.
+ * Everything about how that is read and written, `replace` included, is `lib/page-address.ts`'s;
+ * this names the grammar. The project's spelling of its issue table is its own: `?status=`,
+ * `?unclaimed=` and `?nofilter=` are the project's words, and the open statuses are a default a
+ * shared link leaves out, so this table brings its own grammar rather than taking the ordinary
+ * one (`tableAddressGrammar`).
+ *
+ * `stateKey` is the prefix the table's own controls are written under (`<stateKey>.sort`), so a
+ * page drawing two tables gives each one its own; a table with none keeps the bare `sort`, `q`,
+ * `group`, `page` and `size` this page has always published. The grammar is memoized on it,
+ * since `useTableAddress` memoizes the view it reads on the grammar's identity.
  */
-export function useTableView(stateKey?: string) {
-  const [params, setParams] = useSearchParams();
-  const view = useMemo(() => readUrl(params, stateKey), [params, stateKey]);
-  const updateView = (update: (current: View) => View) =>
-    setParams((current) => writeUrl(current, update(readUrl(current, stateKey)), stateKey), {
-      replace: true,
-    });
-  return {
-    params,
-    setParams,
-    view,
-    setSorting: (update: SortingState | ((current: SortingState) => SortingState)) =>
-      updateView((current) => ({
-        ...current,
-        sorting: typeof update === "function" ? update(current.sorting) : update,
-        page: 0,
-      })),
-    setGrouping: (update: GroupingState | ((current: GroupingState) => GroupingState)) =>
-      updateView((current) => ({
-        ...current,
-        grouping: typeof update === "function" ? update(current.grouping) : update,
-        page: 0,
-      })),
-    setFilters: (
-      update: ColumnFiltersState | ((current: ColumnFiltersState) => ColumnFiltersState)
-    ) =>
-      updateView((current) => ({
-        ...current,
-        filters: typeof update === "function" ? update(current.filters) : update,
-        page: 0,
-      })),
-    setSearch: (search: string) =>
-      updateView((current) => ({ ...current, search: capSearchQuery(search), page: 0 })),
-    setPagination: (update: PaginationState | ((current: PaginationState) => PaginationState)) =>
-      updateView((current) => {
-        const next =
-          typeof update === "function"
-            ? update({ pageIndex: current.page, pageSize: current.pageSize })
-            : update;
-        return { ...current, page: next.pageIndex, pageSize: next.pageSize };
-      }),
-  };
+export function useTableView(stateKey?: string): TableAddress<View> {
+  const grammar = useMemo<TableAddressGrammar<View>>(
+    () => ({
+      read: (params) => readUrl(params, stateKey),
+      write: (params, view) => writeUrl(params, view, stateKey),
+    }),
+    [stateKey]
+  );
+  return useTableAddress(grammar);
 }

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useLocation } from "react-router-dom";
 
+import { usePageAddress } from "../../lib/page-address";
 import { agentArtifactQuery } from "../refs/reference-target";
 import { parseAgentArtifactPath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
@@ -18,7 +18,7 @@ import { ArtifactQueryStates } from "./ArtifactQueryStates";
  * never this page.
  */
 export function AgentArtifactPage(): ReactNode {
-  const location = useLocation();
+  const location = usePageAddress();
   const route = parseAgentArtifactPath(location.pathname, location.search);
   const artifact = useQuery({
     ...agentArtifactQuery(route?.session, route?.slug),

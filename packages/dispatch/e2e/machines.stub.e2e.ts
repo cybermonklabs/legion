@@ -16,7 +16,7 @@
 import { expect, type Page } from "@playwright/test";
 
 import type { TmuxPlace } from "../web/src/api/types";
-import { agentFilter, setLiveSessions } from "./agents";
+import { agentFilter, openAgentFilters, setLiveSessions } from "./agents";
 import {
   assertPaneProportions,
   DAEMON_SOCKET,
@@ -286,6 +286,7 @@ test.describe("@machines-honesty", () => {
     // The Agents page opens on this machine's filter, so the session on another machine is
     // left out of the list; the windowed list draws a row it excludes only while the reader
     // has it open, so that one is not on the page at all.
+    await openAgentFilters(page);
     await expect(agentFilter(page, "machine")).toContainText("1");
     await expect(page.locator(`[data-agent-row="${scene.elsewhere}"]`)).toBeHidden();
     await expect(page.locator(`[data-agent-row="${scene.kubeOne}"]`)).toBeAttached();

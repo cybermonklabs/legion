@@ -20,6 +20,7 @@ export type KeymapScope =
   | "project"
   | "architecture"
   | "board"
+  | "delivery"
   | "issue"
   | "document"
   | "agents";
