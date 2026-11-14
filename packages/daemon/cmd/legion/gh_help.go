@@ -627,6 +627,31 @@ func (c *ghCommand) readsGHRepo() bool {
 	return c.flags["repo"].placeholder == "[HOST/]OWNER/REPO" || quirkOf(c.path).readsGHRepo
 }
 
+// ghDefaultMarkerGroups are the top-level groups gh builds with its repoResolvingCmdFactory,
+// whose commands resolve their own repository through gh's default marker, a remote's
+// gh-resolved setting (cli/cli pkg/cmd/root/root.go, `repoResolvingCmdFactory.BaseRepo =
+// factory.SmartBaseRepoFunc(f)`, gh 2.65.0 through 2.98.0; 2.65.0 has neither agent-task nor
+// discussion). Every other group keeps gh's BaseRepoFunc, which takes the first of gh's sorted
+// remotes and never reads the marker.
+var ghDefaultMarkerGroups = map[string]bool{
+	"agent-task": true, "browse": true, "discussion": true, "pr": true, "org": true, "issue": true, "release": true,
+	"repo": true, "ruleset": true, "run": true, "workflow": true, "label": true, "cache": true, "api": true,
+}
+
+// honoursDefaultMarker says whether gh takes the leaf's own repository from its default marker
+// where one is set (ghDefaultMarkerGroups) and reads no other remote's: not repo set-default,
+// which reads every remote's network (readsAllRemotes), unless its --view or --unset is true,
+// where gh returns before it reads a network (cli/cli pkg/cmd/repo/setdefault/setdefault.go).
+func (c *ghCommand) honoursDefaultMarker(parsed ghArgs) bool {
+	if !ghDefaultMarkerGroups[c.path[0]] {
+		return false
+	}
+	if !quirkOf(c.path).readsAllRemotes {
+		return true
+	}
+	return slices.Equal(c.path, []string{"repo", "set-default"}) && (parsed.booleans["view"] || parsed.booleans["unset"])
+}
+
 // isAPI says whether the leaf is gh api, whose argument is an endpoint and which has no -R.
 func (c *ghCommand) isAPI() bool { return slices.Equal(c.path, []string{"api"}) }
 

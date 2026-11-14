@@ -127,17 +127,24 @@ URL). The command's own repository counts too whenever gh resolves it, because n
 it, and for `repo set-default`, which reads every remote's network, whatever names it: `GH_REPO`
 for a command that reads it (`gh api`'s `{owner}` and `:owner` placeholders among them), and
 otherwise every `github.com` remote and `gh-resolved` setting of the working directory, read with
-gh's own URL parser, whatever the scheme. A command naming no owner, in a directory whose remotes
-name none, runs at the issue owner's. A command whose last `--help` is true, and `gh --version`
-alone, only print. It fails closed: a command it cannot read for certain (an option the leaf's
+gh's own URL parser, whatever the scheme. One working directory counts `origin` alone: one whose
+only `gh-resolved` line gh reads is `remote.origin.gh-resolved base`, on an `origin` whose fetch
+URL gh keeps as `github.com` and is not ssh, for a command of the 14 groups gh resolves through
+that marker (`agent-task`, `api`, `browse`, `cache`, `discussion`, `issue`, `label`, `org`, `pr`,
+`release`, `repo`, `ruleset`, `run` and `workflow`, as gh's `pkg/cmd/root/root.go` builds them;
+`repo set-default` only with `--view` or `--unset`), because gh itself acts on `origin` there. A
+command naming no owner, in a directory whose remotes name none, runs at the issue owner's. A
+command whose last `--help` is true, and `gh --version` alone, only print. It fails closed: a
+command it cannot read for certain (an option the leaf's
 help does not list or names a repository with in a way it does not know, a subcommand gh does not
 know, a first word gh's own help does not list, anything before the command but `-R` and
 `--help`, an argument the leaf's usage has no place for or names in a way it does not know, a
 search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as
 `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
 extension exec`), one naming two owners (an option or a second repository naming one owner while
-gh acts on another's, or a workspace whose remotes name two), one naming an owner the bundle
-holds no directory for, every command where `PATH`'s first `gh` is not Legion's wrapper (a script
+gh acts on another's, or a workspace whose remotes name two, but for the marked `origin` above),
+one naming an owner the bundle holds no directory for, every command where `PATH`'s first `gh` is
+not Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing. The real gh runs with `GH_PATH`
@@ -152,6 +159,10 @@ the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
 on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in the path git asks
 about where the bundle holds its directory, the owner's otherwise, and nothing else.
+Every provision, a pane's and a pod's, also writes `remote.origin.gh-resolved base`, gh's own
+default-repository marker, into the clone's own configuration where that configuration holds no
+`gh-resolved` line, so a worker who adds an `upstream` remote keeps gh's choice, and `legion gh`'s,
+on the issue's repository; a marker a person set, or one a renamed remote carries, stays.
 
 A pane keeps the machine's own `git` and `jj`, unwrapped.
 Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under

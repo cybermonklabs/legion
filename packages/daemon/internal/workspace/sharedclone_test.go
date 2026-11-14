@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -132,30 +133,16 @@ func TestProvisionTurnsOffTheClonesAmbiguousRefWarningAndLeavesTheFeedAlone(t *t
 	if err != nil {
 		t.Fatalf("provision from the feed: %v", err)
 	}
-	// read runs `git <args> config --get core.warnAmbiguousRefs` in dir under the fixtures'
-	// environment and returns what it printed and its exit code. git exits 1, printing nothing,
-	// for a key no configuration sets.
-	read := func(dir string, args ...string) (string, int) {
-		t.Helper()
-		command := exec.Command("git", append(args, "config", "--get", "core.warnAmbiguousRefs")...)
-		command.Dir = dir
-		command.Env = setupEnvironment()
-		output, err := command.CombinedOutput()
-		var exit *exec.ExitError
-		if err != nil && !errors.As(err, &exit) {
-			t.Fatalf("git config --get core.warnAmbiguousRefs in %s: %v", dir, err)
-		}
-		return string(output), command.ProcessState.ExitCode()
-	}
 	for _, place := range []struct{ name, dir string }{
 		{"the shared clone", working.Clone},
 		{"the issue's workspace", working.Dir},
 	} {
-		if output, code := read(place.dir); output != "false\n" || code != 0 {
+		if output, code := gitConfigRead(t, place.dir, "config", "--get", "core.warnAmbiguousRefs"); output != "false\n" || code != 0 {
 			t.Errorf("%s %s reads core.warnAmbiguousRefs as %q (exit %d), want false", place.name, place.dir, output, code)
 		}
 	}
-	if output, code := read(first.Feed, "--git-dir="+first.Feed); output != "" || code != 1 {
+	// git exits 1, printing nothing, for a key no configuration sets.
+	if output, code := gitConfigRead(t, first.Feed, "--git-dir="+first.Feed, "config", "--get", "core.warnAmbiguousRefs"); output != "" || code != 1 {
 		t.Errorf("the feed %s reads core.warnAmbiguousRefs as %q (exit %d), want nothing and exit 1", first.Feed, output, code)
 	}
 	// Fetch removes a feed whose configuration holds a key outside feedConfigKeys and clones it
@@ -167,4 +154,94 @@ func TestProvisionTurnsOffTheClonesAmbiguousRefWarningAndLeavesTheFeedAlone(t *t
 	if again.Cloned {
 		t.Errorf("Fetch after provisioning reported %+v: it cloned the feed again whole, want the feed kept", again)
 	}
+}
+
+// gitConfigRead runs `git <args>` in dir under the fixtures' environment and returns what it
+// printed and its exit code. A git that could not run fails the test.
+func gitConfigRead(t *testing.T, dir string, args ...string) (string, int) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	command.Env = setupEnvironment()
+	output, err := command.CombinedOutput()
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		t.Fatalf("git %s in %s: %v", strings.Join(args, " "), dir, err)
+	}
+	return string(output), command.ProcessState.ExitCode()
+}
+
+// Every provision marks origin as gh's default repository in the shared clone
+// (configureCloneDefaultRepository), on both runtimes' paths: from a pod's feed, as
+// `workspace-init provision` does, and from GitHub, as the tmux daemon does. The clone and the
+// issue's workspace each read one gh-resolved line, `remote.origin.gh-resolved base`, and the
+// feed's configuration is byte for byte what Fetch wrote. A clone that already holds a marker, here
+// the one `gh repo fork --remote` leaves on the remote it renames origin to, keeps it at its next
+// provision and gets no origin line beside it.
+func TestProvisionMarksOriginAsGhsDefaultRepository(t *testing.T) {
+	// readsOnly fails the test unless the shared clone and the issue's workspace each print the
+	// one line want from `git config --get-regexp '^remote\..*\.gh-resolved$'`, the read gh makes
+	// of every remote's default marker (cli/cli git/client.go, populateResolvedRemotes). git exits
+	// 1, printing nothing, where no key matches.
+	readsOnly := func(t *testing.T, working Workspace, want string) {
+		t.Helper()
+		for _, place := range []struct{ name, dir string }{
+			{"the shared clone", working.Clone},
+			{"the issue's workspace", working.Dir},
+		} {
+			if output, code := gitConfigRead(t, place.dir, "config", "--get-regexp", `^remote\..*\.gh-resolved$`); output != want || code != 0 {
+				t.Errorf("%s %s reads its gh-resolved lines as %q (exit %d), want %q", place.name, place.dir, output, code, want)
+			}
+		}
+	}
+	const marked = "remote.origin.gh-resolved base\n"
+	t.Run("from a feed", func(t *testing.T) {
+		run := newLocalRunner(t)
+		fetch := fetchRequest(t)
+		fetched, err := Fetch(context.Background(), run, fetch)
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		feedConfig := filepath.Join(fetched.Feed, "config")
+		before, err := os.ReadFile(feedConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := provisionRequest(t)
+		request.Source = FromFeed(fetch.Feed)
+		working, err := Provision(context.Background(), run, request)
+		if err != nil {
+			t.Fatalf("provision from the feed: %v", err)
+		}
+		readsOnly(t, working, marked)
+		after, err := os.ReadFile(feedConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(after, before) {
+			t.Errorf("the feed's config %s reads %q after the provision, want what Fetch wrote, %q", feedConfig, after, before)
+		}
+	})
+	t.Run("from GitHub", func(t *testing.T) {
+		run := newLocalRunner(t)
+		working, err := Provision(context.Background(), run, provisionRequest(t))
+		if err != nil {
+			t.Fatalf("provision from GitHub: %v", err)
+		}
+		readsOnly(t, working, marked)
+	})
+	t.Run("over a marker the clone holds", func(t *testing.T) {
+		run := newLocalRunner(t)
+		request := feedRequest(t, run, provisionRequest(t))
+		working, err := Provision(context.Background(), run, request)
+		if err != nil {
+			t.Fatalf("first provision: %v", err)
+		}
+		runSetup(t, working.Clone, "git", "config", "--unset", "remote.origin.gh-resolved")
+		runSetup(t, working.Clone, "git", "config", "remote.upstream.gh-resolved", "base")
+		if _, err := Provision(context.Background(), run, request); err != nil {
+			t.Fatalf("provision the existing workspace: %v", err)
+		}
+		readsOnly(t, working, "remote.upstream.gh-resolved base\n")
+	})
 }
