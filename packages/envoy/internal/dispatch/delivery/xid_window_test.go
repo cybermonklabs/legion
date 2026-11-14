@@ -50,3 +50,38 @@ func TestXidWindowDeployedEventRecorded(t *testing.T) {
 	storetest.AssertXidWindows(t, report, storetest.XidWindowOf(3,
 		"the pull request's marking update, the batch appending issue.deployed and the COMMIT ending them"))
 }
+
+// A head write moves a pull request from one issue to another, so it records the move on both
+// issues (UpsertPullRequestHead, appendAttributionChange): the webhook intake's write, the
+// reconcile's refresh and the results read's read-through all make it. Its window opens at the
+// row's own lock, which headIssueBefore takes to read the issue the row held, and holds database
+// statements only: that locked read, the row's upsert, the lock of both issues' owners in lock-key
+// order (events.Broker.LockOwners), one batch per issue appending its
+// issue.pull_request_attribution_changed, and the COMMIT ending them.
+func TestXidWindowAttributionMoveRecorded(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	tracer := storetest.NewXidTracer()
+	traced := storetest.Traced(t, pool, tracer, nil)
+	left := seedAttributionIssue(t, ctx, traced, 76)
+	reached := seedAttributionIssue(t, ctx, traced, 77)
+	broker := events.NewBroker()
+	// The row is credited to the issue it leaves first, whatever an earlier run of this database
+	// left it holding, so the measured write is a move; that first write may record a move off
+	// the issue the measured one reaches, whose events are cleared again behind it.
+	if err := UpsertPullRequestHead(ctx, traced, broker, attributedHeadRow(176, &left, sourceTitleBody)); err != nil {
+		t.Fatalf("store the head attributed to %s: %v", left, err)
+	}
+	seedAttributionIssue(t, ctx, traced, 77)
+
+	report := tracer.Measure(t, traced, func() {
+		if err := UpsertPullRequestHead(storetest.MarkXid(ctx), traced, broker, attributedHeadRow(176, &reached, sourceBranch)); err != nil {
+			t.Errorf("move the head to %s: %v", reached, err)
+		}
+	})
+	if moved := attributionEvents(t, ctx, traced, reached); len(moved) != 1 || moved[0].Payload.From == nil || *moved[0].Payload.From != left {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): %s carries %+v, want the one move the measured write recorded", reached, moved)
+	}
+	storetest.AssertXidWindows(t, report, storetest.XidWindowOf(6,
+		"the row's locked read of the issue it held, the row's upsert, the lock of both issues' owners, "+
+			"the batch appending issue.pull_request_attribution_changed on each of the two issues and the COMMIT ending them"))
+}

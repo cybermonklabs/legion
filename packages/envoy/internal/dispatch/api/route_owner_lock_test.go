@@ -36,9 +36,31 @@ type routeOwnerLockCase struct {
 	name string
 	// route is the route the row drives and the function that serves it, as a failure names it.
 	route string
-	// ready stands up a server of this row's own, seeds what the route needs and readies the
-	// call on a handler of one connection, so the backend the wait watches is the route's.
-	ready func(t *testing.T) lockedItemWrite
+	// ready stands up a server of this row's own on base, seeds what the route needs and
+	// readies the call on a handler of one connection, so the backend the wait watches is the
+	// route's.
+	ready func(t *testing.T, base routeFixture) lockedItemWrite
+}
+
+// routeFixture is what a row's ready builds its server on: options, to which the row adds what
+// it needs of its own, and spec, the spec of the issue the row files where the row needs none of
+// its own ("A spec.\n" when empty). The lock test builds every row on the zero value; the xid
+// window table (route_xid_window_test.go) builds its rows on a traced pool and a spec the size of
+// the load harness's large ones.
+type routeFixture struct {
+	options testServerOptions
+	spec    string
+}
+
+// issue stands up the row's server on b's options and files the issue the row writes under,
+// titled title, with b's spec (newItemRowFixture).
+func (b routeFixture) issue(t *testing.T, title string) itemRowFixture {
+	t.Helper()
+	spec := b.spec
+	if spec == "" {
+		spec = "A spec.\n"
+	}
+	return newItemRowFixture(t, b.options, title, spec)
 }
 
 // routeOwnerLockTable is the route table.
@@ -65,16 +87,16 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 // nothing, then to finish once the lock is given back (holdWriterBehindOwnerLock).
 func TestEveryRouteOnTheRouteTableWaitsForItsOwnerLockHoldingNoTransactionID(t *testing.T) {
 	for _, row := range routeOwnerLockTable {
-		t.Run(row.name, func(t *testing.T) { holdWriterBehindOwnerLock(t, row.route, row.ready(t)) })
+		t.Run(row.name, func(t *testing.T) { holdWriterBehindOwnerLock(t, row.route, row.ready(t, routeFixture{})) })
 	}
 }
 
 // readyArtifactReview drives POST /api/v1/artifacts/{id}/reviews on an issue's spec with no
 // approval request open, which inserts the review under the issue's owner lock the route takes
 // before it reads the settled version (createArtifactReview, requireOpenOwner).
-func readyArtifactReview(t *testing.T) lockedItemWrite {
+func readyArtifactReview(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Review", "A spec.\n")
+	fixture := base.issue(t, "Review")
 	return fixture.routeWrite(t, "the review it inserts",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, http.MethodPost,
@@ -94,9 +116,9 @@ func readyArtifactReview(t *testing.T) lockedItemWrite {
 // readyPlanReview drives POST /api/v1/artifacts/{id}/plan-reviews on an issue's plan, which
 // inserts the plan review under the issue's owner lock the route takes before it reads the plan's
 // settled versions (createArtifactPlanReview, requireOpenOwner).
-func readyPlanReview(t *testing.T) lockedItemWrite {
+func readyPlanReview(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Plan review", "A spec.\n")
+	fixture := base.issue(t, "Plan review")
 	plan := uploadDocument(t, fixture.handler, "/api/v1/issues/"+fixture.issueKey, "plan.md", "# Plan\n\nOne task.\n")
 	return fixture.routeWrite(t, "the plan review it inserts",
 		func(handler http.Handler) *httptest.ResponseRecorder {
@@ -117,9 +139,9 @@ func readyPlanReview(t *testing.T) lockedItemWrite {
 // readyArtifactRename drives PATCH /api/v1/artifacts/{id} on a document of the issue, which
 // corrects its title under the issue's owner lock beginArtifactWrite takes before the owner's
 // names are read (renameArtifact, requireOpenOwnerStatus).
-func readyArtifactRename(t *testing.T) lockedItemWrite {
+func readyArtifactRename(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Rename", "A spec.\n")
+	fixture := base.issue(t, "Rename")
 	document := emptyDocument(t, fixture.handler, fixture.issueKey, "Notes")
 	const corrected = "Field notes"
 	return fixture.routeWrite(t, "the document's corrected title",
@@ -145,9 +167,9 @@ func readyArtifactRename(t *testing.T) lockedItemWrite {
 // readyArtifactRemoval drives DELETE /api/v1/artifacts/{id} on an untouched document of the
 // issue, which removes it under the issue's owner lock beginArtifactWrite takes before the
 // document's room (removeArtifact, requireOpenOwnerStatus).
-func readyArtifactRemoval(t *testing.T) lockedItemWrite {
+func readyArtifactRemoval(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Removal", "A spec.\n")
+	fixture := base.issue(t, "Removal")
 	document := emptyDocument(t, fixture.handler, fixture.issueKey, "Scratch")
 	return fixture.routeWrite(t, "the document it removes",
 		func(handler http.Handler) *httptest.ResponseRecorder {
@@ -172,9 +194,9 @@ func readyArtifactRemoval(t *testing.T) lockedItemWrite {
 // readyNamedVersion drives POST /api/v1/artifacts/{id}/versions on the issue's spec, which names
 // its current version under the issue's owner lock (createNamedVersion, requireOpenOwner, and
 // docs.NamedVersion's own lockArtifactOwner).
-func readyNamedVersion(t *testing.T) lockedItemWrite {
+func readyNamedVersion(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Named version", "A spec.\n")
+	fixture := base.issue(t, "Named version")
 	return fixture.routeWrite(t, "the named version",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+fixture.artifactID+"/versions",
@@ -191,9 +213,9 @@ func readyNamedVersion(t *testing.T) lockedItemWrite {
 // readyDocumentEdit drives POST /api/v1/artifacts/{id}/edits on the issue's spec, which applies
 // its ops under the issue's owner lock (editArtifact, requireOpenOwnerStatus, and the live
 // write's own lockArtifactOwner).
-func readyDocumentEdit(t *testing.T) lockedItemWrite {
+func readyDocumentEdit(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Document edit", "before\n")
+	fixture := newItemRowFixture(t, base.options, "Document edit", "before\n")
 	return fixture.routeWrite(t, "the document's edit",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+fixture.artifactID+"/edits", map[string]any{
@@ -221,10 +243,11 @@ func readyDocumentEdit(t *testing.T) lockedItemWrite {
 // therefore commit its attempt past the holder and then wait in the next transaction, with no
 // transaction id, which the wait alone cannot tell from a claim still queued. The row's meanwhile
 // tells them apart: while the route waits, the mention must still hold its one attempt.
-func readyMentionRetry(t *testing.T) lockedItemWrite {
+func readyMentionRetry(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	listener := itemRowSessionListener(t, "steer")
-	fixture := newItemRowFixture(t, testServerOptions{envoyURL: listener.URL}, "Mention retry", "A spec.\n")
+	base.options.envoyURL = listener.URL
+	fixture := base.issue(t, "Mention retry")
 	comment := decodeMentionedComment(t, postMentionedComment(t, fixture.handler, fixture.issueKey, map[string]any{
 		"body":     "The session this mention names is sent it twice.",
 		"mentions": []map[string]any{{"target": "session:s1"}},
@@ -256,10 +279,11 @@ func readyMentionRetry(t *testing.T) lockedItemWrite {
 // it, so this row stands one up and sends the message to that session before the lock is held.
 // Its claim commits on its own, as the mention's does, so the row asks the same meanwhile
 // (readyMentionRetry): while the route waits, the message must still hold its one attempt.
-func readyMessageRetry(t *testing.T) lockedItemWrite {
+func readyMessageRetry(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	listener := itemRowSessionListener(t, "btw")
-	fixture := newItemRowFixture(t, testServerOptions{envoyURL: listener.URL}, "Message retry", "A spec.\n")
+	base.options.envoyURL = listener.URL
+	fixture := base.issue(t, "Message retry")
 	message := createIssueMessage(t, fixture.handler, fixture.issueKey, map[string]any{
 		"body": "Did this ship?", "target": "session:s1", "delivery": "btw",
 	}, "alice")
@@ -303,9 +327,9 @@ func readyMessageRetry(t *testing.T) lockedItemWrite {
 // lock) and commits. A record that read the check under the lock finds the version moved and
 // judges the result by it; one that read the check before the lock records it against the words
 // the version replaced.
-func readyResultRecord(t *testing.T, heldOnTheChecksIssue bool) lockedItemWrite {
+func readyResultRecord(t *testing.T, base routeFixture, heldOnTheChecksIssue bool) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Result record", "A spec.\n")
+	fixture := base.issue(t, "Result record")
 	verification := uploadDocument(t, fixture.handler, "/api/v1/issues/"+fixture.issueKey, "verification.md", twoChecks)
 	child := decodeBody[model.Issue](t, dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "LOCK", "title": "Child", "parent": fixture.issueKey, "force": true}, "alice"))
@@ -343,19 +367,21 @@ func readyResultRecord(t *testing.T, heldOnTheChecksIssue bool) lockedItemWrite 
 	return write
 }
 
-func readyResultHeldOnTheRecordingIssue(t *testing.T) lockedItemWrite {
-	return readyResultRecord(t, false)
+func readyResultHeldOnTheRecordingIssue(t *testing.T, base routeFixture) lockedItemWrite {
+	return readyResultRecord(t, base, false)
 }
 
-func readyResultHeldOnTheChecksIssue(t *testing.T) lockedItemWrite { return readyResultRecord(t, true) }
+func readyResultHeldOnTheChecksIssue(t *testing.T, base routeFixture) lockedItemWrite {
+	return readyResultRecord(t, base, true)
+}
 
 // readyDesignGates drives PUT /api/v1/issues/{key}/design-gates, which rewrites the issue's
 // design_gates rows under the issue's owner lock (putIssueDesignGates, store.LockOwnerAndRead). It
 // appends no event, so that lock is the only one it takes: a publish without it would not wait at
 // all.
-func readyDesignGates(t *testing.T) lockedItemWrite {
+func readyDesignGates(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Design gates", "A spec.\n")
+	fixture := base.issue(t, "Design gates")
 	return fixture.routeWrite(t, "the issue's design gates",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return publishDesignGatesResponse(t, handler, fixture.issueKey, map[string]any{
@@ -376,9 +402,9 @@ func readyDesignGates(t *testing.T) lockedItemWrite {
 // readyProjectDefaultAssignee drives PUT /api/v1/projects/{key}/default-assignee, which updates
 // the project's row under the project's owner lock it takes, with its read of the default the
 // write moves from, before the update (putProjectDefaultAssignee, store.LockOwnerAndRead).
-func readyProjectDefaultAssignee(t *testing.T) lockedItemWrite {
+func readyProjectDefaultAssignee(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Default assignee", "A spec.\n")
+	fixture := base.issue(t, "Default assignee")
 	write := fixture.routeWrite(t, "the project's default assignee",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/LOCK/default-assignee",
@@ -402,9 +428,10 @@ func readyProjectDefaultAssignee(t *testing.T) lockedItemWrite {
 // owner's lock (storeArtifact, requireOpenOwner). A document's upload has the document service
 // take the same lock before the room, but a file is written by the route alone, so the route's own
 // lock is the one it waits on.
-func readyProjectFileUpload(t *testing.T) lockedItemWrite {
+func readyProjectFileUpload(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{files: filestest.NewMemory()}, "Project file upload", "A spec.\n")
+	base.options.files = filestest.NewMemory()
+	fixture := base.issue(t, "Project file upload")
 	first := multipartRequest(t, fixture.handler, "/api/v1/projects/LOCK/artifacts", map[string]string{"name": "shot.png"},
 		"shot.png", "image/png", pngBytes("first"), "alice")
 	if first.Code != http.StatusCreated {
@@ -433,9 +460,9 @@ func readyProjectFileUpload(t *testing.T) lockedItemWrite {
 // readyAskFollow drives PUT /api/v1/asks/{id}/followers/{session_id}, a person adding a follower
 // to an ask, which inserts the follower row under the ask owner's lock it takes before the insert
 // (changeAskFollower, events.Broker.LockOwners).
-func readyAskFollow(t *testing.T) lockedItemWrite {
+func readyAskFollow(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Ask follow", "A spec.\n")
+	fixture := base.issue(t, "Ask follow")
 	created := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/issues/"+fixture.issueKey+"/asks",
 		map[string]any{"question": "Who follows this?"}, "alice")
 	if created.Code != http.StatusCreated {
@@ -460,9 +487,9 @@ func readyAskFollow(t *testing.T) lockedItemWrite {
 // does not hold yet, which updates the project's row under the project's owner lock it takes
 // before the update (putProjectGatedSteps): the publish the daemon makes at every boot, beside
 // the creates that hold that lock while they wait for the row.
-func readyProjectGatedSteps(t *testing.T) lockedItemWrite {
+func readyProjectGatedSteps(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	fixture := newItemRowFixture(t, testServerOptions{}, "Gated steps", "A spec.\n")
+	fixture := base.issue(t, "Gated steps")
 	write := fixture.routeWrite(t, "the project's gated steps",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return agentRequest(t, handler, http.MethodPut, "/api/v1/projects/LOCK/gated-steps",

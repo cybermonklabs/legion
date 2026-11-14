@@ -84,6 +84,14 @@ type lockedItemWrite struct {
 	// wrote fails the test unless the writer, run once the lock was given back, finished and
 	// left the row it meant to write.
 	wrote func(t *testing.T)
+	// server, send and answered are a route row's own request, set by routeWrite alone: send
+	// runs the request on the handler it is given, answered fails the test unless what it
+	// answered is the write the row means, and server is the handler of the fixture the row
+	// seeded on. call is send on the row's one-connection handler; the xid window table
+	// (route_xid_window_test.go) runs send on server under a marked context instead.
+	server   http.Handler
+	send     func(handler http.Handler) *httptest.ResponseRecorder
+	answered func(t *testing.T, answer *httptest.ResponseRecorder)
 }
 
 // itemRowLockCase is one row of the table: a serving writer of an item row, the census entry that
@@ -345,7 +353,10 @@ func (f itemRowFixture) routeWrite(
 			answer = send(handler)
 			return fmt.Sprintf("status=%d body=%s", answer.Code, answer.Body.String())
 		},
-		wrote: func(t *testing.T) { wrote(t, answer) },
+		wrote:    func(t *testing.T) { wrote(t, answer) },
+		server:   f.handler,
+		send:     send,
+		answered: wrote,
 	}
 }
 
