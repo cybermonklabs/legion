@@ -164,7 +164,15 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // over that skill; and "A spec is a conversation" states the conversation rule. The new rule
 // cannot live in another skill, because R1 and R4 name skills/dispatch/SKILL.md, which every
 // session with Dispatch reads.
-test("the three Dispatch skills total fewer than 2,326 words", () => {
+//
+// It also moves when an approved requirement puts in the skill every session loads a rule that no
+// other skill holds, and only by what that rule costs: R11 of dispatch://INFRA-2947 puts one line
+// in `dispatch` (an issue names the priority it advances), which check `c0cd78f8` of that issue
+// reads there, so it cannot live elsewhere. The line is 14 words, the shortest that carries the
+// two strings the check reads, so the three skills, 2,325 words on main, stand at 2,325 + 14 =
+// 2,339 and the bound moves from 2,326 by those 14 to 2,340, keeping the margin above it the raise
+// before set and adding none.
+test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -174,7 +182,7 @@ test("the three Dispatch skills total fewer than 2,326 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_326);
+  expect(words).toBeLessThan(2_340);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {

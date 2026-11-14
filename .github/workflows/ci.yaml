@@ -509,6 +509,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
               - 'packages/envoy/internal/dispatch/redeliver/*'
@@ -854,6 +855,10 @@ jobs:
               - 'scripts/third-party-notices.test.ts'
               - 'scripts/semantic-line-breaks.ts'
               - 'scripts/semantic-line-breaks.test.ts'
+              - 'scripts/priorities-seed.ts'
+              - 'scripts/priorities-seed.test.ts'
+              - 'scripts/priorities-seed-check.sh'
+              - 'scripts/priorities-seed-check.test.sh'
               - 'scripts/sessions-import-pods.sh'
               - 'scripts/sessions-import-pods.test.sh'
               # `bun test scripts/e2e/lib` scans scripts/e2e/*.sh (lib/script-functions.test.ts:101-104),
@@ -1649,6 +1654,7 @@ jobs:
               # serverchange soak compiles this package: a change to it must re-run that soak.
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
               - 'packages/envoy/internal/dispatch/refs/*'
@@ -1660,6 +1666,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubappjwt/*'
+              # The fake timer cmd/listener's repair and grant-guard tests share.
+              - 'packages/envoy/internal/kvwatch/kvwatchtest/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/pglisten/*'
@@ -3787,6 +3795,11 @@ jobs:
       - name: Test the semantic line-break checker
         run: bun test scripts/semantic-line-breaks.test.ts
 
+      # The seed that writes the first priorities from the table kept by hand, driven against a
+      # fake Dispatch of the test's own: it reaches no network and no deployment.
+      - name: Test the priorities seed
+        run: bun test scripts/priorities-seed.test.ts
+
       - name: Test the Bun pin check
         run: .github/scripts/check-bun-version.test.sh
 
@@ -3909,6 +3922,9 @@ jobs:
 
       - name: Test the session import pods script (a stand-in kubectl)
         run: bash scripts/sessions-import-pods.test.sh
+
+      - name: Test the priorities seed check (a stand-in Dispatch)
+        run: bash scripts/priorities-seed-check.test.sh
 
       - name: Lint the Dispatch census script
         run: bunx biome check --error-on-warnings scripts/dispatch
