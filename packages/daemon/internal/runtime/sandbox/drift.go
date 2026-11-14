@@ -26,9 +26,8 @@ import (
 // over such a pod instead. The round asks each role in it to push its work and answer (api's
 // claims/ready-for-update), and replaces the pod once every asked role has answered and no turn
 // runs, or at the round's bound (pod_update_grace_minutes) whatever the roles answered, an
-// operator's suspension excepted; the push check runs before every replacement. PodDrift is what
-// the round is opened on, and ReplacePod what ends the round; the round itself, its ask and its
-// sweep are the daemon's (internal/daemon).
+// operator's suspension excepted. PodDrift is what the round is opened on, and ReplacePod what
+// ends the round; the round itself, its ask and its sweep are the daemon's (internal/daemon).
 //
 // A launch never replaces a live pod a round covers for one of these reasons (relaunch,
 // roundCovers): it keeps the pod and starts its role in it, since the round, not the launch, is

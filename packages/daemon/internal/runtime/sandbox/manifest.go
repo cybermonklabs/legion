@@ -1354,8 +1354,8 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	add("PI_SHELL_PREFIX", shellprefix.For(legionDir))
 	add("GIT_TERMINAL_PROMPT", "0")
 	env = append(env, gitConfigEnv()...)
-	// The shared public leak check every write of this role runs first: its `legion gh`, its
-	// pushes and the rescue helper each resolve PUBLIC_LEAK_CHECK before anything else
+	// The shared public leak check every write of this role runs first: its `legion gh` and its
+	// pushes each resolve PUBLIC_LEAK_CHECK before anything else
 	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
 	// image — it is published by tag, the image carries the pin, and the daemon reads the check at
 	// that pin and pushes it to the pod's launcher, which installs it once for the pod before any

@@ -358,12 +358,6 @@ func (h *runtimeHolder) ReplacePod(ctx context.Context, k runtime.Known, due fun
 	return rt.ReplacePod(ctx, k, due)
 }
 
-func (h *runtimeHolder) RescueUnpushed(ctx context.Context, k runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	rt, left := h.enter()
-	defer left()
-	return rt.RescueUnpushed(ctx, k, request)
-}
-
 func (h *runtimeHolder) CleanupTree(ctx context.Context, tree string) error {
 	rt, left := h.enter()
 	defer left()

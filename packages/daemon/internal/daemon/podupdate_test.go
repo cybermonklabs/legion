@@ -585,12 +585,17 @@ func (r *podUpdateRig) notices() []record.ControllerNotice {
 	return notices
 }
 
-// messages is the body of every message the sweep wrote on the issue, oldest first (posts).
+// messages is the body of every message the sweep wrote on the issue, oldest first, decoded as
+// the outbox decodes its row.
 func (r *podUpdateRig) messages() []string {
 	r.t.Helper()
 	var bodies []string
-	for _, post := range r.posts() {
-		bodies = append(bodies, post.Body)
+	for _, row := range r.rows(record.OutboxKindDispatchMessage) {
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			r.t.Fatalf("decode message %d: %v", row.ID, err)
+		}
+		bodies = append(bodies, payload.(record.MessagePost).Body)
 	}
 	return bodies
 }
@@ -916,6 +921,101 @@ func TestPodUpdateReplacesThePodWithoutWaitingForAFailedClaim(t *testing.T) {
 	rig.awaitReplacement(1, "once every claim but the failed one answered")
 	for _, role := range answering {
 		rig.awaitClaim(role, "its round to end with the replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	}
+}
+
+// A round every role answered with the ready_for_update call goes to its replacement on those
+// answers alone: from the first answer on, the runtime is asked nothing for it but the one
+// ReplacePod, with only the sweep's own reads of the pod (PodDrift) and of its processes beside
+// it. The answers end the round before its bound, so no line of a bounded end is written, and
+// the sweeps after the replacement replace nothing more.
+func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *testing.T) {
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	for _, role := range roles {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+
+	before := len(rig.rt.Calls())
+	for _, role := range roles {
+		rig.signal(role, "a1b2c3d")
+	}
+	rig.awaitReplacement(1, "once every role answered with the ready_for_update call")
+	rig.drifts()
+	for _, role := range roles {
+		rig.awaitClaim(role, "its round to end with the replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	}
+	rig.tick()
+	rig.tick()
+
+	if calls := rig.replacements(); len(calls) != 1 {
+		t.Fatalf("the pod was replaced %d times, want once", len(calls))
+	}
+	if notDue := rig.notDue(); len(notDue) != 0 {
+		t.Errorf("the replacement was refused inside ReplacePod %d times, want none", len(notDue))
+	}
+	var asked []string
+	for _, call := range rig.rt.Calls()[before:] {
+		asked = append(asked, call.Method)
+		switch call.Method {
+		case "ReplacePod", "PodDrift", "Probe", "Observe", "ReconcileOrphans":
+		default:
+			t.Errorf("the runtime was called %s for the round, want nothing but the sweep's reads and one ReplacePod: %v", call.Method, asked)
+		}
+	}
+	if lines := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(lines) != 0 {
+		t.Errorf("the sweep logged a bounded end %+v for a round its answers ended", lines)
+	}
+	if notices := rig.notices(); len(notices) != 0 {
+		t.Fatalf("the controller was told %+v; a round that finishes by itself needs no one", notices)
+	}
+}
+
+// podUpdateAccountDrift is the reason PodDrift gives for a pod running as a ServiceAccount other
+// than the configured one, spelled as drift.go builds it: "account " + <the account the pod runs
+// as> + ", now " + <the configured account> (PodDrift, accountDrift), here a pod left on `default`
+// under a configuration that now names `legion-worker`. This round rig scripts PodDrift, so
+// nothing here reads drift.go: the sandbox package's TestPodDriftNamesTheServiceAccountThePodRunsAs
+// holds that spelling, and this copy of it only makes the round below one opened on the account.
+const podUpdateAccountDrift = "account default, now legion-worker"
+
+// The ServiceAccount a pod runs as reaches its replacement the way every other drift of an issue
+// pod does, and that is the whole of what this test holds. A pod created under the account the
+// configuration has since moved off used to be replaced by the next launch of any of its roles,
+// which cut every turn running in the pod and deleted its disk with everything unpushed still on
+// it. The account is now one of PodDrift's reasons for every pod a round covers, so a round
+// opened on that reason alone does what a round does: every worker claim of the issue is asked
+// and answers, and only then is the pod replaced and the claims let go of the round. The rest of
+// the round's machinery is held by the tests around this one; this one holds the daemon's half of
+// the account's path, with PodDrift's half held in the sandbox package.
+func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
+	roles := []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleArchitect), readyWorker(claim.RoleImplementer))
+	rig.drifts(podUpdateAccountDrift)
+
+	rig.tick()
+	for _, role := range roles {
+		asked := rig.awaitRound(role, podUpdateRound)
+		if asked.UpdateReasons != podUpdateAccountDrift {
+			t.Errorf("%s UpdateReasons = %q, want the account reason %q and nothing else",
+				role, asked.UpdateReasons, podUpdateAccountDrift)
+		}
+		rig.signal(role, "")
+		rig.awaitClaim(role, "its answer to the round the account opened", func(c supervise.Claim) bool {
+			return c.UpdateRound == podUpdateRound && c.UpdateSignalledAt != nil
+		})
+	}
+
+	calls := rig.awaitReplacement(1, "once every worker of the account-drifted pod answered")
+	if calls[0].Pod.Locator == nil || calls[0].Pod.Locator.Sandbox.PodUID != podUpdatePod {
+		t.Fatalf("ReplacePod called with %+v, want a process of the account-drifted pod %s", calls[0].Pod, podUpdatePod)
+	}
+	for _, role := range roles {
+		rig.awaitClaim(role, "its round to end with the replacement", func(c supervise.Claim) bool {
+			return c.UpdateRound == "" && c.UpdateSignalledAt == nil
+		})
 	}
 }
 

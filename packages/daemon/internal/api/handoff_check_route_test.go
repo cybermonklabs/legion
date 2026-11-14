@@ -83,11 +83,11 @@ func newCheckLookClaim(t *testing.T, h *harness, key string, role claim.Role, lo
 }
 
 // mergedCloseBehindATestingTurn drives the reviewer's trace as far as the close. A child's pull
-// request merges before awaiting_merge and a person sets the issue done from Dispatch while the
-// tester's testing turn is still running: the close spares the check's role (workflow's
-// linger.go, `except = e.checkRole()`), opens the tester's production check and starts look 1
-// behind that running turn. It answers the harness, its record of every fact the routes applied,
-// and the tester's claim with the machine that holds it.
+// request merges while the child is still in testing, before it reaches merging, and a person
+// sets the issue done from Dispatch while the tester's testing turn is still running: the close
+// spares the check's role (workflow's linger.go, `except = e.checkRole()`), opens the tester's
+// production check and starts look 1 behind that running turn. It answers the harness, its
+// record of every fact the routes applied, and the tester's claim with the machine that holds it.
 func mergedCloseBehindATestingTurn(t *testing.T) (*harness, *factRecorder, liveClaim, *supervise.Machine) {
 	t.Helper()
 	now := time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC)

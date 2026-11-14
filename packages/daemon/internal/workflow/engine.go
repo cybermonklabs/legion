@@ -278,6 +278,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.merged(ctx, tx, fact)
 	case intake.PullRequestClosed:
 		return e.closed(ctx, tx, fact)
+	case intake.PullRequestDequeued:
+		return e.dequeued(ctx, tx, fact)
+	case intake.MergeQueueReadDone:
+		return e.mergeQueueReadDone(ctx, tx, fact)
 	case intake.PullRequestMissing:
 		return e.pullRequestMissing(ctx, tx, fact)
 	case intake.ClaimReady:
@@ -302,6 +306,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.lingerExpired(ctx, tx, fact)
 	case intake.DaemonBooted:
 		return e.booted(ctx, tx, fact)
+	case intake.CutoverMergerRepair:
+		return e.cutoverMergerRepair(ctx, tx, fact)
 	case intake.CheckReport:
 		return e.checkReported(ctx, tx, fact)
 	case intake.CheckLookEnded:
@@ -421,8 +427,9 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// what this mark is for. And the daemon's own sends of work the record already owes a phase
 	// worker are starts that mark nothing (startOrOwe's reassertion): every send of an owed
 	// entry — admission's sweep on every pass and each minute, its slot repair, readyWorkerTask,
-	// the boot's resume by rule and the silence repair (sendOwedEntry) — and the phase's resume
-	// task the boot's resume and the silence repair send a claim level with its entry. The
+	// the boot's resume by rule, the cutover's one-time repair (cutoverMergerRepair) and the
+	// silence repair (sendOwedEntry) — and the phase's resume task the boot's resume, the
+	// cutover's repair and the silence repair send a claim level with its entry. The
 	// movement is the fact that raised the entry, which the transition's phase write and its
 	// start mark below (Engine.transition, StartOrOwe), and not each delivery of it.
 	if !fact.DaemonActor {
