@@ -580,15 +580,15 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	if err := st.PutWorkspaceBundle(ctx, rootIssue, release, saved); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
-	// A running copy off the same pod that a daemon without the refusal of such a copy stored in
-	// the release's window, after the save and before the role stops: the newer of the two by the
-	// clock. The store no longer writes one (PutRunningWorkspaceCopy, ErrReleaseBundleSaved), so
-	// the row is written here as that daemon left it.
+	// A running copy beside the bundle, written straight into the table: no daemon writes one off
+	// the pod a release bundle came off (PutRunningWorkspaceCopy refuses it, ErrReleaseBundleSaved),
+	// but what this test holds the cancel to is about the two tables and not about who wrote
+	// them: the release's bundle goes with the mark, and the running copy stays as it stands.
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"),
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: time.Now().UTC(), PodUID: "pod-being-released"}
 	if _, err := st.Pool().Exec(ctx, `insert into workspace_running_copies (issue, source_pod_uid, bundle, size_bytes, at, head)
 		values ($1, $2, $3, $4, $5, $6)`, rootIssue, taken.PodUID, taken.Bundle, taken.Size(), taken.At, taken.Head); err != nil {
-		t.Fatalf("write the running copy an earlier daemon took in the release's window: %v", err)
+		t.Fatalf("write a running copy beside the release's bundle: %v", err)
 	}
 
 	refused := errors.New("the resume could not be encoded")

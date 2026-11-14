@@ -819,8 +819,9 @@ func TestARestoreSendsNoRunningCopyOlderThanTheIssuesNewestPushAndLogsThePushItW
 // any other: it is the released pod's last copy, taken while the roles were idle and before the
 // release stopped them, so a push recorded after it — GitHub's "Update branch", a person's push,
 // a webhook the daemon applied late — holds none of its work, and the bundle is the one place that
-// work is. It crosses whole but for the issue's own branch, and the launcher's report moves it out
-// of the bundle table, so it holds the issue's pod no longer.
+// work is. It crosses whole but for the issue's own branch and its rescue branch, which no
+// restore sets (runtime.RestorableBookmarks), and the launcher's report moves it out of the bundle
+// table, so it holds the issue's pod no longer.
 //
 // The report keeps it as the restoring pod's running copy, and the push recorded before the
 // confirmation refuses that copy no more than it refused the bundle: the kept copy is stamped at

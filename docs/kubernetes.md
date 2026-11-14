@@ -4927,7 +4927,7 @@ the daemon logs `running copy: no copy of the issue workspace was stored` with t
 the issue keeps the copy it had, and the next period tries again.
 
 Once an idle release has saved its bundle, that bundle is the pod's last copy.
-No running copy is taken off that pod afterwards, at a push or for any other reason, and no running copy taken earlier supersedes it.
+No running copy is taken off that pod afterwards, at a push or for any other reason, and no running copy taken earlier supersedes it, since the save deletes the issue's running copy in its own transaction.
 The release saves the bundle first, while the pod's roles are idle, and stops them after it ([Idle release](#idle-release)), so the roles are still live for a moment after the save.
 A push the daemon records in that moment, such as GitHub's "Update branch", a person's push or a late webhook, asks for a copy like any other push.
 The daemon reads the pod the role's process runs in before it asks the role, and asks no role of a pod whose release has saved its bundle; the store refuses the write of a copy off that pod as well.
@@ -4948,7 +4948,6 @@ A new pod of the issue is sent the newer of the two, by the time each was taken,
 The older is closed unsent:
 the daemon spends its one restore attempt and discards its body, because a copy left open could still be sent to a later pod whose workspace already holds the descendants of the work the newer copy put back.
 A tie goes to the release bundle, which was taken while the roles were idle.
-A running copy off the pod a release bundle came off never supersedes that bundle, whatever their times: the bundle is that pod's last copy, so it is the copy offered and the running copy is closed unsent, which also answers any such row a daemon before this rule stored.
 The bytes of a closed copy stay in the database for an operator.
 
 A restore the new pod's launcher confirms keeps the work it put back as that pod's own running copy, whichever kind of copy it was.

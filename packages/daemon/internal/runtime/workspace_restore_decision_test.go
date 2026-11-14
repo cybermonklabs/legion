@@ -9,10 +9,9 @@ import (
 // copy the issue does not hold, whose one attempt is spent or whose work came off the pod asking
 // is answered nothing; the newer of the copies the issue holds is offered and the older
 // superseded, a tie going to the release bundle, whether or not the newer can be sent this pod;
-// a running copy off the pod the release bundle came off never supersedes that bundle, whatever
-// their times; a running copy older than the newest recorded push is refused, offered or not, and
-// a release bundle never is; and the offered copy is sent to a pod created after it, read to its
-// own second, and refused to any other.
+// a running copy older than the newest recorded push is refused, offered or not, and a release
+// bundle never is; and the offered copy is sent to a pod created after it, read to its own
+// second, and refused to any other.
 func TestDecideWorkspaceRestoreAnswersEachCopyByEveryRuleOfTheRestore(t *testing.T) {
 	at := time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
 	const released, cameBack, asking = "pod-the-work-came-off", "pod-that-came-back", "pod-asking"
@@ -24,9 +23,6 @@ func TestDecideWorkspaceRestoreAnswersEachCopyByEveryRuleOfTheRestore(t *testing
 	elsewhere := func(at time.Time) WorkspaceCopyHeld { return WorkspaceCopyHeld{At: at, Source: cameBack} }
 	spentElsewhere := func(at time.Time) WorkspaceCopyHeld { return WorkspaceCopyHeld{At: at, Spent: true, Source: cameBack} }
 	pushed := WorkspacePush{At: at.Add(time.Minute), Head: "c2"}
-	// The push after the bundle and after the running copy off its pod that a push in the
-	// release's window took (at + 2m): the second push of an issue whose release ran.
-	pushedAfterBoth := WorkspacePush{At: at.Add(5 * time.Minute), Head: "c3"}
 	// A pod created long after every copy below, unless a case names its own creation.
 	later := at.Add(time.Hour)
 	for _, c := range []struct {
@@ -65,20 +61,6 @@ func TestDecideWorkspaceRestoreAnswersEachCopyByEveryRuleOfTheRestore(t *testing
 			wantBundle: WorkspaceBundleSend, wantRunning: WorkspaceBundleSuperseded, wantOffered: WorkspaceCopyReleaseBundle},
 		{name: "a tie goes to the release bundle", bundle: held(at), running: elsewhere(at),
 			wantBundle: WorkspaceBundleSend, wantRunning: WorkspaceBundleSuperseded, wantOffered: WorkspaceCopyReleaseBundle},
-		{name: "a running copy off the bundle's own pod taken after it is superseded", bundle: held(at), running: held(at.Add(2 * time.Minute)),
-			wantBundle: WorkspaceBundleSend, wantRunning: WorkspaceBundleSuperseded, wantOffered: WorkspaceCopyReleaseBundle},
-		{name: "a running copy off the bundle's own pod taken after it and after a push between them is superseded", bundle: held(at), running: held(at.Add(2 * time.Minute)), push: pushed,
-			wantBundle: WorkspaceBundleSend, wantRunning: WorkspaceBundleSuperseded, wantOffered: WorkspaceCopyReleaseBundle},
-		{name: "a push after the bundle and after a running copy off its pod: the bundle is sent, the copy refused", bundle: held(at), running: held(at.Add(2 * time.Minute)), push: pushedAfterBoth,
-			wantBundle: WorkspaceBundleSend, wantRunning: WorkspaceBundleRefusedPushed, wantOffered: WorkspaceCopyReleaseBundle},
-		{name: "a running copy off the bundle's own pod taken before it is superseded", bundle: held(at), running: held(at.Add(-time.Minute)),
-			wantBundle: WorkspaceBundleSend, wantRunning: WorkspaceBundleSuperseded, wantOffered: WorkspaceCopyReleaseBundle},
-		{name: "a running copy off the bundle's own pod does not supersede a spent bundle", bundle: spent(at), running: held(at.Add(2 * time.Minute)),
-			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleSuperseded, wantOffered: WorkspaceCopyReleaseBundle},
-		{name: "a pod older than the bundle is refused it, and a later running copy off its pod is superseded", bundle: held(at), running: held(at.Add(2 * time.Minute)), created: at.Add(-time.Minute),
-			wantBundle: WorkspaceBundleRefusedOlder, wantRunning: WorkspaceBundleSuperseded, wantOffered: WorkspaceCopyReleaseBundle},
-		{name: "the pod both copies came off is offered the bundle and records nothing", bundle: fromThisPod(at), running: fromThisPod(at.Add(2 * time.Minute)), push: pushed,
-			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantOffered: WorkspaceCopyReleaseBundle},
 		{name: "a copy whose attempt is spent", running: spent(at),
 			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantOffered: WorkspaceCopyRunning},
 		{name: "the pod the work came off", running: fromThisPod(at),

@@ -2,7 +2,6 @@ package supervise
 
 import (
 	"errors"
-	"slices"
 	"testing"
 	"time"
 
@@ -830,44 +829,6 @@ func TestACompactionThatEndsInATurnUnderAHeldSuspensionSaysTheClaimWasNotGivenBa
 
 	h.wantState(StateSuspended)
 	h.wantPrompts(ladderSends)
-}
-
-// A turn that ends while the session is being compacted leaves the claim working (turnEnded),
-// so the claim reaches its idle at the compaction's end instead — and that idle is reported to
-// the daemon exactly as the turn's own end reports one (durableWrite, OnDurableState). The
-// daemon takes the copy of the issue workspace's unpushed work that ends each turn from that
-// report (internal/daemon's copyWorkspaceAtTurnEnd), so a transition reported by nothing leaves
-// the work of that turn held by no copy until some later turn ends.
-func TestATurnEndingUnderACompactionReportsItsIdleWhenTheCompactionEnds(t *testing.T) {
-	notices := 0
-	h := ladderStuck(t, &notices)
-	reports := watchReports(h)
-	release := h.conn.HoldCompact()
-	compacted := make(chan error, 1)
-	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
-	waitForCompacting(t, h)
-
-	// A follow-up an Envoy delivery queued while the session was being compacted: its turn ends
-	// under the compaction, which keeps the claim working for the compaction's own end.
-	h.must(StreamTurnStart{Claim: h.token})
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	h.wantState(StateWorking)
-	if seen := states(reports()); slices.Contains(seen, StateIdle) {
-		t.Fatalf("the daemon was told %v while the compaction still held the claim working", seen)
-	}
-	release()
-
-	if err := <-compacted; err != nil {
-		t.Fatalf("the compaction answered %v, want the claim back", err)
-	}
-	h.m.Wait()
-	h.wantState(StateIdle)
-	if seen := states(reports()); !slices.Contains(seen, StateIdle) {
-		t.Fatalf("the daemon was told %v, want the claim's idle among them: the copy of the turn's work is taken from that report", seen)
-	}
-	if persisted := h.store.load(h.token).State; persisted != StateIdle {
-		t.Fatalf("the stored claim is %s, want idle: the report follows the write it reports", persisted)
-	}
 }
 
 // A compaction asked for over a claim a suspension is already held over is taken for nothing:

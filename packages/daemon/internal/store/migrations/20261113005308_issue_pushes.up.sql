@@ -3,13 +3,14 @@
 -- (INFRA-1117).
 --
 -- A copy of a workspace is restored by `jj edit` back to its head and `jj bookmark set
--- --allow-backwards` of each bookmark it holds but the issue's own branch `legion/<KEY>`, which no
--- restore sets (runtime.RestorableBookmarks): the branch stays where the new pod's fetch from
--- GitHub put it, so no restore can move it behind the pushed commits. This record is the second
--- line. A running copy is taken while the roles work and push, and an update round replaces a pod
--- just after its roles pushed, so a running copy taken before the push is common: restoring it
--- would `jj edit` the workspace back behind the push and set its other bookmarks there, and the
--- roles would have to bring their work forward over the pushed commits.
+-- --allow-backwards` of each bookmark it holds but the issue's own branch `legion/<KEY>` and its
+-- rescue branch `legion/<KEY>-rescue`, which no restore sets (runtime.RestorableBookmarks): each
+-- stays where the new pod's fetch from GitHub put it, so no restore can move the issue's branch
+-- behind the pushed commits. This record is the second line. A running copy is taken while the
+-- roles work and push, and an update round replaces a pod just after its roles pushed, so a
+-- running copy taken before the push is common: restoring it would `jj edit` the workspace back
+-- behind the push and set its other bookmarks there, and the roles would have to bring their work
+-- forward over the pushed commits.
 -- store.TakeWorkspaceCopyForRestore reads this row in the transaction that chooses between the
 -- issue's two copies and refuses a running copy whose `at` (when the shim took it) is before
 -- pushed_at (runtime.DecideWorkspaceRestore). It guards running copies only, because once an idle
@@ -18,9 +19,8 @@
 -- daemon's idleReleaseRows), so a push recorded after the save is no push of the work the bundle
 -- holds, and the bundle is restored as any other. No running copy is taken off that pod after
 -- the save, at a push or for any other reason, although its roles are live until their stops
--- (store.PutRunningWorkspaceCopy), and no running copy off that pod supersedes the bundle: such a
--- copy would be the later of the two by the clock and would be offered to the next pod in the
--- bundle's place.
+-- (store.PutRunningWorkspaceCopy): such a copy would be the later of the two by the clock and
+-- would be offered to the next pod in the bundle's place.
 --
 -- The record is the push webhook itself (intake.Push, the workflow engine's push handler), for
 -- every push of `legion/<KEY>` on the repository the issue is recorded on, whether or not the
@@ -73,12 +73,10 @@ create table issue_push_heads (
 -- check does not admit it: a release bundle is its pod's last copy, saved while the roles are idle
 -- and before the release stops them, so no later push holds its work, and a refused bundle would
 -- hold the issue's pod from every later idle release (workflow.IdleHoldBundleUnrestored).
--- `superseded` is the copy a pod is not offered when it is offered the other: the older of the
--- issue's two copies, or a running copy off the pod the release bundle came off, which is never
--- offered in that bundle's place. The pods after it hold the descendants of the work the offered
--- copy restores, so this one is closed unsent. Both spend the copy's one attempt, as
--- `refused_older` does. A daemon of an earlier release reads neither, since it never reads the
--- outcome of a row whose attempt is spent.
+-- `superseded` is the older of the issue's two copies when the newer one is offered to the pod:
+-- the pods after it hold that work's descendants, so the older copy is closed unsent. Both spend
+-- the copy's one attempt, as `refused_older` does. A daemon of an earlier release reads neither,
+-- since it never reads the outcome of a row whose attempt is spent.
 alter table workspace_bundles
   drop constraint workspace_bundles_attempt_outcome,
   add constraint workspace_bundles_attempt_outcome

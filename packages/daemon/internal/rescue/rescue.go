@@ -91,13 +91,6 @@ func jjString(name string) string {
 // the second run costs is time, and the budget holds both runs (GuardReserve).
 var gitPins = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
 
-// Target is the issue's one rescue branch, `legion/<KEY>-rescue` (claim.RescueBranch), which the
-// check pushes each workspace's own work to (Request.Target) and which only moves forward. It is
-// no issue's branch (claim.BranchIssue), so nothing the daemon keeps follows it.
-func Target(issue string) string {
-	return claim.RescueBranch(issue)
-}
-
 // Request is one check of every workspace on a pod's disk.
 type Request struct {
 	// StateDir is the disk's root: workspaces under <StateDir>/workspaces/<owner>/<repo>/<issue>,
@@ -109,9 +102,9 @@ type Request struct {
 	// forward-only rule. An older daemon lists whatever branch the check reports, so its message
 	// names the right branch.
 	Branch string
-	// Target is the issue's one rescue branch, `legion/<KEY>-rescue`, which the check pushes each
-	// workspace's own work to and which only moves forward. The daemon names it beside Branch
-	// (shimwire.RescueUnpushed), and an older daemon names none.
+	// Target is the issue's one rescue branch, `legion/<KEY>-rescue` (claim.RescueBranch), which
+	// the check pushes each workspace's own work to and which only moves forward. The daemon names
+	// it beside Branch (shimwire.RescueUnpushed), and an older daemon names none.
 	Target string
 	// WorkspaceTimeout bounds one workspace's check and push.
 	WorkspaceTimeout time.Duration
@@ -231,7 +224,7 @@ func pushBranch(req Request, dir string) (branch, issue string, err error) {
 	if !claim.IsIssueKey(issue) {
 		return "", "", fmt.Errorf("the workspace directory %s names no issue key, and the rescue branch %q is %s: nothing of it is pushed", dir, branch, owner)
 	}
-	one := Target(issue)
+	one := claim.RescueBranch(issue)
 	if branch != one && (!strings.HasPrefix(branch, one+"-") || len(branch) == len(one)+1) {
 		return "", "", fmt.Errorf("the workspace %s is issue %s's, and the rescue branch %q is %s: its work is not pushed under the name of another issue", dir, issue, branch, owner)
 	}

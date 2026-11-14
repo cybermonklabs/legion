@@ -85,11 +85,10 @@ const (
 	// a release bundle is never refused so. The refusal is the copy's one attempt and its bytes
 	// stay for an operator, as RefusedOlder's do.
 	WorkspaceBundleRefusedPushed
-	// WorkspaceBundleSuperseded: the issue's other copy is the copy this pod is offered — the
-	// newer one, or the release bundle beside a running copy off the bundle's own pod, which is
-	// that pod's last copy (DecideWorkspaceRestore) — so this one is closed unsent. The pods
-	// after this one hold the descendants of the work it restores, so a copy left open for them
-	// would be applied over everything pushed in between. Its bytes stay for an operator too.
+	// WorkspaceBundleSuperseded: the issue's other copy is the newer one and is the copy this
+	// pod is offered, so this one is closed unsent. The pods after this one hold the
+	// descendants of the work it restores, so a copy left open for them would be applied over
+	// everything pushed in between. Its bytes stay for an operator too.
 	WorkspaceBundleSuperseded
 )
 
@@ -156,12 +155,11 @@ func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 // two copies of its issue's workspace. It reads what each copy's row says of it, the newest push
 // of the issue's branch the daemon recorded, and the pod asking: its uid, podUID, and the
 // creationTimestamp the API server stamped it with, podCreated. It answers what the ask does to
-// each copy, and the kind of the copy it offers: the newer of the copies the issue holds, but the
-// release bundle beside a running copy off the bundle's own pod, and empty when it holds neither.
-// It is a pure function so that it is one decision, read in one place: the store calls it inside
-// the transaction that holds both rows and records every take it answers but WorkspaceBundleNone
-// (store.Store.TakeWorkspaceCopyForRestore), and a test outside the store drives the very same
-// decision against real git and jj.
+// each copy, and the kind of the copy it offers, which is the newer of the copies the issue holds,
+// or empty when it holds neither. It is a pure function so that it is one decision, read in one
+// place: the store calls it inside the transaction that holds both rows and records every take it
+// answers but WorkspaceBundleNone (store.Store.TakeWorkspaceCopyForRestore), and a test outside
+// the store drives the very same decision against real git and jj.
 //
 // The newer copy is offered and the older superseded (WorkspaceBundleSuperseded). `at` orders
 // them because it is the one thing both carry and the only one that says which work descends
@@ -181,23 +179,6 @@ func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 // its attempt unspent is a copy some later pod can still be sent, and that pod's workspace holds
 // the descendants of the work this pod is about to restore: the older copy would then be applied
 // over everything pushed in between.
-//
-// A running copy off the pod the release bundle came off never supersedes that bundle, whatever
-// their times: the bundle is offered and the copy is closed as an older copy is. Once an idle
-// release has saved its bundle, that bundle is the pod's last copy. The release's rows run the
-// save first, then a stop per role, then the teardown (internal/daemon's idleReleaseRows), so the
-// pod's roles are still live after the save, and a copy taken off them in that window, such as
-// the copy a push the daemon records there asks for, is the later of the two by the clock. It
-// holds no work the bundle lacks: the roles were idle, work given to the pod before its first
-// role stops cancels the release and drops its bundle (store.Store.CancelIssueRelease), and work
-// given after that waits for the release to end. The daemon stores no such copy
-// (store.Store.PutRunningWorkspaceCopy), and this rule answers any row a daemon that stored one
-// left behind. Offered, such a copy would be sent to the next pod and the bundle closed unsent,
-// and a row of workspace_bundles of any outcome holds the issue's pod
-// (workflow.IdleHoldBundleUnrestored), so no idle release of the issue would run again; a push
-// after both would refuse the copy, and that pod would be sent nothing at all. The copy's own
-// take follows the rules below as any other copy's does: it is superseded, or refused by the push
-// when it was taken before it.
 //
 // A running copy taken before the newest recorded push is refused (WorkspaceBundleRefusedPushed),
 // the offered one or the older. No restore sets the issue's branch `legion/<KEY>`
@@ -255,10 +236,8 @@ func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 // future and that pod is refused, which costs the restore and loses no work: the direction to
 // fail in.
 func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePush, podUID string, podCreated time.Time) (bundleTake, runningTake WorkspaceBundleTake, offered WorkspaceCopyKind) {
-	// A running copy off the bundle's own pod is never the newer (above), so only a copy off
-	// another pod is weighed against the bundle by time.
 	switch {
-	case running.Held() && (!bundle.Held() || (running.Source != bundle.Source && running.At.After(bundle.At))):
+	case running.Held() && (!bundle.Held() || running.At.After(bundle.At)):
 		offered = WorkspaceCopyRunning
 	case bundle.Held():
 		offered = WorkspaceCopyReleaseBundle
@@ -295,8 +274,8 @@ func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePus
 // by jj as a move backwards or sideways.
 //
 // The rescue branch is withheld because it only moves forward: each rescue is one commit on the
-// tip GitHub holds (rescue.Target). The shim's bundler keeps a local bookmark of it, like any
-// other, where it is on a commit no remote branch holds, and a rescue the pod pushes after the
+// tip GitHub holds (claim.RescueBranch). The shim's bundler keeps a local bookmark of it, like
+// any other, where it is on a commit no remote branch holds, and a rescue the pod pushes after the
 // copy was taken moves GitHub's tip past that commit. A restore that set the bookmark back there
 // would leave it behind GitHub's tip: a role's `jj git push` of it moves GitHub's branch backwards
 // and drops the later rescue, and the next rescue push leaves the bookmark conflicted, which jj

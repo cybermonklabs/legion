@@ -655,13 +655,13 @@ func (p pushCheck) rescued() []string {
 
 // rescueBranch is the prefix of every rescue branch of a pod's replacement:
 // `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which a shim that predates the issue's one
-// rescue branch (rescue.Target) numbers from 1. It is no issue's branch (claim.BranchIssue), so
-// nothing the daemon keeps follows it. The request names the issue's one branch in a field of its
-// own, beside this prefix rather than in its place: an older shim reports every remote branch that
-// starts with `<branch>-` as its own, so the one branch's name there would have it report every
-// earlier pod's rescue branches (shimwire.RescueUnpushed).
+// rescue branch (claim.RescueBranch) numbers from 1. It is no issue's branch (claim.BranchIssue),
+// so nothing the daemon keeps follows it. The request names the issue's one branch in a field of
+// its own, beside this prefix rather than in its place: an older shim reports every remote branch
+// that starts with `<branch>-` as its own, so the one branch's name there would have it report
+// every earlier pod's rescue branches (shimwire.RescueUnpushed).
 func rescueBranch(issue, pod string) string {
-	return rescue.Target(issue) + "-" + pod[:min(8, len(pod))]
+	return claim.RescueBranch(issue) + "-" + pod[:min(8, len(pod))]
 }
 
 // checkUnpushed runs the push check of the round's pod (runtime.Runtime.RescueUnpushed) through a
@@ -692,7 +692,7 @@ func (s *supervision) checkUnpushed(ctx context.Context, issue, round, pod strin
 	if timeout <= 0 {
 		return fmt.Errorf("%w: the replacement has no time left to run it in", errPushCheckFailed)
 	}
-	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), Target: rescue.Target(issue),
+	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), Target: claim.RescueBranch(issue),
 		WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
 	var refused []string
 	for _, c := range rescuers(group, round) {
