@@ -27,6 +27,7 @@ import type {
   LegionSettingsChangeResult,
   LegionSettingVerdict,
 } from "../../api/types";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import {
   TableBody,
   TableCell,
@@ -37,8 +38,11 @@ import {
 } from "../../components/TableShell";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import {
+  borderDefault,
+  card,
   dangerText,
   successText,
+  surfaceMutedHoverBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textPrimaryOnSurface,
@@ -129,6 +133,7 @@ export function LegionSettingsPanel({ board }: { readonly board: LegionBoardResp
   // the daemon's own value.
   const [drafts, setDrafts] = useState<Readonly<Record<string, string>>>({});
   const [results, setResults] = useState<Readonly<Record<string, RowResult>>>({});
+  const [hintOpen, setHintOpen] = useState(false);
   /** Puts `key` back as `previous` showed it: a change refused or failed puts back the one key it
    *  touched, leaving every other field as the live subscription has it now. */
   const rollBack = (key: string, previous: LegionBoardResponse | undefined) => {
@@ -230,15 +235,31 @@ export function LegionSettingsPanel({ board }: { readonly board: LegionBoardResp
 
   return (
     <section aria-labelledby={headingId} className="mt-6" data-legion-settings>
-      <h3 className={`text-base font-semibold ${textPrimaryOnCanvas}`} id={headingId}>
-        Daemon settings
-      </h3>
-      <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-        {project}&apos;s <code>legion.yaml</code> as the daemon reports it, with where each value
-        came from. A change reaches the running daemon at once, and the daemon decides each setting
-        and says how it took it.
-        {human ? "" : " Sign in to change one."}
-      </p>
+      {/* The help text sits behind an (i) hint beside the heading, as the Issues tab's does. */}
+      <div className="flex items-center gap-2">
+        <h3 className={`text-base font-semibold ${textPrimaryOnCanvas}`} id={headingId}>
+          Daemon settings
+        </h3>
+        <PanelTrigger
+          label="i"
+          onOpenChange={setHintOpen}
+          open={hintOpen}
+          panelClassName={`z-50 flex w-72 max-w-[calc(100vw-16px)] flex-col gap-1.5 rounded-lg border p-3 text-xs font-normal shadow-lg ${card} ${textSecondaryOnCanvas}`}
+          title="About the daemon settings"
+          triggerClassName={`inline-flex size-9 shrink-0 items-center justify-center rounded-full border text-xs font-semibold italic md:size-7 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas}`}
+        >
+          {() => (
+            <>
+              <p>
+                The <code>legion.yaml</code> of {project}, as its daemon sends it
+              </p>
+              <p>Where each value came from: the file, or a change made here</p>
+              <p>A change goes to the daemon at once, and the daemon tells how it used it</p>
+              {human ? null : <p>Sign in to change a setting</p>}
+            </>
+          )}
+        </PanelTrigger>
+      </div>
       {keys.length === 0 ? (
         <p className={`mt-4 text-sm ${textMutedOnCanvas}`} data-legion-settings-empty>
           No read of this daemon has recorded its settings yet.
