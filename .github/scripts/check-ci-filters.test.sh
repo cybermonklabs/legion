@@ -235,35 +235,48 @@ replace() {
 }
 
 check_report_section() {
-  local token outside line in_report=false
-  token=$(grep -E '^::stop-commands::[0-9a-f]{32}$' <<<"$out" || true)
-  check "starts the report section with one token" \
-    "$(is "$(grep -Ecx '^::stop-commands::[0-9a-f]{32}$' <<<"$out" || true)" 1)"
-  token=${token#::stop-commands::}
-  check "ends the report section with its token" \
-    "$(is "$(grep -Fxc -- "::$token::" <<<"$out" || true)" 1)"
+  local token tokens outside line stopped=false
+  tokens=$(grep -E '^::stop-commands::[0-9a-f]{32}$' <<<"$out" || true)
+  check "starts import and report sections with two tokens" \
+    "$(is "$(grep -Ecx '^::stop-commands::[0-9a-f]{32}$' <<<"$out" || true)" 2)"
+  while IFS= read -r token; do
+    token=${token#::stop-commands::}
+    check "ends a stopped command section with its token" \
+      "$(is "$(grep -Fxc -- "::$token::" <<<"$out" || true)" 1)"
+  done <<<"$tokens"
   outside=
   while IFS= read -r line; do
-    if [[ $line == "::stop-commands::$token" ]]; then
-      in_report=true
+    if [[ $line =~ ^::stop-commands::([0-9a-f]{32})$ ]]; then
+      token=${BASH_REMATCH[1]}
+      stopped=true
       continue
     fi
-    if [[ $line == "::$token::" ]]; then
-      in_report=false
+    if [[ $stopped == true ]] && [[ $line == "::$token::" ]]; then
+      stopped=false
       continue
     fi
-    if [[ $in_report == false ]] && { [[ $line == report:* ]] || [[ $line =~ (::[a-z-]+|##\[) ]]; }; then
+    if [[ $stopped == false ]] && { [[ $line == report:* ]] || [[ $line =~ (::[a-z-]+|##\[) ]]; }; then
       outside+="$line"$'\n'
     fi
   done <<<"$out"
-  check "keeps report lines and command syntax inside the pair" "$(is "$outside" "")"
+  check "keeps report lines and command syntax inside stopped sections" "$(is "$outside" "")"
 }
 
 unescaped_workflow_commands() {
-  local line unsafe=
+  local line unsafe= token stopped=false
   while IFS= read -r line; do
-    if [[ $line == *'##['* ]] ||
-      { [[ $line != ::error\ file=*::* ]] && [[ $line =~ ::[a-z-]+ ]]; }; then
+    if [[ $line =~ ^::stop-commands::([0-9a-f]{32})$ ]]; then
+      token=${BASH_REMATCH[1]}
+      stopped=true
+      continue
+    fi
+    if [[ $stopped == true ]] && [[ $line == "::$token::" ]]; then
+      stopped=false
+      continue
+    fi
+    if [[ $stopped == false ]] &&
+      { [[ $line == *'##['* ]] ||
+        { [[ ! $line =~ ^::(error|warning)\ file=.*:: ]] && [[ $line =~ ::[a-z-]+ ]]; }; }; then
       unsafe+="$line"$'\n'
     fi
   done <<<"$out"
@@ -336,6 +349,17 @@ bad: "::warning file=x::forged
 YAML
 run_check "$root"
 check_input_parse_error ".github/workflows/forged.yaml"
+
+echo "case: importing an unsafe data string cannot inject warning commands"
+root=$(fixture import-warning-command)
+cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+Read("unsafe\q##[warning]forged::warning file=x::forged", "the unsafe path")
+PY
+run_check "$root"
+check "passes after reporting the import warning" "$(is "$status" 0)"
+check "emits one escaped warning annotation" \
+  "$(is "$(grep -Ec '^::warning file=.github/scripts/ci_job_reads.py::line [0-9]+: SyntaxWarning: invalid escape sequence' <<<"$out" || true)" 1)"
+check "keeps commands out of standard output and standard error" "$(is "$(unescaped_workflow_commands)" "")"
 
 
 echo "case: a report path beginning with :: is not a command"

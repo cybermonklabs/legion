@@ -60,6 +60,10 @@ def error(file: str | None, message: str) -> Annotation:
     return Annotation("error", file, message)
 
 
+def warning(file: str | None, message: str) -> Annotation:
+    return Annotation("warning", file, message)
+
+
 class RepositoryInputError(Exception):
     """A repository file could not be read or parsed, with its path kept for the annotation."""
 
@@ -75,6 +79,12 @@ def repository_path(path: Path) -> str:
         return path.relative_to(REPO).as_posix()
     except ValueError:
         return str(path)
+
+
+def warning_path(filename: str) -> str:
+    """The annotation file property for a warning emitted while importing repository code."""
+    path = Path(filename)
+    return repository_path(path) if path.is_absolute() else filename
 
 
 def read_repository_text(path: Path) -> str:
@@ -108,6 +118,12 @@ def load_repository_yaml_text(path: str, text: str):
 def print_annotation(annotation: Annotation) -> None:
     location = f" file={escape_property(annotation.file)}" if annotation.file else ""
     print(f"::{annotation.severity}{location}::{escape_annotation_message(annotation.message)}")
+
+
+def print_import_warning(caught) -> None:
+    """Emit an import warning without letting its formatter print repository source text."""
+    line = f"line {caught.lineno}: " if caught.lineno else ""
+    print_annotation(warning(warning_path(caught.filename), f"{line}{caught.category.__name__}: {caught.message}"))
 
 
 @dataclass(frozen=True)
