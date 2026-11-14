@@ -277,12 +277,51 @@ SH
   echo "$root"
 }
 
+# GATE_BOUND: the seconds one call of the gate may take before this harness calls it hung and
+# stops, naming the case that ran it. Measured on 2026-11-14 on an INFRA issue pod (2 CPUs,
+# gVisor): an unmutated harness run made 147 gate calls, median 1.5 s, 99th percentile 1.87 s,
+# slowest 1.94 s (`declaration-two-loops-below`). 60 s is about thirty times that slowest call,
+# which is the margin: a slow runner does not trip it, and a gate that never returns fails here
+# a minute in, under its case's name, rather than at the test job's own key with GitHub's bare
+# timeout line. Round 32's mutation pass found two mutants of rule 8 that hang the gate
+# (dispatch://INFRA-1545), and before this bound nothing below the job key ended them.
+GATE_BOUND=60
+
+# run_gate <stderr: out|null> <root> <args…>: runs the gate in a session of its own with its
+# output in a file, never through a pipe: a gate that hangs is bash waiting on its Python, and
+# killing the bash alone leaves the Python holding a pipe open, which blocks a `$(…)` capture
+# for ever. At the bound the whole session is killed, the hang is one FAIL under the current
+# case, and the harness ends there, since every later case would hang the same way.
+run_gate() {
+  local stderr=$1 root=$2 log="$work/gate.out" pid tenths=0
+  shift 2
+  if [ "$stderr" = out ]; then
+    ( cd "$root" && exec setsid ./.github/scripts/check-download-retry.sh "$@" ) > "$log" 2>&1 &
+  else
+    ( cd "$root" && exec setsid ./.github/scripts/check-download-retry.sh "$@" ) > "$log" 2>/dev/null &
+  fi
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$tenths" -ge $((GATE_BOUND * 10)) ]; then
+      kill -KILL -- "-$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      echo "  FAIL: the gate did not return within ${GATE_BOUND} s of starting this case"
+      FAIL=$((FAIL + 1))
+      summary "check-download-retry.sh"
+    fi
+    sleep 0.1
+    tenths=$((tenths + 1))
+  done
+  wait "$pid"
+  status=$?
+  out=$(cat "$log")
+}
+
 run_check() {
   local root=$1
   shift
   set +e
-  out=$(cd "$root" && "./.github/scripts/check-download-retry.sh" "$@" 2>&1)
-  status=$?
+  run_gate out "$root" "$@"
   set -e
 }
 
@@ -305,8 +344,7 @@ declare_entry() {
 list_check() {
   local root=$1
   set +e
-  out=$(cd "$root" && "./.github/scripts/check-download-retry.sh" --list 2>/dev/null)
-  status=$?
+  run_gate null "$root" --list
   set -e
 }
 
