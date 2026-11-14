@@ -546,12 +546,47 @@ function openAsksServer() {
   })
 }
 
-// A Legion pane's jj commits carry the pane's session and its issue, through an overlay the hook
-// writes and the JJ_CONFIG every later Bash command of the session sources. The hook writes it
-// because the pane's claim boot cannot: that boot is the MCP server Claude Code spawns as a
-// child, and a child cannot change its parent's environment. The issue line is scoped to the
-// pane's own workspace, so a commit the same shell makes in another repository carries the
-// session line alone.
+/** The overlay's unscoped `[templates]` table for `hookInput`'s session, written out line by line:
+ * the session line, then the role line when `role` is given, in each of the three templates. */
+function unscopedTable(role?: string): string {
+  const withRole = role !== undefined
+  return [
+    "[templates]",
+    `commit_trailers = '"Omp-Session: s-1${withRole ? `\\nLegion-Role: ${role}` : ""}"'`,
+    "revert_description = '''",
+    "concat(",
+    `  'Revert "' ++ description.first_line() ++ '"' ++ "\\n",`,
+    `  "\\n",`,
+    `  "This reverts commit " ++ commit_id ++ ".\\n",`,
+    `  "\\n",`,
+    `  "Omp-Session: s-1\\n",`,
+    ...(withRole ? [`  "Legion-Role: ${role}\\n",`] : []),
+    ")",
+    "'''",
+    "duplicate_description = '''",
+    "concat(",
+    "  description,",
+    "  if(description, concat(",
+    `    if(!trailers, "\\n"),`,
+    `    if(!trailers.any(|t| t.key() == "Omp-Session" && t.value() == "s-1"), "Omp-Session: s-1\\n"),`,
+    ...(withRole
+      ? [
+          `    if(!trailers.any(|t| t.key() == "Legion-Role" && t.value() == "${role}"), "Legion-Role: ${role}\\n"),`,
+        ]
+      : []),
+    "  )),",
+    ")",
+    "'''",
+    "",
+  ].join("\n")
+}
+
+// A Legion pane's jj commits carry the pane's session, its role and its issue, through an overlay
+// the hook writes and the JJ_CONFIG every later Bash command of the session sources. The hook
+// writes it because the pane's claim boot cannot: that boot is the MCP server Claude Code spawns
+// as a child, and a child cannot change its parent's environment. The issue line is scoped to the
+// pane's own workspace, so a commit the same shell makes in another repository carries no issue
+// line. This pane has no LEGION_ROLE, so both tables carry the session line alone.
 test("writes the pane's attribution overlay and exports the chain layering it over jj's own config", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-"))
   const stateDir = join(scratch, "state")
@@ -583,9 +618,47 @@ test("writes the pane's attribution overlay and exports the chain layering it ov
       ].join("\n"),
     )
     expect(await readFile(overlay, "utf8")).toBe(
-      `[templates]\ncommit_trailers = '"Omp-Session: s-1"'\n` +
+      unscopedTable() +
         `\n[[--scope]]\n--when.workspaces = ["${await realpath(workspace)}"]\n` +
         `[--scope.templates]\ncommit_trailers = '"Omp-Session: s-1\\nDispatch: ACME-7"'\n`,
+    )
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
+// A pane whose LEGION_ROLE names a role gets the role line after the session line. The scoped
+// table carries it too, before the issue line: a scoped commit_trailers replaces the unscoped one.
+test("writes the pane's role after the session line, in the unscoped table and the scoped one", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-role-"))
+  const stateDir = join(scratch, "state")
+  await mkdir(stateDir)
+  const workspace = join(scratch, "workspace")
+  await mkdir(workspace)
+  const userConfig = join(scratch, "jj-user.toml")
+  const bin = await jjDirectory(scratch, `printf '%s\\n' ${JSON.stringify(userConfig)}`)
+  const envFile = join(scratch, "session-env.sh")
+  try {
+    const result = await runHook(hookInput, {
+      HOME: scratch,
+      PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+      CLAUDE_ENV_FILE: envFile,
+      LEGION_STATE_DIR: stateDir,
+      LEGION_ISSUE_TRAILER: "ACME-7",
+      LEGION_WORKSPACE: workspace,
+      LEGION_ROLE: "implementer",
+    })
+
+    expect(result.exitCode).toBe(0)
+    const overlay = join(stateDir, "omp-attribution-s-1.toml")
+    expect(await readFile(envFile, "utf8")).toContain(
+      `export JJ_CONFIG='${userConfig}:${overlay}'\n`,
+    )
+    expect(await readFile(overlay, "utf8")).toBe(
+      unscopedTable("implementer") +
+        `\n[[--scope]]\n--when.workspaces = ["${await realpath(workspace)}"]\n[--scope.templates]\n` +
+        `commit_trailers = '"Omp-Session: s-1\\nLegion-Role: implementer\\nDispatch: ACME-7"'\n`,
     )
   } finally {
     await rm(scratch, { recursive: true, force: true })
@@ -612,9 +685,7 @@ test("writes the session line alone when the pane names no workspace", async () 
     })
 
     expect(result.exitCode).toBe(0)
-    expect(await readFile(join(stateDir, "omp-attribution-s-1.toml"), "utf8")).toBe(
-      `[templates]\ncommit_trailers = '"Omp-Session: s-1"'\n`,
-    )
+    expect(await readFile(join(stateDir, "omp-attribution-s-1.toml"), "utf8")).toBe(unscopedTable())
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
@@ -641,9 +712,7 @@ test("writes the session line alone when the daemon named no issue key", async (
     expect(await readFile(envFile, "utf8")).toContain(
       `export JJ_CONFIG='${userConfig}:${overlay}'\n`,
     )
-    expect(await readFile(overlay, "utf8")).toBe(
-      `[templates]\ncommit_trailers = '"Omp-Session: s-1"'\n`,
-    )
+    expect(await readFile(overlay, "utf8")).toBe(unscopedTable())
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
@@ -754,9 +823,7 @@ test("single-quotes the chain, so a shell sourcing the file reads a state direct
     const overlay = join(stateDir, "omp-attribution-s-1.toml")
     const sourced = Bun.spawnSync(["bash", "-c", `. "$1"; printf %s "$JJ_CONFIG"`, "-", envFile])
     expect(sourced.stdout.toString()).toBe(`${userConfig}:${overlay}`)
-    expect(await readFile(overlay, "utf8")).toBe(
-      `[templates]\ncommit_trailers = '"Omp-Session: s-1"'\n`,
-    )
+    expect(await readFile(overlay, "utf8")).toBe(unscopedTable())
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
@@ -806,7 +873,7 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
 // 2.1.311), so the only runs that find an `export JJ_CONFIG=` line already written are a resume
 // or a compaction of that same id — which the Legion daemon does on every relaunch. The line
 // there names this same session's own overlay, still on disk: a jj that never answers must leave
-// it, since removing it would leave the session with neither trailer. The writer takes its base
+// it, since removing it would leave the session with no trailer. The writer takes its base
 // from an inherited JJ_CONFIG and spawns no jj at all when it finds one, so both runs are given
 // an environment carrying none, as Claude Code's hook process is.
 test("keeps the session's own export when a later run of the same id has no jj to answer", async () => {
