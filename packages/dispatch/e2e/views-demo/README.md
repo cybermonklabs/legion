@@ -46,13 +46,18 @@ what `<out>/raw/` lacks. Add `--refresh` to read everything again.
 cd packages/dispatch
 DISPATCH_URL=<Dispatch base URL> DISPATCH_TOKEN_FILE=<token file> \
   bun e2e/views-demo/fixtures.ts --out "$TMPDIR/views-demo/fixtures" \
-  --project <KEY> --reader <login> --daemon-url <the project's Legion daemon base URL>
+  --project <KEY> --reader <login> --daemon-url <the project's Legion daemon base URL> \
+  --no-daemon-project <KEY>
 ```
 
-`--daemon-url` reads the daemon's `GET /legion/v1/state` (in the cluster, no token). Use
-`--daemon-state <file>` instead to build from a saved state. `<out>/manifest.json` names, for
-each fixture, its source, the UTC time it was read, and which of its fields are real, derived or
-invented.
+`--project` is the project with a Legion daemon. `--daemon-url` reads its daemon's
+`GET /legion/v1/state` (in the cluster, no token). Use `--daemon-state <file>` instead to build
+from a saved state. Each `--no-daemon-project` adds a real project's open and done listings and
+no Legion setting, so the views of a project with no daemon can be shown beside it; its done rows
+keep a null `closed_at`, since their events are not read. `<out>/manifest.json` names, for each
+fixture, its source, the UTC time it was read, and which of its fields are real, derived or
+invented. The board leaves out a card's `checks_verdict`, which
+cybermonklabs/legion#2731's newest head removes.
 
 ## The fixtures as an archive
 
@@ -84,15 +89,27 @@ Open `http://127.0.0.1:5190/projects/<KEY>/issues`. A request the stub cannot an
 in the console (`[views demo] no stub route answers …`) and kept in
 `window.__dispatchDemoUnanswered`.
 
+To show a failed read of the daemon, add `demo=read-failed` to the address
+(`/projects/<KEY>/issues?view=open&demo=read-failed`; in the single file, after the `#`). The
+board's newest read is then a failure with an error text the demo makes up, its cards those of
+the read before it, so the alert beside the tabs shows; the banner names the failure among what
+is invented. The flag leaves the address before the app reads it and holds for the rest of the
+tab's life; `demo=read-ok` turns it off.
+
 ## Take the pictures
 
 With the demo running:
 
 ```sh
 cd packages/dispatch
-bun e2e/views-demo/shots.ts --base http://127.0.0.1:5190 --out "$TMPDIR/views-demo/shots" \
-  --chromium <path to Chromium> [--before]
+TZ=UTC bun e2e/views-demo/shots.ts --base http://127.0.0.1:5190 --out "$TMPDIR/views-demo/shots" \
+  --chromium <path to Chromium> [--before] [--no-daemon-project <KEY>]
 ```
+
+Every page runs in the UTC time zone and the `en-US` language, and its clock stands at the
+fixtures' read time (`web/src/demo/clock.ts`), so a run on another machine or another day draws
+the same times. `report-<mode>.json` writes down the Chromium version and every font the browser
+drew the pictures' text in, with its glyph count, so two runs can be compared.
 
 Without `--before` it takes the design's pictures, each named by what it shows:
 
@@ -105,14 +122,19 @@ Without `--before` it takes the design's pictures, each named by what it shows:
 - the project settings page;
 - the (i) hint open beside the tabs;
 - five phone pictures: All open and In flight in the table, the In flight and All open Boards,
-  and Time per phase in Hours.
+  and Time per phase in Hours;
+- All open, In flight and All open on the Board of the project with no Legion daemon
+  (`--no-daemon-project`, GTM by default);
+- All open with the daemon's read failed (`demo=read-failed`).
 
 `--before` takes the page before the design, on a checkout of its base: the List, the Board, the
 Legion view and the phone List. A picture is taken only once its page has drawn its rows (a
 table row, a Board card or a Legion view card) or its own element; a page that does not draw
-them in 30 s fails its picture. The run fails if a picture failed, the stub left a request
-unanswered, the page threw, or the phone banner took more than two lines. `report-<mode>.json`
-in the output lists all of it.
+them in 30 s fails its picture. The design's Issues page is also waited on for its view tabs
+(`[data-view-tab]`), which the page before the design has none of, so the design's pictures
+taken against that page fail at the first one. The run fails if a picture failed, the stub left
+a request unanswered, the page threw, or the phone banner took more than two lines.
+`report-<mode>.json` in the output lists all of it.
 
 ## Build the single file
 
@@ -120,7 +142,7 @@ in the output lists all of it.
 cd packages/dispatch
 bun e2e/views-demo/single-file.ts --fixtures "$TMPDIR/views-demo/fixtures" \
   --out "$TMPDIR/views-demo/<name>.html"
-bun e2e/views-demo/shots.ts --file --base "file://$TMPDIR/views-demo/<name>.html" \
+TZ=UTC bun e2e/views-demo/shots.ts --file --base "file://$TMPDIR/views-demo/<name>.html" \
   --out "$TMPDIR/views-demo/shots" --chromium <path to Chromium>
 ```
 

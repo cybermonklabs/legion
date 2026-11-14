@@ -29,7 +29,20 @@ const STYLE = `
   .views-demo-banner .short { display: block; }
 }`;
 
-export function showBanner(manifest: DemoManifest): void {
+/** The banner, of the manifest's words; `readFailed` adds the failed daemon read the tab asked
+ *  for (install.ts), which no production read holds either. */
+export function showBanner(manifest: DemoManifest, readFailed: boolean): void {
+  // Each project's issues with the time they were read; the daemon's state is the first one's.
+  const projects = [
+    `${manifest.project} issues (read ${utc(manifest.issues_read_at)})`,
+    ...manifest.no_daemon_projects.map(
+      ({ key, read_at }) => `${key} issues (read ${utc(read_at)})`
+    ),
+  ].join(", ");
+  const invented = [
+    ...manifest.invented_summary,
+    ...(readFailed ? ["the failed daemon read"] : []),
+  ].join(", ");
   const style = document.createElement("style");
   style.textContent = STYLE;
   document.head.append(style);
@@ -41,9 +54,9 @@ export function showBanner(manifest: DemoManifest): void {
   full.className = "full";
   const lines = [
     "Demo: the back end is stubbed",
-    `Real: ${manifest.project} issues (read ${utc(manifest.issues_read_at)}), Legion daemon state (read ${utc(manifest.daemon_read_at)})`,
+    `Real: ${projects}, ${manifest.project}'s Legion daemon state (read ${utc(manifest.daemon_read_at)})`,
     `Estimated from issue events: ${manifest.derived_summary.join(", ")}`,
-    `Invented: ${manifest.invented_summary.join(", ")}`,
+    `Invented: ${invented}`,
   ];
   for (const [index, text] of lines.entries()) {
     const line = document.createElement(index === 0 ? "b" : "div");
@@ -52,8 +65,9 @@ export function showBanner(manifest: DemoManifest): void {
   }
   const short = document.createElement("div");
   short.className = "short";
-  // The phone's two lines: the same facts, the invented ones in the manifest's own words.
-  short.textContent = `Stubbed · real ${manifest.project} data of ${utc(manifest.daemon_read_at)}, times estimated · invented: ${manifest.invented_summary.join(", ")}`;
+  // The phone's two lines: the invented figures in the manifest's own words, and the read time;
+  // the real projects' names are the desktop banner's, since they would take a third line.
+  short.textContent = `Stubbed · real data of ${utc(manifest.daemon_read_at)}, times estimated · invented: ${invented}`;
   banner.append(full, short);
   document.body.append(banner);
 }

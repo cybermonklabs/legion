@@ -78,7 +78,7 @@ export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
     cols: ["queue", "priority", "key", "title", "waiting_reason", "waited", "epic"],
     bar: "waiting_reason",
     legionOnly: true,
-    hint: "The issues that Legion holds before it starts them, in the order it starts them",
+    hint: "The issues that wait for Legion to start them, in the order it starts them",
   },
   {
     id: "in-flight",
@@ -95,17 +95,7 @@ export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
           ],
     // Assignee is in the Columns menu, not the defaults: the default columns fit 1440 px
     // beside the sidebar.
-    cols: [
-      "priority",
-      "key",
-      "title",
-      "stage",
-      "slot",
-      "roles",
-      "ci",
-      "time_in_phase",
-      "phase_hours",
-    ],
+    cols: ["priority", "key", "title", "stage", "slot", "roles", "time_in_phase", "phase_hours"],
     bar: "stage",
     hint: "The issues in work now, from Design to Held",
   },
@@ -113,7 +103,7 @@ export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
     id: "slots",
     name: "Slots",
     params: () => [...SLOT_USES.map((use) => ["f.slot_use", use] as const), ["sort", "slot"]],
-    cols: ["slot", "key", "title", "stage", "slot_use", "ci", "phase_hours"],
+    cols: ["slot", "key", "title", "stage", "slot_use", "phase_hours"],
     bar: "slot_use",
     legionOnly: true,
     hint: "The issues that hold a slot, and what each does with it",

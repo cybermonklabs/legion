@@ -134,7 +134,6 @@ export type ColumnId =
   | "closed"
   | "slot"
   | "roles"
-  | "ci"
   | "slot_use"
   | "waited"
   | "waiting_reason"
@@ -197,8 +196,11 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "queue",
     size: 104,
     min: 104,
+    // The address keeps the values `Queued` and `Not queued` (`f.queue=Queued`); the reader
+    // sees the set by the Waiting line tab's own name.
     filter: one((item) => (item.queued ? "Queued" : "Not queued"), {
       order: ["Queued", "Not queued"],
+      show: (value) => (value === "Queued" ? "In waiting line" : "Not in waiting line"),
       groups: false,
     }),
   },
@@ -316,15 +318,6 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   { id: "slot", size: 60, min: 56, board: true },
   { id: "roles", size: 120, min: 64, board: true },
-  {
-    id: "ci",
-    size: 84,
-    min: 72,
-    board: true,
-    filter: one((item) => item.card?.card.checks_verdict ?? "", {
-      show: (value) => (value === "" ? "None" : value),
-    }),
-  },
   {
     id: "slot_use",
     size: 140,

@@ -66,7 +66,7 @@ function DaemonHint({
       </dd>
       <dt className={textMutedOnCanvas}>Trees</dt>
       <dd data-legion-trees>{trees}</dd>
-      <dt className={textMutedOnCanvas}>In the queue</dt>
+      <dt className={textMutedOnCanvas}>Waiting line</dt>
       <dd data-legion-queue-length>{queue_length}</dd>
       <dt className={textMutedOnCanvas}>Last read</dt>
       <dd data-legion-read-at>
@@ -218,8 +218,9 @@ export function IssueViewTabs({
   views: readonly BuiltInView[];
 }): ReactNode {
   const [panel, setPanel] = useState<"hint" | "save" | undefined>(undefined);
-  // The tab row scrolls sideways on a phone: the active tab is brought into it, the row alone
-  // scrolling, never the page.
+  // On a phone the tab row wraps, so every tab is in view. From `md` up it is one line, which
+  // scrolls sideways only if the tabs outgrow it: there the active tab is brought into it, the
+  // row alone scrolling, never the page.
   const listRef = useRef<HTMLDivElement>(null);
   const countsText = [...counts.values()].join(",");
   const activeTab =
@@ -334,8 +335,12 @@ export function IssueViewTabs({
           )}
         </PanelTrigger>
         {readFailed ? (
+          // Narrow on desktop, so it never takes the tabs' room: the whole error is in its text
+          // (which the alert reads out), its title and the (i) hint, and the line shows its
+          // start. On a phone it follows the space kept for Reset view and Save view, taking a
+          // line of its own, so that space never wraps onto an empty line.
           <span
-            className={`max-w-28 truncate text-xs md:max-w-xs ${dangerText}`}
+            className={`order-last max-w-full truncate text-xs md:order-none md:max-w-36 ${dangerText}`}
             data-legion-read-error
             role="alert"
             title={boardHeader?.read_error ?? undefined}

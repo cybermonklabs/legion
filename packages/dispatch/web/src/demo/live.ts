@@ -3,7 +3,7 @@
 // from the stub. The `legion` view is answered with the board route's body, again whenever the
 // stub's board moves; the event feed starts at the stub's head and carries the stub's own events.
 // Any other view, and any other socket, is refused and recorded as unanswered.
-import type { LiveClientFrame, LiveServerFrame } from "@legion/contracts";
+import type { LegionBoardResponse, LiveClientFrame, LiveServerFrame } from "@legion/contracts";
 import type { DemoServer } from "./server";
 
 const HEARTBEAT_MS = 15_000;
@@ -77,12 +77,15 @@ export function demoWebSocket(ready: Promise<DemoServer>): typeof WebSocket {
             });
             return;
           }
+          // The contract's card still names `checks_verdict`, which the demo's board leaves
+          // out (#2731's newest head removes it); the frame carries the body as it is.
+          const body = server.legionBoard() as unknown as LegionBoardResponse;
           this.frame({
             type: "snapshot",
             sub: frame.sub,
             seq: server.eventHead(),
             changed_at: null,
-            body: server.legionBoard(),
+            body,
             revs: { items: {}, maps: {}, counts: {}, fields: {} },
           });
         };

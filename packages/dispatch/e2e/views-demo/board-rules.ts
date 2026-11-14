@@ -3,8 +3,9 @@
 // legion/board_rules.go (Column, SlotUse, CardWaiting), waiting_line.go (WaitingLine), tree.go
 // (TreeChain) and api/legion_board.go (legionBoardCompute). Each function keeps its Go name and
 // its order of tests, so a card the demo draws is the card that route draws from the same state.
-// The fixtures build (fixtures.ts) and the demo's stub (web/src/demo/) both call computeBoard,
-// the stub again whenever a simulated daemon read moves the state.
+// One field is left out: a card's `checks_verdict`, which cybermonklabs/legion#2731's newest head
+// removes. The fixtures build (fixtures.ts) and the demo's stub (web/src/demo/) both call
+// computeBoard, the stub again whenever a simulated daemon read moves the state.
 import type {
   LegionBoardCard,
   LegionBoardColumn,
@@ -349,8 +350,6 @@ export interface ObservedIssue {
   tree: string;
   /** The daemon's `waitingOn`, as it sent it. */
   waiting_on: unknown;
-  /** The pull request's checks verdict, "" where none. */
-  checks_verdict: string;
   /** The roles whose claim state is `working`, sorted. */
   roles: string[];
 }
@@ -382,9 +381,20 @@ export interface DispatchIssue {
   created_at: string;
 }
 
+/** A card as the demo serves it: the route's card, less `checks_verdict`. */
+export type DemoBoardCard = Omit<LegionBoardCard, "checks_verdict">;
+
+/** A column of the demo's cards. */
+export type DemoBoardColumn = Omit<LegionBoardColumn, "cards"> & { cards: DemoBoardCard[] };
+
+/** The board route's body as the demo serves it, of the demo's cards. */
+export type DemoBoardResponse = Omit<LegionBoardResponse, "columns"> & {
+  columns: DemoBoardColumn[];
+};
+
 /** A card as the compute makes it: the wire card and the daemon's wait it was made from, which
  *  the waiting rule reads once every card is placed and which the body does not carry. */
-type MadeCard = LegionBoardCard & { wait: Wait | null };
+type MadeCard = DemoBoardCard & { wait: Wait | null };
 
 /** treeNode: what the tree walk reads of one issue — the daemon's `tree`, Dispatch's parent,
  *  and whether the issue is Legion's (the daemon reports it, or it carries phase work). */
@@ -412,7 +422,7 @@ export function computeBoard(
   population: BoardPopulation,
   dispatchIssues: readonly DispatchIssue[],
   now: string
-): LegionBoardResponse {
+): DemoBoardResponse {
   const ranked = [...dispatchIssues].sort(rankOrder).map((issue) => issue.key);
   const held = new Map(dispatchIssues.map((issue) => [issue.key, issue]));
   const phaseWork = new Set(population.phase_work);
@@ -450,7 +460,6 @@ export function computeBoard(
       slot_since: issue.slot !== null ? issue.slot_since : null,
       waiting_place: null,
       roles: [...issue.roles],
-      checks_verdict: issue.checks_verdict === "" ? null : issue.checks_verdict,
       blocked_by: blockedBy ?? [],
       waiting_on:
         wait === null ? null : { kind: wait.kind, since: wait.since, answered_at: wait.answeredAt },
@@ -519,7 +528,7 @@ export function computeBoard(
     }
   }
 
-  const columns: LegionBoardColumn[] = BOARD_COLUMN_ORDER.map(({ id, label }) => ({
+  const columns: DemoBoardColumn[] = BOARD_COLUMN_ORDER.map(({ id, label }) => ({
     id,
     label,
     cards: (cards.get(id) ?? []).map(({ wait: _wait, ...card }) => card),

@@ -1,7 +1,11 @@
 // Builds the views demo's fixtures (README.md beside this file) from production reads:
 //
 //   DISPATCH_URL=… DISPATCH_TOKEN_FILE=… bun e2e/views-demo/fixtures.ts --out <dir> \
-//     --project <KEY> --reader <login> --daemon-url <daemon base URL>
+//     --project <KEY> --reader <login> --daemon-url <daemon base URL> \
+//     [--no-daemon-project <KEY>]…
+//
+// --project is the project with a Legion daemon. Each --no-daemon-project adds a real project's
+// open and done listings, with no Legion setting, so the views of a project with no daemon show.
 //
 // It writes into --out only, never into the repository: the reads under <out>/raw/, and beside
 // them the files the demo's stub loads (web/src/demo/fixtures.ts) and manifest.json, which names
@@ -35,6 +39,7 @@ const { values: flags } = parseArgs({
     "daemon-url": { type: "string" },
     "daemon-state": { type: "string" },
     refresh: { type: "boolean", default: false },
+    "no-daemon-project": { type: "string", multiple: true, default: [] },
     "reads-only": { type: "boolean", default: false },
   },
 });
@@ -65,7 +70,6 @@ interface DaemonIssue {
   waitingOn?: unknown;
   architect?: { state?: string } | null;
   workers?: Record<string, { claim?: { state?: string } }> | null;
-  pullRequest?: { checksVerdict?: string } | null;
 }
 
 const state = (await reader.daemonState(flags["daemon-url"], flags["daemon-state"])) as DaemonState;
@@ -80,6 +84,27 @@ const done = await reader.dispatch<IssueSummary[]>(
 const projects = await reader.dispatch<Project[]>("projects.json", "/api/v1/projects");
 const schema = await reader.dispatch("schema-blocks.json", "/api/v1/schema/blocks");
 const agents = await reader.dispatch<unknown[]>("agents.json", "/api/v1/agents");
+// Each project with no daemon: its two listings alone. Its done rows keep a null closed_at, since
+// a close time is read from the issue's events, which are not read for it.
+const noDaemon = flags["no-daemon-project"].filter((key) => key !== project);
+const noDaemonListings: { key: string; open: IssueSummary[]; done: IssueSummary[] }[] = [];
+for (const key of noDaemon) {
+  noDaemonListings.push({
+    key,
+    open: await reader.dispatch<IssueSummary[]>(
+      `issues-open-${key}.json`,
+      `/api/v1/issues?project=${key}&open=true`
+    ),
+    done: await reader.dispatch<IssueSummary[]>(
+      `issues-done-${key}.json`,
+      `/api/v1/issues?project=${key}&status=done`
+    ),
+  });
+}
+const noDaemonIssues: IssueSummary[] = noDaemonListings.flatMap((listing) => [
+  ...listing.open.map((issue) => ({ ...issue, closed_at: null })),
+  ...listing.done.map((issue) => ({ ...issue, closed_at: null })),
+]);
 
 // The events of every done issue (its close time and its facts) and of every open issue the
 // daemon reports (its facts and its time in phase).
@@ -133,7 +158,6 @@ for (const [key, issue] of Object.entries(state.issues)) {
     slot_since: slot?.admittedAt ?? null,
     tree: issue.tree ?? "",
     waiting_on: issue.waitingOn ?? null,
-    checks_verdict: issue.pullRequest?.checksVerdict ?? "",
     roles: [...roles].sort(),
   };
 }
@@ -247,6 +271,7 @@ const cardCount = cards.size;
 const manifest: DemoManifest = {
   built_at: builtAt,
   project,
+  no_daemon_projects: noDaemon.map((key) => ({ key, read_at: times[`issues-open-${key}.json`] })),
   reader: login,
   issues_read_at: issuesReadAt,
   daemon_read_at: daemonReadAt,
@@ -269,11 +294,31 @@ const manifest: DemoManifest = {
       ],
       invented: [],
     },
+    // The projects with no Legion daemon share issues.json, each with its own record here.
+    ...Object.fromEntries(
+      noDaemonListings.map((listing) => [
+        `issues.json: ${listing.key}`,
+        {
+          source: `GET /api/v1/issues?project=${listing.key}&open=true (${listing.open.length} rows) and GET /api/v1/issues?project=${listing.key}&status=done (${listing.done.length} rows), production Dispatch`,
+          read_at: times[`issues-open-${listing.key}.json`],
+          real: [
+            "every field of every row the two reads answered",
+            sameAsAt(listing, issuesReadAt),
+          ],
+          derived: [
+            `closed_at: null on every row, open and done: the issues' events, which a close time is read from, were not read for ${listing.key}, so no closed window lists its ${listing.done.length} done issues`,
+          ],
+          invented: [
+            `${listing.key} has no Legion setting in the demo (reader.json names ${project} alone), so its views are a project's with no daemon`,
+          ],
+        },
+      ])
+    ),
     "population.json": {
       source: `the INFRA Legion daemon's GET /legion/v1/state (${Object.keys(state.issues).length} issues, admission cap ${state.admission?.cap ?? "none"}), read in the cluster; and the events of ${events.size} issues (GET /api/v1/issues/{key}/events), production Dispatch`,
       read_at: daemonReadAt,
       real: [
-        "each issue's phase, slot, tree, waitingOn, pull request checks verdict and working claims (the roles), as the state read answered them",
+        "each issue's phase, slot, tree, waitingOn and working claims (the roles), as the state read answered them; not its pull request's checks verdict, which the board of #2731's newest head no longer carries",
         "the admission block (cap, active, waiting, trees, blocked) and the settings",
         "read.at: when the state was read; read.ok true",
       ],
@@ -291,10 +336,13 @@ const manifest: DemoManifest = {
         "computed by e2e/views-demo/board-rules.ts (the board route's rules of #3578 at 02a7b3c67e, ported) from population.json and issues.json; the stub computes it again in the browser",
       read_at: daemonReadAt,
       real: [
-        `the ${cardCount} cards, their columns, waiting places, slots, slot uses, waiting reasons, roles, CI verdicts, blockers and children, and the header's slots in use (${board.header.slots_in_use}), cap (${board.header.slot_cap}), trees (${board.header.trees}) and queue length (${board.header.queue_length})`,
+        `the ${cardCount} cards, their columns, waiting places, slots, slot uses, waiting reasons, roles, blockers and children, and the header's slots in use (${board.header.slots_in_use}), cap (${board.header.slot_cap}), trees (${board.header.trees}) and queue length (${board.header.queue_length})`,
       ],
       derived: ["phase_since, slot_since and the issues map, as population.json says"],
-      invented: ["computed_at"],
+      invented: [
+        "computed_at",
+        "with the page's demo=read-failed flag on (web/src/demo/install.ts): the newest read's failure and its error text, the cards staying those of the read before it",
+      ],
     },
     "agents.json": {
       source: `GET /api/v1/agents (${agents.length} sessions), production Dispatch`,
@@ -335,7 +383,7 @@ const manifest: DemoManifest = {
   },
 };
 
-await writeFile(join(out, "issues.json"), JSON.stringify(issues));
+await writeFile(join(out, "issues.json"), JSON.stringify([...issues, ...noDaemonIssues]));
 await writeFile(join(out, "population.json"), JSON.stringify(population));
 await writeFile(join(out, "board.json"), JSON.stringify(board));
 await writeFile(join(out, "projects.json"), JSON.stringify(projects));
@@ -344,8 +392,20 @@ await writeFile(join(out, "agents.json"), JSON.stringify(agents));
 await writeFile(join(out, "reader.json"), JSON.stringify(readerFixture, null, 2));
 await writeFile(join(out, "manifest.json"), JSON.stringify(manifest, null, 2));
 console.log(
-  `wrote ${issues.length} issues, ${cardCount} cards, ${Object.keys(facts).length} facts rows to ${out}`
+  `wrote ${issues.length} ${project} issues and ${noDaemonIssues.length} of ${noDaemon.join(", ") || "no other project"}, ${cardCount} cards, ${Object.keys(facts).length} facts rows to ${out}`
 );
+
+/** Whether a project's listing, read later than `at`, still holds the rows it held at `at`, the
+ *  moment the page's clock stands at: true where no row was written after it. */
+function sameAsAt(listing: { open: IssueSummary[]; done: IssueSummary[] }, at: string): string {
+  const newest = [...listing.open, ...listing.done].reduce(
+    (latest, issue) => (issue.updated_at > latest ? issue.updated_at : latest),
+    ""
+  );
+  return newest !== "" && Date.parse(newest) <= Date.parse(at)
+    ? `no row was written after ${at} (the newest updated_at is ${newest}), so the rows are the ones the page's clock time would read`
+    : `rows were written after ${at} (the newest updated_at is ${newest}): they show what came after the page's clock time`;
+}
 
 function required(value: string | undefined, what: string): string {
   if (value === undefined || value === "") throw new Error(`name ${what}`);

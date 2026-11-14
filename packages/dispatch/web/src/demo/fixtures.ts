@@ -20,7 +20,11 @@ export interface FixtureRecord {
 
 export interface DemoManifest {
   built_at: string;
+  /** The project with a Legion daemon: the one the board, the setting and the facts are of. */
   project: string;
+  /** Real projects whose issues the fixtures hold too, with no Legion setting, and when each
+   *  one's listings were read: the views as a project with no daemon draws them. */
+  no_daemon_projects: { key: string; read_at: string }[];
   reader: string;
   /** When the issues and the daemon's state were read, for the banner. */
   issues_read_at: string;

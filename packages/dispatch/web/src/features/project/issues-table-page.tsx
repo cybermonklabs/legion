@@ -40,7 +40,7 @@ export function Action({
 
 /** Which of the row's own panels stands open, so the List keeps one at a time rather than a
  *  row of them: the filter panel behind the trigger, or the display menu at the right end. */
-type ToolbarPanel = "flags" | "view";
+type ToolbarPanel = "flags" | "display";
 
 /** A narrowing an address carries that is no column's filter: a chip with a remove button. */
 export interface ExtraChip {
@@ -112,9 +112,11 @@ export function IssueTableToolbar({
         chips={chips}
         display={
           <DisplayMenu
-            label="View"
-            onOpenChange={(open) => setOpenPanel(open ? "view" : undefined)}
-            open={openPanel === "view"}
+            // "View" names the views in the tab row on this page, so the menu that holds the
+            // grouping takes another word.
+            label="Display"
+            onOpenChange={(open) => setOpenPanel(open ? "display" : undefined)}
+            open={openPanel === "display"}
             sections={[
               {
                 id: "group",

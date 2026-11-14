@@ -92,12 +92,7 @@ function LegionFacts({ item, nowMs }: { item: Item; nowMs: number }): ReactNode 
           label="Slot"
           value={legion.slot === null ? "none" : String(legion.slot)}
         />
-        <Fact
-          hook="roles"
-          label="In a turn"
-          value={roles.length === 0 ? "nobody" : roles.join(", ")}
-        />
-        <Fact hook="checks" label="CI" value={legion.checks_verdict ?? "no verdict"} />
+        <Fact hook="roles" label="Roles" value={roles.length === 0 ? "none" : roles.join(", ")} />
       </div>
       {blockedBy.length === 0 ? null : (
         <p

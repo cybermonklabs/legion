@@ -174,7 +174,10 @@ const renderings = (
             #{place}
           </span>
         );
-      return queued ? <span className={`text-xs ${textMutedOnCanvas}`}>Queued</span> : null;
+      // In the waiting line with no place of its own: a Queue card the line does not name.
+      return queued ? (
+        <span className={`text-xs ${textMutedOnCanvas}`}>In waiting line</span>
+      ) : null;
     },
   },
   key: {
@@ -351,13 +354,6 @@ const renderings = (
   roles: {
     header: "Roles",
     accessorFn: (item) => (item.card?.card.roles ?? []).join(", "),
-    cell: ({ getValue }) => (
-      <span className={`text-xs ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
-    ),
-  },
-  ci: {
-    header: "CI",
-    accessorFn: (item) => item.card?.card.checks_verdict ?? "",
     cell: ({ getValue }) => (
       <span className={`text-xs ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
     ),

@@ -13,7 +13,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { type Browser, chromium, type Locator, type Page } from "@playwright/test";
+import { type Browser, type CDPSession, chromium, type Locator, type Page } from "@playwright/test";
 
 const { values: flags } = parseArgs({
   options: {
@@ -23,6 +23,8 @@ const { values: flags } = parseArgs({
     file: { type: "boolean", default: false },
     chromium: { type: "string" },
     project: { type: "string", default: "INFRA" },
+    // A real project with no Legion daemon in the fixtures (fixtures.ts --no-daemon-project).
+    "no-daemon-project": { type: "string", default: "GTM" },
     only: { type: "string" },
   },
 });
@@ -31,9 +33,14 @@ const out = flags.out;
 const base = flags.base;
 const project = flags.project;
 const issuesPath = `/projects/${project}/issues`;
+const mode = flags.before ? "before" : flags.file ? "file" : "after";
 
 const DESKTOP = { width: 1440, height: 900 };
 const PHONE = { width: 390, height: 844 };
+/** The page's time zone and language, the same on every machine, so a time of day and a date
+ *  read the same in every run (the README runs it with TZ=UTC as well). */
+const TIME_ZONE = "UTC";
+const LOCALE = "en-US";
 
 /** One picture: its file name, the window it is taken in, and how to reach what it shows. */
 interface Shot {
@@ -43,13 +50,24 @@ interface Shot {
 }
 
 interface Report {
+  /** What the pictures were drawn with: the browser, its time zone and language, and every
+   *  font the browser drew the pictures' text in, with how many glyphs. */
+  browser: { version: string; time_zone: string; locale: string };
+  fonts: Record<string, number>;
   shots: string[];
   unanswered: string[];
   errors: string[];
   checks: string[];
 }
 
-const report: Report = { shots: [], unanswered: [], errors: [], checks: [] };
+const report: Report = {
+  browser: { version: "", time_zone: TIME_ZONE, locale: LOCALE },
+  fonts: {},
+  shots: [],
+  unanswered: [],
+  errors: [],
+  checks: [],
+};
 
 /** The address of `path`: the demo's own, or the single file's fragment, which its router reads
  *  (web/src/demo/file-router.ts). */
@@ -61,6 +79,9 @@ function address(path: string): string {
  *  design, a Legion view card. */
 const ROWS = "[data-issue-row], [data-board-card], [data-legion-card]";
 
+/** An Issues page, by the dev server's address or the single file's fragment. */
+const ISSUES_PAGE = /\/projects\/[^/?#]+\/issues(?:[?#]|$)/;
+
 /** Opens `path` and waits until the page has drawn what `ready` names, its rows by default. */
 async function open(page: Page, path: string, ready?: Locator): Promise<void> {
   await page.goto(address(path));
@@ -68,11 +89,34 @@ async function open(page: Page, path: string, ready?: Locator): Promise<void> {
 }
 
 /** Waits for `ready`, the page's rows by default, and then for the drawing to settle. A page
- *  that never draws them fails its picture rather than leaving a loading state in it. */
+ *  that never draws them fails its picture rather than leaving a loading state in it. The
+ *  design's Issues page draws its view tabs first, which the page before the design has none
+ *  of: a run of the design's pictures against that page fails at its first picture. */
 async function settle(page: Page, ready?: Locator): Promise<void> {
   await page.waitForLoadState("networkidle").catch(() => undefined);
+  if (mode !== "before" && ISSUES_PAGE.test(page.url())) {
+    await page.locator("[data-view-tab]").first().waitFor({ timeout: 30_000 });
+  }
   await (ready ?? page.locator(ROWS).first()).waitFor({ timeout: 30_000 });
   await page.waitForTimeout(1_200);
+}
+
+/** The fonts the browser drew the page's text in, from its own record of each text node
+ *  (`CSS.getPlatformFontsForNode`), over the elements that hold the page's words. */
+const FONT_SAMPLE =
+  "h1, h2, [data-view-tab], thead th, [data-issue-row] td, [data-board-card], button, input, [data-testid='views-demo-banner'] div, [data-legion-settings] td";
+async function recordFonts(cdp: CDPSession): Promise<void> {
+  const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+  const { nodeIds } = await cdp.send("DOM.querySelectorAll", {
+    nodeId: root.nodeId,
+    selector: FONT_SAMPLE,
+  });
+  for (const nodeId of nodeIds.slice(0, 80)) {
+    const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
+    for (const font of fonts) {
+      report.fonts[font.familyName] = (report.fonts[font.familyName] ?? 0) + font.glyphCount;
+    }
+  }
 }
 
 function check(passed: boolean, what: string): void {
@@ -80,7 +124,8 @@ function check(passed: boolean, what: string): void {
   else report.errors.push(`check failed: ${what}`);
 }
 
-const view = (id: string, extra = "") => `${issuesPath}?view=${id}${extra}`;
+const view = (id: string, extra = "", key = project) =>
+  `/projects/${key}/issues?view=${id}${extra}`;
 const tab = (page: Page, id: string) => page.locator(`[data-view-tab="${id}"]`);
 
 /** Opens In flight narrowed to one stage, so the view is changed, and opens Save view with a
@@ -238,6 +283,34 @@ const afterShots: Shot[] = [
       await open(page, view("open"));
       await page.getByRole("button", { name: "About this view" }).click();
       await page.waitForTimeout(500);
+    },
+  },
+  // The views of a project with no Legion daemon: no Waiting line or Slots tab, no board-fed
+  // column, and In flight of the statuses Legion does not run.
+  {
+    name: "no-daemon-view-open-1440",
+    viewport: DESKTOP,
+    take: (page) => open(page, view("open", "", flags["no-daemon-project"])),
+  },
+  {
+    name: "no-daemon-view-in-flight-1440",
+    viewport: DESKTOP,
+    take: (page) => open(page, view("in-flight", "", flags["no-daemon-project"])),
+  },
+  {
+    name: "no-daemon-board-all-open-1440",
+    viewport: DESKTOP,
+    take: (page) => open(page, view("open", "&layout=board", flags["no-daemon-project"])),
+  },
+  // The daemon's newest read failed (the stub's demo=read-failed flag): the alert beside the
+  // tabs, and the cards of the read before it.
+  {
+    name: "view-open-daemon-read-failed-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("open", "&demo=read-failed"));
+      await page.locator("[data-legion-read-error]").waitFor({ timeout: 30_000 });
+      check(!page.url().includes("demo="), "the read-failed flag leaves the address");
     },
   },
 ];
@@ -405,7 +478,12 @@ async function takeAll(browser: Browser, shots: Shot[]): Promise<void> {
     if (wanted !== undefined && !wanted.some((part) => shot.name.includes(part))) continue;
     // A fresh context for each picture: nothing stored, as a first visit; and for the single
     // file no network at all, every request outside the page refused and recorded.
-    const context = await browser.newContext({ viewport: shot.viewport, offline: flags.file });
+    const context = await browser.newContext({
+      viewport: shot.viewport,
+      offline: flags.file,
+      timezoneId: TIME_ZONE,
+      locale: LOCALE,
+    });
     if (flags.file) {
       await context.route(/^(?!file:|data:|blob:)/, (route) => {
         report.errors.push(`${shot.name}: a request left the file: ${route.request().url()}`);
@@ -413,6 +491,9 @@ async function takeAll(browser: Browser, shots: Shot[]): Promise<void> {
       });
     }
     const page = await context.newPage();
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("DOM.enable");
+    await cdp.send("CSS.enable");
     page.on("pageerror", (error) => report.errors.push(`${shot.name}: ${error.message}`));
     page.on("console", (message) => {
       if (message.type() === "error") report.errors.push(`${shot.name}: ${message.text()}`);
@@ -429,6 +510,7 @@ async function takeAll(browser: Browser, shots: Shot[]): Promise<void> {
           });
         check(lines <= 2, `${shot.name}: the phone banner takes ${lines} lines`);
       }
+      await recordFonts(cdp);
       const file = join(out, `${shot.name}.png`);
       await page.screenshot({ path: file });
       report.shots.push(file);
@@ -445,9 +527,10 @@ async function takeAll(browser: Browser, shots: Shot[]): Promise<void> {
   }
 }
 
-const mode = flags.before ? "before" : flags.file ? "file" : "after";
 await mkdir(out, { recursive: true });
+if (process.env.TZ !== TIME_ZONE) console.warn(`run with TZ=${TIME_ZONE}, as the README says`);
 const browser = await chromium.launch({ executablePath: flags.chromium });
+report.browser.version = `${browser.browserType().name()} ${browser.version()}`;
 try {
   await takeAll(browser, { before: beforeShots, file: fileShots, after: afterShots }[mode]);
 } finally {

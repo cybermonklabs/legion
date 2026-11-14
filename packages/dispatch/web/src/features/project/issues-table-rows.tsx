@@ -145,7 +145,7 @@ export function GroupRow({
           ) : null}
           <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
             {count}
-            {Number.isFinite(next) ? ` · next in queue #${next}` : ""}
+            {Number.isFinite(next) ? ` · next in waiting line #${next}` : ""}
           </span>
         </>
       }

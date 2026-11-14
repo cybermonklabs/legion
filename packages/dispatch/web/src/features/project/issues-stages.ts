@@ -99,7 +99,8 @@ const waitingLabels: Record<WaitingReason, string> = {
   ready: "Ready",
   slot: "Needs a slot",
   blocked: "Blocked",
-  person: "Needs a person",
+  // The stage's own words: a person has not answered.
+  person: "Waiting on a person",
 };
 export function waitingLabel(reason: string): string {
   return (waitingLabels as Record<string, string>)[reason] ?? reason;

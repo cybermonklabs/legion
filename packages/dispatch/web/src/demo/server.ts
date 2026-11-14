@@ -4,16 +4,11 @@
 // which the tab keeps in sessionStorage across a reload, and goes out on the event feed as the
 // server's own event would; a write that the daemon would see moves the board at its next read,
 // which `DAEMON_READ_MS` after the write stands in for.
-import type {
-  DispatchEvent,
-  Issue,
-  IssueSummary,
-  LegionBoardResponse,
-  UserIssueState,
-} from "@legion/contracts";
+import type { DispatchEvent, Issue, IssueSummary, UserIssueState } from "@legion/contracts";
 import {
   type BoardPopulation,
   computeBoard,
+  type DemoBoardResponse,
   PhaseDone,
   rankOrder,
 } from "../../../e2e/views-demo/board-rules";
@@ -28,6 +23,9 @@ export interface DemoAnswer {
 /** How long after a write the daemon's next read moves its cards. */
 const DAEMON_READ_MS = 4_000;
 const KEPT_STATE = "dispatch-demo.state";
+/** What the board's newest read answers when the page asks for a failed read (install.ts's
+ *  `demo=read-failed`): a failure the demo makes up, worded as a read's error. */
+export const DEMO_READ_ERROR = "GET /legion/v1/state: the daemon did not answer in 10 s";
 /** The listing's status order (model.IssueStatuses). */
 const STATUS_ORDER = [
   "triage",
@@ -60,7 +58,7 @@ export class DemoServer {
   private userState: Record<string, UserIssueState>;
   private population: BoardPopulation;
   private populationMoved = false;
-  private board: LegionBoardResponse | null = null;
+  private board: DemoBoardResponse | null = null;
   private eventId: number;
   private readonly eventListeners = new Set<(id: string, event: DispatchEvent) => void>();
   private readonly boardListeners = new Set<Listener>();
@@ -69,7 +67,12 @@ export class DemoServer {
   /** Every request no route of the stub answered, for the screenshot run to read. */
   readonly unanswered: string[] = [];
 
-  constructor(fixtures: DemoFixtures) {
+  /** `readFailed` makes the daemon's newest read a failure, with the cards the read before it
+   *  left, as the board answers after a read that failed. */
+  constructor(
+    fixtures: DemoFixtures,
+    private readonly readFailed = false
+  ) {
     this.fixtures = fixtures;
     for (const issue of fixtures.issues) this.issues.set(issue.key, issue);
     this.userState = { ...fixtures.reader.user_state };
@@ -113,9 +116,16 @@ export class DemoServer {
   }
 
   /** The board route's body, computed from the daemon's state and the issues as they stand. */
-  legionBoard(): LegionBoardResponse {
+  legionBoard(): DemoBoardResponse {
+    const population: BoardPopulation =
+      this.readFailed && this.population.read !== null
+        ? {
+            ...this.population,
+            read: { at: this.population.read.at, ok: false, failure: DEMO_READ_ERROR },
+          }
+        : this.population;
     this.board ??= computeBoard(
-      this.population,
+      population,
       [...this.issues.values()].filter((issue) => issue.key.startsWith(`${this.project}-`)),
       goTime(new Date())
     );
