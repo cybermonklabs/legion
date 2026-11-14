@@ -17,13 +17,13 @@
 //
 // A source as a session's forms print it (String) names no host, account, region or project:
 // those lines land in an agent's command output and from there in whatever it quotes, a public
-// pull request among them. Only the secret forms, which a person runs under their own cloud
-// sign-in to write to one account or project, name it (storeName), and their --json carries it.
+// pull request among them. Only the secret forms, which read and write one account's or project's
+// store themselves, name it (storeName), and their --json carries it.
 //
 // No source names a secret's version: the broker releases a grant's values as names and values
 // alone (POST /v1/grants/{id}/values), and a session holds no sign-in of its own to the store to
 // read one with. `agent-secrets secret show` names each version, from the store itself under the
-// person's own sign-in.
+// cloud credential its environment gives it.
 package main
 
 import (
@@ -149,10 +149,10 @@ func (s source) asked() string {
 	return "; asked " + s.String()
 }
 
-// storeName is the store alone, for the secret forms: they read and write it directly under the
-// person's own cloud sign-in rather than through the broker, so naming the broker as the source
-// of those answers would be wrong. It falls back to naming the broker whose settings chose the
-// store when those settings describe none this release knows how to name.
+// storeName is the store alone, for the secret forms: they read and write it directly, under the
+// cloud credential their environment gives them, rather than through the broker, so naming the
+// broker as the source of those answers would be wrong. It falls back to naming the broker whose
+// settings chose the store when those settings describe none this release knows how to name.
 func (s source) storeName() string {
 	if s.store == "" {
 		return "the secret store " + s.brokerAt() + " names"

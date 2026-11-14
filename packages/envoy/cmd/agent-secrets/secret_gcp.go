@@ -1,11 +1,11 @@
 // packages/envoy/cmd/agent-secrets/secret_gcp.go
 //
-// The GCP side of the secret forms: the Secret Manager calls they make, under the person's own
-// Google sign-in - their Application Default Credentials, or their gcloud login where those are
-// absent or, for a write, a machine's own identity (gcloudLogin) - and the check that refuses a
-// write under any identity but a person's own (GCP, unlike AWS, needs no separate wrong-project
-// read check: every call already names the project explicitly, so the API itself refuses one in
-// another project).
+// The GCP side of the secret forms: the Secret Manager calls they make, under the Google credential
+// this command's environment gives it - an access token in CLOUDSDK_AUTH_ACCESS_TOKEN, else the
+// Application Default Credentials, else the gcloud login (newGCPBackend) - whatever identity that
+// is, a person's or a machine's: Secret Manager's own IAM decides what it may read and write. GCP,
+// unlike AWS, needs no wrong-project read check: every call already names the project explicitly,
+// so the API itself refuses one in another project.
 //
 // GCP Secret Manager has no soft-delete-with-recovery-window the way AWS does. Instead delete sets
 // the secret's own expire_time, which GCP uses as a TTL: the secret (and every version it holds)
@@ -70,29 +70,30 @@ func checkSettingsKMSKeyName(settings Settings) error {
 	return nil
 }
 
-// gcpCredentials loads the person's Application Default Credentials. Tests replace it.
+// gcpCredentials loads the Application Default Credentials. Tests replace it.
 var gcpCredentials = func(ctx context.Context) (*google.Credentials, error) {
 	return google.FindDefaultCredentials(ctx, secretmanager.DefaultAuthScopes()...)
 }
 
-// gcpUserinfo reads the signed-in email behind creds from Google's userinfo endpoint.
-// Tests replace it so no form makes a network call for it.
+// gcpUserinfo reads the email of the account behind creds from Google's userinfo endpoint, which
+// answers only a token that carries an email scope. Only --owner me asks for it
+// (gcpBackend.personEmail). Tests replace it so no form makes a network call for it.
 var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, error) {
 	httpClient := oauth2.NewClient(ctx, creds.TokenSource)
 	resp, err := httpClient.Get("https://www.googleapis.com/oauth2/v2/userinfo")
 	if err != nil {
-		return "", fmt.Errorf("read your Google sign-in's identity: %w", err)
+		return "", fmt.Errorf("read the Google sign-in's email: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("read your Google sign-in's identity: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("read the Google sign-in's email: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var userinfo struct {
 		Email string `json:"email"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&userinfo); err != nil {
-		return "", fmt.Errorf("decode your Google sign-in's identity: %w", err)
+		return "", fmt.Errorf("decode the Google sign-in's email: %w", err)
 	}
 	return userinfo.Email, nil
 }
@@ -114,23 +115,23 @@ var gcpClientDial = func(ctx context.Context, creds *google.Credentials) (*secre
 // it has passed, and gcloud answers the token it holds until that one nears its own expiry.
 const gcloudTokenLife = 5 * time.Minute
 
-// gcloudLogin lends this command the person's own gcloud login (`gcloud auth login`) as Google
-// credentials, through the interface gcloud offers for that, never its credential files:
-// chooseGcloudAccount picks the account from `gcloud auth list`, and gcloudToken runs
+// gcloudLogin lends this command the gcloud login (`gcloud auth login`, or any other login gcloud
+// holds) as Google credentials, through the interface gcloud offers for that, never its credential
+// files: chooseGcloudAccount picks the account from `gcloud auth list`, and gcloudToken runs
 // `gcloud auth print-access-token` for it, gcloud refreshing the login as it does for itself.
 // gcloud is the first `gcloud` on PATH. It asks for the first token at once, so a login gcloud
-// cannot lend is refused here, before any call is made under it. It answers the account too: a
-// write checks that the token is that account's (requireWriteSignIn).
+// cannot lend is refused here, before any call is made under it. It answers the account too, which
+// signInPrefix and the identity a refusal names (gcpBackend.identity) read.
 func gcloudLogin(ctx context.Context) (*google.Credentials, gcloudAccount, error) {
 	gcloud, err := exec.LookPath("gcloud")
 	if err != nil {
-		return nil, gcloudAccount{}, errors.New("no gcloud is on PATH: install the Google Cloud CLI, then sign in once with `gcloud auth login`, which leaves this machine's own credentials as they are")
+		return nil, gcloudAccount{}, errors.New("no gcloud is on PATH: install the Google Cloud CLI, then sign in once with `gcloud auth login`")
 	}
 	account, err := chooseGcloudAccount(ctx, gcloud)
 	if err != nil {
 		return nil, gcloudAccount{}, err
 	}
-	source := gcloudToken{ctx: ctx, gcloud: gcloud, account: account.email}
+	source := gcloudToken{ctx: ctx, gcloud: gcloud, account: account.account}
 	first, err := source.Token()
 	if err != nil {
 		return nil, gcloudAccount{}, err
@@ -139,27 +140,28 @@ func gcloudLogin(ctx context.Context) (*google.Credentials, gcloudAccount, error
 }
 
 // gcloudAccount is the gcloud login a command signs in with: its account, as `gcloud auth list`
-// names it, and whether gcloud's own CLOUDSDK_CORE_ACCOUNT chose it.
+// names it (an email, or a principal:// identifier for a workload or workforce identity federation
+// login), and whether gcloud's own CLOUDSDK_CORE_ACCOUNT chose it.
 type gcloudAccount struct {
-	email string
-	named bool
+	account string
+	named   bool
 }
 
-// personAccount reports whether account, as `gcloud auth list` names it, is a person's: a plain
-// email the broker accepts as a person owner (policy.ValidPersonOwner, lowercased), and no service
-// account's (one ending in .gserviceaccount.com, such as a machine's own). A login from a
-// credential configuration (`gcloud auth login --cred-file`) is named by its service account's
-// email or, for workload and workforce identity federation, by a principal:// identifier, which
-// is no email.
-func personAccount(account string) bool {
-	lower := strings.ToLower(account)
+// personAccount reports whether email, as Google's userinfo endpoint names an account, is a
+// person's: a plain email the broker accepts as a person owner (policy.ValidPersonOwner,
+// lowercased), and no service account's (one ending in .gserviceaccount.com, such as a machine's
+// own). --owner me takes only a person's (gcpBackend.personEmail).
+func personAccount(email string) bool {
+	lower := strings.ToLower(email)
 	return policy.ValidPersonOwner(lower) && !strings.HasSuffix(lower, ".gserviceaccount.com")
 }
 
-// chooseGcloudAccount picks the person's own login from `gcloud auth list`: of the accounts gcloud
-// holds a login for, the people's (personAccount). It takes the one gcloud's own
-// CLOUDSDK_CORE_ACCOUNT names when that is one of them, else the only one, and refuses none or
-// several: which person a write runs as is never guessed.
+// chooseGcloudAccount picks the login gcloud itself would use, of every login `gcloud auth list`
+// names, whatever kind of account it is: the one gcloud's own CLOUDSDK_CORE_ACCOUNT names, else
+// the one gcloud marks active (its core/account property), else the only one. An account
+// CLOUDSDK_CORE_ACCOUNT names is the caller's choice, so where gcloud holds no login for it the
+// command is refused, naming it and each login gcloud holds, rather than run as another login. It
+// also refuses none, and several of which none is active, naming each.
 func chooseGcloudAccount(ctx context.Context, gcloud string) (gcloudAccount, error) {
 	out, err := runGcloud(ctx, gcloud, "auth", "list", "--format=json")
 	if err != nil {
@@ -167,26 +169,38 @@ func chooseGcloudAccount(ctx context.Context, gcloud string) (gcloudAccount, err
 	}
 	var listed []struct {
 		Account string `json:"account"`
+		Status  string `json:"status"`
 	}
 	if err := json.Unmarshal(out, &listed); err != nil {
 		return gcloudAccount{}, fmt.Errorf("`gcloud auth list --format=json` answered something other than a list of accounts: %w", err)
 	}
-	var people []string
+	var accounts []string
+	active := ""
 	for _, entry := range listed {
-		if personAccount(entry.Account) {
-			people = append(people, entry.Account)
+		accounts = append(accounts, entry.Account)
+		if entry.Status == "ACTIVE" {
+			active = entry.Account
 		}
 	}
-	if named := os.Getenv("CLOUDSDK_CORE_ACCOUNT"); named != "" && slices.Contains(people, named) {
-		return gcloudAccount{email: named, named: true}, nil
+	if named := os.Getenv("CLOUDSDK_CORE_ACCOUNT"); named != "" {
+		if !slices.Contains(accounts, named) {
+			held := "none"
+			if len(accounts) > 0 {
+				held = strings.Join(accounts, ", ")
+			}
+			return gcloudAccount{}, fmt.Errorf("CLOUDSDK_CORE_ACCOUNT names %s, and gcloud holds no login for it (it holds %s): sign in as %s with `gcloud auth login`, or name another login gcloud holds", named, held, named)
+		}
+		return gcloudAccount{account: named, named: true}, nil
 	}
-	switch len(people) {
-	case 0:
-		return gcloudAccount{}, errors.New("gcloud holds no person's login: sign in once with `gcloud auth login`, which leaves this machine's own credentials as they are")
-	case 1:
-		return gcloudAccount{email: people[0]}, nil
+	switch {
+	case active != "":
+		return gcloudAccount{account: active}, nil
+	case len(accounts) == 1:
+		return gcloudAccount{account: accounts[0]}, nil
+	case len(accounts) == 0:
+		return gcloudAccount{}, errors.New("gcloud holds no login: sign in once with `gcloud auth login`")
 	}
-	return gcloudAccount{}, fmt.Errorf("gcloud holds several people's logins (%s), and the command signs in with the one CLOUDSDK_CORE_ACCOUNT names: run it again with CLOUDSDK_CORE_ACCOUNT set to yours", strings.Join(people, ", "))
+	return gcloudAccount{}, fmt.Errorf("gcloud holds several logins (%s) and none is active: run the command again with CLOUDSDK_CORE_ACCOUNT set to the one to use", strings.Join(accounts, ", "))
 }
 
 // gcloudToken is the oauth2.TokenSource of one gcloud login: each Token runs
@@ -229,13 +243,12 @@ func (s gcloudToken) Token() (*oauth2.Token, error) {
 	return &oauth2.Token{AccessToken: token, TokenType: "Bearer", Expiry: started.Add(gcloudTokenLife)}, nil
 }
 
-// gcloudIdentityOverrides are the variables that make gcloud lend another identity than the
-// account it is asked for: an access token (store.ACCESS_TOKEN_ENV_VAR_NAME, read by _Load alone),
-// and the auth properties an access token file, a credential file override and impersonation
-// set. runGcloud runs gcloud without them; gcloudTokenArgs also clears the last three where the
-// configuration file sets them.
+// gcloudIdentityOverrides are the variables of the auth properties that make gcloud lend another
+// identity than the account it is asked for: an access token file, a credential file override and
+// impersonation. runGcloud runs gcloud without them, and gcloudTokenArgs also clears them where
+// the configuration file sets them. CLOUDSDK_AUTH_ACCESS_TOKEN is not among them: a command whose
+// environment sets it signs in with that token and never runs gcloud (newGCPBackend).
 var gcloudIdentityOverrides = []string{
-	"CLOUDSDK_AUTH_ACCESS_TOKEN",
 	"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE",
 	"CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
 	"CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT",
@@ -274,10 +287,10 @@ func runGcloud(ctx context.Context, gcloud string, args ...string) ([]byte, erro
 	return out, nil
 }
 
-// lentGCPAccessToken makes credentials from CLOUDSDK_AUTH_ACCESS_TOKEN, which gcloud itself
-// reads as an access token. It intentionally does not read CLOUDSDK_AUTH_ACCESS_TOKEN_FILE: that
-// is a gcloud configuration source, removed from gcloudEnv with the other identity overrides, not
-// a token this command accepts directly.
+// lentGCPAccessToken makes credentials from CLOUDSDK_AUTH_ACCESS_TOKEN, the variable gcloud itself
+// reads an access token from, or answers nil where it is unset or empty. It intentionally does not
+// read CLOUDSDK_AUTH_ACCESS_TOKEN_FILE: that is a gcloud configuration source, removed from
+// gcloudEnv with the other identity overrides, not a token this command accepts directly.
 func lentGCPAccessToken() *google.Credentials {
 	token := os.Getenv("CLOUDSDK_AUTH_ACCESS_TOKEN")
 	if token == "" {
@@ -286,85 +299,88 @@ func lentGCPAccessToken() *google.Credentials {
 	return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: "Bearer"})}
 }
 
-// newGCPBackend loads the person's Application Default Credentials, reads the ADC JSON's own
-// "type" and dials the Secret Manager client (gcpClientDial). Where there are none to load and
-// GOOGLE_APPLICATION_CREDENTIALS is unset, every form, a read included, signs in with the
-// person's gcloud login (gcloudLogin) instead. Where no gcloud login is available,
-// CLOUDSDK_AUTH_ACCESS_TOKEN is a direct lent-token fallback. It makes no userinfo call: that is
-// only needed for a write's --owner me, so requireWriteSignIn makes it lazily, and a read under an
-// identity whose token lacks userinfo scope (common for a machine's) still succeeds.
+// newGCPBackend signs every form, a read and a write alike, in with the Google credential this
+// command's environment gives it, and dials the Secret Manager client under it (gcpClientDial):
+// the access token CLOUDSDK_AUTH_ACCESS_TOKEN holds, which the caller set and so outranks every
+// other source; else the Application Default Credentials, of any type; else, where there are none
+// to load and GOOGLE_APPLICATION_CREDENTIALS is unset, the gcloud login (gcloudLogin). It refuses
+// no credential for the identity it is: Secret Manager's IAM decides what each may read and
+// write, and a refusal of the store's names the credential (identity). It makes no userinfo call:
+// only --owner me needs an email (personEmail), and a token that carries no email scope reads and
+// writes all the same.
 func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) {
 	b := &gcpBackend{settings: settings}
-	creds, err := gcpCredentials(ctx)
-	switch {
-	case err != nil && os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "":
-		// google.FindDefaultCredentials reads only the file GOOGLE_APPLICATION_CREDENTIALS names
-		// whenever that is set, so no sign-in fixes a file it cannot read or parse: only that
-		// variable or its file does.
-		return nil, fmt.Errorf("load the Google Cloud credentials file GOOGLE_APPLICATION_CREDENTIALS names: %w", err)
-	case err != nil:
-		// The load's own error is left out: it names the file it read, or links Google's guide to
-		// `gcloud auth application-default login`, which replaces a machine's own credentials for
-		// every program that uses them, and the gcloud login needs neither.
-		var account gcloudAccount
-		if creds, account, err = gcloudLogin(ctx); err != nil {
-			if creds = lentGCPAccessToken(); creds == nil {
-				return nil, fmt.Errorf("found no usable Google Cloud Application Default Credentials, so this command uses your gcloud login, but %w", err)
+	creds := lentGCPAccessToken()
+	if creds != nil {
+		b.signedInAs = "the access token in CLOUDSDK_AUTH_ACCESS_TOKEN"
+	} else {
+		var err error
+		creds, err = gcpCredentials(ctx)
+		switch {
+		case err != nil && os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "":
+			// google.FindDefaultCredentials reads only the file GOOGLE_APPLICATION_CREDENTIALS
+			// names whenever that is set, so no sign-in fixes a file it cannot read or parse: only
+			// that variable or its file does.
+			return nil, fmt.Errorf("load the Google Cloud credentials file GOOGLE_APPLICATION_CREDENTIALS names: %w", err)
+		case err != nil:
+			// The load's own error is left out: it names the file it read, or links Google's
+			// guide to `gcloud auth application-default login`, which replaces a machine's own
+			// credentials for every program that uses them, and the gcloud login needs neither.
+			if creds, b.login, err = gcloudLogin(ctx); err != nil {
+				return nil, fmt.Errorf("found no CLOUDSDK_AUTH_ACCESS_TOKEN and no usable Google Cloud Application Default Credentials, so this command uses your gcloud login, but %w", err)
 			}
-			b.lentToken = true
-			fmt.Fprintf(os.Stderr, "agent-secrets: gcloud login was unavailable (%v); using CLOUDSDK_AUTH_ACCESS_TOKEN\n", err)
-		} else {
-			b.login = account
-		}
-	case len(creds.JSON) > 0:
-		var parsed struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(creds.JSON, &parsed); err == nil {
-			b.credsKind = google.CredentialsType(parsed.Type)
+			b.signedInAs = "the gcloud login " + b.login.account
+		default:
+			b.signedInAs = adcIdentity(creds)
 		}
 	}
-	if err := b.signIn(ctx, creds); err != nil {
-		return nil, err
+	client, err := gcpClientDial(ctx, creds)
+	if err != nil {
+		return nil, fmt.Errorf("create the Secret Manager client: %w", err)
 	}
+	b.client, b.creds = client, creds
 	return b, nil
 }
 
+// adcIdentity names Application Default Credentials by what they are, never by the file they were
+// read from: the metadata server's identity, the one that carries no JSON, or the "type" the
+// credentials name, with the service account they act as where they name one (a key file's
+// client_email, or the account a workload identity federation credential impersonates).
+func adcIdentity(creds *google.Credentials) string {
+	if len(creds.JSON) == 0 {
+		return "the metadata server's identity, this machine's or this pod's"
+	}
+	var parsed struct {
+		Type             string `json:"type"`
+		ClientEmail      string `json:"client_email"`
+		ImpersonationURL string `json:"service_account_impersonation_url"`
+	}
+	if err := json.Unmarshal(creds.JSON, &parsed); err != nil || parsed.Type == "" {
+		return "Application Default Credentials that name no type"
+	}
+	identity := fmt.Sprintf("Application Default Credentials of type %q", parsed.Type)
+	account := parsed.ClientEmail
+	if _, rest, ok := strings.Cut(parsed.ImpersonationURL, "/serviceAccounts/"); ok && account == "" {
+		account, _, _ = strings.Cut(rest, ":")
+	}
+	if account != "" {
+		identity += " acting as " + account
+	}
+	return identity
+}
+
 // gcpBackend is the secretBackend for store "gcp-secret-manager": GCP Secret Manager under the
-// person's own Google sign-in, pinned to settings.GCPProject.
+// Google credential this command's environment gives it (newGCPBackend), pinned to
+// settings.GCPProject.
 type gcpBackend struct {
 	settings Settings
 	client   *secretmanager.Client
 	creds    *google.Credentials
-	// credsKind is the ADC JSON's own "type" (google.AuthorizedUser for a person's own sign-in,
-	// google.ServiceAccount for a key file, google.ExternalAccount for a workload identity
-	// federation credential such as a dev box's), "" when ADC carries no JSON at all (a GCE/GKE
-	// metadata-server identity or GKE workload identity) or JSON with no "type" (an OAuth client
-	// secret file).
-	credsKind google.CredentialsType
-	// login is the person's gcloud login once creds are it (gcloudLogin) in place of the
-	// Application Default Credentials - for every form where there are none, and for a write where
-	// they are a machine's own (requireWriteSignIn) - and zero while creds are the Application
-	// Default Credentials.
+	// login is the gcloud login creds are (gcloudLogin), where neither CLOUDSDK_AUTH_ACCESS_TOKEN
+	// nor Application Default Credentials gave one; zero otherwise.
 	login gcloudAccount
-	// lentToken is true only while this backend signs in with CLOUDSDK_AUTH_ACCESS_TOKEN. Its
-	// owner is recorded after requireWriteSignIn verifies it with userinfo.
-	lentToken      bool
-	lentTokenOwner string
-}
-
-// signIn makes creds this backend's sign-in: it dials the Secret Manager client under them
-// (gcpClientDial) and closes the client that client replaces.
-func (b *gcpBackend) signIn(ctx context.Context, creds *google.Credentials) error {
-	client, err := gcpClientDial(ctx, creds)
-	if err != nil {
-		return fmt.Errorf("create the Secret Manager client: %w", err)
-	}
-	if b.client != nil {
-		b.client.Close()
-	}
-	b.client, b.creds = client, creds
-	return nil
+	// signedInAs names creds for a refusal of the store's (identity).
+	signedInAs string
 }
 
 // id is the Secret Manager resource name of the secret whose name under the prefix is slug.
@@ -390,83 +406,41 @@ func (b *gcpBackend) displayName(id string) string { return displayName(b.settin
 // make.
 func (b *gcpBackend) requireAccount(context.Context) error { return nil }
 
-// requireWriteSignIn answers, before any write, the signed-in person's lowercased email for
-// --owner me, and makes sure the write runs under a person's own Google Account sign-in:
-// Application Default Credentials of type "authorized_user", the person's gcloud login, or a
-// person's lent CLOUDSDK_AUTH_ACCESS_TOKEN. Where the Application Default Credentials are anything
-// else - a service account key file, a workload identity federation credential (a dev box's own
-// identity), a workforce identity federation sign-in, or a GCE/GKE metadata-server identity - it
-// signs the backend in with the person's gcloud login (gcloudLogin), leaving those credentials as
-// they are, unless GOOGLE_APPLICATION_CREDENTIALS chose them, a choice it refuses rather than
-// overrides. When no gcloud login is available, a lent token is the fallback. Under the gcloud
-// login it refuses a token Google does not answer as that login's account. It calls the userinfo
-// endpoint (gcpUserinfo) only here, not in newGCPBackend: a read never needs the email, and a
-// machine identity's token commonly lacks the userinfo scope that call needs.
-func (b *gcpBackend) requireWriteSignIn(ctx context.Context) (string, error) {
-	if b.login.email == "" && b.credsKind != google.AuthorizedUser && !b.lentToken {
-		found := gcpCredsFound(b.creds, b.credsKind)
-		if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
-			return "", fmt.Errorf("a secret is written under your own Google sign-in, never a machine's, and GOOGLE_APPLICATION_CREDENTIALS names %s: run this command without GOOGLE_APPLICATION_CREDENTIALS to sign in as yourself", found)
-		}
-		creds, account, err := gcloudLogin(ctx)
-		if err != nil {
-			if creds = lentGCPAccessToken(); creds == nil {
-				return "", fmt.Errorf("a secret is written under your own Google sign-in, never this machine's (its Application Default Credentials are %s), so a write uses your gcloud login, but %w", found, err)
-			}
-			b.lentToken = true
-			fmt.Fprintf(os.Stderr, "agent-secrets: gcloud login was unavailable (%v); using CLOUDSDK_AUTH_ACCESS_TOKEN\n", err)
-		} else {
-			b.login = account
-		}
-		if err := b.signIn(ctx, creds); err != nil {
-			return "", err
-		}
-	}
+// personEmail answers, for --owner me, the lowercased email of the person this sign-in is, as
+// Google's userinfo endpoint (gcpUserinfo) names the account behind its token. It is the one
+// userinfo call any form makes. It refuses a token userinfo does not answer, which is any token
+// without an email scope (an access token minted for cloud-platform alone, as a lent token or a
+// machine's commonly is), and an account that is no person's (personAccount): a service account's
+// email names no person.
+func (b *gcpBackend) personEmail(ctx context.Context) (string, error) {
 	email, err := gcpUserinfo(ctx, b.creds)
-	if err != nil {
-		return "", err
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("Google's userinfo endpoint does not name the account behind %s, as it names none for a token without an email scope: %w", b.signedInAs, err)
+	case email == "":
+		return "", fmt.Errorf("Google's userinfo endpoint names no email for %s", b.signedInAs)
+	case !personAccount(email):
+		return "", fmt.Errorf("Google's userinfo endpoint names %s as %s, which is no person's email", b.signedInAs, email)
 	}
-	if email == "" {
-		return "", errors.New("your Google sign-in names no email")
-	}
-	if b.lentToken && !personAccount(email) {
-		return "", fmt.Errorf("the lent Google access token was refused: Google userinfo names %s, not a person's account", email)
-	}
-	if b.login.email != "" && !strings.EqualFold(email, b.login.email) {
-		return "", fmt.Errorf("the token gcloud lent for %s is %s's, as Google answers it, and a secret is written only under the login this command chose: nothing was written", b.login.email, email)
-	}
-	email = strings.ToLower(email)
-	if b.lentToken {
-		b.lentTokenOwner = email
-	}
-	return email, nil
+	return strings.ToLower(email), nil
 }
 
-// gcpCredsFound names Application Default Credentials that are not a person's own sign-in by what
-// they are, never by the file they were read from: the metadata server's identity, the one that
-// carries no JSON, or the "type" a credentials file names, if any (an OAuth client secret file
-// names none).
-func gcpCredsFound(creds *google.Credentials, kind google.CredentialsType) string {
-	if len(creds.JSON) == 0 {
-		return "the metadata server's identity, this machine's or this pod's"
-	}
-	if kind == "" {
-		return "credentials that name no type"
-	}
-	return fmt.Sprintf("credentials of type %q", kind)
-}
+// identity names the credential this backend signs in with (newGCPBackend): the lent token, the
+// gcloud login's account, or what the Application Default Credentials are (adcIdentity).
+func (b *gcpBackend) identity() string { return b.signedInAs }
 
 // signInPrefix is the shell assignments a command line a form prints for running again
 // (pipeCommand) needs to sign in as this one did, each shell-quoted: GOOGLE_APPLICATION_CREDENTIALS
 // when it was set, and CLOUDSDK_CORE_ACCOUNT when it chose the gcloud login, since either may have
-// been set for this one command; "" when neither.
+// been set for this one command; "" when neither. It never writes CLOUDSDK_AUTH_ACCESS_TOKEN: a
+// printed command carries no token.
 func (b *gcpBackend) signInPrefix() string {
 	prefix := ""
 	if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
 		prefix += "GOOGLE_APPLICATION_CREDENTIALS=" + shellWord(path) + " "
 	}
 	if b.login.named {
-		prefix += "CLOUDSDK_CORE_ACCOUNT=" + shellWord(b.login.email) + " "
+		prefix += "CLOUDSDK_CORE_ACCOUNT=" + shellWord(b.login.account) + " "
 	}
 	return prefix
 }
@@ -565,14 +539,6 @@ func (b *gcpBackend) show(ctx context.Context, slug string) (secretView, error) 
 }
 
 func (b *gcpBackend) create(ctx context.Context, slug string, tags map[string]string, value string) error {
-	if b.lentToken {
-		if b.lentTokenOwner == "" {
-			return errors.New("a lent Google access token cannot write until its person is verified: nothing was written")
-		}
-		if owner := tags[policy.TagOwner]; !strings.EqualFold(owner, b.lentTokenOwner) {
-			return fmt.Errorf("a secret is created only under its owner's Google sign-in: the requested owner is %s, but the lent token is %s's, so nothing was written", owner, b.lentTokenOwner)
-		}
-	}
 	secret, err := b.client.CreateSecret(ctx, &secretmanagerpb.CreateSecretRequest{
 		Parent:   b.parent(),
 		SecretId: b.secretID(slug),
@@ -596,54 +562,23 @@ func (b *gcpBackend) create(ctx context.Context, slug string, tags map[string]st
 }
 
 func (b *gcpBackend) set(ctx context.Context, slug, value string) error {
-	if err := b.refuseLentExistingWrite(slug); err != nil {
-		return err
-	}
 	return b.addVersion(ctx, b.id(slug), value)
 }
 
 func (b *gcpBackend) addVersion(ctx context.Context, parent, value string) error {
-	version, err := b.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
+	_, err := b.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
 		Parent:  parent,
 		Payload: &secretmanagerpb.SecretPayload{Data: []byte(value)},
 	})
-	if err != nil || !b.lentToken {
-		return err
-	}
-	secret, readErr := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: parent})
-	switch {
-	case readErr != nil:
-		return b.undoLentVersion(ctx, version.GetName(), "could not re-read the secret owner")
-	case strings.EqualFold(secret.GetAnnotations()[policy.TagOwner], b.lentTokenOwner):
-		return nil
-	default:
-		return b.undoLentVersion(ctx, version.GetName(), "the secret owner changed")
-	}
-}
-
-func (b *gcpBackend) undoLentVersion(ctx context.Context, version, reason string) error {
-	if _, err := b.client.DestroySecretVersion(ctx, &secretmanagerpb.DestroySecretVersionRequest{Name: version}); err != nil {
-		return fmt.Errorf("%s after adding version %s; the version was left behind: %w", reason, version, err)
-	}
-	return fmt.Errorf("%s after adding version %s; the write was undone", reason, version)
+	return err
 }
 
 func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, error) {
-	if err := b.refuseLentExistingWrite(slug); err != nil {
-		return heldTags{}, err
-	}
 	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: b.id(slug)})
 	if err != nil {
 		return heldTags{}, err
 	}
 	return heldTags{tags: secret.GetAnnotations(), etag: secret.GetEtag()}, nil
-}
-
-func (b *gcpBackend) refuseLentExistingWrite(slug string) error {
-	if !b.lentToken {
-		return nil
-	}
-	return fmt.Errorf("a lent Google access token may only create a new secret it owns, so it cannot write the existing secret %s", b.id(slug))
 }
 
 // setTags writes tags into the annotations held holds, and removeTags deletes keys from them, each
@@ -653,16 +588,10 @@ func (b *gcpBackend) refuseLentExistingWrite(slug string) error {
 // since held was read refuses it with FAILED_PRECONDITION (errTagsChanged), naming the change,
 // rather than being merged into annotations no one checked.
 func (b *gcpBackend) setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error {
-	if err := b.refuseLentExistingWrite(slug); err != nil {
-		return err
-	}
 	return b.updateAnnotations(ctx, slug, held, func(annotations map[string]string) { maps.Copy(annotations, tags) })
 }
 
 func (b *gcpBackend) removeTags(ctx context.Context, slug string, held heldTags, keys []string) error {
-	if err := b.refuseLentExistingWrite(slug); err != nil {
-		return err
-	}
 	return b.updateAnnotations(ctx, slug, held, func(annotations map[string]string) {
 		for _, key := range keys {
 			delete(annotations, key)
@@ -692,9 +621,6 @@ func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held he
 }
 
 func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error) {
-	if err := b.refuseLentExistingWrite(slug); err != nil {
-		return nil, err
-	}
 	expire := time.Now().UTC().Add(time.Duration(recoveryWindowDays) * 24 * time.Hour)
 	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
 		Secret: &secretmanagerpb.Secret{
@@ -712,9 +638,6 @@ func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error
 // restore clears expire_time: the field mask names it with no value in the body, which Secret
 // Manager reads as unsetting it.
 func (b *gcpBackend) restore(ctx context.Context, slug string) error {
-	if err := b.refuseLentExistingWrite(slug); err != nil {
-		return err
-	}
 	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
 		Secret:     &secretmanagerpb.Secret{Name: b.id(slug)},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},

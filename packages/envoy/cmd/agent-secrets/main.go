@@ -4,9 +4,10 @@
 // AGENT_SECRETS_HELPER_SOCK, to sign on its behalf (helper mode). It enrolls a runtime (box
 // enrollment only, through the local helper — see cmdEnrollHelper below), requests and reads
 // back secret grants, and — in its most common shape — requests one or more secrets and execs a
-// command with them in its environment. A person manages the agent secrets themselves with the
-// secret forms (secret.go), which call the broker's own store (AWS Secrets Manager or GCP Secret
-// Manager) under the person's own cloud sign-in and then ask the broker to reread what they wrote.
+// command with them in its environment. The agent secrets themselves are managed with the secret
+// forms (secret.go), which call the broker's own store (AWS Secrets Manager or GCP Secret Manager)
+// under the cloud credential their environment gives them, the store's own IAM deciding what that
+// credential may do, and then ask the broker to reread what they wrote.
 //
 // Every answer and every refusal about a secret names where it came from (source.go): the broker
 // AGENT_SECRETS_URL names, and the kind of that broker's store, where its settings give one. This
@@ -15,8 +16,8 @@
 // execs — the names it injected and their source, never a value — and the status forms print
 // that source beside what they report. None of those lines names the broker's host or the store's
 // account, region or project, since they are quoted wherever an agent's output is; the secret
-// forms, which a person runs under their own cloud sign-in, name the account or project they
-// write to. No form prints a credential AGENT_SECRETS_URL carries (internal/redact).
+// forms, which call the store itself, name the account or project they read and write. No form
+// prints a credential AGENT_SECRETS_URL carries (internal/redact).
 //
 //	agent-secrets keygen --out <dir>
 //	agent-secrets enroll --helper --runtime-id <id> --thumbprint <tp> [--session-id <id>]
@@ -215,8 +216,11 @@ environment:
                              fixes none
   AWS_PROFILE                the AWS profile the secret forms sign in with when --profile names
                              none (else the AWS SDK's default credential chain); every secret
-                             form needs a sign-in in the broker's account, and a write your own
-                             Identity Center sign-in there
+                             form needs a sign-in in the broker's account, and the store's IAM
+                             decides what it may do there
+  CLOUDSDK_AUTH_ACCESS_TOKEN a Google access token the secret forms sign in with against a broker
+                             on Google Cloud, before the Application Default Credentials and the
+                             gcloud login; the store's IAM decides what it may do
 
 exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval, 76 permanent renewal refusal, 77 denied;
 register --exec exits 127 when COMMAND is not found and 126 when it cannot run;

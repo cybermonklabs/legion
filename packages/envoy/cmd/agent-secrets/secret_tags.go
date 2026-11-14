@@ -12,20 +12,29 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 )
 
-// checkOwnerTier refuses an --owner that is neither me nor shared and a --tier that is neither
-// agent nor human; "" passes either, for a form where it is optional.
-func checkOwnerTier(owner, tier string) error {
+// ownerMe is the --owner value that names the person the sign-in names (secretSession.ownerTag).
+const ownerMe = "me"
+
+// checkOwnerTier answers the owner --owner names - me, shared, or a person's email, lowercased,
+// which must be one the broker accepts as a person owner (policy.ValidPersonOwner) - and refuses
+// any other --owner and a --tier that is neither agent nor human; "" passes either, for a form
+// where it is optional.
+func checkOwnerTier(owner, tier string) (string, error) {
 	var errs []error
-	if owner != "" && owner != "me" && owner != policy.OwnerShared {
-		errs = append(errs, fmt.Errorf("--owner is me or %s, not %q", policy.OwnerShared, owner))
+	switch lower := strings.ToLower(owner); {
+	case owner == "", owner == ownerMe, owner == policy.OwnerShared:
+	case policy.ValidPersonOwner(lower):
+		owner = lower
+	default:
+		errs = append(errs, fmt.Errorf("--owner is %s, %s or a person's email, not %q", ownerMe, policy.OwnerShared, owner))
 	}
 	if tier != "" && tier != policy.TierAgent && tier != policy.TierHuman {
 		errs = append(errs, fmt.Errorf("--tier is %s or %s, not %q", policy.TierAgent, policy.TierHuman, tier))
 	}
 	if len(errs) > 0 {
-		return usageErr{errors.Join(errs...)}
+		return "", usageErr{errors.Join(errs...)}
 	}
-	return nil
+	return owner, nil
 }
 
 // tagNone is the value of --kind, --github-owners, --requesters, --scopes, --admin, --shape,
@@ -381,17 +390,6 @@ func optionalTags(f tagFlags) map[string]string {
 		tags[policy.TagDefaultGrant] = f.DefaultGrant
 	}
 	return tags
-}
-
-// ownerTag is the owner tag --owner names: the signed-in person's email for me, shared for shared.
-func ownerTag(owner, email string) (string, error) {
-	if owner == "me" {
-		if !policy.ValidPersonOwner(email) {
-			return "", usageErr{fmt.Errorf("your sign-in's email %q is not an email the broker accepts as an owner", email)}
-		}
-		return email, nil
-	}
-	return owner, nil
 }
 
 // checkDefaultGrant is --default-grant's rule: "session", or none where orNone allows it.

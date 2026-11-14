@@ -326,8 +326,9 @@ In Secret Manager these fields are annotations rather than labels because a labe
 hold an email (`@` and `.` are outside its alphabet), and the broker compares the owner with a
 Dispatch login byte for byte. An annotation holds the email as it is.
 
-People write the secrets and their tags, not the broker: `agent-secrets secret` creates and
-changes them under the person's own cloud sign-in, both stores
+People and agents write the secrets and their tags, not the broker: `agent-secrets secret` creates
+and changes them under whatever cloud credential its environment gives it, in both stores, and the
+store's IAM decides what that credential may change
 ([manage a secret](/legion/broker/guides/manage-a-secret/)).
 
 A `requesters` list is read before owner and tier. Where a secret carries one, a session whose

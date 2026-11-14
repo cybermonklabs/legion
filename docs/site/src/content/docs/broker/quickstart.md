@@ -51,8 +51,8 @@ That line is why a reader never has to guess which store answered: another secre
 machine can hold a different value under the same name, and every `agent-secrets` answer and
 refusal names its own broker and the kind of its store. These lines land in the agent's own
 output, which is often quoted, so none names the broker's host or the store's account, region or
-project; `agent-secrets secret show`, which a person runs under their own cloud sign-in, names the
-account or project.
+project; `agent-secrets secret show`, which calls the store itself under a cloud credential, names
+the account or project.
 
 When it needs a person's approval, `agent-secrets` says so, with the request's id, where it was
 made, who approves it, and the page on the secrets broker where they decide it, and waits (up to

@@ -1,8 +1,9 @@
 // packages/envoy/cmd/agent-secrets/secret_aws.go
 //
-// The AWS side of the secret forms: the Secrets Manager and STS calls they make, under the
-// person's own AWS sign-in, and the checks that refuse a read or a write under a sign-in in another
-// account and a write under any sign-in but a person's own.
+// The AWS side of the secret forms: the Secrets Manager and STS calls they make, under the AWS
+// sign-in this command's environment gives it, whatever principal that is, a person's or a
+// machine's: Secrets Manager's own IAM decides what it may read and write. The one check is the
+// one that refuses a read or a write under a sign-in in another account than the broker's.
 package main
 
 import (
@@ -49,8 +50,8 @@ var (
 	_ stsAPI     = (*sts.Client)(nil)
 )
 
-// awsClients loads the person's own sign-in (--profile, else AWS_PROFILE, else the default chain)
-// pinned to the broker's region. Tests replace it.
+// awsClients loads the AWS sign-in this command's environment gives it (--profile, else
+// AWS_PROFILE, else the default chain) pinned to the broker's region. Tests replace it.
 var awsClients = func(ctx context.Context, profile, region string) (secretsAPI, stsAPI, error) {
 	options := []func(*config.LoadOptions) error{config.WithRegion(region)}
 	if profile != "" {
@@ -63,10 +64,10 @@ var awsClients = func(ctx context.Context, profile, region string) (secretsAPI, 
 	return secretsmanager.NewFromConfig(cfg), sts.NewFromConfig(cfg), nil
 }
 
-// ssoRole matches a person's Identity Center sign-in and captures (account, session name). The
-// deployment repository's Identity Center permission sets map the session name to the person's
-// userName, which is their email.
-var ssoRole = regexp.MustCompile(`^arn:aws[a-z-]*:sts::([0-9]{12}):assumed-role/AWSReservedSSO_[^/]+/(.+)$`)
+// ssoRole matches an IAM Identity Center sign-in and captures its session name. The deployment
+// repository's Identity Center permission sets map the session name to the person's userName,
+// which is their email: --owner me reads it there (awsBackend.personEmail).
+var ssoRole = regexp.MustCompile(`^arn:aws[a-z-]*:sts::[0-9]{12}:assumed-role/AWSReservedSSO_[^/]+/(.+)$`)
 
 // requireAccount refuses, before any read or write, a sign-in in an account other than the
 // broker's, naming both accounts: a read there would list another account's secrets as if they
@@ -82,22 +83,6 @@ func requireAccount(ctx context.Context, st stsAPI, settings Settings) (arn stri
 			arn, account, settings.AWSAccountID, settings.AWSAccountID)
 	}
 	return arn, nil
-}
-
-// requireWriteSignIn refuses, before any write, a sign-in in another account (requireAccount) or
-// one that is a machine's own role (a devbox instance role, an assumed service role, an IAM user),
-// naming the ARN it found; it answers the signed-in person's lowercased email for --owner me.
-func requireWriteSignIn(ctx context.Context, st stsAPI, settings Settings) (email string, err error) {
-	arn, err := requireAccount(ctx, st, settings)
-	if err != nil {
-		return "", err
-	}
-	m := ssoRole.FindStringSubmatch(arn)
-	if m == nil || m[1] != settings.AWSAccountID {
-		return "", fmt.Errorf("%s is not a person's Identity Center sign-in: a secret is written under your own sign-in to account %s (aws sso login, then --profile or AWS_PROFILE), never a machine's role",
-			arn, settings.AWSAccountID)
-	}
-	return strings.ToLower(m[2]), nil
 }
 
 // checkSettingsKeyARN refuses, before any AWS call, settings whose aws_account_id or aws_region does
@@ -126,12 +111,14 @@ func isAccessDenied(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "AccessDeniedException"
 }
 
-// awsBackend is the secretBackend for store "" or secrets.StoreAWS: AWS Secrets Manager
-// under the person's own AWS sign-in, pinned to the key ARN's account and region.
+// awsBackend is the secretBackend for store "" or secrets.StoreAWS: AWS Secrets Manager under the
+// AWS sign-in this command's environment gives it, pinned to the key ARN's account and region.
 type awsBackend struct {
 	settings Settings
 	sm       secretsAPI
 	st       stsAPI
+	// arn is the sign-in requireAccount read, which every form reads first.
+	arn string
 }
 
 func (b *awsBackend) id(slug string) string { return b.settings.SecretsPrefix + slug }
@@ -139,13 +126,25 @@ func (b *awsBackend) id(slug string) string { return b.settings.SecretsPrefix + 
 func (b *awsBackend) displayName(id string) string { return displayName(b.settings.SecretsPrefix, id) }
 
 func (b *awsBackend) requireAccount(ctx context.Context) error {
-	_, err := requireAccount(ctx, b.st, b.settings)
+	arn, err := requireAccount(ctx, b.st, b.settings)
+	b.arn = arn
 	return err
 }
 
-func (b *awsBackend) requireWriteSignIn(ctx context.Context) (string, error) {
-	return requireWriteSignIn(ctx, b.st, b.settings)
+// personEmail answers, for --owner me, the session name of an Identity Center sign-in, lowercased,
+// which is the person's email. Any other sign-in - a machine's role, an assumed service role, an
+// IAM user - names no person. It reads the ARN requireAccount read, which every form reads before
+// it calls anything else.
+func (b *awsBackend) personEmail(context.Context) (string, error) {
+	m := ssoRole.FindStringSubmatch(b.arn)
+	if m == nil {
+		return "", fmt.Errorf("%s is no IAM Identity Center sign-in, so it names no person", b.arn)
+	}
+	return strings.ToLower(m[1]), nil
 }
+
+// identity is the sign-in's ARN, as requireAccount read it.
+func (b *awsBackend) identity() string { return "the AWS sign-in " + b.arn }
 
 // signInPrefix is empty: an AWS sign-in a printed command needs is its --profile, which
 // pipeCommand writes itself.
