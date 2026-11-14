@@ -14,11 +14,16 @@
 #   bash docs/research/internet-of-cognition/check.sh --coverage
 #   bash docs/research/internet-of-cognition/check.sh --help
 #
-# It prints one PASS or FAIL line per assertion and a last line reading
+# It prints PASS and FAIL lines, each naming an assertion, and a last line reading
 #   all N assertions passed
-# N being the number it ran. Any other ending, no output at all included, is a failed
-# check: a run that was killed prints nothing and exits non-zero for a reason that is not
-# this deliverable's. Read the run by that last line and not by the exit status alone.
+# N being the number of assertions the mode declares in the one assertion table below,
+# not the number of lines it printed. The mode runs in a subshell, and its verdict reads
+# what each declared assertion reported: one that reported a FAIL failed, and one that
+# reported nothing, because its code crashed, exited or was skipped, is a FAIL naming it,
+# so no assertion is passed by its silence. Any other ending, no output at all included,
+# is a failed check: a run that was killed prints nothing and exits non-zero for a reason
+# that is not this deliverable's. Read the run by that last line and not by the exit
+# status alone.
 #
 # Prerequisites, because nothing in CI runs this script and a gate nobody else can start
 # passes by default:
@@ -105,11 +110,14 @@ EVIDENCE="${IOC_EVIDENCE:-$HERE}"
 # run reads from Dispatch is never read by the next.
 RUN_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/ioc-run.XXXXXX")"
 trap 'rm -rf "$RUN_SCRATCH"' EXIT
-PASSED=0
-FAILED=0
-FAILED_FAMILIES=""
+# Every PASS and FAIL a mode reports is also written here, one line each, so its verdict
+# reads them after the mode's subshell ends, however it ended.
+REPORTED="$RUN_SCRATCH/reported"
+: >"$REPORTED"
 
-# family | mode | what it asserts | the fault --self-test plants, or - for none
+# family | mode | what it asserts | the fault --self-test plants, or - for none. A mode
+# declares the assertions it runs by this table: the rows of its mode, and for
+# --self-test its own rows and every row with a planted fault.
 assertion_table() {
     cat <<'TABLE'
 claim-form|replay|every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
@@ -149,7 +157,22 @@ landed-no-refusal|landed|no landed step's diff reaches a refusal path of the dae
 landed-third-change|landed|the third change, a refusal of a reviewer completion with no pair result, is not landed in any form|the third change landed as prose in a skill
 published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every file a page links to|-
 published-delivery|published|the record of the delivery is on the issue: the message, the comment on dispatch://INFRA-1098 and the comment recording the publication|-
+admitted-form|admitted|every entry of ADMITTED, the forms the evaluator admits, is used by a row of claims.jsonl|-
+admitted-rows|admitted|the classifier refuses no row of claims.jsonl that carries a command|-
+admitted-header|admitted|the table of admitted forms in the header above run_recorded is the one --admitted measures, line for line|-
+admitted-reserved|admitted|the header's list of reserved names is the reader's, and every name the runner and the shims record with starts with a reserved prefix|-
+self-test-baseline|self-test|the fixture deliverable passes --replay, --shape, --citations and --landed|-
+gate-cases|self-test|every case of check.test.sh, the faults the tester found, passes|-
+admitted-table|self-test|check.sh --admitted passes|-
+coverage-complete|self-test|the coverage report names every assertion family the gate holds|-
 TABLE
+}
+
+# declared_assertions <mode>; the assertions the mode declares, one per line.
+declared_assertions() {
+    assertion_table | awk -F'|' -v mode="$1" '
+        mode == "self-test" { if ($2 == "self-test" || $4 != "-") print $1; next }
+        $2 == mode { print $1 }'
 }
 
 usage() {
@@ -158,23 +181,46 @@ usage() {
 }
 
 pass() {
-    PASSED=$((PASSED + 1))
+    printf 'PASS %s\n' "$1" >>"$REPORTED"
     printf 'PASS %s: %s\n' "$1" "$2"
 }
 
 fail() {
-    FAILED=$((FAILED + 1))
-    FAILED_FAMILIES="$FAILED_FAMILIES $1"
+    printf 'FAIL %s\n' "$1" >>"$REPORTED"
     printf 'FAIL %s: %s\n' "$1" "$2"
 }
 
+# finish <mode>; the verdict of the mode over the assertions it declares. One that
+# reported a FAIL failed; one that reported nothing failed, and is named in a FAIL line
+# here; one that reported only PASS passed. An assertion the mode reported but does not
+# declare fails too. The last line counts the declared assertions.
 finish() {
-    local total=$((PASSED + FAILED))
-    if [ "$FAILED" -eq 0 ]; then
+    local family failed=0 total=0 families="" declared
+    declared="$(declared_assertions "$1")"
+    while IFS= read -r family; do
+        [ -n "$family" ] || continue
+        total=$((total + 1))
+        if grep -qxF "FAIL $family" "$REPORTED"; then
+            failed=$((failed + 1))
+            families="$families $family"
+        elif ! grep -qxF "PASS $family" "$REPORTED"; then
+            printf 'FAIL %s: it reported no verdict, so its code crashed, exited or was skipped before it passed or failed\n' "$family"
+            failed=$((failed + 1))
+            families="$families $family"
+        fi
+    done <<<"$declared"
+    while IFS= read -r family; do
+        [ -n "$family" ] || continue
+        total=$((total + 1))
+        failed=$((failed + 1))
+        families="$families $family"
+        printf 'FAIL %s: --%s reported it, and the assertion table declares no such assertion for --%s\n' "$family" "$1" "$1"
+    done < <(cut -d' ' -f2 "$REPORTED" | sort -u | grep -vxF -f <(printf '%s\n' "$declared"))
+    if [ "$failed" -eq 0 ]; then
         printf 'all %d assertions passed\n' "$total"
         return 0
     fi
-    printf '%d of %d assertions failed:%s\n' "$FAILED" "$total" "$FAILED_FAMILIES"
+    printf '%d of %d assertions failed:%s\n' "$failed" "$total" "$families"
     return 1
 }
 
@@ -232,10 +278,13 @@ dispatch_get() {
     curl -sS -H @"$header" "${DISPATCH_URL%/}$path"
 }
 
-# env_functions makes env.sh's functions functions of this shell, so that check.sh and
-# env.sh keep a Dispatch record by one rule (ioc_env_read_record: the read exited 0 and
-# what it printed is not a refusal) and clone a repository by one rule (ioc_env_clone).
-# env.sh read this way defines its functions and prepares nothing.
+# env_functions makes env.sh's functions and lists those of this shell, so that check.sh
+# and env.sh share each rule they both read: a Dispatch record (ioc_env_read_record: the
+# read exited 0 and what it printed is not a refusal), a clone (ioc_env_clone), the
+# variables uv and pip enforce the locks by (IOC_ENV_ENFORCED), the environments and their
+# locks (IOC_ENV_FROZEN, read by ioc_env_frozen_entry), the reader of a lock
+# (ioc_env_lock_py), and the check of what an environment holds (ioc_env_frozen). env.sh
+# read this way defines them and prepares nothing.
 env_functions() {
     declare -F ioc_env_read_record >/dev/null && return 0
     [ -r "$EVIDENCE/env.sh" ] || return 1
@@ -894,11 +943,17 @@ github_budget() {
 # Under UV_REQUIRE_HASHES=1 uv refuses every local source path, since a directory has no
 # hash, so one install is written with the visible prefix UV_REQUIRE_HASHES=0, and the
 # classifier admits it there alone: before a uv pip install whose every package is a local
-# source path, that names -b "$IOC_EVID/build-constraints.txt" and -c of a hashed lock
-# under evidence/, into an environment of env.sh's IOC_ENV_FROZEN named with --python or
-# VIRTUAL_ENV. uv still checks every hash its -c and -b files carry; a dependency the local
-# package fetches from an index that its -c leaves out installs unchecked, and the third
-# guarantee refuses it.
+# source path, into an environment of env.sh's IOC_ENV_FROZEN named with --python or
+# VIRTUAL_ENV, that names -c of that environment's own lock and no other -c or -r, -b
+# "$IOC_EVID/build-constraints.txt", and --require-build-hashes. Under the prefix uv checks
+# the hash of every package its -c lists and of every build dependency -b lists, and
+# --require-build-hashes makes it refuse a build dependency -b does not list (measured: a
+# setuptools-backend package fetched setuptools unhashed without it, and was refused with
+# it; uv 0.13.5 calls the option experimental and prints a warning, which no row's
+# predicate reads). A package it fetches that the environment's lock does not list
+# installs unchecked, and the third guarantee refuses it; a package the lock lists was
+# checked against the lock's hash, because the -c is that lock. Each condition broken is
+# refused by name.
 #
 # The reader's guarantee, which holds for every spelling uv does not enforce and stands
 # behind uv for the rest. Each package a command names from an index is looked up in the
@@ -921,10 +976,23 @@ github_budget() {
 # it runs), and on each whose site-packages changed while the row ran, which finds an
 # install inside a script the row runs. It lists every package installed there and fails
 # install-pinned, naming the row, the environment, the package, its version and the lock,
-# for a package from an index the environment's lock does not hold at that version and a
-# package from a path or a URL that its pinned clone does not declare at that version, in
-# a pyproject.toml at the pinned commit, or that was not installed from inside the clone.
-# env.sh runs the same check after it builds each environment.
+# for a package from an index that the environment's own lock does not hold at that
+# version, a package from a path or a URL that its pinned clone does not declare at that
+# version, in a pyproject.toml at the pinned commit, or that was not installed from
+# inside the clone, and a dist-info it cannot read; a check that ends without a verdict
+# fails install-pinned too. env.sh runs the same check after it builds each environment.
+#
+# What the third guarantee can prove. uv 0.13.5 records, for a package from an index,
+# METADATA (its name and version), RECORD (the sha256 of each file it installed),
+# INSTALLER, REQUESTED and WHEEL, and for one from a path, direct_url.json, uv_build.json
+# and uv_cache.json besides (measured in the environments env.sh builds). Nothing records
+# the hash or the index of the archive a package came from. So the check proves a
+# package's name, its version and whether it came from an index or from a path inside
+# the clone, and nothing of its bytes: a package fetched unhashed at the version the lock
+# holds passes it. The bytes are held by uv's hash check when it installs: every install
+# but the exemption runs under UV_REQUIRE_HASHES=1, and the exemption's -c is the
+# environment's own lock, so a package the check passes was checked against that lock's
+# hash, and one the lock does not hold is refused.
 #
 # The environments made for one run are out of the third guarantee's reach: uv run --with,
 # uv tool run --from and --with, uvx, pipx run, npx, bunx and npm exec. For them the
@@ -932,9 +1000,7 @@ github_budget() {
 # or a wheel: uvx and uv tool run a package the lock their -c names holds, whose
 # dependencies -c holds to the lock's versions (though neither checks their hashes),
 # and uv run, which takes no -c, a package ioc-venv.lock holds that requires no other
-# package by the lock's "# via" lines; a package that requires others is refused. What the
-# third guarantee reads is a name, a version and where a package came from: the bytes of
-# a package are held by uv's hash check alone.
+# package by the lock's "# via" lines; a package that requires others is refused.
 #
 # A build backend is an install. A local path that is no wheel is built, and its build
 # backend and that backend's dependencies are fetched like any package: every local
@@ -998,7 +1064,7 @@ github_budget() {
 # above program_shims, then env.sh's ENFORCED and ENVIRONMENTS, and env.sh's reader of a
 # lock.
 reader_py() {
-    local v label written python
+    local v label
     # env.sh's IOC_ENV_ENFORCED, the variables uv and pip enforce the locks by, which the
     # reader reserves; its IOC_ENV_FROZEN, the environments a row may install into, which
     # the gate checks after the row; and ioc_env_lock_py, the one reader of a hashed lock.
@@ -1017,9 +1083,9 @@ reader_py() {
         printf '"%s", ' "$v"
     done
     printf ')\nENVIRONMENTS = {'
-    for v in $IOC_ENV_FROZEN; do
-        IFS=: read -r label written python _ <<<"$v"
-        printf '"%s": ("%s", "%s"), ' "$label" "$written" "$python"
+    for label in $(ioc_env_frozen_labels); do
+        ioc_env_frozen_entry "$label"
+        printf '"%s": ("%s", "%s"), ' "$label" "$ENTRY_WRITTEN" "$ENTRY_LOCK"
     done
     printf '}\nLOCKS_DIR = %s\n' "$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$EVIDENCE/evidence")"
     ioc_env_lock_py
@@ -1085,12 +1151,11 @@ def requires(package, path):
 
 # The environment an install writes into, which the gate checks after the row: one of
 # ENVIRONMENTS, env.sh's IOC_ENV_FROZEN, named as the rows name it, by its directory
-# ($IOC_TC_WORK/venv), by the python under it ($IOC_TC_WORK/venv/bin/python) or by its
-# program variable ($IOC_TC_PY). A uv pip install or sync names it with --python or -p,
-# or with a VIRTUAL_ENV prefix; pip installs into the environment of the pip it runs, a
-# path ending in /bin/pip or a python given -m pip. One that writes outside an
-# environment (--system, --target, --prefix, --user, --root) or names none of them
-# installs where the gate checks nothing.
+# ($IOC_TC_WORK/venv) or by the python or pip under it ($IOC_TC_WORK/venv/bin/python). A
+# uv pip install or sync names it with --python or -p, or with a VIRTUAL_ENV prefix; pip
+# installs into the environment of the pip it runs, a path ending in /bin/pip or a python
+# given -m pip. One that writes outside an environment (--system, --target, --prefix,
+# --user, --root) or names none of them installs where the gate checks nothing.
 OUTSIDE = {"--system", "--target", "-t", "--prefix", "--user", "--root"}
 TARGETS = set()  # the environments read_command found an install into, for "environments"
 
@@ -1099,8 +1164,8 @@ def environment_of(written):
         return None
     path = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", r"$\1", written)
     base = re.sub(r"/bin/(python|pip)[0-9.]*$", "", path)
-    for label, (directory, python) in ENVIRONMENTS.items():
-        if base == directory or (python and path == "$" + python):
+    for label, (directory, _) in ENVIRONMENTS.items():
+        if base == directory:
             return label
     return None
 
@@ -1185,27 +1250,52 @@ def pip_words(rest):
         j += 1
     return packages, locks, unlocked, builds, flags
 
+def named_locks(rest):
+    # Each (option, file) of -c, --constraint, -r and --requirement among the words of a
+    # pip install, uv pip install or uv pip sync after its subcommand.
+    named, j = [], 0
+    while j < len(rest):
+        key, value = rest[j].split("=", 1)[0], option_value(rest[j])
+        if key in ("-c", "--constraint", "-r", "--requirement"):
+            if value is None:
+                value = rest[j + 1] if j + 1 < len(rest) else ""
+                j += 1
+            named.append((key, re.sub(r"\$\{IOC_EVID\}", "$IOC_EVID", value)))
+        elif value is None and key in PIP_VALUE:
+            j += 1
+        j += 1
+    return named
+
 def hash_exemption(words, prefixes):
     # None when words, the command after a prefix UV_REQUIRE_HASHES=0 and the other
-    # prefixes, is the one form the prefix is admitted before, or the condition it breaks:
-    # a uv pip install whose every package is a local source path, with -b of the hashed
-    # build lock and -c of a hashed lock, into an environment the gate checks after the
-    # row. uv refuses every local source under UV_REQUIRE_HASHES=1, since a directory has
-    # no hash, and still checks every hash the -c and -b files carry; a dependency the -c
-    # leaves out installs unchecked, and the check of the environment refuses it.
+    # prefixes, is the one form check.sh's install-pinned header states the prefix is
+    # admitted before, or the condition of that form it breaks.
     if words[:3] != ["uv", "pip", "install"]:
         return "it prefixes no uv pip install"
-    packages, locks, unlocked, builds, flags = pip_words(words[3:])
+    rest = words[3:]
+    packages, _, _, builds, flags = pip_words(rest)
     if not packages or any(not local(p) for p in packages):
         return "a package it installs is no local source path"
     if not any(build_lock(b) for b in builds):
         return "it names no -b $IOC_EVID/build-constraints.txt"
-    if not locks:
-        return "it names no hashed lock with -c"
-    if unlocked or flags:
-        return "it names a file or an option uv would check no hash under"
-    if install_environment(prefixes + words, len(prefixes) + 1) is None:
+    label = install_environment(prefixes + words, len(prefixes) + 1)
+    if label is None:
         return "it installs into no environment env.sh builds, named with --python or VIRTUAL_ENV, which the gate checks after the row"
+    own = "$IOC_EVID/" + ENVIRONMENTS[label][1]
+    named = named_locks(rest)
+    for key, value in named:
+        if key in ("-r", "--requirement"):
+            return "it names " + key + " " + value + ", and the lock of " + label + " is read with -c alone"
+        if value != own:
+            return "it names -c " + value + ", which is not " + own + ", the lock of " + label
+    if not named:
+        return "it names no -c " + own + ", the lock of " + label
+    if not hashed_lock(own):
+        return own + ", the lock of " + label + ", is no committed hashed lock"
+    if flags:
+        return "it names " + flags[0] + ", an option under which uv checks no hash"
+    if "--require-build-hashes" not in rest:
+        return "it does not pass --require-build-hashes, so uv would check the hash of no build dependency -b leaves out"
     return None
 
 def py_ok(arg):
@@ -2162,7 +2252,7 @@ def classify_word(words):
             why = "it is no prefix" if i == len(words) else (
                 "its value is not 0" if word != HASH_EXEMPT + "=0" else hash_exemption(words[i:], words[:i]))
             if why:
-                raise Refused(word + ", which clears uv's hash check, admitted only as UV_REQUIRE_HASHES=0 before a uv pip install of local sources alone with -b $IOC_EVID/build-constraints.txt and -c of a hashed lock, into an environment the gate checks: " + why)
+                raise Refused(word + ", which clears uv's hash check, admitted only before the one install check.sh's install-pinned header states: " + why)
         elif reserved(name) and name != EXPECT_STATUS:
             raise Refused(word + ", an assignment to " + name + ", a name the gate records with")
         admit("assigns " + name, word + ", an assignment to " + name + ", a name the evaluator does not admit")
@@ -2409,11 +2499,10 @@ unpinned_installs() {
 # and after each row, it finds an install the reader cannot see, such as one inside a
 # script the row runs.
 environment_stamps() {
-    local entry label dir
-    for entry in $IOC_ENV_FROZEN; do
-        label="${entry%%:*}"
-        dir="$(ioc_env_frozen_path "$label")" || continue
-        set -- "$dir"/lib/python*/site-packages
+    local label
+    for label in $(ioc_env_frozen_labels); do
+        ioc_env_frozen_entry "$label" && [ -n "$ENTRY_DIR" ] || continue
+        set -- "$ENTRY_DIR"/lib/python*/site-packages
         [ -d "$1" ] && printf '%s %s\n' "$label" "$(stat -c %y "$1")"
     done
 }
@@ -2421,17 +2510,22 @@ environment_stamps() {
 # check_environments <id> <label>...; checks what each environment holds after the row
 # <id> installed into it, by env.sh's ioc_env_frozen, and fails install-pinned for each
 # package it refuses, naming the row, the environment, the package, its version and the
-# lock. It returns non-zero when one is refused.
+# lock, and for a check that ended non-zero with no refusal, which only a crash of the
+# check leaves. It returns non-zero when one fails.
 check_environments() {
-    local id="$1" label out kind text status=0
+    local id="$1" label out kind text status=0 named
     shift
     for label in "$@"; do
         out="$(ioc_env_frozen "$label" "$EVIDENCE/evidence")" && continue
         status=1
+        named=0
         while IFS=$'\t' read -r kind text; do
             [ "$kind" = REFUSED ] || continue
+            named=1
             fail install-pinned "$id installed into $label, and what $label holds after it is refused: $text"
         done <<<"$out"
+        [ "$named" -eq 1 ] ||
+            fail install-pinned "$id installed into $label, and the check of what $label holds ended with no verdict: $(printf '%s' "$out" | tail -c 200 | tr '\n' ' ')"
     done
     return "$status"
 }
@@ -2449,9 +2543,9 @@ reserved_line() { printf '%-37s %s' "$1" "$2"; }
 # per entry with the number of rows that use it. It fails an entry no row uses, a row the
 # classifier refuses, and a line of the header's table that differs from the one measured.
 # It fails as well a header list of reserved names that differs from the reader's, which
-# the reader builds from PROGRAM_VARIABLES and RUNNER_PREFIXES, and a name the runner or
-# the shims record with that starts with none of RUNNER_PREFIXES, which no row would be
-# kept from touching.
+# the reader builds from PROGRAM_VARIABLES, RUNNER_PREFIXES and env.sh's IOC_ENV_ENFORCED,
+# and a name the runner or the shims record with that starts with none of RUNNER_PREFIXES,
+# which no row would be kept from touching.
 mode_admitted() {
     local kind a b c line measured=() header=() reserved=() refused=0 differ=0
     while IFS=$'\t' read -r kind a b c; do
@@ -4155,13 +4249,13 @@ main() {
     case "$mode" in
     --help | -h) usage ;;
     --coverage) coverage_report ;;
-    --replay) need git jq python3 && { mode_replay; finish; } ;;
-    --shape) need git jq && { mode_shape; finish; } ;;
-    --citations) need git jq curl python3 && { mode_citations; finish; } ;;
-    --landed) need git jq && { mode_landed; finish; } ;;
-    --published) need git jq curl && { mode_published; finish; } ;;
-    --admitted) need python3 && { mode_admitted; finish; } ;;
-    --self-test) need git jq python3 && { mode_self_test; finish; } ;;
+    --replay) need git jq python3 && { (mode_replay); finish replay; } ;;
+    --shape) need git jq && { (mode_shape); finish shape; } ;;
+    --citations) need git jq curl python3 && { (mode_citations); finish citations; } ;;
+    --landed) need git jq && { (mode_landed); finish landed; } ;;
+    --published) need git jq curl && { (mode_published); finish published; } ;;
+    --admitted) need python3 && { (mode_admitted); finish admitted; } ;;
+    --self-test) need git jq python3 && { (mode_self_test); finish self-test; } ;;
     *)
         usage
         exit 2

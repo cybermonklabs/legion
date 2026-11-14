@@ -17,7 +17,8 @@ OURS=/legion/workspaces/cybermonklabs/legion/infra-3134
 # The pinned build environment of every local package below and the hashed pins of its
 # third-party dependencies, added on 2026-11-14 after the run that wrote maslab-load.txt,
 # so that a rerun fetches no unpinned hatchling and no unpinned dependency. UV_REQUIRE_HASHES
-# is cleared for each install, since uv refuses a local source path under it.
+# is cleared for each install, since uv refuses a local source path under it, and
+# --require-build-hashes holds the build environment to the hashes of $BUILD.
 BUILD=$OURS/docs/research/internet-of-cognition/evidence/build-constraints.txt
 PINS=$OURS/docs/research/internet-of-cognition/evidence/tm-constraints.txt
 
@@ -37,11 +38,11 @@ echo
 echo "### 1. the install, from the clone at the pinned commit (mas-lab 0.2.0 is on PyPI as well)"
 run uv venv --allow-existing "$VENV"
 cd "$IOC_CLONES/mas-lab" || exit 1
-UV_REQUIRE_HASHES=0 VIRTUAL_ENV=$VENV run uv pip install -c "$PINS" -b "$BUILD" ./runtime ./ctl ./library-standard
+UV_REQUIRE_HASHES=0 VIRTUAL_ENV=$VENV run uv pip install -c "$PINS" -b "$BUILD" --require-build-hashes ./runtime ./ctl ./library-standard
 # A built wheel of mas-lab-ctl carries no docs/schemas, so validate falls back to
 # "no schema file for kind 'agent'". An editable install of ctl and of the lab core
 # component gives the validator the schemas and the registry it imports.
-UV_REQUIRE_HASHES=0 VIRTUAL_ENV=$VENV run uv pip install -c "$PINS" -b "$BUILD" -e ./ctl -e ./lab/components/core
+UV_REQUIRE_HASHES=0 VIRTUAL_ENV=$VENV run uv pip install -c "$PINS" -b "$BUILD" --require-build-hashes -e ./ctl -e ./lab/components/core
 cd "$OUT" || exit 1
 
 echo
@@ -100,12 +101,12 @@ echo "### 8. what their validator does from a plain wheel install"
 WHEELVENV=$TMPDIR/infra3134/tm-venv-wheel
 run uv venv --allow-existing "$WHEELVENV"
 cd "$IOC_CLONES/mas-lab" || exit 1
-UV_REQUIRE_HASHES=0 VIRTUAL_ENV=$WHEELVENV run uv pip install -c "$PINS" -b "$BUILD" ./runtime ./ctl ./library-standard
+UV_REQUIRE_HASHES=0 VIRTUAL_ENV=$WHEELVENV run uv pip install -c "$PINS" -b "$BUILD" --require-build-hashes ./runtime ./ctl ./library-standard
 cd "$OUT" || exit 1
 run "$WHEELVENV/bin/mas-ctl" validate legion-workflow.yaml
 # The same ctl from a source checkout, without the lab core component its validator imports.
 cd "$IOC_CLONES/mas-lab" || exit 1
-UV_REQUIRE_HASHES=0 VIRTUAL_ENV=$WHEELVENV run uv pip install -c "$PINS" -b "$BUILD" -e ./ctl
+UV_REQUIRE_HASHES=0 VIRTUAL_ENV=$WHEELVENV run uv pip install -c "$PINS" -b "$BUILD" --require-build-hashes -e ./ctl
 cd "$OUT" || exit 1
 run "$WHEELVENV/bin/mas-ctl" validate legion-workflow.yaml
 

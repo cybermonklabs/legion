@@ -360,6 +360,19 @@ honest_result() {
     fi
 }
 
+# passed_result <name> <gate output>; an honest form that passes only when the gate ends
+# with its all-passed line, with no failure of any family.
+passed_result() {
+    local name="$1" out="$2"
+    if printf '%s\n' "$out" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS %s\n' "$name"
+    else
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL %s: %s\n' "$name" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')"
+    fi
+}
+
 # 24. A read that failed in a stage of the final pipeline before its last. The pipeline's
 # status is its last stage's, so `{ printf 'ran once\n'; false; } | cat` exits 0 and its
 # output still meets the predicate. At 25c02ddfcf the ERR trap inside the group saw that
@@ -933,16 +946,16 @@ install_passes editable-joined-lock "uv pip install -b \"\$IOC_EVID/build-constr
 # 65. uv enforces the lock itself: env.sh exports UV_REQUIRE_HASHES=1, UV_BUILD_CONSTRAINT
 # and PIP_REQUIRE_HASHES=1 into every row's environment, and the three are reserved, so no
 # row assigns, unsets or re-points them. uv refuses every local source path under
-# UV_REQUIRE_HASHES=1, so one form clears it, visibly, as UV_REQUIRE_HASHES=0 before a uv
-# pip install of local sources alone with -b of the hashed build lock and -c of a hashed
-# lock, into an environment env.sh builds, which the gate checks after the row (case 66).
-# Each of its four conditions broken, one at a time, is refused by name, and so are
-# another value, a statement of its own, and an assignment to the other two names; the
-# four real rows' form passes.
-EXEMPT='UV_REQUIRE_HASHES=0, which clears uv.s hash check, admitted only as UV_REQUIRE_HASHES=0 before a uv pip install of local sources alone with -b .IOC_EVID/build-constraints.txt and -c of a hashed lock, into an environment the gate checks: '
+# UV_REQUIRE_HASHES=1, so one form clears it, visibly, as UV_REQUIRE_HASHES=0, in the one
+# install check.sh's install-pinned header states. Each of its conditions broken, one at
+# a time, is refused by name, and so are another value, a statement of its own, and an
+# assignment to the other two names; the four real rows' form passes. Since the ninth
+# review (case 67) the form also names the target environment's own lock with -c and
+# passes --require-build-hashes, so the forms here that reach those conditions carry them.
+EXEMPT='UV_REQUIRE_HASHES=0, which clears uv.s hash check, admitted only before the one install check.sh.s install-pinned header states: '
 refused_read exempt-registry "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local requests==2.32.3; printf 'ran once\\n'" "${EXEMPT}a package it installs is no local source path"
 refused_read exempt-no-build "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" ./local; printf 'ran once\\n'" "${EXEMPT}it names no -b .IOC_EVID/build-constraints.txt"
-refused_read exempt-no-lock "true || UV_REQUIRE_HASHES=0 uv pip install -c c.txt -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'" "${EXEMPT}it names no hashed lock with -c"
+refused_read exempt-no-lock "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c c.txt -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" "${EXEMPT}it names -c c.txt, which is not .IOC_EVID/ioc-venv.lock, the lock of IOC_TC_WORK"
 refused_read exempt-other-value "true || UV_REQUIRE_HASHES=false uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'" 'UV_REQUIRE_HASHES=false, which clears uv.s hash check, admitted only .*: its value is not 0'
 refused_read exempt-statement "UV_REQUIRE_HASHES=0; printf 'ran once\\n'" 'UV_REQUIRE_HASHES=0, which clears uv.s hash check, admitted only .*: it is no prefix'
 refused_read build-constraint-assigned "true || UV_BUILD_CONSTRAINT=b.txt uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" ./local; printf 'ran once\\n'" 'UV_BUILD_CONSTRAINT=b.txt, an assignment to UV_BUILD_CONSTRAINT, a name the gate records with'
@@ -1016,24 +1029,6 @@ TOML
 freeze_venv() {
     UV_CACHE_DIR="$FREEZE/cache" UV_OFFLINE=1 uv venv -q --python "$(command -v python3)" "$FREEZE/$1/venv" >/dev/null 2>&1
 }
-if freeze_world; then
-    admitted_read exempt-honest "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'" tcwork
-else
-    printf 'SKIP the admitted form of UV_REQUIRE_HASHES=0: uv, or an environment it builds here offline, is missing\n'
-fi
-
-# 66. The installed result is checked, not only the command. Under UV_REQUIRE_HASHES=0 a
-# dependency the local package fetches that its -c leaves out installs unchecked, and at
-# da7af429a2 nothing read what the environment held afterwards. The gate now lists every
-# package of each environment env.sh builds that a row installs into, after the row, and
-# refuses one its lock does not hold at that version by name. The case plants a local
-# package of a pinned clone, ioc-freeze-pkg, whose dependency ioc-freeze-dep 1.0 the
-# fixture's ioc-venv.lock leaves out, installed with the visible prefix, -c of that lock
-# and -b of the build lock, as tc-install-1 installs ioc-concord; the honest form is the
-# same install after the fixture's lock holds ioc-freeze-dep 1.0 with its hash, which uv
-# checks. Both run offline: the dependency is a wheel built here, found under
-# UV_FIND_LINKS with no index, and the package's backend needs no package.
-FREEZE_INSTALL="UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" \"\$IOC_CLONES/cognition-protocols/packages/ioc-freeze-pkg\"; printf 'ran once\\n'"
 # freeze_run <dir> <environment name>; the gate's --replay of a fixture whose row installs
 # into $FREEZE/<environment name>/venv, offline.
 freeze_run() {
@@ -1044,6 +1039,25 @@ freeze_run() {
             fixture_run "$1" --replay
     )
 }
+if freeze_world; then
+    admitted_read exempt-honest "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" tcwork
+else
+    printf 'SKIP the admitted form of UV_REQUIRE_HASHES=0: uv, or an environment it builds here offline, is missing\n'
+fi
+
+# 66. The installed result is checked, not only the command. Under UV_REQUIRE_HASHES=0 a
+# dependency the local package fetches that its -c leaves out installs unchecked, and at
+# da7af429a2 nothing read what the environment held afterwards. The gate now lists every
+# package of each environment env.sh builds that a row installs into, after the row, and
+# refuses one its lock does not hold at that version by name. The case plants a local
+# package of a pinned clone, ioc-freeze-pkg, whose dependency ioc-freeze-dep 1.0 the
+# fixture's ioc-venv.lock, the tc-work environment's own lock, leaves out, installed with
+# the visible prefix, -c of that lock, -b of the build lock and --require-build-hashes, as
+# tc-install-1 installs ioc-concord; the honest form is the same install after the
+# fixture's lock holds ioc-freeze-dep 1.0 with its hash, which uv checks. Both run
+# offline: the dependency is a wheel built here, found under UV_FIND_LINKS with no index,
+# and the package's backend needs no package.
+FREEZE_INSTALL="UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes \"\$IOC_CLONES/cognition-protocols/packages/ioc-freeze-pkg\"; printf 'ran once\\n'"
 if freeze_world && freeze_venv left-out && freeze_venv held; then
     dir="$(fresh freeze-left-out)"
     plant_behaviour "$dir" "$FREEZE_INSTALL" '{"contains":"ran once"}'
@@ -1053,17 +1067,48 @@ if freeze_world && freeze_venv left-out && freeze_venv held; then
     dir="$(fresh freeze-held)"
     plant_behaviour "$dir" "$FREEZE_INSTALL" '{"contains":"ran once"}'
     printf 'ioc-freeze-dep==1.0 \\\n    --hash=sha256:%s\n' "$FREEZE_DEP_HASH" >>"$dir/repo/docs/research/internet-of-cognition/evidence/ioc-venv.lock"
-    out="$(freeze_run "$dir" held)"
-    if printf '%s\n' "$out" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
-        CASES_PASSED=$((CASES_PASSED + 1))
-        printf 'PASS %s\n' "the same install with its dependency in the lock passes"
-    else
-        CASES_FAILED=$((CASES_FAILED + 1))
-        printf 'FAIL %s: %s\n' "the same install with its dependency in the lock passes" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')"
-    fi
+    passed_result "the same install with its dependency in the lock passes" "$(freeze_run "$dir" held)"
 else
     printf 'SKIP the check of what an environment holds after a local install: uv, or an environment it builds here offline, is missing\n'
 fi
+
+# 67-68 come from the ninth review of the pull request; each fault passed the gate at
+# fe34a1bada.
+#
+# 67. The exemption reads the target environment's own lock. At fe34a1bada any hashed -c
+# passed, so the review installed mas-lab into a mas-lab environment with -c of
+# ioc-venv.lock, and 13 of its 28 packages came from the index unhashed, at versions the
+# check of the environment, which reads names and versions, then passed. -c is now the
+# lock IOC_ENV_FROZEN binds the environment to, -r is refused, and --require-build-hashes is
+# required, so uv checks the hash of a build dependency -b leaves out; each is refused by
+# name beside the honest form of case 65. The review's form is planted as it ran.
+refused_read exempt-other-lock "true || { cd \"\$IOC_CLONES/mas-lab\" && UV_REQUIRE_HASHES=0 VIRTUAL_ENV=\"\$IOC_MASLAB_WHEEL_VENV\" uv pip install -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" ./runtime ./ctl ./library-standard; }; printf 'ran once\\n'" "${EXEMPT}it names -c .IOC_EVID/ioc-venv.lock, which is not .IOC_EVID/tm-constraints.txt, the lock of IOC_MASLAB_WHEEL_VENV"
+refused_read exempt-requirement "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -r \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" --require-build-hashes ./local; printf 'ran once\\n'" "${EXEMPT}it names -r .IOC_EVID/ioc-venv.lock, and the lock of IOC_TC_WORK is read with -c alone"
+refused_read exempt-no-build-hashes "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'" "${EXEMPT}it does not pass --require-build-hashes"
+
+# 68. No assertion passes by its silence. At fe34a1bada the check of an environment
+# crashed on an empty dist-info, which an interrupted install leaves, and install-pinned
+# then reported neither PASS nor FAIL while the run still ended all N assertions passed.
+# The check now refuses the dist-info by name, and every mode's verdict counts the
+# assertions it declares: one that reports nothing, here order-of-work after an exit
+# planted in its code in the fixture's copy of the gate, is a FAIL naming it.
+if freeze_world && freeze_venv broken; then
+    mkdir -p "$(set -- "$FREEZE/broken/venv"/lib/python*/site-packages && printf '%s' "$1")/broken-1.0.dist-info"
+    dir="$(fresh freeze-broken-dist-info)"
+    plant_behaviour "$dir" "true || $FREEZE_INSTALL" '{"contains":"ran once"}'
+    case_result "an empty dist-info in an environment a row installs into fails install-pinned by name" \
+        'install-pinned: f-behaviour-1 installed into IOC_TC_WORK, and what IOC_TC_WORK holds after it is refused: IOC_TC_WORK holds .*broken-1.0.dist-info, a dist-info with no name or version' \
+        "$(freeze_run "$dir" broken)"
+else
+    printf 'SKIP the check of an environment holding an empty dist-info: uv, or an environment it builds here offline, is missing\n'
+fi
+dir="$(fresh shape-assertion-exits)"
+sed -i '/pass order-of-work "the commit that adds the question list is an ancestor/s/^\( *\)/\1exit 3; /' "$dir/repo/docs/research/internet-of-cognition/check.sh"
+grep -q 'exit 3; \[ "$bad" -eq 0 \] && pass order-of-work' "$dir/repo/docs/research/internet-of-cognition/check.sh" || {
+    printf 'FAIL the exit could not be planted in the fixture copy of check.sh\n'
+    exit 1
+}
+case_result "an assertion whose code exits before its verdict fails, named" 'order-of-work: it reported no verdict' "$(fixture_run "$dir" --shape)"
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
