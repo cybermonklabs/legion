@@ -786,6 +786,42 @@ func TestMemoryGuardEndsTheHolderOfAnUnmappedMemfdAtItsSize(t *testing.T) {
 	}
 }
 
+// A memfd made large with ftruncate and never written has its size and no pages, so ending the
+// process that holds it frees nothing. In a gVisor pod on 2026-11-14, the head's launcher, run as
+// the container's first process, ended first a process that held a 16 GiB memfd made that way
+// (`ended pid=5584 ... size=17185095680`, twice the pod's 8 GiB limit), then ended nothing more,
+// and the kernel stopped the sandbox while a process beside it grew by about 1 GiB a second;
+// without the holder, the guard ended that grower and the pod lived. Under gVisor a descriptor's
+// stat gives no resident size (st_blocks reads the file's size) and lseek SEEK_DATA answers
+// EINVAL, while the sandbox's Shmem reading counts the pages every memfd holds. So a memfd a
+// descriptor holds counts at most that reading (W1 version 8): the grower, whose anonymous memory
+// is larger than Shmem, is ended first, and the holder counts its Anonymous and the Shmem reading
+// at most.
+func TestMemoryGuardDoesNotPickTheHolderOfAnUnwrittenMemfdBeforeALargerProcess(t *testing.T) {
+	pod := newFakePod(t)
+	hole := pod.memfd("hole", 16*gib)
+	pod.add(
+		agent(3*gib),
+		fakeProcess{pid: 1150, ppid: 100, args: []string{"python3", "sparse.py"}, anon: 20 * mib, fds: []string{hole.path}},
+		fakeProcess{pid: 1151, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+	)
+	pod.setShmem(32 * mib)
+	pod.setAnon(4050 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	// 550 MiB freed, and 3500 MiB is still above the mark: the guard decides again on what is
+	// left, the holder alone, which holds less than the floor.
+	h.signal.onKill = exitFreeing(pod, 550*mib)
+	h.run()
+	h.requireKilled(1151)
+	h.tick()
+	h.requireKilled(1151)
+	endable := fmt.Sprintf(" endable=%d ", 20*mib+32*mib)
+	if stopped := h.log.with("stopped"); len(stopped) != 1 || !strings.Contains(stopped[0], endable) {
+		t.Fatalf("the stopped lines are %q, want one with%s (the holder's Anonymous and the Shmem reading at most); the log:\n%s",
+			stopped, endable, strings.Join(h.log.all(), "\n"))
+	}
+}
+
 // A memfd that a process maps counts through that mapping's Rss alone, whichever process holds it
 // by a descriptor: a process that maps the memfd it holds counts it once, and a process that holds
 // by a descriptor alone a memfd another process maps counts nothing for it, so neither is ranked
