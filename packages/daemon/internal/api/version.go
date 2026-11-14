@@ -1597,7 +1597,8 @@ package api
 // row of 98's `admission.held`, which names no issue `active` or `waiting` names. An issue past
 // its review holds no slot on 111's rule, so it has none to give back and never reads this word.
 // A plugin from 85 through 131, INFRA-714's 86, INFRA-3219's 87, INFRA-2800's 94, INFRA-3107's
-// 98, INFRA-3161's 104, INFRA-2560's 111 and INFRA-3146's 123 above among them, reads `kind` with a `z.enum` of the
+// 98, INFRA-3161's 104, INFRA-2560's 111 and INFRA-3146's 123 above among them, reads `kind`
+// with a `z.enum` of the
 // four words before it, which refuses a word it does not name and with it the whole state body,
 // so a caller from a pod whose claims record a contract below 132 is served every member of that
 // kind without its `kind` (api's stateFor, withoutWaitingOnIssue), which that schema takes as
@@ -1630,7 +1631,7 @@ package api
 // requests other than this one at 2026-11-13T09:03:10Z gave, above 94: 95 (#3519 and #3712), 96
 // (#2731 and #3573), 97 (#3937, which had moved up from 93 meanwhile), 98 (#3708) and 99
 // (#3575), so 97 was no longer free and this branch took 100. main has since landed #3708's 98,
-// INFRA-3107's, the entry right above, at b7a2f926, and this entry sits above it. The same
+// INFRA-3107's, then the entry right above, at b7a2f926, and this entry sits above it. The same
 // reading at refs/pull/<n>/head of each of the 140 open pull requests other than this one (141
 // with it) at 2026-11-13T13:47:46Z gave, above 98: 99 (#3575), 100 (#3573), 101 (#3712), 102
 // (#3730), 103 (#3519), 104 (#3830 and #3937) and 105 (#3659), so this branch moved to 106. The
@@ -1640,8 +1641,8 @@ package api
 // moved to 107. The same reading of the 140 open pull requests other than this one at
 // 2026-11-13T14:31:49Z gave, as the highest numbers above 98, 105 (#3659), 106 (#3730 and
 // #3793) and 107 (#3712, which had moved up from 101 meanwhile), and no open head declares above
-// 107, so this branch moved to 108. main has since landed #3830's 104, INFRA-3161's, the entry
-// right above, at aee2873c, and this entry sits above it. The same reading of the 137 open pull
+// 107, so this branch moved to 108. main has since landed #3830's 104, INFRA-3161's, then the
+// entry right above, at aee2873c, and this entry sits above it. The same reading of the 137 open pull
 // requests other than this one at 2026-11-13T17:15:05Z gave, above 104, 105 (#3659), 106 (#2731
 // and #3730), 107 (#3712) and 109 (#3519 and #3793), and no open head declares above 109, so
 // this branch moved to 110: 108 was free, but it was below 109. The same reading of the 135 open
@@ -1649,7 +1650,7 @@ package api
 // (#2731 and #3730), 107 (#3712), 108 (#3519, which had moved down from 109 meanwhile), 109
 // (#3793) and 110 (#3937, which had moved up from 104 meanwhile), and no open head declares
 // above 110, so this branch took 111, above main's 104 and above every number another open head
-// declared. main has since landed #3573's 111, INFRA-2560's, the entry right above, at 80920857,
+// declared. main has since landed #3573's 111, INFRA-2560's, then the entry right above, at 80920857,
 // and this entry sits above it. The same reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head of each of the 138 open pull requests other than this one (139 with it), at
 // 2026-11-13T22:06:06Z, gave, above 111, 111 (#3793), 112 (#2731), 113 (#3575) and 114 (#3730),
