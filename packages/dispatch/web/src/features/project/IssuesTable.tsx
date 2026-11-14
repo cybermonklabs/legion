@@ -90,7 +90,12 @@ import {
   type View,
   viewLayoutColumns,
 } from "./issues-table-model";
-import { type ExtraChip, IssueTableSelection, IssueTableToolbar } from "./issues-table-page";
+import {
+  type ExtraChip,
+  IssueTableSelection,
+  IssueTableStatus,
+  IssueTableToolbar,
+} from "./issues-table-page";
 import { GroupRow, IssueRow } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
 import {
@@ -117,10 +122,9 @@ const NONE: readonly string[] = [];
 const NO_VIEWS: readonly BuiltInView[] = [];
 const NO_SAVED: readonly SavedView[] = [];
 /** An embedded table's own parameters that Clear filters leaves as they are (`<stateKey>.`). */
-const EMBEDDED_KEPT = ["sort", "group", "size", "page"];
-/** What else Clear filters takes off an embedded table: the flags and the chips, which belong
- *  to the page's address rather than to one table. */
-const EMBEDDED_CLEARED = ["needs-you", "unread", "only", "onlyLabel", "exclude_tree"];
+const EMBEDDED_KEPT = ["sort", "group", "size"];
+/** The page's flags Clear filters takes off an embedded table as well, as main's does. */
+const EMBEDDED_CLEARED = ["needs-you", "unread"];
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
@@ -354,21 +358,15 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       : viewQueryKey(copyAddress(savedView.query)) !== queryKey;
   // The address the view opens at, and whether the reader's narrowings differ from its own: the
   // tab's mark shows any change, Clear filters only a change of what the rows are narrowed by.
-  // An embedded table is narrowed by any parameter of its own but its sort, grouping and page,
-  // by a flag, or by a chip.
+  // An embedded table offers Clear filters by main's rule: while it has a filter (its Status
+  // filter included), a search, or the Needs you or Unread flag.
   const ownAddress =
     savedView === undefined
       ? copyAddress(builtIn.id === "open" ? "" : `view=${builtIn.id}`)
       : copyAddress(savedView.query);
-  const narrowed =
-    place.kind === "embedded"
-      ? [...params.keys()].some(
-          (key) =>
-            (key.startsWith(`${place.stateKey}.`) &&
-              !EMBEDDED_KEPT.includes(key.slice(place.stateKey.length + 1))) ||
-            EMBEDDED_CLEARED.includes(key)
-        )
-      : narrowingsKey(params) !== narrowingsKey(ownAddress);
+  const narrowed = embedded
+    ? filters.length > 0 || search !== "" || flags.needsYou || flags.unread
+    : narrowingsKey(params) !== narrowingsKey(ownAddress);
 
   // The layout: the address's for this load, else the one kept for the view, else today's
   // `project.issue-view` choice (All open's, its `legion` value In flight's Board). An embedded
@@ -463,20 +461,19 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   const trailingWidth =
     embedded || ["open", "waiting", "mine"].includes(builtIn.id) ? ACTION_WIDTH : 0;
   const layout = useMemo(() => {
-    const registryOrder = [
-      "select",
-      ...viewCols,
-      ...COLUMNS.map((column) => column.id).filter(
-        (id) => id !== "select" && !viewCols.includes(id)
-      ),
-    ];
-    // The listing columns sit beside the title, which is what a row of every project's issues
-    // is read by.
-    const after = registryOrder.indexOf("title") + 1;
+    // An embedded table is laid out by main's rules alone (`issueTableLayout`): its columns at
+    // main's widths, scrolling sideways where they do not fit, in the order the reader left them.
+    if (embedded) return storedLayout;
     const kept =
       storedLayout.order.length > 0
         ? storedLayout.order
-        : [...registryOrder.slice(0, after), ...listingCols, ...registryOrder.slice(after)];
+        : [
+            "select",
+            ...viewCols,
+            ...COLUMNS.map((column) => column.id).filter(
+              (id) => id !== "select" && !viewCols.includes(id)
+            ),
+          ];
     // On a phone Select and Key are the pinned columns, and Title, which fills the rest of the
     // box, comes straight after them, so a row at rest reads its key and its title.
     const phone = storedLayout.boxWidth < 640;
@@ -559,7 +556,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
         });
       },
     };
-  }, [colsParam, hasLegion, listingCols, storedLayout, trailingWidth, update, viewCols]);
+  }, [colsParam, embedded, hasLegion, storedLayout, trailingWidth, update, viewCols]);
   const { attachAbove, boxWidth } = layout;
 
   // The reads: the open listing, the done issues the view lists, and the board.
@@ -641,7 +638,8 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     boxWidth < 640,
     recordMark,
     listingCols,
-    place.kind === "embedded" ? place.priorityTitles : undefined
+    place.kind === "embedded" ? place.priorityTitles : undefined,
+    embedded
   );
 
   const model = useDataTable<Item>({
@@ -832,7 +830,8 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
     setChosenSaved(undefined);
   };
   // Clear filters: the narrowings back to the view's own, the sort and grouping kept. An
-  // embedded table's own parameters go back to what it opens with, and the flags and chips go.
+  // embedded table clears as main's does: its filters back to the open statuses, its search and
+  // its page, and the Needs you and Unread flags; its sort, grouping and page size stay.
   const clearFilters = () =>
     update((current) => {
       if (place.kind === "project") return clearNarrowings(current, ownAddress);
@@ -840,17 +839,16 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       for (const key of [...current.keys()])
         if (
           (key.startsWith(mark) && !EMBEDDED_KEPT.includes(key.slice(mark.length))) ||
-          EMBEDDED_CLEARED.includes(key) ||
-          key === `${mark}page`
+          EMBEDDED_CLEARED.includes(key)
         )
           current.delete(key);
       return current;
     });
 
-  // The bar: the listed rows by the view's Bar by column. An embedded table counts its rows by
-  // stage across its whole width, with no Not started cut.
-  const barBy = embedded ? "stage" : builtIn.bar;
-  const notStartedNumber = !embedded && builtIn.notStartedNumber === true;
+  // The bar: the listed rows by the view's Bar by column. An embedded table draws main's strip
+  // instead (`IssueTableStatus`).
+  const barBy = builtIn.bar;
+  const notStartedNumber = builtIn.notStartedNumber === true;
   const barColumn = barBy === undefined ? undefined : BAR_COLUMN[barBy];
   const barPicks = (() => {
     if (barColumn === undefined || !params.has(ownParam(`f.${barColumn}`))) return undefined;
@@ -895,13 +893,16 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
         ]),
   ];
   // The Columns menu lists the Legion columns and the stage first, where a reader looks for
-  // them, then the issue's own columns.
+  // them, then the issue's own columns. An embedded table lists its columns as main does, in
+  // their order.
   const legionFirst = (id: string) =>
     isBoardColumn(id) || id === "stage" || id === "queue" || id === "closed" ? 0 : 1;
-  const offeredColumns: Column<Item>[] = table
-    .getAllLeafColumns()
-    .filter((column) => hasLegion || !isBoardColumn(column.id))
-    .sort((a, b) => legionFirst(a.id) - legionFirst(b.id));
+  const offeredColumns: Column<Item>[] = embedded
+    ? table.getAllLeafColumns()
+    : table
+        .getAllLeafColumns()
+        .filter((column) => hasLegion || !isBoardColumn(column.id))
+        .sort((a, b) => legionFirst(a.id) - legionFirst(b.id));
 
   // A view with a Legion filter waits for the board: it never lists unfiltered rows under the
   // view's name.
@@ -1005,20 +1006,27 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
   return (
     <section
       aria-label={place.kind === "embedded" ? place.label : "Project issues"}
-      className="space-y-2 sm:pb-24"
+      className={`${embedded ? "space-y-3" : "space-y-2"} sm:pb-24`}
       data-view={embedded ? undefined : builtIn.id}
     >
-      <div className="space-y-2" ref={attachAbove}>
+      <div className={embedded ? "space-y-3" : "space-y-2"} ref={attachAbove}>
         {tabs}
-        <ViewBar
-          by={barBy}
-          items={loading ? [] : listedRows.map((row) => row.original)}
-          narrowTo={narrowTo}
-          notStartedNumber={notStartedNumber}
-          picked={barPicks}
-        />
+        {embedded ? (
+          // Issues by status, as main draws them: a click shows only that status, a second
+          // click every status.
+          <IssueTableStatus epics={epics} items={allItems} table={table} />
+        ) : (
+          <ViewBar
+            by={barBy}
+            items={loading ? [] : listedRows.map((row) => row.original)}
+            narrowTo={narrowTo}
+            notStartedNumber={notStartedNumber}
+            picked={barPicks}
+          />
+        )}
         <IssueTableToolbar
           columns={offeredColumns}
+          embedded={embedded}
           extraChips={extraChips}
           labelOptions={labelOptions}
           layout={layoutChoice}
@@ -1028,8 +1036,6 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
           searchRef={searchRef}
           table={table}
           trailing={toolbarTrailing}
-          // An embedded table keeps the List's two flags; Unclaimed is its Claimed by column's.
-          unclaimedFlag={!embedded}
           unclaimedUnchecked={
             wantsFree && registry.isError
               ? registry.refilling
@@ -1153,7 +1159,13 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
       ) : (
         <PhaseHoursContext value={{ mode: phaseMode, pageMax }}>
           <DataTable
-            empty={<span className={textMutedOnCanvas}>No issues match these filters</span>}
+            empty={
+              embedded ? (
+                "No issues match these filters."
+              ) : (
+                <span className={textMutedOnCanvas}>No issues match these filters</span>
+              )
+            }
             filterCounts={openFacets}
             filterUnloaded={done !== undefined && !doneLoaded ? DONE_UNLOADED : undefined}
             label={`${place.kind === "embedded" ? place.label : "Project issues"} table`}
@@ -1192,6 +1204,7 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
                 grouping={grouping[0] ?? ""}
                 index={index}
                 measure={measure}
+                byStatus={embedded}
                 notStartedNumber={notStartedNumber}
                 onMerge={mergeEpic}
                 onRename={renameEpic}
@@ -1216,6 +1229,9 @@ function ViewsTable({ place }: { place: TablePlace }): ReactNode {
               />
             )}
             scrollTestId="issues-table-scroll"
+            // An embedded table stacks its Title header's sort and filter on a phone, as main's
+            // does; the Issues tab pins Title beside Key instead.
+            stackColumn={embedded ? "title" : undefined}
             trailingWidth={trailingWidth}
           />
         </PhaseHoursContext>

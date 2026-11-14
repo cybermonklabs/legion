@@ -44,9 +44,9 @@ import {
   COLUMNS,
   COMPACT_COLUMN_MIN,
   type ColumnId,
+  ISSUE_ROW_ATTRIBUTE,
   type Item,
   matchesFilters,
-  viewLayoutColumns,
 } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
@@ -587,33 +587,80 @@ const LISTING_COLUMNS: readonly {
  *  and Updated, which a fault list of the priorities page opens with shown. */
 export type ShownColumnId = ListingColumnId | "updated";
 
-/** The registry columns a table another page draws opens with shown: the ones the project List
- *  showed before the views, every column it had but Updated. The design's own columns (Stage,
- *  Closed) are in its Columns menu, and the Legion columns are not offered there at all. */
-const EMBEDDED_SHOWN: readonly ColumnId[] = [
-  "priority",
-  "queue",
-  "key",
-  "title",
-  "status",
-  "epic",
-  "assignee",
-  "author",
-  "labels",
-  "claim",
-  "asks",
-  "created",
-];
+/**
+ * The registry columns an issue table another page draws has (the priority pages'), at the
+ * widths main's registry gives them: those tables keep main's columns and look, which the pages'
+ * approved pictures show, and the design's own columns (Stage, Closed and the Legion ones) and
+ * its widths, fitted to the Issues tab's views, are the Issues tab's. `phone` is a column's
+ * narrowest on a phone where it differs.
+ */
+const EMBEDDED_WIDTHS: Readonly<
+  Partial<
+    Record<ColumnId, { readonly size: number; readonly min: number; readonly phone?: number }>
+  >
+> = {
+  select: { size: 44, min: 44 },
+  priority: { size: 140, min: 140 },
+  queue: { size: 96, min: 124 },
+  key: { size: 104, min: 108, phone: 88 },
+  title: { size: 380, min: 116, phone: 120 },
+  status: { size: 128, min: 132 },
+  epic: { size: 220, min: 116 },
+  assignee: { size: 180, min: 148 },
+  author: { size: 200, min: 164 },
+  labels: { size: 200, min: 132 },
+  claim: { size: 220, min: 164 },
+  asks: { size: 96, min: 148 },
+  created: { size: 120, min: 148 },
+  updated: { size: 120, min: 148 },
+};
+/** Those columns, in the registry's order, which is main's. */
+const EMBEDDED_IDS: readonly ColumnId[] = COLUMNS.map(({ id }) => id).filter(
+  (id) => EMBEDDED_WIDTHS[id] !== undefined
+);
+const embeddedMin = (id: ColumnId): number => EMBEDDED_WIDTHS[id]?.min ?? 0;
+const embeddedPhoneMin = (id: ColumnId): number =>
+  EMBEDDED_WIDTHS[id]?.phone ?? EMBEDDED_WIDTHS[id]?.min ?? 0;
+
+/**
+ * The cells such a table draws as main draws them, where the Issues tab's differ: Queue, the
+ * number Start next reads, with the rows that have none after the rest in the listing's order
+ * (where the Issues tab's Place is the daemon's waiting line), and Assignee, whole on one line.
+ */
+const EMBEDDED_RENDERINGS: Readonly<Partial<Record<ColumnId, Partial<ColumnDef<Item>>>>> = {
+  queue: {
+    header: "Queue",
+    accessorFn: (item) => item.queue,
+    sortUndefined: "last",
+    sortDescFirst: false,
+    cell: ({ getValue }) => {
+      const place = getValue<number | undefined>();
+      return place === undefined ? null : (
+        <span className="font-semibold tabular-nums" title="Legion starts issues in this order">
+          #{place}
+        </span>
+      );
+    },
+  },
+  assignee: {
+    header: "Assignee",
+    accessorFn: (item) => item.issue.assignee ?? "Unassigned",
+    cell: ({ getValue }) => (
+      <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
+    ),
+  },
+};
 
 /** Each layout `issueTableLayout` built, by its columns and the ones it opens with shown. */
 const layouts = new Map<string, LayoutColumns>();
 
 /**
- * The layout of an issue table another page draws, with the listing columns `columns`
- * (`listingColumns`), that opens with `shown` shown beside its registry columns
- * (`EMBEDDED_SHOWN`): the registry's own rules, with those listing columns at their widths, and
- * every other column hidden until the reader shows it. Built once for each pair and kept, since
- * the stored layout is read again whenever this object changes (`useTableLayout`).
+ * The layout of an issue table another page draws, as main lays it out: main's registry columns
+ * at main's widths with Updated hidden, the listing columns `columns` (`listingColumns`) at
+ * their widths, each hidden unless `shown` names it, and main's pins - Select, Priority, Key and
+ * Title within 60% of a wide box, Select, Key and Title within 85% of a phone's. Built once for
+ * each pair and kept, since the stored layout is read again whenever this object changes
+ * (`useTableLayout`).
  */
 export function issueTableLayout(
   columns: readonly ListingColumnId[],
@@ -622,27 +669,37 @@ export function issueTableLayout(
   const name = `${columns.join(" ")}|${shown.join(" ")}`;
   const built = layouts.get(name);
   if (built !== undefined) return built;
-  const registry = viewLayoutColumns([
-    ...EMBEDDED_SHOWN,
-    ...(shown.includes("updated") ? (["updated"] as const) : []),
-  ]);
   const listing = LISTING_COLUMNS.filter(({ id }) => columns.includes(id));
+  const hidden: [string, boolean][] = [
+    ["updated", false],
+    ...listing.map(({ id }): [string, boolean] => [id, false]),
+  ];
   const layout: LayoutColumns = {
-    ...registry,
-    ids: [...registry.ids, ...listing.map(({ id }) => id)],
-    hiddenByDefault: {
-      ...registry.hiddenByDefault,
-      ...Object.fromEntries(
-        listing.flatMap(({ id }) => (shown.includes(id) ? [] : [[id, false] as const]))
-      ),
-    },
+    ids: [...EMBEDDED_IDS, ...listing.map(({ id }) => id)],
+    rowAttribute: ISSUE_ROW_ATTRIBUTE,
+    hiddenByDefault: Object.fromEntries(
+      hidden.filter(([id]) => !shown.includes(id as ShownColumnId))
+    ),
     sizes: {
-      ...registry.sizes,
+      ...Object.fromEntries(EMBEDDED_IDS.map((id) => [id, EMBEDDED_WIDTHS[id]?.size])),
       ...Object.fromEntries(listing.map(({ id, size }) => [id, size])),
     },
     minimums: {
-      ...registry.minimums,
+      ...Object.fromEntries(EMBEDDED_IDS.map((id) => [id, embeddedMin(id)])),
       ...Object.fromEntries(listing.map(({ id, min }) => [id, min])),
+    },
+    pins: {
+      wide: {
+        columns: COLUMNS.filter((column) => column.pinned).map(({ id }) => id),
+        share: 0.6,
+      },
+      phone: {
+        columns: ["select", "key", "title"] satisfies ColumnId[],
+        share: 0.85,
+        widths: { key: embeddedPhoneMin("key") },
+        flexibleMin: embeddedPhoneMin("title"),
+      },
+      flexible: "title" satisfies ColumnId,
     },
   };
   layouts.set(name, layout);
@@ -653,7 +710,8 @@ const NO_LISTING_COLUMNS: readonly ListingColumnId[] = [];
 
 /** The List's columns, and the listing columns `listing` names after Title. `onMark` is told
  *  the row a row's own checkbox marks; it is a dependency of the columns, so a caller hands a
- *  stable one, as it does `listing` and `priorityTitles`. */
+ *  stable one, as it does `listing` and `priorityTitles`. A table another page draws
+ *  (`embedded`) has main's registry columns at main's widths, drawn as main draws them. */
 export function useIssueTableColumns(
   userState: UserState | undefined,
   compact: boolean,
@@ -661,18 +719,28 @@ export function useIssueTableColumns(
   listing: readonly ListingColumnId[] = NO_LISTING_COLUMNS,
   /** Each priority's title by its id, which the Advances column names a priority by; one this
    *  map does not hold, a priority deleted since it was read, is named by its id. */
-  priorityTitles?: ReadonlyMap<string, string>
+  priorityTitles?: ReadonlyMap<string, string>,
+  embedded = false
 ): ColumnDef<Item>[] {
   return useMemo<ColumnDef<Item>[]>(() => {
     const rendering = renderings(userState, onMark);
     const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
-    const registered = COLUMNS.map((column): ColumnDef<Item> => {
+    const registered = COLUMNS.filter(
+      (column) => !embedded || EMBEDDED_WIDTHS[column.id] !== undefined
+    ).map((column): ColumnDef<Item> => {
       const picks = column.filter?.kind === "picks" ? column.filter : undefined;
+      const minSize = embedded
+        ? compact
+          ? embeddedPhoneMin(column.id)
+          : embeddedMin(column.id)
+        : ((compact ? COMPACT_COLUMN_MIN[column.id] : undefined) ?? COLUMN_MIN[column.id]);
+      // Main's Queue filter names its values as they are, Queued and Not queued.
+      const show = embedded && column.id === "queue" ? undefined : picks?.show;
       return {
-        ...rendering[column.id],
+        ...((embedded ? EMBEDDED_RENDERINGS[column.id] : undefined) ?? rendering[column.id]),
         id: column.id,
-        size: column.size,
-        minSize: (compact ? COMPACT_COLUMN_MIN[column.id] : undefined) ?? COLUMN_MIN[column.id],
+        size: embedded ? (EMBEDDED_WIDTHS[column.id]?.size ?? column.size) : column.size,
+        minSize,
         enableResizing: column.id !== "select",
         enableSorting: column.sortable !== false,
         enableColumnFilter: column.filter !== undefined,
@@ -685,7 +753,7 @@ export function useIssueTableColumns(
           ...(column.filter?.kind === "text" ? { text: true } : {}),
           ...(column.filter?.kind === "range" ? { range: true } : {}),
           ...(picks?.order === undefined ? {} : { order: picks.order }),
-          ...(picks?.show === undefined ? {} : { show: picks.show }),
+          ...(show === undefined ? {} : { show }),
           ...(picks?.always === undefined ? {} : { always: picks.always }),
         },
       };
@@ -706,5 +774,5 @@ export function useIssueTableColumns(
     // Beside the title, which is what a reader reads a row of every project's issues by.
     const after = registered.findIndex(({ id }) => id === "title") + 1;
     return [...registered.slice(0, after), ...extra, ...registered.slice(after)];
-  }, [userState, compact, onMark, listing, priorityTitles]);
+  }, [userState, compact, onMark, listing, priorityTitles, embedded]);
 }

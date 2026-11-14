@@ -278,6 +278,8 @@ export function PrioritiesTable({
           />
         )}
         scrollTestId="priorities-table-scroll"
+        // Main's header cell stacks the Title column's sort and filter on a phone.
+        stackColumn="title"
       />
 
       {open === undefined ? null : (

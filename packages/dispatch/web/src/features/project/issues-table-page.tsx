@@ -8,12 +8,22 @@ import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
-import { borderDefault, card, surfaceBg, surfaceMutedHoverBg } from "../../theme/classes";
+import {
+  borderDefault,
+  card,
+  issueStatusScale,
+  surfaceBg,
+  surfaceMutedBg,
+  surfaceMutedHoverBg,
+  textPrimaryOnCanvas,
+  textSecondaryOnCanvas,
+} from "../../theme/classes";
 import { useUserPreference } from "../shell/userPreference";
+import { issueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import type { ViewLayout } from "./IssueViewTabs";
 import { useIssueFilters } from "./issue-filters";
-import type { Item } from "./issues-table-model";
+import { type Item, runningIssueStatuses } from "./issues-table-model";
 
 /** The panel the row's one filter trigger opens: a column of chips, portalled over the page so
  *  opening it moves no row of the table beneath (INFRA-3135, R1). */
@@ -38,6 +48,80 @@ export function Action({
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * The strip a table another page draws above its rows (the priority pages'), as main draws it:
+ * how many of its issues are in Legion's queue, running, and epics, and its issues by status in
+ * the status scale. A click shows only that status, a second click every status. The project's
+ * Issues tab draws its views' bar instead (`issues-table-bar.tsx`).
+ */
+export function IssueTableStatus({
+  table,
+  items,
+  epics,
+}: {
+  table: Table<Item>;
+  items: readonly Item[];
+  epics: readonly IssueSummary[];
+}): ReactNode {
+  const statusColumn = table.getColumn("status");
+  const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
+  const statusCounts = new Map<string, number>();
+  let queuedCount = 0;
+  let runningCount = 0;
+  for (const item of items) {
+    statusCounts.set(item.issue.status, (statusCounts.get(item.issue.status) ?? 0) + 1);
+    if (item.queue !== undefined) queuedCount += 1;
+    if ((runningIssueStatuses as readonly string[]).includes(item.issue.status)) runningCount += 1;
+  }
+  return (
+    <div className={`rounded-xl border p-3 ${borderDefault}`}>
+      <div
+        className={`mb-2 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm ${textSecondaryOnCanvas}`}
+      >
+        <span>
+          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{queuedCount}</b> in Legion's
+          queue
+        </span>
+        <span>
+          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{runningCount}</b> running
+        </span>
+        <span>
+          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{epics.length}</b>{" "}
+          {epics.length === 1 ? "epic" : "epics"}
+        </span>
+      </div>
+      <fieldset
+        aria-label="Issues by status"
+        className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
+      >
+        {issueStatuses.map((status) => {
+          const count = statusCounts.get(status) ?? 0;
+          if (count === 0) return null;
+          const on = statusPicks.length === 0 || statusPicks.includes(status);
+          return (
+            <button
+              className={`min-h-11 shrink-0 px-3 py-2 text-left text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${issueStatusScale[status]} ${on ? "" : "opacity-30"}`}
+              key={status}
+              onClick={() =>
+                statusColumn?.setFilterValue(
+                  statusPicks.length === 1 && statusPicks[0] === status ? undefined : [status]
+                )
+              }
+              title={`${statusLabel(status)}: ${count}`}
+              // Each status takes width in proportion to its count, so the bar spans the box
+              // and reads as shares; a phone keeps 44 px targets and scrolls sideways instead.
+              style={{ flexGrow: count }}
+              type="button"
+            >
+              {statusLabel(status)} {count}
+            </button>
+          );
+        })}
+      </fieldset>
+    </div>
   );
 }
 
@@ -126,6 +210,7 @@ function BoardFiltersTrigger({
  */
 export function IssueTableToolbar({
   columns,
+  embedded,
   extraChips,
   labelOptions,
   layout,
@@ -133,11 +218,17 @@ export function IssueTableToolbar({
   searchRef,
   table,
   trailing,
-  unclaimedFlag,
   unclaimedUnchecked,
 }: {
   /** The columns the Columns menu offers: those the project has. */
   columns: Column<Item>[];
+  /**
+   * A table another page draws (the priority pages'): the row as INFRA-3135 draws it for main's
+   * List, with main's words - "View" for the display menu and main's search placeholder - and
+   * the List's two flags, its Unclaimed on the Claimed by column; Clear filters shows only while
+   * it has something to clear, and the row wraps slot by slot on a phone.
+   */
+  embedded: boolean;
   extraChips: readonly ExtraChip[];
   /** The labels the Board's Labels picker offers. */
   labelOptions: readonly string[];
@@ -153,9 +244,6 @@ export function IssueTableToolbar({
   /** The page's own controls: the layout switch, the Columns menu for the table or Show Icebox
    *  and the lanes for the Board, then Save view and the (i) hint. */
   trailing: ReactNode;
-  /** Whether the trigger holds Unclaimed beside Needs you and Unread: the Issues tab's does, and
-   *  a table another page draws keeps the List's two flags, its Unclaimed on Claimed by. */
-  unclaimedFlag: boolean;
   /** Why the Claimed by filter cannot tell which claims have lapsed, while it is asked to. */
   unclaimedUnchecked: "refilling" | "unreachable" | undefined;
 }): ReactNode {
@@ -172,7 +260,7 @@ export function IssueTableToolbar({
     {
       label: "Unclaimed",
       off: () => flags.setUnclaimed(false),
-      on: unclaimedFlag && flags.unclaimed,
+      on: !embedded && flags.unclaimed,
     },
   ].filter(({ on }) => on);
   // The Board draws no column header, so a label it filters by is a chip of the row.
@@ -209,11 +297,11 @@ export function IssueTableToolbar({
   const flagsPanel = () => (
     <>
       <IssueFlagChips />
-      {unclaimedFlag ? (
+      {embedded ? null : (
         <Chip onClick={() => flags.setUnclaimed(!flags.unclaimed)} selected={flags.unclaimed}>
           Unclaimed
         </Chip>
-      ) : null}
+      )}
       {extraChips.length === 0 ? null : (
         <ul
           aria-label="Other narrowings"
@@ -248,9 +336,9 @@ export function IssueTableToolbar({
         display={
           board ? undefined : (
             <DisplayMenu
-              // "View" names the views in the tab row on this page, so the menu that holds the
-              // grouping takes another word.
-              label="Display"
+              // "View" names the views in the tab row on the Issues tab, so the menu that holds
+              // the grouping takes another word there; a table another page draws keeps "View".
+              label={embedded ? "View" : "Display"}
               onOpenChange={(open) => setOpenPanel(open ? "display" : undefined)}
               open={openPanel === "display"}
               sections={[
@@ -277,15 +365,19 @@ export function IssueTableToolbar({
             />
           )
         }
-        flows
-        keepsClearRoom
+        flows={!embedded}
+        keepsClearRoom={!embedded}
         onClear={onClear}
         search={
           <SearchBox
             className="w-full"
             label="Search issues"
             onChange={(value) => table.setGlobalFilter(value)}
-            placeholder="Search: key, title, epic, people, labels"
+            placeholder={
+              embedded
+                ? "Search issues: key, title, epic, assignee, author, labels"
+                : "Search: key, title, epic, people, labels"
+            }
             ref={searchRef}
             size="compact"
             value={search}

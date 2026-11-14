@@ -7,16 +7,19 @@ import { PanelTrigger } from "../../components/PanelTrigger";
 import {
   borderDefault,
   focusVisibleRing,
+  issueStatusScale,
   linkHoverText,
   linkText,
   selectedCardBg,
   surfaceBg,
+  surfaceMutedBg,
   surfaceMutedHoverBg,
   textMutedOnCanvas,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
+import { issueStatuses, statusLabel } from "./board-model";
 import { BarTrack, barSegments, cutNotStarted } from "./issues-table-bar";
 import { columnFilterSpec, type Item } from "./issues-table-model";
 
@@ -77,6 +80,7 @@ export function IssueRow({
 export function GroupRow({
   row,
   grouping,
+  byStatus,
   columns,
   epics,
   notStartedNumber,
@@ -103,6 +107,8 @@ export function GroupRow({
   /** The view's bar writes the Not started count as a number: the heading's bar takes the same
    *  cut. */
   notStartedNumber: boolean;
+  /** A table another page draws: the heading counts its rows by status in the status scale. */
+  byStatus: boolean;
   onRename: (key: string) => void;
   /** How an epic is merged into another; absent on a table that stands on no project, where
    *  the issues of a group come from several and no epic can take them all. */
@@ -122,11 +128,20 @@ export function GroupRow({
       ? `${leaves.length} ${leaves.length === 1 ? "issue" : "issues"}`
       : `${here} of ${leaves.length} issues`;
   const epicKey = grouping === "epic" ? leaves[0]?.original.epicKey : undefined;
+  // The Issues tab's heading counts by stage and names the next place in the waiting line; a
+  // table another page draws keeps main's heading: its rows by status in the status scale, and
+  // the next number of the queue Start next reads.
   let next = Number.POSITIVE_INFINITY;
+  const leafCounts = new Map<string, number>();
   for (const leaf of leaves) {
-    const { place } = leaf.original;
-    if (place !== undefined && place < next) next = place;
+    const { issue, place, queue } = leaf.original;
+    leafCounts.set(issue.status, (leafCounts.get(issue.status) ?? 0) + 1);
+    const number = byStatus ? queue : place;
+    if (number !== undefined && number < next) next = number;
   }
+  const statusCounts = issueStatuses
+    .map((status) => [status, leafCounts.get(status) ?? 0] as const)
+    .filter(([, count]) => count > 0);
   const segments = barSegments(
     leaves.map((leaf) => leaf.original),
     "stage"
@@ -147,7 +162,9 @@ export function GroupRow({
           ) : null}
           <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
             {count}
-            {Number.isFinite(next) ? ` · next in waiting line #${next}` : ""}
+            {Number.isFinite(next)
+              ? ` · next in ${byStatus ? "queue" : "waiting line"} #${next}`
+              : ""}
           </span>
         </>
       }
@@ -165,20 +182,42 @@ export function GroupRow({
               {heading}
             </Link>
           )}
-          <span className="flex items-center gap-2" data-group-bar>
-            {notStartedNumber ? (
+          {byStatus ? (
+            <span className="flex items-center gap-2">
               <span
-                className={`text-xs tabular-nums ${textMutedOnSurfaceMuted}`}
-                title={notStarted.map((segment) => `${segment.label} ${segment.count}`).join(", ")}
+                aria-hidden
+                className={`flex h-2 w-32 overflow-hidden rounded-full ${surfaceMutedBg}`}
               >
-                {notStartedCount} not started
+                {statusCounts.map(([status, count]) => (
+                  <span className={issueStatusScale[status]} key={status} style={{ flex: count }} />
+                ))}
               </span>
-            ) : null}
-            {work.length === 0 ? null : <BarTrack className="h-2 w-32" segments={work} />}
-            <span className={`text-xs ${textMutedOnSurfaceMuted}`}>
-              {work.map((segment) => `${segment.count} ${segment.label.toLowerCase()}`).join(" · ")}
+              <span className={`text-xs ${textMutedOnSurfaceMuted}`}>
+                {statusCounts
+                  .map(([status, count]) => `${count} ${statusLabel(status).toLowerCase()}`)
+                  .join(" · ")}
+              </span>
             </span>
-          </span>
+          ) : (
+            <span className="flex items-center gap-2" data-group-bar>
+              {notStartedNumber ? (
+                <span
+                  className={`text-xs tabular-nums ${textMutedOnSurfaceMuted}`}
+                  title={notStarted
+                    .map((segment) => `${segment.label} ${segment.count}`)
+                    .join(", ")}
+                >
+                  {notStartedCount} not started
+                </span>
+              ) : null}
+              {work.length === 0 ? null : <BarTrack className="h-2 w-32" segments={work} />}
+              <span className={`text-xs ${textMutedOnSurfaceMuted}`}>
+                {work
+                  .map((segment) => `${segment.count} ${segment.label.toLowerCase()}`)
+                  .join(" · ")}
+              </span>
+            </span>
+          )}
           {epicKey === undefined ? null : (
             <EpicActions
               epicKey={epicKey}
