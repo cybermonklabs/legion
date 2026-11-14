@@ -155,7 +155,8 @@ func TestARestoreConfirmationKeepsOnlyTheBundleOfTheReleaseItNames(t *testing.T)
 }
 
 // The idle rule releases no pod of an issue whose stored bundle no pod has restored, and the row's
-// own presence is that record: it is there from the save until a launcher's report deletes it.
+// own presence is that record: it is there from the save until the launcher of the pod it was sent
+// to reports the restore.
 func TestAStoredBundleReadsAsUnrestoredUntilItsConfirmation(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -182,11 +183,82 @@ func TestAStoredBundleReadsAsUnrestoredUntilItsConfirmation(t *testing.T) {
 	if !unrestored() {
 		t.Fatal("an issue whose release saved a bundle reads as holding nothing")
 	}
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-that-restored-it", saved.At.Add(time.Minute)); err != nil ||
+		restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the pod after the release was answered %v (%v), want the bundle sent", restore.ReleaseBundle.Take, err)
+	}
 	if err := s.KeepRestoredWorkspaceBundle(ctx, "INFRA-945", "pod-that-restored-it", 11); err != nil {
 		t.Fatal(err)
 	}
 	if unrestored() {
 		t.Fatal("an issue whose restore was confirmed still reads as holding work no pod has restored")
+	}
+}
+
+// A confirmation keeps only a bundle whose one attempt was a send to the confirming pod. Any other
+// launcher of the issue reports work its pod does not hold — the pod the bundle was refused to, or
+// one it was never sent to — and such a report keeps nothing: no running copy is written from it,
+// and the bundle's row stays, with the hold it puts on the issue's pod, since no pod's disk holds
+// that work.
+func TestARestoreConfirmationFromAPodNotSentTheBundleKeepsNothingAndLiftsNoHold(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	const issue = "INFRA-945"
+	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
+	held := func(why string) {
+		t.Helper()
+		var unrestored bool
+		if err := s.Tx(ctx, func(tx pgx.Tx) error {
+			var err error
+			unrestored, err = workspaceBundleUnrestored(ctx, tx, issue)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !unrestored {
+			t.Fatalf("after %s the bundle reads as restored, which lifts the hold on the issue's pod", why)
+		}
+		if row := heldCopyRow(t, s, runningCopyCopies, issue); row.held {
+			t.Fatalf("after %s the issue holds the running copy %+v, want none written", why, row)
+		}
+	}
+	if err := s.PutWorkspaceBundle(ctx, issue, 11, runtime.WorkspaceBundle{Bundle: []byte("PACK the first release"),
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}); err != nil {
+		t.Fatal(err)
+	}
+	// A pod not created after the save is refused the bundle, which spends its attempt.
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-older-than-the-save", at.Add(-time.Minute)); err != nil ||
+		restore.ReleaseBundle.Take != runtime.WorkspaceBundleRefusedOlder {
+		t.Fatalf("a pod older than the save was answered %v (%v), want the bundle refused", restore.ReleaseBundle.Take, err)
+	}
+	if err := s.KeepRestoredWorkspaceBundle(ctx, issue, "pod-older-than-the-save", 11); err != nil {
+		t.Fatal(err)
+	}
+	held("a report of the pod the bundle was refused to")
+
+	// The issue's next release saves a bundle of its own, which is sent to pod-two.
+	if err := s.PutWorkspaceBundle(ctx, issue, 12, runtime.WorkspaceBundle{Bundle: []byte("PACK the second release"),
+		Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", At: at.Add(time.Hour), PodUID: "pod-of-the-second-release"}); err != nil {
+		t.Fatal(err)
+	}
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-two", at.Add(2*time.Hour)); err != nil ||
+		restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("pod-two was answered %v (%v), want the second release's bundle sent", restore.ReleaseBundle.Take, err)
+	}
+	if err := s.KeepRestoredWorkspaceBundle(ctx, issue, "another-pod-of-the-issue", 12); err != nil {
+		t.Fatal(err)
+	}
+	held("a report of a pod the bundle was not sent to")
+
+	// The report of the pod it was sent to keeps it.
+	if err := s.KeepRestoredWorkspaceBundle(ctx, issue, "pod-two", 12); err != nil {
+		t.Fatal(err)
+	}
+	if row := heldCopyRow(t, s, releaseBundleCopies, issue); row.held {
+		t.Fatalf("after pod-two's report the store holds the bundle %+v, want it kept as pod-two's running copy", row)
+	}
+	if row := storedRunningCopy(t, s, issue); string(row.bundle) != "PACK the second release" || row.sourcePod != "pod-two" {
+		t.Fatalf("after pod-two's report the running copy is %q off %q, want the second release's work off pod-two", row.bundle, row.sourcePod)
 	}
 }
 

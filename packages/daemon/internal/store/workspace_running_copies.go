@@ -49,13 +49,35 @@ var ErrReleaseBundleSaved = errors.New("an idle release has saved its bundle off
 // (runtime.DecideWorkspaceRestore). Nor does it read the attempt: the pod a bundle came off never
 // spends it (TakeWorkspaceCopyForRestore answers that pod nothing), and the pod that does is made
 // only once the release has taken that pod away, so for as long as the bundle's row stands the
-// bundle is its pod's last copy. A release a wake cancels drops its bundle (CancelIssueRelease),
-// which lifts the refusal for the pod that then works on, and a confirmed restore drops it too
-// (KeepRestoredWorkspaceBundle), keeping its work as the restoring pod's running copy.
+// bundle is its pod's last copy. A release a wake cancels moves its bundle into the issue's
+// running copy (CancelIssueRelease), which lifts the refusal for the pod that then works on, and a
+// confirmed restore moves it too (KeepRestoredWorkspaceBundle), keeping its work as the restoring
+// pod's running copy.
 //
 // It is one text, read by the cadence before it asks a shim (ReleaseBundleSavedOff) and written
 // into both of PutRunningWorkspaceCopy's statements, so the two places are one rule.
 const releaseBundleSavedOff = `exists (select 1 from workspace_bundles where issue = $1 and source_pod_uid = $2)`
+
+// runningCopyReplaced is the part of every statement that writes other work into the row of an
+// issue's running copy: the row takes a restore id of its own and its restore attempt is cleared.
+// The work is not the copy it replaces, so it is offered to a pod of its own
+// (TakeWorkspaceCopyForRestore), and a report naming the id it replaced changes nothing
+// (KeepRestoredRunningWorkspaceCopy). It is one text, written by the save of a copy
+// (PutRunningWorkspaceCopy), by the move of a release bundle into the table
+// (keepReleaseBundleAsRunningCopy, which a confirmed restore and a cancelled release both make)
+// and by the keep of a restored running copy (KeepRestoredRunningWorkspaceCopy), so no statement
+// gives the row other work under the id it had or leaves an attempt spent on work the row no
+// longer holds.
+const runningCopyReplaced = `restore_id = nextval('workspace_running_copy_restore_ids'),
+	attempt_pod_uid = null, attempt_at = null, attempt_outcome = null`
+
+// runningCopyUpsert is the conflict clause of the two statements that write a whole copy into an
+// issue's running copy, the save (PutRunningWorkspaceCopy) and the move of a release bundle
+// (keepReleaseBundleAsRunningCopy): one issue has one row, and the copy the insert carries
+// replaces every column of the work the row held, under runningCopyReplaced.
+const runningCopyUpsert = `on conflict (issue) do update set source_pod_uid = excluded.source_pod_uid,
+	bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
+	tips = excluded.tips, bookmarks = excluded.bookmarks, ` + runningCopyReplaced
 
 // ReleaseBundleSavedOff is whether issue's release bundle came off pod (releaseBundleSavedOff),
 // which the daemon's cadence reads before it asks a shim of that pod for a copy, so that no bundle
@@ -78,9 +100,7 @@ func (s *Store) ReleaseBundleSavedOff(ctx context.Context, issue, pod string) (b
 // issue's pod for ever, as well as destroying a release bundle whose restore no pod has confirmed.
 //
 // Each copy the save stores takes a restore id of its own and clears the restore attempt the row
-// carried with the rest of it: it is other work than the copy it replaces, so it is offered to a
-// pod of its own (TakeWorkspaceCopyForRestore), and a report naming the id it replaced
-// changes nothing (KeepRestoredRunningWorkspaceCopy).
+// carried with the rest of it (runningCopyReplaced).
 //
 // A save whose content equals the stored row's moves the time alone and leaves the bytes, the size
 // and the restore id where they are. Equal means the same head, the same tips, the same bookmarks
@@ -141,11 +161,7 @@ func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, b run
 			(issue, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
 		select $1, $2, $3, $4, $5, $6, $7, $8
 		where not `+releaseBundleSavedOff+`
-		on conflict (issue) do update set restore_id = nextval('workspace_running_copy_restore_ids'),
-			source_pod_uid = excluded.source_pod_uid, bundle = excluded.bundle,
-			size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
-			tips = excluded.tips, bookmarks = excluded.bookmarks,
-			attempt_pod_uid = null, attempt_at = null, attempt_outcome = null`,
+		`+runningCopyUpsert,
 		issue, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks)
 	if err != nil {
 		return fmt.Errorf("save the running workspace copy of %s: %w", issue, err)
@@ -346,7 +362,7 @@ func deleteRunningCopy(ctx context.Context, db execer, issue string) error {
 // KeepRestoredRunningWorkspaceCopy keeps issue's running copy of restoreID, which the launcher of
 // the pod of podUID has reported restored, as that pod's own copy of the work: in one statement
 // it names that pod as the row's source, gives the row a restore id of its own and clears its
-// attempt, leaving the work as it is.
+// attempt (runningCopyReplaced), leaving the work as it is.
 //
 // The copy is kept rather than dropped because from the confirmation on its work is on the
 // restoring pod's disk alone, and none of the three triggers of a running copy need fire for a
@@ -379,14 +395,20 @@ func deleteRunningCopy(ctx context.Context, db execer, issue string) error {
 // MinRunningWorkspaceCopyRestoreID is a release's and matches no row here, which is the
 // disjointness the schema keeps. A report with no pod to name is refused, since the row could not
 // then tell the pod the work is on from the pod that replaces it.
+//
+// It keeps only a copy whose one attempt was a send to that pod: the row's attempt names podUID
+// and records the send (attempt_outcome, TakeWorkspaceCopyForRestore). Any other launcher of the
+// issue — one whose pod the take answered nothing, refused the copy or closed it superseded —
+// reports work its pod was never sent, and its report changes nothing, so the row is never sourced
+// to a pod whose disk does not hold the work, and the attempt stays as the take left it.
 func (s *Store) KeepRestoredRunningWorkspaceCopy(ctx context.Context, issue, podUID string, restoreID int64) error {
 	if podUID == "" {
 		return fmt.Errorf("the restored running workspace copy %d of %s needs the pod that restored it", restoreID, issue)
 	}
 	if _, err := s.pool.Exec(ctx, `update workspace_running_copies
-		set source_pod_uid = $3, at = now(), restore_id = nextval('workspace_running_copy_restore_ids'),
-			attempt_pod_uid = null, attempt_at = null, attempt_outcome = null
-		where issue = $1 and restore_id = $2`, issue, restoreID, podUID); err != nil {
+		set source_pod_uid = $3, at = now(), `+runningCopyReplaced+`
+		where issue = $1 and restore_id = $2 and attempt_pod_uid = $3 and attempt_outcome = $4`,
+		issue, restoreID, podUID, sentCopyOutcome); err != nil {
 		return fmt.Errorf("keep the restored running workspace copy %d of %s as the copy of pod %s: %w", restoreID, issue, podUID, err)
 	}
 	return nil
@@ -405,15 +427,18 @@ func (s *Store) KeepRestoredRunningWorkspaceCopy(ctx context.Context, issue, pod
 // because the report is that issue's launcher's and another issue's copy is none of its business.
 // An id below it is the id of the release whose teardown saved the bundle, and that keep names the
 // issue and the release together, which is the same rule: a bundle a later release saved stays.
+// Each keep also reads the copy's attempt, and keeps nothing that was not sent to the reporting
+// pod.
 //
 // The rule lives here, beside the two keeps it chooses between, because it is a statement about
 // which table an id names and about nothing else: the daemon wires this method straight onto the
 // runtime's report callback (runtime.WorkspaceBundleRestored), and the sandbox runtime's own tests
 // drive the report through it rather than through a copy of the branch.
 //
-// An id of either kind that no row of issue holds changes nothing, which is the ordinary end of a
-// late report, and the caller is told the keep succeeded, because it did: the work the report
-// confirmed is either kept already or replaced by newer work.
+// An id of either kind that no row of issue holds, or that names a copy not sent to podUID,
+// changes nothing, which is the ordinary end of a late report, and the caller is told the keep
+// succeeded, because it did: the work the report confirmed is either kept already, replaced by
+// newer work, or never this pod's.
 func (s *Store) KeepRestoredWorkspaceCopy(ctx context.Context, issue, podUID string, restoreID int64) error {
 	if restoreID >= MinRunningWorkspaceCopyRestoreID {
 		return s.KeepRestoredRunningWorkspaceCopy(ctx, issue, podUID, restoreID)

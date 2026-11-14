@@ -487,7 +487,10 @@ const withheldBranchLine = "launcher bundle: the saved workspace copy's own valu
 const reachedLine = "launcher bundle: the issue's saved workspace work reached the pod that restores it"
 
 // restoreFailedLine is the warning a launcher's report of a restore that failed is logged with.
-const restoreFailedLine = "launcher bundle: the pod's launcher could not restore the issue's saved workspace work, which had its one attempt and stays in the daemon's database"
+// The copy had its one attempt and stays in the daemon's database, but a running copy only until
+// the next copy of the issue's workspace replaces it, which the line says so that an operator who
+// wants its bytes reads them first (restoreReported).
+const restoreFailedLine = "launcher bundle: the pod's launcher could not restore the issue's saved workspace work, which had its one attempt and is sent to no pod again; it stays in the daemon's database, a running copy only until the next copy of the issue's workspace replaces it"
 
 // restoreWorkspace carries the newer of the two copies of this pod's issue workspace to the pod's
 // launcher: the bundle the issue's last idle release saved, and the copy the daemon took while
@@ -623,10 +626,12 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 // restoreReported keeps the saved copy of this pod's issue workspace that a launcher's report
 // names as this pod's own running copy, once that launcher reports that its restore put the work
 // back. A restore that failed, and a pod no role ever started in, leave the copy as the send left
-// it, with its one attempt recorded, so no pod is sent it again (restoreWorkspace). Nothing else
-// drops a release bundle no pod restored, so the issue's close and its tree's close are what end
-// one (outbox's dropReleasedWork); a running copy no pod restored is replaced by the next copy
-// taken off the pod it came off.
+// it, with its one attempt recorded, so no pod is sent it again (restoreWorkspace). A release
+// bundle no pod restored is ended by the issue's close or its tree's close (outbox's
+// dropReleasedWork), or by a cancel of the release that saved it, which moves it into the issue's
+// running copy (store.CancelIssueRelease). A running copy no pod restored is replaced by the next
+// copy taken off any pod of the issue, the restoring pod's own included
+// (store.PutRunningWorkspaceCopy).
 //
 // The confirmed copy is kept, not deleted, because from here on the restoring pod's disk is the
 // one place its work is, and a pod that does nothing takes no copy of its own: an agent relaunched

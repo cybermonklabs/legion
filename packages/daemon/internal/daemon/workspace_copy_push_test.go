@@ -186,8 +186,7 @@ func TestAReleaseSaveWaitsForTheRunningCopyBundlerInFlightBeforeItBundles(t *tes
 // bundler failed — the launcher is gone — so the release is cancelled and the pod goes on idle with
 // no bundle; the copy the push asked for is then the one copy of the pod's work since the push,
 // and dropped with the save it would leave an eviction of that idle pod nothing newer than what
-// the issue held before. Only a save that stored its bundle drops it: that bundle is the pod's
-// last copy.
+// the issue held before.
 func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBundle(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
@@ -222,6 +221,48 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBun
 	}
 	if asked := rig.bundler.reads(); len(asked) != 1 {
 		t.Fatalf("the cadence's bundler was asked %v, want the one copy the push owed", asked)
+	}
+}
+
+// Behind a save that stored its bundle, the copy a push owed while the save held the place is
+// started all the same, and the rule that makes that bundle the pod's last copy refuses it before
+// any shim is asked (store.Store.ReleaseBundleSavedOff): the give-back holds no rule of its own
+// about it. Stored, the copy would be the later of the issue's two copies, offered to the next pod
+// in the bundle's place, and the bundle's row would hold the issue's pod.
+func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsRefusedWhenTheSaveStoresItsBundle(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	apply := rig.pushEngine(t)
+	rig.rt.beforeBundle = func() {
+		// The implementer's process is recorded in the pod the bundle is being taken off, and a
+		// push lands while the save holds the issue's place: its copy is owed behind the save.
+		rig.setLocatorPod(t, releasedPodUID)
+		apply("c0", "c2", time.Now().UTC())
+		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+			rig.w.copies.mu.Lock()
+			defer rig.w.copies.mu.Unlock()
+			return rig.w.copies.issues[rig.issue.Key].owed
+		}) {
+			t.Fatalf("the push's copy was never owed behind the save; the daemon logged:\n%s", rig.logs.String())
+		}
+	}
+
+	rig.saveRelease(t)
+	refused := rig.awaitUnsaved(t, runningCopyReleaseBundled, 1)
+	rig.awaitQuiet(t)
+	if line := refused[0]; line["level"] != "INFO" || line["issue"] != rig.issue.Key || line["pod"] != releasedPodUID {
+		t.Fatalf("the owed copy was refused as %v, want it at INFO naming %s and the pod %s", line, rig.issue.Key, releasedPodUID)
+	}
+	if asked := rig.bundler.reads(); len(asked) != 0 {
+		t.Fatalf("the bundler was asked %v for the copy the push owed, want no shim asked of the pod the bundle came off", asked)
+	}
+	if rig.copied(t) {
+		t.Fatal("the copy the push owed behind the save was stored beside the bundle")
+	}
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", time.Now().UTC().Add(time.Hour))
+	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend || restore.Running.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the next pod was answered %v of the bundle and %v of a running copy (%v), want the bundle sent and no running copy held",
+			restore.ReleaseBundle.Take, restore.Running.Take, err)
 	}
 }
 

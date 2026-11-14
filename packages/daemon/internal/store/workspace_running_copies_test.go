@@ -263,10 +263,15 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 func TestARestoreReportNamingAnotherIssuesRunningCopyChangesNothing(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
+	at := time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
 	other := runtime.WorkspaceBundle{Bundle: []byte("PACK another issue's work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
-		At: time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC), PodUID: "pod-of-another-issue"}
+		At: at, PodUID: "pod-of-another-issue"}
 	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-2760", other); err != nil {
 		t.Fatal(err)
+	}
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-2760", "pod-of-INFRA-2760", at.Add(time.Minute)); err != nil ||
+		restore.Running.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the next pod of INFRA-2760 was answered %v (%v), want its copy sent", restore.Running.Take, err)
 	}
 	stored := storedRunningCopy(t, s, "INFRA-2760")
 	if err := s.KeepRestoredWorkspaceCopy(ctx, "INFRA-1117", "pod-of-INFRA-1117", stored.restoreID); err != nil {
@@ -280,6 +285,63 @@ func TestARestoreReportNamingAnotherIssuesRunningCopyChangesNothing(t *testing.T
 	}
 	if row := storedRunningCopy(t, s, "INFRA-2760"); row.sourcePod != "pod-of-INFRA-2760" || row.restoreID == stored.restoreID {
 		t.Fatalf("the report of the copy's own issue left %+v, want it kept as the reporting pod's copy under a new id", row)
+	}
+}
+
+// A confirmation keeps only a running copy whose one attempt was a send to the confirming pod. Any
+// other launcher of the issue reports work its pod does not hold — the pod the copy was refused
+// to, or one it was never sent to — and such a report keeps nothing: the row keeps its source, its
+// restore id, its time and its attempt, so it is never named off a pod whose disk lacks the work.
+func TestARestoreReportFromAPodNotSentTheRunningCopyKeepsNothing(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	const issue = "INFRA-1117"
+	at := time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
+	unchanged := func(why string, want storedCopy) {
+		t.Helper()
+		if row := storedRunningCopy(t, s, issue); row.restoreID != want.restoreID || row.sourcePod != want.sourcePod ||
+			row.attemptPod != want.attemptPod || !row.at.Equal(want.at) {
+			t.Fatalf("after %s the running copy reads %+v, want it as it was: %+v", why, row, want)
+		}
+	}
+	if err := s.PutRunningWorkspaceCopy(ctx, issue, runtime.WorkspaceBundle{Bundle: []byte("PACK the first copy"),
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: runningPodUID}); err != nil {
+		t.Fatal(err)
+	}
+	// A push the daemon recorded after the copy refuses it to the pod that asks, which spends its
+	// attempt.
+	recordPush(t, s, issue, "c0", "c1", at.Add(time.Minute))
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-refused-the-copy", at.Add(time.Hour)); err != nil ||
+		restore.Running.Take != runtime.WorkspaceBundleRefusedPushed {
+		t.Fatalf("the pod after the push was answered %v (%v), want the copy refused", restore.Running.Take, err)
+	}
+	refused := storedRunningCopy(t, s, issue)
+	if err := s.KeepRestoredRunningWorkspaceCopy(ctx, issue, "pod-refused-the-copy", refused.restoreID); err != nil {
+		t.Fatal(err)
+	}
+	unchanged("a report of the pod the copy was refused to", refused)
+
+	// The pod's next copy is taken after the push and sent to pod-two.
+	if err := s.PutRunningWorkspaceCopy(ctx, issue, runtime.WorkspaceBundle{Bundle: []byte("PACK the copy after the push"),
+		Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", At: at.Add(2 * time.Minute), PodUID: runningPodUID}); err != nil {
+		t.Fatal(err)
+	}
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-two", at.Add(time.Hour)); err != nil ||
+		restore.Running.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("pod-two was answered %v (%v), want the copy after the push sent", restore.Running.Take, err)
+	}
+	sent := storedRunningCopy(t, s, issue)
+	if err := s.KeepRestoredRunningWorkspaceCopy(ctx, issue, "another-pod-of-the-issue", sent.restoreID); err != nil {
+		t.Fatal(err)
+	}
+	unchanged("a report of a pod the copy was not sent to", sent)
+
+	// The report of the pod it was sent to keeps it as that pod's own.
+	if err := s.KeepRestoredRunningWorkspaceCopy(ctx, issue, "pod-two", sent.restoreID); err != nil {
+		t.Fatal(err)
+	}
+	if row := storedRunningCopy(t, s, issue); row.sourcePod != "pod-two" || row.restoreID == sent.restoreID || row.attemptPod != "" {
+		t.Fatalf("after pod-two's report the running copy reads %+v, want it kept off pod-two under a new id with no attempt", row)
 	}
 }
 
@@ -305,12 +367,17 @@ func TestARunningCopyLeavesTheIssueReleasableWhileItIsIdle(t *testing.T) {
 
 	// The control: the flag is read, and it is the release bundle that sets it. An idle release
 	// of this pod stores that bundle, and until a pod puts it back the issue is held. The save
-	// drops the running copy as it stores the bundle (PutWorkspaceBundle), and the pod whose
-	// release a wake then cancelled works on and is copied again.
+	// drops the running copy as it stores the bundle (PutWorkspaceBundle); the pod that replaces
+	// the released one is sent the bundle, and a pod that came back beside it works on and is
+	// copied.
 	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7, runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work of the release"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9",
 		At: now, PodUID: releasedPodUID}); err != nil {
 		t.Fatalf("save a release bundle of %s: %v", rootIssue, err)
+	}
+	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-that-restored-it", now.Add(time.Hour)); err != nil ||
+		restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the pod after the release was answered %v (%v), want the bundle sent", restore.ReleaseBundle.Take, err)
 	}
 	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work after the release"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",

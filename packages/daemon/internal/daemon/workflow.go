@@ -1104,8 +1104,8 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.copyStore = supervision.supervisor.store
 	if bundler, ok := supervision.supervisor.deps.Runtime.(runtime.WorkspaceBundler); ok {
 		w.copyBundler = bundler
-		// A copy owed while a release's save held the issue's place is taken when that save
-		// stores no bundle, and the outbox that runs the save starts it through the cadence's
+		// A copy owed while a release's save held the issue's place is taken once that save
+		// gives the place back, and the outbox that runs the save starts it through the cadence's
 		// own start (runningCopies.hold).
 		w.copies.startsOwedWith(w.startOwedCopy)
 	} else {

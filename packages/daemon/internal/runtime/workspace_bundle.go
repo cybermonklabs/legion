@@ -151,6 +151,31 @@ type WorkspaceCopyHeld struct {
 // Held is whether the issue holds the copy at all.
 func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 
+// NewerWorkspaceCopy is which of an issue's two copies of its workspace holds the newer work, and
+// empty when the issue holds neither. `at` orders them because it is the one thing both carry and
+// the only one that says which work descends from which: a running copy is taken while the roles
+// work, a release bundle while they are idle, just before the release stops them, and either can
+// be the newer, since a pod can be released minutes after a copy or run for hours after a
+// cancelled release left one behind. A tie goes to the release bundle, which is taken from a
+// workspace whose roles are idle: a copy of the same second holds no more than the bundle does,
+// and restoring the bundle also lifts the hold its row puts on the issue's pod
+// (workflow.IdleHoldBundleUnrestored).
+//
+// Which copy is the newer is a fact of the two copies alone, so it reads nothing else of them:
+// not whether a copy's attempt is spent, not the pod its work came off, and nothing of a pod
+// asking or of a push. The restore offers the copy it answers (DecideWorkspaceRestore), and the
+// two writes that turn a release bundle into the issue's running copy leave a running copy it
+// answers as it is (store.Store.KeepRestoredWorkspaceBundle, store.Store.CancelIssueRelease).
+func NewerWorkspaceCopy(bundle, running WorkspaceCopyHeld) WorkspaceCopyKind {
+	switch {
+	case running.Held() && (!bundle.Held() || running.At.After(bundle.At)):
+		return WorkspaceCopyRunning
+	case bundle.Held():
+		return WorkspaceCopyReleaseBundle
+	}
+	return ""
+}
+
 // DecideWorkspaceRestore is the whole of the choice the restore of a new pod makes between the
 // two copies of its issue's workspace. It reads what each copy's row says of it, the newest push
 // of the issue's branch the daemon recorded, and the pod asking: its uid, podUID, and the
@@ -161,19 +186,12 @@ func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 // answers but WorkspaceBundleNone (store.Store.TakeWorkspaceCopyForRestore), and a test outside
 // the store drives the very same decision against real git and jj.
 //
-// The newer copy is offered and the older superseded (WorkspaceBundleSuperseded). `at` orders
-// them because it is the one thing both carry and the only one that says which work descends
-// from which: a running copy is taken while the roles work, a release bundle while they are idle,
-// just before the release stops them, and either can be the newer, since a pod can be released
-// minutes after a copy or run for hours after a cancelled release left one behind. A tie goes to
-// the release bundle, which is taken from a workspace whose roles are idle: a copy of the same
-// second holds no more than the bundle does, and restoring the bundle also lifts the hold its row
-// puts on the issue's pod (workflow.IdleHoldBundleUnrestored). Which copy is the newer is a fact
-// of the two copies and not of the pod asking or of the push, so the comparison reads every copy
-// the issue holds, spent or not, whichever pod its work came off and whether or not the push
-// refuses it: an older copy is never sent because the newer one went to an earlier pod, nor
-// because the newer one is a running copy the push refuses, which would put the workspace further
-// back still than the copy the push refused.
+// The newer copy (NewerWorkspaceCopy) is offered and the older superseded
+// (WorkspaceBundleSuperseded). The comparison reads every copy the issue holds, spent or not,
+// whichever pod its work came off and whether or not the push refuses it: an older copy is never
+// sent because the newer one went to an earlier pod, nor because the newer one is a running copy
+// the push refuses, which would put the workspace further back still than the copy the push
+// refused.
 //
 // The older is superseded, which spends its attempt, rather than left, because a copy left with
 // its attempt unspent is a copy some later pod can still be sent, and that pod's workspace holds
@@ -236,12 +254,7 @@ func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 // future and that pod is refused, which costs the restore and loses no work: the direction to
 // fail in.
 func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePush, podUID string, podCreated time.Time) (bundleTake, runningTake WorkspaceBundleTake, offered WorkspaceCopyKind) {
-	switch {
-	case running.Held() && (!bundle.Held() || running.At.After(bundle.At)):
-		offered = WorkspaceCopyRunning
-	case bundle.Held():
-		offered = WorkspaceCopyReleaseBundle
-	}
+	offered = NewerWorkspaceCopy(bundle, running)
 	take := func(kind WorkspaceCopyKind, c WorkspaceCopyHeld) WorkspaceBundleTake {
 		switch {
 		case !c.Held(), c.Spent, c.Source == podUID:

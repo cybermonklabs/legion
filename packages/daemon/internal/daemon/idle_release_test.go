@@ -569,8 +569,8 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 // process of the pod, and until it has run a delivery for a role of the pod cancels the
 // release: one queued below the release's own rows was in flight when the mark was written,
 // one above them arrived while every role still ran. Either way the roles go on in the same
-// pod, nothing is suspended, no Sandbox is torn down and the bundle the save stored goes with
-// the release, since the pod keeps that work in its own workspace.
+// pod, nothing is suspended, no Sandbox is torn down and the bundle the save stored leaves the
+// bundle table, whose row would hold the issue's pod, to stand as the pod's running copy.
 func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -611,6 +611,9 @@ func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
 			}
 			if rig.bundled(t) {
 				t.Fatal("the cancelled release left its bundle behind")
+			}
+			if !rig.copied(t) {
+				t.Fatal("the cancelled release kept no running copy of the work its save stored")
 			}
 			if rig.marked(t) {
 				t.Fatal("the release's mark outlived it")
@@ -691,12 +694,23 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 		t.Fatal("the cancel left its bundle behind when the store refused a delete of its own")
 	}
 
+	// The resumed roles push their work, and the daemon records the push.
+	pushed := time.Now().UTC().Add(time.Minute)
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Clock: func() time.Time { return pushed }, Pushes: rig.st}, quietLogger())
+	push := intake.Push{Repo: rig.issue.GitHubRepo, Branch: "legion/" + rig.issue.Key, Before: "c0", After: "c2"}
+	if _, err := intake.ApplyFact(ctx, rig.pool, "github", "push-webhook:c0..c2", push, engine); err != nil {
+		t.Fatalf("apply the push of c0..c2: %v", err)
+	}
+
 	// The pod an eviction or an update round makes hours later, with the resumed roles' work
-	// pushed in between: it is sent nothing at all.
+	// pushed in between: it is sent nothing of the work the release saved. The bundle's row is
+	// gone, and the copy the cancel kept of that work as the pod's running copy is older than the
+	// push, which refuses it (runtime.WorkspaceBundleRefusedPushed).
 	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour))
 	later := restore.ReleaseBundle
-	if err != nil || later.Take != runtime.WorkspaceBundleNone {
-		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle.Bundle, later.Take, err)
+	if err != nil || later.Take != runtime.WorkspaceBundleNone || restore.Running.Take == runtime.WorkspaceBundleSend {
+		t.Fatalf("a pod created after the cancelled release's save was answered %v of %q and %v of the running copy (%v), want nothing sent",
+			later.Take, later.Bundle.Bundle, restore.Running.Take, err)
 	}
 	if len(later.Bundle.Bookmarks) != 0 {
 		t.Fatalf("that pod was answered the bookmarks %v, which a restore would move back over everything pushed since the cancel", later.Bundle.Bookmarks)

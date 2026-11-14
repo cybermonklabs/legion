@@ -36,9 +36,10 @@ const (
 	ReleaseOver ReleaseAct = iota
 	// ReleaseCancel: the release is cancelled. The caller carries the cancel out
 	// (CancelIssueRelease): the claims this release suspended are resumed and the mark goes, in
-	// one transaction, and the bundle it stored is deleted, so the pod is left as a wake would
-	// have left it. The mark stands until that call, so a cancel that does not finish is read
-	// again by the row's retry rather than lost.
+	// one transaction, and the bundle it stored becomes the issue's running copy, so the pod is
+	// left as a wake would have left it with its work still copied outside it. The mark stands
+	// until that call, so a cancel that does not finish is read again by the row's retry rather
+	// than lost.
 	ReleaseCancel
 	// ReleaseActs: the row acts.
 	ReleaseActs

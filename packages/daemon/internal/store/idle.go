@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -292,25 +293,43 @@ func insertOutboxRow(ctx context.Context, tx pgx.Tx, issue string, row IdleRelea
 type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, error)
 
 // CancelIssueRelease ends a release that did not finish, in one transaction: the bundle that
-// release saved is deleted, the resume of each claim this release suspended and still holds is
-// queued, and the mark goes with them. The three are one act because any of them alone is a wrong
-// state of the pod: a mark deleted before the resumes are durable leaves those roles `released` in
-// a pod that still stands, with no backstop — a release arms one only once its pod is gone — and
-// nothing left to read that says they are owed a process, since the next row of the release reads
-// the release as over and the next idle tick sees a pod whose claims are suspended; and a bundle
-// left behind is a copy of work the pod the roles resume in holds on its own disk, which would
-// hold the issue's pod (workflow.IdleHoldBundleUnrestored) until some later pod of the issue
-// restored it. Queueing the resumes rather than relaunching here is what makes them durable: the
-// row is the daemon's own record of what the pod is owed, and its lane retries it until the role
-// has it back.
+// release saved is kept as the issue's running copy, the resume of each claim this release
+// suspended and still holds is queued, and the mark goes with them. The three are one act because
+// any of them alone is a wrong state of the pod: a mark deleted before the resumes are durable
+// leaves those roles `released` in a pod that still stands, with no backstop — a release arms one
+// only once its pod is gone — and nothing left to read that says they are owed a process, since
+// the next row of the release reads the release as over and the next idle tick sees a pod whose
+// claims are suspended; and a bundle left in its own table is a copy of work the pod the roles
+// resume in holds on its own disk, which would hold the issue's pod
+// (workflow.IdleHoldBundleUnrestored) until some later pod of the issue restored it. Queueing the
+// resumes rather than relaunching here is what makes them durable: the row is the daemon's own
+// record of what the pod is owed, and its lane retries it until the role has it back.
 //
-// The issue's running copy stays. A cancel the save makes is reached before the save replaced
-// that copy — a bundler that failed, a bundle too large to carry, a write that failed — and the
-// pod then goes on idle with that copy as the only copy of its work outside it, so a cancel that
-// dropped it would leave an eviction of that idle pod nothing to restore. A cancel after a save
-// that stored its bundle, such as a wake's, finds no running copy to keep, since the save dropped
-// it (PutWorkspaceBundle) and no copy off that pod is stored while the bundle stands
-// (releaseBundleSavedOff).
+// The bundle is kept, not dropped, because it is the only copy of the pod's work outside the pod.
+// A cancel after a save that stored its bundle — a wake's or a delivery's, the usual cancel —
+// finds no running copy beside it: the save dropped that copy (PutWorkspaceBundle), no copy off
+// the pod is stored while the bundle stands (releaseBundleSavedOff), and the roles the cancel
+// resumes come up Ready rather than ending a turn, so no copy of their own is taken until a woken
+// turn ends. A cancel that dropped the bundle would leave an eviction of the pod in that window
+// nothing to restore. It is moved into the running copy's table by the move a confirmed restore
+// makes (keepReleaseBundleAsRunningCopy), sourced to the pod it came off, which is the pod the
+// roles resume in: the take answers that pod nothing of it (the source rule,
+// runtime.DecideWorkspaceRestore), and offers it to the pod that replaces it. It is stamped with
+// the statement's now(), the store's clock, as a confirmed restore's copy is
+// (KeepRestoredWorkspaceBundle): from the cancel on it stands for the resumed pod's workspace, so
+// a push recorded during the release does not refuse it to the pod that replaces that one. From
+// then on it is a running copy like any other: it holds no pod, the pod's own next copy replaces
+// it, a push recorded after the cancel refuses it (runtime.WorkspaceBundleRefusedPushed) and takes
+// a copy of its own off the resumed roles, and every restore withholds the issue's branch
+// (runtime.RestorableBookmarks), so no pod that restores it moves the branch over the roles'
+// pushes. A running copy the issue holds that is newer than the bundle (runtime.NewerWorkspaceCopy)
+// stays as it is, and the bundle's row goes alone; it can only be another pod's, since no copy off
+// the bundle's own pod is stored while the bundle stands.
+//
+// A cancel the save makes is reached before the save replaced the issue's running copy — a
+// bundler that failed, a bundle too large to carry, a write that failed — so its release has no
+// bundle, and the copy stays as it stands: the pod then goes on idle with that copy as the only
+// copy of its work outside it.
 //
 // It answers the roles it queued a resume for: the claims this release suspended that are still
 // suspended as `released`. A claim another path took over — a close, a linger, an operator —
@@ -369,19 +388,20 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			return err
 		}
 		suspendsNoRole = kind == releaseKindUnowned
-		// The release's bundle goes with the mark, in this transaction. The pod it was taken off
-		// is the pod the roles resume in, with that work in its own workspace; left behind, the
-		// bundle would hold the issue's pod (workflow.IdleHoldBundleUnrestored) until a pod
-		// created after it restored it. The issue's running copy is not touched. Whatever pod
-		// restores it next cannot move the branch over the roles' pushes, since every restore
-		// withholds the issue's branch (runtime.RestorableBookmarks) and a running copy taken
-		// before the newest recorded push is refused (runtime.DecideWorkspaceRestore), and the
-		// pod it came off, the one the roles resume in, is answered nothing of it by the take's
-		// source rule. So it is the newest copy of this pod's work for the pod that replaces it,
-		// which is what it is for. A delete that fails fails the cancel, which its row's lane
-		// runs again.
-		if _, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1 and release_id = $2`, issue, release); err != nil {
+		// The release's bundle goes into the issue's running copy with the mark, in this
+		// transaction, still sourced to the pod it came off. A release whose save stored none has
+		// no row here. A move that fails fails the cancel, which its row's lane runs again.
+		var bundle runtime.WorkspaceCopyHeld
+		err = tx.QueryRow(ctx, `select at, source_pod_uid from workspace_bundles
+			where issue = $1 and release_id = $2 for update`, issue, release).Scan(&bundle.At, &bundle.Source)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
 			return err
+		default:
+			if err := keepReleaseBundleAsRunningCopy(ctx, tx, issue, release, bundle, bundle.Source); err != nil {
+				return err
+			}
 		}
 		roles, err := stillReleasedRoles(ctx, tx, project, issue, suspended)
 		if err != nil {

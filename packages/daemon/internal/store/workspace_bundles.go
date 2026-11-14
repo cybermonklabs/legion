@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -84,9 +83,9 @@ func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, boo
 }
 
 // DeleteWorkspaceBundle drops issue's bundle whatever release saved it: the release saved a
-// workspace with nothing unpushed, or the issue's work is over. A cancelled release deletes its
-// own bundle in its cancel's transaction (CancelIssueRelease), not here. Deleting one the table
-// does not hold is success, so a retried delete finishes.
+// workspace with nothing unpushed, or the issue's work is over. A cancelled release moves its own
+// bundle into the issue's running copy in its cancel's transaction (CancelIssueRelease), not here.
+// Deleting one the table does not hold is success, so a retried delete finishes.
 //
 // The issue's running copy goes in the same transaction, whatever minute took it, because each
 // reason to drop the bundle is a reason to drop that copy as firmly. A release that found nothing
@@ -112,8 +111,7 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 // has reported restored, as that pod's own copy of the issue's work. In one transaction it deletes
 // the bundle's row, which lifts the hold the row puts on the issue's pod
 // (workspaceBundleUnrestored, workflow.IdleHoldBundleUnrestored), and writes the same work as the
-// issue's running copy, sourced to the pod that restored it, under a restore id of its own and
-// with no attempt spent. The bytes move inside the database and never through the daemon.
+// issue's running copy, sourced to the pod that restored it (keepReleaseBundleAsRunningCopy).
 //
 // The work is kept because from the confirmation on it is on the restoring pod's disk alone, and
 // none of the three triggers of a running copy need fire for a pod that does nothing: a relaunched
@@ -140,11 +138,11 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 // for a push.
 //
 // A running copy the issue already holds is replaced only where the bundle's work is the newer of
-// the two by the restore's own rule (runtime.DecideWorkspaceRestore), read with the bundle's own
-// time, because the newer work wins. The decision that sent this bundle superseded such a copy,
-// and no pod is sent a superseded copy again, so replacing it loses nothing a pod would restore. A
-// copy the rule reads as the newer — one taken off another pod after the bundle — stays as it is,
-// and the bundle's row goes all the same, since the restore it confirms is done.
+// the two (runtime.NewerWorkspaceCopy), because the newer work wins. The decision that sent this
+// bundle superseded such a copy, and no pod is sent a superseded copy again, so replacing it loses
+// nothing a pod would restore. A copy that is the newer — one taken off another pod after the
+// bundle — stays as it is, and the bundle's row goes all the same, since the restore it confirms
+// is done.
 //
 // It names the release because a launcher holds its report until some connection carries it
 // (internal/launcher's bundleRestore.owed): a report can reach the daemon after the issue's next
@@ -152,48 +150,67 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 // any release but the one whose row the issue holds changes nothing, and so does a confirmation the
 // daemon read twice, the row being gone. A report with no pod to name is refused, since the kept
 // row could not then tell the pod the work is on from the pod that replaces it.
+//
+// It keeps only a bundle whose one attempt was a send to that pod: the row's attempt names podUID
+// and records the send (attempt_outcome, TakeWorkspaceCopyForRestore). Any other launcher of the
+// issue — one whose pod the take answered nothing, refused the bundle or closed it superseded —
+// reports work its pod was never sent, and its report changes nothing: the bundle's row stays, and
+// with it the hold on the issue's pod, since no pod's disk holds that work.
 func (s *Store) KeepRestoredWorkspaceBundle(ctx context.Context, issue, podUID string, release int64) error {
 	if podUID == "" {
 		return fmt.Errorf("the restored workspace bundle of %s saved by release %d needs the pod that restored it", issue, release)
 	}
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		// Both rows are locked in the order the restore's own take locks them
-		// (TakeWorkspaceCopyForRestore), the bundle first.
 		var bundle runtime.WorkspaceCopyHeld
 		err := tx.QueryRow(ctx, `select at, source_pod_uid from workspace_bundles
-			where issue = $1 and release_id = $2 for update`, issue, release).Scan(&bundle.At, &bundle.Source)
+			where issue = $1 and release_id = $2 and attempt_pod_uid = $3 and attempt_outcome = $4 for update`,
+			issue, release, podUID, sentCopyOutcome).Scan(&bundle.At, &bundle.Source)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		running, err := heldCopy(ctx, tx, runningCopyCopies, issue)
-		if err != nil {
-			return err
-		}
-		// Which copy is the newer is a fact of the two copies alone, so the push and the pod the
-		// decision is otherwise asked for change nothing of it.
-		if _, _, newer := runtime.DecideWorkspaceRestore(bundle, running, runtime.WorkspacePush{}, "", time.Time{}); newer == runtime.WorkspaceCopyRunning {
-			_, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1 and release_id = $2`, issue, release)
-			return err
-		}
-		_, err = tx.Exec(ctx, `with kept as (
-				delete from workspace_bundles where issue = $1 and release_id = $2
-				returning bundle, size_bytes, head, tips, bookmarks)
-			insert into workspace_running_copies (issue, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-			select $1, $3, bundle, size_bytes, now(), head, tips, bookmarks from kept
-			on conflict (issue) do update set restore_id = nextval('workspace_running_copy_restore_ids'),
-				source_pod_uid = excluded.source_pod_uid, bundle = excluded.bundle,
-				size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
-				tips = excluded.tips, bookmarks = excluded.bookmarks,
-				attempt_pod_uid = null, attempt_at = null, attempt_outcome = null`, issue, release, podUID)
-		return err
+		return keepReleaseBundleAsRunningCopy(ctx, tx, issue, release, bundle, podUID)
 	})
 	if err != nil {
 		return fmt.Errorf("keep the restored workspace bundle of %s saved by release %d as the copy of pod %s: %w", issue, release, podUID, err)
 	}
 	return nil
+}
+
+// keepReleaseBundleAsRunningCopy ends issue's release bundle of release in tx and keeps its work
+// as the issue's running copy: one statement deletes the bundle's row and writes the same work into
+// the running copy's, sourced to pod, stamped with the statement's now() — the store's clock — and
+// under a restore id of its own with no attempt spent (runningCopyUpsert). The bytes move inside
+// the database and never through the daemon. bundle is the bundle's row as the caller read it for
+// update in tx, and the running copy's row is locked after it here, which is the order the
+// restore's own take locks the two (TakeWorkspaceCopyForRestore).
+//
+// A running copy the issue holds that is newer than the bundle (runtime.NewerWorkspaceCopy) stays
+// as it is, and the bundle's row goes alone: the newer work wins.
+//
+// It is the one move of a release bundle into the running copy, made by the two writes that end a
+// bundle whose work a live pod's disk holds: the confirmation of its restore, which sources the
+// work to the restoring pod (KeepRestoredWorkspaceBundle), and the cancel of the release that saved
+// it, which leaves it sourced to the pod it came off, the one the roles resume in
+// (CancelIssueRelease).
+func keepReleaseBundleAsRunningCopy(ctx context.Context, tx pgx.Tx, issue string, release int64, bundle runtime.WorkspaceCopyHeld, pod string) error {
+	running, err := heldCopy(ctx, tx, runningCopyCopies, issue)
+	if err != nil {
+		return err
+	}
+	if runtime.NewerWorkspaceCopy(bundle, running) == runtime.WorkspaceCopyRunning {
+		_, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1 and release_id = $2`, issue, release)
+		return err
+	}
+	_, err = tx.Exec(ctx, `with kept as (
+			delete from workspace_bundles where issue = $1 and release_id = $2
+			returning bundle, size_bytes, head, tips, bookmarks)
+		insert into workspace_running_copies (issue, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
+		select $1, $3, bundle, size_bytes, now(), head, tips, bookmarks from kept
+		`+runningCopyUpsert, issue, release, pod)
+	return err
 }
 
 // workspaceBundleUnrestored is whether issue has a stored bundle whose restore is not recorded,

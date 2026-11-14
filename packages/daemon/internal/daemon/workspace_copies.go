@@ -138,11 +138,10 @@ type runningCopies struct {
 	issues map[string]runningCopy
 	run    context.Context
 	// startOwed starts the copy of an issue that was owed while a release's save held the issue's
-	// place and that the save gives back without storing a bundle (hold). It is the daemon's own
-	// start of a copy (workflowRuntime.startOwedCopy), set where the daemon attaches the cadence
-	// (attach), because the save runs in the outbox, which holds this memory and nothing that
-	// starts a copy. nil starts nothing, which is a daemon whose runtime bundles no workspace and
-	// so owes no copy.
+	// place, once the save gives the place back (hold). It is the daemon's own start of a copy
+	// (workflowRuntime.startOwedCopy), set where the daemon attaches the cadence (attach), because
+	// the save runs in the outbox, which holds this memory and nothing that starts a copy. nil
+	// starts nothing, which is a daemon whose runtime bundles no workspace and so owes no copy.
 	startOwed func(issue string)
 }
 
@@ -153,7 +152,7 @@ func (c *runningCopies) runUnder(ctx context.Context) {
 	c.run = ctx
 }
 
-// startsOwedWith makes start what takes a copy owed behind a release's save that stored nothing
+// startsOwedWith makes start what takes a copy owed behind a release's save
 // (runningCopies.startOwed).
 func (c *runningCopies) startsOwedWith(start func(issue string)) {
 	c.mu.Lock()
@@ -287,32 +286,29 @@ func (c *runningCopies) overtaken(issue string) bool {
 // copy it was owed can take two copy budgets, which is more than a short `idle_minutes`.
 //
 // Giving the place back is a copy's own give-back (giveBack): it starts the issue's period and
-// prunes as a copy's end does. The caller says whether the save stored a bundle, and a copy owed
-// while the save held the place — a push's above all, or a turn's end — goes one of two ways on
-// it. A save that stored its bundle drops it: that bundle is the newer copy of the same workspace,
-// taken while the roles are idle and just before the release stops them, it drops the issue's
-// running copy as it is stored (store.PutWorkspaceBundle), and it is the pod's last copy, so no
-// copy taken off that pod after it is stored at all (takeRunningCopy): it would be a second,
-// later copy of the same work in the other table, which the restore would then offer in place of
-// the bundle and leave the bundle holding the issue's pod. A save that stored none — its bundler
-// failed, the bundle was too large, its write failed, or the workspace held nothing unpushed —
-// leaves the pod with no such last copy, and its release is cancelled or goes on with nothing to
-// restore, so the owed copy is taken as the copy owed behind a copy in flight is (done): the work
-// that asked for it was written after whatever the issue's copy holds, and dropping it would leave
-// an eviction of the pod short of that work. It is started once the place is given back, through
-// the daemon's own start of a copy (startOwed), and takes the place again as any copy does.
-func (c *runningCopies) hold(ctx context.Context, issue string) (func(stored bool), error) {
+// prunes as a copy's end does. A copy owed while the save held the place — a push's above all, or
+// a turn's end — is started once the place is given back, through the daemon's own start of a
+// copy (startOwed), and takes the place again as any copy does, whatever the save did. A save that
+// stored no bundle — its bundler failed, the bundle was too large, its write failed, or the
+// workspace held nothing unpushed — leaves the pod with no last copy of its own, and its release is
+// cancelled or goes on with nothing to restore, so the owed copy is the one that holds the work
+// that asked for it, which was written after whatever the issue's copy holds; dropping it would
+// leave an eviction of the pod short of that work. A save that stored its bundle made that bundle
+// the pod's last copy, and the copy then started is refused by the one rule that says so, before
+// any shim is asked and again at its write (takeRunningCopy, store.Store.ReleaseBundleSavedOff), so
+// the give-back holds no rule of its own about it.
+func (c *runningCopies) hold(ctx context.Context, issue string) (func(), error) {
 	for {
 		c.mu.Lock()
 		held, took := c.take(issue)
 		c.mu.Unlock()
 		if took {
-			return func(stored bool) {
+			return func() {
 				c.mu.Lock()
 				owed := c.giveBack(issue, time.Now()).owed
 				start := c.startOwed
 				c.mu.Unlock()
-				if owed && !stored && start != nil {
+				if owed && start != nil {
 					start(issue)
 				}
 			}, nil
@@ -555,7 +551,8 @@ func (w *workflowRuntime) startOwedCopy(issue string) {
 // role whose locator names no pod. The two are one rule (store.Store.ReleaseBundleSavedOff), and
 // each logs it at Info under a reason of its own (runningCopyReleaseBundled). Every copy is taken
 // here — the cadence's (copyWorkingWorkspaces), a turn's end (copyWorkspaceAtTurnEnd), a push's
-// (copyWorkspaceAtPush) and the copy owed behind one in flight (done) — so each meets it.
+// (copyWorkspaceAtPush) and the copy owed behind one in flight (done) or behind a release's save
+// (runningCopies.hold) — so each meets it.
 //
 // Every way it can come to nothing is logged under its own reason and holds nothing: the issue
 // keeps the copy it had, and the next period tries again. The daemon's own stop is not such a
