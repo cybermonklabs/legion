@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The worker image pins the shared public leak check at `leak-check-v17`. Its pre-push mode reads
+  only the update line's remote commit and the push's boundary, so a pod's push check before a pod
+  update fits its bound, and the pod update rounds that waited on that check end. `leak-check-v16`,
+  which this also brings, no longer counts a path a push removes as one it adds.
