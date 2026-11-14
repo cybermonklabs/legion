@@ -101,7 +101,7 @@ func TestRepeatedInsertsCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T
 				}
 			}
 			text := documentMarkdown(t, handler, issue.PrimaryArtifactID)
-			uploaded := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "spec.md"}, "spec.md", "text/markdown", []byte(text), "alice")
+			uploaded := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "spec.md", "precondition": uploadBaseField(t, handler, issue.PrimaryArtifactID)}, "spec.md", "text/markdown", []byte(text), "alice")
 			if uploaded.Code != http.StatusCreated {
 				t.Fatalf("upload of the document's own %d-byte text: status=%d body=%.500s, want 201", len(text), uploaded.Code, uploaded.Body.String())
 			}

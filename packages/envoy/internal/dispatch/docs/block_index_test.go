@@ -2161,11 +2161,8 @@ func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *test
 
 	// An edit that no settlement has written a version for: the live text is ahead of version
 	// 1, and the document owes a settlement this service never runs.
-	if err := joinedWrite(service, func(ctx context.Context) error {
-		_, err := service.ReplaceText(ctx, document, stored+"\nThe live paragraph.\n",
-			model.Actor{Kind: "user", ID: "alice"})
-		return err
-	}); err != nil {
+	if _, err := joinedReplaceText(service, document, stored+"\nThe live paragraph.\n",
+		model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("edit the document past its latest version: %v", err)
 	}
 	live, _, err := service.TextWithBlocks(ctx, document)

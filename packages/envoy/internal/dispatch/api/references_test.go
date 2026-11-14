@@ -120,8 +120,9 @@ func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 		t.Fatalf("conditional issue references: status=%d etag=%q body=%q", notModified.Code, notModified.Header().Get("ETag"), notModified.Body.String())
 	}
 
-	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]string{
+	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]any{
 		"name": "Design notes", "content": "# Design\nNo references\n",
+		"precondition": uploadBase(t, handler, design.ID),
 	}, "alice")
 	if updated.Code != http.StatusCreated {
 		t.Fatalf("update Design notes: status=%d body=%s", updated.Code, updated.Body.String())

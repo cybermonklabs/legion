@@ -108,6 +108,7 @@ export function GrantsSection(): ReactNode {
       query={grants}
       revoke={(grant, bounds) => api.revokeCredentialGrant(grant.grant_id, bounds)}
       revokeError="Could not revoke this grant."
+      revokeStopped="the revoke of this grant"
       rowKey={(grant) => grant.grant_id}
       unrevocable={unrevocable}
     />

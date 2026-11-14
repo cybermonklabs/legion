@@ -122,6 +122,8 @@ func TestMovedApprovalRequestComesFromTheReplaceRoute(t *testing.T) {
 	replaced := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+state.key+"/artifacts", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
 		"name":  "verification.md", "content": "# Verification\n\nOne, rewritten.\n",
+		// A replacement names the token of the version it replaces, or Dispatch refuses it.
+		"precondition": map[string]string{"document": readDocumentPrecondition(t, handler, state.verification).Token},
 	})
 	advice := adviceFromResponse(t, replaced.Code, replaced.Body.String())
 	moved := advice.MovedApprovalRequest
@@ -153,6 +155,8 @@ func TestMovedApprovalRequestRidesTheUploadAdviceWhenIssueAdviceFails(t *testing
 	replaced := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+state.key+"/artifacts", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
 		"name":  "verification.md", "content": "# Verification\n\nOne, rewritten.\n",
+		// A replacement names the token of the version it replaces, or Dispatch refuses it.
+		"precondition": map[string]string{"document": readDocumentPrecondition(t, handler, state.verification).Token},
 	})
 	var envelope struct {
 		Advice map[string]json.RawMessage `json:"advice"`

@@ -1,15 +1,19 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { answerInboxReads } from "../../__tests__/send-answers";
-import { ApiError } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { inboxThreadsQuery, myRepliesCountQuery, whoAmIQuery } from "../../api/queries";
 import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { InboxBar, type InboxFilters } from "./InboxBar";
 import type { InboxListRow } from "./list-row";
 import { MARK_ALL_REFUSED_TEXT, markAllReadBody, marksThread, useMarkAllRead } from "./mark-all";
@@ -190,4 +194,38 @@ test("a refused press brings the rows and the counts back and says nothing was m
   expect(inboxCount()).toBe("2");
   expect(unread()).toBe("2");
   expect(listed()).toBe("2");
+});
+
+// A press the reader stopped is no refusal: it may have marked the rows, and here it had. So the
+// bar does not say nothing was marked, and the rows are not drawn unread again: the list and its
+// count are read again from Dispatch, which holds them read.
+test("a stopped press reads the list again rather than saying nothing was marked", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  answerInboxReads().mockRejectedValue(
+    new NetworkError("/api/v1/me/inbox/read", new TypeError("Failed to fetch"))
+  );
+  const reread = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
+    page.limit === 1
+      ? threadsRead([])
+      : threadsRead([replyRow("c1", { unread: false }), replyRow("c2", { unread: false })])
+  );
+  const client = renderBar([replyRow("c1"), replyRow("c2")], 2);
+  try {
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await stopTheLateWrite(client);
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the read mark", "saved", {
+        anew: "The Inbox is read again from Dispatch, and Mark all read sends a new mark for any thread still unread.",
+      })
+    );
+    expect(reread).toHaveBeenCalled();
+    expect(unread()).toBe("0");
+    expect(inboxCount()).toBe("0");
+    expect(listed()).toBe("2");
+  } finally {
+    reread.mockRestore();
+    realClock();
+  }
 });

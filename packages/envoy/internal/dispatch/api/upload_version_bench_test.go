@@ -49,6 +49,10 @@ func BenchmarkUploadVersion(b *testing.B) {
 		b.ResetTimer()
 		for range b.N {
 			b.StopTimer()
+			// The upload replaces the spec whole, so it names the token of the version it
+			// replaces. That token is read before the eviction below, so the timed upload
+			// still loads the document cold.
+			base := readDocumentPrecondition(b, handler, artifactID).Token
 			// The room's compaction as it closes folds only updates older than its tail window;
 			// an hour old, every one of them is.
 			if _, err := database.Pool.Exec(context.Background(), `update doc_updates set created_at = created_at - interval '1 hour' where artifact_id = $1`, artifactID); err != nil {
@@ -58,7 +62,7 @@ func BenchmarkUploadVersion(b *testing.B) {
 				b.Fatalf("evict spec room: %v", err)
 			}
 			b.StartTimer()
-			uploadSpecVersion(b, handler, issueKey, next)
+			uploadSpecVersion(b, handler, issueKey, next, base)
 			next++
 		}
 	})
@@ -134,20 +138,15 @@ func newBenchmarkIssue(tb testing.TB, handler http.Handler, projectKey, projectN
 func newUploadVersionSpec(tb testing.TB, handler http.Handler) (issueKey, artifactID string) {
 	tb.Helper()
 	issueKey = newBenchmarkIssue(tb, handler, "BENCH", "Benchmark project", "Upload benchmark")
+	// The issue's creation made its spec, so the document every version below replaces is there
+	// to be read for its token before the first of them.
+	artifactID = artifactIDNamed(tb, handler, "/api/v1/issues/"+issueKey+"/artifacts", "spec.md")
+	if artifactID == "" {
+		tb.Fatalf("%s carries no spec.md for the benchmark to write versions of", issueKey)
+	}
 	comment := 0
 	for version := 1; version <= uploadVersionHistory; version++ {
-		uploaded := uploadSpecVersion(tb, handler, issueKey, version)
-		if version == 1 {
-			var upload struct {
-				Artifact struct {
-					ID string `json:"id"`
-				} `json:"artifact"`
-			}
-			if err := json.Unmarshal(uploaded.Body.Bytes(), &upload); err != nil {
-				tb.Fatalf("decode upload: %v", err)
-			}
-			artifactID = upload.Artifact.ID
-		}
+		uploadSpecVersion(tb, handler, issueKey, version, readDocumentPrecondition(tb, handler, artifactID).Token)
 		// Comment i follows version 1 + i*(history-1)/comments.
 		for comment < uploadVersionComments && 1+comment*(uploadVersionHistory-1)/uploadVersionComments == version {
 			quote := fmt.Sprintf("Paragraph %d revision", 8+16*comment)
@@ -163,22 +162,20 @@ func newUploadVersionSpec(tb testing.TB, handler http.Handler) (issueKey, artifa
 	if comment != uploadVersionComments {
 		tb.Fatalf("created %d comments, want %d", comment, uploadVersionComments)
 	}
-	if artifactID == "" {
-		tb.Fatal("the first upload named no artifact")
-	}
 	return issueKey, artifactID
 }
 
-// uploadSpecVersion uploads version of the spec and fails unless the upload succeeds.
-func uploadSpecVersion(tb testing.TB, handler http.Handler, issueKey string, version int) *httptest.ResponseRecorder {
+// uploadSpecVersion uploads version of the spec and fails unless the upload succeeds. The issue's
+// creation made its spec, so every upload replaces a document that already exists and names base,
+// the token of the version it replaces.
+func uploadSpecVersion(tb testing.TB, handler http.Handler, issueKey string, version int, base string) {
 	tb.Helper()
-	response := uploadVersionRequest(tb, handler, "/api/v1/issues/"+issueKey+"/artifacts", map[string]string{
-		"name": "spec.md", "content": uploadVersionMarkdown(version),
+	response := uploadVersionRequest(tb, handler, "/api/v1/issues/"+issueKey+"/artifacts", map[string]any{
+		"name": "spec.md", "content": uploadVersionMarkdown(version), "precondition": map[string]string{"document": base},
 	})
 	if response.Code < 200 || response.Code > 299 {
 		tb.Fatalf("upload version %d: status=%d body=%s", version, response.Code, response.Body.String())
 	}
-	return response
 }
 
 // uploadVersionRequest POSTs body as JSON, signed in as alice.

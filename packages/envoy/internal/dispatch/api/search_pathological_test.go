@@ -114,7 +114,12 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 			blocks := size / len(to)
 			headings, rules := []byte(strings.Repeat(from, blocks)), []byte(strings.Repeat(to, blocks))
 			upload := func(name string, body []byte) {
-				response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": name}, "body.md", "text/markdown", body, "alice")
+				owner := "/api/v1/issues/" + issue.Key + "/artifacts"
+				fields := map[string]string{"name": name}
+				if base := uploadBaseNamed(t, handler, owner, name); base != nil {
+					fields["precondition"] = encodeUploadBase(t, base)
+				}
+				response := multipartRequest(t, handler, owner, fields, "body.md", "text/markdown", body, "alice")
 				if response.Code != http.StatusCreated {
 					t.Fatalf("upload %d blocks of %q: status=%d body=%.200s", blocks, body[:len(from)], response.Code, response.Body.String())
 				}
@@ -302,7 +307,7 @@ func TestUploadRefusesADocumentTooLargeToStore(t *testing.T) {
 	if first := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md"}, "body.md", "text/markdown", []byte("# Notes\n"), "alice"); first.Code != http.StatusCreated {
 		t.Fatalf("seed notes.md: status=%d body=%.300s", first.Code, first.Body.String())
 	}
-	response = multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md"}, "body.md", "text/markdown", []byte(body), "alice")
+	response = multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md", "precondition": encodeUploadBase(t, uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "notes.md"))}, "body.md", "text/markdown", []byte(body), "alice")
 	if !refusedTooLarge(t, response) || !strings.Contains(response.Body.String(), "more than 65536 elements") {
 		t.Fatalf("replacement by a document too large to store: status=%d body=%.400s, want 413 CAP_EXCEEDED naming the 65536-element limit, as the document service words it", response.Code, response.Body.String())
 	}

@@ -85,6 +85,7 @@ func TestAWriteNamingABlockIDPastTheBoundIsWritten(t *testing.T) {
 			write: func(t *testing.T, handler http.Handler, issueKey, artifactID string) string {
 				uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/artifacts", map[string]any{
 					"name": "spec.md", "content": documentMarkdown(t, handler, artifactID) + "\n" + boundCallout(long),
+					"precondition": uploadBase(t, handler, artifactID),
 				}, "alice")
 				if uploaded.Code != http.StatusCreated {
 					t.Fatalf("upload a version naming a block id of 3200 bytes: status=%d body=%.400s, want 201 as main answers", uploaded.Code, uploaded.Body.String())
@@ -155,6 +156,7 @@ func TestADocumentHoldingABlockIDPastTheBoundTakesUnrelatedWrites(t *testing.T) 
 	}
 	if uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"name": "spec.md", "content": documentMarkdown(t, handler, issue.PrimaryArtifactID) + "\nAn uploaded line.\n",
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	}, "alice"); uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload a version keeping the long block id: status=%d body=%.400s", uploaded.Code, uploaded.Body.String())
 	}

@@ -3,17 +3,19 @@
  * it was, drawn as read (INFRA-450). Only a dismiss takes a row out of the list.
  */
 
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { onFakeClock } from "../../__tests__/fake-clock";
+import { onFakeClock, realClock } from "../../__tests__/fake-clock";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAgentStates, answerThreadReads } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { api, NetworkError } from "../../api/client";
 import {
   inboxQuery,
   inboxThreadsQuery,
@@ -33,6 +35,7 @@ import type {
 } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { ThreadRowCard } from "./ThreadRowCard";
 
@@ -233,6 +236,43 @@ test("a row read in the column stays in the list after the selection moves off i
   } finally {
     viewport.restore();
     narrow();
+  }
+});
+
+// A card's Mark read is a `PUT` of the thread's mark. One the reader stopped may have been saved,
+// so the card neither says it failed nor shows the stopped write's own words, which are a
+// composer's and speak of a message: it says what its Retry does with the mark.
+test("a Mark read the reader stopped says what Retry does, not a message's words", async () => {
+  answerThreadReads().mockRejectedValue(
+    new NetworkError("/api/v1/me/threads/comment-1/read", new TypeError("Failed to fetch"))
+  );
+  mockCommentReads();
+  // No thread is unread to the card's watcher, so the press is the one write the card makes.
+  const client = seeded([]);
+  render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ThreadRowCard thread={commentRow("comment-1", "The retry budget")} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  await screen.findByTestId("inbox-thread-comment");
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(screen.getByRole("button", { name: "Mark read" }));
+    await stopTheLateWrite(client);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("this thread's read mark", "saved", {
+        again: "Retry",
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
   }
 });
 

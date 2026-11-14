@@ -16,7 +16,8 @@ import {
 } from "../../theme/classes";
 import { storeAgentState } from "../agents/unread";
 import { Timestamp } from "../refs/Timestamp";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ThreadOwnerLine } from "./AskOwnerLink";
 import { DismissControl } from "./DismissControl";
 import { rowPriority, rowType } from "./list-row";
@@ -42,6 +43,8 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const session = read.kind === "agent" ? read.session.id : undefined;
   const markRead = useKeyedWrite<UserAgentState | undefined>({
     label: () => "Thread marked read",
+    // Either mark is a `PUT`.
+    method: "PUT",
     // An Agent row is read by id, as every read of one is: its session's own read mark covers
     // replies in the live conversation and in its other threads, which this press has not
     // shown. Every other row carries a thread mark, which this moves to its newest write.
@@ -96,7 +99,20 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
       </div>
       {markRead.isError ? (
         <div className="mt-2">
-          <QueryError message={markRead.error.message} onRetry={() => markRead.mutate()} />
+          {/* A mark the reader stopped may have been saved, and Retry makes it again (`retry`):
+              the error's own words are a composer's, of a message. */}
+          <QueryError
+            message={
+              endedStopped(markRead)
+                ? stoppedWriteNote("this thread's read mark", "saved", {
+                    again: "Retry",
+                    method: markRead.method,
+                    stopped: markRead.error,
+                  })
+                : markRead.error.message
+            }
+            onRetry={markRead.retry}
+          />
         </div>
       ) : null}
     </div>

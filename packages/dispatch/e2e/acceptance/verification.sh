@@ -262,11 +262,26 @@ close_issue() {
   pass "$1" "closed $2"
 }
 
-# upload SECTION ISSUE NAME FILE: uploads FILE as the document NAME of ISSUE. --force writes the
-# next version of a name the issue already holds, which spec.md always is.
+# upload SECTION ISSUE NAME FILE [BASE]: uploads FILE as the document NAME of ISSUE. --force writes the
+# next version of a name the issue already holds, which spec.md always is, and BASE is the document
+# token of the version that upload replaces, which Dispatch asks of every such upload; a first
+# upload of a name replaces no version and has none to name.
 upload() {
-  run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4" --force
+  if [[ -n "${5:-}" ]]; then
+    run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4" --force \
+      --precondition-json "$(jq -cn --arg t "$5" '{document: $t}')"
+  else
+    run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4" --force
+  fi
   pass "$1" "uploaded $3 to $2"
+}
+
+# token_of SECTION ISSUE SLUG: sets $doc_token to the document token of ISSUE's document SLUG,
+# the base an upload replacing it names.
+token_of() {
+  get "/api/v1/issues/$2/artifacts/$3/text"
+  want_status 200 "$1" "read $2's $3 token"
+  doc_token="$(jq -er '.token' "$work/body")" || fail "$1" "read $2's $3 token" "$(body)"
 }
 
 # document_body ISSUE NAME FILE: the JSON an artifact POST takes for FILE under NAME.
@@ -803,7 +818,10 @@ else
   h1="$(sha256sum "$work/approved-spec.md" | cut -d' ' -f1)"
   cp "$work/approved-spec.md" "$work/revised-spec.md"
   printf '\nA new line the person has not approved.\n' >>"$work/revised-spec.md"
-  upload review "$both" spec.md "$work/revised-spec.md"
+  # This upload replaces the spec whole, so it names the token of the version it replaces, through the multipart
+  # form `--path` sends.
+  token_of review "$both" spec.md
+  upload review "$both" spec.md "$work/revised-spec.md" "$doc_token"
   get "/api/v1/artifacts/$artifact/versions/2"
   want_status 200 review "$both's spec version 2 answers"
   h2="$(jq -j .markdown "$work/body" | sha256sum | cut -d' ' -f1)"

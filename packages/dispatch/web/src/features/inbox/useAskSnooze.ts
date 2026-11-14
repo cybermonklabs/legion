@@ -4,11 +4,13 @@ import { useState } from "react";
 import { api, askSnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 
 export interface AskSnoozeWrite {
-  /** The server's reason after a refused save, until the next attempt. */
+  /** The server's reason after a refused save, or what one the reader stopped may have done and
+   *  what Retry does with it, until the next attempt. */
   error: string | undefined;
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
@@ -35,6 +37,8 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   const inboxKey = inboxQuery().queryKey;
   // The row says why its snooze was refused, where the reader pressed it.
   const mutation = useKeyedWrite({
+    // A snooze is a `PUT`, and bringing the row back a `DELETE`.
+    method: (until: string | null) => (until === null ? "DELETE" : "PUT"),
     write: (until: string | null, bounds) =>
       until === null
         ? api.unsnoozeAsk(askId, bounds)
@@ -59,23 +63,30 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
     },
   });
   return {
-    error: mutation.error?.message,
+    // A save the reader stopped may have been made, and Retry makes it again (`retry`): the
+    // error's own words are a composer's, of a message.
+    error: endedStopped(mutation)
+      ? stoppedWriteNote(mutation.variables === null ? "the un-snooze" : "the snooze", "saved", {
+          again: "Retry",
+          method: mutation.method,
+          stopped: mutation.error,
+        })
+      : mutation.error?.message,
     failed: mutation.isError,
     pending: mutation.isPending,
     pendingUntil: mutation.isPending ? mutation.variables : undefined,
-    retry: () => {
-      if (mutation.variables !== undefined) mutation.mutate(mutation.variables);
-    },
+    retry: mutation.retry,
     submit: (until) => mutation.mutate(until),
   };
 }
 
-/** One ask the server refused, with the reason it gave - the same message the per-row control
- *  shows, so a sign-out never reads like a validation refusal. */
-export interface AskSnoozeFailure {
-  askId: string;
-  reason: string;
-}
+/** One ask whose snooze Dispatch did not confirm: one it refused, with the reason it gave - the
+ *  same message the per-row control shows, so a sign-out never reads like a validation refusal -
+ *  or one the reader stopped (`stopped`), which may have been saved and is no refusal, so it
+ *  carries no reason. */
+export type AskSnoozeFailure =
+  | { readonly askId: string; readonly reason: string; readonly stopped: false }
+  | { readonly askId: string; readonly stopped: true };
 
 export interface AskSnoozeManyWrite {
   /** True while a bulk save is in flight. */
@@ -129,11 +140,18 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
           })
         )
       );
-      const failed = ids.flatMap((askId, index) => {
+      const failed = ids.flatMap((askId, index): AskSnoozeFailure[] => {
         const result = results[index];
         if (result === undefined || result.status !== "rejected") return [];
         const reason: unknown = result.reason;
-        return [{ askId, reason: reason instanceof Error ? reason.message : String(reason) }];
+        if (reason instanceof SendStoppedError) return [{ askId, stopped: true }];
+        return [
+          {
+            askId,
+            reason: reason instanceof Error ? reason.message : String(reason),
+            stopped: false,
+          },
+        ];
       });
       const refused = new Set(failed.map(({ askId }) => askId));
       for (const [key, data] of refused.size === 0 ? [] : previous) {

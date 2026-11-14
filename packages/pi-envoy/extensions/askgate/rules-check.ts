@@ -9,7 +9,7 @@
 // request, and asks the model `createAskGate` resolved for the charter
 // call, on the same chain, deadline, transcript and stop. It never imports `askgate-core.ts`: the
 // walk, the dump and the stop are passed in, so the core owns them once for both calls.
-import { type NewAsk, newAsks, openingOf } from "@legion/envoy-client/askgate-new-asks";
+import { askBlocks, type NewAsk, newAsks, openingOf } from "@legion/envoy-client/askgate-new-asks";
 import {
   type DocumentBlocks,
   type DocumentTarget,
@@ -423,13 +423,38 @@ async function readAsks(
   // An upload replaces the document whose name or slug its name is, as the server matches one; the
   // asks that version already holds are not new. Any other document the reference found (one whose
   // id it is) says nothing about this upload, so every opener in it is judged.
+  //
+  // An opener is one the current version already holds when it names a block id the version
+  // holds, or, naming no id, when its question is word for word a question the version holds.
+  // Both sides are read with the same scan (`askBlocks`), over the markdown `readDocumentBlocks`
+  // already returned, so no second read is made and a match means the same text on each side;
+  // the scan trims each body.
+  //
+  // The second rule is wider than the server's carry, and deliberately. The server gives a block
+  // the live block's id only where the alignment pairs the two unchanged at one position
+  // (pmdoc's carryBlockIDs), so a question the upload moved, or one whose `urgency` or
+  // `multiple` changed, takes a fresh id and does open an ask this leaves unjudged. That is
+  // accepted: the text is a question the document already holds, so the gate's rules were
+  // applied to those words when they first entered it, and judging them again would refuse a
+  // re-upload of an unchanged document for its own ask block.
   const name = uploadName(call.input);
-  const currentIds =
-    read !== "not-found" && (read.name === name || read.slug === name)
-      ? new Set(read.blocks.map((block) => block.id))
-      : undefined;
+  const current =
+    read !== "not-found" && (read.name === name || read.slug === name) ? read.blocks : undefined;
+  const currentIds = current === undefined ? undefined : new Set(current.map((block) => block.id));
+  // The live document is scanned for its questions only when an opener names no id, which a
+  // body read back from the server never does: an upload of such a body is decided by the ids
+  // alone and pays no scan.
+  const unnamed = first.some((ask) => ask.id === undefined);
+  const currentQuestions =
+    current === undefined || !unnamed
+      ? undefined
+      : new Set(current.flatMap((block) => askBlocks(block.text)).map((ask) => ask.text));
   return {
-    asks: first.filter((ask) => ask.id === undefined || currentIds?.has(ask.id) !== true),
+    asks: first.filter((ask) =>
+      ask.id === undefined
+        ? currentQuestions?.has(ask.text) !== true
+        : currentIds?.has(ask.id) !== true
+    ),
     textMissing: false,
     asksPartial: false,
   };

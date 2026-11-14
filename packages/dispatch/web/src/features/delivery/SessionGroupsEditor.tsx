@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
-import { api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import { api, apiErrorMessage, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -18,16 +18,18 @@ import {
 } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { storedSessionTitle } from "./lib/sessionTitles";
 
-/** One change to the groups: what it is, in the reader's words, and one attempt of it. A delete
- *  is idempotent and goes without the key. A create names what it makes (`made`), which the
- *  editor says was made when Dispatch lost its answer. */
+/** One change to the groups: what it is, in the reader's words, the method of its request and one
+ *  attempt of it. A delete is idempotent and goes without the key. A create names what it makes
+ *  (`made`), which the editor says was made when Dispatch lost its answer. */
 interface GroupChange {
   readonly label: string;
   readonly made?: string;
+  readonly method: WriteMethod;
   readonly run: (bounds: WriteBounds) => Promise<unknown>;
 }
 
@@ -72,6 +74,7 @@ function GroupCard({
           onClick={() =>
             write({
               label: `Rename of the group ${group.name}`,
+              method: "PATCH",
               run: (bounds) =>
                 api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
             })
@@ -99,6 +102,7 @@ function GroupCard({
               onClick={() =>
                 write({
                   label: `Removal of ${text.sessionText(session, storedTitle(session))} from ${group.name}`,
+                  method: "PATCH",
                   run: (bounds) =>
                     api.updateDeliverySessionGroup(group.id, { remove: [session] }, bounds),
                 })
@@ -117,6 +121,7 @@ function GroupCard({
           onClick={() =>
             write({
               label: `Sessions added to ${group.name}`,
+              method: "PATCH",
               run: (bounds) => api.updateDeliverySessionGroup(group.id, { add: addable }, bounds),
             })
           }
@@ -130,6 +135,7 @@ function GroupCard({
           onClick={() =>
             write({
               label: `Deletion of the group ${group.name}`,
+              method: "DELETE",
               run: (bounds) => api.deleteDeliverySessionGroup(group.id, bounds),
             })
           }
@@ -178,6 +184,7 @@ export function SessionGroupsEditor({
         predicate: (query) => !isLiveQuery(query),
       });
     },
+    method: (change) => change.method,
     write: (change, bounds) => change.run(bounds),
   });
 
@@ -201,6 +208,7 @@ export function SessionGroupsEditor({
       {
         label: `New group ${name.trim()}`,
         made: `The group “${name.trim()}”`,
+        method: "POST",
         run: (bounds) =>
           api.createDeliverySessionGroup({ name: name.trim(), sessions: selected }, bounds),
       },
@@ -298,8 +306,18 @@ export function SessionGroupsEditor({
         {madeUnanswered === undefined ? null : <LandedWithoutAnswer what={madeUnanswered} />}
       </section>
 
+      {/* A change the reader stopped may have been saved, and every button here is a press of
+          its own, under a key of its own: none makes the stopped change again. */}
       {save.isError ? (
-        <QueryError message={apiErrorMessage(save.error, "Couldn't save the session groups.")} />
+        <QueryError
+          message={
+            save.error instanceof SendStoppedError
+              ? stoppedWriteNote("this change to the session groups", "saved", {
+                  anew: "Making it again sends it as a new write.",
+                })
+              : apiErrorMessage(save.error, "Couldn't save the session groups.")
+          }
+        />
       ) : null}
 
       {groups.length === 0 ? null : (

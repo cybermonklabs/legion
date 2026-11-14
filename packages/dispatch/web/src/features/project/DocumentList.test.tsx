@@ -6,9 +6,11 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { DocumentList } from "./DocumentList";
 
 function document(overrides: Partial<Artifact> = {}): Artifact {
@@ -61,7 +63,7 @@ function renderList(artifacts: Artifact[]) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { listProjectArtifacts, view };
+  return { listProjectArtifacts, queryClient, view };
 }
 
 test("Documents requests unlinked project artifacts and links a document to its project page", async () => {
@@ -206,6 +208,122 @@ test("New document refuses a title the project already holds, as a name and as a
     view.unmount();
     listProjectArtifacts.mockRestore();
     uploadArtifact.mockRestore();
+  }
+});
+
+// New document sends the title alone, so a title this list did not show as taken - a document
+// created since the list was read, or one whose slug the title matches - reaches Dispatch as a
+// write with no content over a document that exists. Dispatch refuses that write whatever token
+// it names (`blankWriteToADocumentThatExists`, `api/artifacts.go`), ahead of every check of the
+// token against the document - the form sends none, so no malformed one is answered first - so
+// the person reads that refusal, whose remedies Dispatch takes, and never the token refusal of a
+// replacement, whose remedy - name the token - would be refused in its turn.
+test("a New document over a title Dispatch holds reads the blank write's refusal, not a token's", async () => {
+  const user = userEvent.setup();
+  const { listProjectArtifacts, view } = renderList([]);
+  const refusal =
+    '"Design notes" names artifact design-notes (Design notes), which exists; a write with no ' +
+    "content makes no document and writes no version: edit it with dispatch doc-edit, or give " +
+    "the new document another name";
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new ApiError(400, { code: "ARTIFACT_INPUT", error: refusal })
+  );
+
+  try {
+    await screen.findByText("No documents yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    const error = await screen.findByRole("alert");
+    expect(error.textContent).toBe(refusal);
+    // And the form around it adds no remedy of its own that names a token, which the route would
+    // refuse for this write whatever token it named.
+    const form = screen.getByRole("form", { name: "New document" });
+    expect(form.textContent).not.toMatch(/token|--precondition-json/i);
+    // The write carries the title and nothing else: no content, so Dispatch reads it as a blank
+    // write, and no token, which a new document has none of to name.
+    const sent = uploadArtifact.mock.calls[0]?.[1];
+    expect(sent).toEqual({ name: "Design notes" });
+  } finally {
+    view.unmount();
+    listProjectArtifacts.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// Stop trying is no verdict of Dispatch's: the create may have reached it. The shell lets go of an
+// inline write the reader stopped, so this form is the only place they read what became of it.
+// The stopped write's own words promise a Retry under its key, which this form does not make, so
+// the form says what a press of Create again does. "Could not create the document." would name
+// no outcome at all.
+test("a New document the reader stopped says what pressing Create again does", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { listProjectArtifacts, queryClient, view } = renderList([]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/projects/CORE/artifacts", new TypeError("Failed to fetch"))
+  );
+
+  try {
+    await tick(0);
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await stopTheLateWrite(queryClient);
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the document “Design notes”", "made", {
+        anew: "Press Create again: if it was, Dispatch says that title is taken and the list shows the document.",
+      })
+    );
+    // The form stands, with the title in it, for the person to press Create again.
+    expect(screen.getByRole("form", { name: "New document" })).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listProjectArtifacts.mockRestore();
+    uploadArtifact.mockRestore();
+    realClock();
+  }
+});
+
+// A create the reader stopped belongs to the press that made it, and this form offers no Retry
+// of it: Create pressed again is a press the person made anew, so it goes under a key of its own
+// though it carries the same title. Sent under the stopped press's key, it would be answered with
+// whatever that press did at Dispatch rather than decided as the press the person made now.
+test("Create pressed again with the title a stopped create carried goes under a key of its own", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { listProjectArtifacts, queryClient, view } = renderList([]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/projects/CORE/artifacts", new TypeError("Failed to fetch"))
+  );
+
+  try {
+    await tick(0);
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await stopTheLateWrite(queryClient);
+    const stoppedKey = uploadArtifact.mock.calls[0]?.[2]?.key;
+    const stopped = uploadArtifact.mock.calls.length;
+
+    uploadArtifact.mockResolvedValue(uploadResponse());
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await tick(1_000);
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const again = uploadArtifact.mock.calls.at(-1);
+    expect(again?.[1]).toEqual({ name: "Design notes" });
+    expect(again?.[2]?.key).not.toBe(stoppedKey);
+  } finally {
+    view.unmount();
+    listProjectArtifacts.mockRestore();
+    uploadArtifact.mockRestore();
+    realClock();
   }
 });
 

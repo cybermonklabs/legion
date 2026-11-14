@@ -1,14 +1,18 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Agent, DeliverySessionGroup } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { SessionGroupsEditor } from "./SessionGroupsEditor";
 
 const crew: DeliverySessionGroup = {
@@ -174,6 +178,32 @@ test("rename, add, remove and delete each write their one change", async () => {
   } finally {
     cleanup();
     update.mockRestore();
+    remove.mockRestore();
+  }
+});
+
+// A change the reader stopped may have been saved: the editor says so, and that each button is
+// a press of its own, rather than a failure it cannot know of.
+test("a change the reader stopped says it may have been saved, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const remove = spyOn(api, "deleteDeliverySessionGroup").mockRejectedValue(
+    new NetworkError("/api/v1/delivery/session-groups", new TypeError("Failed to fetch"))
+  );
+  const queryClient = renderEditor([crew]);
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    await user.click(within(group).getByRole("button", { name: "Delete group" }));
+    await stopTheLateWrite(queryClient);
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("this change to the session groups", "saved", {
+        anew: "Making it again sends it as a new write.",
+      })
+    );
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
     remove.mockRestore();
   }
 });

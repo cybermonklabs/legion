@@ -753,6 +753,7 @@ func TestAnUploadMovingAnOpenAsksQuoteIntoACodeBlockIs400(t *testing.T) {
 
 	upload := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"name": name, "content": "Intro.\n\n```\nrun the tests\n```\n", "summary": "Fence the command",
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	}, "alice")
 	if upload.Code != http.StatusBadRequest || !strings.Contains(upload.Body.String(), `"code":"INVALID_MARKDOWN"`) ||
 		!strings.Contains(upload.Body.String(), `the open ask anchored on \"run the tests\"`) {

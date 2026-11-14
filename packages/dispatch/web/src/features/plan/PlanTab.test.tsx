@@ -188,5 +188,8 @@ test("an issue with no plan document shows the command that makes one", () => {
   const empty = screen.getByTestId("plan-empty");
   expect(empty.textContent).toContain("CORE-1 has no plan document.");
   expect(empty.textContent).toContain("dispatch artifact --issue CORE-1 --name plan.md");
+  // The note's words are asserted once, in `ArtifactUpload.test.tsx`, where they live: this
+  // case asks only that the tab shows the note.
+  expect(within(empty).getByTestId("replacing-upload-note")).not.toBeNull();
   expect(getArtifactBlocks).not.toHaveBeenCalled();
 });

@@ -1,14 +1,17 @@
 import {
   type DefaultError,
+  type MutateOptions,
+  type UseMutateAsyncFunction,
+  type UseMutateFunction,
   type UseMutationOptions,
   type UseMutationResult,
   useMutation,
 } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 
-import type { WriteBounds, WriteRequest } from "../../api/client";
+import type { WriteBounds, WriteMethod, WriteRequest } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey } from "./keyed-write";
+import { retriesUnderItsKey, SendStoppedError } from "./keyed-write";
 import { plainWrite, useWrites } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
@@ -34,33 +37,28 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made: by an attempt of its own (`write`, under the bounds the store gives it:
- *  its key, its login and its deadline), or, on a line, from its request alone. Writes to one
- *  target - one issue's fields - go out in press order, so an older one never lands after a newer
- *  one; each names the request its client method's builder makes (`issuePatchRequest`), which is
- *  what goes out (`api.send`) and what a write waiting its turn is kept as for a reload, so the
- *  two can never differ, and nothing of it runs until its turn comes (`WriteSpec.request`). */
+ *  its key, its login and its deadline), with the `method` of the request it makes, which the
+ *  write names because no attempt says it until it goes out (`WriteSpec.method`); or, on a line,
+ *  from its request alone. Writes to one target - one issue's fields - go out in press order, so
+ *  an older one never lands after a newer one; each names the request its client method's
+ *  builder makes (`issuePatchRequest`), which is what goes out (`api.send`) and what a write
+ *  waiting its turn is kept as for a reload, so the two can never differ, and nothing of it runs
+ *  until its turn comes (`WriteSpec.request`). */
 export type KeyedWriteMade<TData, TVariables> =
   | {
       readonly write: (variables: TVariables, bounds: WriteBounds) => Promise<TData>;
+      /** The method of the request `write` makes, or, where a press's variables decide it, the
+       *  method of that press's. */
+      readonly method: WriteMethod | ((variables: TVariables) => WriteMethod);
       readonly target?: undefined;
       readonly request?: undefined;
     }
   | {
       readonly write?: undefined;
+      readonly method?: undefined;
       readonly target: (variables: TVariables) => string | undefined;
       readonly request: (variables: TVariables) => WriteRequest<TData>;
     };
-
-/** Whether `a` and `b` are the same variables: one value, or two that serialise alike (a form
- *  built afresh at each submit); variables that do not serialise are only themselves. */
-function sameVariables(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  try {
-    return JSON.stringify(a) === JSON.stringify(b);
-  } catch {
-    return false;
-  }
-}
 
 /** A press Dispatch made and had no answer to give for: its variables, and when it landed. */
 export interface UnansweredLanding<TVariables> {
@@ -68,9 +66,26 @@ export interface UnansweredLanding<TVariables> {
   readonly at: number;
 }
 
+/** One press of a keyed write: the variables it was made with and, out of a surface's reach, the
+ *  key its attempts go out under, minted when the press was made. TanStack runs the write over
+ *  these, so each key travels with its own press however many presses are out at once, and a
+ *  surface that reads a keyed write in TanStack's mutation cache reads its presses' `variables`
+ *  (`useDefaultAssigneeWrite`). A press the reader stopped is handed back by `stopped` as this very
+ *  object, which is its handle: the hook finds what it holds for a press by that object alone,
+ *  never by the variables it carries. */
+export interface KeyedPress<TVariables> {
+  readonly variables: TVariables;
+}
+
+/** A press as the hook makes it and holds it. */
+interface Press<TVariables> extends KeyedPress<TVariables> {
+  readonly key: string;
+}
+
 /** `useMutation`'s result, with the one "made, but Dispatch lost its answer" state every create
  *  form shows (`LandedWithoutAnswer`): the last press that landed with `null`, until the next
- *  press starts or the form lets it go (`forgetUnanswered`, on an edit). */
+ *  press starts or the form lets it go (`forgetUnanswered`, on an edit); and the Retry of a press
+ *  the reader stopped, which only the surface's own Retry makes (`retry`, `stopped`, `again`). */
 export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
   TData | null,
   DefaultError,
@@ -79,7 +94,65 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
 > & {
   readonly unanswered: UnansweredLanding<TVariables> | undefined;
   readonly forgetUnanswered: () => void;
+  /** The surface's Retry of its newest press, the press its refusal is about. Where the reader
+   *  stopped that press it is made again, under its key (`again`): it may have reached Dispatch,
+   *  which answers a `POST` or a `PATCH` under that key with what it did there, and a `PUT` or a
+   *  `DELETE`, which sends no key, is the same change made again. Where Dispatch refused it, the
+   *  Retry is a new press of the same variables under a new key, since Dispatch would answer the
+   *  old key with that refusal. Nothing where the hook has made no press. */
+  readonly retry: () => void;
+  /** The press the reader stopped that `wanted` picks out by its variables, or `undefined` where
+   *  the hook holds no stopped press that is that one. The hook holds every press that ended
+   *  stopped and has not been made again, newest first, each under the key its attempts went out
+   *  under. More than one press of a hook can be out at once - a paste of several files is several
+   *  presses - and the refusal a surface shows follows its newest press, which is not always the
+   *  press the reader stopped last. So such a surface's Retry names the press its refusal is
+   *  about, under `retriesUnderItsKey` of that refusal, and makes that press again (`again`). */
+  readonly stopped: (
+    wanted: (variables: TVariables) => boolean
+  ) => KeyedPress<TVariables> | undefined;
+  /** Makes `press`, which `stopped` handed back, again under its own key, and says whether it
+   *  did. It leaves the presses the hook holds while it is out, and is held again, under the same
+   *  key, if the reader stops it again. A press the hook does not hold - out again already, or
+   *  decided - is not made, and `again` returns `false`. */
+  readonly again: (press: KeyedPress<TVariables>) => boolean;
+  /** The method of the newest press's request where the reader stopped that press, the press
+   *  `retry` makes again, so a surface's sentence of that Retry reads it here rather than stating
+   *  it a second time (`endedStopped`, `stoppedWriteNote`); `undefined` while the newest press did
+   *  not end stopped. */
+  readonly method: WriteMethod | undefined;
 };
+
+/** Whether the newest press of `write` ended with the reader's stop: its `error` is then that
+ *  `SendStoppedError`, and its `method` the method of that press's request. */
+export function endedStopped<
+  W extends { readonly error: unknown; readonly method: WriteMethod | undefined },
+>(write: W): write is W & { readonly error: SendStoppedError; readonly method: WriteMethod } {
+  return write.error instanceof SendStoppedError && write.method !== undefined;
+}
+
+/** The callbacks a surface hands one `mutate`, as TanStack calls them with the press the hook made
+ *  of it: each is handed that press's variables, as it would be from a `useMutation` of its own. */
+function pressCallbacks<TData, TVariables, TContext>(
+  callbacks: MutateOptions<TData, DefaultError, TVariables, TContext> | undefined
+): MutateOptions<TData, DefaultError, Press<TVariables>, TContext> | undefined {
+  if (callbacks === undefined) {
+    return undefined;
+  }
+  const { onError, onSettled, onSuccess } = callbacks;
+  return {
+    onError:
+      onError &&
+      ((error, press, result, context) => onError(error, press.variables, result, context)),
+    onSettled:
+      onSettled &&
+      ((data, error, press, result, context) =>
+        onSettled(data, error, press.variables, result, context)),
+    onSuccess:
+      onSuccess &&
+      ((data, press, result, context) => onSuccess(data, press.variables, result, context)),
+  };
+}
 
 /**
  * The one way a surface that is not a composer writes to Dispatch: each `mutate` is one press,
@@ -87,43 +160,68 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * pending-writes indicator while it is out and, refused, with Retry and Discard (`Writes.run`).
  * The mutation settles with Dispatch's answer - `null` for a landing without one - its refusal, or
  * `SendStoppedError` once the reader stops it, so the surface keeps its optimistic state until
- * then and rolls it back on anything but a landing. A `mutate` of the same variables a press the
- * reader stopped was made with is that press made again, under its key - Dispatch may have taken
- * it, and answers the key with what it did - while one after Dispatch's own refusal is a new
- * press, since Dispatch would answer the old key with that refusal. It runs whether or not the
- * browser says it is online (`networkMode: "always"`): the write's own tries wait out a network
- * that is down, and a mutation TanStack paused offline would make none, never go late and never
- * offer Stop trying. A press that lands with no answer is kept as `unanswered` for the surface
- * to say so, until the next press or `forgetUnanswered`.
+ * then and rolls it back on anything but a landing.
+ *
+ * A press the reader stopped is no verdict: it may have reached Dispatch, which answers the key
+ * of a `POST` or a `PATCH` with what it did there; a `PUT` or a `DELETE` sends no key, and is the
+ * same change however often it is made. So the hook holds every press that ended stopped,
+ * under its key, and that press belongs to the press that made it: only the surface's
+ * own Retry reaches it, through `retry` where the Retry is of the surface's newest press, or
+ * through the handle `stopped` gives and `again` where more than one press is out at once. A
+ * `mutate` or `mutateAsync` is a press the person made anew and always goes under a new key,
+ * whatever its variables are: the hook never matches a press by its variables, by identity or by
+ * value, so a later press of equal values - a title typed again, Approve after a change request -
+ * is a write Dispatch decides, never one it answers with what the stopped press did there while
+ * the person's own choice is dropped in silence. Where the stopped press had landed, the later
+ * press is a second write: Dispatch refuses it where that would be wrong - a name the owner holds
+ * now, an upload's base the document has moved past - and the person reads that refusal, and a
+ * field ends at the value the person chose last. A Retry after Dispatch's own refusal is a press
+ * of its own too, since Dispatch would answer the old key with that refusal.
+ *
+ * TanStack runs each press as the hook made it (`KeyedPress`), the key with it, so the key goes
+ * with its own press however many are out at once; the surface's callbacks and the result's
+ * `variables` are the press's own variables, as from a `useMutation` of its own. It runs whether
+ * or not the browser says it is online (`networkMode: "always"`): the write's own tries wait out a
+ * network that is down, and a mutation TanStack paused offline would make none, never go late and
+ * never offer Stop trying. A press that lands with no answer is kept as `unanswered` for the
+ * surface to say so, until the next press or `forgetUnanswered`.
  */
 export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   endsWithSession,
   file,
   inline,
   label,
+  method,
+  onError,
+  onMutate,
+  onSettled,
+  onSuccess,
   request,
   target,
   write,
   ...options
 }: KeyedWriteOptions<TData, TVariables, TContext>): KeyedWriteResult<TData, TVariables, TContext> {
   const writes = useWrites();
-  /** The last press the reader stopped, which a Retry of the same variables makes again. */
-  const stopped = useRef<{ readonly key: string; readonly variables: TVariables } | undefined>(
-    undefined
-  );
+  /** Every press the reader stopped and has not made again, newest first. Each is reached by its
+   *  own object alone: `again` of the handle `stopped` gave, or `retry` of the newest press. */
+  const held = useRef<readonly Press<TVariables>[]>([]);
   const [unanswered, setUnanswered] = useState<UnansweredLanding<TVariables> | undefined>(
     undefined
   );
   const forgetUnanswered = useCallback(() => setUnanswered(undefined), []);
-  const mutation = useMutation({
+  /** The method of the request a press of `variables` makes. */
+  const methodOf = (variables: TVariables): WriteMethod =>
+    write === undefined
+      ? request(variables).method
+      : typeof method === "function"
+        ? method(variables)
+        : method;
+  const mutation = useMutation<TData | null, DefaultError, Press<TVariables>, TContext>({
     ...options,
-    mutationFn: (variables: TVariables) => {
-      const again = stopped.current;
-      stopped.current = undefined;
+    mutationFn: (press) => {
+      const { key, variables } = press;
       setUnanswered(undefined);
-      const key =
-        again !== undefined && sameVariables(again.variables, variables) ? again.key : newSendKey();
-      const press = {
+      const spec = {
         detail: null,
         endsWithSession,
         file: file?.(variables),
@@ -135,8 +233,12 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
       } as const;
       return (
         write === undefined
-          ? writes.run({ ...press, request: request(variables), target: target(variables) })
-          : writes.run({ ...press, write: (bounds) => write(variables, bounds) })
+          ? writes.run({ ...spec, request: request(variables), target: target(variables) })
+          : writes.run({
+              ...spec,
+              method: methodOf(variables),
+              write: (bounds) => write(variables, bounds),
+            })
       ).then(
         (answer) => {
           if (answer === null) setUnanswered({ at: Date.now(), variables });
@@ -144,13 +246,89 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
         },
         (error: unknown) => {
           if (retriesUnderItsKey(error instanceof Error ? error : undefined)) {
-            stopped.current = { key, variables };
+            held.current = [press, ...held.current];
           }
           throw error;
         }
       );
     },
     networkMode: "always",
+    onError:
+      onError &&
+      ((error, press, result, context) => onError(error, press.variables, result, context)),
+    onMutate: onMutate && ((press, context) => onMutate(press.variables, context)),
+    onSettled:
+      onSettled &&
+      ((data, error, press, result, context) =>
+        onSettled(data, error, press.variables, result, context)),
+    onSuccess:
+      onSuccess &&
+      ((data, press, result, context) => onSuccess(data, press.variables, result, context)),
   });
-  return { ...mutation, forgetUnanswered, unanswered };
+  const { mutate: makePress, mutateAsync: makePressAsync } = mutation;
+  const mutate = useCallback(
+    (
+      ...[variables, callbacks]: Parameters<
+        UseMutateFunction<TData | null, DefaultError, TVariables, TContext>
+      >
+    ) =>
+      makePress(
+        { key: newSendKey(), variables: variables as TVariables },
+        pressCallbacks(callbacks)
+      ),
+    [makePress]
+  );
+  const mutateAsync = useCallback(
+    (
+      ...[variables, callbacks]: Parameters<
+        UseMutateAsyncFunction<TData | null, DefaultError, TVariables, TContext>
+      >
+    ) =>
+      makePressAsync(
+        { key: newSendKey(), variables: variables as TVariables },
+        pressCallbacks(callbacks)
+      ),
+    [makePressAsync]
+  );
+  const stopped = useCallback(
+    (wanted: (variables: TVariables) => boolean) =>
+      held.current.find((press) => wanted(press.variables)),
+    []
+  );
+  const again = useCallback(
+    (press: KeyedPress<TVariables>) => {
+      const made = held.current.find((each) => each === press);
+      if (made === undefined) {
+        return false;
+      }
+      held.current = held.current.filter((each) => each !== made);
+      makePress(made);
+      return true;
+    },
+    [makePress]
+  );
+  const newest = mutation.variables;
+  // Built only once the newest press ended stopped, when its request went out: a press whose
+  // request could not be built ended with that error instead, which building it here would throw.
+  const newestMethod =
+    newest !== undefined && mutation.error instanceof SendStoppedError
+      ? methodOf(newest.variables)
+      : undefined;
+  const retry = useCallback(() => {
+    if (newest !== undefined && !again(newest)) mutate(newest.variables);
+  }, [again, mutate, newest]);
+  // TanStack's result is a union over `status`, each member with the press it ran, and the
+  // press's own variables stand in for it member by member, which the spread does not show.
+  return {
+    ...mutation,
+    again,
+    forgetUnanswered,
+    method: newestMethod,
+    mutate,
+    mutateAsync,
+    retry,
+    stopped,
+    unanswered,
+    variables: newest?.variables,
+  } as KeyedWriteResult<TData, TVariables, TContext>;
 }

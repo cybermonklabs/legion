@@ -33,6 +33,7 @@ func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
 	document := createProjectDocument(t, handler, "LOCK", "Notes", "# Notes\n")
+	base := uploadBase(t, handler, document.ID)
 
 	settling, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -48,8 +49,8 @@ func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 
 	uploaded := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		uploaded <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/LOCK/artifacts", map[string]string{
-			"name": "Notes", "content": "# Notes\n\nsecond\n",
+		uploaded <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/LOCK/artifacts", map[string]any{
+			"name": "Notes", "content": "# Notes\n\nsecond\n", "precondition": base,
 		}, "alice")
 	}()
 	// The upload blocks on the owner row this transaction holds, and on nothing else.
@@ -138,12 +139,13 @@ func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTh
 			t.Fatalf("release a hold: %v", err)
 		}
 	}
+	copyBase := uploadBase(t, handler, copied.ID)
 	uploadHold, answerHold := hold(holdUpload), hold(holdAnswer)
 	const markingCopy, writingAnswer = "%insert into doc_settlements_pending%", "%update asks set state%"
 
 	upload := startRequest(func() *httptest.ResponseRecorder {
-		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/COPY/artifacts", map[string]string{
-			"name": "Copy", "content": "Kept again\n\n" + block,
+		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/COPY/artifacts", map[string]any{
+			"name": "Copy", "content": "Kept again\n\n" + block, "precondition": copyBase,
 		}, "alice")
 	})
 	awaitLockWaits(t, ctx, database, "the upload never waited between its document write and its event", func(waiting func(string) int) bool {
@@ -272,6 +274,7 @@ func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
 	document := createProjectDocument(t, handler, "LEVEL", "Notes", "# Notes\n")
+	base := uploadBase(t, handler, document.ID)
 
 	appending, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -284,8 +287,8 @@ func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
 
 	uploaded := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		uploaded <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/LEVEL/artifacts", map[string]string{
-			"name": "Notes", "content": "# Notes\n\nsecond\n",
+		uploaded <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/LEVEL/artifacts", map[string]any{
+			"name": "Notes", "content": "# Notes\n\nsecond\n", "precondition": base,
 		}, "alice")
 	}()
 	// The upload takes the owner row, then waits here for the room.

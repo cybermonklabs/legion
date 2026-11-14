@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
@@ -6,10 +6,14 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
-import { ApiError, api, type DeclineAskInput } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, type DeclineAskInput, NetworkError } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 
 let whoAmI: Mock<typeof api.whoAmI>;
@@ -327,5 +331,39 @@ test("a decline out keeps its dialog through Escape and the backdrop, and shows 
     expect(card.getByRole("dialog", { name: "Decline to answer" })).toBeTruthy();
   } finally {
     view.unmount();
+  }
+});
+
+// A decline the reader stopped may have been made: the dialog says so, and that its button is a
+// press of its own, rather than a failure it cannot know of.
+test("a decline the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const open = openAsk();
+  const { queryClient, view } = renderCard(
+    <AskCard
+      ask={open}
+      declineAsk={() =>
+        Promise.reject(new NetworkError("/api/v1/asks/ask-1/decline", new TypeError("Failed")))
+      }
+      getAskThread={async () => thread(open)}
+      initialThread={thread(open)}
+    />
+  );
+  const card = within(view.container);
+  try {
+    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
+    await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
+    await stopTheLateWrite(queryClient);
+    expect(within(dialog).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("your decline", "made", {
+        anew: "Pressing Decline to answer again sends a new decline.",
+      })
+    );
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
   }
 });

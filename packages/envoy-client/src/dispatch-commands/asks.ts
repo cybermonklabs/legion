@@ -18,6 +18,7 @@ import {
   movedApprovalDocuments,
   otherAdviceLines,
   renderAdvice,
+  standingReviewLines,
 } from "./advice";
 import { askQuestionWithRef } from "./check";
 import {
@@ -336,13 +337,15 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
       : resolved === undefined
         ? issueTopic(issue())
         : documentTopic(resolved.artifact);
-  // The check's form sits right under the line naming the ask, and the issue's declined asks
-  // under that; renderAdvice's cadence line must stay the result's last line.
+  // The check's form sits right under the line naming the ask, the standing review under that,
+  // and the issue's declined asks under that; renderAdvice's cadence line must stay the result's
+  // last line.
   const checkLines = relatedCheckLines(ask.advice?.suggestions, {
     project: resolved?.artifact.project ?? (ask.issue_key ?? "").replace(/-[0-9]+$/, ""),
     text: stringArg(args, "question"),
     configUrl: linkBase,
   });
+  const reviewLines = await otherAdviceLines(() => standingReviewLines(ask.advice));
   // An ask on a project document stands on no issue, and the server sends declined asks only
   // for a write that does, so there is nothing to print there.
   const declinedLines =
@@ -357,6 +360,7 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
     text: [
       `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency})${asked === undefined ? "" : `, waiting on ${asked}`}: ${ask.question}`,
       ...checkLines,
+      ...reviewLines,
       ...declinedLines,
       await followsAsk(askOwner, input.subscriptions),
       ...adviceLines,

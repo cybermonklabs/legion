@@ -268,15 +268,28 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 	for _, t := range order {
 		g.Go(func() error {
 			name := fmt.Sprintf("%s%d.md", refTargetPrefix, t.n)
+			// The id of the document version 1 created, which every later version reads its base
+			// from: an upload replacing a document names the text it believes it is replacing.
+			var artifactID string
 			for v := range t.versions {
 				body := map[string]any{
 					"name":    name,
 					"content": fmt.Sprintf("# Reference target %d\n\nRevision %d of a document other issues cite.\n", t.n, v+1),
 					"actor":   refWriter(t.order[v]),
 				}
+				if v > 0 {
+					token, err := refDocumentToken(gctx, a, artifactID)
+					if err != nil {
+						return err
+					}
+					body["precondition"] = map[string]any{"document": token}
+				}
 				res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+t.issue+"/artifacts", who{}, body, refTargetKey(t.n, v+1))
 				if res.err != nil || res.status != http.StatusCreated {
 					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, trunc(res.body), res.err)
+				}
+				if artifactID = idOf(res.body); artifactID == "" {
+					return fmt.Errorf("write %s version %d on %s: no artifact id in %s", name, v+1, t.issue, trunc(res.body))
 				}
 				if n := written.Add(1); n%refProgressEvery == 0 {
 					log.Printf("seed-refs: %d/%d versions, %d targets done, %s", n, total, done.Load(), time.Since(start).Round(time.Second))
@@ -291,6 +304,22 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 	}
 	log.Printf("seed-refs: wrote %d targets, %d versions in %s", len(p.targets), written.Load(), time.Since(start).Round(time.Second))
 	return int(written.Load()), nil
+}
+
+// refDocumentToken is the document token of a target about to take another version: the base the
+// upload writing that version names, read as `dispatch doc-read` reads it.
+func refDocumentToken(ctx context.Context, a *api, artifactID string) (string, error) {
+	res := a.callRetry(ctx, "GET", "/api/v1/artifacts/"+artifactID+"/text", who{}, nil)
+	if res.err != nil || res.status != http.StatusOK {
+		return "", fmt.Errorf("read %s before its next version: %d %s %v, want 200", artifactID, res.status, trunc(res.body), res.err)
+	}
+	var doc struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(res.body, &doc); err != nil || doc.Token == "" {
+		return "", fmt.Errorf("read %s before its next version: no document token in %s (%v)", artifactID, trunc(res.body), err)
+	}
+	return doc.Token, nil
 }
 
 // writeRefSources writes one references.md per LGA issue that cites at least one target. Each

@@ -30,6 +30,7 @@ import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** The word that opens the paragraph the server reads as a decision's doubt
@@ -239,6 +240,7 @@ function ChangeComposer({
   const send = useKeyedWrite({
     inline: true,
     label: () => `Change to ${decision.heading}`,
+    method: "POST",
     // The decisions document belongs to an issue, and a comment on an issue's document is the
     // issue's own write: the artifact route refuses it, naming the issue route (`send-request.ts`
     // follows the same rule for a thread's replies).
@@ -282,7 +284,13 @@ function ChangeComposer({
       />
       {send.error === null ? null : (
         <p className={`text-sm ${dangerText}`} role="alert">
-          {send.error.message}
+          {/* A change the reader stopped may have been posted, and Send is a press of its own,
+              under a key of its own. The error's own words are a composer's, of its Retry. */}
+          {send.error instanceof SendStoppedError
+            ? stoppedWriteNote("your change", "posted", {
+                anew: "Send posts it again as a new comment.",
+              })
+            : send.error.message}
         </p>
       )}
       <div className="flex gap-2">
@@ -389,6 +397,7 @@ function WaitingDecision({
   const keep = useKeyedWrite({
     inline: true,
     label: () => `Keep ${decision.heading}`,
+    method: "POST",
     // The sum of the text this card showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
     write: (id: string, bounds) =>
@@ -444,7 +453,13 @@ function WaitingDecision({
             </div>
             {keep.error === null ? null : (
               <p className={`text-sm ${dangerText}`} role="alert">
-                {keep.error.message}
+                {/* A Keep the reader stopped may have been made, and Keep is a press of its
+                    own, under a key of its own. */}
+                {keep.error instanceof SendStoppedError
+                  ? stoppedWriteNote(`the Keep of “${decision.heading}”`, "made", {
+                      anew: "Pressing Keep again sends a new Keep.",
+                    })
+                  : keep.error.message}
               </p>
             )}
             {changing && quote !== undefined ? (

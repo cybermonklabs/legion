@@ -151,6 +151,15 @@ export function optionalNumber(args: Record<string, unknown>, name: string): num
   return typeof value === "number" ? value : undefined;
 }
 
+/** The optimistic-concurrency guard a call carries, under whichever shape its tool takes: an
+ *  edit's `EditPrecondition`, an upload's `UploadPrecondition`. The tool's own schema already
+ *  held the value to that shape, so this only reads it off `args`, which carries an index
+ *  signature a package built with `noPropertyAccessFromIndexSignature` denies a dotted read of. */
+export function optionalPrecondition<Guard>(args: Record<string, unknown>): Guard | undefined {
+  const { precondition } = args;
+  return precondition as Guard | undefined;
+}
+
 /** One field of a call's input, or no field at all when the argument was absent. An input whose
  *  optional properties are exact (`exactOptionalPropertyTypes`, which claude-envoy compiles this
  *  file under) takes an omitted key, never one whose value is `undefined`. */

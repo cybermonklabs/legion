@@ -7,6 +7,9 @@ export type IssueUpdateInput = Partial<Pick<Issue, "parent" | "route" | "status"
 
 export interface IssueUpdateMutation {
   mutate: (input: IssueUpdateInput) => void;
+  /** The write's Retry of its newest press (`useKeyedWrite`), under that press's key where the
+   *  reader stopped it. */
+  retry: () => void;
   variables: IssueUpdateInput | undefined;
 }
 

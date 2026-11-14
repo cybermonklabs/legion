@@ -145,6 +145,7 @@ export function enqueueBroadcast(writes: Writes, send: BroadcastSend): void {
       label: `Broadcast to ${send.input.session_ids.length}`,
       presentation: "composer",
       target: "broadcast",
+      method: "POST",
       write: (bounds) => api.createBroadcast(send.input, bounds),
     })
     .catch(() => {});

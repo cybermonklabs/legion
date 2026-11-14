@@ -1745,7 +1745,9 @@ export class DispatchClient {
   }
 
   /** An upload to an owner's artifact route: a file as multipart, and everything else as JSON -
-   *  inline content, and a name alone, which makes an empty document. */
+   *  inline content, and a name alone, which makes an empty document. A base the upload names
+   *  travels in the JSON body as `precondition`, and in a multipart form as the field
+   *  `precondition` holding that same JSON object's text, which is how the route reads it. */
   async #upload<T>(path: readonly string[], input: CreateArtifactInput, key?: string): Promise<T> {
     if (input.file === undefined) {
       return this.#json("POST", path, input, undefined, undefined, key);
@@ -1753,6 +1755,8 @@ export class DispatchClient {
     const form = new FormData();
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
+    if (input.precondition !== undefined)
+      form.set("precondition", JSON.stringify(input.precondition));
     if (input.actor !== undefined) form.set("actor", JSON.stringify(input.actor));
     form.set("file", input.file, input.name);
     return this.#form("POST", path, form, key);

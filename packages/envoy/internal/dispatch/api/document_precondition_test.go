@@ -46,7 +46,10 @@ func preconditionTestHandler(t *testing.T) (http.Handler, *store.Store, docs.API
 	return handler, database, deps.Docs
 }
 
-func readDocumentPrecondition(t *testing.T, handler http.Handler, artifactID string) documentPreconditionRead {
+// readDocumentPrecondition is the text read of a document and the token it carries now, which
+// an upload replacing it names (uploadBase). It takes a benchmark's TB as well as a test's,
+// since the upload benchmark reads its spec's token through it.
+func readDocumentPrecondition(t testing.TB, handler http.Handler, artifactID string) documentPreconditionRead {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice")
 	if response.Code != http.StatusOK {

@@ -5,6 +5,7 @@ import type {
   AskWithTrees,
   EditOp,
   EditPrecondition,
+  UploadPrecondition,
 } from "@legion/contracts";
 import {
   ARTIFACT_NAME_EXISTS_RULE,
@@ -40,6 +41,7 @@ import {
   numberArg,
   optionalBoolean,
   optionalNumber,
+  optionalPrecondition,
   optionalString,
   type ResolvedArtifact,
   stringArg,
@@ -381,8 +383,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   const resolved = await resolveDocument(documentOwner(), optionalString(args, "artifact"));
   const ops = args.ops as EditOp[];
   const summary = optionalString(args, "summary");
-  const { precondition: rawPrecondition } = args;
-  const precondition = rawPrecondition as EditPrecondition | undefined;
+  const precondition = optionalPrecondition<EditPrecondition>(args);
   await refuseRemovingOpenDecisionBlocks(client, input.tool, resolved, ops);
   const edited = await client.docEdit(resolved.artifact.id, {
     ops,
@@ -857,8 +858,20 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   const name = stringArg(args, "name");
   const content = optionalString(args, "content");
   const path = optionalString(args, "path");
+  // The base an upload over a document that already exists replaces: the document token
+  // alone, which is all the server takes from an upload. It rides every shape below, a create
+  // that stores nothing included, because the server is what decides a token that names
+  // nothing it can replace: it refuses a token on a first upload, and a blank write over a
+  // held name whatever well-formed token it names, ahead of every check of the token against
+  // the document; a token that is not well formed it answers as malformed first.
+  const precondition = optionalPrecondition<UploadPrecondition>(args);
   // What every create carries, whatever it stores under the name.
-  const options = { name, ...(summary === undefined ? {} : { summary }), actor };
+  const options = {
+    name,
+    ...(summary === undefined ? {} : { summary }),
+    ...(precondition === undefined ? {} : { precondition }),
+    actor,
+  };
   const artifactOwner = documentOwner();
   // The server's own `blank`: a body carrying no content, or content Go's
   // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in

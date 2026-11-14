@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { api, apiErrorMessage, isSourceNotFound, removedEvenIfGone } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -19,7 +19,8 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   ownerRepoPattern,
   settingsFieldLabel,
@@ -55,6 +56,7 @@ export function ArchitectureSourcesSection(): ReactNode {
     inline: true,
     label: (input: { project: string; repo: string; branch: string }) =>
       `${input.project}'s architecture source ${input.repo}`,
+    method: "PUT",
     write: (input, bounds) =>
       api.putArchitectureSource(input.project, input.repo, { branch: input.branch }, bounds),
     onSettled: () => submitGuard.release(),
@@ -68,7 +70,14 @@ export function ArchitectureSourcesSection(): ReactNode {
   });
   const deleteSource = useKeyedWrite({
     label: (source: SourceKey) => `${source.project}'s architecture source ${source.repo} removed`,
-    write: (source, bounds) => api.deleteArchitectureSource(source.project, source.repo, bounds),
+    // A removal made again after one that landed finds no source (`404 SOURCE_NOT_FOUND`), which
+    // is the removal done (`removedEvenIfGone`).
+    method: "DELETE",
+    write: (source, bounds) =>
+      removedEvenIfGone(
+        api.deleteArchitectureSource(source.project, source.repo, bounds),
+        isSourceNotFound
+      ),
     onSuccess: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
@@ -78,6 +87,7 @@ export function ArchitectureSourcesSection(): ReactNode {
   const refreshSource = useKeyedWrite({
     label: (source: SourceKey) =>
       `Refresh of ${source.project}'s architecture source ${source.repo}`,
+    method: "POST",
     write: (source, bounds) => api.syncArchitectureSource(source.project, source.repo, bounds),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
@@ -276,10 +286,15 @@ export function ArchitectureSourcesSection(): ReactNode {
           {saveSource.isError ? (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(
-                  saveSource.error,
-                  "Couldn't save the architecture source."
-                )}
+                message={
+                  endedStopped(saveSource)
+                    ? stoppedWriteNote("the architecture source", "saved", {
+                        again: "Retry",
+                        method: saveSource.method,
+                        stopped: saveSource.error,
+                      })
+                    : apiErrorMessage(saveSource.error, "Couldn't save the architecture source.")
+                }
                 onRetry={() => submitGuard.retryLast(saveSource)}
                 retrying={saveSource.isPending}
               />
@@ -288,8 +303,16 @@ export function ArchitectureSourcesSection(): ReactNode {
           {deleteSource.isError ? (
             <div className="mt-4">
               <QueryError
-                message="Couldn't delete the architecture source."
-                onRetry={() => deleteSource.mutate(deleteSource.variables)}
+                message={
+                  endedStopped(deleteSource)
+                    ? stoppedWriteNote("the removal of the architecture source", "made", {
+                        again: "Retry",
+                        method: deleteSource.method,
+                        stopped: deleteSource.error,
+                      })
+                    : "Couldn't delete the architecture source."
+                }
+                onRetry={deleteSource.retry}
                 retrying={deleteSource.isPending}
               />
             </div>
@@ -297,11 +320,19 @@ export function ArchitectureSourcesSection(): ReactNode {
           {refreshSource.isError ? (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(
-                  refreshSource.error,
-                  "Couldn't refresh the architecture source."
-                )}
-                onRetry={() => refreshSource.mutate(refreshSource.variables)}
+                message={
+                  endedStopped(refreshSource)
+                    ? stoppedWriteNote("the refresh of the architecture source", "made", {
+                        again: "Retry",
+                        method: refreshSource.method,
+                        stopped: refreshSource.error,
+                      })
+                    : apiErrorMessage(
+                        refreshSource.error,
+                        "Couldn't refresh the architecture source."
+                      )
+                }
+                onRetry={refreshSource.retry}
                 retrying={refreshSource.isPending}
               />
             </div>

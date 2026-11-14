@@ -6,6 +6,7 @@ import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, ArtifactBlock } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { card, dangerText, textMutedOnCanvas, textMutedOnSurface } from "../../theme/classes";
+import { ReplacingUploadNote } from "../artifacts/ArtifactUpload";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { withBlock } from "../refs/block-reference";
 import { BlockReferences } from "../refs/ReferencedBy";
@@ -147,7 +148,12 @@ export function PlanTab({
     return (
       <div data-testid="plan-empty">
         <EmptyState
-          action={<code>{`dispatch artifact --issue ${issueKey} --name plan.md`}</code>}
+          action={
+            <>
+              <code>{`dispatch artifact --issue ${issueKey} --name plan.md`}</code>
+              <ReplacingUploadNote />
+            </>
+          }
           label="Plan empty state"
           message={`${issueKey} has no plan document. Make one with:`}
         />

@@ -60,6 +60,7 @@ export function SignInsSection(): ReactNode {
       query={signIns}
       revoke={(signIn, bounds) => api.revokeSignIn(signIn.signin_id, bounds)}
       revokeError="Could not revoke this sign-in."
+      revokeStopped="the revoke of this sign-in"
       rowKey={(signIn) => signIn.signin_id}
     />
   );

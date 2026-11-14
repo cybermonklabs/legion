@@ -23,6 +23,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
 
@@ -105,8 +106,14 @@ function DeclineDialog({
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
               {/* The server's own words where it gave any - the note is too long, the ask is an
-                  approval request, it is already closed - since each says what to do next. */}
-              {apiErrorMessage(error, "Could not decline this question. Try again.")}
+                  approval request, it is already closed - since each says what to do next. A
+                  decline the reader stopped may have been made, and the button below is a press
+                  of its own, under a key of its own. */}
+              {error instanceof SendStoppedError
+                ? stoppedWriteNote("your decline", "made", {
+                    anew: "Pressing Decline to answer again sends a new decline.",
+                  })
+                : apiErrorMessage(error, "Could not decline this question. Try again.")}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -166,6 +173,7 @@ export function DeclineControl({
   const write = useOutstandingAnswerWrite({
     askId: ask.id,
     label: () => `Decline of “${ask.question}”`,
+    method: "POST",
     write: (input: DeclineAskInput, bounds) => decline(ask.id, input, bounds),
     onSettled: () => submitGuard.release(),
     onSuccess: (declined) => {

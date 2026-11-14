@@ -28,7 +28,8 @@ import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
 
 export type CreateReply = (
@@ -106,6 +107,7 @@ export function AskReplyComposer({
   const uploading = upload.pending > 0;
   // The form shows a refused reply itself, with Retry, under the draft it kept.
   const submit = useKeyedWrite({
+    method: "POST",
     write: (text: string, bounds) => {
       if (ask.issue_key === null) {
         if (ask.artifact_id === null || ask.artifact_id === undefined) {
@@ -163,12 +165,16 @@ export function AskReplyComposer({
       </button>
       {submit.isError ? (
         <QueryError
-          message="Could not post your reply."
-          onRetry={() => {
-            if (submit.variables !== undefined) {
-              submit.mutate(submit.variables);
-            }
-          }}
+          message={
+            endedStopped(submit)
+              ? stoppedWriteNote("your reply", "posted", {
+                  again: "Retry",
+                  method: submit.method,
+                  stopped: submit.error,
+                })
+              : "Could not post your reply."
+          }
+          onRetry={submit.retry}
           retrying={submit.isPending}
         />
       ) : null}

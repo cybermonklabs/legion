@@ -20,7 +20,9 @@ type nameBoundTarget struct {
 
 func nameBoundTargets(issueKey, session string) []nameBoundTarget {
 	document := func(t *testing.T, handler http.Handler, base, name string) *httptest.ResponseRecorder {
-		return dispatchRequest(t, handler, http.MethodPost, base, map[string]any{"name": name, "content": "# Notes\n"}, "alice")
+		return dispatchRequest(t, handler, http.MethodPost, base, map[string]any{
+			"name": name, "content": "# Notes\n", "precondition": uploadBaseNamed(t, handler, base, name),
+		}, "alice")
 	}
 	file := func(t *testing.T, handler http.Handler, base, name string) *httptest.ResponseRecorder {
 		return multipartRequest(t, handler, base, map[string]string{"name": name}, "notes.bin", "application/octet-stream", []byte("bytes"), "alice")

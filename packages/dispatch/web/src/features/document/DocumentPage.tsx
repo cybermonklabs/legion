@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { api, isSubscriberNotFound, removedEvenIfGone } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { dangerText } from "../../theme/classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
@@ -20,7 +20,8 @@ import {
 } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
 
 export function DocumentPage(): ReactNode {
@@ -52,11 +53,17 @@ export function DocumentPage(): ReactNode {
   const unsubscribe = useKeyedWrite({
     label: (sessionId: string) =>
       `${agentText.sessionText(sessionId, subscribers.data?.find((row) => row.session_id === sessionId)?.title)} unsubscribed from this document`,
-    write: (sessionId: string, bounds) => {
+    // An unsubscribe made again after one that landed finds the session no longer subscribed
+    // (`404 SUBSCRIBER_NOT_FOUND`), which is the unsubscribe done (`removedEvenIfGone`).
+    method: "DELETE",
+    write: async (sessionId: string, bounds) => {
       if (artifact.data === undefined) {
         throw new Error("Document unsubscribe requires an artifact.");
       }
-      return api.unsubscribeArtifactSession(artifact.data.id, sessionId, bounds);
+      await removedEvenIfGone(
+        api.unsubscribeArtifactSession(artifact.data.id, sessionId, bounds),
+        isSubscriberNotFound
+      );
     },
     onSuccess: () => {
       if (artifact.data !== undefined) {
@@ -139,8 +146,16 @@ export function DocumentPage(): ReactNode {
         ) : null}
         {unsubscribe.isError ? (
           <QueryError
-            message="Could not unsubscribe this agent."
-            onRetry={() => unsubscribe.mutate(unsubscribe.variables as string)}
+            message={
+              endedStopped(unsubscribe)
+                ? stoppedWriteNote("this agent's unsubscribe", "made", {
+                    again: "Retry",
+                    method: unsubscribe.method,
+                    stopped: unsubscribe.error,
+                  })
+                : "Could not unsubscribe this agent."
+            }
+            onRetry={unsubscribe.retry}
             retrying={unsubscribe.isPending}
           />
         ) : null}

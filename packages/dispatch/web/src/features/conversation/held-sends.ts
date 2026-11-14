@@ -437,6 +437,8 @@ export class HeldSends {
           owner.kind === "session" && request.edit === undefined
             ? `session:${owner.sessionId}`
             : undefined,
+        // A comment's edit is its `PATCH`; every other send is a `POST` (`sendAttempt`).
+        method: request.edit === undefined ? "POST" : "PATCH",
         write: sendAttempt(request),
       })
       .catch(() => {});

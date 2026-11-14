@@ -11,12 +11,13 @@ import {
   createIssueArtifact,
   createProject,
   dashboardOrigin,
+  documentBase,
   editArtifact,
   getArtifactText,
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, type TestInfo, test } from "./test";
+import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
 
 const tinyPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
@@ -200,6 +201,101 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   }
 });
 
+// The base a multipart upload names: the value of its `precondition` form field, parsed, and
+// null when the upload carries no such field. The page posts a `FormData` for a picked file, and
+// the server reads the base from that field (`multipartArtifactUpload` in the server's
+// `api/artifacts.go`), so this is the base as the server receives it rather than as the page
+// meant it. No unit test reads this: every one of them mocks the client the page uploads
+// through, so what the request carries is read here or nowhere.
+function uploadedBase(request: Request): unknown {
+  const field = /name="precondition"\r?\n\r?\n([^\r\n]*)/.exec(request.postData() ?? "");
+  return field === null ? null : JSON.parse(field[1] ?? "");
+}
+
+// A person uploading a markdown document over a name the issue already holds must name the
+// token of the version they are replacing, so what the page sends and what it shows are read
+// here rather than in jsdom alone. The page reads that token when the person chooses the file
+// and every attempt of the press sends the one it read; the upload is then held in its own
+// route while an agent changes the document under it, so the change lands between the page's
+// read and the server's reading of the request, and no wall clock decides it. The second half
+// is what `web/src/features/artifacts/ArtifactUpload.test.tsx` asserts against a mocked client
+// - the server's own sentence names `dispatch doc-read` and `--precondition-json`, and a person
+// at a browser runs no command and pastes no token, so the row must say what the refusal means
+// instead.
+test("an upload over a document carries the token the page read, and says what a change under it means", async ({
+  page,
+}, testInfo) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Upload over a document" });
+  const notes = await createIssueArtifact(issue.key, {
+    content: "# Review notes\n\nThe ledger keeps three leases.\n",
+    name: "notes.md",
+  });
+
+  const bases: unknown[] = [];
+  // What the next upload meets at the server: the first one meets nothing and is taken, and the
+  // second meets this edit, made after the page read its token.
+  let changeUnderTheUpload: (() => Promise<unknown>) | null = null;
+  await page.route(`**/api/v1/issues/${issue.key}/artifacts`, async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    bases.push(uploadedBase(route.request()));
+    const change = changeUnderTheUpload;
+    changeUnderTheUpload = null;
+    if (change !== null) {
+      await change();
+    }
+    return route.fallback();
+  });
+
+  await page.goto(`/issues/${issue.key}`);
+  await openArtifacts(page, false);
+  const upload = page.getByLabel("Upload artifact");
+  const row = page.getByTestId("artifact-notes-md");
+  await expect(row).toContainText("1 version");
+
+  // The base the live document holds now, which is what the page reads for itself before it
+  // posts: the upload names it, and the version it writes is the proof the server took it.
+  const base = await documentBase(notes.artifact.id);
+  await upload.setInputFiles(await notesFile(testInfo));
+  await confirmUpload(page);
+  await expect(row).toContainText("2 versions");
+  expect(bases).toEqual([base]);
+  expect((await getArtifactText(notes.artifact.id)).markdown).toBe(
+    "# Review notes\n\nThese notes replace the initial spec.\n"
+  );
+
+  // The second upload names the token the document holds now, and an agent moves the document
+  // past it while the upload is held, so the server reads a base that is one version behind.
+  const held = await documentBase(notes.artifact.id);
+  changeUnderTheUpload = () =>
+    editArtifact(
+      notes.artifact.id,
+      {
+        ops: [
+          {
+            find: "These notes replace the initial spec.",
+            op: "replace",
+            with: "The reviewer rewrote these notes.",
+          },
+        ],
+        summary: "The reviewer's own words",
+      },
+      { as: "agent" }
+    );
+  await upload.setInputFiles(await notesFile(testInfo));
+  await confirmUpload(page);
+
+  const refusal = page.getByRole("alert");
+  await expect(refusal).toContainText("changed");
+  await expect(refusal).not.toContainText("dispatch doc-read");
+  await expect(refusal).not.toContainText("--precondition-json");
+  expect(bases).toEqual([base, held]);
+  // Nothing of the refused upload was written: the document still says what the agent left.
+  expect((await getArtifactText(notes.artifact.id)).markdown).toBe(
+    "# Review notes\n\nThe reviewer rewrote these notes.\n"
+  );
+});
+
 // The From/To compare of a document shows what changed as the change view, word by word. It is
 // seeded on a document that is not the issue's primary one, because `ArtifactRoutePanel` mounts
 // `ArtifactDetails` - the version history and this compare - only off the primary document's own
@@ -351,8 +447,13 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(added).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("activity-added-artifact.png") });
 
-  // A second upload under the same name is a new version; its line links that version.
-  await createIssueArtifact(issue.key, { content: "# Draft\n\nRevised.\n", name });
+  // A second upload under the same name is a new version; its line links that version. It
+  // replaces the whole document, so it names the token of the version it replaces.
+  await createIssueArtifact(issue.key, {
+    content: "# Draft\n\nRevised.\n",
+    name,
+    precondition: await documentBase(upload.artifact.id),
+  });
   const saved = rows.filter({ hasText: `saved ${name} v2` });
   await expect(saved).toHaveCount(1);
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();

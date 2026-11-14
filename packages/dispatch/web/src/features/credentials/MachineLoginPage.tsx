@@ -14,6 +14,7 @@ import {
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { CredentialDecisionButtons } from "./CredentialDecisionButtons";
 import { CredentialRecordFacts } from "./CredentialRecordFacts";
@@ -74,6 +75,7 @@ export function MachineLoginPage(): ReactNode {
     inline: true,
     label: () => "Lookup of a machine login code",
     onSettled: () => submitGuard.release(),
+    method: "POST",
     write: (lookupCode: string, bounds) => api.lookupMachineCredential(lookupCode, bounds),
   });
   // A lookup Dispatch answered with nothing it kept shows nothing until it is looked up again.
@@ -83,6 +85,7 @@ export function MachineLoginPage(): ReactNode {
 
   // Each is typed by its answer, which its callbacks read.
   const approve = useKeyedWrite<DecisionResponse>({
+    method: "POST",
     write: (_variables, bounds) =>
       api.approveCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
@@ -96,6 +99,7 @@ export function MachineLoginPage(): ReactNode {
     },
   });
   const deny = useKeyedWrite<StateResponse>({
+    method: "POST",
     write: (_variables, bounds) =>
       api.denyCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
@@ -169,9 +173,15 @@ export function MachineLoginPage(): ReactNode {
           Look up
         </button>
       </form>
+      {/* A lookup the reader stopped may have been made, and Look up is a press of its own, under
+          a key of its own. */}
       {lookup.isError ? (
         <p className={dangerText}>
-          {apiErrorMessage(lookup.error, "Could not look up that code.")}
+          {lookup.error instanceof SendStoppedError
+            ? stoppedWriteNote("the lookup of that code", "made", {
+                anew: "Look up sends the code in the field as a new lookup.",
+              })
+            : apiErrorMessage(lookup.error, "Could not look up that code.")}
         </p>
       ) : null}
       {view === undefined ? null : (

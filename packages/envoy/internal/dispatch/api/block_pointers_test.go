@@ -38,10 +38,14 @@ func claimMarkdown(id, serves string) string {
 	return ":::claim{#" + id + " serves=\"" + serves + "\"}\nIt holds.\n:::\n"
 }
 
+// uploadChecks uploads checks.md to the issue, naming the token of the version it replaces where
+// the issue already holds one, as every replacement does.
 func uploadChecks(t *testing.T, handler http.Handler, issueKey, content string) *httptest.ResponseRecorder {
 	t.Helper()
-	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/artifacts", map[string]any{
+	owner := "/api/v1/issues/" + issueKey + "/artifacts"
+	return dispatchRequest(t, handler, http.MethodPost, owner, map[string]any{
 		"name": "checks.md", "content": content,
+		"precondition": uploadBaseNamed(t, handler, owner, "checks.md"),
 	}, "alice")
 }
 

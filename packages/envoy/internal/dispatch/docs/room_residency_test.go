@@ -832,7 +832,12 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 				defer tx.Rollback(ctx)
 				joined, ledger := service.Join(ctx, tx)
 				defer ledger.Discard()
-				if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+				precondition, err := replacementPrecondition(joined, service, artifactID)
+				if err != nil {
+					written <- err
+					return
+				}
+				if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}, precondition); err != nil {
 					written <- err
 					return
 				}
@@ -990,7 +995,7 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					tx.Rollback(ctx)
 					closeConn()
 				}()
-				if _, err := service.ReplaceText(joined, artifactID, markdown(paragraphs, "after"), alice); err != nil {
+				if _, err := service.ReplaceText(joined, artifactID, markdown(paragraphs, "after"), alice, liveDocumentToken(t, service, artifactID)); err != nil {
 					t.Fatalf("trial %d: replace: %v", trial, err)
 				}
 				closed := make(chan error, 1)

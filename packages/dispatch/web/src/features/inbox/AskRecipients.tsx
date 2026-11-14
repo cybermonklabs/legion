@@ -1,7 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
-import { api, type WriteBounds } from "../../api/client";
+import {
+  api,
+  isFollowerNotFound,
+  isSubscriberNotFound,
+  removedEvenIfGone,
+  type WriteBounds,
+} from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
@@ -11,7 +17,8 @@ import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteR
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 
 const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds): Promise<void> =>
   api.removeAskFollower(askId, sessionId, bounds);
@@ -265,17 +272,23 @@ export function AskRecipients({
   const counted = !subscribersQuery.isError;
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
   const [open, setOpen] = useState(false);
+  // Each is a `DELETE`: made again after one that landed, it finds the session off the ask
+  // already (`404 FOLLOWER_NOT_FOUND`, `404 SUBSCRIBER_NOT_FOUND`), which is the change done
+  // (`removedEvenIfGone`).
   const unfollow = useKeyedWrite({
-    write: (sessionId: string, bounds) => removeFollower(askId, sessionId, bounds),
+    method: "DELETE",
+    write: (sessionId: string, bounds) =>
+      removedEvenIfGone(removeFollower(askId, sessionId, bounds), isFollowerNotFound),
     label: (sessionId) => `${text.sessionText(sessionId, undefined)} taken off this ask`,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ask-thread", askId] }),
   });
   const unsubscribe = useKeyedWrite({
-    write: (sessionId: string, bounds) => {
+    method: "DELETE",
+    write: async (sessionId: string, bounds) => {
       if (subscription === undefined) {
         throw new Error("Ask recipients unsubscribe requires an owner.");
       }
-      return subscription.remove(sessionId, bounds);
+      await removedEvenIfGone(subscription.remove(sessionId, bounds), isSubscriberNotFound);
     },
     label: (sessionId) =>
       `${text.sessionText(sessionId, subscribers.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${subscription?.label ?? "this ask"}`,
@@ -427,8 +440,16 @@ export function AskRecipients({
       {unfollow.isError ? (
         <div className="mt-2">
           <QueryError
-            message="Could not unfollow."
-            onRetry={() => unfollow.mutate(unfollow.variables)}
+            message={
+              endedStopped(unfollow)
+                ? stoppedWriteNote("the unfollow", "made", {
+                    again: "Retry",
+                    method: unfollow.method,
+                    stopped: unfollow.error,
+                  })
+                : "Could not unfollow."
+            }
+            onRetry={unfollow.retry}
             retrying={unfollow.isPending}
           />
         </div>
@@ -436,8 +457,16 @@ export function AskRecipients({
       {unsubscribe.isError ? (
         <div className="mt-2">
           <QueryError
-            message="Could not unsubscribe."
-            onRetry={() => unsubscribe.mutate(unsubscribe.variables)}
+            message={
+              endedStopped(unsubscribe)
+                ? stoppedWriteNote("the unsubscribe", "made", {
+                    again: "Retry",
+                    method: unsubscribe.method,
+                    stopped: unsubscribe.error,
+                  })
+                : "Could not unsubscribe."
+            }
+            onRetry={unsubscribe.retry}
             retrying={unsubscribe.isPending}
           />
         </div>

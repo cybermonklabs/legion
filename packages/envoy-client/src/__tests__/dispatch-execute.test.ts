@@ -10382,6 +10382,105 @@ describe("executeDispatchTool", () => {
     expect(body).not.toHaveProperty("primary");
   });
 
+  // The base a replacement names travels in both encodings: the JSON body's `precondition`, and
+  // the multipart form field `precondition` holding that same object's JSON text, which is what
+  // the upload route reads (`packages/envoy/internal/dispatch/api/artifacts.go`). A replacement
+  // carries `force`, which is how the command is asked for a document's next version, so the
+  // command's own read of the owner's documents is not what answers it.
+  test("sends the base a replacement names, as JSON and as a multipart form field", async () => {
+    const precondition = { document: "sha256:live-spec" };
+    const sent = async (args: Record<string, unknown>, cwd: string): Promise<RequestInit> => {
+      const requests: RequestInit[] = [];
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const preflight = uploadPreflight(url, init);
+        if (preflight !== undefined) return preflight;
+        requests.push(init ?? {});
+        return response({
+          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md" },
+          version: { number: 2 },
+        });
+      };
+      await executeDispatchTool({
+        tool: "dispatch_artifact",
+        args: { issue: "DSP-42", name: "spec.md", force: true, precondition, ...args },
+        cwd,
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      expect(requests).toHaveLength(1);
+      return requests[0] ?? {};
+    };
+
+    const json = await sent({ content: "# Spec\n" }, "/workspace");
+    expect(JSON.parse(json.body as string)).toMatchObject({ precondition });
+
+    const cwd = makeDirectory();
+    writeFileSync(path.join(cwd, "spec.md"), "# Spec\n");
+    const multipart = await sent({ path: "spec.md" }, cwd);
+    const form = await new Response(multipart.body, {
+      headers: multipart.headers as Record<string, string>,
+    }).formData();
+    expect(form.get("precondition")).toBe(JSON.stringify(precondition));
+  });
+
+  // A base behind the live document is Dispatch's own refusal, and the reader gets the words it
+  // sent: which document moved on, and that the next upload names the token `dispatch doc-read`
+  // prints. Nothing is swallowed into a bare status. Only the upload is refused here: the
+  // command's own reads before it are answered, so the refusal the reader gets is the upload's.
+  test("hands the reader the words a stale base was refused with", async () => {
+    const error =
+      "document edit precondition failed: the document changed; read the document with `dispatch doc-read`, " +
+      "which prints `Document token: sha256:…`, and upload again naming that token as " +
+      '`--precondition-json \'{"document":"sha256:…"}\'`';
+    const uploads: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
+      uploads.push(String(url));
+      return new Response(
+        JSON.stringify({
+          code: "PRECONDITION_FAILED",
+          error,
+          current: { document: "sha256:live-spec", blocks: [], version: 7 },
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } }
+      );
+    };
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_artifact",
+        args: {
+          issue: "DSP-42",
+          name: "spec.md",
+          content: "# Spec\n",
+          force: true,
+          precondition: { document: "sha256:behind" },
+        },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      })
+    ).rejects.toEqual(
+      expect.objectContaining({
+        name: "DispatchServiceError",
+        code: "PRECONDITION_FAILED",
+        status: 409,
+        message: error,
+        current: { document: "sha256:live-spec", blocks: [], version: 7 },
+      })
+    );
+    expect(uploads).toEqual([expect.stringMatching(/\/api\/v1\/issues\/DSP-42\/artifacts$/)]);
+  });
+
   test("reports the artifact slug and dispatch:// reference in the upload result text", async () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
       uploadPreflight(url, init) ??
@@ -10606,6 +10705,10 @@ describe("executeDispatchTool", () => {
       "issue DSP-42 already holds plan.md (slug plan-md, kind doc) at version 2, which user alice wrote. " +
         ARTIFACT_NAME_EXISTS_RULE,
     ]);
+    // A writer who follows it is not refused a second time for the token: it names both of the
+    // things a replacement takes, --force and the token of the version it replaces.
+    expect(failure.problems[0]).toContain("--force");
+    expect(failure.problems[0]).toContain("--precondition-json");
     // The document's own slug names it too, as the upload itself resolves a name.
     await expect(upload({ issue: "DSP-42", name: "plan-md", content: "# Plan\n" })).rejects.toThrow(
       "already holds plan.md"
@@ -10685,6 +10788,10 @@ describe("executeDispatchTool", () => {
     expect(failure).not.toBeInstanceOf(ToolInputError);
     expect(String(failure)).toContain(refusal);
     expect(String(failure)).not.toContain(ARTIFACT_NAME_EXISTS_RULE);
+    // Nothing the writer reads names a remedy the server would refuse: a blank write over a held
+    // name is refused whatever --force says and whatever token it names, so neither is offered.
+    expect(String(failure)).not.toContain("--force");
+    expect(String(failure)).not.toContain("--precondition-json");
   });
 
   // INFRA-1334 R11: the server reads U+FEFF as content, the other way round from U+0085 above

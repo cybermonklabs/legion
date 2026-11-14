@@ -6,8 +6,9 @@
  * the list was read at (`as_of`) and the narrowing the list is under, so the server marks exactly
  * the threads the reader is looking at: no row that arrived after that read is swallowed, and no
  * row the Filter hid is marked. The press is applied here first - the rows are drawn as read and
- * every unread count drops - because the reader pressed it, and is taken back whole when the
- * request fails, which an old server with no such route is one way of doing.
+ * every unread count drops - because the reader pressed it, and is taken back whole when Dispatch
+ * refuses it, which an old server with no such route is one way of doing. A press the reader
+ * stopped is no refusal - it may have marked the rows - so the list is read again instead.
  *
  * It takes no row out of the list. A thread stays in the Inbox, read or not, until it is
  * dismissed (`useInboxDismiss.ts`), as an email stays until it is archived.
@@ -30,6 +31,7 @@ import type {
   MyReplyRow,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
@@ -37,6 +39,12 @@ import { inboxWriteScope, inWriteScope } from "./write-scope";
 
 /** What the page says when the server refused the press and nothing was marked. */
 export const MARK_ALL_REFUSED_TEXT = "Nothing was marked read.";
+
+/** What the page says of a press the reader stopped, which may have marked the rows: the list is
+ *  read again from Dispatch, and the button is back while a thread there is still unread. */
+export const MARK_ALL_STOPPED_TEXT = stoppedWriteNote("the read mark", "saved", {
+  anew: "The Inbox is read again from Dispatch, and Mark all read sends a new mark for any thread still unread.",
+});
 
 /**
  * The body one press sends: the read mark the list was read at, and the list's own narrowing
@@ -96,8 +104,10 @@ interface MarkAllRollback {
 export interface MarkAllRead {
   /** Marks every unread thread the list is showing read. */
   readonly markAll: () => void;
-  /** Whether the last press was refused, which is the one thing this says to the reader. */
-  readonly refused: boolean;
+  /** How the last press ended where it did not land, until the next press: `refused` by
+   *  Dispatch, which takes the press back (`MARK_ALL_REFUSED_TEXT`), or `stopped` by the reader,
+   *  which reads the list again (`MARK_ALL_STOPPED_TEXT`). The one thing this says to the reader. */
+  readonly failure: "refused" | "stopped" | undefined;
   /** Whether the list holds a row this would mark: the button shows only then. */
   readonly offered: boolean;
 }
@@ -130,10 +140,16 @@ export function useMarkAllRead({
   readonly rows: readonly InboxListRow[];
 }): MarkAllRead {
   const queryClient = useQueryClient();
-  const [refused, setRefused] = useState(false);
+  const [failure, setFailure] = useState<"refused" | "stopped" | undefined>(undefined);
   const threadsKey = inboxThreadsQuery().queryKey;
   const countKey = myRepliesCountQuery().queryKey;
   const body = asOf === undefined ? undefined : markAllReadBody(filters, asOf);
+  // What a press may have marked is read again from the server: the list, its counts, and the
+  // per-session agent state the Agents page's **New replies** badge counts.
+  const readAgain = () => {
+    void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+    void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
+  };
   // The button is offered only while the list holds an unread Reply or Agent row, which is what
   // the spec asks for: a list showing none has nothing for one press to mark.
   const offered =
@@ -143,14 +159,21 @@ export function useMarkAllRead({
   const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllRollback>({
     inline: true,
     label: () => "Inbox marked read",
-    onError: (_error, _input, rollback) => {
-      setRefused(true);
+    onError: (error, _input, rollback) => {
+      // A press the reader stopped may have marked the rows, so they are not drawn unread again:
+      // what Dispatch holds is read instead.
+      if (error instanceof SendStoppedError) {
+        setFailure("stopped");
+        readAgain();
+        return;
+      }
+      setFailure("refused");
       if (rollback === undefined) return;
       queryClient.setQueryData(threadsKey, rollback.threads);
       queryClient.setQueryData(countKey, rollback.count);
     },
     onMutate: (input) => {
-      setRefused(false);
+      setFailure(undefined);
       const threads = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
       const count = queryClient.getQueryData<number>(countKey);
       const marked = new Set(
@@ -170,21 +193,16 @@ export function useMarkAllRead({
       }
       return { count, threads };
     },
-    onSuccess: () => {
-      // What the server marked is read again from the server: the list, its counts, and the
-      // per-session agent state the Agents page's **New replies** badge counts.
-      void queryClient.invalidateQueries({ queryKey: myRepliesKey });
-      void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
-    },
+    onSuccess: readAgain,
     request: (input) => markInboxReadRequest(input),
     target: () => "inbox:read",
   });
 
   return {
+    failure,
     markAll: () => {
       if (body !== undefined) write.mutate(body);
     },
     offered,
-    refused,
   };
 }

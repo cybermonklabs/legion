@@ -5,6 +5,7 @@ import { useRef, useSyncExternalStore } from "react";
 import {
   ApiError,
   api,
+  goesUnderKey,
   type WriteBounds,
   type WriteMethod,
   type WriteRequest,
@@ -47,13 +48,19 @@ export type WriteState =
   | { readonly status: "made"; readonly answer: unknown };
 
 /** A write apart from where it stands: its key, its kind and its kind's record (`detail`), the
- *  login of the person who pressed it (stamped at the press, never again), what it is called and
- *  where it shows, and the target its line is ordered on. */
+ *  login of the person who pressed it (stamped at the press, never again), whether it goes under
+ *  its key, what it is called and where it shows, and the target its line is ordered on. */
 export interface WriteBase<D = unknown> {
   readonly id: number;
   readonly key: string;
   readonly kind: string;
   readonly login: string | undefined;
+  /** Whether the request it makes goes under its key (`goesUnderKey`): a `POST` or a `PATCH`,
+   *  whose Retry after it ended without Dispatch's verdict asks again under that key, and not a
+   *  `PUT` or a `DELETE`, which sends none. Read from the method its spec names at the press
+   *  (`WriteSpec`), never from what goes out later, since a write can end stopped before any
+   *  attempt of it sends a request; kept with it (`KeptWrite.keyed`), so a reload reads it back. */
+  readonly keyed: boolean;
   readonly label: string;
   readonly presentation: Presentation;
   /** Whether the surface that made it shows its refusal itself, so the store lets a refused one
@@ -85,14 +92,15 @@ export type Write<D = unknown> = WriteBase<D> & WriteState;
 
 /** `write` apart from where it stands, for a new state to be put on. */
 function baseOf<D>(write: Write<D>): WriteBase<D> {
-  const { detail, id, inline, joined, key, kind, label, login, presentation, pressedAt } = write;
-  const { retried, sent, signingOutElsewhere, target, uploaded } = write;
+  const { detail, id, inline, joined, key, keyed, kind, label, login, presentation } = write;
+  const { pressedAt, retried, sent, signingOutElsewhere, target, uploaded } = write;
   return {
     detail,
     id,
     inline,
     joined,
     key,
+    keyed,
     kind,
     label,
     login,
@@ -193,6 +201,8 @@ export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
          *  and no other: `Writes.run` refuses one that names an attempt (`write`) instead. */
         readonly request: WriteRequest<T>;
         readonly write?: undefined;
+        /** The request's own (`request.method`). */
+        readonly method?: undefined;
       }
     | {
         readonly request?: undefined;
@@ -200,6 +210,9 @@ export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
          *  the state the last answer left); the request is kept as its first attempt goes out,
          *  and every attempt must make that one (`OneRequestPerWriteError`). */
         readonly write: Attempt<T>;
+        /** The method of the request every attempt of `write` makes, which no attempt says
+         *  until it goes out: what tells whether the write goes under its key (`Write.keyed`). */
+        readonly method: WriteMethod;
       }
   );
 
@@ -431,6 +444,7 @@ export class Writes {
         inline: spec.inline ?? false,
         joined: this.#nextJoin(),
         key,
+        keyed: goesUnderKey(request === undefined ? spec.method : request.method),
         kind: spec.kind.name,
         label: spec.label,
         login,
@@ -809,6 +823,7 @@ export class Writes {
         inline: false,
         joined: this.#nextJoin(),
         key: kept.key,
+        keyed: kept.keyed,
         kind: kept.kind,
         label: kept.label,
         login: kept.login,
@@ -1162,6 +1177,7 @@ export class Writes {
       carried: this.#carried.get(write.key) ?? null,
       detail: kind?.keep === undefined ? write.detail : kind.keep(write.detail),
       key: write.key,
+      keyed: write.keyed,
       kind: write.kind,
       label: write.label,
       login: write.login,

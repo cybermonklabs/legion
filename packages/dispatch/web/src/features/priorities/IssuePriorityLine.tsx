@@ -21,7 +21,8 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
 
@@ -210,7 +211,13 @@ export function IssuePriorityLine({
       ) : null}
       {write.error === null ? null : (
         <span className={`shrink-0 text-xs ${dangerText}`} role="alert">
-          {apiErrorMessage(write.error, "Could not save what this issue advances.")}
+          {/* A write the reader stopped may have been saved, and the line offers no Retry of it:
+              each press here is a new write of the set the line reads, under a key of its own. */}
+          {endedStopped(write)
+            ? stoppedWriteNote("what this issue advances", "saved", {
+                anew: "It is read again, and adding or removing a priority sends a new write.",
+              })
+            : apiErrorMessage(write.error, "Could not save what this issue advances.")}
         </span>
       )}
     </div>

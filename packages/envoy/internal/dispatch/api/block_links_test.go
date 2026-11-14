@@ -26,10 +26,16 @@ func readBlockLinks(t *testing.T, handler http.Handler, from, to string) model.B
 	return decodeBody[model.BlockLinks](t, response)
 }
 
-// uploadIssueDocument uploads markdown as the issue document name and returns it.
+// uploadIssueDocument uploads markdown as the issue document name and returns it, naming the
+// token of the version it replaces where the issue already holds that name.
 func uploadIssueDocument(t *testing.T, handler http.Handler, key, name, markdown string) model.Artifact {
 	t.Helper()
-	response := multipartRequest(t, handler, "/api/v1/issues/"+key+"/artifacts", map[string]string{"name": name}, name, "text/markdown", []byte(markdown), "alice")
+	owner := "/api/v1/issues/" + key + "/artifacts"
+	fields := map[string]string{"name": name}
+	if base := uploadBaseNamed(t, handler, owner, name); base != nil {
+		fields["precondition"] = encodeUploadBase(t, base)
+	}
+	response := multipartRequest(t, handler, owner, fields, name, "text/markdown", []byte(markdown), "alice")
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload %s: status=%d body=%s", name, response.Code, response.Body.String())
 	}

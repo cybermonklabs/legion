@@ -68,6 +68,9 @@ type writeAdvice struct {
 	// SupersededApproval is set by a document write that stored a version replacing the one a
 	// person had approved; nil (omitted) everywhere else.
 	SupersededApproval *supersededApproval `json:"superseded_approval,omitempty"`
+	// StandingReview is the person's review the issue's specification already carries, set only
+	// on a question opened on an issue (createAskFor); nil (omitted) everywhere else.
+	StandingReview *standingReview `json:"standing_review,omitempty"`
 	// MovedApprovalRequest is set by a document write that took an open approval request back
 	// from the person it waits on; nil (omitted) everywhere else.
 	MovedApprovalRequest *movedApprovalRequest `json:"moved_approval_request,omitempty"`

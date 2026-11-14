@@ -101,7 +101,7 @@ function statusWrite(
     presentation: "indicator",
   } as const;
   return fields.target === undefined
-    ? writes.run({ ...press, write: attemptOf(patch, answer) })
+    ? writes.run({ ...press, method: "PATCH", write: attemptOf(patch, answer) })
     : writes.run({ ...press, request: sends.answer({ ...patch }, answer), target: fields.target });
 }
 
@@ -120,6 +120,7 @@ function uploadWrite(writes: Writes, file: File, answer: () => Promise<unknown>)
     file,
     kind: plainWrite,
     label: `Upload of ${file.name}`,
+    method: "POST",
     presentation: "indicator",
     write: attemptOf(uploadOf(file), answer),
   });
@@ -224,6 +225,7 @@ test("one key per press, reused by every attempt the store makes", async () => {
       detail: null,
       kind: plainWrite,
       label: "CORE-1 set to done",
+      method: "PATCH",
       presentation: "indicator",
       write: (bounds) => {
         keys.push(bounds.key);
@@ -288,6 +290,7 @@ test("Stop trying ends a late write, and Retry keeps its key until Dispatch has 
         detail: null,
         kind: plainWrite,
         label: "CORE-1 set to done",
+        method: "PATCH",
         presentation: "indicator",
         write: (bounds) => {
           keys.push(bounds.key);
@@ -341,6 +344,7 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
           detail: null,
           kind: plainWrite,
           label: "Ask snoozed",
+          method: "PUT",
           presentation: "indicator",
           write: attemptOf(put, hang),
         })
@@ -724,6 +728,7 @@ async function lapsedWrites() {
       file,
       kind: plainWrite,
       label: "Upload of spec.md",
+      method: "PATCH",
       presentation: "indicator",
       write: attemptOf(patch, () => {
         attempts += 1;
@@ -736,6 +741,7 @@ async function lapsedWrites() {
       detail: { draft: "My only copy of this" },
       kind: draftWrite,
       label: "Message",
+      method: "PATCH",
       presentation: "composer",
       write: attemptOf(patch, () => Promise.reject(verdict)),
     })
@@ -829,6 +835,7 @@ test("a write answered 401 is asked again under its key, and whoami is read agai
       detail: null,
       kind: plainWrite,
       label: "CORE-1 set to done",
+      method: "PATCH",
       presentation: "indicator",
       write: (bounds) => {
         keys.push(bounds.key);
@@ -895,6 +902,7 @@ test("a sign-out still out lands when the session lapses", async () => {
         inline: true,
         kind: plainWrite,
         label: "Sign out",
+        method: "POST",
         presentation: "indicator",
         write: () => {
           attempts += 1;
@@ -928,6 +936,7 @@ test("LOGIN_CHANGED drops every write of its login and reads whoami again", asyn
         detail: null,
         kind: plainWrite,
         label: "CORE-1 set to done",
+        method: "PATCH",
         presentation: "indicator",
         write: (bounds) => {
           sentLogin = bounds.login;
@@ -1008,6 +1017,7 @@ test("a sign-out out holds its person's writes until Dispatch answers it", async
           inline: true,
           kind: plainWrite,
           label: "Sign out",
+          method: "POST",
           presentation: "indicator",
           write: () => answer,
         })
@@ -1129,6 +1139,7 @@ test("a quiet write is never shown refused and is let go after five minutes", as
           detail: null,
           kind: plainWrite,
           label: "Read mark",
+          method: "PATCH",
           presentation: "quiet",
           write: attemptOf(patch, answer),
         })
@@ -1222,6 +1233,7 @@ test("a resent DELETE answered 404 lands", async () => {
       detail: null,
       kind: plainWrite,
       label: "Source removed",
+      method: "DELETE",
       presentation: "indicator",
       write: attemptOf(remove, () => {
         attempts += 1;
@@ -1458,6 +1470,7 @@ test("a route that keeps failing at the connection backs off to its cap while ot
           detail: null,
           kind: plainWrite,
           label: "CORE-1 set to done",
+          method: "PATCH",
           presentation: "indicator",
           write: (bounds) => api.send(patch, bounds),
         })
@@ -1539,6 +1552,7 @@ test("a plain write on a line goes out as the very request it is kept as", async
         detail: null,
         kind: plainWrite,
         label: "CORE-1 set to todo",
+        method: "PATCH",
         presentation: "indicator",
         target: "issue:CORE-1",
         write: async () => {
@@ -1567,6 +1581,7 @@ test("a plain write on a line goes out as the very request it is kept as", async
       detail: null,
       kind: plainWrite,
       label: "CORE-2 set to done",
+      method: "PATCH",
       presentation: "indicator",
       write: (bounds) => {
         attempts += 1;
@@ -1848,6 +1863,51 @@ test("an entry kept with no carried loads, and reads as what it sent", async () 
       expect(tab.kept(spent)).toMatchObject({ carried: "PATCH", sent: true, version: 1 });
     } finally {
       send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// Whether a write goes under its key is its press's to say (`WriteSpec.method`), and a reload
+// reads it back from what was kept (`KeptWrite.keyed`), not from a request: a write its kind
+// makes again from its own record, kept before any attempt of it went out, holds none. So the
+// indicator says of a `PUT` that came back interrupted that its Retry sends the same change
+// again, and of a `POST` that it asks again under the same key.
+test("a reload reads back whether each write goes under its key, with no request to read it from", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    try {
+      const before = new Writes(signedIn(), tab.page(), memoryFiles());
+      const hang = () => Promise.withResolvers<never>().promise;
+      for (const method of ["PUT", "POST"] as const) {
+        void before
+          .run({
+            detail: null,
+            kind: composedWrite,
+            label: method,
+            method,
+            presentation: "indicator",
+            write: hang,
+          })
+          .catch(() => {});
+      }
+      await settle();
+      for (const write of before.rows()) {
+        const entry = tab.kept(write.key) as { pressedAt: number; request: unknown };
+        expect(entry.request).toBeNull();
+        tab.storage.setItem(
+          `dispatch.write:${write.key}`,
+          JSON.stringify({ ...entry, pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1 })
+        );
+      }
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      after.resume("alice");
+      await settle();
+      expect(Object.fromEntries(after.rows().map((write) => [write.label, write.keyed]))).toEqual({
+        POST: true,
+        PUT: false,
+      });
+    } finally {
       tab.close();
     }
   });

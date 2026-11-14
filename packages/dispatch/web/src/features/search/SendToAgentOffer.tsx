@@ -6,8 +6,15 @@ import type { IssueDetails } from "../../api/types";
 import { claimHoldingFromRead } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { useWrites } from "../writes/write-store";
-import { barNoteClassName, type Offer, refusalText, useWordsState } from "./offer";
+import {
+  barNoteClassName,
+  type Offer,
+  type UnconfirmedPress,
+  unconfirmedPress,
+  useWordsState,
+} from "./offer";
 import { type SendToAgent, sendToAgent } from "./send-to-agent";
 
 /** The group the offer's one row sits in, and the row's own id, which the bar's arrows and
@@ -15,12 +22,13 @@ import { type SendToAgent, sendToAgent } from "./send-to-agent";
 export const SEND_TO_AGENT_GROUP_ID = "search-group-send-to-agent";
 export const SEND_TO_AGENT_OPTION_ID = "search-option-send-to-agent";
 
-/** Where the offer stands once a press has been made: the send out, the message sent, or a
- *  refusal in the person's words. Nothing pressed is no state at all (`useWordsState`). */
+/** Where the offer stands once a press has been made: the send out, the message sent, a refusal
+ *  in the person's words, or a send the person stopped before Dispatch confirmed it. Nothing
+ *  pressed is no state at all (`useWordsState`). */
 type OfferState =
   | { readonly kind: "sending"; readonly words: string }
   | { readonly agent: string; readonly kind: "sent"; readonly words: string }
-  | { readonly kind: "refused"; readonly refusal: string; readonly words: string };
+  | UnconfirmedPress;
 
 /**
  * The session a live agent holds this issue's claim with, or undefined where no such agent does:
@@ -95,11 +103,7 @@ export function useSendToAgentOffer({
         );
       },
       (error: unknown) => {
-        setState({
-          kind: "refused",
-          refusal: refusalText(error, "the message did not reach Dispatch."),
-          words,
-        });
+        setState(unconfirmedPress(error, words, "the message did not reach Dispatch."));
       }
     );
   };
@@ -107,9 +111,13 @@ export function useSendToAgentOffer({
   // agent is live on the issue and no send of these words is out. The row is gone from the
   // press onward: one approval sends one message, so there is no second press to make, and the
   // line below says what became of it. A refused send puts the row back, because then nothing
-  // was sent.
+  // was sent; so does one the person stopped, which may have been sent, and whose line says a
+  // press sends it again as a new message.
   const sendable =
-    holder !== undefined && (here === undefined || here.kind === "refused") ? holder : undefined;
+    holder !== undefined &&
+    (here === undefined || here.kind === "refused" || here.kind === "stopped")
+      ? holder
+      : undefined;
   return {
     row:
       sendable === undefined
@@ -146,6 +154,15 @@ function SendToAgentSaid({
     return (
       <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="alert">
         Could not send it to the agent on {issue}: {state.refusal}
+      </p>
+    );
+  }
+  if (state.kind === "stopped") {
+    return (
+      <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="alert">
+        {stoppedWriteNote(`your message to the agent on ${issue}`, "sent", {
+          anew: "Pressing Send this to the agent again sends it as a new message.",
+        })}
       </p>
     );
   }

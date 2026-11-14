@@ -141,6 +141,7 @@ export function writePin(
       label: `${applied.op === "pin" ? "Pin" : "Unpin"} on ${issueKey}`,
       presentation: "indicator",
       target: `pin:${issueKey}`,
+      method: "PUT",
       write: pinAttempt(detail),
     })
     .catch(() => {});

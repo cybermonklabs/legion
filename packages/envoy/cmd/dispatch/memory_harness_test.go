@@ -614,15 +614,24 @@ func (p *memoryServer) tryUpload(mode, issue, markdown string) (uploadResult, er
 }
 
 // tryUploadNamed is tryUpload of a document named name: a new version of the issue's document of
-// that name where it has one.
+// that name where it has one. A version after the first replaces a document that already exists,
+// so it names the token of the version it replaces, which uploadBase reads.
 func (p *memoryServer) tryUploadNamed(mode, issue, name, markdown string) (uploadResult, error) {
+	base, err := p.uploadBase(issue, name)
+	if err != nil {
+		return uploadResult{}, err
+	}
 	actor := map[string]string{"kind": "session", "id": "memory-test"}
 	var body *bytes.Buffer
 	var contentType string
 	switch mode {
 	case "json":
 		body = &bytes.Buffer{}
-		if err := json.NewEncoder(body).Encode(map[string]any{"name": name, "content": markdown, "actor": actor}); err != nil {
+		upload := map[string]any{"name": name, "content": markdown, "actor": actor}
+		if base != nil {
+			upload["precondition"] = base
+		}
+		if err := json.NewEncoder(body).Encode(upload); err != nil {
 			return uploadResult{}, fmt.Errorf("encode the upload: %w", err)
 		}
 		contentType = "application/json"
@@ -631,7 +640,15 @@ func (p *memoryServer) tryUploadNamed(mode, issue, name, markdown string) (uploa
 		if err != nil {
 			return uploadResult{}, fmt.Errorf("encode the actor: %w", err)
 		}
-		body, contentType, err = apitest.MultipartUpload(map[string]string{"name": name, "actor": string(encodedActor)}, name, "text/markdown", []byte(markdown))
+		fields := map[string]string{"name": name, "actor": string(encodedActor)}
+		if base != nil {
+			encodedBase, err := json.Marshal(base)
+			if err != nil {
+				return uploadResult{}, fmt.Errorf("encode the token the upload replaces: %w", err)
+			}
+			fields["precondition"] = string(encodedBase)
+		}
+		body, contentType, err = apitest.MultipartUpload(fields, name, "text/markdown", []byte(markdown))
 		if err != nil {
 			return uploadResult{}, err
 		}
@@ -654,6 +671,32 @@ func (p *memoryServer) tryUploadNamed(mode, issue, name, markdown string) (uploa
 		result.artifactID = created.Artifact.ID
 	}
 	return result, nil
+}
+
+// uploadBase is the token an upload of the document the issue holds under name must name: the one
+// that document carries now, read as every reader of it reads it. It answers nothing where the
+// issue holds no document under that name, since such an upload is the document's first version
+// and replaces nothing. Any other answer is this reader's error: it cannot know what the upload
+// should name.
+func (p *memoryServer) uploadBase(issue, name string) (map[string]string, error) {
+	answer, err := p.trySend(http.MethodGet, "/api/v1/issues/"+issue+"/artifacts/"+name+"/text", "", nil,
+		http.Header{"Authorization": {"Bearer " + memoryTestToken}})
+	if err != nil {
+		return nil, err
+	}
+	if answer.status == http.StatusNotFound {
+		return nil, nil
+	}
+	if answer.status != http.StatusOK {
+		return nil, fmt.Errorf("read the document %q of %s: status %d body %.300s", name, issue, answer.status, answer.body)
+	}
+	var document struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(answer.body, &document); err != nil {
+		return nil, fmt.Errorf("decode the document %q of %s: %w", name, issue, err)
+	}
+	return map[string]string{"document": document.Token}, nil
 }
 
 // requireAnswered fails the test unless the upload was stored or refused with a 4xx naming its

@@ -135,6 +135,10 @@ the Dispatch specs behind the `dispatch` command:
   attributes and `block.invalid` records a malformed browser-authored ask block, or, with
   `block_type: "check"`, a browser-written `ci_check` that breaks a rule, which settlement deleted
   (`reason` is the rule).
+- `dispatch artifact` takes a `precondition` of its own, `{ document }` alone, built by `uploadPreconditionArgument` (`dispatch doc-edit`'s guard, which also takes `blocks`, is `preconditionArgument`), and `CreateArtifactInput` carries it as `UploadPrecondition` to `POST /api/v1/{issues|projects}/{key}/artifacts`: in the JSON body, and for a multipart upload in the form field `precondition`, holding that same object's JSON text.
+  An upload replaces the whole document, so only the document token says which version it replaces, and the server refuses a `blocks` guard in one with `400 INVALID_PRECONDITION`.
+  A token behind the live document is refused `409 PRECONDITION_FAILED`, whose `current` carries the live token and whose `current.version` carries the live version number (`EditPreconditionCurrent.version`, which an edit's own refusal omits because it reads no version rows).
+  An upload replacing a document the owner already holds and naming no token is refused `400 PRECONDITION_REQUIRED`, by every server and under no setting; a first upload of a name replaces no version, so it names none.
 - Quote anchors retain their quote display cache and inline mark while carrying nullable `block_id`;
   new quotes use their lowest complete containing block, while quotes across top-level siblings
   remain unpinned. Clients must preserve the field.
