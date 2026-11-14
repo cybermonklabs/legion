@@ -595,7 +595,7 @@ func TestAMappingReadBetweenTheRenameRebuildsNarrowsNoGitHubFilter(t *testing.T)
 // holder, never the thing inside it). Three of those readers are started once, at boot, long
 // before any rebuild: the hold poll (pollHoldRelease) and the reconnect watchdog
 // (reconnectWatchdog), which workflowRuntime.run starts, and the consumer lag the state route
-// reads (consumerLagOf), which serve hands the API. Each once took what the holder held when it
+// reads (natsHolder.Lag), which serve hands the API. Each once took what the holder held when it
 // started and kept it, so after one rebuild the poll read every position from consumers on the
 // closed connection and never released a hold placed after it, the watchdog warned for ever
 // about the closed connection and never watched the new one, and the state reported every
@@ -622,7 +622,7 @@ func TestTheReadersOfTheNatsHolderReadWhatARebuildSwappedIn(t *testing.T) {
 
 	// The readers, started as the daemon starts them: the state's lag as serve builds it, and the
 	// two loops as run starts them, all before anything rebuilds.
-	lag := consumerLagOf(w)
+	lag := w.nats.Lag
 	ctx, cancel := context.WithCancel(context.Background())
 	var readers sync.WaitGroup
 	readers.Go(func() { w.pollHoldRelease(ctx) })
@@ -697,42 +697,8 @@ func TestTheReadersOfTheNatsHolderReadWhatARebuildSwappedIn(t *testing.T) {
 // as they did, acknowledging an event of a repository they do not hear rather than handing it
 // back for consumers that were never swapped in, which would hand it back for ever.
 func TestAMessageDeliveredDuringTheHandoverIsAppliedNotAcknowledgedUnapplied(t *testing.T) {
-	url := testnats.URL(t)
-	js, stream := notificationsStreamOn(t, url)
-	w := grantWorkflow(t, &syncBuffer{})
-	cfg := daemonGrantConfig(url)
-	rebuild := newRebuilder(w.log, config.Settled(cfg))
-	if err := connectAsBootDoes(t, w, cfg, rebuild, func(string) (string, bool) { return "", false }); err != nil {
-		t.Fatalf("connect the workflow's NATS: %v", err)
-	}
-	t.Cleanup(w.stop)
-	heard := &heardPullRequests{}
-	w.handlers = []intake.Handler{heard}
-
-	// The daemon's own intake loop, which runs the consumers of each generation the holder
-	// hands it (runIntake).
-	ctx, cancel := context.WithCancel(context.Background())
-	intaking := make(chan error, 1)
-	go func() { intaking <- w.runIntake(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		if err := <-intaking; err != nil {
-			t.Errorf("the intake loop stopped: %v", err)
-		}
-	})
-	github := "legion-go-" + cfg.Project + "-github"
-	durable := func(ctx context.Context) (*jetstream.ConsumerInfo, bool) {
-		consumer, err := stream.Consumer(ctx, github)
-		if err != nil {
-			return nil, false
-		}
-		info, err := consumer.Info(ctx)
-		return info, err == nil
-	}
-	testwait.Eventually(t, "the boot's intake pulling from the GitHub durable", func() bool {
-		info, ok := durable(t.Context())
-		return ok && info.NumWaiting > 0
-	})
+	r := newHandoverRig(t)
+	w := r.w
 
 	// A rebuild whose own connection is closed before its handover, so the handover's
 	// SetRepositories fails.
@@ -744,20 +710,20 @@ func TestAMessageDeliveredDuringTheHandoverIsAppliedNotAcknowledgedUnapplied(t *
 		}
 		return conn, consumers, err
 	}
-	if err := w.nats.rebuild(&cfg); err == nil {
+	if err := w.nats.rebuild(&r.cfg); err == nil {
 		t.Fatal("a rebuild whose connection closed before its handover succeeded, so this proves nothing")
 	}
 	w.nats.open = open
-	publishDaemonGrantEnvelope(t, js, "notifications.github.sjawhar.legion.pr.7", "github", "unheard-after-a-failed-handover",
+	publishDaemonGrantEnvelope(t, r.js, "notifications.github.sjawhar.legion.pr.7", "github", "unheard-after-a-failed-handover",
 		`{"action":"opened","author":"author","base_ref":"main","body":"Dispatch: CAPTURE-1","head_ref":"legion/CAPTURE-1",`+
 			`"head_sha":"head-captured","kind":"pr","number":"7","repo":"someone/else","title":"Captured GitHub event",`+
 			`"updated_at":"2026-09-23T00:00:00Z","url":"https://github.com/someone/else/pull/7"}`)
-	unheard, err := stream.Info(t.Context())
+	unheard, err := r.stream.Info(t.Context())
 	if err != nil {
 		t.Fatalf("read the stream's last sequence: %v", err)
 	}
 	testwait.Eventually(t, "the consumers a failed handover left serving acknowledging an event of a repository they do not hear", func() bool {
-		info, ok := durable(t.Context())
+		info, ok := r.durable(t.Context())
 		return ok && info.AckFloor.Stream >= unheard.State.LastSeq
 	})
 
@@ -765,41 +731,165 @@ func TestAMessageDeliveredDuringTheHandoverIsAppliedNotAcknowledgedUnapplied(t *
 	w.nats.handover = func(ctx context.Context, consumers *intake.Consumers, swap func()) error {
 		return handover(ctx, consumers, func() {
 			defer swap()
-			before, ok := durable(ctx)
-			if !ok {
-				t.Error("read the GitHub durable before publishing the partner's event")
-				return
-			}
-			publishDaemonGrantEnvelope(t, js, "notifications.github.cybermonklabs.legion.pr.42", "github", "handover-partner-pr-opened",
-				`{"action":"opened","author":"author","base_ref":"main","body":"Dispatch: CAPTURE-1","head_ref":"legion/CAPTURE-1",`+
-					`"head_sha":"head-captured","kind":"pr","number":"42","repo":"cybermonklabs/legion","title":"Captured GitHub event",`+
-					`"updated_at":"2026-09-23T00:00:00Z","url":"https://github.com/cybermonklabs/legion/pull/42"}`)
-			published, err := stream.Info(ctx)
-			if err != nil {
-				t.Errorf("read the stream's last sequence: %v", err)
-				return
-			}
-			seq := published.State.LastSeq
-			if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
-				info, ok := durable(ctx)
-				return ok && info.Delivered.Stream >= seq && (info.AckFloor.Stream >= seq || info.Delivered.Consumer >= before.Delivered.Consumer+2)
-			}) {
-				t.Error("the replaced intake was never delivered the partner's event and settled it before the swap, so this proves nothing")
-			}
+			r.deliverPartner(t, ctx)
 		})
 	}
 
-	// The operator configures the transfer while the daemon runs.
-	before := w.nats.connection()
-	changed := cfg
-	changed.RepositoryRenames = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
-	rebuild.observe(&changed, []config.Change{changeOfPath(t, "repository_renames")})
-	if w.nats.connection() == before {
+	if !r.transfer() {
 		t.Fatal("the change did not rebuild the NATS holder, so this proves nothing")
 	}
+	r.awaitPartnerApplied(t)
+}
 
+// The consumers a NATS rebuild replaces are marked as handing over before the set is handed to
+// the ones it opened, not once that call has returned (workflowRuntime.natsHandover). JetStream
+// widens the GitHub durable's filter when it takes the new consumers' SetRepositories, before the
+// call answers, so a `repository_renames` partner's event can reach the replaced intake while the
+// call is still in flight; marked only once it returned, that intake decodes the event against
+// its own older set and acknowledges it unapplied. Publishing once the call has returned, as
+// TestAMessageDeliveredDuringTheHandoverIsAppliedNotAcknowledgedUnapplied does, cannot tell the
+// two orders apart.
+//
+// So the call is held in flight: a stand-in for it (handRepositories) makes the real one and then
+// waits until the test releases it. While it waits, the partner's pull request is published and
+// the replaced intake, the only one running, is let be delivered it and settle it. Then the call
+// returns, and what is asserted is that the fact reaches the handler.
+func TestAMessageDeliveredWhileTheHandedSetIsInFlightIsAppliedNotAcknowledgedUnapplied(t *testing.T) {
+	r := newHandoverRig(t)
+	reached, held := make(chan struct{}), make(chan struct{})
+	r.w.handRepositories = func(ctx context.Context, consumers *intake.Consumers, repositories []ghrepo.Repository) error {
+		err := consumers.SetRepositories(ctx, repositories)
+		close(reached)
+		<-held
+		return err
+	}
+
+	var swapped bool
+	rebuilt := make(chan struct{})
+	go func() {
+		defer close(rebuilt)
+		swapped = r.transfer()
+	}()
+	release := sync.OnceFunc(func() { close(held) })
+	t.Cleanup(func() { release(); <-rebuilt })
+	select {
+	case <-reached:
+	case <-rebuilt:
+		t.Fatal("the rebuild ended before its handover handed the new consumers their set, so this proves nothing")
+	}
+
+	r.deliverPartner(t, t.Context())
+	release()
+	<-rebuilt
+	if !swapped {
+		t.Fatal("the change did not rebuild the NATS holder, so this proves nothing")
+	}
+	r.awaitPartnerApplied(t)
+}
+
+// handoverRig is the daemon a handover test rebuilds: booted as a daemon boots, on a project
+// whose mapping serves sjawhar/legion (grantWorkflow), with a handler that records every pull
+// request it applies (heard) and the daemon's own intake loop running the consumers of each
+// generation the holder hands it (runIntake), already pulling from the GitHub durable when the
+// rig is answered.
+type handoverRig struct {
+	w       *workflowRuntime
+	js      jetstream.JetStream
+	stream  jetstream.Stream
+	cfg     config.Config
+	rebuild *rebuilder
+	renames config.Change
+	heard   *heardPullRequests
+}
+
+func newHandoverRig(t *testing.T) *handoverRig {
+	t.Helper()
+	url := testnats.URL(t)
+	js, stream := notificationsStreamOn(t, url)
+	w := grantWorkflow(t, &syncBuffer{})
+	cfg := daemonGrantConfig(url)
+	rebuild := newRebuilder(w.log, config.Settled(cfg))
+	if err := connectAsBootDoes(t, w, cfg, rebuild, func(string) (string, bool) { return "", false }); err != nil {
+		t.Fatalf("connect the workflow's NATS: %v", err)
+	}
+	t.Cleanup(w.stop)
+	r := &handoverRig{w: w, js: js, stream: stream, cfg: cfg, rebuild: rebuild, renames: changeOfPath(t, "repository_renames"), heard: &heardPullRequests{}}
+	w.handlers = []intake.Handler{r.heard}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	intaking := make(chan error, 1)
+	go func() { intaking <- w.runIntake(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-intaking; err != nil {
+			t.Errorf("the intake loop stopped: %v", err)
+		}
+	})
+	testwait.Eventually(t, "the boot's intake pulling from the GitHub durable", func() bool {
+		info, ok := r.durable(t.Context())
+		return ok && info.NumWaiting > 0
+	})
+	return r
+}
+
+// durable reads the GitHub durable, which the replaced consumers and the ones a rebuild opens
+// share on one server.
+func (r *handoverRig) durable(ctx context.Context) (*jetstream.ConsumerInfo, bool) {
+	consumer, err := r.stream.Consumer(ctx, "legion-go-"+r.cfg.Project+"-github")
+	if err != nil {
+		return nil, false
+	}
+	info, err := consumer.Info(ctx)
+	return info, err == nil
+}
+
+// deliverPartner publishes the pull request of the rename partner, cybermonklabs/legion, while
+// the replaced intake is the only one running, and waits until that intake has been delivered it
+// and settled it: acknowledged, which the durable's ack floor shows, or handed back, which its
+// next delivery shows. It runs while a rebuild is under way, so it reports what fails rather than
+// stopping there.
+func (r *handoverRig) deliverPartner(t *testing.T, ctx context.Context) {
+	t.Helper()
+	before, ok := r.durable(ctx)
+	if !ok {
+		t.Error("read the GitHub durable before publishing the partner's event")
+		return
+	}
+	publishDaemonGrantEnvelope(t, r.js, "notifications.github.cybermonklabs.legion.pr.42", "github", "handover-partner-pr-opened",
+		`{"action":"opened","author":"author","base_ref":"main","body":"Dispatch: CAPTURE-1","head_ref":"legion/CAPTURE-1",`+
+			`"head_sha":"head-captured","kind":"pr","number":"42","repo":"cybermonklabs/legion","title":"Captured GitHub event",`+
+			`"updated_at":"2026-09-23T00:00:00Z","url":"https://github.com/cybermonklabs/legion/pull/42"}`)
+	published, err := r.stream.Info(ctx)
+	if err != nil {
+		t.Errorf("read the stream's last sequence: %v", err)
+		return
+	}
+	seq := published.State.LastSeq
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		info, ok := r.durable(ctx)
+		return ok && info.Delivered.Stream >= seq && (info.AckFloor.Stream >= seq || info.Delivered.Consumer >= before.Delivered.Consumer+2)
+	}) {
+		t.Error("the replaced intake was never delivered the partner's event and settled it before the swap, so this proves nothing")
+	}
+}
+
+// transfer is the operator configuring the transfer of sjawhar/legion to cybermonklabs/legion
+// while the daemon runs, handed to the rebuilder as the settings holder hands it a change
+// (rebuilder.observe). It returns once the rebuild that change causes has, and answers whether
+// that rebuild swapped in a connection of its own.
+func (r *handoverRig) transfer() bool {
+	before := r.w.nats.connection()
+	changed := r.cfg
+	changed.RepositoryRenames = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+	r.rebuild.observe(&changed, []config.Change{r.renames})
+	return r.w.nats.connection() != before
+}
+
+// awaitPartnerApplied waits for the daemon to apply the partner's pull request.
+func (r *handoverRig) awaitPartnerApplied(t *testing.T) {
+	t.Helper()
 	testwait.Eventually(t, "the daemon applying the partner's pull request its rebuild's handover was delivered", func() bool {
-		return slices.Contains(heard.repositories(), "cybermonklabs/legion")
+		return slices.Contains(r.heard.repositories(), "cybermonklabs/legion")
 	})
 }
 

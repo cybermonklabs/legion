@@ -170,12 +170,12 @@ that, so it stops well inside a pod's termination grace. It ends no agent: the n
 every pod or pane still running and relaunches each launch the stop cut short.
 
 A signal that comes before the boot is recorded ends the boot step under way only when that step
-is the plugin gate, which runs first, the GitHub App token mint, the image probe, or the NATS and
-Dispatch readiness checks; the daemon then stops without recording a boot. The cluster check,
-opening and migrating the store, building the runtime and recording the boot are not cut short:
-each runs to its end, with at most 30 seconds between one of the steps that end at the signal and
-the next, and the daemon stops at the next such step, or once its boot is recorded, which it then
-stamps.
+is the plugin gate, the GitHub App token mint, the image probe, or the NATS and Dispatch readiness
+checks; the daemon then stops without recording a boot. The cluster check and opening the store,
+which run before the plugin gate, and migrating the store, building the runtime and recording the
+boot, are not cut short: each runs to its end on a budget of at most 30 seconds, so a signal before
+the gate can wait up to 60 seconds, and the daemon stops at the next such step, or once its boot is
+recorded, which it then stamps.
 
 - **`legion daemon stopped draining the API`.** A request was still in flight after those 8
   seconds. The daemon cut it short, the caller got an error, and the next boot takes its claim up;

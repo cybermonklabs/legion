@@ -94,6 +94,19 @@ func (h *natsHolder) intake() *intake.Consumers {
 	return h.consumers
 }
 
+// DispatchPosition and Lag are the consumers' own, forwarded to the consumers the holder holds at
+// each call, so the readers the boot starts once and keeps for the daemon's life — the hold poll
+// (workflowRuntime.pollHoldRelease) and the state's lag (serve's ConsumerLag) — hold the holder
+// and have nothing of the consumers to keep (rebuilder.go: a reader holds the holder, never the
+// thing inside it). A rebuild swaps the consumers and closes the connection the ones it replaced
+// were on, so a reader that kept them would fail every read from then on: the poll would never
+// release a hold placed after the rebuild, and the state would report every consumer unavailable.
+func (h *natsHolder) DispatchPosition(ctx context.Context) (intake.DispatchConsumerPosition, error) {
+	return h.intake().DispatchPosition(ctx)
+}
+
+func (h *natsHolder) Lag(ctx context.Context) []intake.ConsumerLag { return h.intake().Lag(ctx) }
+
 // begin is one generation of the intake loop: the consumers to run, a context the next rebuild
 // cancels, the generation's number, which the loop compares to tell a rebuild's cancel from the
 // daemon's stop, and the settled the loop closes once its Run has returned.

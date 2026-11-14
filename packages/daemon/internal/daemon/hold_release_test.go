@@ -117,7 +117,7 @@ func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
-	go func() { w.pollHoldReleaseWith(ctx, func() positionReader { return reader }); close(done) }()
+	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
 
 	testwait.Eventually(t, "the poll retries the failed read and eventually releases", func() bool { return !admission.Held() })
 	cancel()
@@ -165,7 +165,7 @@ func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) 
 	defer cancel()
 	done := make(chan struct{})
 	hold(2)
-	go func() { w.pollHoldReleaseWith(ctx, func() positionReader { return reader }); close(done) }()
+	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
 	testwait.Eventually(t, "the first hold released", func() bool { return !admission.Held() })
 	time.Sleep(50 * time.Millisecond)
 
@@ -210,7 +210,7 @@ func TestPollHoldReleaseRetriesAFailedApplyOfAnUnchangedPosition(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
-	go func() { w.pollHoldReleaseWith(ctx, func() positionReader { return reader }); close(done) }()
+	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
 
 	testwait.Eventually(t, "the poll retries the failed apply of an unchanged position and eventually releases", func() bool { return !admission.Held() })
 	cancel()
@@ -531,7 +531,7 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
-	go func() { w.pollHoldReleaseWith(ctx, func() positionReader { return reader }); close(done) }()
+	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
 
 	testwait.Eventually(t, "the poll warns about a hold that has not released", func() bool {
 		return strings.Contains(logBuf.String(), "admission: a hold has not released")
@@ -581,7 +581,7 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 	defer cancel()
 	done := make(chan struct{})
 	reader := &failingPositionReader{failures: 1 << 20}
-	go func() { w.pollHoldReleaseWith(ctx, func() positionReader { return reader }); close(done) }()
+	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
 	testwait.Eventually(t, "the poll to have observed the held admission at least once", func() bool {
 		reader.mu.Lock()
 		defer reader.mu.Unlock()
@@ -674,7 +674,7 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	reader := &failingPositionReader{failures: 1 << 20}
-	go func() { w.pollHoldReleaseWith(ctx, func() positionReader { return reader }); close(done) }()
+	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
 	testwait.Eventually(t, "the poll to have observed the held admission at least once", func() bool {
 		reader.mu.Lock()
 		defer reader.mu.Unlock()

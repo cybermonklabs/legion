@@ -767,9 +767,7 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 		if decoded.Unheard && handingOver {
 			logMessage(spec.Logger, slog.LevelInfo, "a GitHub event of a repository the replaced intake does not hear is handed back to its durable for the intake replacing it", message,
 				"event_id", decoded.EventID, "retry_in", spec.NakDelay)
-			if err := message.NakWithDelay(spec.NakDelay); err != nil {
-				logMessage(spec.Logger, slog.LevelError, "nak a GitHub event the replaced intake does not hear", message, "event_id", decoded.EventID, "error", err)
-			}
+			nakWithDelay(spec, message, decoded.EventID, spec.NakDelay, "nak a GitHub event the replaced intake does not hear")
 			return false
 		}
 		return ackMessage(spec.Logger, message)
@@ -1076,8 +1074,8 @@ func resolveReviewBody(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact,
 }
 
 // nakResolve widens message's nak delay to a RetryLater's wait when it names one longer than
-// spec.NakDelay, logs what failed and the delay at warn, then naks the message with that delay,
-// logging nakWhat at error if the nak itself fails.
+// spec.NakDelay, logs what failed and the delay at warn, then naks the message with that delay
+// (nakWithDelay).
 func nakResolve(spec ConsumerSpec, message jetstream.Msg, eventID, what, nakWhat string, err error) {
 	delay := spec.NakDelay
 	var later *RetryLater
@@ -1085,8 +1083,14 @@ func nakResolve(spec ConsumerSpec, message jetstream.Msg, eventID, what, nakWhat
 		delay = later.After
 	}
 	logMessage(spec.Logger, slog.LevelWarn, what, message, "event_id", eventID, "retry_in", delay, "error", err)
-	if nakErr := message.NakWithDelay(delay); nakErr != nil {
-		logMessage(spec.Logger, slog.LevelError, nakWhat, message, "event_id", eventID, "error", nakErr)
+	nakWithDelay(spec, message, eventID, delay, nakWhat)
+}
+
+// nakWithDelay naks message, to be delivered again after delay, logging nakWhat at error if the
+// nak itself fails.
+func nakWithDelay(spec ConsumerSpec, message jetstream.Msg, eventID string, delay time.Duration, nakWhat string) {
+	if err := message.NakWithDelay(delay); err != nil {
+		logMessage(spec.Logger, slog.LevelError, nakWhat, message, "event_id", eventID, "error", err)
 	}
 }
 

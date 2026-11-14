@@ -61,12 +61,8 @@ type workflowRuntime struct {
 	// reads a bare field: the serving goroutine's workflowRuntime.stop, reconnectWatchdog and the
 	// intake loop read it while run can close it at the stop's budget (closeNATS), and
 	// internal/daemon runs under the race detector in CI (.github/workflows/ci.yaml, the step
-	// "Test the concurrent packages under the race detector"). And every reader takes them at each
-	// use, keeping neither past one call, since a rebuild swaps both and closes the connection it
-	// replaced: the loops boot starts read the holder at every tick (pollHoldRelease,
-	// reconnectWatchdog), the state's lag at every read (consumerLagOf), and the intake loop at
-	// every generation, which the rebuild ends before it closes that generation's connection
-	// (runIntake, natsHolder.begin).
+	// "Test the concurrent packages under the race detector"). A reader that outlives a rebuild
+	// holds the holder, never what it holds (natsHolder.DispatchPosition says why).
 	nats *natsHolder
 	// keeper is the controller keeper and the controller tick's wake behind their holder; nil in
 	// a runtime a test built by hand, which runs no keeper.
@@ -86,7 +82,14 @@ type workflowRuntime struct {
 	// are the concrete *intake.Consumers and a test of the mapping refresh's ordering has to hold
 	// the call while it proves no transaction waits on it (INFRA-3169).
 	setRepositories func(ctx context.Context, repositories []ghrepo.Repository) error
-	outbox          *outbox
+	// handRepositories hands the consumers a NATS rebuild opened the repositories they are to
+	// hear, the one route the handover reaches that stream call by (handOverRepositories). The
+	// boot leaves it nil, which means consumers.SetRepositories; a test sets it to a stand-in,
+	// since those consumers are the concrete *intake.Consumers and a test of the handover's
+	// ordering has to hold the call while it proves the consumers it replaces already hand back
+	// what they do not hear.
+	handRepositories func(ctx context.Context, consumers *intake.Consumers, repositories []ghrepo.Repository) error
+	outbox           *outbox
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
 	// at open, before the outbox exists, and the facts the boot applies before attach write rows
 	// through them, so the wake forwards to whatever attach has stored, and to nothing before
@@ -789,12 +792,23 @@ func (w *workflowRuntime) natsHandover(ctx context.Context, consumers *intake.Co
 	}
 	replaced := w.nats.intake()
 	replaced.HandingOver(true)
-	if err := consumers.SetRepositories(ctx, heard); err != nil {
+	if err := w.handOverRepositories(ctx, consumers, heard); err != nil {
 		replaced.HandingOver(false)
 		return fmt.Errorf("hand the rebuilt consumers the repositories this daemon hears: %w", err)
 	}
 	swap()
 	return nil
+}
+
+// handOverRepositories has consumers, the ones a NATS rebuild opened, hear repositories: the one
+// route natsHandover reaches their SetRepositories by, so the handover never escapes the stand-in
+// a test puts in its place (handRepositories, which the boot leaves nil because the daemon's own
+// answer is those consumers' own SetRepositories).
+func (w *workflowRuntime) handOverRepositories(ctx context.Context, consumers *intake.Consumers, repositories []ghrepo.Repository) error {
+	if w.handRepositories != nil {
+		return w.handRepositories(ctx, consumers, repositories)
+	}
+	return consumers.SetRepositories(ctx, repositories)
 }
 
 // phaseHolds answers supervise's Deps.PhaseHolds from the issue record: a task carries the phase
@@ -1576,9 +1590,9 @@ const (
 )
 
 // positionReader is pollHoldRelease's only dependency on the Dispatch consumer: reading its
-// current position. A test substitutes one that fails on demand to prove the poll logs and
-// retries rather than silently ending the hold. The poll asks for the reader at every tick and
-// keeps none (pollHoldReleaseWith), because a NATS rebuild swaps the consumers under it.
+// current position. The daemon's is the NATS holder (natsHolder.DispatchPosition); a test
+// substitutes one that fails on demand to prove the poll logs and retries rather than silently
+// ending the hold.
 type positionReader interface {
 	DispatchPosition(ctx context.Context) (intake.DispatchConsumerPosition, error)
 }
@@ -1603,18 +1617,12 @@ type positionReader interface {
 // hold is not the only one), and its release can read the same (ack floor, idle) as an earlier
 // hold's, which would otherwise be applied as that earlier release's duplicate, or skipped as
 // the reading last applied, and the hold never released.
-//
-// The Dispatch consumer is read from the NATS holder at every tick (natsHolder.intake), never
-// once for the poll's life: the poll starts at boot, and a rebuild swaps the consumers and
-// closes the connection the boot's were on, so a reader kept from the start would fail every
-// read with `connection closed` and never release a hold placed after the rebuild.
 func (w *workflowRuntime) pollHoldRelease(ctx context.Context) {
-	w.pollHoldReleaseWith(ctx, func() positionReader { return w.nats.intake() })
+	w.pollHoldReleaseWith(ctx, w.nats)
 }
 
-// pollHoldReleaseWith is pollHoldRelease reading each position from the reader current answers
-// at that tick.
-func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, current func() positionReader) {
+// pollHoldReleaseWith is pollHoldRelease reading each position from reader.
+func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, reader positionReader) {
 	interval := w.holdPollInterval
 	if interval <= 0 {
 		interval = defaultHoldPollInterval
@@ -1663,7 +1671,7 @@ func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, current func(
 		if heldSince.IsZero() {
 			heldSince = time.Now()
 		}
-		position, err := current().DispatchPosition(ctx)
+		position, err := reader.DispatchPosition(ctx)
 		if err != nil {
 			w.log.Error("read Dispatch consumer position for a held release", "error", err)
 			continue
@@ -1706,8 +1714,7 @@ const defaultReconnectPollInterval = 10 * time.Second
 const defaultReconnectWarnEvery = 3 * time.Minute
 
 // connStatus is reconnectWatchdog's only dependency on *nats.Conn: a test substitutes a fake that
-// reports disconnected, with a LastError, on demand. The watchdog asks for the connection at
-// every tick and keeps none (reconnectWatchdogWith), because a NATS rebuild swaps it.
+// reports disconnected, with a LastError, on demand.
 type connStatus interface {
 	IsConnected() bool
 	LastError() error
@@ -1724,10 +1731,10 @@ type connStatus interface {
 // has anything to say, instead of just the one disconnect line a reconnect that keeps failing
 // never reaches a reconnected or a closed line to follow.
 //
-// The connection is read from the NATS holder at every tick (natsHolder.connection), never once
-// for the watchdog's life: the watchdog starts at boot, and a rebuild swaps the connection and
-// closes the one it replaced, which a watchdog that kept it would warn about for ever while
-// never watching the one the daemon reads on. The stop clears the holder's connection
+// It reads the holder's connection at every tick (natsHolder.connection), a getter where the
+// holder's other readers have forwarding methods (natsHolder.DispatchPosition), because its
+// clocks are one connection's: a tick must know which connection it read, to start them again
+// for one a rebuild swapped in (reconnectWatchdogWith). The stop clears the holder's connection
 // (natsHolder.close), and a tick that finds none watches nothing.
 func (w *workflowRuntime) reconnectWatchdog(ctx context.Context) {
 	w.reconnectWatchdogWith(ctx, func() connStatus {

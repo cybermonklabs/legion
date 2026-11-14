@@ -63,11 +63,11 @@ func launchSecretNames(cfg config.Config, lookup func(string) (string, bool)) []
 }
 
 // checkOperatorConfig refuses, over the configuration and the daemon's environment (lookup), what
-// the operator configured that collides with Legion's own, before anything is opened (readBoot). On
-// either runtime, a provider key may not name a launch secret, which every launch hands the agent
-// behind its `<NAME>_FILE` pointer alone (a tmux pane would refuse every launch; a pod's shim skips
-// the key). Under runtime: kubernetes, the operator's pod and provider keys are then held to the
-// Sandbox runtime's own refusals (sandbox.CheckPod).
+// the operator configured that collides with Legion's own, before any launch is prepared
+// (readBoot). On either runtime, a provider key may not name a launch secret, which every launch
+// hands the agent behind its `<NAME>_FILE` pointer alone (a tmux pane would refuse every launch; a
+// pod's shim skips the key). Under runtime: kubernetes, the operator's pod and provider keys are
+// then held to the Sandbox runtime's own refusals (sandbox.CheckPod).
 func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) error {
 	names := launchSecretNames(cfg, lookup)
 	for _, key := range cfg.ProviderKeys {
