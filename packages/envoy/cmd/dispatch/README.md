@@ -2241,29 +2241,49 @@ It refuses:
     It tests a `not valid` constraint on no existing row, of the table or of the table a foreign key references.
     `set default` and `drop default` change only what later inserts write, `drop not null` checks no row, and `drop expression` keeps the values a stored generated column holds.
     The census admits no other subcommand: `set not null` scans the table for nulls, `alter column … type` rewrites it, and `validate constraint` and a validated `add constraint` scan it.
-    It does not admit `alter view`, `alter index`, `alter sequence`, `alter foreign table` or `alter type … add attribute`, which Postgres parses as an `alter table` too.
+    It does not admit `alter view`, `alter materialized view`, `alter index`, `alter sequence`, `alter foreign table` or `alter type … add attribute`, which Postgres parses as an `alter table` too.
     Each admitted subcommand still takes ACCESS EXCLUSIVE briefly under the runner's `lock_timeout`: the exemption removes a size refusal, not the lock bound.
 
-  - `add column`, in such an `alter table`, of a type that resolves in the database the census reads and that is neither a domain nor the row type of a relation (`catalogOnlyColumn`):
+  - `add column`, in such an `alter table`, of a column whose types and default the census admits (`catalogOnlyColumn`):
     Postgres then writes only the catalog, whatever the type, and stores a non-null default as the value every existing row reads.
-    The census admits an array, an enum, a range and a composite type made with `create type … as`.
-    The type name must have one or two parts.
-    The census does not admit a column whose type name is one of the six serial names with one part (`smallserial`, `serial2`, `serial`, `serial4`, `bigserial`, `serial8`), whatever type of that name exists.
-    Postgres gives such a column a sequence and a `nextval` default, which rewrites the table.
-    The census does not admit a domain, with constraints or without: Postgres rewrites the table for a domain with constraints, and the census reads only the type's kind (`typtype`) to refuse every domain.
-    It does not admit the row type of a table, a view or another relation, since a pending `drop table` can uncover a domain of the same name in a later schema of the `search_path`.
-    The census reads the catalog before any pending migration applies, so a type or a function that an `add column` uses must ship in an earlier release than the column.
-    The census does not find one that an earlier pending migration creates, and then it does not admit the column.
     The column may carry `collate`, `storage` and `compression`, since each changes only what the catalog says of the column.
+    The census judges every type the statement names, the column's type and the type its default casts to, by the rules below (`admittedType`).
+    It admits an enum, a range, a composite type made with `create type … as`, and an array of one of these or of a base type.
+
+    - The type name must have one or two parts, and the type must resolve in the database the census reads.
+      The census reads the catalog before any pending migration applies, so a type or a function that an `add column` uses must ship in an earlier release than the column.
+      The census does not find one that an earlier pending migration creates, and then it does not admit the column.
+
+    - A type name of one part must not be one of the six serial names (`smallserial`, `serial2`, `serial`, `serial4`, `bigserial`, `serial8`), in the column or in a cast, whatever type of that name exists.
+      Postgres gives a column of such a name a sequence and a `nextval` default, which rewrites the table.
+      Postgres resolves the name in a cast as it resolves any other type name, so the rule refuses more casts than it must, and no default a migration ships casts to one.
+
+    - The type must not be a domain, with constraints or without.
+      Postgres rewrites the table for a domain with constraints, and the census reads only the type's kind (`typtype`) to refuse every domain.
+
+    - The type must not be the row type of a table, a view or another relation.
+      A pending `drop table` does not stop the catalog reads, and after it the same name can resolve to a type in a later schema of the `search_path`, which the census did not read.
+      That type can be a domain with a constraint, or a type whose cast from the default calls a volatile function.
+
+    - When the type is an array, its element type must not be a domain or the row type of a relation either.
+      The drop can change what the element type resolves to in the same way, and the census refuses an array of a domain as it refuses the domain.
+
     A default, when the column has one, must be one of these four kinds:
 
     - a constant (a number, a string, a bit string, a boolean or `null`), or an `array[…]` of constants that holds no other array.
 
-    - a cast of one of those to a type that resolves and is not a domain, such as `'x'::text` or `'x'::varchar(5)`.
+    - a cast of one of those to a type that the census admits by the rules above, such as `'x'::text` or `'x'::varchar(5)`.
 
     - a SQL value function, such as `current_timestamp`, `current_date` or `current_user`.
 
-    - a call with no argument, written `f()` or `pg_catalog.f()`, of a `pg_catalog` function that is no aggregate, no window function and no set-returning function, and that the catalog marks stable or immutable, such as `now()`.
+    - a call with no argument, written `f()` or `pg_catalog.f()`, of a `pg_catalog` function that is no aggregate, no window function and no set-returning function, and that the catalog marks stable or immutable, such as `now()` (`admittedCall`).
+      The census judges `pg_catalog.f()` by the function in `pg_catalog` alone, since Postgres searches only that schema for a qualified name.
+      It admits `f()` only when `pg_catalog` is the first schema of the census's `search_path` other than the temporary schema, and no function outside `pg_catalog` has the name, in any schema.
+      Postgres's call resolution also takes a function whose arguments all have defaults, and of two candidates in different schemas the one in the earlier schema of the `search_path` wins.
+      So `s1.now(a int default 0)` takes the call `now()` when `s1` comes before `pg_catalog`, and a pending `create function` can create such a function, which the census does not see.
+      With `pg_catalog` first, the function of `pg_catalog` wins over the function of every other schema, a function that a pending migration creates included.
+      Postgres never searches the temporary schema for a function.
+      The rule about the name also covers a runner whose `search_path` is not the census's, for every function that exists when the census runs.
 
     The census admits no other default.
     A volatile function (`gen_random_uuid()`, `clock_timestamp()`) makes Postgres rewrite the table to give each row a value of its own, and a function of another schema can read any table while Postgres holds ACCESS EXCLUSIVE.

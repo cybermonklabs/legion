@@ -162,10 +162,9 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 // needs it: an added column's type and default, whether the table a created index is built on is
 // new, and, for a replaced or altered function, whether a cast calls a function of its name.
 // The census reads every pending migration against the catalog as it stands before any of them
-// applies, so from the first pending migration that changes what a name resolves to there (a
-// type, a domain, a cast, a schema or an extension changed, a session setting of search_path,
-// role or session_authorization, or a text the parser cannot read), every later one is classified
-// with no catalog, and its added columns and created indexes are judged on size (catalogTrusted).
+// applies, so from the first pending migration that changes what a name resolves to there
+// (catalogReadsOff), every later one is classified with no catalog, and its added columns and
+// created indexes are judged on size (catalogTrusted).
 //
 // It returns an error only when the census itself could not be taken: a connection whose
 // search_path names no schema that exists among them, where current_schema() is null, so neither

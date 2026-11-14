@@ -200,10 +200,10 @@ func (*classifier) catalogOnlyDrop(node json.RawMessage) (string, error) {
 // subcommand still takes ACCESS EXCLUSIVE briefly, bounded by the runner's lock_timeout.
 //
 // The statement must alter a table (objtype OBJECT_TABLE). ALTER TYPE … ADD ATTRIBUTE and ALTER
-// FOREIGN TABLE parse as this node too, as do ALTER VIEW, ALTER INDEX and ALTER SEQUENCE. The
-// census sizes neither a type nor a foreign table, so admitting them serves nothing, and ALTER
-// TYPE alters a type, which takes the catalog reads away from every later migration
-// (catalogReadsOff).
+// FOREIGN TABLE parse as this node too, as do ALTER VIEW, ALTER MATERIALIZED VIEW (objtype
+// OBJECT_MATVIEW), ALTER INDEX and ALTER SEQUENCE. The census sizes neither a type nor a foreign
+// table, so admitting them serves nothing, and ALTER TYPE alters a type, which takes the catalog
+// reads away from every later migration (catalogReadsOff).
 func (c *classifier) catalogOnlyAlterTable(node json.RawMessage) (string, error) {
 	var alter struct {
 		Objtype string `json:"objtype"`
@@ -253,8 +253,9 @@ func (c *classifier) catalogOnlyAlterTable(node json.RawMessage) (string, error)
 // index over its rows, and a REFERENCES on a column with a DEFAULT clause checks every row. For
 // any other column Postgres writes only the catalog, whatever the type, and stores a non-null
 // default as the value every existing row reads. The column is admitted when each check below
-// holds, and each says why it is there; the checks that read the statement come before the ones
-// that read the catalog.
+// holds, and each says why it is there. admittedType judges every type the statement names, the
+// column's and the one its default casts to, and admittedCall judges every function its default
+// calls.
 func (c *classifier) catalogOnlyColumn(def json.RawMessage) (bool, error) {
 	// COLLATE, STORAGE and COMPRESSION change only what the catalog says of the column. Any other
 	// key refuses it, so that a field a later libpg_query adds to the grammar is refused until
@@ -262,10 +263,6 @@ func (c *classifier) catalogOnlyColumn(def json.RawMessage) (bool, error) {
 	// identity, a generated expression and an explicit NULL all arrive as entries of constraints,
 	// and raw_default, is_not_null, identity and generated stay empty.
 	column, ok := fieldsOnly(def, "colname", "typeName", "is_local", "location", "constraints", "collClause", "compression", "storage_name")
-	if !ok {
-		return false, nil
-	}
-	typeName, serial, ok := typeNameOf(column["typeName"])
 	if !ok {
 		return false, nil
 	}
@@ -286,9 +283,12 @@ func (c *classifier) catalogOnlyColumn(def json.RawMessage) (bool, error) {
 			notNull = true
 		case "CONSTR_DEFAULT":
 			// Postgres refuses a column with two defaults, so a second one is not read.
-			parts, ok := defaultPartsOf(item.Constraint.Expr)
-			if !ok || columnDefault != nil {
+			if columnDefault != nil {
 				return false, nil
+			}
+			parts, ok, err := c.defaultPartsOf(item.Constraint.Expr)
+			if err != nil || !ok {
+				return false, err
 			}
 			columnDefault = &parts
 		case "CONSTR_FOREIGN":
@@ -319,97 +319,53 @@ func (c *classifier) catalogOnlyColumn(def json.RawMessage) (bool, error) {
 	if notNull && (columnDefault == nil || columnDefault.null) {
 		return false, nil
 	}
-	// PostgreSQL's transformColumnDefinition (parse_utilcmd.c) turns a column whose type name has
-	// one part, spelled smallserial, serial2, serial, serial4, bigserial or serial8, into an
-	// integer column with a sequence and a nextval default before it looks up any type, and that
-	// volatile default rewrites the table. Catalog read 1 would resolve a type of that name where
-	// one exists and admit the column, so the name alone refuses it, whatever the catalog holds.
-	// Postgres compares the folded name with strcmp, so "Serial" and pg_catalog.serial stay type
-	// names it looks up as it looks up any other.
-	if serial {
-		return false, nil
-	}
-	// Without the catalog every added column is judged on size, a text column included: an
-	// unqualified type name resolves through the search_path, and a migration that sets its own
-	// can find a type of another schema under the name (catalogReadsOff).
-	if c.catalog == nil {
-		return false, nil
-	}
-	// The type must resolve in the catalog as it stands before any pending migration applies: a
-	// type an earlier pending migration creates is not there yet, and ships in an earlier release.
-	// Every domain is refused, not only one with constraints, since that reads one field. So is the
-	// row type of a table, a view, a materialized view, a foreign table or a partitioned table: a
-	// pending DROP TABLE of that relation can uncover a domain of the same name in a later schema
-	// of the search_path, and Postgres would rewrite the table for that domain's constraint. A
-	// composite type made by CREATE TYPE … AS (relkind c), an array, an enum and a range are
-	// admitted.
-	columnType, found, err := c.resolveType(typeName)
-	if err != nil || !found || columnType.typtype == "d" || columnType.relkind != "" && columnType.relkind != "c" {
+	columnType, ok, err := c.admittedType(column["typeName"])
+	if err != nil || !ok {
 		return false, err
 	}
 	if columnDefault == nil {
 		return true, nil
 	}
-	targets := []uint32{columnType.oid, columnType.elem}
-	if columnDefault.cast != "" {
-		castType, found, err := c.resolveType(columnDefault.cast)
-		if err != nil || !found || castType.typtype == "d" {
-			return false, err
-		}
-		targets = append(targets, castType.oid, castType.elem)
-	}
-	if columnDefault.function != "" {
-		// Postgres evaluates the default once, under the ACCESS EXCLUSIVE lock, and a function of
-		// another schema can read any table, where a function of pg_catalog with no argument reads
-		// none (now(), statement_timestamp()). A volatile one makes Postgres rewrite the table, to
-		// give each row a value of its own, and so does one that is no plain function returning
-		// one value.
-		var volatility, kind string
-		var inCatalog, returnsSet bool
-		found, err := c.read(functionQuery, columnDefault.function, &volatility, &inCatalog, &kind, &returnsSet)
-		if err != nil || !found || !inCatalog || kind != "f" || returnsSet || volatility != "s" && volatility != "i" {
-			return false, err
-		}
-	}
 	// Postgres can put a cast of its own between the default and the column (int8(int4) puts 0
 	// into a bigint), and a volatile cast function makes it rewrite the table. Every cast to the
 	// column's type, to the type the default casts to, or to the element type of either, is read:
 	// a superset of the casts Postgres can choose, which refuses nothing in a stock PostgreSQL 18,
-	// none of whose cast functions is volatile. The input and output functions an I/O conversion
-	// calls are not read: none of a stock PostgreSQL 18 is volatile, and only a superuser can make
-	// a base type with functions of its own in C.
+	// none of whose cast functions is volatile. Where the default casts nothing, or a type has no
+	// element type, the oid read is 0, which no cast targets. The input and output functions an
+	// I/O conversion calls are not read: none of a stock PostgreSQL 18 is volatile, and only a
+	// superuser can make a base type with functions of its own in C.
 	var volatileCast bool
-	found, err = c.read(volatileCastQuery, targets, &volatileCast)
+	found, err := c.read(volatileCastQuery, []uint32{columnType.oid, columnType.elem, columnDefault.cast.oid, columnDefault.cast.elem}, &volatileCast)
 	return found && !volatileCast, err
 }
 
-// defaultParts are what the catalog judges of an added column's default: the type a cast names,
-// as Catalog read 1 takes it, and the function a call names, as Catalog read 2 takes it, each ""
-// where the default has none; and whether the default is a null constant, cast or not.
+// defaultParts are what catalogOnlyColumn reads of a default defaultPartsOf admits: the type its
+// cast names, as Catalog read 1 finds it, zero where the default casts nothing, and whether the
+// default is a null constant, cast or not.
 type defaultParts struct {
-	cast, function string
-	null           bool
+	cast catalogType
+	null bool
 }
 
 // defaultPartsOf reads a default's raw expression into its parts, ok false where it is not built
 // from the four kinds of parts Postgres stores as a value of the catalog in place of a rewrite:
 //
 //   - a constant, or an ARRAY[…] of constants (constant);
-//   - a cast of one of those: a TypeCast whose arg is a constant and whose type name typeNameOf
-//     reads. A cast of a cast, or of a function, is refused: no default a migration ships casts
+//   - a cast of one of those: a TypeCast whose arg is a constant and whose type admittedType
+//     admits. A cast of a cast, or of a function, is refused: no default a migration ships casts
 //     anything but a constant, and the cast's own function would be one more to judge;
 //   - a SQL value function, of any op: current_timestamp, current_date, localtimestamp,
 //     current_user, session_user and the like, each stable;
 //   - a call with no arguments: a FuncCall holding no key but funcname, funcformat and location,
-//     so no argument, *, DISTINCT, VARIADIC, ORDER BY, FILTER or OVER, of a name of one part, or
-//     of two whose first is pg_catalog. Catalog read 2 judges the function the name resolves to.
+//     so no argument, *, DISTINCT, VARIADIC, ORDER BY, FILTER or OVER, of a function
+//     admittedCall admits.
 //
 // Anything else is refused: an operator (1 + 1), a column reference, a subquery, COALESCE and
 // the like.
-func defaultPartsOf(expr json.RawMessage) (parts defaultParts, ok bool) {
+func (c *classifier) defaultPartsOf(expr json.RawMessage) (parts defaultParts, ok bool, err error) {
 	kind, body, ok := nodeOf(expr)
 	if !ok {
-		return parts, false
+		return parts, false, nil
 	}
 	switch kind {
 	case "TypeCast":
@@ -418,30 +374,134 @@ func defaultPartsOf(expr json.RawMessage) (parts defaultParts, ok bool) {
 			TypeName json.RawMessage `json:"typeName"`
 		}
 		if json.Unmarshal(body, &cast) != nil {
-			return parts, false
+			return parts, false, nil
 		}
 		if parts.null, ok = constant(cast.Arg); !ok {
-			return parts, false
+			return parts, false, nil
 		}
-		parts.cast, _, ok = typeNameOf(cast.TypeName)
-		return parts, ok
+		parts.cast, ok, err = c.admittedType(cast.TypeName)
+		return parts, ok, err
 	case "SQLValueFunction":
-		return parts, true
+		return parts, true, nil
 	case "FuncCall":
 		call, ok := fieldsOnly(body, "funcname", "funcformat", "location")
 		var name nameList
 		if !ok || json.Unmarshal(call["funcname"], &name) != nil {
-			return parts, false
+			return parts, false, nil
 		}
-		switch id := name.identifier(); {
-		case len(id) == 1, len(id) == 2 && id[0] == "pg_catalog":
-			parts.function = id.Sanitize() + "()"
-			return parts, true
-		}
-		return parts, false
+		ok, err = c.admittedCall(name)
+		return parts, ok, err
 	}
 	parts.null, ok = constant(expr)
-	return parts, ok
+	return parts, ok, nil
+}
+
+// admittedType judges a type a statement names, a TypeName node: an added column's type
+// (catalogOnlyColumn) or the type its default casts to (defaultPartsOf). It judges every type
+// position, and nothing else resolves a type. It answers the type as Catalog read 1 finds it, ok
+// true where the census admits it: the name typeNameOf reads is no serial name, it resolves in
+// the catalog, and neither the type nor its element type is a domain or the row type of a
+// relation.
+func (c *classifier) admittedType(node json.RawMessage) (t catalogType, ok bool, err error) {
+	name, ok := typeNameOf(node)
+	if !ok {
+		return t, false, nil
+	}
+	// PostgreSQL's transformColumnDefinition (parse_utilcmd.c) turns a column whose type name has
+	// one part, spelled smallserial, serial2, serial, serial4, bigserial or serial8, into an
+	// integer column with a sequence and a nextval default before it resolves any type, and that
+	// volatile default rewrites the table. Catalog read 1 would resolve a type of that name where
+	// one exists and admit the column, so the name alone refuses it, whatever the catalog holds.
+	// Postgres compares the folded name with strcmp, so "Serial" and pg_catalog.serial stay type
+	// names it resolves as it resolves any other. Postgres refuses a column of an array of such a
+	// name (array of serial is not implemented), so the census refuses one too, and compares the
+	// name without its []. Postgres resolves a cast's type name as it resolves any other, so the
+	// rule also refuses a cast to a type of one of these names that the checks below would admit:
+	// that only refuses more, and no default a migration ships casts to one. The six names are
+	// written as typeNameOf quotes a name of one part.
+	if slices.Contains([]string{`"smallserial"`, `"serial2"`, `"serial"`, `"serial4"`, `"bigserial"`, `"serial8"`}, strings.TrimSuffix(name, "[]")) {
+		return t, false, nil
+	}
+	// Without the catalog no type is admitted, text included: an unqualified type name resolves
+	// through the search_path, and a migration that sets its own can find a type of another schema
+	// under the name (catalogReadsOff).
+	if c.catalog == nil {
+		return t, false, nil
+	}
+	// The type must resolve in the catalog as it stands before any pending migration applies: a
+	// type an earlier pending migration creates is not there yet, and ships in an earlier release.
+	found, err := c.read(typeQuery, name, &t.oid, &t.typtype, &t.elem, &t.relkind, &t.elemTyptype, &t.elemRelkind)
+	if err != nil || !found {
+		return t, false, err
+	}
+	// Every domain is refused, not only one with constraints, since that reads one field. So is
+	// the row type of a table, a view, a materialized view, a foreign table or a partitioned table
+	// (a relkind other than c). A pending DROP TABLE of that relation leaves the catalog reads on
+	// (catalogReadsOff), and after it the name can resolve to a type of a later schema of the
+	// search_path, which the census did not read. That type can be a domain with a constraint,
+	// for which Postgres rewrites the table, or a type with a volatile cast from the default,
+	// which Catalog read 3 did not read. The same drop can change what an array's element type
+	// resolves to, so the element type is held to both rules too, and an array of a domain is
+	// refused as the domain is, which only refuses more. An array's element type is never an
+	// array (x[][] is x[]), so one level of element covers every array. A composite type made by
+	// CREATE TYPE … AS (relkind c), an enum, a range, a base type and an array of one of these
+	// are admitted.
+	domainOrRowType := func(typtype, relkind string) bool { return typtype == "d" || relkind != "" && relkind != "c" }
+	return t, !domainOrRowType(t.typtype, t.relkind) && !domainOrRowType(t.elemTyptype, t.elemRelkind), nil
+}
+
+// admittedCall judges every function a default calls with no argument (defaultPartsOf), name as
+// the parser gives it. Postgres evaluates the default once, under the ACCESS EXCLUSIVE lock, and a
+// function of another schema can read any table, where a function of pg_catalog with no argument
+// reads none (now(), statement_timestamp()). A volatile one makes Postgres rewrite the table, to
+// give each row a value of its own, and so does one that is no plain function returning one
+// value. The call is admitted when each check below holds, and each says why it is there.
+func (c *classifier) admittedCall(name nameList) (bool, error) {
+	// The name has one part, or two whose first is pg_catalog: a function of any other schema can
+	// read any table.
+	id := name.identifier()
+	qualified := len(id) == 2 && id[0] == "pg_catalog"
+	if len(id) != 1 && !qualified {
+		return false, nil
+	}
+	// Without the catalog no call is admitted: an unqualified name resolves through the
+	// search_path, and a migration that sets its own can find a function of another schema under
+	// the name (catalogReadsOff).
+	if c.catalog == nil {
+		return false, nil
+	}
+	// The function of no argument the name resolves to is of pg_catalog, a plain function (prokind
+	// f) that returns one value, and stable or immutable.
+	var volatility, kind string
+	var inCatalog, returnsSet, catalogFirst, shared bool
+	found, err := c.read(functionQuery, id.Sanitize()+"()", &volatility, &inCatalog, &kind, &returnsSet, &catalogFirst, &shared)
+	if err != nil || !found || !inCatalog || kind != "f" || returnsSet || volatility != "s" && volatility != "i" {
+		return false, err
+	}
+	// Postgres searches pg_catalog alone for pg_catalog.f, so no function of another schema can
+	// take the call, and the two checks below do not apply to it.
+	if qualified {
+		return true, nil
+	}
+	// PostgreSQL's call resolution (FuncnameGetCandidates, namespace.c) takes a function whose
+	// arguments all have defaults as well as one with no argument, and of two candidates in
+	// different schemas the one of the earlier schema of the search_path wins. to_regprocedure
+	// finds only the signature of no argument, so with s1.now(a int default 0) and search_path
+	// s1, pg_catalog, Catalog read 2 reads pg_catalog.now() and Postgres calls s1.now(0). A pending
+	// CREATE FUNCTION leaves the catalog reads on, and it can create such a function, which the
+	// census does not see. So pg_catalog must be the first schema of the census's search_path that
+	// is not the temporary schema, which Postgres never searches for a function: pg_catalog's
+	// candidate then wins over the candidate of every other schema, a pending migration's
+	// included. Where two functions of pg_catalog could both take the call, Postgres finds it
+	// ambiguous and refuses it: a failed migration, not a rewrite.
+	if !catalogFirst {
+		return false, nil
+	}
+	// No routine outside pg_catalog has the name, in any schema, whatever its arguments: the
+	// census refuses every name that a function of another schema shares. That also covers a
+	// runner whose search_path is not the census's, for every function there is before the
+	// pending migrations apply.
+	return !shared, nil
 }
 
 // constant says whether an expression is a constant a default may be or cast, an A_Const or an
@@ -645,13 +705,13 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 //     names a role's lookup finds;
 //   - a GRANT or a REVOKE of a role's membership in another role (GrantRoleStmt), CREATE ROLE,
 //     whose IN ROLE, ROLE and ADMIN clauses grant memberships, ALTER ROLE, which changes them and
-//     the role's INHERIT attribute (ALTER GROUP … ADD USER and DROP USER parse as it too), and
-//     DROP ROLE, which removes them, USER or GROUP in place of ROLE included: a role holds the
-//     USAGE on a schema that each role it inherits from holds, so each of these can change which
-//     schemas a role's lookup finds names in, as a GRANT on a schema does. ALTER ROLE … SET and
-//     ALTER DATABASE … SET parse as nodes of their own (AlterRoleSetStmt, AlterDatabaseSetStmt)
-//     and stay off this list: they name no type, domain, cast or schema, and they are no SET the
-//     migration runs;
+//     the role's INHERIT attribute (ALTER GROUP … ADD USER and ALTER GROUP … DROP USER parse as
+//     it too), and DROP ROLE, which removes them, USER or GROUP in place of ROLE included: a role
+//     holds the USAGE on a schema that each role it inherits from holds, so each of these can
+//     change which schemas a role's lookup finds names in, as a GRANT on a schema does.
+//     ALTER ROLE … SET and ALTER DATABASE … SET parse as nodes of their own (AlterRoleSetStmt,
+//     AlterDatabaseSetStmt) and stay off this list: they name no type, domain, cast or schema, and
+//     they are no SET the migration runs;
 //   - a rename of a role (RenameStmt of OBJECT_ROLE): the default search_path starts with
 //     "$user", the name of the role a session runs as, so the rename changes which schema that
 //     entry names for a session of the role;
@@ -745,13 +805,24 @@ func (c *classifier) castFunction(name nameList) (bool, error) {
 const (
 	// typeQuery, Catalog read 1, resolves a type name: its oid, its typtype (d for a domain), its
 	// element type (typelem, 0 where it has none, which no cast targets), and the relkind of the
-	// relation whose row type it is, '' where it is none's. No row means the name resolves to no
-	// type.
-	typeQuery = `select t.oid, t.typtype, t.typelem, coalesce(c.relkind::text, '') from pg_type t left join pg_class c on c.oid = t.typrelid where t.oid = to_regtype($1)`
+	// relation whose row type it is, '' where it is none's; then the typtype of the element type
+	// and the relkind of the relation whose row type that is, each '' where there is none. No row
+	// means the name resolves to no type.
+	typeQuery = `select t.oid, t.typtype, t.typelem, coalesce(c.relkind::text, ''), coalesce(e.typtype::text, ''), coalesce(ec.relkind::text, '')
+		from pg_type t left join pg_class c on c.oid = t.typrelid
+		left join pg_type e on e.oid = t.typelem left join pg_class ec on ec.oid = e.typrelid
+		where t.oid = to_regtype($1)`
 	// functionQuery, Catalog read 2, resolves a call of no arguments: its volatility, whether it
-	// is of pg_catalog, its kind (f for a plain function) and whether it returns a set. No row
-	// means the name resolves to no function.
-	functionQuery = `select p.provolatile, p.pronamespace = 'pg_catalog'::regnamespace, p.prokind, p.proretset from pg_proc p where p.oid = to_regprocedure($1)`
+	// is of pg_catalog, its kind (f for a plain function) and whether it returns a set. It also
+	// reads whether pg_catalog is the first schema of the session's search_path that is not a
+	// temporary one (current_schemas(true) lists the schemas a lookup searches, in order, the
+	// temporary one as pg_temp_N), and whether a routine outside pg_catalog has the function's
+	// name. No row means the name resolves to no function.
+	functionQuery = `select p.provolatile, p.pronamespace = 'pg_catalog'::regnamespace, p.prokind, p.proretset,
+		coalesce((select s.nspname = 'pg_catalog' from unnest(current_schemas(true)) with ordinality s(nspname, ord)
+			where not starts_with(s.nspname, 'pg_temp_') order by s.ord limit 1), false),
+		exists (select from pg_proc o where o.proname = p.proname and o.pronamespace <> 'pg_catalog'::regnamespace)
+		from pg_proc p where p.oid = to_regprocedure($1)`
 	// volatileCastQuery, Catalog read 3, says whether any cast to one of the types $1 names calls a
 	// volatile function.
 	volatileCastQuery = `select exists (select from pg_cast c join pg_proc p on p.oid = c.castfunc where c.casttarget = any($1::oid[]) and p.provolatile = 'v')`
@@ -764,15 +835,8 @@ const (
 
 // catalogType is what Catalog read 1 finds for a type name.
 type catalogType struct {
-	oid, elem        uint32
-	typtype, relkind string
-}
-
-// resolveType runs Catalog read 1 for the type name name, found false where it resolves to no
-// type.
-func (c *classifier) resolveType(name string) (t catalogType, found bool, err error) {
-	found, err = c.read(typeQuery, name, &t.oid, &t.typtype, &t.elem, &t.relkind)
-	return t, found, err
+	oid, elem                                  uint32
+	typtype, relkind, elemTyptype, elemRelkind string
 }
 
 // read runs one catalog read in a savepoint of the census's transaction, as lockBoundOf and
@@ -884,21 +948,18 @@ func (n nameList) identifier() pgx.Identifier {
 // array's name. ok is false where the node holds a key other than names, typemod, typmods,
 // arrayBounds and location (%TYPE and SETOF among them), or a name of other than one or two
 // parts. A type modifier does not change the type a name resolves to, and array bounds do no more
-// than make it an array. serial says the name has one part that is exactly smallserial, serial2,
-// serial, serial4, bigserial or serial8, which a column definition does not look up as a type
-// (catalogOnlyColumn).
-func typeNameOf(node json.RawMessage) (name string, serial, ok bool) {
+// than make it an array: x[][] is the type x[].
+func typeNameOf(node json.RawMessage) (name string, ok bool) {
 	fields, ok := fieldsOnly(node, "names", "typemod", "typmods", "arrayBounds", "location")
 	var names nameList
 	if !ok || json.Unmarshal(fields["names"], &names) != nil || len(names) < 1 || len(names) > 2 {
-		return "", false, false
+		return "", false
 	}
-	serial = len(names) == 1 && slices.Contains([]string{"smallserial", "serial2", "serial", "serial4", "bigserial", "serial8"}, names[0].String.Sval)
 	name = names.identifier().Sanitize()
 	if fields["arrayBounds"] != nil {
 		name += "[]"
 	}
-	return name, serial, true
+	return name, true
 }
 
 // tableSizeExemption says why migration sql is exempt from CensusTableLimit: the kinds of its
