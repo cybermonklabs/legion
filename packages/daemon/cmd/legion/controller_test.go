@@ -382,6 +382,13 @@ exit %[2]d
 		t.Fatalf("write the recording omp: %v", err)
 	}
 	t.Setenv("HOME", home)
+	// No helper socket set or present unless a test makes one: AGENT_SECRETS_HELPER_SOCK blank and
+	// XDG_RUNTIME_DIR, where the default socket lies, an empty directory of the test's own. The
+	// start reads both to decide whether a machine session kept in the controller's key directory
+	// is dropped (controllerKeys), so the helper of the machine running the tests must not decide
+	// it. A test that sets either after this call wins.
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("OMP_PROFILE", "")
@@ -1530,15 +1537,18 @@ func TestControllerStartRefusesASignInDirectoryThatIsNotEmpty(t *testing.T) {
 	}
 }
 
-// The controller's `agent-secrets` reads sign as the helper's session where a helper runs, and
-// otherwise, on a machine that proves an identity of its own, as a machine session that command
-// registers and writes into the key directory, where in the operator's own every later
-// `agent-secrets` call in the operator's shells would sign as it (controllerKeys). Under either
-// Dispatch credential, the load probe and the controller are told AGENT_SECRETS_KEY_DIR naming a
-// directory of the controller's own under the state directory, not the one the operator's shell
-// exports nor the default under its XDG_RUNTIME_DIR, and each finds that directory there, 0700.
-// The helper's socket and the runtime directory reach both as the operator's shell has them, so
-// where a helper runs it still signs.
+// The controller's `agent-secrets` reads sign as the helper's session whenever a helper socket is
+// set or present, and otherwise, where no helper socket is and the machine proves an identity of
+// its own, as a machine session that command registers and writes into the key directory, where
+// in the operator's own every later `agent-secrets` call in the operator's shells would sign as
+// it (controllerKeys). Under either Dispatch credential, the load probe and the controller are
+// told AGENT_SECRETS_KEY_DIR naming a directory of the controller's own under the state
+// directory, not the one the operator's shell exports nor the default under its XDG_RUNTIME_DIR,
+// and each finds that directory there, 0700. The helper's socket and the runtime directory reach
+// both as the operator's shell has them, so whenever a helper socket is set or present the helper
+// still signs; the start drops a machine session kept in that directory then, so one read made
+// while the helper was down cannot pin later reads to the machine identity
+// (TestControllerStartDropsAKeptMachineSessionWhenAHelperSocketIsSetOrPresent).
 func TestControllerStartGivesTheControllerAKeyDirectoryOfItsOwn(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1588,9 +1598,9 @@ func TestControllerStartGivesTheControllerAKeyDirectoryOfItsOwn(t *testing.T) {
 	}
 }
 
-// What the controller's key directory holds is the machine session `agent-secrets` registered
-// for the controller at an earlier start (controllerKeys), so the start keeps it and goes on, and
-// makes a directory of a wider mode 0700.
+// With no helper socket set or present, what the controller's key directory holds is the machine
+// session `agent-secrets` registered for the controller at an earlier start (controllerKeys), so
+// the start keeps it and goes on, and makes a directory of a wider mode 0700.
 func TestControllerStartKeepsWhatTheKeyDirectoryHolds(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
@@ -1616,6 +1626,143 @@ func TestControllerStartKeepsWhatTheKeyDirectoryHolds(t *testing.T) {
 	}
 	if got := modeOf(t, own); got != 0o700 {
 		t.Errorf("the controller's key directory mode %o, want 0700", got)
+	}
+}
+
+// keptMachineSession writes into own, the controller's key directory, what `agent-secrets` keeps
+// there once it has registered a machine session for the controller (writeMachineSession in
+// packages/envoy's cmd/agent-secrets): key.pem, the machine-session marker when marked, and
+// enrollment. It answers each file's path with what it holds. The key is no key: the start reads
+// none of these files, it only keeps or drops them.
+func keptMachineSession(t *testing.T, own string, marked bool) map[string]string {
+	t.Helper()
+	if err := os.MkdirAll(own, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		filepath.Join(own, "key.pem"):    "the key an earlier read registered\n",
+		filepath.Join(own, "enrollment"): "enr-an-earlier-start\n",
+	}
+	if marked {
+		files[filepath.Join(own, "machine-session")] = ""
+	}
+	for path, contents := range files {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return files
+}
+
+// R6: the helper wins whenever its socket is set or present, including over a machine session
+// `agent-secrets` kept in the controller's key directory from an earlier read with no helper,
+// which that command would otherwise take before the helper on every later read, across restarts
+// and reboots. So a start finding such a session, with AGENT_SECRETS_HELPER_SOCK naming a socket
+// (even one nothing is at: agent-secrets then asks it and fails rather than signing another way)
+// or with the default socket present under XDG_RUNTIME_DIR, drops its key, enrollment and marker,
+// says so on stderr naming the directory and the socket, and goes on to launch the controller
+// with the directory still there, 0700.
+func TestControllerStartDropsAKeptMachineSessionWhenAHelperSocketIsSetOrPresent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// socket makes the helper socket the case is about, and answers its path.
+		socket func(t *testing.T) string
+	}{
+		{"set, with nothing listening", func(t *testing.T) string {
+			sock := filepath.Join(t.TempDir(), "helper.sock")
+			t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+			return sock
+		}},
+		{"unset, present at the default", func(t *testing.T) string {
+			runtimeDir := t.TempDir()
+			t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+			sock := filepath.Join(runtimeDir, "agent-secrets", "helper.sock")
+			if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(sock, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return sock
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newControllerDaemon(t)
+			c := newControllerStart(t, d, controllerOptions{})
+			own := filepath.Join(c.defaultDir, "controller-keys")
+			kept := keptMachineSession(t, own, true)
+			sock := tc.socket(t)
+
+			code, _, errb := c.run()
+			if code != 0 {
+				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+			}
+			for path := range kept {
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					t.Errorf("%s is still in the controller's key directory (%v); want the kept machine session dropped", filepath.Base(path), err)
+				}
+			}
+			want := "[legion] dropped the machine session kept in the controller's key directory " + own +
+				": a helper socket is set or present (" + sock + "), so the helper signs the controller's agent-secrets reads\n"
+			if !strings.Contains(errb, want) {
+				t.Errorf("stderr = %q, want it to carry %q", errb, want)
+			}
+			if !c.launched() {
+				t.Error("Oh My Pi was not launched")
+			}
+			if probe, launch := c.keyDirModes(); probe != "700" || launch != "700" {
+				t.Errorf("the load probe found the controller's key directory at mode %q and the controller at %q, want 700 for both", probe, launch)
+			}
+		})
+	}
+}
+
+// R6: with no helper socket set or present, the controller's `agent-secrets` reads sign as the
+// machine session of its own it kept in the key directory, so a start finding one keeps every
+// file of it byte for byte and says nothing of a drop: dropping it would only make the next read
+// register a session anew.
+func TestControllerStartKeepsAMachineSessionWithNoHelperSocket(t *testing.T) {
+	d := newControllerDaemon(t)
+	c := newControllerStart(t, d, controllerOptions{})
+	own := filepath.Join(c.defaultDir, "controller-keys")
+	kept := keptMachineSession(t, own, true)
+
+	code, _, errb := c.run()
+	if code != 0 {
+		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+	}
+	for path, contents := range kept {
+		if got, err := os.ReadFile(path); err != nil || string(got) != contents {
+			t.Errorf("%s = %q (%v), want %q, as the earlier start left it", filepath.Base(path), got, err, contents)
+		}
+	}
+	if strings.Contains(errb, "dropped the machine session") {
+		t.Errorf("stderr = %q, want no drop with no helper socket set or present", errb)
+	}
+}
+
+// R6 drops only a machine session `agent-secrets` registered for this machine, which it marks
+// with machine-session beside the key: a key.pem and enrollment with no marker are a launcher's,
+// or what `agent-secrets enroll --pod` wrote, and are not the start's to drop. So even with a
+// helper socket set, a start keeps them byte for byte and says nothing of a drop.
+func TestControllerStartKeepsAKeyWithNoMachineSessionMarker(t *testing.T) {
+	d := newControllerDaemon(t)
+	c := newControllerStart(t, d, controllerOptions{})
+	own := filepath.Join(c.defaultDir, "controller-keys")
+	kept := keptMachineSession(t, own, false)
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", filepath.Join(t.TempDir(), "helper.sock"))
+
+	code, _, errb := c.run()
+	if code != 0 {
+		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+	}
+	for path, contents := range kept {
+		if got, err := os.ReadFile(path); err != nil || string(got) != contents {
+			t.Errorf("%s = %q (%v), want %q, as it was", filepath.Base(path), got, err, contents)
+		}
+	}
+	if strings.Contains(errb, "dropped the machine session") {
+		t.Errorf("stderr = %q, want no drop of a key with no machine-session marker", errb)
 	}
 }
 

@@ -92,6 +92,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -550,8 +551,8 @@ func selectSigner(dir string) (string, Signer, error) {
 	} else if record != nil {
 		return record.enrollmentID, record, nil
 	}
-	sock, named := helperSocket()
-	if named || exists(sock) {
+	sock, there := helper.Socket(os.Getenv)
+	if there {
 		return "", &helperSigner{sock: sock}, nil
 	}
 	if signer, err := machineSigner(dir); err != nil {

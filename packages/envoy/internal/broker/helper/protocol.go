@@ -167,6 +167,11 @@ const (
 
 const maxLine = 64 << 10
 
+// SocketVar names the helper's socket where a machine sets one, in place of DefaultSocket: the
+// helper listens there, every client asks it there, and `agent-secrets-helper install` writes
+// it into the unit it installs when it is set.
+const SocketVar = "AGENT_SECRETS_HELPER_SOCK"
+
 // DefaultSocket is the helper's socket when AGENT_SECRETS_HELPER_SOCK is unset: under the
 // user's runtime dir, which scripts/agentbox never mounts into a box. getenv is injectable so
 // callers can test their own defaulting against a fake environment.
@@ -176,6 +181,23 @@ func DefaultSocket(getenv func(string) string) string {
 		dir = "/run/user/" + strconv.Itoa(os.Getuid())
 	}
 	return filepath.Join(dir, "agent-secrets", "helper.sock")
+}
+
+// Socket is the helper's socket under getenv, and whether a helper socket is set or present
+// there, which is when a client takes the helper to sign rather than any machine session of its
+// own (cmd/agent-secrets, selectSigner). SocketVar's value, where it is non-empty, is there
+// whether or not anything listens on it: a client then asks that socket and fails when nothing
+// answers, rather than signing another way. Otherwise the socket is DefaultSocket, there only
+// when that path exists. This is the one place the rule is written, so `legion controller start`,
+// which drops a machine session kept in the controller's key directory whenever a helper socket
+// is set or present, decides exactly as the controller's agent-secrets will.
+func Socket(getenv func(string) string) (sock string, there bool) {
+	if named := getenv(SocketVar); named != "" {
+		return named, true
+	}
+	sock = DefaultSocket(getenv)
+	_, err := os.Stat(sock)
+	return sock, err == nil
 }
 
 // UnitName is the helper's systemd user unit.

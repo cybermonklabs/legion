@@ -32,21 +32,17 @@ import (
 )
 
 const (
-	// keyFile and enrollmentFile are a box's or pod's identity in its key dir: the key keygen
-	// writes, and the enrollment id enroll (or the pod's launcher) writes beside it.
-	keyFile        = "key.pem"
-	enrollmentFile = "enrollment"
-	// enrollmentErrorFile is what whoever wrote the key records a refused enrollment in, beside
-	// it: key.pem with no enrollment is the one state selectSigner cannot read on its own, since
-	// it takes the key dir's branch on the key alone and then finds no id. Its content is the
-	// refusal, which selectSigner appends to what it answers, so a later call says what the
-	// broker said rather than naming a missing file.
-	enrollmentErrorFile = "enrollment.error"
-	// machineSessionMarker says this key dir's key and enrollment are a session this command
-	// registered for a machine that proves an identity of its own, which is what makes the
-	// enrollment one this command may register again when the broker says it is not live. A
-	// launcher's key dir holds no such file: its enrollment is the launcher's to make again.
-	machineSessionMarker = "machine-session"
+	// keyFile, enrollmentFile, enrollmentErrorFile and machineSessionMarker are the key dir's
+	// files of a session's identity: a box's or pod's key and enrollment id, the refusal of an
+	// enrollment, and the marker of a session this command registered for a machine that proves
+	// an identity of its own. internal/brokerclient (keydir.go) names them and says what each
+	// holds, so that `legion controller start`, which drops a machine session kept in the
+	// controller's key directory (brokerclient.DropMachineSession), names the files this command
+	// writes.
+	keyFile              = brokerclient.KeyFile
+	enrollmentFile       = brokerclient.EnrollmentFile
+	enrollmentErrorFile  = brokerclient.EnrollmentErrorFile
+	machineSessionMarker = brokerclient.MachineSessionMarker
 	// pendingMarker is the file a box's launcher keeps in the key dir while it sets the box up.
 	pendingMarker = "enrollment.pending"
 	// pendingMarkerLife bounds how long a client trusts a marker, by its mtime. It covers the
@@ -89,10 +85,11 @@ func brokerBaseURL() string {
 	return brokerclient.WithoutTrailingSlashes(os.Getenv(brokerURLVar))
 }
 
-// helperSocket is AGENT_SECRETS_HELPER_SOCK, else the helper's default socket; named reports
-// which, since a default counts only when the socket is there.
+// helperSocket is AGENT_SECRETS_HELPER_SOCK (helper.SocketVar), else the helper's default
+// socket; named reports which, since a default counts only when the socket is there
+// (helper.Socket, the rule selectSigner takes the helper by).
 func helperSocket() (sock string, named bool) {
-	if sock := os.Getenv("AGENT_SECRETS_HELPER_SOCK"); sock != "" {
+	if sock := os.Getenv(helper.SocketVar); sock != "" {
 		return sock, true
 	}
 	return helper.DefaultSocket(os.Getenv), false

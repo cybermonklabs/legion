@@ -84,9 +84,12 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // is missing or blank, an Oh My Pi invocation that does not resolve, a sign-in directory of
 // the controller's own (`<state_dir>/controller-signins`, its AGENT_SECRETS_SIGNIN_DIR) that
 // holds any entry, which is otherwise made, or kept, 0700 and empty before anything runs under
-// the controller's environment (controllerSignIns says why), and a path at its key directory
+// the controller's environment (controllerSignIns says why), a path at its key directory
 // (`<state_dir>/controller-keys`, its AGENT_SECRETS_KEY_DIR) that is no directory, which is
-// otherwise made, or kept with what it holds, 0700 (controllerKeys says why);
+// otherwise made, or kept 0700 with what it holds but for a machine session `agent-secrets` kept
+// there, which the start drops whenever a helper socket is set or present in the controller's
+// environment, so one read made while the helper was down cannot pin later reads to the machine
+// identity, and a drop of that session that fails (controllerKeys says why);
 // then probe that Oh My Pi as the controller will run it — the launch prefix, the invocation, the
 // controller's whole environment, in
 // `<state_dir>/controller`, created for it, at the operator's terminal — and refuse a
@@ -112,7 +115,9 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // as LEGION_CONTROLLER_START_MESSAGE in its environment for that pi-legion command to send as the
 // first turn — in the foreground with the same environment, and answer
 // its exit code. A refusal before the secret is written removes the directories made for the
-// probe, the sign-in directory and the key directory, so the state directory is as it was.
+// probe, the sign-in directory and the key directory, so the state directory is as it was, but
+// for a machine session dropped from the key directory under a helper socket: the helper signs in
+// its place.
 func controllerStart(ctx context.Context, configPath, daemonURL string, stderr io.Writer) (int, error) {
 	absolute, err := filepath.EvalSymlinks(configPath)
 	if err == nil {
@@ -231,14 +236,15 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 		env[pair[0]] = pair[1]
 	}
 	// The sign-in directory first, since its refusal comes before any directory is made, then the
-	// key directory, both before the probe, which runs Oh My Pi under this environment; then the
-	// probe's own directory. A refusal from here to the mint removes what any of them made
-	// (removeDirs), deepest first.
+	// key directory, which drops a machine session kept there whenever a helper socket is set or
+	// present in this environment, as the controller's `agent-secrets` will find it, both before
+	// the probe, which runs Oh My Pi under this environment; then the probe's own directory. A
+	// refusal from here to the mint removes what any of them made (removeDirs), deepest first.
 	created, err := controllerSignIns(controllerSignInDir(stateDir))
 	if err != nil {
 		return 0, err
 	}
-	made, err := controllerKeys(controllerKeyDir(stateDir))
+	made, err := controllerKeys(controllerKeyDir(stateDir), func(name string) string { return env[name] }, stderr)
 	if err != nil {
 		removeDirs(created)
 		return 0, err
@@ -360,7 +366,11 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 // every configuration, a sign-in directory of the controller's own that controllerStart keeps
 // empty, for the reason controllerSignIns gives, and AGENT_SECRETS_KEY_DIR names
 // `<state_dir>/controller-keys` (controllerKeyDir), a key directory of its own, for the reason
-// controllerKeys gives. Later pairs replace any inherited value of the same name.
+// controllerKeys gives, from which controllerStart drops a machine session `agent-secrets` kept
+// there whenever a helper socket is set or present, so one read made while the helper was down
+// cannot pin later reads to the machine identity. AGENT_SECRETS_HELPER_SOCK and XDG_RUNTIME_DIR
+// stay as the operator's environment has them, so the helper whose socket is set or present
+// there signs the controller's reads. Later pairs replace any inherited value of the same name.
 func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh string) [][2]string {
 	bin := workerbin.LauncherDir(stateDir)
 	env := [][2]string{
@@ -525,35 +535,20 @@ func controllerSignInDir(stateDir string) string {
 // here comes before the probe and before the mint, which revokes the running controller
 // (controllerStart).
 func controllerSignIns(dir string) ([]string, error) {
-	var created []string
-	info, err := os.Lstat(dir)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		if created, err = makeDirs(dir); err != nil {
-			return nil, err
-		}
-	case err != nil:
-		return nil, fmt.Errorf("the controller's sign-in directory %s could not be read: %w", dir, err)
-	case !info.IsDir():
-		return nil, fmt.Errorf("the controller's sign-in directory %s is not a directory (mode %v): it is the controller's AGENT_SECRETS_SIGNIN_DIR, which this start makes 0700 and keeps empty; remove it and start again", dir, info.Mode())
-	default:
+	return controllerOwnDir(dir, "sign-in directory", "AGENT_SECRETS_SIGNIN_DIR, which this start makes 0700 and keeps empty", func() error {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return nil, fmt.Errorf("read the controller's sign-in directory %s: %w", dir, err)
+			return fmt.Errorf("read the controller's sign-in directory %s: %w", dir, err)
 		}
 		if len(entries) > 0 {
 			names := make([]string, len(entries))
 			for i, entry := range entries {
 				names[i] = entry.Name()
 			}
-			return nil, fmt.Errorf("the controller's sign-in directory %s holds %s: it is the controller's AGENT_SECRETS_SIGNIN_DIR, kept empty so that every credential its session trades at the secrets broker trades this machine's identity, and a sign-in there would act for a person; empty it and start again", dir, strings.Join(names, ", "))
+			return fmt.Errorf("the controller's sign-in directory %s holds %s: it is the controller's AGENT_SECRETS_SIGNIN_DIR, kept empty so that every credential its session trades at the secrets broker trades this machine's identity, and a sign-in there would act for a person; empty it and start again", dir, strings.Join(names, ", "))
 		}
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		removeDirs(created)
-		return nil, fmt.Errorf("make the controller's sign-in directory %s 0700: %w", dir, err)
-	}
-	return created, nil
+		return nil
+	})
 }
 
 // controllerKeyDir is the controller's own agent-secrets key directory within stateDir, its
@@ -563,28 +558,68 @@ func controllerKeyDir(stateDir string) string {
 }
 
 // controllerKeys makes dir, the controller's key directory (controllerKeyDir), 0700, keeping
-// what it holds, and answers the directories it created (makeDirs) for a refusal to remove.
+// what it holds but a machine session `agent-secrets` kept there, which it drops whenever a
+// helper socket is set or present under getenv, the controller's environment; it says so on
+// stderr, and answers the directories it created (makeDirs) for a refusal to remove.
 //
 // Why a directory of its own: the controller's session runs `agent-secrets` for its secret reads
 // (a Slack thread's, skill://legion-controller). With no key.pem in its key directory, no sign-in
-// (controllerSignIns) and no helper running, that command registers a machine session for a
-// machine that proves an identity of its own and writes its key, enrollment and marker into the
-// key directory, AGENT_SECRETS_KEY_DIR else $XDG_RUNTIME_DIR/agent-secrets (packages/envoy's
-// cmd/agent-secrets, keyDir and selectSigner). In the operator's key directory, every later
-// `agent-secrets` call in the operator's own shells would then sign as that session. So the
-// controller's reads sign as the helper's session where a helper runs, as a machine session of
-// the controller's own, kept here, where AGENT_SECRETS_MACHINE_IDENTITY is set and no helper runs,
-// and otherwise fail with `no session identity`. Neither a key.pem in the operator's key
-// directory (an agent box's, or a pod's that ran `agent-secrets enroll --pod`) nor the operator's
-// sign-in signs them, which is intended: either would make the controller sign as a session or a
-// person it is not.
+// (controllerSignIns) and no helper socket set or present, that command registers a machine
+// session for a machine that proves an identity of its own and writes its key, enrollment and
+// marker into the key directory, AGENT_SECRETS_KEY_DIR else $XDG_RUNTIME_DIR/agent-secrets
+// (packages/envoy's cmd/agent-secrets, keyDir and selectSigner). In the operator's key
+// directory, every later `agent-secrets` call in the operator's own shells would then sign as
+// that session. So the controller's reads sign as the helper's session whenever a helper socket
+// is set or present, as a machine session of the controller's own, kept here, where
+// AGENT_SECRETS_MACHINE_IDENTITY is set and no helper socket is, and otherwise fail with `no
+// session identity`. Neither a key.pem in the operator's key directory (an agent box's, or a
+// pod's that ran `agent-secrets enroll --pod`) nor the operator's sign-in signs them, which is
+// intended: either would make the controller sign as a session or a person it is not.
 //
-// What the directory holds is kept: it is that session, from an earlier start, which the command
-// uses first while it is here. A path there that is no directory, a symbolic link included, which
-// could name the operator's key directory, is refused; a directory of another mode is made 0700,
-// the mode the command makes a key directory with. Every refusal here comes before the probe and
-// before the mint, which revokes the running controller (controllerStart).
-func controllerKeys(dir string) ([]string, error) {
+// Why the drop: `agent-secrets` takes a key.pem in its key directory before the helper, so a
+// machine session kept here from one read made while no helper socket was set or present — the
+// helper down, or not yet installed — would sign every later read, across restarts and reboots,
+// as a machine identity that may hold none of the grants the controller reads. So whenever a
+// helper socket is set or present in the controller's environment (brokerclient.HelperSocket,
+// the one rule `agent-secrets` takes the helper by, read in the environment the controller's
+// `agent-secrets` runs in), the start drops that session (brokerclient.DropMachineSession) and
+// the helper signs; a socket that is set with nothing listening fails those reads rather than
+// registering a session anew. With no helper socket set or present, what the directory holds is
+// kept: it is the machine session the controller's `agent-secrets` registered at an earlier
+// start, which the command uses first while it is here. A key.pem with no `machine-session`
+// marker beside it is no session `agent-secrets` registered for this machine (a launcher's, or
+// one `agent-secrets enroll --pod` wrote), and is kept either way.
+//
+// A path there that is no directory, a symbolic link included, which could name the operator's
+// key directory, is refused, and so is a drop that fails, naming the directory and the socket; a
+// directory of another mode is made 0700, the mode the command makes a key directory with. Every
+// refusal here comes before the probe and before the mint, which revokes the running controller
+// (controllerStart).
+func controllerKeys(dir string, getenv func(string) string, stderr io.Writer) ([]string, error) {
+	return controllerOwnDir(dir, "key directory", "AGENT_SECRETS_KEY_DIR, which this start makes 0700 so that the controller's agent-secrets session is kept apart from the operator's own", func() error {
+		sock, there := brokerclient.HelperSocket(getenv)
+		if !there {
+			return nil
+		}
+		dropped, err := brokerclient.DropMachineSession(dir)
+		if err != nil {
+			return fmt.Errorf("the machine session kept in the controller's key directory %s could not be dropped: a helper socket is set or present (%s), so the helper, not that session, must sign the controller's agent-secrets reads: %w", dir, sock, err)
+		}
+		if dropped {
+			fmt.Fprintf(stderr, "[legion] dropped the machine session kept in the controller's key directory %s: a helper socket is set or present (%s), so the helper signs the controller's agent-secrets reads\n", dir, sock)
+		}
+		return nil
+	})
+}
+
+// controllerOwnDir makes dir, a directory of the controller's own within its state directory,
+// 0700, and answers the directories it created (makeDirs) for a refusal to remove: the one shape
+// of controllerSignIns and controllerKeys. what names the directory in every refusal ("sign-in
+// directory", "key directory"), and role is what the refusal of a path there that is no
+// directory says it is, after "it is the controller's ". kept runs only on a directory that was
+// there already, before it is made 0700, and its error is the start's refusal, which leaves the
+// directory's mode as it was.
+func controllerOwnDir(dir, what, role string, kept func() error) ([]string, error) {
 	var created []string
 	info, err := os.Lstat(dir)
 	switch {
@@ -593,13 +628,17 @@ func controllerKeys(dir string) ([]string, error) {
 			return nil, err
 		}
 	case err != nil:
-		return nil, fmt.Errorf("the controller's key directory %s could not be read: %w", dir, err)
+		return nil, fmt.Errorf("the controller's %s %s could not be read: %w", what, dir, err)
 	case !info.IsDir():
-		return nil, fmt.Errorf("the controller's key directory %s is not a directory (mode %v): it is the controller's AGENT_SECRETS_KEY_DIR, which this start makes 0700 so that the controller's agent-secrets session is kept apart from the operator's own; remove it and start again", dir, info.Mode())
+		return nil, fmt.Errorf("the controller's %s %s is not a directory (mode %v): it is the controller's %s; remove it and start again", what, dir, info.Mode(), role)
+	default:
+		if err := kept(); err != nil {
+			return nil, err
+		}
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
 		removeDirs(created)
-		return nil, fmt.Errorf("make the controller's key directory %s 0700: %w", dir, err)
+		return nil, fmt.Errorf("make the controller's %s %s 0700: %w", what, dir, err)
 	}
 	return created, nil
 }

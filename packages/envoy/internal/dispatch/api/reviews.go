@@ -390,23 +390,24 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 	// Without a request open, the header reviews this document at its latest settled version;
 	// with one, it answers that request, so it reviews every document the request named, each at
 	// the version the request named, and the request is answered once for both.
-	reviewed := []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}
+	approval := &model.AskApproval{Documents: []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}}
 	if open != nil {
-		reviewed = open.Approval.Documents
+		approval = open.Approval
 	}
-	// The version this review records for the document is reviewed's entry for it: the one the
-	// open request names for it (OpenApprovalAsk finds only a request that names it), else the
-	// latest settled version. A caller that names the version it read is refused here when that
-	// is not it, before the request is answered or anything is written, so no review records in a
-	// person's name a version of this document that person did not name. With a request open,
-	// every other document the request names is reviewed at the version the request names for
-	// it, which the caller does not name and this check does not compare.
-	var recorded int
-	for _, document := range reviewed {
-		if document.ArtifactID == artifact.ID {
-			recorded = document.Version
-		}
+	// The version this review records for the document is approval's entry for it: the one the
+	// open request names for it (OpenApprovalAsk finds only a request that names it, so a request
+	// with no entry for it is a fault of this server's, answered 500 before anything is written),
+	// else the latest settled version. A caller that names the version it read is refused here
+	// when that is not it, before the request is answered or anything is written, so no review
+	// records in a person's name a version of this document that person did not name. With a
+	// request open, every other document the request names is reviewed at the version the
+	// request names for it, which the caller does not name and this check does not compare.
+	entry := approval.Document(artifact.ID)
+	if entry == nil {
+		s.writeHandlerError(w, fmt.Errorf("the open approval request %s names no entry for the document %s it was found by", open.ID, artifact.ID))
+		return
 	}
+	recorded := entry.Version
 	if input.Version != nil && *input.Version != recorded {
 		writeError(w, "REVIEW_VERSION_MOVED", http.StatusConflict, fmt.Sprintf(
 			"the review would record version %d of %s, not version %d: read version %d and review it",
@@ -428,7 +429,7 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 		events = append(events, answeredEvents...)
 		askID = &answered.ID
 	}
-	reviews, reviewEvents, err := s.writeApprovalReviews(r.Context(), tx, artifact, reviewed, state, actor, reason, askID)
+	reviews, reviewEvents, err := s.writeApprovalReviews(r.Context(), tx, artifact, approval.Documents, state, actor, reason, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
