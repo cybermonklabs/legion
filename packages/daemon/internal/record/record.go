@@ -1524,6 +1524,13 @@ type Store interface {
 	// the trees that have one: what a catch-up queued to another tree's architect is written for
 	// (record.CatchUp.Launch), so a failed forward of an older one is not queued again behind it.
 	ArchitectLaunches(ctx context.Context, tx pgx.Tx, trees []string) (map[string]uint64, error)
+	// ArchitectServed is the issue generation of the last task the root architect claim of tree
+	// took (supervise.Claim.ServingGeneration): the run that claim last served, and zero where the
+	// tree has no architect claim or its claim has taken no task of a run. It is what tells a tree
+	// that ran at an earlier generation (workflow.ArchitectStartTask's fourth rule). The launch
+	// ArchitectLaunches reads cannot tell it: claims.generation counts the claim's launches, and
+	// the claim is kept from one run to the next.
+	ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, error)
 	// KeepReadmittedApproval keeps, for root's next architect start, the step whose document a
 	// person approved, the version they approved and that document's latest version, which its
 	// re-admission found above the approved one before it cleared the old generation's gate; a

@@ -135,11 +135,11 @@ func confirmedEntryOne(h *harness) (queued, confirmed time.Time) {
 // A confirmation the daemon takes back was never the worker's: Oh My Pi's busy answer says the turn
 // that confirmed the task was one the agent was already in, so the task goes back unread and that
 // turn's end sends it again. The handshake gives that confirmation back too, in memory and in the
-// store, so the state does not say the worker took a task it never read and `legion state`'s first
-// arm can still name the root. The task's real confirmation, by the turn its re-send starts, is
-// then the one recorded. A death in the turn is the other way about: a turn did start on the task,
-// so the worker took it, and the handshake keeps that confirmation while the task goes back to be
-// sent to the relaunched agent (interrupted).
+// store, so the state's `entryConfirmedAt` does not say the worker took a task it never read. The
+// task's real confirmation, by the turn its re-send starts, is then the one recorded. A death in
+// the turn is the other way about: a turn did start on the task, so the worker took it, and the
+// handshake keeps that confirmation while the task goes back to be sent to the relaunched agent
+// (interrupted).
 func TestATakenBackConfirmationIsTakenFromTheHandshakeAndADeathsIsNot(t *testing.T) {
 	t.Run("a busy answer after the turn started", func(t *testing.T) {
 		h := newHarness(t)

@@ -2267,7 +2267,8 @@ The daemon wakes the project's controller with `architect-stalled on <KEY>` (`sk
 
 - the architect took nothing: the task of its entry was queued to its claim more than ten minutes ago, and no turn confirmed it.
 
-- the architect's claim cannot be reached: the claim is failed or retired and no start of the root's run waits in the queue to relaunch it, or no architect claim stands and the work of the entry has waited the same ten minutes.
+- the architect's claim cannot be reached: the claim is failed or retired, the root is not waiting on a person, and no start of the root's run waits in the queue to relaunch it, or no architect claim stands, no start of one waits in the queue, and the work of the entry has waited the same ten minutes.
+  A root waiting on a person raises none for a failed or retired claim, because the person's answer resumes its architect with a start of its own.
 
 - the root is slow before its gate: it still stands at `admitted` with no design-gate step registered 90 minutes after its admission or its architect's last raised entry, whichever is later.
 
@@ -2278,8 +2279,9 @@ The daemon reads them by the same rules as the wake, and the plain `legion state
 
 Store migration 20261113181500_architect_stalled_notices adds `architect_stalled_notices`, which marks each wake told.
 Store migration 20261113182000_architect_entry_upgrade settles every root architect of the release before it at entry 1, on its row and on its claim, so the upgrade sends no running architect a first task.
-It marks the first and the third arm told for each root whose run has started, which is a root whose architect claim is of the generation it stands at or a root that holds its admission slot, so the upgrade wakes the controller for none of them.
-A root re-admitted before the upgrade and still waiting in the line is marked for no arm, so the arms of its next run wake the controller as any run's do.
+It marks the first and the third arm told for each root whose run has started, which is a root whose status is not `todo`, so the upgrade wakes the controller for none of them.
+The status is what says it, because a re-admission sets a root to `todo` and the promotion that starts its run sets it to `in_progress`, while the architect claim's generation counts its launches and not the root's runs.
+A root still waiting in the line at `todo` is marked for no arm, whether it was re-admitted before the upgrade or carried out of another tree with that tree's slot, so the arms of its next run wake the controller as any run's do.
 Store migration 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns that hold a claim's handshake, at defaults that name no entry.
 The state of such a root carries its two numbers and neither time, since the upgrade queues no task and records no handshake.
 Store migration 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, the mark that the sweep sends a root architect's entry again as written, which the resume of a root a person answered sets and every other raise of an entry clears;

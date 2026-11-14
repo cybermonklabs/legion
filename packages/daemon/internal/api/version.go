@@ -1568,9 +1568,10 @@ package api
 // A tree's own root carries `architectStalls` too: every arm of INFRA-2614's architect-stalled
 // reading that holds for its architect at that read, as `record.ArchitectStallArm`'s values —
 // `took-nothing` (the task of its entry was queued to its claim more than ten minutes ago and no
-// turn confirmed it), `claim-unreachable` (the claim is failed or retired and no start of the
-// root's run waits in the queue to relaunch it, or no architect claim stands and the work of its
-// entry has waited the same ten minutes) and `slow-before-gate` (it stands at `admitted` with no
+// turn confirmed it), `claim-unreachable` (the claim is failed or retired, the root is not waiting
+// on a person, and no start of the root's run waits in the queue to relaunch it, or no architect
+// claim stands, no start of one waits in the queue, and the work of its entry has waited the same
+// ten minutes) and `slow-before-gate` (it stands at `admitted` with no
 // design-gate step registered 90 minutes after the later of its admission and its architect's
 // last raised entry) — in that order. The daemon serves the arms the admission pass reads before
 // it wakes the controller, by the same predicates over the same reads

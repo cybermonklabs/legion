@@ -16,8 +16,8 @@ body: |-
   notice, once per arm and run, for a root whose architect took nothing, whose claim cannot be
   reached, or that is slow before its design gate, and only while a controller is registered.
   Four migrations come with it: `20261113181500` (the wakes' marks), `20261113182000` (settles
-  every architect of the release before at entry 1 and marks its first and third arm, for a run
-  that has started), `20261114020537` (the claim's handshake) and `20261114061900` (whether an
+  every root architect of the release before at entry 1 and marks its first and third arm, for a
+  run that has started), `20261114020537` (the claim's handshake) and `20261114061900` (whether an
   entry is sent as written). A rollback to contract 111 runs the contract 117 block in
-  docs/kubernetes.md with the daemon stopped; a rollback below 111 also runs the phase entry's
-  block and the steps of each release it crosses.
+  docs/kubernetes.md with the daemon stopped; a rollback below 111 also takes the steps of each
+  release it crosses, the phase entry's block among them when it crosses below 94.

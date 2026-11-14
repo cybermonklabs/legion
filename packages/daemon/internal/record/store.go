@@ -1329,6 +1329,19 @@ func (s *Postgres) ArchitectLaunches(ctx context.Context, tx pgx.Tx, trees []str
 	return launches, nil
 }
 
+func (s *Postgres) ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, error) {
+	var served int64
+	err := tx.QueryRow(ctx, `select serving_generation from claims
+		where role = $1 and issue = $2 and tree = $2`, string(claim.RoleArchitect), tree).Scan(&served)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the run the architect of %s last served: %w", tree, err)
+	}
+	return uint64(served), nil
+}
+
 func (s *Postgres) ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error {
 	if len(kept.Decisions) > 0 {
 		refs, at := keptMarks(kept)

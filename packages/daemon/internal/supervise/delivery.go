@@ -64,7 +64,8 @@ type Delivery struct {
 	// A start delivers to whatever process the claim already has — a live worker is not
 	// relaunched — so the pane's own environment names the run it was launched for, which may be
 	// an earlier one. The work a worker reports is the task it was given, and this is that task's
-	// run. Zero for a task of no run: an operator's own, an architect's.
+	// run. Zero for a task of no run, such as an operator's own; a root architect's start carries
+	// its root's generation, as a phase worker's start carries its issue's.
 	Generation uint64
 	// Entry is the phase entry this task is of, from the start row that queued it: the number the
 	// transition raised on the role's phases row when that entry handed this role work, which

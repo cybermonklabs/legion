@@ -114,8 +114,8 @@ func newAdmissionForProject(t *testing.T, project string, cap int, steps []recor
 
 // architectStart is the task admission queues with the start of a root architect
 // (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: the
-// root as it stands now, the design gate rows it holds, the generation its architect claim
-// stands at, and what its tree is owed where a person decided something on it while nobody in
+// root as it stands now, the design gate rows it holds, the run its architect claim last served,
+// and what its tree is owed where a person decided something on it while nobody in
 // the tree could hear them. A test about what admission writes names the task through this
 // helper, under the gate steps its own admission runs; which shape each root gets, and the whole
 // text of each shape, are pinned in internal/workflow (TestTheArchitectTaskOfEachShape,
@@ -132,11 +132,11 @@ func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key,
 			t.Fatalf("read the design gate of %s: %v", key, err)
 		}
 		start.Gate.Rows = rows
-		launches, err := records.ArchitectLaunches(context.Background(), tx, []string{root.Tree})
+		served, err := records.ArchitectServed(context.Background(), tx, root.Tree)
 		if err != nil {
-			t.Fatalf("read what generation the architect claim of %s stands at: %v", root.Tree, err)
+			t.Fatalf("read the run the architect claim of %s last served: %v", root.Tree, err)
 		}
-		start.Launch = launches[root.Tree]
+		start.Served = served
 	})
 	return workflow.ArchitectStartTask(start)
 }

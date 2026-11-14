@@ -35,24 +35,33 @@
 -- marks for it would be rows nothing ever reads.
 --
 -- The marks are the first and the third of the three stall arms (record.ArchitectStallArm),
--- written for each of those roots at the run its record stands at, so this release wakes the
--- project's controller for no root it has not repaired. The first arm reads a task queued to a
--- claim that confirmed nothing, and the third a root standing at admitted with no design-gate step
--- registered, which is what the 16 measured roots are. The second arm is marked for none of them:
--- it reports a claim that is failed or retired with no start of its run queued to relaunch it,
--- which the record states plainly and no send of the sweep cures, so a filled claim that fails or
--- that an operator retires wakes the controller as any other claim does.
+-- written for each of those roots at the run its record stands at. They are R8's statement that
+-- this release wakes the project's controller for no root in the run the fill settles, a run the
+-- fill does not repair. The third arm reads a root standing at admitted with no design-gate
+-- step registered, which is what the 16 measured roots are, so its mark keeps the first pass from
+-- waking the controller for each of them. The first arm reads a task that carries the entry the
+-- claim was given and that no turn confirmed. No architect of the release before holds a delivery
+-- that carries an entry, since that release raised no entry for an architect, so the first arm
+-- cannot hold for any of these roots at the upgrade. Its mark keeps that arm quiet for the rest of
+-- the run instead: a task a later raise of the same run queues, such as the resume of a root a
+-- person answered, wakes nobody if its architect does not take it. The second arm is marked for
+-- none of them: it reports a claim that is failed or retired with no start of its run queued to
+-- relaunch it, which the record states plainly and no send of the sweep cures, so a filled claim
+-- that fails or that an operator retires wakes the controller as any other claim does.
 --
--- The marks are written only for a root whose run has started: its architect claim is of the
--- generation the root stands at, or the root holds its admission slot, which the promotion that
--- starts a run takes. A root re-admitted before the upgrade and still waiting in the line holds
--- neither. readmit raised its generation and set it to todo, and its claim is the one of the run
--- that ended, so the run its record names has not started, and that run is not standing when
--- this runs. Its promotion after the upgrade raises its architect's entry and sends the task
--- (admit's LineQueuedRoot branch, workflow.Engine.StartArchitect), and that run's arms wake the
--- controller as any run's do. The entry fill, the first two statements below, needs no such
--- exception: it puts that root's row and claim at entry 1, the promotion raises the entry to 2,
--- and the start carries entry 2, which is above what the claim was given.
+-- The marks are written only for a root whose run has started, which the root's status says:
+-- readmit sets a root it takes back to todo, and the promotion that starts the run sets it to
+-- in_progress, the status record.QueuedRoot reads too. The architect claim cannot say it: its
+-- generation counts the claim's launches, not the runs of the root, and the claim is kept from one
+-- run to the next. The slot cannot say it either: a root carried out of another tree waits in the
+-- line at todo holding the slot of the tree it left, and its own tree's run has not started. A
+-- root re-admitted before the upgrade and still waiting in the line stands at todo too, so the run
+-- its record names has not started, and that run is not standing when this runs. Its promotion
+-- after the upgrade raises its architect's entry and sends the task (admit's LineQueuedRoot
+-- branch, workflow.Engine.StartArchitect), and that run's arms wake the controller as any run's
+-- do. The entry fill, the first two statements below, needs no such exception: it puts that
+-- root's row and claim at entry 1, the promotion raises the entry to 2, and the start carries
+-- entry 2, which is above what the claim was given.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon
@@ -169,12 +178,13 @@ from issues i
 where i.key = c.issue and i.key = i.tree and c.role = 'architect' and c.given_entry = 0;
 
 -- The two arms this release will not wake anybody for, marked told at the run each root stands at,
--- as record.Store.TellArchitectsStalled writes them, for each root whose run has started.
+-- as record.Store.TellArchitectsStalled writes them, for each root whose run has started: each root
+-- that does not wait in the line at todo.
 insert into architect_stalled_notices (issue, tree, generation, arm, told_at)
 select i.key, i.tree, i.generation, arm, now()
 from issues i
   join claims c on c.issue = i.key and c.role = 'architect'
   cross join unnest(array['took-nothing', 'slow-before-gate']) as arm
 where i.key = i.tree
-  and (c.generation = i.generation or exists (select 1 from slots s where s.issue = i.key))
+  and i.status <> 'todo'
 on conflict do nothing;

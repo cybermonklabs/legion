@@ -247,9 +247,10 @@ func seedQuietArchitectStall(t *testing.T, pool *store.Pool) record.Issue {
 // for its architect (api.Issue.ArchitectStalls), read in the state's own snapshot by the reading
 // the admission pass wakes the controller from (admit's ArchitectStallArms), and it serves them
 // whether or not the controller was told. So the arm is on the root's view while no controller
-// is registered, when the daemon tells nobody and marks nothing, and it is still there after the
-// sweep has told a registered controller: `legion state` prints that key and judges no arm of its
-// own, so the view is the one place an operator reads which arms hold.
+// is registered, when the daemon tells nobody and marks nothing. It is there once a controller
+// registers, while the state's own read has queued no wake for it, and it is still there after the
+// sweep has told that controller: `legion state` prints that key and judges no arm of its own, so
+// the view is the one place an operator reads which arms hold.
 func TestTheArchitectSweepsStallArmsAreServedOnTheStateWhetherOrNotTheControllerWasTold(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -297,11 +298,16 @@ func TestTheArchitectSweepsStallArmsAreServedOnTheStateWhetherOrNotTheController
 		t.Fatalf("the state serves %s the arms %v while no controller is registered, want %v: the arm holds whether or not "+
 			"anybody was told of it", root.Key, arms, tookNothing)
 	}
+
+	// The daemon queues no wake while no controller is registered, so the state's reading is held
+	// to sending nothing once one is: a read before that could never see a wake.
+	registerProjectController(t, pool, quietStallProject)
+	if arms := served(); !slices.Equal(arms, tookNothing) {
+		t.Fatalf("the state serves %s the arms %v once a controller is registered, want %v", root.Key, arms, tookNothing)
+	}
 	if wakes := architectStalledWakes(t, pool, root.Key); len(wakes) != 0 {
 		t.Fatalf("the architect-stalled wakes of %s = %q, want none: the state's reading sends nothing", root.Key, wakes)
 	}
-
-	registerProjectController(t, pool, quietStallProject)
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
 		dispatchProject: quietStallProject, bootID: "test-boot", log: log,

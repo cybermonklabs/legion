@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -10,12 +11,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// entryQueuedField and entryConfirmedField are the names the two times carry on the wire. The
-// tests read the keys by these names rather than repeating the strings, as the sibling contract's
-// tests read `phaseEntry` by phaseEntryField.
+// entryQueuedField and entryConfirmedField are the names the two times carry on the wire, and
+// architectStallsField the name of a root's arms beside them. The tests read the keys by these
+// names rather than repeating the strings, as the sibling contract's tests read `phaseEntry` by
+// phaseEntryField.
 const (
-	entryQueuedField    = "entryQueuedAt"
-	entryConfirmedField = "entryConfirmedAt"
+	entryQueuedField     = "entryQueuedAt"
+	entryConfirmedField  = "entryConfirmedAt"
+	architectStallsField = "architectStalls"
 )
 
 // architectHandshakeState is a state of three roots standing at admitted, the phase a root's own
@@ -160,27 +163,15 @@ func TestTheArchitectStallArmsDowngradeWithTheEntryTimes(t *testing.T) {
 		"LEGION-50": {Key: "LEGION-50", Phase: phase.Admitted, Status: "in_progress", Tree: "LEGION-50",
 			Workers: map[claim.Role]PhaseView{}, ArchitectStalls: []record.ArchitectStallArm{record.ArchitectClaimUnreachable}},
 	}}
-	arms := func(body []byte) (json.RawMessage, bool) {
-		t.Helper()
-		var served struct {
-			Issues map[string]map[string]json.RawMessage `json:"issues"`
-		}
-		if err := json.Unmarshal(body, &served); err != nil {
-			t.Fatalf("decode state %s: %v", body, err)
-		}
-		raw, carried := served.Issues["LEGION-50"]["architectStalls"]
-		return raw, carried
-	}
-
 	at := stateFrom(t, state, statePodAddr+":4100", podClaims(entryTimesContract))
-	if raw, carried := arms(at); !carried || string(raw) != `["claim-unreachable"]` {
-		t.Errorf("the pod at %d is served the arms %s (carried %t) for LEGION-50, want [\"claim-unreachable\"]: %s",
-			entryTimesContract, raw, carried, at)
+	if arms, carried := issueViews(t, at)["LEGION-50"][architectStallsField]; !carried || !reflect.DeepEqual(arms, []any{"claim-unreachable"}) {
+		t.Errorf("the pod at %d is served the arms %v (carried %t) for LEGION-50, want [claim-unreachable]: %s",
+			entryTimesContract, arms, carried, at)
 	}
 	behind := stateFrom(t, state, statePodAddr+":4100", podClaims(entryTimesContract-1))
-	if raw, carried := arms(behind); carried {
-		t.Errorf("the pod below %d is served the arms %s for LEGION-50, want no key: the arms are not its contract's: %s",
-			entryTimesContract, raw, behind)
+	if arms, carried := issueViews(t, behind)["LEGION-50"][architectStallsField]; carried {
+		t.Errorf("the pod below %d is served the arms %v for LEGION-50, want no key: the arms are not its contract's: %s",
+			entryTimesContract, arms, behind)
 	}
 }
 

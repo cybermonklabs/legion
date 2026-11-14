@@ -11,10 +11,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// architectStartTail ends every task ArchitectStartTask writes, and nothing else writes it. It is
-// text for the architect alone, and no reader of a task reads it back: what wrote an entry's task
-// is a fact of the record (record.PhaseRow.EntryVerbatim, which SendArchitectStart reads), and
-// whether a held task carries the first-task instruction is the entry it is of (NarrowRootTask).
+// architectStartTail ends every task of the four shapes ArchitectStartTask writes, and nothing
+// else writes it. The answer its second rule gives, what a person decided alone, carries none. It
+// is text for the architect alone, and no reader of a task reads it back: what wrote an entry's
+// task is a fact of the record (record.PhaseRow.EntryVerbatim, which SendArchitectStart reads),
+// and whether a held task carries the first-task instruction is the entry it is of
+// (NarrowRootTask).
 const architectStartTail = " Nothing else starts this tree, and no message is coming."
 
 // Each shape of the start task carries one label of its own, as testerVerdictLabel ties a task's
@@ -55,9 +57,11 @@ type ArchitectStart struct {
 	// Gate is the steps the deployment gates and the design gate rows the root holds now
 	// (record.Store.GatesOf). The zero value is a root that has registered nothing.
 	Gate record.TreeGate
-	// Launch is the generation the tree's architect claim stands at
-	// (record.Store.ArchitectLaunches), zero where that tree has no architect claim.
-	Launch uint64
+	// Served is the issue generation of the last task the tree's architect claim took
+	// (record.Store.ArchitectServed), zero where that tree has no architect claim or its claim has
+	// taken no task of a run. It is a run, which the claim's own generation is not: that counts
+	// the claim's launches, and the claim is kept from one run to the next.
+	Served uint64
 	// Decided is what a person decided on the tree while nobody in it could hear them, as
 	// KeptDecisionsTask writes it, empty where there is nothing.
 	Decided string
@@ -66,8 +70,8 @@ type ArchitectStart struct {
 // ArchitectStartOf reads from the record what the first task of root's architect is derived from
 // (ArchitectStart), all but Decided: whether a hand-over carried the root in at its generation
 // (ArchitectCarried), the design gate rows it holds under steps, the design-gate steps the
-// deployment gates, and the generation its tree's architect claim stands at. It is the one reader
-// of those three, which every derivation of a root architect's task reads them through.
+// deployment gates, and the run its tree's architect claim last served. It is the one reader of
+// them, which every derivation of a root architect's task reads them through.
 //
 // Decided is the caller's because it is what tells a task composed now from a held task narrowed.
 // A task composed now names what its tree is owed and nothing claims (ParkedDecisionTask, which
@@ -92,11 +96,9 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 	if start.Gate.Rows, err = store.GatesOf(ctx, tx, root.Key); err != nil {
 		return ArchitectStart{}, err
 	}
-	launches, err := store.ArchitectLaunches(ctx, tx, []string{root.Tree})
-	if err != nil {
+	if start.Served, err = store.ArchitectServed(ctx, tx, root.Tree); err != nil {
 		return ArchitectStart{}, err
 	}
-	start.Launch = launches[root.Tree]
 	if root.Phase != phase.Admitted {
 		if start.Carried, err = ArchitectCarried(ctx, tx, store, root); err != nil {
 			return ArchitectStart{}, err
@@ -136,21 +138,25 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //     which is the empty string where a person has decided nothing, and which carries no tail.
 //  3. The root holds design gate rows. Its gate stands part way, so the task reports it step by
 //     step and the architect carries it on from there.
-//  4. The tree's architect claim stands below the root's generation, or the root's run has stood
-//     in a phase of its own (record.Issue.TakenBack). The tree ran at an earlier generation, and
-//     re-admission cleared that generation and its design gate with it, so the spec is registered
-//     again and nothing is decomposed anew.
+//  4. The tree's architect claim last served a run below the root's generation (Served), or the
+//     root's run has stood in a phase of its own (record.Issue.TakenBack). The tree ran at an
+//     earlier generation, and re-admission cleared that generation and its design gate with it,
+//     so the spec is registered again and nothing is decomposed anew.
 //  5. Otherwise nobody has architected this tree, and the task asks for the whole first act.
 //
 // A root a hand-over carried in that stands at phase.Admitted falls past rule 1 to rules 3, 4 and
 // 5. That is right: a child handed over before it ever started has no phase of its own to take up,
 // and it writes its own spec like any tree nobody has architected.
 //
-// One reading of rule 4 is worth stating, because it is the one that is easy to get wrong. A tree
-// whose earlier generation ended with no phase of its own leaves no TakenBack mark, and its
-// architect claim can already stand at the root's own generation, which the launch of this very
-// admission puts it at. Such a tree falls through to rule 5, and that is right: the first act is
-// the act that tree still owes, since nothing of it has been claimed, decomposed or registered.
+// Two readings of rule 4 are worth stating, because they are easy to get wrong. The rule reads the
+// run the claim served, and not the claim's generation, which counts its launches: the claim is
+// kept from one run to the next, so after relaunches in an earlier run its count can stand above
+// the root's generation, and where it was never relaunched below it, whatever the tree has run.
+// And a tree whose earlier generation ended with no phase of its own leaves no TakenBack mark, so
+// it falls through to rule 5 where its claim served nothing or served the run the root stands at.
+// A claim that served nothing took no task of any run, so the record holds no earlier run of the
+// tree for the task to carry on from. A claim that served the root's own generation took a task
+// of this run, which says nothing of an earlier one.
 //
 // Decided leads every shape rather than replacing it, since a person's decision is read first and
 // a tree that owes one still has to be taken up.
@@ -168,7 +174,7 @@ func ArchitectStartTask(start ArchitectStart) string {
 		writeCarriedPhase(&task, start)
 	case len(start.Gate.Rows) > 0:
 		writeGateStanding(&task, start)
-	case start.Launch > 0 && start.Launch < start.Root.Generation, start.Root.TakenBack:
+	case start.Served > 0 && start.Served < start.Root.Generation, start.Root.TakenBack:
 		writeEarlierGeneration(&task, start)
 	default:
 		writeFreshTree(&task, start)

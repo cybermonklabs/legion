@@ -26,12 +26,17 @@ const architectUpgradeVersion = 20261113182000
 // root with no architect claim, which the daemon never started; and a role of the same root that
 // is not its architect, whose own entry the earlier migration decides.
 //
-// The marks are read on two more roots, each a root the older daemon re-admitted before the
-// upgrade, so each stands at a generation its architect claim was not started at. One still
-// waits in the line: it holds no slot, and its next run has not started, so the fill marks no arm
-// of it and that run's arms wake the controller as any run's do. The other was promoted: it holds
-// its slot and its start is queued, so its run has started under the older release, and the fill
-// marks it as it marks every root standing in a run.
+// The marks are read on three more roots, and the status of each says whether its run has
+// started: readmit sets a root it takes back to todo, and the promotion that starts the run sets
+// it to in_progress, the status record.QueuedRoot reads too. The architect claim's generation
+// says nothing of the run, since it counts the claim's launches and a claim is kept across runs.
+// One root the older daemon re-admitted still waits in the line at generation 4, and its
+// architect claim has launched four times, so the two numbers are equal: the fill marks no arm of
+// it, and the arms of its next run wake the controller as any run's do. A root carried out of
+// another tree waits in the line too, holding the slot of the tree it left, and the fill marks no
+// arm of it either. The third root was re-admitted and then promoted: it holds its slot in
+// in_progress and the start of its architect is queued, so its run started under the older
+// release, and the fill marks it as it marks every root standing in a run.
 func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -64,16 +69,18 @@ func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testi
 		`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 			values ('LEGION-210', 'LEGION-210', 'LEGION', 'unstarted root', 'admitted', 1, 'in_progress', 'C', 1)`,
 		// A root the older daemon re-admitted, still waiting in the line: its generation is
-		// raised to 4 and its status is todo, while its architect claim is the retired one of
-		// run 3, the run that ended.
+		// raised to 4 and its status is todo, while its architect claim is the retired one that
+		// served run 3, the run that ended. That claim has launched four times, so its launch
+		// count equals the generation the root now stands at.
 		`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 			values ('LEGION-211', 'LEGION-211', 'LEGION', 'queued root', 'admitted', 4, 'todo', 'D', 1)`,
 		`insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
 			launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation)
-			values ('legion-LEGION-211-architect', 'legion', 'LEGION-211', 'LEGION-211', 'architect', 3, 'ses_q', '',
+			values ('legion-LEGION-211-architect', 'legion', 'LEGION-211', 'LEGION-211', 'architect', 4, 'ses_q', '',
 				'retired', 0, 0, 0, 0, 3)`,
 		// A root the older daemon re-admitted and then promoted: it holds its slot at generation
-		// 5, and the start of its architect is queued, so the claim is still the one of run 4.
+		// 5, and the start of its architect is queued, so the claim is still the one that served
+		// run 4.
 		`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 			values ('LEGION-212', 'LEGION-212', 'LEGION', 'promoted root', 'admitted', 5, 'in_progress', 'E', 1)`,
 		`insert into slots (issue, index, admitted_at) values ('LEGION-212', 0, now())`,
@@ -81,6 +88,17 @@ func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testi
 			launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation)
 			values ('legion-LEGION-212-architect', 'legion', 'LEGION-212', 'LEGION-212', 'architect', 4, 'ses_p', '',
 				'retired', 0, 0, 0, 0, 4)`,
+		// A root carried out of the tree LEGION-214 in the phase it ran there, waiting in the line
+		// at todo for its own tree to be opened. It still holds the slot of the tree it left, and
+		// the sub-architect claim an operator started for it there.
+		`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq,
+				handed_over, handed_over_from)
+			values ('LEGION-213', 'LEGION-213', 'LEGION', 'carried root', 'implementing', 2, 'todo', 'F', 1, true, 'LEGION-214')`,
+		`insert into slots (issue, index, admitted_at) values ('LEGION-213', 1, now())`,
+		`insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+			launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation)
+			values ('legion-LEGION-213-architect', 'legion', 'LEGION-214', 'LEGION-213', 'architect', 1, 'ses_h', '',
+				'retired', 0, 0, 0, 0, 1)`,
 	} {
 		if _, err := store.Pool().Exec(ctx, seed); err != nil {
 			t.Fatalf("record before the migration: %v", err)
@@ -132,10 +150,17 @@ func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testi
 		t.Fatalf("the arms the promoted LEGION-212 is marked told for = %v, want the first and the third: its run started under "+
 			"the older release, as every root the fill marks did", arms)
 	}
-	for _, generation := range []uint64{3, 4} {
-		if arms := architectUpgradeMarks(t, store, "LEGION-211", generation); len(arms) != 0 {
-			t.Fatalf("the queued LEGION-211 is marked told for %v at generation %d after the migration, want no arm: its next run "+
-				"has not started, so a mark would keep that run's first and third arms from waking anybody", arms, generation)
+	for _, waiting := range []struct {
+		issue, why string
+		generation uint64
+	}{
+		{issue: "LEGION-211", generation: 4, why: "its architect claim's launch count equals its generation, and a launch count is not a run"},
+		{issue: "LEGION-213", generation: 2, why: "the slot it holds is the one of the tree it left"},
+	} {
+		if arms := architectUpgradeMarks(t, store, waiting.issue, waiting.generation); len(arms) != 0 {
+			t.Errorf("%s, waiting in the line, is marked told for %v at generation %d after the migration, want no arm: %s, and its "+
+				"next run has not started, so a mark would keep that run's first and third arms from waking anybody",
+				waiting.issue, arms, waiting.generation, waiting.why)
 		}
 	}
 

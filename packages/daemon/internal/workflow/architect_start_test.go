@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -123,18 +126,18 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 		},
 		{
 			name:  "a tree that ran at an earlier generation, under a deployment that gates the spec",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 1},
 			want:  readmittedLead + " request approval of its primary document and register that step of its design gate again. Decompose nothing anew." + startTail,
 		},
 		{
 			name:  "a tree that ran at an earlier generation, under a deployment that gates two steps",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: two}, Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: two}, Served: 1},
 			want: readmittedLead + " request approval of each document this deployment gates and register each of their steps of its design gate again: " +
 				"its decisions document and its Verification document. Decompose nothing anew." + startTail,
 		},
 		{
 			name:  "a tree that ran at an earlier generation, under a deployment that gates no step",
-			start: ArchitectStart{Root: admittedRoot(), Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Served: 1},
 			want:  readmittedLead + " register that spec again at its current version, which opens the design gate with no approval. Decompose nothing anew." + startTail,
 		},
 	} {
@@ -186,7 +189,7 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 		},
 		{
 			name:  "a tree that ran at an earlier generation",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 1},
 			label: ArchitectReadmittedLabel,
 		},
 	} {
@@ -211,11 +214,11 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 }
 
 // The rule that chooses the shape, case by case. Three readings of it are easy to get wrong: a
-// root at admitted whose architect claim already stands at the root's own generation and whose
-// tree has never run is a tree nobody has architected, since the first act is the act it still
-// owes; a root a hand-over carried in stands in the phase that came with it whatever its gate
-// rows say; and a carried root that never left admitted has no phase of its own to take up, so it
-// reads as any other root standing there.
+// root at admitted whose architect claim served the root's own generation, and whose run never
+// stood in a phase of its own, is a tree nobody has architected, since its claim took a task of
+// this run and of no earlier one; a root a hand-over carried in stands in the phase that came
+// with it whatever its gate rows say; and a carried root that never left admitted has no phase of
+// its own to take up, so it reads as any other root standing there.
 func TestTheArchitectTaskShapeRule(t *testing.T) {
 	registered := registeredSpec()
 	carried := func(gate record.TreeGate, taken bool) ArchitectStart {
@@ -239,13 +242,13 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 			label: ArchitectFreshTreeLabel,
 		},
 		{
-			name:  "an architect claim already at the root's own generation, for a tree that never ran",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 2},
+			name:  "an architect claim that served the root's own generation, for a tree that never ran",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 2},
 			label: ArchitectFreshTreeLabel,
 		},
 		{
-			name:  "an architect claim one generation behind",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 1},
+			name:  "an architect claim that served the generation before",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 1},
 			label: ArchitectReadmittedLabel,
 		},
 		{
@@ -254,13 +257,13 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 			label: ArchitectReadmittedLabel,
 		},
 		{
-			name:  "a run that stood in a phase of its own, whose claim stands at this generation",
-			start: ArchitectStart{Root: takenBack(), Gate: record.TreeGate{Steps: specGated}, Launch: 2},
+			name:  "a run that stood in a phase of its own, whose claim served this generation",
+			start: ArchitectStart{Root: takenBack(), Gate: record.TreeGate{Steps: specGated}, Served: 2},
 			label: ArchitectReadmittedLabel,
 		},
 		{
 			name:  "a gate row beats a tree that ran at an earlier generation",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registered}, Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registered}, Served: 1},
 			label: ArchitectGateRowsLabel,
 		},
 		{
@@ -297,6 +300,62 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 	}
 }
 
+// The fourth rule reads the run the tree's architect claim last served, never the claim's launch
+// count. The claim is kept from one run to the next, and its generation (claims.generation)
+// counts its launches, so it can stand above the root's generation after relaunches in an earlier
+// run, or below it where the claim was never relaunched, whatever the tree has run. Each case is a
+// root re-admitted at generation 3, at admitted with no design gate row and no run of its own
+// phase, read from the record through ArchitectStartOf:
+//   - a claim that launched five times and last served generation 2 ran the tree at an earlier
+//     generation, so the task is of the fourth rule's shape;
+//   - a claim that served nothing took no task of any run, so the tree is one nobody has
+//     architected;
+//   - a claim that served generation 3 took a task of the run the root stands at, which says
+//     nothing of an earlier run, so the task is not of the fourth rule's shape.
+func TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		launches, served uint64
+		label            string
+	}{
+		{"a claim that launched five times and served generation 2", 5, 2, ArchitectReadmittedLabel},
+		{"a claim that launched twice and served nothing", 2, 0, ArchitectFreshTreeLabel},
+		{"a claim that launched twice and served generation 3, the run the root stands at", 2, 3, ArchitectFreshTreeLabel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			pool := migratedPool(t)
+			root := architectEntryRoot()
+			root.Generation = 3
+			seedIssue(t, pool, root)
+			project, err := claim.ProjectToken(root.Project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation)
+				values ($1, $2, $3, $4, 'architect', $5, 'session-architect', '', 'ready', 0, 0, 0, 0, $6)`,
+				string(wakeToken(t, claim.RoleArchitect)), project, root.Tree, root.Key, int64(tc.launches), int64(tc.served)); err != nil {
+				t.Fatalf("seed the architect's claim: %v", err)
+			}
+			var task string
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				start, err := ArchitectStartOf(ctx, tx, record.NewStore(), specGated, root)
+				task = ArchitectStartTask(start)
+				return err
+			}); err != nil {
+				t.Fatalf("read what the architect's first task is derived from: %v", err)
+			}
+			if !strings.Contains(task, tc.label) {
+				t.Fatalf("the architect's start task is %q, want the shape labelled %q", task, tc.label)
+			}
+			if tc.label != ArchitectReadmittedLabel && strings.Contains(task, ArchitectReadmittedLabel) {
+				t.Fatalf("the architect's start task is %q, want no task of the fourth rule's shape: its claim took no task of an earlier run", task)
+			}
+		})
+	}
+}
+
 // The derivation gives no task for a root past admitted under its own power: one in a working
 // phase, one waiting on a person and one in accepting. Each of those is told its work by its
 // phase's own role, by the resume a person's answer composes, or by the notice that moved it, so
@@ -314,7 +373,7 @@ func TestTheArchitectTaskIsNoneForARootPastAdmitted(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			start := ArchitectStart{Root: rootAt(tc.stand),
-				Gate: record.TreeGate{Steps: specGated, Rows: registered}, Launch: 1}
+				Gate: record.TreeGate{Steps: specGated, Rows: registered}, Served: 1}
 			if got := ArchitectStartTask(start); got != "" {
 				t.Fatalf("the architect's start task = %q, want none: this root is no root the derivation serves", got)
 			}
@@ -340,7 +399,7 @@ func TestTheArchitectTaskNamesAKeptDecisionFirstInEveryShape(t *testing.T) {
 		{"a tree nobody has architected", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}}},
 		{"a root a hand-over carried in", ArchitectStart{Root: rootAt(phase.Planning), Carried: true, Gate: record.TreeGate{Steps: specGated}}},
 		{"a root that holds design gate rows", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registeredSpec()}}},
-		{"a tree that ran at an earlier generation", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 1}},
+		{"a tree that ran at an earlier generation", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bare := ArchitectStartTask(tc.start)
@@ -391,7 +450,7 @@ func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 		},
 		{
 			name:  "a tree that ran at an earlier generation",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Served: 1},
 			label: ArchitectReadmittedLabel,
 		},
 	} {

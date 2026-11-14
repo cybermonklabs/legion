@@ -20,8 +20,8 @@ import (
 // architectStalls). A proof reads it to say that a root the daemon served raises no wake of
 // any arm: each arm is a reading that the architect did not take its work, is not there, or has
 // not moved, and none of the three is true of a root whose architect holds the task it was sent.
-// The daemon queues such a wake only for a registered controller, so a proof whose project
-// registers none reads the arms themselves as well (architectStallArmsOf).
+// The daemon queues such a wake only for a registered controller, so a proof that reads it
+// registers one first (registerProjectController), or the read could never see a wake.
 func architectStalledWakes(t *testing.T, pool *store.Pool, issue string) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select coalesce(payload->>'reason', '') from outbox
@@ -203,6 +203,9 @@ func TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask(t *testin
 		t.Fatalf("%s holds %d architect start rows after its own was run, want none", mainPathRoot, held)
 	}
 
+	// A controller is registered for the four passes, since the daemon queues no wake while none is
+	// (admit's wakeStalledArchitects), so a stall arm read by any of them could queue one.
+	registerProjectController(t, r.pool, mainPathProject)
 	for range 4 {
 		r.admitPass()
 	}

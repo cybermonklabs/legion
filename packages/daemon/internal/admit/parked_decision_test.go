@@ -441,9 +441,9 @@ func TestARetriedRowTellsTheArchitectEachKeptDecisionOnce(t *testing.T) {
 	})
 }
 
-// putEarlierRootArchitect records the architect claim LEGION-ROOT's close left at the generation
-// before, which record.Store.ArchitectLaunches reads. The claim token is written here rather than
-// minted (putWorkerClaim), because LEGION-ROOT is no issue key.
+// putEarlierRootArchitect records the architect claim LEGION-ROOT's close left, which served the
+// generation before, the run record.Store.ArchitectServed reads. The claim token is written here
+// rather than minted (putWorkerClaim), because LEGION-ROOT is no issue key.
 func putEarlierRootArchitect(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,

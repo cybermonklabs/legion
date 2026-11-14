@@ -52,9 +52,10 @@
 -- the store reports, its highest recorded row (store.SchemaVersionTx), that release's own again,
 -- and the drop is owed to the roll-forward, whose run of this file again would fail at its create
 -- table on a table left standing. Migrate makes the table again, empty, and the architect
--- upgrade, re-armed by the same block, marks it again for every root standing then: the first and
--- the third arm, so the marks of the second arm are the ones the drop loses, and a root whose
--- claim is still failed or retired at the roll-forward wakes the controller once more.
+-- upgrade, re-armed by the same block, marks it again for every root whose run has started then:
+-- the first and the third arm, so the marks of the second arm are the ones the drop loses, and a
+-- root whose claim is still failed or retired at the roll-forward, with no start of its run
+-- queued, wakes the controller once more.
 create table architect_stalled_notices (
     issue text not null references issues (key) on delete cascade,
     tree text not null,
