@@ -23,7 +23,7 @@ None. Closed and done issues are included in results (dimmed by status) and in t
 | Keyword search across every issue and document, fast, from anywhere in the app | Sami 2026-09-10 17:35Z: "I want some way to search for a keyword across all documents and issues. Like, I know I've used the word astrolabe somewhere in one of these issues. I just don't know where to find it. So I need some way to search. We need a fast global search." |
 | Agents get the same search as a tool, and creation is gated on it | Sami 2026-09-10 17:45Z: "agents need a way to search too, otherwise many duplicate issues" |
 | Corpus = issues (key, title), latest version of every `kind='doc'` artifact, comments, asks (question + answer text), messages | inferred: these are the places a word is written in Dispatch; refs/events restate them |
-| Postgres full-text search in the existing database; no second service | inferred: ~100 documents, one Postgres already backed up; standing rule "boring standard mechanism" |
+| Postgres full-text search in the existing database; no second service | inferred: ~100 documents, one Postgres already backed up; Sami's CLAUDE.md rule: "Agents have hand-rolled every one of those here while the boring standard mechanism sat unused" (https://github.com/sjawhar/dotfiles/blob/f52de18367896bee15b5b23248e8b5a86d90fc17/.claude/CLAUDE.md#L34) |
 | Results carry `href` deep links so a hit is one click from the text | inferred: "I just don't know where to find it" is a navigation problem |
 | Live document text reaches the index at settle (2 s idle, `docs.Deps.Settle`); the palette shows the last settled text | fact: `artifact_versions` is written by `writeVersionTx` on settle; the search reads versions |
 

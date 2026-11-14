@@ -62,8 +62,11 @@ The fix is always the same, and never a weakened assertion: seed the identity th
 reports (`paneIdentity()` / `livePanes(command)` in `processes.test.ts`), so the pane verifies and
 the kill the test is about is actually attempted. Put each such bring-up in its own commit, placed
 first, so every commit in the chain stays green and the reviewer can see it is a fixture, not a
-behaviour change. Sami's rule applies: a pre-existing test you break is yours to fix at the root,
-with the reason in the commit message.
+behaviour change. A pre-existing test you break is yours to fix at the root, with the reason in
+the commit message; Sami's CLAUDE.md: "Excuses don't close goals: "pre-existing issue," "known
+bug," "we didn't introduce this," "not related to our changes." If one of these facts is true,
+pair it with a remediation path."
+(https://github.com/sjawhar/dotfiles/blob/b44037a470cfd1740c26f811dec98a7550598b49/.claude/CLAUDE.md#L46)
 
 ## The complementary fake rule
 

@@ -27,7 +27,7 @@ symptoms:
   - "a green negative control that pins the very behaviour production later showed to be the defect"
   - "a re-send test times out at 5 s and the next test in the file fails on a stale console spy"
 applies_when:
-  - Sami's standing order (2026-09-13) forbids a smoke rig, scratch daemon, throwaway broker, or scratch tmux server for the issue
+  - A smoke rig, scratch daemon, throwaway broker, or scratch tmux server is forbidden for the issue
   - The change spans two deployable parts (daemon and listener/plugin) that may land in either order
   - A test asserts timer-driven retry/backoff behaviour on an injected clock
   - A design rule the suite pins is reversed by a later spec version
@@ -168,8 +168,9 @@ A `publishRole` fake shows what the daemon sends and what a correct receiver doe
 cannot show that the real listener stamps the body's `dedupe_key` onto the envelope, or that the
 installed plugin's dedupe actually drops the copy — those are LEGION-108's Go tests and
 LEGION-109's plugin tests, and, end to end, LEGION-101's production hour (`envoy_inbox` on three
-busy architects, no payload twice). Say so in the PR's E2E line, cite the standing order, and name
-where the remaining proof lives; do not describe the unit suite as production-like.
+busy architects, no payload twice). Say so in the PR's E2E line, cite Sami's 2026-09-13 shutdown
+of the smoke rig (https://github.com/cybermonklabs/legion/pull/1075), and name where the remaining
+proof lives; do not describe the unit suite as production-like.
 
 ## Related
 

@@ -23,12 +23,13 @@ symptoms:
 
 # Proving an OMP build in your own process
 
-## The standing order and what it permits
+## Sami's 2026-09-13 smoke shutdown, and what the root architect ruled it permits
 
-Sami (2026-09-13, 19:00Z): "Please shutdown the goddamn legion smoke. It's pointless and it has
-led to destructive actions twice now." No smoke scripts, no stand-in or scratch daemon, no kind
-cluster, no message-bus container, no scratch tmux server. The LEGION-19 root architect ruled
-the same day that one throwaway database container on a loopback port, started in the worker's
+Sami (2026-09-13, 19:00Z, relayed in https://github.com/cybermonklabs/legion/pull/1075): "Please
+shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice
+now." The LEGION-19 root architect read it as no smoke scripts, no stand-in or scratch daemon, no
+kind cluster, no message-bus container, no scratch tmux server, and ruled the same day that one
+throwaway database container on a loopback port, started in the worker's
 own process purely as the database under test and removed at the end, is a **test fixture**, not
 a rig. Every proof on LEGION-80 was the stock `omp` binary run directly against that fixture.
 

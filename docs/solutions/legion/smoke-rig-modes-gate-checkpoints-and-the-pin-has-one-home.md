@@ -97,10 +97,8 @@ Rules:
   `mise where` and never installs; preflight does exactly that, so the two cannot disagree and a
   missing install fails before NATS and the listener are up rather than after.
 - **A default that only exists under one operator's `$HOME` is a local workaround, not a fix.**
-  Sami's direction, relayed by the Legion PO: "A rig that falls back to a file under one
-  operator's ~/.local/state cannot run on any other box and should not ship." If the real fix
-  (a tagged release) is not available yet, the spec should say so and the rig should fail
-  closed naming the remedy — never fall back.
+  If the real fix (a tagged release) is not available yet, the spec should say so and the rig
+  should fail closed naming the remedy — never fall back.
 - **Remedy text must describe an action that actually changes the outcome.** "Bump the pin"
   was true of the system and false of the function. Write the remedy from the code path that
   prints it.

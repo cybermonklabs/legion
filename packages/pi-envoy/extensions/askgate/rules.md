@@ -75,10 +75,12 @@ access 7.) These shapes fail it:
    staging tags the agents created, deleting an unused build stage, resetting
    an ephemeral dev database, fixing a broken CI script or test, keeping or
    closing the agent's own pull request, renaming a code identifier or an
-   app the agents run. The person's standing rule: cleanup, naming, a
-   choice between two equal options, and the removal of a thing that no
-   longer works are the agent's decisions. The agent makes them, does them
-   and reports what it did. A recommendation does not rescue these.
+   app the agents run. The person's standing rule
+   (https://github.com/sjawhar/dotfiles/blob/f7fb4740bb5a8f9d4b7448236cd9e42f07851d70/.claude/CLAUDE.md#L54):
+   cleanup, naming, a choice between two equal options, and the removal of
+   a thing that no longer works are the agent's decisions. The agent makes
+   them, does them and reports what it did. A recommendation does not
+   rescue these.
    Fix: retract with
    `dispatch resolve-ask --ask <id> --kind retracted --reason '<why>'`,
    take the recommended option, record it in the

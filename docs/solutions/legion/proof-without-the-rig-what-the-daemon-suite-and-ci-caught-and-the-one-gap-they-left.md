@@ -30,8 +30,11 @@ applies_when:
 
 LEGION-93's spec had a fifth acceptance line: a fake shim on the smoke rig drives one role through
 retire → relaunch → `worker-died`, and the rig's Envoy listener records the notice on the architect
-topic. Sami's standing order landed mid-tree and withdrew it; the plan's Task 4 (a `swallow-prompts`
-stand-in for the rig's launch prefix) and Task 6 (the rig run) were dropped. The proof surface
+topic. Sami's 2026-09-13 shutdown of the smoke rig ("Please shutdown the goddamn legion smoke.
+It's pointless and it has led to destructive actions twice now", relayed in
+https://github.com/cybermonklabs/legion/pull/1075) landed mid-tree and withdrew it; the plan's
+Task 4 (a `swallow-prompts` stand-in for the rig's launch prefix) and Task 6 (the rig run) were
+dropped. The proof surface
 became the daemon's own suite plus CI on the pull request — and the E2E line said exactly that,
 citing the order, rather than dressing a unit run up as an end-to-end pass.
 
@@ -42,9 +45,9 @@ Two defects, both in CI, neither reachable from the rig:
 1. **The `LEGION_E2E=1`-only suite had drifted.** `real-prompt-delivery-e2e.test.ts` (a real tmux
    pane, the real `legion worker-shim`, a stand-in OMP that never starts a turn) asserted the
    LEGION-60 accounting — `promptFailures` 3 at the third failure — and is skipped locally (10 skips
-   in `bun test packages/daemon`). The first CI run failed it; the fix was test-only. Under the
-   standing order that suite runs **only** in CI, so before pushing a change to a counter or a log
-   line, grep the gated suites for it: `grep -n promptFailures packages/daemon/src/daemon/__tests__/*e2e*`.
+   in `bun test packages/daemon`). The first CI run failed it; the fix was test-only. Before
+   pushing a change to a counter or a log line, grep the gated suites for it:
+   `grep -n promptFailures packages/daemon/src/daemon/__tests__/*e2e*`.
    A green local run is not evidence the gated suite agrees.
 2. **`main`'s harness change on the merge ref** (#1027; see
    `mains-test-fixture-change-is-a-conflict-mergeable-does-not-see.md`). A rig exercises the daemon
