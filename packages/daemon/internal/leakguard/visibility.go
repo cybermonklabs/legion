@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"golang.org/x/sys/unix"
 )
 
 const rateLimitWaitBound = 2 * time.Minute
@@ -122,7 +123,7 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 	if path == "" {
 		return "", false
 	}
-	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", false
 	}
@@ -131,7 +132,7 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 	if err != nil || !info.IsDir() || !ownedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
 		return "", false
 	}
-	fd, err := syscall.Openat(int(dir.Fd()), filepath.Base(path), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	fd, err := unix.Openat(int(dir.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return "", false
 	}
