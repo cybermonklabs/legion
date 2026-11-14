@@ -32,7 +32,10 @@ import (
 // public.evt_shadow, for the row that drops that table under a search_path that lists public
 // before late. The schema sp_1792 holds mood, a domain with a constraint under the name of the
 // enum public.mood. The view sp_view and the rule of the table sp_ruled each call set_config to
-// put sp_1792 first in the session's search_path, for the rows whose statement runs one of them.
+// put sp_1792 first in the session's search_path, for the rows whose statement runs one of them,
+// and so do the column default of sp_default, the check constraint of sp_check, the check of the
+// domain sp_domain that sp_domained's column has, and the default of the domain sp_domdef that
+// sp_domdefed's column has.
 const catalogOnlyFixtureSQL = `
 create table schema_migrations (version bigint primary key);
 insert into schema_migrations (version) values (1);
@@ -80,6 +83,12 @@ create domain sp_1792.mood as text check (value <> 'x');
 create view sp_view as select set_config('search_path', 'sp_1792, public', false) as sp;
 create table sp_ruled (id int);
 create rule sp_ruled_sets as on insert to sp_ruled do also select set_config('search_path', 'sp_1792, public', false);
+create table sp_default (id int, sp text default set_config('search_path', 'sp_1792, public', false));
+create table sp_check (id int, constraint sp_check_sets check (set_config('search_path', 'sp_1792, public', false) is not null));
+create domain sp_domain as int check (set_config('search_path', 'sp_1792, public', false) is not null);
+create table sp_domained (v sp_domain);
+create domain sp_domdef as text default set_config('search_path', 'sp_1792, public', false);
+create table sp_domdefed (id int, sp sp_domdef);
 `
 
 // catalogOnlyFixture is catalogOnlyFixtureSQL with rows rows in each large table. The census
@@ -562,6 +571,18 @@ var refusedRows = []refusedRow{
 	// table under ACCESS EXCLUSIVE.
 	{name: "after a select of a view whose query calls set_config", migrations: []string{"select * from sp_view", "alter table big add column c mood default 'calm'"}},
 	{name: "after an insert into a table whose rule calls set_config", migrations: []string{"insert into sp_ruled values (1)", "alter table big add column c mood default 'calm'"}},
+	// An INSERT or an UPDATE also runs expressions that the catalog holds for the table it writes:
+	// a column's default, a check constraint, and a domain's check or default. Each of these in
+	// the fixture calls set_config, as sp_view's query does. On PostgreSQL 18.6, with
+	// artifact_versions at 1.2 GiB, the census exempted such an ADD COLUMN after an insert that ran
+	// a column default, a check constraint or a domain check that calls set_config. When the
+	// migrations applied, Postgres gave the column the domain and rewrote the table under ACCESS
+	// EXCLUSIVE.
+	{name: "after an insert that runs a column default that calls set_config", migrations: []string{"insert into sp_default (id) values (1)", "alter table big add column c mood default 'calm'"}},
+	{name: "after an update that sets a column to a default that calls set_config", migrations: []string{"update sp_default set sp = default", "alter table big add column c mood default 'calm'"}},
+	{name: "after an insert that runs a check constraint that calls set_config", migrations: []string{"insert into sp_check values (1)", "alter table big add column c mood default 'calm'"}},
+	{name: "after an insert that runs a domain check that calls set_config", migrations: []string{"insert into sp_domained values (1)", "alter table big add column c mood default 'calm'"}},
+	{name: "after an insert that runs a domain default that calls set_config", migrations: []string{"insert into sp_domdefed (id) values (1)", "alter table big add column c mood default 'calm'"}},
 }
 
 // censusOf runs one census, with the table limit at one byte, of sqls as pending migrations
