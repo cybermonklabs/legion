@@ -125,17 +125,18 @@ func approveURL() string {
 // Session answers for both Request and Enrollment, and the credential request names no session
 // at all.
 //
-// The Codex CLI sets CODEX_THREAD_ID in every shell command it runs (INFRA-3558), and it stands
-// where CLAUDE_CODE_SESSION_ID stands. A shell that carries both, because a Codex session was
-// started from a Claude Code shell or the other way round, names whichever of `codex` and
-// `claude` is this process's nearer ancestor; where the walk finds neither, Claude Code's id, as
-// before Codex was a host.
+// The Codex CLI sets CODEX_THREAD_ID in every shell command it runs (INFRA-3558). A shell that
+// carries it beside another session's id, because a Codex session was started from a Claude Code
+// or Oh My Pi shell or the other way round, names whichever of `codex`, `claude` and `omp` is
+// this process's nearest ancestor; where the walk finds none of them, the order above, with
+// CODEX_THREAD_ID after CLAUDE_CODE_SESSION_ID, as before Codex was a host.
 func requestSessionID() string {
-	harness := os.Getenv("CLAUDE_CODE_SESSION_ID")
-	if codex := os.Getenv("CODEX_THREAD_ID"); codex != "" && (harness == "" || nearestHarness("codex", "claude") == "codex") {
-		harness = codex
+	codex := os.Getenv("CODEX_THREAD_ID")
+	others := cmp.Or(os.Getenv("OMP_SESSION_ID"), os.Getenv("ENVOY_SESSION_ID"), os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	if codex != "" && (others == "" || nearestHarness("codex", "claude", "omp") == "codex") {
+		return codex
 	}
-	return cmp.Or(os.Getenv("OMP_SESSION_ID"), os.Getenv("ENVOY_SESSION_ID"), harness)
+	return others
 }
 
 // nearestHarness answers which of names the nearest ancestor of this process (itself included)

@@ -208,6 +208,12 @@ export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAg
     },
     delivered(text, dispatchMessageId) {
       if (stopped) return
+      // A person's message the hook took never becomes a user row of the transcript, so the
+      // tag kept for that row is dropped rather than left for a later message with the same words.
+      if (dispatchMessageId !== undefined) {
+        const index = expected.findIndex((entry) => entry.dispatchMessageId === dispatchMessageId)
+        if (index >= 0) expected.splice(index, 1)
+      }
       record(
         { content: [{ text, type: "text" }], role: "user", timestamp: at(now()) },
         dispatchMessageId,

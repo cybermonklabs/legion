@@ -207,21 +207,24 @@ export function fitOutput(
 /**
  * The host this command runs under. `DISPATCH_HOST` names it, else Claude Code's
  * `CLAUDE_CODE_CHILD_SESSION=1` or the Codex CLI's `CODEX_THREAD_ID`, which each sets in every
- * shell command it runs. A shell that carries Codex's variable beside Claude Code's (a
- * `DISPATCH_HOST=claude` its hook exported, or `CLAUDE_CODE_CHILD_SESSION=1`) belongs to whichever
- * of `codex` and `claude` is the command's nearer ancestor, since one was started from the
- * other's shell and inherited its variables: a Codex session started from a Claude Code shell
- * must not act as the Claude Code session. Where the walk finds neither, Claude Code's variables
- * win, as they did before Codex was a host.
+ * shell command it runs. A shell that carries Codex's variable beside another host's (a
+ * `DISPATCH_HOST` of `claude` or `omp` that host's plugin exported, or
+ * `CLAUDE_CODE_CHILD_SESSION=1`) belongs to whichever of `codex`, `claude` and `omp` is the
+ * command's nearest ancestor, since one was started from the other's shell and inherited its
+ * variables: a Codex session started from a Claude Code or Oh My Pi shell must not act as that
+ * session. Where the walk finds none of them, the other host's variables win, as they did before
+ * Codex was a host.
  */
 function commandHost(
   env: Readonly<Record<string, string>>,
   nearest: (names: readonly string[]) => string | undefined
 ): string | undefined {
-  const claudeSignal = env.DISPATCH_HOST === "claude" || env.CLAUDE_CODE_CHILD_SESSION === "1";
-  if (env.CODEX_THREAD_ID !== undefined && (claudeSignal || env.DISPATCH_HOST === undefined)) {
-    if (!claudeSignal) return "codex";
-    if (nearest(["codex", "claude"]) === "codex") return "codex";
+  const inherited =
+    (env.DISPATCH_HOST !== undefined && env.DISPATCH_HOST !== "codex") ||
+    env.CLAUDE_CODE_CHILD_SESSION === "1";
+  if (env.CODEX_THREAD_ID !== undefined && env.DISPATCH_HOST !== "codex") {
+    if (!inherited) return "codex";
+    if (nearest(["codex", "claude", "omp"]) === "codex") return "codex";
   }
   if (env.DISPATCH_HOST !== undefined) return env.DISPATCH_HOST;
   return env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined;
@@ -246,6 +249,15 @@ export async function runDispatchCli(
   // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
   // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
   const claudeSession = env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
+  // The host, worked out once and only when asked: the walk of the parent processes it may take
+  // runs at most once per call, for the refusal ledger and the call alike.
+  let resolvedHost: { readonly name: string | undefined } | undefined;
+  const ledgerHost = (): string | undefined => {
+    resolvedHost ??= {
+      name: commandHost(env, (names) => (io.nearestAncestorNamed ?? nearestAncestorNamed)(names)),
+    };
+    return resolvedHost.name;
+  };
   const refuse = (
     text: string,
     code: number,
@@ -254,7 +266,7 @@ export async function runDispatchCli(
   ): number => {
     print(text);
     const sessionId =
-      env.DISPATCH_HOST === "codex"
+      ledgerHost() === "codex"
         ? env.CODEX_THREAD_ID
         : (claudeSession ?? env.DISPATCH_SESSION_ID ?? env.CODEX_THREAD_ID);
     if (sessionId !== undefined) {
@@ -290,9 +302,7 @@ export async function runDispatchCli(
       : refuse(new ToolInputError(parsed.tool, parsed.problems).message, USAGE, parsed.tool);
   }
 
-  const hostName = commandHost(env, (names) =>
-    (io.nearestAncestorNamed ?? nearestAncestorNamed)(names)
-  );
+  const hostName = ledgerHost();
   const host = HOSTS.find((name) => name === hostName);
   if (host === undefined) {
     return refuse(

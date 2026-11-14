@@ -21,6 +21,7 @@ import {
   codexHome,
   codexProcessId,
   codexSessionRecordFile,
+  processStarted,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
@@ -52,6 +53,7 @@ async function sessionStart(raw: unknown): Promise<void> {
       await writeCodexSessionRecord(codexSessionRecordFile(pluginData, pid), {
         codex_executable: codexExecutable(pid) ?? null,
         codex_home: codexHome(process.env),
+        codex_started: processStarted(pid) ?? null,
         cwd: input.cwd,
         session_id: input.session_id,
         source: input.source ?? null,

@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process"
+import { randomBytes } from "node:crypto"
+import { mkdirSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 
 /**
  * The two things the Codex plugin asks of Codex itself (INFRA-3558): put a message into a running
@@ -36,8 +39,15 @@ function childEnv(command: CodexCommand): Record<string, string> {
 export function queueMessage(
   command: CodexCommand,
   threadId: string,
-  message: string,
+  text: string,
+  spillDirectory?: string,
 ): Promise<void> {
+  let message: string
+  try {
+    message = fitArgument(text, spillDirectory)
+  } catch (error) {
+    return Promise.reject(error)
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(command.executable, ["queue", "--thread", threadId, "--message", message], {
       env: childEnv(command),
@@ -67,6 +77,28 @@ export function queueMessage(
       }
     })
   })
+}
+
+/** The longest message `codex queue` is handed as its argument. Linux refuses a single argument
+ *  over 128 KiB (`MAX_ARG_STRLEN`) and the spawn would fail on every resend of the frame. */
+const QUEUE_ARGUMENT_MAX_BYTES = 96 * 1024
+/** How much of a longer message is quoted before the line naming the file holding all of it. */
+const QUEUE_HEAD_CHARS = 8_000
+
+/**
+ * `text` as one argument `codex queue` can take: itself, or, past the bound, its start and a line
+ * naming a file under `spillDirectory` that holds the whole of it. Throws when it is too long and
+ * there is nowhere to put it.
+ */
+export function fitArgument(text: string, spillDirectory: string | undefined): string {
+  if (Buffer.byteLength(text) <= QUEUE_ARGUMENT_MAX_BYTES) return text
+  if (spillDirectory === undefined) {
+    throw new Error(`the message is ${Buffer.byteLength(text)} bytes, over what codex queue takes`)
+  }
+  mkdirSync(spillDirectory, { mode: 0o700, recursive: true })
+  const file = join(spillDirectory, `${Date.now()}-${randomBytes(4).toString("hex")}.txt`)
+  writeFileSync(file, text, { mode: 0o600 })
+  return `${text.slice(0, QUEUE_HEAD_CHARS)}\n\n[This message is ${Buffer.byteLength(text)} bytes long; the whole of it is in ${file}.]`
 }
 
 /** How long a side question may run before it is abandoned. */
@@ -173,6 +205,8 @@ export function askSideQuestion(
     child.stderr.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString()).slice(-2000)
     })
+    // A write to an app server that has died raises EPIPE here; its `close` says why it ended.
+    child.stdin.on("error", () => undefined)
     child.on("error", (error) =>
       finish(new Error(`could not run ${command.executable} app-server: ${error.message}`)),
     )

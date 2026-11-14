@@ -17,11 +17,20 @@ import { type CodexInboxItem, putInbox, takeInbox, takenBy } from "./codex-inbox
  * from `./codex-transcript`). A write resolves once the line is in the session - Codex stored
  * it in its queue, or the hook took it into the turn - and rejects when `codex queue` failed, so
  * the Envoy frame it carries is not answered and the listener sends it again.
+ *
+ * Every write settles, because the session's frames are written one behind another and one that
+ * never settled would hold back every later one: a line the hook did not take is queued at the
+ * turn's end, and, while no turn runs, by a sweep every `pollMs`; a sweep looks at the inbox of
+ * every session a line still waits in, so a `/new` that moves the session to another id while a
+ * line waits for the old one queues it for the new one; and a sweep that fails is logged and
+ * tried again rather than ending the ones after it.
  */
 export interface CodexDeliveryOptions {
-  /** The inbox directory of the session now bound (`codexInboxDirectory`). */
-  readonly inboxDirectory: () => string
-  /** `codex queue` for the session now bound. */
+  /** The session the `codex` process runs now, as its record names it. */
+  readonly sessionId: () => string
+  /** The inbox directory of a session (`codexInboxDirectory`). */
+  readonly inboxDirectory: (sessionId: string) => string
+  /** `codex queue` for the session the process runs now. */
   readonly queue: (text: string) => Promise<void>
   /** Told of each line the hook took into a running turn, so the live view can show it: the
    *  transcript records a hook's text as an instruction, not as a message of the conversation. */
@@ -38,6 +47,9 @@ export interface CodexDelivery {
   turnStarted(): void
   /** The transcript says the turn ended: anything still waiting goes to `codex queue`. */
   turnEnded(): Promise<void>
+  /** The process moved to another session (`/new`): no turn of it runs yet, and what waited for
+   *  the old one goes to the new one. */
+  rebind(): Promise<void>
   /** Whether a turn runs, as the transcript last said. */
   turnRunning(): boolean
   /** Stops watching waiting lines; a write still waiting rejects. */
@@ -57,14 +69,15 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
   const pollMs = options.pollMs ?? WAITING_POLL_MS
   let running = false
   let stopped = false
-  /** Every line in the inbox whose write has not resolved, by file name. */
+  /** Every line in an inbox whose write has not resolved, by file name. */
   const waiting = new Map<string, Waiter>()
   /** One sweep at a time, so a line is never queued twice by two sweeps. */
   let sweeping: Promise<void> = Promise.resolve()
 
-  const sweep = (): Promise<void> => {
-    sweeping = sweeping.then(async () => {
-      const directory = options.inboxDirectory()
+  const sweepOnce = async (): Promise<void> => {
+    const directories = new Set([options.inboxDirectory(options.sessionId())])
+    for (const waiter of waiting.values()) directories.add(waiter.directory)
+    for (const directory of directories) {
       for (const { name, item } of await takeInbox(directory, "server")) {
         const waiter = waiting.get(name)
         waiting.delete(name)
@@ -73,11 +86,16 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
           waiter?.resolve()
         } catch (error) {
           const failure = error instanceof Error ? error : new Error(messageFor(error))
-          if (waiter === undefined)
+          if (waiter === undefined) {
             options.warn(`a waiting message could not be queued: ${failure.message}`)
-          else waiter.reject(failure)
+          } else waiter.reject(failure)
         }
       }
+    }
+  }
+  const sweep = (): Promise<void> => {
+    sweeping = sweeping.then(sweepOnce).catch((error: unknown) => {
+      options.warn(`the Codex inbox could not be swept, and will be again: ${messageFor(error)}`)
     })
     return sweeping
   }
@@ -92,7 +110,10 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
     }
   }
   const timer = setInterval(() => {
-    if (waiting.size > 0) void check()
+    if (waiting.size === 0) return
+    void check()
+      .then(() => (running || waiting.size === 0 ? undefined : sweep()))
+      .catch((error: unknown) => options.warn(messageFor(error)))
   }, pollMs)
   timer.unref?.()
 
@@ -103,7 +124,7 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
         await options.queue(item.content)
         return
       }
-      const directory = options.inboxDirectory()
+      const directory = options.inboxDirectory(options.sessionId())
       const name = await putInbox(directory, item)
       const written = new Promise<void>((resolve, reject) => {
         waiting.set(name, { directory, item, reject, resolve })
@@ -117,7 +138,11 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
     },
     async turnEnded() {
       running = false
-      await check()
+      await check().catch((error: unknown) => options.warn(messageFor(error)))
+      await sweep()
+    },
+    async rebind() {
+      running = false
       await sweep()
     },
     turnRunning: () => running,

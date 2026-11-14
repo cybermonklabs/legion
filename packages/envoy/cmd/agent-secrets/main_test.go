@@ -1620,7 +1620,8 @@ func TestRequestSessionIDCodex(t *testing.T) {
 		{"Codex nearer than Claude Code", "sess-claude", "thread-codex", "codex", "", "thread-codex"},
 		{"Claude Code nearer than Codex", "sess-claude", "thread-codex", "claude", "", "sess-claude"},
 		{"neither found: Claude Code, as before", "sess-claude", "thread-codex", "", "", "sess-claude"},
-		{"OMP_SESSION_ID still wins", "", "thread-codex", "codex", "sess-omp", "sess-omp"},
+		{"OMP_SESSION_ID when Oh My Pi is nearer", "", "thread-codex", "omp", "sess-omp", "sess-omp"},
+		{"CODEX_THREAD_ID when Codex is nearer than Oh My Pi", "", "thread-codex", "codex", "sess-omp", "thread-codex"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

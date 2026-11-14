@@ -58,6 +58,7 @@ describe("createCodexDelivery", () => {
     const taken: CodexInboxItem[] = []
     const delivery = createCodexDelivery({
       inboxDirectory: () => directory,
+      sessionId: () => "session/1",
       pollMs: 10,
       queue: async (text) => {
         if (failQueue) throw new Error("codex queue exited 1")
@@ -120,6 +121,60 @@ describe("createCodexDelivery", () => {
     await busy.delivery.turnEnded()
     await expect(written).rejects.toThrow("codex queue exited 1")
     busy.delivery.stop()
+  })
+
+  test("after /new a line waiting for the old session is queued for the new one", async () => {
+    const base = join(root, String(count++))
+    let session = "old"
+    const queued: string[] = []
+    const delivery = createCodexDelivery({
+      inboxDirectory: (id) => codexInboxDirectory(base, id),
+      pollMs: 10,
+      queue: async (text) => {
+        queued.push(`${session}:${text}`)
+      },
+      sessionId: () => session,
+      warn: () => undefined,
+    })
+    delivery.turnStarted()
+    const written = delivery.deliver({ content: "waiting" })
+    await Bun.sleep(20)
+    session = "new"
+    await delivery.rebind()
+    await written
+    expect(queued).toEqual(["new:waiting"])
+    delivery.stop()
+  })
+
+  test("a sweep that fails is tried again, and the write still settles", async () => {
+    const directory = inbox()
+    const queued: string[] = []
+    const warnings: string[] = []
+    let failures = 1
+    const delivery = createCodexDelivery({
+      inboxDirectory: () => directory,
+      pollMs: 10,
+      queue: async (text) => {
+        queued.push(text)
+      },
+      sessionId: () => "session/1",
+      warn: (text) => warnings.push(text),
+    })
+    delivery.turnStarted()
+    const written = delivery.deliver({ content: "late" })
+    await Bun.sleep(20)
+    // The first sweep finds a file where the server's directory should be and fails.
+    const blocker = join(directory, "queued")
+    await Bun.write(blocker, "not a directory")
+    await delivery.turnEnded()
+    expect(warnings.some((text) => text.includes("could not be swept"))).toBe(true)
+    expect(queued).toEqual([])
+    failures -= 1
+    await Bun.file(blocker).delete()
+    await written
+    expect(queued).toEqual(["late"])
+    expect(failures).toBe(0)
+    delivery.stop()
   })
 
   test("stopping rejects a line still waiting", async () => {

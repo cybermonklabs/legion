@@ -45,6 +45,7 @@ import {
   codexPluginDataDirectory,
   codexSessionRecordFile,
   readCodexSessionRecord,
+  recordOfProcess,
 } from "./codex-session-record"
 import { followTranscript, type TranscriptFollower, transcriptEvents } from "./codex-transcript"
 import { createCodexUserTurnRouter } from "./codex-user-turns"
@@ -137,6 +138,9 @@ export function runDispatchCommand(
         output: signal === null ? output : `${output}dispatch: stopped by ${signal}\n`,
       })
     })
+    // A command that exits without reading all of a long stdin raises EPIPE here, which
+    // would otherwise end this server; the command's own exit code is the answer.
+    child.stdin.on("error", () => undefined)
     child.stdin.end(stdin)
   })
 }
@@ -156,11 +160,16 @@ function stateDirectoryFor(pluginRoot: string): string {
 }
 
 /** Resolves with the record once the `SessionStart` hook has written it, polling the file. */
-function waitForRecord(file: string, signal: AbortSignal): Promise<CodexSessionRecord | undefined> {
+function waitForRecord(
+  file: string,
+  pid: number,
+  signal: AbortSignal,
+): Promise<CodexSessionRecord | undefined> {
   return new Promise((done) => {
     const look = (): void => {
       void readCodexSessionRecord(file).then((record) => {
-        if (record === undefined) return
+        // A record an earlier process with the same id left behind names no session of this one.
+        if (record === undefined || !recordOfProcess(record, pid)) return
         unwatchFile(file, look)
         done(record)
       })
@@ -213,7 +222,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
       return `dispatch: the tool takes args (a list of strings) and an optional stdin\n[exit 2]`
     // The hook writes the record before the turn's first request, but the server reads it on a
     // poll, so a call in the session's first turn can arrive first: it reads the record itself.
-    const current = record ?? (await readCodexSessionRecord(recordFile))
+    const read = record ?? (await readCodexSessionRecord(recordFile))
+    const current = read !== undefined && recordOfProcess(read, codexPid) ? read : undefined
     const sessionId = identity?.id ?? current?.session_id
     if (sessionId === undefined || current === undefined) {
       return `dispatch: this session has no id yet; Codex records it at the session's first prompt\n[exit 2]`
@@ -263,13 +273,29 @@ export async function runCodexEnvoyServer(): Promise<void> {
   process.once("SIGHUP", stop)
   await server.connect(new StdioServerTransport())
 
-  record = await waitForRecord(recordFile, stopping.signal)
+  record = await waitForRecord(recordFile, codexPid, stopping.signal)
   if (record === undefined) {
     await stopped.promise
     await server.close().catch(() => undefined)
     return
   }
   const bound = record
+  /** Whether the session code, the live view and the transcript follower have started; a `/new`
+   *  before then is applied once they have. */
+  let ready = false
+  /** Moves this server's Codex parts to the session `next` names (`/new`): the delivery's turn
+   *  state and waiting lines, the live view, and the transcript followed. The Envoy session code
+   *  follows the hand-off file the hook wrote beside the record on its own. */
+  let moveTo: (next: CodexSessionRecord) => void = () => undefined
+  // Watched from now, so a `/new` while the session starts is seen.
+  watchFile(recordFile, { interval: RECORD_POLL_MS }, () => {
+    void readCodexSessionRecord(recordFile).then((next) => {
+      if (next === undefined || !recordOfProcess(next, codexPid)) return
+      if (next.session_id === record?.session_id) return
+      record = next
+      if (ready) moveTo(next)
+    })
+  })
   identity = new SessionIdentity(bound.session_id, bound.cwd)
   const id = identity
   const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
@@ -307,9 +333,15 @@ export async function runCodexEnvoyServer(): Promise<void> {
     fetch: globalThis.fetch,
   })
   const clientInstanceID = newClientInstanceID()
+  /** The session the `codex` process runs now, as its record names it: what `codex queue` and the
+   *  inbox are addressed by, which moves at `/new` before the Envoy session code adopts the new
+   *  id from the hand-off file. */
+  const runningSession = (): string => record?.session_id ?? bound.session_id
   const codexDelivery = createCodexDelivery({
-    inboxDirectory: () => codexInboxDirectory(stateDirectory, id.id),
-    queue: (text) => queueMessage(command(), id.id, text),
+    inboxDirectory: (sessionId) => codexInboxDirectory(stateDirectory, sessionId),
+    queue: (text) =>
+      queueMessage(command(), runningSession(), text, join(stateDirectory, "codex-long-messages")),
+    sessionId: runningSession,
     taken: (item) => stream?.delivered(item.content, item.dispatchMessageId),
     warn,
   })
@@ -334,6 +366,12 @@ export async function runCodexEnvoyServer(): Promise<void> {
       },
       { warn },
     )
+  }
+
+  moveTo = (next) => {
+    void codexDelivery.rebind().catch((error: unknown) => warn(messageFor(error)))
+    stream?.rebind(next.session_id)
+    follow(next.transcript_path)
   }
 
   try {
@@ -389,17 +427,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
     runtime = { client, clientInstanceID, identity: id, session }
     follow(bound.transcript_path)
 
-    // A `/new`: the hook writes a new record. The session code follows the hand-off file to the
-    // new id; this follows the record to the new transcript, and the live view to the new id.
-    watchFile(recordFile, { interval: RECORD_POLL_MS }, () => {
-      void readCodexSessionRecord(recordFile).then((next) => {
-        if (next === undefined || next.session_id === record?.session_id) return
-        record = next
-        void codexDelivery.turnEnded().catch((error: unknown) => warn(messageFor(error)))
-        stream?.rebind(next.session_id)
-        follow(next.transcript_path)
-      })
-    })
+    ready = true
+    // A `/new` the record watcher saw while the session was starting.
+    if (record !== undefined && record.session_id !== bound.session_id) moveTo(record)
     if (isStopping) await session.shutdown()
     await stopped.promise
   } finally {

@@ -1809,6 +1809,18 @@ describe("the dispatch CLI's envoy.json", () => {
     expect(actors).toEqual(["codex-thread-3", "claude-ses", "claude-ses"]);
   });
 
+  test("a Codex shell started from an Oh My Pi shell acts as the nearer of codex and omp", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const both = { ...fromFile, CODEX_THREAD_ID: "codex-thread-4" };
+    const argv = ["message", "--issue", "DSP-1", "--body", "hello"];
+    expect((await run(argv, both, "", undefined, () => "codex")).code).toBe(0);
+    expect((await run(argv, both, "", undefined, () => "omp")).code).toBe(0);
+    const actors = requests
+      .filter((request) => request.path === "/api/v1/issues/DSP-1/messages")
+      .map((request) => (request.body as { actor: { id: string } }).actor.id);
+    expect(actors).toEqual(["codex-thread-4", "ses-1"]);
+  });
+
   test("DISPATCH_HOST=codex with no CODEX_THREAD_ID refuses naming it, sending nothing", async () => {
     const { code, stdout } = await run(["projects"], {
       ...fromFile,

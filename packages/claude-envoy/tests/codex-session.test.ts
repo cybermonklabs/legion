@@ -1,17 +1,21 @@
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
 import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel-topics"
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
+import { fitArgument } from "../src/codex/codex-cli"
 import type { CodexInboxItem } from "../src/codex/codex-inbox"
 import {
   codexHome,
   codexPluginDataDirectory,
   codexProcessId,
   codexSessionRecordFile,
+  processStarted,
   readCodexSessionRecord,
+  recordOfProcess,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
@@ -27,6 +31,7 @@ describe("the Codex session record", () => {
     const record = {
       codex_executable: "/opt/codex",
       codex_home: "/home/a/.codex",
+      codex_started: "123",
       cwd: "/work",
       session_id: "01a1",
       source: "startup",
@@ -36,6 +41,33 @@ describe("the Codex session record", () => {
     expect(await readCodexSessionRecord(file)).toEqual(record)
     await Bun.write(file, '{"session_id": ""}')
     expect(await readCodexSessionRecord(file)).toBeUndefined()
+  })
+
+  test("a record is this process's only when it names this process's start", () => {
+    const record = {
+      codex_executable: null,
+      codex_home: "/h",
+      cwd: "/w",
+      codex_started: processStarted(process.pid) ?? null,
+      session_id: "s",
+      source: null,
+      transcript_path: null,
+    }
+    expect(record.codex_started).not.toBeNull()
+    expect(recordOfProcess(record, process.pid)).toBe(true)
+    expect(recordOfProcess({ ...record, codex_started: "1" }, process.pid)).toBe(false)
+    expect(recordOfProcess({ ...record, codex_started: null }, process.pid)).toBe(true)
+  })
+
+  test("a message too long for one argument is spilled to a file the queued line names", () => {
+    expect(fitArgument("short", undefined)).toBe("short")
+    const long = "x".repeat(200_000)
+    expect(() => fitArgument(long, undefined)).toThrow("over what codex queue takes")
+    const fitted = fitArgument(long, join(directory, "spill"))
+    expect(Buffer.byteLength(fitted)).toBeLessThan(10_000)
+    const file = /the whole of it is in (.+)\.\]$/.exec(fitted)?.[1]
+    expect(file).toBeDefined()
+    expect(readFileSync(file ?? "", "utf8")).toBe(long)
   })
 
   test("the plugin's state directory follows from where Codex installed it", () => {

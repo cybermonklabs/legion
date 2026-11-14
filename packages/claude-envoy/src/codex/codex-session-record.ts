@@ -22,6 +22,10 @@ export const CodexSessionRecord = z.object({
   source: z.string().nullable(),
   /** The `codex` binary the session runs (`/proc/<pid>/exe`), or null where it cannot be read. */
   codex_executable: z.string().nullable(),
+  /** When the `codex` process started, as `/proc/<pid>/stat` counts it, or null where it cannot
+   *  be read. A record whose start is not the server's parent's was written by an earlier process
+   *  that had the same id, and names nothing the server runs under. */
+  codex_started: z.string().nullable().default(null),
 })
 export type CodexSessionRecord = z.infer<typeof CodexSessionRecord>
 
@@ -112,6 +116,24 @@ function procParent(pid: number): number | undefined {
   } catch {
     return undefined
   }
+}
+
+/** When process `pid` started, as the 22nd field of `/proc/<pid>/stat` (clock ticks since boot),
+ *  or undefined where it cannot be read. Two processes that had one id never share it. */
+export function processStarted(pid: number): string | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]
+  } catch {
+    return undefined
+  }
+}
+
+/** Whether `record` belongs to the `codex` process `pid` now runs, rather than to an earlier
+ *  process that had the same id. A record or a process whose start cannot be read is taken. */
+export function recordOfProcess(record: CodexSessionRecord, pid: number): boolean {
+  const started = processStarted(pid)
+  return record.codex_started === null || started === undefined || record.codex_started === started
 }
 
 /** The binary the `codex` process `pid` runs, so the plugin calls the same Codex the session
