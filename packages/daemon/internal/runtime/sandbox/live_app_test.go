@@ -20,10 +20,11 @@ import (
 )
 
 // implementTokens is the harness's ProvisionTokens: the implement App's installation token
-// narrowed to reading the one repository it is minted for, from the token command the script
-// hands the harness (resolveApp), so the harness holds no App key. repos are the run's
-// repositories, the first the run's own; a token names the one it is minted for, as every mint
-// of the daemon's does. left is the one record of what those mints find GitHub refuses, which
+// narrowed to reading, on the owner of the repository it is minted for, from the token command
+// the script hands the harness (resolveApp), so the harness holds no App key. repos are the run's
+// repositories, the first the run's own; a lease is cached under the one it is minted for and
+// reaches every repository of that owner's installation, as every mint of the daemon's does.
+// left is the one record of what those mints find GitHub refuses, which
 // the bundles write and the directory set reads, as the daemon's three share one
 // (appauth.LeftOut, internal/daemon's sandboxRuntime).
 type implementTokens struct {
@@ -33,8 +34,9 @@ type implementTokens struct {
 }
 
 func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (string, error) {
-	// No fallback to the owner's own write token, which the daemon's adapter has: the App is
-	// this run's own, so a refusal here is a misconfigured proof and must fail the run loudly.
+	// The reading lease and nothing else, as the daemon's own adapter mints it (internal/daemon's
+	// implementTokens): a refusal is returned as it came, since the App is this run's own and a
+	// refusal here is a misconfigured proof that must fail the run loudly.
 	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner(), []string{repo.Name()})
 	return lease.Token, err
 }
@@ -42,8 +44,8 @@ func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (str
 // Credential is the harness's GitHubCredential: the daemon's own bundle
 // (appauth.GitHubCredential) over the run's repositories, with every lease minted as the
 // implement App, the one App the harness holds — its write lease for the repository the role
-// works, a lease narrowed to that one repository for each other repository of its owner, and a
-// read-only lease per other owner over the repositories it serves. Every role is rendered as the
+// works, a read-only lease cached under each other repository of its owner, and a read-only
+// lease per other owner, each reaching its owner's whole installation. Every role is rendered as the
 // implementer's, so Stage 4a proves the files reach each role, follow the lease and pick the
 // directory a command names, not which App a role writes as; Stage 4b's daemon hands each role
 // its own.
