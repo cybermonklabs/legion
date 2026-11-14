@@ -630,21 +630,22 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 //   - an issue of this project that no tree of this daemon runs, through a blocked-by link,
 //     which is a blocker like one in another project and waits by design for the same reason
 //     (the architect's ruling on cybermonklabs/legion#3715). The controller still sees that
-//     wait: the waiter stands in the state's `admission.blocked` and in the `blocked` list of
-//     the controller's tick notice, which the daily report reads.
+//     wait: the waiter stands in the state's `admission.waiting`, its `waitingLine` kind
+//     `waiting_on_issue`, in `admission.blocked`, and in the `blocked` list of the controller's
+//     tick notice, which the daily report reads.
+//
+// An issue standing in held — held from a phase up to its review, which gave its slot back
+// because it waits on work outside its tree as above — waits on that work like the three above,
+// and is answered true. What its tree can do (the architect's retry_or_escalate) ends the hold,
+// but the issue still waits on its blocker and still holds no slot, so a stall notice would name
+// a tree whose own act cannot move it. The hold reaches its architect and the controller through
+// its own held notice, and this measure reads the tree again once the blocker closes.
 //
 // A children-first wait on an open child the daemon has not released — a child the architect
 // filed and left unreleased — is none of these: releasing that child is the tree's own work,
 // which nothing but that architect does. Such a waiter is answered false here and read by
 // waitsByDesign as every other wait of the daemon's is, so a project that fails every term of
 // lineCanMove names its tree (the architect's ruling on cybermonklabs/legion#3715).
-//
-// An issue standing in held — held from a phase up to its review, which gave its slot back
-// because it waits on work outside its tree as above — is such a waiter too. What its tree can do
-// (the architect's retry_or_escalate) ends the hold, but the issue still waits on its blocker and
-// still holds no slot, so a stall notice would name a tree whose own act cannot move it. The hold
-// reaches its architect and the controller through its own held notice, and this measure reads
-// the tree again once the blocker closes.
 func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 	entry, stands := h.line[issue.Key]
 	if !stands || entry.Kind != record.LineWaitingOnIssue || len(entry.Waits) == 0 {
@@ -695,7 +696,9 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //     when a row names it. The table carries every project's rows while the cap counts this
 //     project's alone (ownSlots), and the walk below is over this project's own records, so a
 //     row of another project matches no issue here and says nothing about this line. A holder is
-//     asked exactly what a member is asked, by the one rule, and the cap's own hold is simply one
+//     asked the ladder a member is asked (waitsByDesign); it holds a row, so it is never a
+//     waiting_on_issue entry and waitsOnWorkOutsideItsTree never answers true of it. The cap's
+//     own hold is simply one
 //     a holder never carries: it is an entry of the line that holds no slot
 //     (record.LineEntry.Holds);
 //  3. the free-slot term: some entry of the line waits on no other issue (blockers.LineWaitsOn,

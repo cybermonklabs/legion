@@ -1263,8 +1263,10 @@ func TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped(t *testing.T) {
 	// The waiter held from implementing, on the same link to another project: a held issue up to
 	// its review holds its slot (record.KeepsSlot reads the phase it was held from), so it gives
 	// that slot back for the wait like any started issue, and the wait on work outside its tree
-	// leaves its tree unnamed whatever the hold says (the held sentence of
-	// everyIssueWaitsByDesign's doc).
+	// leaves its tree unnamed whatever the hold says (the held paragraph of
+	// lineHolds.waitsOnWorkOutsideItsTree's doc). With waitsOnWorkOutsideItsTree false for a held
+	// issue, the first pass tells the controller of this tree; with blockers.waitsOf no longer
+	// releasing a held issue, waitPasses fails on its premise.
 	t.Run("held-waiter", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 4)
@@ -1320,11 +1322,10 @@ func waitPasses(t *testing.T, pool *pgxpool.Pool, admission *Admission, waiters 
 // the wait leaves the tree to the stall measure exactly as any other wait of the daemon's does:
 // told once the project's line can no longer move.
 //
-// What fails without the rule: at 7b31b601 every wait of a started issue on another issue was
-// silenced whatever the line did, so the unreleased child's tree was told to nobody and
-// unreleased-child fails there. Before that commit no such wait was silenced where the line
-// could not move, and released-child fails there, as it does under a rule that silences no
-// children-first wait at all.
+// What fails without the rule: with waitsOnWorkOutsideItsTree true for every
+// record.LineWaitingOnIssue entry whatever its children, the unreleased child's tree is told to
+// nobody and unreleased-child fails; with it false for every children-first wait, released-child
+// fails.
 //
 // Each project is the root alone at admitted under a design gate that has opened, with its
 // architect idle, under a cap of four, measured over three passes past the bound.
@@ -1388,9 +1389,9 @@ func TestAWaitOnAChildIsAWaitByDesignOnlyOnceTheChildIsReleased(t *testing.T) {
 // line entry is such a root, can still move, and its waiting tree is told to nobody on the pass
 // that opens the carried root's tree.
 //
-// What fails without the rule: at 7b31b601 the free-slot term returned false at a full cap
-// before it read the line, so the project read as unable to move on the very pass that opens
-// the carried root's tree, and the controller was told that LEGION-930's tree had stopped.
+// What fails without the rule: a free-slot term that answers false at a full cap before it
+// reads the line reads the project as unable to move on the very pass that opens the carried
+// root's tree, and the controller is told that LEGION-930's tree has stopped.
 func TestAFullCapWithAHandedOverRootPastItsReviewStillMoves(t *testing.T) {
 	const (
 		awaiting = "LEGION-930"
