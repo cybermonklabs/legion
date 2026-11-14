@@ -514,16 +514,18 @@ func ghSentFiles(parsed ghArgs) []leakguard.GhFile {
 // a repository, an owner, a team or an issue by URL (ghOptionKinds). So does the command's own
 // repository when gh resolves it, because no argument names it and the leaf reads one, or
 // whatever names it for a leaf that reads every remote (fromOwnRepository): GH_REPO for a leaf
-// that reads it, gh api's :owner and {repo} placeholders among them, and otherwise every
-// github.com repository the working directory's git remotes name (remotes), read as gh reads
-// them; a command naming no owner at all counts those too. They must all name one owner; two are
-// an error. The target's repository is the one repository they all name, which is none where a
-// selector names an owner alone — `orgs/<owner>/`, an owner:/org:/user: qualifier, an `<owner>`
-// argument, a team, a project, an owner option — since such a command reaches whatever else of
-// that owner's gh resolves. A GraphQL query naming its repository otherwise, by a node id or in
-// the query text, names none gh could resolve. GH_HOST naming another host than github.com, where
-// gh would send no token of the bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in place
-// of any directory's token, are errors.
+// that reads it, gh api's :owner and {repo} placeholders among them, and otherwise the working
+// directory's git remotes (remotes), read as gh reads them: origin's fetch URL alone where the
+// leaf honours gh's default marker (honoursDefaultMarker) and `remote.origin.gh-resolved base`
+// makes origin's repository gh's own, and every github.com repository they name otherwise
+// (fromWorkingDirectory); a command naming no owner at all counts those too. They must all name
+// one owner; two are an error. The target's repository is the one repository they all name,
+// which is none where a selector names an owner alone — `orgs/<owner>/`, an owner:/org:/user:
+// qualifier, an `<owner>` argument, a team, a project, an owner option — since such a command
+// reaches whatever else of that owner's gh resolves. A GraphQL query naming its repository
+// otherwise, by a node id or in the query text, names none gh could resolve. GH_HOST naming
+// another host than github.com, where gh would send no token of the bundle's, and a GH_TOKEN or
+// GITHUB_TOKEN, which gh sends in place of any directory's token, are errors.
 func ghTargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]ghRemote, error)) (ghTarget, error) {
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
 		return ghTarget{}, fmt.Errorf("GH_HOST is %q, another host than github.com, so it sends no token; unset GH_HOST", host)
@@ -616,10 +618,12 @@ func cannotPlace(arg, why string, api bool) error {
 }
 
 // ghArgs is a leaf's arguments as pflag reads them: its positional arguments in order, every
-// value given each option, by long name, and whether gh only prints the leaf's help.
+// value given each option, by long name, the last value given each boolean option but --help, by
+// long name, and whether gh only prints the leaf's help.
 type ghArgs struct {
 	positionals []string
 	values      map[string][]string
+	booleans    map[string]bool
 	help        bool
 }
 
@@ -632,7 +636,7 @@ type ghArgs struct {
 // the rest on: so the first argument after `--` is positional when none came before it.
 func (c *ghCommand) parse(args []string) (ghArgs, error) {
 	api, leaf := c.isAPI(), c.quoted()
-	parsed := ghArgs{values: map[string][]string{}}
+	parsed := ghArgs{values: map[string][]string{}, booleans: map[string]bool{}}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -720,8 +724,9 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 	return parsed, nil
 }
 
-// set records value given the option name: --help's as a boolean, any other's taking a value in
-// the order given.
+// set records value given the option name: --help's as a boolean; another boolean's as pflag
+// reads it (strconv.ParseBool), the last given deciding, and false for a value that is no boolean,
+// which gh refuses itself; any other's taking a value in the order given.
 func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) error {
 	switch {
 	case name == "help":
@@ -732,6 +737,8 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 		p.help = help
 	case flag.value:
 		p.values[name] = append(p.values[name], value)
+	default:
+		p.booleans[name], _ = strconv.ParseBool(value)
 	}
 	return nil
 }

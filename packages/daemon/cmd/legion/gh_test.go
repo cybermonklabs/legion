@@ -342,13 +342,13 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// on the working directory's: every github.com remote and gh-resolved setting names an
 		// owner, and they must name one.
 		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone), owner: "acme"},
-		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "origin", resolved: "base"}), owner: "acme"},
+		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved base")), owner: "acme"},
 		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"repo", "view"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"api", "repos/{owner}/{repo}"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://github.com/octocat/hello"}), owner: "octocat"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}), err: `more than one owner, acme (the working directory's remote "origin" (https://github.com/Acme/widgets.git)) and sjawhar (the working directory's remote "upstream" (git@github.com:sjawhar/legion.git))`},
-		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "origin", resolved: "sjawhar/legion"}), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion)"},
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved sjawhar/legion")), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion)"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "fork", url: "ssh://git@ssh.github.com:443/Sjawhar/legion"}), err: "more than one owner"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: "is an ssh remote whose host gh may read as github.com"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "mirror", url: "https://gitlab.example.com/sjawhar/legion"}, ghRemote{name: "local", url: "/srv/legion"}), owner: "acme"},
@@ -665,8 +665,8 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "sjawhar/Legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "repos/{owner}/{repo}/pulls"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone), owner: "acme", repo: "widgets"},
-		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone, ghRemote{name: "origin", resolved: "base"}), owner: "acme", repo: "widgets"},
-		{argv: []string{"pr", "list"}, remotes: remotes(ghRemote{name: "origin", resolved: "acme/widgets"}), owner: "acme", repo: "widgets"},
+		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved base")), owner: "acme", repo: "widgets"},
+		{argv: []string{"pr", "list"}, remotes: remotes(ghMarkerLine("remote.origin.gh-resolved acme/widgets")), owner: "acme", repo: "widgets"},
 		// The same repository named twice is still the one: the leaf's own argument beside the
 		// working directory's remote, and an option's URL beside -R.
 		{argv: []string{"pr", "view", "1", "-R", "acme/widgets"}, remotes: remotes(acmeClone), owner: "acme", repo: "widgets"},
@@ -750,10 +750,10 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 	remotes, err := readGitRemotes()
 	want := []ghRemote{
 		{name: "origin", url: "https://github.com/acme/widgets.git"},
-		{name: "origin", url: "https://github.com/acme/pushed.git"},
+		{name: "origin", url: "https://github.com/acme/pushed.git", push: true},
 		{name: "upstream", url: "git@github.com:sjawhar/legion"},
-		{name: "upstream", url: "git@github.com:sjawhar/legion"},
-		{name: "origin", resolved: "base"},
+		{name: "upstream", url: "git@github.com:sjawhar/legion", push: true},
+		{name: "origin", marker: true, key: "remote.origin.gh-resolved", resolved: "base", valued: true},
 	}
 	if err != nil || !slices.Equal(remotes, want) {
 		t.Errorf("readGitRemotes = %+v, %v; want %+v", remotes, err, want)

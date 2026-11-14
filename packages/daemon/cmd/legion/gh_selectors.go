@@ -192,13 +192,14 @@ func (s *selectors) fromCommand(cmd *ghCommand, parsed ghArgs) error {
 // fromOwnRepository collects the owner of the repository gh takes as the command's own when no
 // argument names it and the leaf reads one (readsOwnRepository), and, for a command naming no
 // owner at all, wherever gh might: GH_REPO for a leaf that reads it, gh api's base placeholders
-// among them, and otherwise the working directory's git remotes (fromWorkingDirectory). A leaf
-// whose quirk reads every remote counts them whatever names its repository. So an option or a
-// second repository naming one owner while gh acts on another's repository names two owners, and
-// is refused.
+// among them, and otherwise the working directory's git remotes (fromWorkingDirectory): origin's
+// alone where the leaf honours gh's default marker (honoursDefaultMarker) and the marker makes
+// origin's repository gh's own, every one otherwise. A leaf whose quirk reads every remote reads
+// them whatever names its repository. So an option or a second repository naming one owner while
+// gh acts on another's repository names two owners, and is refused.
 func (s *selectors) fromOwnRepository(cmd *ghCommand, parsed ghArgs, env map[string]string, remotes func() ([]ghRemote, error)) error {
 	if quirkOf(cmd.path).readsAllRemotes {
-		return s.fromWorkingDirectory(remotes)
+		return s.fromWorkingDirectory(remotes, cmd.honoursDefaultMarker(parsed))
 	}
 	reads := !s.targeted && cmd.readsOwnRepository(len(parsed.positionals))
 	if s.api {
@@ -210,7 +211,7 @@ func (s *selectors) fromOwnRepository(cmd *ghCommand, parsed ghArgs, env map[str
 	if repo := env["GH_REPO"]; repo != "" && (cmd.readsGHRepo() || (s.api && s.readsBase)) {
 		return s.repository(repo, "GH_REPO "+repo)
 	}
-	return s.fromWorkingDirectory(remotes)
+	return s.fromWorkingDirectory(remotes, cmd.honoursDefaultMarker(parsed))
 }
 
 // fromAPI collects the owners gh api's endpoint and fields name: the endpoint's (endpoint); a
@@ -469,17 +470,33 @@ func checkedOwner(owner, what string, api bool) (string, error) {
 	return lower, nil
 }
 
-// ghRemote is one setting of the working directory's git remotes that gh reads to find the
-// repository of a command naming none: a remote's fetch or push URL as `git remote -v` prints it,
-// or its gh-resolved setting (`gh repo set-default`'s), "base" for the remote's own repository or
-// [HOST/]OWNER/REPO for another.
+// ghRemote is one line of the working directory's git remotes that gh reads to find the
+// repository of a command naming none: a URL line, a remote's fetch or push (push) URL as `git
+// remote -v` prints it, or a marker line (marker), a gh-resolved setting, gh's default marker
+// (`gh repo set-default`'s), as `git config --get-regexp` prints it: its key, its value
+// (resolved), "base" for the remote's own repository or [HOST/]OWNER/REPO for another, and whether
+// git printed a value at all (valued), which it does not for a key set with none. name is the
+// remote's, for a marker line its key without `remote.` and `.gh-resolved`.
 type ghRemote struct {
-	name, url, resolved string
+	name          string
+	url           string
+	push          bool
+	marker        bool
+	key, resolved string
+	valued        bool
 }
 
-// what is the remote setting as a refusal names it.
+// ghMarkerLine is the marker line of one line `git config --get-regexp` prints, `<key> <value>`,
+// or `<key>` alone for a key set with no value.
+func ghMarkerLine(line string) ghRemote {
+	key, value, valued := strings.Cut(line, " ")
+	name := strings.TrimSuffix(strings.TrimPrefix(key, "remote."), ".gh-resolved")
+	return ghRemote{name: name, marker: true, key: key, resolved: value, valued: valued}
+}
+
+// what is the remote line as a refusal names it.
 func (r ghRemote) what() string {
-	if r.resolved != "" {
+	if r.marker {
 		return fmt.Sprintf("remote.%s.gh-resolved %s", r.name, r.resolved)
 	}
 	return fmt.Sprintf("remote %q (%s)", r.name, r.url)
@@ -519,17 +536,17 @@ func ghParseGitURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// repository is the lowercased owner and the name of the github.com repository the remote
-// setting names, read as gh reads it (ghParseGitURL), "" for one naming none gh reads: a remote
-// with no host (a local path) or on another host, and a gh-resolved "base", whose remote's own
-// URL is read beside it. The name is carried on as the setting spells it, `.git` and all, which
-// the one gh directory lookup normalizes (repositoryGHConfigDir). why says why a setting is one
-// this cannot read: a URL gh's parser refuses, an ssh remote on another host, which gh may read
-// as an alias of github.com from ssh's configuration, and a github.com one naming no OWNER/REPO
-// whose owner is a GitHub login.
+// repository is the lowercased owner and the name of the github.com repository the remote line
+// names, read as gh reads it (ghParseGitURL), "" for one naming none gh reads: a remote with no
+// host (a local path) or on another host, and a marker line with no value, an empty one or
+// "base", whose remote's own URL is read beside it. The name is carried on as the line spells it,
+// `.git` and all, which the one gh directory lookup normalizes (repositoryGHConfigDir). why says
+// why a line is one this cannot read: a URL gh's parser refuses, an ssh remote on another host,
+// which gh may read as an alias of github.com from ssh's configuration, and a github.com one
+// naming no OWNER/REPO whose owner is a GitHub login.
 func (r ghRemote) repository() (owner, repo, why string) {
-	if r.resolved != "" {
-		if r.resolved == "base" {
+	if r.marker {
+		if r.resolved == "" || r.resolved == "base" {
 			return "", "", ""
 		}
 		owner, repo, err := repositoryTarget(r.resolved, "", false)
@@ -556,16 +573,69 @@ func (r ghRemote) repository() (owner, repo, why string) {
 	return owner, parts[1], ""
 }
 
-// fromWorkingDirectory collects the owner and the repository of every github.com repository the
-// working directory's git remotes name (remotes): gh takes the repository of a command it
-// resolves none for from those remotes, an `upstream` before an `origin` and a gh-resolved one
-// before either, so every one counts, and a workspace whose remotes name two owners names two —
-// as a workspace whose remotes name two repositories of one owner names two repositories, and so
-// no one repository. Two settings spelling the one repository differently, a URL's `repo.git`
-// beside a gh-resolved `owner/repo`, are two names here too, which leaves the command the
-// owner's own directory: the wider of the two tokens, and never another repository's. A remote
-// this cannot read is refused; a working directory that is no git repository names none.
-func (s *selectors) fromWorkingDirectory(remotes func() ([]ghRemote, error)) error {
+// isPlainGitHubURL says whether the URL line names a github.com repository gh reads with nothing
+// the wrapper cannot read: gh's parser reads it (ghParseGitURL) as no ssh URL, whose host gh
+// rewrites through ssh's own configuration (go-gh pkg/ssh/ssh.go), on a host gh's
+// normalizeHostname (cli/cli internal/ghrepo/repo.go: a leading lower-case `www.` stripped, then
+// lower-cased) makes github.com, the one host context/remote.go's FilterByHosts keeps, and it
+// names an OWNER/REPO whose owner is a GitHub login (repository).
+func (r ghRemote) isPlainGitHubURL() bool {
+	u, err := ghParseGitURL(r.url)
+	if err != nil || u.Scheme == "ssh" || strings.ToLower(strings.TrimPrefix(u.Hostname(), "www.")) != "github.com" {
+		return false
+	}
+	owner, _, _ := r.repository()
+	return owner != ""
+}
+
+// readsAsMarker says whether the marker line counts among the markers gh reads (cli/cli
+// git/client.go, populateResolvedRemotes): git printed a value, and the key has a second
+// `.`-separated part, gh's name of its remote (`remote.origin.fork.gh-resolved` is origin's). An
+// empty value only clears its remote's marker, which counts on origin, whose `base` it may clear,
+// and on no other remote, where a marker it could clear is a line of its own.
+func (r ghRemote) readsAsMarker() bool {
+	_, rest, named := strings.Cut(r.key, ".")
+	remote, _, _ := strings.Cut(rest, ".")
+	return r.valued && named && (r.resolved != "" || remote == "origin")
+}
+
+// markedOrigin is the index in remotes of origin's fetch line, and whether gh's default marker
+// makes that line's repository the one gh resolves: of the marker lines gh reads as one
+// (readsAsMarker), one is left, `remote.origin.gh-resolved base`, and origin has one fetch line,
+// whose URL gh keeps as a github.com remote with nothing the wrapper cannot read
+// (isPlainGitHubURL). gh then takes origin, the first remote marked "base" (cli/cli
+// context/context.go, ResolvedRemotes.BaseRepo), and its repository from that fetch URL
+// (context/remote.go, TranslateRemotes), whatever origin's push URLs and the other remotes name.
+func markedOrigin(remotes []ghRemote) (fetch int, ok bool) {
+	var marker ghRemote
+	markers, fetches := 0, 0
+	for i, remote := range remotes {
+		switch {
+		case remote.marker && remote.readsAsMarker():
+			markers++
+			marker = remote
+		case !remote.marker && !remote.push && remote.name == "origin":
+			fetches++
+			fetch = i
+		}
+	}
+	return fetch, markers == 1 && marker.key == "remote.origin.gh-resolved" && marker.resolved == "base" &&
+		fetches == 1 && remotes[fetch].isPlainGitHubURL()
+}
+
+// fromWorkingDirectory collects the owner and the repository of the github.com repositories the
+// working directory's git remotes name (remotes), from which gh takes the repository of a command
+// it resolves none for. Every line is read first, and one this cannot read is refused; a working
+// directory that is no git repository names none. Where the command honours gh's default marker
+// (honoursMarker) and that marker makes origin's repository gh's own (markedOrigin), origin's
+// fetch line alone counts. Otherwise every line counts, since gh may act on any: the first of its
+// sorted remotes, an `upstream` before an `origin`, the repository a marker names, or, for repo
+// set-default, every remote's network. So a workspace whose remotes name two owners names two —
+// as one whose remotes name two repositories of one owner names two repositories, and so no one
+// repository. Two lines spelling the one repository differently, a URL's `repo.git` beside a
+// gh-resolved `owner/repo`, are two names here too, which leaves the command the owner's own
+// directory: the wider of the two tokens, and never another repository's.
+func (s *selectors) fromWorkingDirectory(remotes func() ([]ghRemote, error), honoursMarker bool) error {
 	advice := "name the repository with -R <owner>/<repo>"
 	if s.api {
 		advice = "name it in the endpoint, repos/<owner>/<repo>/…"
@@ -575,11 +645,17 @@ func (s *selectors) fromWorkingDirectory(remotes func() ([]ghRemote, error)) err
 		return fmt.Errorf("cannot tell which repository the command targets: the working directory's git remotes, from which gh takes the command's own repository, cannot be read (%v), so it sends no token; %s", err, advice)
 	}
 	for _, remote := range listed {
-		owner, repo, why := remote.repository()
-		if why != "" {
+		if _, _, why := remote.repository(); why != "" {
 			return fmt.Errorf("cannot tell which repository the command targets: the working directory's %s %s, so it sends no token; %s", remote.what(), why, advice)
 		}
-		if owner != "" {
+	}
+	if honoursMarker {
+		if fetch, ok := markedOrigin(listed); ok {
+			listed = listed[fetch : fetch+1]
+		}
+	}
+	for _, remote := range listed {
+		if owner, repo, _ := remote.repository(); owner != "" {
 			s.add(owner, "the working directory's "+remote.what())
 			s.repos[ghconfig.RepositoryName(repo)] = true
 		}
@@ -600,12 +676,13 @@ var gitRemoteLine = regexp.MustCompile(`^([^\t]+)\t([^\t\n\f\r ]+) \((fetch|push
 var ghRemoteLine = regexp.MustCompile(`(.+)\s+(.+)\s+\((push|fetch)\)`)
 
 // readGitRemotes is the working directory's git remotes as gh reads them, with git itself: every
-// fetch and push URL `git remote -v` prints, a partial clone's fetch line included (git prints the
-// remote's filter after it, `(fetch) [blob:none]`), and every remote's gh-resolved setting; none
-// for a directory that is no git repository, or where no git runs, since gh then reads none either.
-// A line is read only when it has git's shape (gitRemoteLine, a filter on a fetch line alone) and
-// gh's own reading of it (ghRemoteLine) names the same remote, URL and kind; any other line is
-// refused, since gh could act on a repository this reading never counted.
+// fetch and push URL `git remote -v` prints, each with its kind, a partial clone's fetch line
+// included (git prints the remote's filter after it, `(fetch) [blob:none]`), and every gh-resolved
+// line `git config --get-regexp` prints (ghMarkerLine); none for a directory that is no git
+// repository, or where no git runs, since gh then reads none either. A URL line is read only when
+// it has git's shape (gitRemoteLine, a filter on a fetch line alone) and gh's own reading of it
+// (ghRemoteLine) names the same remote, URL and kind; any other line is refused, since gh could
+// act on a repository this reading never counted.
 func readGitRemotes() ([]ghRemote, error) {
 	lines, err := gitLines("remote", "-v")
 	if err != nil {
@@ -619,7 +696,7 @@ func readGitRemotes() ([]ghRemote, error) {
 			strings.TrimSpace(gh[1]) != git[1] || strings.TrimSpace(gh[2]) != git[2] || gh[3] != git[3] {
 			return nil, fmt.Errorf("git remote -v printed %q", line)
 		}
-		remotes = append(remotes, ghRemote{name: git[1], url: git[2]})
+		remotes = append(remotes, ghRemote{name: git[1], url: git[2], push: git[3] == "push"})
 	}
 	if lines == nil {
 		return nil, nil
@@ -629,9 +706,7 @@ func readGitRemotes() ([]ghRemote, error) {
 		return nil, err
 	}
 	for _, line := range resolved {
-		key, value, _ := strings.Cut(line, " ")
-		name := strings.TrimSuffix(strings.TrimPrefix(key, "remote."), ".gh-resolved")
-		remotes = append(remotes, ghRemote{name: name, resolved: value})
+		remotes = append(remotes, ghMarkerLine(line))
 	}
 	return remotes, nil
 }
