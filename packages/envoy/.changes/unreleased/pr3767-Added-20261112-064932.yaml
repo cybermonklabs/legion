@@ -17,8 +17,11 @@ body: |-
   open issues by lifecycle status, how many are claimed, their open asks, what closed in the last
   seven days and when anything under it last moved — and the two faults: the work in flight that
   advances no priority, counted by project, and the work that advances one and stands in
-  `backlog` or `icebox`, counted by priority, each carrying its newest 50 rows. `?project=`,
-  repeated, narrows the counts and the lists; `?summary=true` answers the two counts alone.
+  `backlog` or `icebox`, counted by priority, each carrying its newest 50 rows. Each row carries
+  `advances` as every issue read does, one `{id, inherited}` entry per live priority the issue
+  advances, own or inherited from an issue above it; a row of the first fault carries none.
+  `?project=`, repeated, narrows the counts and the lists; `?summary=true` answers the two counts
+  alone.
   Each of the three writes appends one `priority.updated` event (`{id, change}`, `change` being
   `created`, `updated` or `deleted`) in its own transaction, owned by nothing: it wakes nobody,
   the outbox publishes it on no subject, and `/ws/live` carries it to every open page, which

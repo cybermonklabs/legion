@@ -692,6 +692,12 @@ func TestTheListingAnswersTheFaultLists(t *testing.T) {
 			t.Fatalf("%s says %s was moved at %v by %v, where the parked list says %v by %v",
 				parkedListing, fault.Key, row.MovedAt, row.MovedBy, fault.MovedAt, fault.MovedBy)
 		}
+		if got, want := advanceEntries(fault.Advances), advanceEntries(row.Advances); !slices.Equal(got, want) {
+			t.Fatalf("the parked list says %s advances %v, where %s answers %v", fault.Key, got, parkedListing, want)
+		}
+	}
+	if got := advanceEntries(parkedRow(t, body, parkedChild).Advances); !slices.Equal(got, []string{"park-the-bus inherited"}) {
+		t.Fatalf("the parked list says %s advances %v, want park-the-bus inherited from its parent", parkedChild, got)
 	}
 	if row := rows[parkedChild]; row.MovedBy == nil || *row.MovedBy != (model.Actor{Kind: "user", ID: "bob"}) {
 		t.Fatalf("%s says %s was moved by %v, want bob, so the comparison above is of a recorded move", parkedListing, parkedChild, row.MovedBy)

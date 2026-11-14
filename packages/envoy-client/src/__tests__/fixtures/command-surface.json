@@ -1185,7 +1185,7 @@
         "- DSP-7 [in_progress] Rotate the broker keys · DSP · person@example.com · changed 2026-01-02T03:04:05Z",
         "",
         "Priority work parked (1: ship-the-daemon 1):",
-        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon · parked 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
+        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon (inherited) · parked 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
       ]
     },
     {

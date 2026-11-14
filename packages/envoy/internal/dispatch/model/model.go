@@ -377,9 +377,10 @@ type PriorityWorkParked struct {
 // PriorityIssue is one row of either fault list: the issue, its project, its status, who holds it
 // and when it last changed, which is how long it has stood as it is.
 //
-// Priorities are the live priorities the issue advances, its own relations and the inherited ones
-// together, in id order; it is empty on a row of the first fault, which is the list of the work
-// that advances none.
+// Advances are the live priorities the issue advances, its own relations and the inherited ones,
+// as the entries every issue read and listing row answers (IssueAdvance): one per priority, in
+// id order, each saying whether the issue states it or inherits it from an issue above it. It is
+// empty on a row of the first fault, which is the list of the work that advances none.
 //
 // MovedAt and MovedBy are the second fault's two cells: when the issue was moved into `backlog`
 // or `icebox` and who moved it, read from the newest `issue.updated` event whose `changed` names
@@ -388,16 +389,16 @@ type PriorityWorkParked struct {
 // the fault is the work standing there and not the record of how it arrived. No reason is
 // answered: a status change records none (dispatch://INFRA-2934).
 type PriorityIssue struct {
-	Key        string      `json:"key"`
-	Title      string      `json:"title"`
-	Project    string      `json:"project"`
-	Status     string      `json:"status"`
-	Assignee   *string     `json:"assignee"`
-	Claim      *IssueClaim `json:"claim"`
-	ChangedAt  time.Time   `json:"changed_at"`
-	Priorities []string    `json:"priorities"`
-	MovedAt    *time.Time  `json:"moved_at"`
-	MovedBy    *Actor      `json:"moved_by"`
+	Key       string         `json:"key"`
+	Title     string         `json:"title"`
+	Project   string         `json:"project"`
+	Status    string         `json:"status"`
+	Assignee  *string        `json:"assignee"`
+	Claim     *IssueClaim    `json:"claim"`
+	ChangedAt time.Time      `json:"changed_at"`
+	Advances  []IssueAdvance `json:"advances"`
+	MovedAt   *time.Time     `json:"moved_at"`
+	MovedBy   *Actor         `json:"moved_by"`
 }
 
 // RepoProject assigns an external repository to a native Dispatch project. Default marks the one

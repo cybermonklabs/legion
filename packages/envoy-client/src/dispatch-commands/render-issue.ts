@@ -38,6 +38,13 @@ function componentsLine(components: IssueComponents): string {
   }
 }
 
+/** One `advances` entry as every printed read names it: the priority, marked own where the
+ *  issue states it and inherited where an issue above it does. The issue read's Advances line
+ *  and each row of `dispatch priorities` print it alike. */
+export function advanceText(advance: IssueAdvance): string {
+  return `${advance.id} (${advance.inherited ? "inherited" : "own"})`;
+}
+
 /** The Advances line of an issue read: each priority the issue serves, marked own where the
  *  issue states it and inherited where an issue above it does. A Dispatch server from before
  *  priorities sends no `advances`, and its answer is unknown, never none: none means the issue
@@ -48,9 +55,7 @@ function advancesLine(issue: { readonly advances?: readonly IssueAdvance[] | nul
   }
   const advances = issue.advances ?? [];
   if (advances.length === 0) return "Advances: no priority";
-  return `Advances: ${advances
-    .map((advance) => `${advance.id} (${advance.inherited ? "inherited" : "own"})`)
-    .join(", ")}`;
+  return `Advances: ${advances.map(advanceText).join(", ")}`;
 }
 
 /**

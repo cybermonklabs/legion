@@ -3,7 +3,8 @@ body: |-
   `dispatch priorities` lists every live priority in rank order with the work under it — its open
   issues by status, how many are claimed, their open asks, what closed in the last seven days and
   when anything under it last moved — then the two faults: the work in flight under no priority,
-  by project, and the work under a priority parked in backlog or icebox, by priority.
+  by project, and the work under a priority parked in backlog or icebox, by priority, each parked
+  row naming the priorities it advances, each marked own or inherited as `dispatch read` marks it.
   `--project`, repeated, narrows the counts and the lists to those projects. A deployment that
   has written no priority prints the server's sentence saying so and exits 0.
   `dispatch issue --advance <id>` and `dispatch issue-update --advance <id>` (repeated, with

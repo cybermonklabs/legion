@@ -189,8 +189,9 @@ func TestPrioritiesRead(t *testing.T) {
 	drawn := map[string]model.PriorityIssue{}
 	for _, issue := range body.WorkUnderNoPriority.Issues {
 		drawn[issue.Key] = issue
-		if len(issue.Priorities) != 0 {
-			t.Fatalf("%s is listed as work under no priority and names %v", issue.Key, issue.Priorities)
+		if issue.Advances == nil || len(issue.Advances) != 0 {
+			t.Fatalf("%s is listed as work under no priority and advances %v, want the empty list",
+				issue.Key, advanceEntries(issue.Advances))
 		}
 	}
 	for status, key := range unplaced {
@@ -213,10 +214,13 @@ func TestPrioritiesRead(t *testing.T) {
 		t.Fatalf("the parked priority work draws %d rows, want %d",
 			len(body.PriorityWorkParked.Issues), priorityFaultRows)
 	}
+	// Each parked row carries its `advances` entries as the issue read answers them: own or
+	// inherited from an issue above it.
 	parked := parkedRow(t, body, parkedChild)
-	if parked.Status != "backlog" || !slices.Equal(parked.Priorities, []string{"park-the-bus"}) {
-		t.Fatalf("%s is parked in %q under %v, want backlog under park-the-bus, which its parent states",
-			parkedChild, parked.Status, parked.Priorities)
+	if got := advanceEntries(parked.Advances); parked.Status != "backlog" ||
+		!slices.Equal(got, []string{"park-the-bus inherited"}) {
+		t.Fatalf("%s is parked in %q advancing %v, want backlog under park-the-bus inherited, which its parent states",
+			parkedChild, parked.Status, got)
 	}
 	if parked.MovedAt == nil || parked.MovedBy == nil || *parked.MovedBy != (model.Actor{Kind: "user", ID: "bob"}) {
 		t.Fatalf("%s was moved at %v by %v, want the moment and the person the events record",
@@ -230,9 +234,9 @@ func TestPrioritiesRead(t *testing.T) {
 	// Both arms of one issue: its own relation and the one it inherits, named together on its
 	// row and counted under each priority.
 	together := parkedRow(t, body, bothArms)
-	if !slices.Equal(together.Priorities, []string{"park-the-bus", "two-at-once"}) {
-		t.Fatalf("%s is parked under %v, want the priority it states and the one it inherits",
-			bothArms, together.Priorities)
+	if got := advanceEntries(together.Advances); !slices.Equal(got, []string{"park-the-bus inherited", "two-at-once own"}) {
+		t.Fatalf("%s is parked under %v, want the priority it inherits and the one it states, each marked",
+			bothArms, got)
 	}
 	// The two parked issues both advance park-the-bus — one through its parent, one through
 	// the parent it shares with its own relation — and the bulk rows state it themselves.
@@ -424,8 +428,13 @@ func assertNoReason(t *testing.T, handler http.Handler) {
 			if field == "reason" {
 				t.Fatalf("a parked row carries a reason: %v", issue)
 			}
+			// The priorities a row advances are its `advances` entries alone, never a bare
+			// list of ids beside them.
+			if field == "priorities" {
+				t.Fatalf("a parked row carries a bare priorities list: %v", issue)
+			}
 		}
-		for _, field := range []string{"moved_at", "moved_by", "priorities", "changed_at"} {
+		for _, field := range []string{"moved_at", "moved_by", "advances", "changed_at"} {
 			if _, carried := issue[field]; !carried {
 				t.Fatalf("a parked row carries no %s: %v", field, issue)
 			}

@@ -1,7 +1,7 @@
 import type { Priorities, PriorityIssue, PriorityWork } from "@legion/contracts";
 import { actorLabel, ISSUE_STATUSES } from "@legion/contracts";
 import { type CommandContext, type DispatchToolResult, optionalStringArray } from "./context";
-import { claimText, holdsSession, type LiveAgents, liveAgents } from "./render-issue";
+import { advanceText, claimText, holdsSession, type LiveAgents, liveAgents } from "./render-issue";
 
 /** The open work under one priority, as `dispatch priorities` prints it under the priority's
  *  own line. The server answers every lifecycle status and 0 where none stands there, so only
@@ -28,10 +28,10 @@ function priorityWorkLine(work: PriorityWork): string {
 }
 
 /** One row of either fault list: where the issue stands, who holds it, and the cell only its
- *  own list fills — the priorities a parked issue advances and when it was parked, which the
- *  work under no priority has neither of. */
+ *  own list fills — the priorities a parked issue advances, each marked own or inherited as the
+ *  issue read marks it, and when it was parked, which the work under no priority has neither of. */
 function priorityIssueLine(issue: PriorityIssue, agents: LiveAgents | undefined): string {
-  const priorities = issue.priorities ?? [];
+  const advances = issue.advances ?? [];
   const moved =
     issue.moved_at === null
       ? ""
@@ -40,7 +40,7 @@ function priorityIssueLine(issue: PriorityIssue, agents: LiveAgents | undefined)
     `- ${issue.key} [${issue.status}] ${issue.title} · ${issue.project}` +
     (issue.assignee === null ? "" : ` · ${issue.assignee}`) +
     (issue.claim === null ? "" : ` · claimed by ${claimText(issue.claim, agents)}`) +
-    (priorities.length === 0 ? "" : ` · advances ${priorities.join(", ")}`) +
+    (advances.length === 0 ? "" : ` · advances ${advances.map(advanceText).join(", ")}`) +
     moved +
     ` · changed ${issue.changed_at}`
   );

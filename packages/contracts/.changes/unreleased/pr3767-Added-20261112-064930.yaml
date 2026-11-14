@@ -9,7 +9,8 @@ body: |-
   `dispatch_priorities` spec takes `project`, repeated as the route takes it, and lists every
   live priority with the work under it and the two faults.
   `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` carry the five priority
-  routes, `IssueAdvance`, and `advances` and `advances_revision` on every issue shape.
+  routes, `IssueAdvance`, and `advances` and `advances_revision` on every issue shape, and
+  `advances` on each fault row of the priorities read (`PriorityIssue`).
   `DispatchEvent` carries `priority.updated` (`PriorityUpdatedEventPayload {id, change}`, with
   `change` one of `created`, `updated` and `deleted`), the ownerless event each priority write
   appends.

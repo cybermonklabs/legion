@@ -90,7 +90,7 @@ const recorded: Priorities = {
         assignee: "ana@theorem.dev",
         claim: null,
         changed_at: "2026-11-10T08:00:00Z",
-        priorities: [],
+        advances: [],
         moved_at: null,
         moved_by: null,
       },
@@ -98,7 +98,7 @@ const recorded: Priorities = {
   },
   priority_work_parked: {
     count: 1,
-    by_priority: { "ship-the-daemon": 1 },
+    by_priority: { "ship-the-daemon": 1, "legion-first": 1 },
     issues: [
       {
         key: "DSP-9",
@@ -108,7 +108,10 @@ const recorded: Priorities = {
         assignee: null,
         claim: null,
         changed_at: "2026-10-02T00:00:00Z",
-        priorities: ["ship-the-daemon"],
+        advances: [
+          { id: "legion-first", inherited: true },
+          { id: "ship-the-daemon", inherited: false },
+        ],
         moved_at: "2026-10-01T00:00:00Z",
         moved_by: ana,
       },
@@ -374,8 +377,8 @@ describe("dispatch priorities", () => {
         "Work under no priority (2: CORE 1, DSP 1; showing the newest 1):",
         "- CORE-7 [in_progress] Rotate the broker keys · CORE · ana@theorem.dev · changed 2026-11-10T08:00:00Z",
         "",
-        "Priority work parked (1: ship-the-daemon 1):",
-        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon · parked 2026-10-01T00:00:00Z by ana@theorem.dev · changed 2026-10-02T00:00:00Z",
+        "Priority work parked (1: legion-first 1, ship-the-daemon 1):",
+        "- DSP-9 [backlog] Backfill the index · DSP · advances legion-first (inherited), ship-the-daemon (own) · parked 2026-10-01T00:00:00Z by ana@theorem.dev · changed 2026-10-02T00:00:00Z",
       ].join("\n")
     );
   });

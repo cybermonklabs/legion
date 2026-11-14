@@ -3,7 +3,8 @@
 // issue_queries.go is of the issue routes. It writes neither `priority_nodes` nor
 // `priority_tuples`, which prioritystore alone writes; it reads them through prioritystore.List
 // and through the SQL below, which splices prioritystore.AdvancesTupleRead, the one reading of
-// the `advances` relation, and joins it to the issues it counts.
+// the `advances` relation, and joins it to the issues it counts. The parked rows carry their
+// `advances` entries through issueAdvancesTerms, the inheritance walk every issue read climbs.
 //
 // The body is six statements. The priorities are prioritystore.List; the relations are the
 // `advances` tuples every live priority holds now (priorityRelationsQuery), read once and then
@@ -196,10 +197,15 @@ func priorityUnplacedQuery(summary bool) string {
 // over the events of the parked members alone. An issue whose events do not reach back to the
 // move answers both cells null and stays in the list, since the fault is the work standing there
 // and not the record of how it arrived.
+//
+// Each listed row carries its `advances` relations as every issue read answers them: the listed
+// rows are the subjects of issueAdvancesTerms, the inheritance walk the issue read and the
+// listing climb, and the row answers issueAdvancesColumns, which advancesScan turns into the
+// entries, own and inherited. The walk climbs from the fifty listed rows alone, so the parked
+// count and the counts by priority still rest on the seed's descent (priorityMemberTerms).
 func priorityParkedQuery(summary bool) string {
 	parked := `with recursive ` + priorityMemberTerms + `, parked as (
-		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at,
-		       array_agg(distinct m.priority order by m.priority) as priorities
+		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
 		from members m
 		join issues i on i.key = m.key
 		where i.closed_at is null
@@ -211,7 +217,15 @@ func priorityParkedQuery(summary bool) string {
 		return parked + `
 	select count(*) from parked`
 	}
-	return parked + `
+	return parked + `, listed as (
+		select p.*, moved.created_at as moved_at, moved.actor as moved_by
+		from parked p
+		` + parkedMoveLateral("p", "") + `
+		order by moved.created_at desc nulls last, p.key asc
+		limit ` + strconv.Itoa(priorityFaultRows) + `
+	), subjects as (
+		select key from listed
+	), ` + issueAdvancesTerms + `
 	select (select count(*) from parked) as total,
 	       (select coalesce(jsonb_object_agg(counted.priority, counted.total), '{}'::jsonb)
 	        from (
@@ -219,17 +233,12 @@ func priorityParkedQuery(summary bool) string {
 	          from members m join parked p on p.key = m.key
 	          group by m.priority
 	        ) counted) as by_priority,
-	       listed.key, listed.title, listed.project_key, listed.status, listed.assignee,
-	       listed.claimed_by, listed.claimed_at, listed.updated_at,
-	       listed.priorities, listed.moved_at, listed.moved_by
+	       i.key, i.title, i.project_key, i.status, i.assignee,
+	       i.claimed_by, i.claimed_at, i.updated_at,
+	       ` + issueAdvancesColumns + `, i.moved_at, i.moved_by
 	from (select 1 as one) seed
-	left join (
-		select p.*, moved.created_at as moved_at, moved.actor as moved_by
-		from parked p
-		` + parkedMoveLateral("p", "") + `
-		order by moved.created_at desc nulls last, p.key asc
-		limit ` + strconv.Itoa(priorityFaultRows) + `
-	) listed on true`
+	left join listed i on true
+	` + issueAdvancesJoin
 }
 
 // parkedMoveLateral reads when the issue aliased `issue` was moved into `backlog` or `icebox` and
@@ -457,28 +466,31 @@ func queuePriorityFault(
 // grouped counts, which every row carries, and the issue's own columns, which are null on the row
 // an empty fault answers.
 type priorityFaultRow struct {
-	total      int
-	counts     map[string]int
-	key        *string
-	title      *string
-	project    *string
-	status     *string
-	assignee   *string
-	claim      claimScan
-	changedAt  *time.Time
-	priorities []string
-	movedAt    *time.Time
-	movedBy    []byte
+	total     int
+	counts    map[string]int
+	key       *string
+	title     *string
+	project   *string
+	status    *string
+	assignee  *string
+	claim     claimScan
+	changedAt *time.Time
+	advances  advancesScan
+	movedAt   *time.Time
+	movedBy   []byte
 }
 
-// targets are the row's scan targets. The parked fault carries three columns more: the priorities
-// the issue advances, and the two cells of the move into `backlog` or `icebox`.
+// targets are the row's scan targets. The parked fault carries five columns more: the three
+// `advances` columns every issue read answers (issueAdvancesColumns), and the two cells of the
+// move into `backlog` or `icebox`. The first fault carries none of them: its rows advance no
+// live priority, so their `advances` is the empty list a zero advancesScan answers.
 func (r *priorityFaultRow) targets(parked bool) []any {
 	targets := []any{&r.total, &r.counts, &r.key, &r.title, &r.project, &r.status, &r.assignee}
 	targets = append(targets, r.claim.targets()...)
 	targets = append(targets, &r.changedAt)
 	if parked {
-		targets = append(targets, &r.priorities, &r.movedAt, &r.movedBy)
+		targets = append(targets, r.advances.targets()...)
+		targets = append(targets, &r.movedAt, &r.movedBy)
 	}
 	return targets
 }
@@ -490,18 +502,15 @@ func (r *priorityFaultRow) resolve() (model.PriorityIssue, error) {
 		return model.PriorityIssue{}, err
 	}
 	issue := model.PriorityIssue{
-		Key:        *r.key,
-		Title:      *r.title,
-		Project:    *r.project,
-		Status:     *r.status,
-		Assignee:   r.assignee,
-		Claim:      claim,
-		ChangedAt:  *r.changedAt,
-		Priorities: r.priorities,
-		MovedAt:    r.movedAt,
-	}
-	if issue.Priorities == nil {
-		issue.Priorities = []string{}
+		Key:       *r.key,
+		Title:     *r.title,
+		Project:   *r.project,
+		Status:    *r.status,
+		Assignee:  r.assignee,
+		Claim:     claim,
+		ChangedAt: *r.changedAt,
+		Advances:  r.advances.resolve(),
+		MovedAt:   r.movedAt,
 	}
 	if len(r.movedBy) > 0 {
 		var actor model.Actor
