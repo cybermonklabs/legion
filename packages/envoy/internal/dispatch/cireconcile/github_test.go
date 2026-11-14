@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -292,7 +291,7 @@ func queryNumber(values url.Values, name string, fallback int) int {
 
 // client is a githubapp.Client on a throwaway key, pointed at this stand-in, obeying and
 // recording the shared rate limits as every Dispatch process's client does.
-func (f *fakeGitHub) client(limits *ratelimit.Store) *githubapp.Client {
+func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	f.t.Helper()
 	_, text := githubapptest.Key(f.t)
 	base := githubtest.Server(f.t, githubtest.Spec{Handle: f.serve})

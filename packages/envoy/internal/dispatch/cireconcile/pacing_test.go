@@ -1,6 +1,7 @@
 package cireconcile
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 )
 
 // head is one open pull request of the mapped repository as the tests below give it: pull
@@ -510,6 +512,48 @@ func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
 		t.Fatalf("the pass after the reset read heads %v over REST, want it to start at 8, the head the limit cut short", asked)
 	}
 	requireConditional(t, h, sentBefore, h.passLine())
+}
+
+// slowRecordLimits is a shared ledger whose write of a limit GitHub answered takes longer than
+// the pass has left, which is a busy database or a pass already near its bound.
+type slowRecordLimits struct {
+	githubapp.Limits
+	delay time.Duration
+}
+
+func (l slowRecordLimits) Record(ctx context.Context, scope string, wait time.Duration) error {
+	time.Sleep(l.delay)
+	return l.Limits.Record(ctx, scope, wait)
+}
+
+// A rate limit GitHub answers while the pass's own bound falls ends the pass as a limit: the
+// pass line says rate_limited, which is what an alarm counts limits by, and the limit reaches
+// the ledger every process shares, so the pass after it is held rather than asking GitHub inside
+// it. Neither holds where the limit's write runs on the pass's own time, or where the bound is
+// read before GitHub's answer.
+func TestALimitAnsweredAsTheBoundFallsIsALimit(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHeads(head(7), head(8))
+	h.github.refuseChecks(gitHubRepository, head(7).sha)
+	h.github.refuseChecks(gitHubRepository, head(8).sha)
+	h.reconciler.PassTimeout = 2 * time.Second
+	h.reconciler.GitHub = h.github.client(slowRecordLimits{Limits: ratelimit.New(h.pool), delay: 3 * time.Second})
+	h.github.rateLimitNext(suitesOf(head(8)))
+
+	h.pass()
+
+	line := h.passLine()
+	if line["rate_limited"] != true {
+		t.Fatalf("the pass reports rate_limited = %v, want true: GitHub answered a limit as the bound fell: %v", line["rate_limited"], line)
+	}
+	if got, want := text(t, line, "last_head"), gitHubRepository+"#7"; got != want {
+		t.Errorf("the pass's last_head = %q, want %q: the head the limit cut short was not read: %v", got, want, line)
+	}
+	scope := githubapp.InstallationScope(h.github.installationID())
+	if _, found, err := h.reconciler.Limits.Get(h.ctx, scope); err != nil || !found {
+		t.Fatalf("the limit GitHub answered as the bound fell is not in the shared ledger under %s: %v, %v", scope, found, err)
+	}
 }
 
 // A head whose reads were cut short keeps everything the Reconciler holds of it, ETags and all:
