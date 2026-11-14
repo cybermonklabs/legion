@@ -213,6 +213,60 @@ func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 	}
 }
 
+// An item whose told row knows no version of its step carries no earlier version. At its send it
+// is dropped, as one whose change set is not recorded is, until the reconcile has recorded its
+// review history unread (record.DesignHistoryUnread): the send queues its tree's reconcile, which
+// asks the history again. An unread row recorded while that reconcile is still to run tells
+// nothing either, since the reconcile replaces it. Once the reconcile has run and the history
+// stands unread, the item stands: the text says the version the holder last took could not be
+// read, and why, never that the version is a first approval, and the delivery goes on carrying the
+// item with no earlier version.
+func TestAnItemWhoseReviewHistoryIsRecordedUnreadIsSentSoAndOneNotYetReadIsDropped(t *testing.T) {
+	r := newNewsRig(t)
+	r.inTx(func(tx pgx.Tx) error {
+		_, err := tx.Exec(r.ctx, `update design_news_told set versions = '{}'::jsonb where issue = $1 and audience = 'holder'`, newsTested)
+		return err
+	})
+	const testerText = "Test the change. Issue: LEGION-502. Phase: testing."
+	unknown := record.DeliveryNewsItem{Issue: newsTested, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", To: 5}
+	tester := record.DeliveryNews{Task: testerText, Items: []record.DeliveryNewsItem{unknown}}
+
+	if task, carried := r.send(newsTested, claim.RoleTester, tester); task != testerText || carried != nil {
+		t.Fatalf("the tester's task with its history neither read nor recorded unread = %q carrying %+v, want its own text alone and no news", task, carried)
+	}
+	var queued int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from outbox where kind = 'design_changes' and issue = $1`, newsRoot).Scan(&queued); err != nil || queued != 1 {
+		t.Fatalf("design_changes rows after the send dropped the item = %d (%v), want one for the tree", queued, err)
+	}
+
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.PutDesignHistoryUnread(r.ctx, tx, record.DesignHistoryUnread{
+			DesignHistoryQuestion: record.DesignHistoryQuestion{ArtifactID: "artifact-spec", To: 5}, ReadAt: time.Now(),
+			Reason: "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY"})
+	})
+	if task, carried := r.send(newsTested, claim.RoleTester, tester); task != testerText || carried != nil {
+		t.Fatalf("the tester's task with its history recorded unread and the tree's reconcile still to run = %q carrying %+v, want its own text alone and no news", task, carried)
+	}
+
+	// The reconcile runs and finishes, its last attempt leaving the history unread.
+	if _, err := r.pool.Exec(r.ctx, `delete from outbox where kind = 'design_changes' and issue = $1`, newsRoot); err != nil {
+		t.Fatalf("finish the tree's reconcile: %v", err)
+	}
+	task, carried := r.send(newsTested, claim.RoleTester, tester)
+	for _, want := range []string{testerText + "\n\n", "version 5, since a version the daemon could not read",
+		"The version your phase last took could not be read: Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY."} {
+		if !strings.Contains(task, want) {
+			t.Fatalf("the tester's task with its history recorded unread = %q, want it to say %q", task, want)
+		}
+	}
+	if strings.Contains(task, "first version a person approved") {
+		t.Fatalf("the tester's task = %q, want no first approval: the history was not read", task)
+	}
+	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{unknown}) {
+		t.Fatalf("the tester's task still carries %+v, want the item with no earlier version", carried)
+	}
+}
+
 // The root architect's summary names every member of its tree with its phase and what it is told
 // as the record stands at the send: the root's implementer owed the spec and told by the next start
 // of its phase, since no claim holds it; a reviewer told nothing because only the root's checks

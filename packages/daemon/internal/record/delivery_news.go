@@ -37,9 +37,12 @@ func (n DeliveryNews) Empty() bool {
 
 // DeliveryNewsItem is one step whose approved version a delivery tells one audience of one issue:
 // its document (Artifact), the version that audience's told row held when the item was composed
-// (From, nil where the row did not know it), and the approved version it tells (To). Its
-// confirmation raises the row's version of Step to To, and taking that confirmation back puts it
-// back to From, or forgets the step where From is nil, which is what the row held.
+// (From, nil where the row did not know it), and the approved version it tells (To). An item with
+// From nil is one whose earlier version Dispatch's review history could not give
+// (DesignHistoryUnread): a send carries it only while the record holds that failed read and no
+// reconcile of its tree is pending to read the history again, and says so. Its confirmation
+// raises the row's version of Step to To, whatever From is, and taking that confirmation back puts
+// it back to From, or forgets the step where From is nil, which is what the row held.
 type DeliveryNewsItem struct {
 	Issue    string         `json:"issue"`
 	Audience DesignAudience `json:"audience"`
@@ -49,16 +52,10 @@ type DeliveryNewsItem struct {
 	To       int            `json:"to"`
 }
 
-// Pair is the change set the item names, and whether it names one: from From to To. An item whose
-// told row knew no version names none. The reconcile resolves such a version into the row itself
-// (Store.FillTold, from Dispatch's review history) before any change set of it is recorded, and a
-// start attaches only an item whose change set is recorded, so an item a delivery carries names
-// its pair.
-func (i DeliveryNewsItem) Pair() (VersionPair, bool) {
-	if i.From == nil {
-		return VersionPair{}, false
-	}
-	return VersionPair{ArtifactID: i.Artifact, From: *i.From, To: i.To}, true
+// NewsItem is the item as the record owes it (NewsItem): its step, its document and its two
+// versions, without the audience it is told to.
+func (i DeliveryNewsItem) NewsItem() NewsItem {
+	return NewsItem{Step: i.Step, ArtifactID: i.Artifact, From: i.From, To: i.To}
 }
 
 // DeliveryOpening is one audience of one issue a delivery carries the gate's opening to.

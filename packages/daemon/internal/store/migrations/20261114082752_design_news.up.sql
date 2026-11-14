@@ -1,6 +1,7 @@
 -- 20261114082752_design_news.up.sql — what each holder of a tree's work took of its approved
--- design, the change sets between two approved versions, the news a delivery carries, and the
--- outbox kind that reconciles the two (dispatch://INFRA-175).
+-- design, the change sets between two approved versions, the questions of a document's review
+-- history that could not be read, the news a delivery carries, and the outbox kind that reconciles
+-- them (dispatch://INFRA-175).
 --
 -- Until this migration nothing recorded what anyone was told of an approved version. The opening
 -- message was composed when the gate flipped and delivered later to whoever held the role then,
@@ -27,7 +28,19 @@
 -- differ. state `unavailable` is a pair Dispatch could not answer, a release without the route, a
 -- document Dispatch no longer holds or a bounded run of failures, with the reason in reason; the
 -- news then names the two versions and says why it names no change. from_version 0 is a pair whose
--- document had no earlier approved version.
+-- document had no approved version before to_version: its holder took the step while none stood,
+-- or the review history was read and named none.
+--
+-- design_history_unread holds each question of a document's review history (GET
+-- /api/v1/artifacts/{id}/reviews) that the reconcile could not answer within its bounded attempts:
+-- which version of artifact_id a person approved before to_version, asked for a holder whose told
+-- row knows no version of that step. reason names the failed read. It is a state of its own, never
+-- a version: the told row keeps no version of the step, the news says that version could not be
+-- read and why, and the next reconcile asks the history again. The daemon tells nothing from a row
+-- while a design_changes row of the tree that asks it is still to run, since that reconcile
+-- replaces it. The read that answers fills the told row and deletes the question's row in one
+-- write. So a failure Dispatch stops giving is never kept, and from_version 0 is never written for
+-- a history nobody read.
 --
 -- pending_task_deliveries.design_news is the news items a delivery carries, each the issue, the
 -- audience, the step, the document and the version pair, and whether it carries the opening: what
@@ -45,13 +58,18 @@
 -- row. No release carries 20261113212423 and main never merged it, so no deployment's database
 -- records it. Only a database that a build of this branch migrated before the forward merge does,
 -- and such a database is a test's own: it would apply this file a second time and fail on the
--- first create table below, so make it again rather than upgrade it.
+-- first create table below, so make it again rather than upgrade it. No release carries
+-- 20261114082752 either, and main has not merged it, so design_history_unread is written into this
+-- file rather than a migration of its own. A database a build of this branch migrated before that
+-- table was added records this version without the table, and it too is a test's own, to make
+-- again.
 --
--- Rolling the image back needs no restore of the schema. The release before this one names
--- neither table nor the new column in any statement, its pending_task_deliveries insert names its
--- own columns and leaves design_news null, and the kind list it set is a subset of this one, so
--- every row it writes is still taken. A design_changes row this release queued sits in the outbox
--- unread under that daemon, which runs no lane of that kind, and runs once this release is back.
+-- Rolling the image back needs no restore of the schema. The release before this one names none
+-- of the three tables nor the new column in any statement, its pending_task_deliveries insert
+-- names its own columns and leaves design_news null, and the kind list it set is a subset of this
+-- one, so every row it writes is still taken. A design_changes row this release queued sits in the
+-- outbox unread under that daemon, which runs no lane of that kind, and runs once this release is
+-- back.
 --
 -- There is no down file: migrations here are forward-only.
 create table design_news_told (
@@ -76,6 +94,14 @@ create table design_changes (
   check (to_version > from_version),
   -- A pair Dispatch could not answer says why, and a pair it answered has no reason to give.
   check ((state = 'unavailable') = (reason <> '')));
+
+create table design_history_unread (
+  artifact_id text not null,
+  to_version integer not null check (to_version > 0),
+  -- A read that failed says why.
+  reason text not null check (reason <> ''),
+  read_at timestamptz not null,
+  primary key (artifact_id, to_version));
 
 alter table pending_task_deliveries add column design_news jsonb;
 

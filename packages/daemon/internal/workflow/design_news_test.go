@@ -93,13 +93,13 @@ func unreadHolderNews() News {
 		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{unread}}
 }
 
-// unreadBaselineChanges is the pair the reconcile records when Dispatch's review history could
-// not say which version an issue whose record knew none took: from 0, unavailable, with the reason
-// naming the failed read (the daemon's designChanges).
+// unreadBaselineChanges is the item of an issue whose told row knows no version of the spec and
+// whose review history Dispatch could not read: it names no pair, only the failed read and its
+// reason (the daemon's designChanges).
 func unreadBaselineChanges() NewsChange {
-	return NewsChange{Step: record.DesignStepSpec, Changes: record.DesignChanges{
-		VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 0, To: 5}, State: record.DesignChangesUnavailable,
-		Reason: "the version this issue last took could not be read from the review history: dispatch: 502 Bad Gateway"}}
+	return NewsChange{Step: record.DesignStepSpec, HistoryUnread: &record.DesignHistoryUnread{
+		DesignHistoryQuestion: record.DesignHistoryQuestion{ArtifactID: "artifact-spec", To: 5},
+		Reason:                "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 Bad Gateway"}}
 }
 
 // unreadBaselineHolderNews is the news of a child's tester whose taken version the review history
@@ -350,34 +350,49 @@ func TestNewsOfAnUnreadPairNamesTheReasonAndTheCommandThatPrintsIt(t *testing.T)
 	}
 }
 
-// A pair from version 0 recorded unavailable is not a first approval: the review history could not
-// say which version the issue took. The holder is told the new version since a version the daemon
-// could not read, with the reason as for any unread pair, and never that no version was approved
-// before; the architect's summary names the member the same way.
-func TestNewsOfAPairWhoseTakenVersionCouldNotBeReadSaysSoAndNotAFirstApproval(t *testing.T) {
+// An item whose review history could not be read is not a first approval: the history could not
+// say which version the issue took, so the item names no pair. The holder is told the new version
+// since a version the daemon could not read, with the reason the history could not be read, and
+// never that no version was approved before. The architect's summary names the member the same
+// way, and lists the item as an entry of its own beside the first approval of the same version,
+// which another member read from the history, so the one is never folded into the other.
+func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(t *testing.T) {
 	text := RenderNews(unreadBaselineHolderNews())
-	t.Logf("the news of a pair whose taken version could not be read:\n%s", text)
+	t.Logf("the news of an item whose review history could not be read:\n%s", text)
 	item := newsItem(t, text, "The spec document (artifact-spec)")
 	for _, want := range []string{"version 5, since a version the daemon could not read",
-		"The change list could not be read: the version this issue last took could not be read from the review history: dispatch: 502 Bad Gateway.",
+		"The version your phase last took could not be read: Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 Bad Gateway.",
 		"`dispatch doc-read --issue LEGION-208 --artifact artifact-spec --version 5`"} {
 		if !strings.Contains(item, want) {
 			t.Errorf("the item does not say %q:\n%s", want, item)
 		}
 	}
-	summary := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
-		Members: []NewsMember{{Issue: "LEGION-217", Phase: phase.Testing, State: NewsSentNow, Items: []NewsChange{unreadBaselineChanges()}}}})
-	if want := "owed version 5 of the spec document, since a version the daemon could not read"; !strings.Contains(summary, want) {
-		t.Errorf("the summary does not say %q:\n%s", want, summary)
-	}
-	for _, never := range []string{"first version a person approved", "No approved version came before it"} {
-		if strings.Contains(text, never) || strings.Contains(summary, never) {
-			t.Errorf("the news says %q of a pair whose taken version could not be read:\n%s\n%s", never, text, summary)
+	for _, never := range []string{"first version a person approved", "No approved version came before it", "The change list"} {
+		if strings.Contains(text, never) {
+			t.Errorf("the news says %q of an item whose review history could not be read:\n%s", never, text)
 		}
 	}
-	// The control: the same pair read from version 0 is a first approval, and says so.
-	if first := RenderNews(firstApprovalHolderNews()); !strings.Contains(first, "the first version a person approved") {
-		t.Errorf("the news of a first approval does not say so:\n%s", first)
+
+	first := firstApprovalHolderNews().Items[0]
+	summary := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
+		Members: []NewsMember{
+			{Issue: "LEGION-217", Phase: phase.Testing, State: NewsSentNow, Items: []NewsChange{unreadBaselineChanges()}},
+			{Issue: "LEGION-213", Phase: phase.Planning, State: NewsSentNow, Items: []NewsChange{first}},
+		}})
+	t.Logf("the summary:\n%s", summary)
+	if line, want := newsLine(t, summary, "- LEGION-217, in testing:"), "owed version 5 of the spec document, since a version the daemon could not read"; !strings.Contains(line, want) ||
+		strings.Contains(line, "first version") {
+		t.Errorf("the summary's line of the member whose history could not be read = %q, want it to say %q and no first approval", line, want)
+	}
+	if line, want := newsLine(t, summary, "- LEGION-213, in planning:"), "owed version 5 of the spec document, the first version a person approved; its phase took none before it"; !strings.Contains(line, want) {
+		t.Errorf("the summary's line of the member whose history named no earlier approval = %q, want it to say %q", line, want)
+	}
+	unread := newsItem(t, summary, "The spec document (artifact-spec): version 5, since a version the daemon could not read.")
+	if want := "The version each issue owed it last took could not be read: Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 Bad Gateway."; !strings.Contains(unread, want) {
+		t.Errorf("the summary's entry of the unread history does not say %q:\n%s", want, unread)
+	}
+	if firstEntry := newsItem(t, summary, "The spec document (artifact-spec): version 5, the first version a person approved."); !strings.Contains(firstEntry, "No approved version came before it, so read it whole.") {
+		t.Errorf("the summary's entry of the first approval does not say so:\n%s", firstEntry)
 	}
 }
 

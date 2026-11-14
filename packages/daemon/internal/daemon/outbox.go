@@ -2750,10 +2750,12 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 // (workflow's tellGateMoved).
 //
 // It also waits while the merger's member is owed news of the approved design that no start can
-// carry yet, its change set not recorded, read or unavailable (mergerNewsUnrecorded): a merger
+// carry yet, its change set not recorded, read or unavailable, or its earlier version neither read
+// nor recorded unread with no reconcile of the tree pending (mergerNewsUnrecorded): a merger
 // released without the change list could merge before it reads what changed. That wait ends within
 // the design_changes row's bounded attempts, since a pair Dispatch cannot read is recorded
-// unavailable (designChangesAttempts), and the start then carries the news (newsForStart).
+// unavailable, and a review history it cannot read is recorded unread (designChangesAttempts), and
+// the start then carries the news (newsForStart).
 //
 // The wake a merge-queue removal makes of a released merger reads this same rule before it wakes
 // it (mergeQueueRemoval), so the message that its pull request left the queue brings back no

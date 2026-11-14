@@ -13,10 +13,12 @@ import (
 const designNewsVersion = 20261114082752
 
 // 20261114082752 records what each holder of a tree's work took of its approved design
-// (design_news_told), the change sets between two approved versions (design_changes), the news a
-// delivery carries (pending_task_deliveries.design_news) and the outbox kind that reconciles them
-// (design_changes), and seeds the told rows from the gates the release before it left, so the
-// upgrade owes nobody news of what the record already shows as taken.
+// (design_news_told), the change sets between two approved versions (design_changes), the
+// questions of a document's review history the reconcile could not answer
+// (design_history_unread), the news a delivery carries (pending_task_deliveries.design_news) and
+// the outbox kind that reconciles them (design_changes), and seeds the told rows from the gates the
+// release before it left, so the upgrade owes nobody news of what the record already shows as
+// taken.
 //
 // The seed is read on five trees that release can leave: a tree whose spec gate stands open at
 // version 4, with a member at work, a member held from implementing, a member held from admitted, a
@@ -36,9 +38,10 @@ const designNewsVersion = 20261114082752
 // none.
 //
 // The negative control is the schema before the migration, the merge-queue kinds' list of
-// 20261114031356 included, which holds no told rows table and refuses a design_changes outbox row;
-// after it, every kind the constraint already named is still taken, the merge-queue kinds among
-// them, since this migration writes the list last on any database.
+// 20261114031356 included, which holds neither the told rows table nor the unread history table
+// and refuses a design_changes outbox row; after it, every kind the constraint already named is
+// still taken, the merge-queue kinds among them, since this migration writes the list last on any
+// database, and an unread history is taken only with its reason and a version above 0.
 func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261114082752(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -101,6 +104,9 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261114082752(t 
 	if _, err := store.Pool().Exec(ctx, "select 1 from design_news_told"); err == nil || !strings.Contains(err.Error(), "design_news_told") {
 		t.Fatalf("reading the told rows before the migration = %v, want the table to be unknown", err)
 	}
+	if _, err := store.Pool().Exec(ctx, "select 1 from design_history_unread"); err == nil || !strings.Contains(err.Error(), "design_history_unread") {
+		t.Fatalf("reading the unread histories before the migration = %v, want the table to be unknown", err)
+	}
 	if err := queue("design_changes"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a design_changes row before the migration = %v, want the kind constraint to refuse it", err)
 	}
@@ -153,6 +159,18 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261114082752(t 
 	if _, err := store.Pool().Exec(ctx, `insert into design_changes (artifact_id, from_version, to_version, state, reason, read_at)
 		values ('doc-100', 5, 6, 'unavailable', '', now())`); err == nil {
 		t.Fatal("recording an unreadable change set with no reason was taken, want it refused")
+	}
+	if _, err := store.Pool().Exec(ctx, `insert into design_history_unread (artifact_id, to_version, reason, read_at)
+		values ('doc-100', 5, 'Dispatch failed 3 reads of it, the last with: 502 BAD_GATEWAY', now())`); err != nil {
+		t.Fatalf("record an unread review history after the migration: %v", err)
+	}
+	for _, refused := range []string{
+		`insert into design_history_unread (artifact_id, to_version, reason, read_at) values ('doc-100', 6, '', now())`,
+		`insert into design_history_unread (artifact_id, to_version, reason, read_at) values ('doc-100', 0, 'a failed read', now())`,
+	} {
+		if _, err := store.Pool().Exec(ctx, refused); err == nil {
+			t.Fatalf("%s was taken, want an unread history with no reason, or of no version, refused", refused)
+		}
 	}
 	if _, err := store.Pool().Exec(ctx, "select design_news from pending_task_deliveries"); err != nil {
 		t.Fatalf("read the news a delivery carries after the migration: %v", err)

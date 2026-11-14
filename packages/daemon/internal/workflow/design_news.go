@@ -29,10 +29,11 @@ import (
 // opened while the audience was owed news, so the news leads with the gate sentence in place of
 // the opening's role message.
 //
-// Items is what the audience is told, each with its recorded change set: the holder's items for
-// Issue, or the architect row's own items for the tree. The send has already dropped every item
-// that no longer stands (classify.DesignApprovalStands) and every pair whose change set is not
-// recorded yet, so each one here is said as given.
+// Items is what the audience is told, each with its recorded change set, or with the review
+// history that could not say which version the audience took: the holder's items for Issue, or the
+// architect row's own items for the tree. The send has already dropped every item that no longer
+// stands (classify.DesignApprovalStands) and every item the record cannot tell yet, so each one
+// here is said as given.
 type News struct {
 	Audience    record.DesignAudience
 	Tree        string
@@ -47,12 +48,48 @@ type News struct {
 	Members []NewsMember
 }
 
-// NewsChange is one step's approved version as news names it: the step, and the recorded change
-// set of the pair (record.DesignChanges), whose VersionPair is the version the audience took
-// (From, 0 for none approved before To) and the version approved now (To).
+// NewsChange is one step's approved version as news names it: the step, and either the recorded
+// change set of the pair (Changes, record.DesignChanges), whose VersionPair is the version the
+// audience took (From, 0 for none approved before To) and the version approved now (To), or, where
+// the audience's told row knows no version of the step and Dispatch's review history could not say
+// which it took, that failed read (HistoryUnread, record.DesignHistoryUnread), with Changes unused:
+// no earlier version is known, so no pair is named, and the item is said as a version the daemon
+// could not read, with the reason, never as a first approval.
 type NewsChange struct {
-	Step    record.DesignStep
-	Changes record.DesignChanges
+	Step          record.DesignStep
+	Changes       record.DesignChanges
+	HistoryUnread *record.DesignHistoryUnread
+}
+
+// newsKey is what one item of news names, once: the pair of versions of its change set, or, for
+// an item whose review history could not be read, the question that history did not answer.
+type newsKey struct {
+	pair   record.VersionPair
+	unread record.DesignHistoryQuestion
+}
+
+// key is what the item names (newsKey).
+func (c NewsChange) key() newsKey {
+	if c.HistoryUnread != nil {
+		return newsKey{unread: c.HistoryUnread.DesignHistoryQuestion}
+	}
+	return newsKey{pair: c.Changes.VersionPair}
+}
+
+// artifact is the document the item names.
+func (c NewsChange) artifact() string {
+	if c.HistoryUnread != nil {
+		return c.HistoryUnread.ArtifactID
+	}
+	return c.Changes.ArtifactID
+}
+
+// to is the approved version the item tells.
+func (c NewsChange) to() int {
+	if c.HistoryUnread != nil {
+		return c.HistoryUnread.To
+	}
+	return c.Changes.To
 }
 
 // NewsMember is one member of a tree as the root architect's summary names it: its key, its phase,
@@ -127,11 +164,13 @@ const (
 // To a holder it then names, for each step, the version pair as the version its phase last took,
 // the `##` sections and the typed blocks that changed (requirements and the other non-check
 // blocks for spec and decisions, checks for criteria), or the reason the change list could not
-// be read, and the `dispatch doc-read` command that prints the new version. One closing sentence
-// names the rule the role's prompt carries for answering it. A holder whose every item changed
-// decision blocks alone is told only that nothing its issue holds changed, with no list and no
-// rule, since there is nothing to answer: that is the one news task of a decision-only version,
-// sent where the opening is owed to it.
+// be read, and the `dispatch doc-read` command that prints the new version. A step whose earlier
+// version Dispatch's review history could not give is named as the new version since a version
+// the daemon could not read, with the reason that history could not be read, and the same
+// command. One closing sentence names the rule the role's prompt carries for answering it. A
+// holder whose every item changed decision blocks alone is told only that nothing its issue holds
+// changed, with no list and no rule, since there is nothing to answer: that is the one news task
+// of a decision-only version, sent where the opening is owed to it.
 //
 // To the root architect it names each pair of versions this news tells of with its change list,
 // then every member of the tree with its phase and what it is told: owed news sent now, owed news
@@ -203,8 +242,8 @@ func holderNews(news News) []string {
 			list = append(list, "- "+nothingChanged(item))
 			continue
 		}
-		list = append(list, fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.Changes.ArtifactID, pairWords(item.Changes, "your phase")))
-		list = append(list, indented(changeLines(news.Tree, item))...)
+		list = append(list, fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.artifact(), pairWords(item, "your phase")))
+		list = append(list, indented(changeLines(news.Tree, item, "your phase"))...)
 	}
 	return []string{strings.Join(list, "\n"), holderRule(news.Issue, news.Phase)}
 }
@@ -246,27 +285,28 @@ func acceptingAnswer(subject string) string {
 
 // architectNews is the root architect's summary after its gate sentence: each pair of versions
 // the news tells of with its change list, once each, then every member of the tree with its phase
-// and what it is told.
+// and what it is told. An item whose review history could not be read is an entry of its own,
+// named by the question that history did not answer (newsKey), never folded into a pair.
 func architectNews(news News) []string {
 	var paragraphs []string
-	own := make(map[record.VersionPair]bool, len(news.Items))
+	own := make(map[newsKey]bool, len(news.Items))
 	for _, item := range news.Items {
-		own[item.Changes.VersionPair] = true
+		own[item.key()] = true
 	}
 	if pairs := distinctPairs(news); len(pairs) > 0 {
 		list := []string{fmt.Sprintf("A person approved a new version of the design of %s. What changed, for each pair of versions this news names:", news.Tree)}
 		for _, item := range pairs {
 			taker := ""
-			if own[item.Changes.VersionPair] {
+			if own[item.key()] {
 				taker = "you"
 			}
-			line := fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.Changes.ArtifactID, pairWords(item.Changes, taker))
+			line := fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.artifact(), pairWords(item, taker))
 			if item.Changes.DecisionOnly {
 				list = append(list, line+" Only its decision blocks changed, so nothing any issue holds changed.")
 				continue
 			}
 			list = append(list, line)
-			list = append(list, indented(changeLines(news.Tree, item))...)
+			list = append(list, indented(changeLines(news.Tree, item, taker))...)
 		}
 		paragraphs = append(paragraphs, strings.Join(list, "\n"))
 	}
@@ -280,15 +320,16 @@ func architectNews(news News) []string {
 	return paragraphs
 }
 
-// distinctPairs is each step's pair of versions the architect's summary tells of, once each: the
-// architect's own items first, then each member's in the order the members are named.
+// distinctPairs is each step's pair of versions the architect's summary tells of, and each
+// question of a review history it could not read, once each (newsKey): the architect's own items
+// first, then each member's in the order the members are named.
 func distinctPairs(news News) []NewsChange {
 	var pairs []NewsChange
-	seen := map[record.VersionPair]bool{}
+	seen := map[newsKey]bool{}
 	add := func(items []NewsChange) {
 		for _, item := range items {
-			if !seen[item.Changes.VersionPair] {
-				seen[item.Changes.VersionPair] = true
+			if key := item.key(); !seen[key] {
+				seen[key] = true
 				pairs = append(pairs, item)
 			}
 		}
@@ -307,7 +348,7 @@ func memberWords(member NewsMember) string {
 	if len(member.Items) > 0 {
 		owed := make([]string, len(member.Items))
 		for i, item := range member.Items {
-			owed[i] = fmt.Sprintf("version %d of the %s document, %s", item.Changes.To, item.Step, sinceWords(item.Changes, "its phase"))
+			owed[i] = fmt.Sprintf("version %d of the %s document, %s", item.to(), item.Step, sinceWords(item, "its phase"))
 		}
 		owes = "owed " + strings.Join(owed, ", and ")
 	}
@@ -348,23 +389,23 @@ func memberWords(member NewsMember) string {
 	return "told nothing."
 }
 
-// pairWords is a change set's pair of versions as news says it: the new version, then what taker
-// took before it (sinceWords).
-func pairWords(changes record.DesignChanges, taker string) string {
-	return fmt.Sprintf("version %d, %s", changes.To, sinceWords(changes, taker))
+// pairWords is the version an item tells as news says it: the new version, then what taker took
+// before it (sinceWords).
+func pairWords(item NewsChange, taker string) string {
+	return fmt.Sprintf("version %d, %s", item.to(), sinceWords(item, taker))
 }
 
-// sinceWords is the version taker last took, the change set's From, as news says it, or that no
-// version was approved before the new one (From 0). A pair from 0 recorded unavailable is not a
-// first approval: it is the pair the reconcile records when Dispatch's review history could not
-// say which version an issue whose record knew none took (the daemon's designChanges), so it is
-// said as a version the daemon could not read, and its change lines give the reason. An empty
-// taker names nobody's taking.
-func sinceWords(changes record.DesignChanges, taker string) string {
-	from := changes.From
-	switch {
-	case from == 0 && changes.State == record.DesignChangesUnavailable:
+// sinceWords is the version taker last took as news says it: the change set's From, or that no
+// version was approved before the new one (From 0). From 0 is only ever a version the told row
+// held or the review history read and found none before: a history that could not be read names
+// no pair (NewsChange.HistoryUnread), and is said as a version the daemon could not read, never as
+// a first approval. An empty taker names nobody's taking.
+func sinceWords(item NewsChange, taker string) string {
+	if item.HistoryUnread != nil {
 		return "since a version the daemon could not read"
+	}
+	from := item.Changes.From
+	switch {
 	case from == 0 && taker == "":
 		return "the first version a person approved"
 	case from == 0:
@@ -375,19 +416,24 @@ func sinceWords(changes record.DesignChanges, taker string) string {
 	return fmt.Sprintf("since version %d, which %s last took", from, taker)
 }
 
-// changeLines is what one item's change set says, line by line: the sections and the blocks that
-// changed, or why the list could not be read, then the command that prints the new version.
-func changeLines(tree string, item NewsChange) []string {
+// changeLines is what one item says, line by line: the sections and the blocks of its change set
+// that changed, or why the list could not be read, or, for an item whose review history could not
+// be read, why the version taker last took could not be read (historyUnreadLine); then the command
+// that prints the new version.
+func changeLines(tree string, item NewsChange, taker string) []string {
 	changes := item.Changes
 	var lines []string
-	if changes.State == record.DesignChangesUnavailable {
+	switch {
+	case item.HistoryUnread != nil:
+		lines = append(lines, historyUnreadLine(*item.HistoryUnread, taker))
+	case changes.State == record.DesignChangesUnavailable:
 		reason := strings.TrimRight(changes.Reason, ". ")
 		if reason == "" {
 			lines = append(lines, "The change list could not be read.")
 		} else {
 			lines = append(lines, fmt.Sprintf("The change list could not be read: %s.", reason))
 		}
-	} else {
+	default:
 		if len(changes.Sections) > 0 {
 			lines = append(lines, sectionsLine(changes.Sections))
 		}
@@ -400,7 +446,21 @@ func changeLines(tree string, item NewsChange) []string {
 			lines = append(lines, "Dispatch named no changed section or block of it.")
 		}
 	}
-	return append(lines, fmt.Sprintf("Read it: `dispatch doc-read --issue %s --artifact %s --version %d`", tree, changes.ArtifactID, changes.To))
+	return append(lines, fmt.Sprintf("Read it: `dispatch doc-read --issue %s --artifact %s --version %d`", tree, item.artifact(), item.to()))
+}
+
+// historyUnreadLine says why an item names no version its audience took: Dispatch's review history
+// could not say which, and why not. taker is whose taking it names, as sinceWords takes it; an
+// empty taker, in the architect's summary, names each issue the item is owed to.
+func historyUnreadLine(unread record.DesignHistoryUnread, taker string) string {
+	if taker == "" {
+		taker = "each issue owed it"
+	}
+	reason := strings.TrimRight(unread.Reason, ". ")
+	if reason == "" {
+		return fmt.Sprintf("The version %s last took could not be read.", taker)
+	}
+	return fmt.Sprintf("The version %s last took could not be read: %s.", taker, reason)
 }
 
 // sectionsLine names each `##` section that changed, by its heading, and how, in Dispatch's own

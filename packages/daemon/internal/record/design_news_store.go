@@ -115,7 +115,9 @@ func (s *Postgres) SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, 
 // the row holds. It is how a version the record did not know is resolved into it — the reconcile
 // reads it from Dispatch's review history (dispatch.Client.ApprovedVersionBefore) — so that every
 // later reader of the row names the same pair of versions, where a version read again at each send
-// could name another. A row already there keeps its owed opening and its ToldAt.
+// could name another. Only a read that answered fills: a history that could not be read is
+// recorded as such (DesignHistoryUnread), never as a version. A row already there keeps its owed
+// opening and its ToldAt.
 func (s *Postgres) FillTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error {
 	if len(versions) == 0 {
 		return nil
@@ -272,6 +274,69 @@ func (s *Postgres) PutDesignChanges(ctx context.Context, tx pgx.Tx, changes Desi
 		changes.ArtifactID, changes.From, changes.To, string(changes.State), changes.DecisionOnly, sections, blocks,
 		changes.Reason, changes.ReadAt, string(DesignChangesRead)); err != nil {
 		return fmt.Errorf("record the change set of %+v: %w", changes.VersionPair, err)
+	}
+	return nil
+}
+
+// DesignHistoryUnreadOf is the recorded unread review history of each of questions that has one,
+// by question, in one read; a question with none recorded has no entry, and no questions read
+// nothing. It reads the rows as they are: whether a row stands, which it does only while no
+// reconcile of the tree that asks it is pending (DesignHistoryUnread), is its caller's to weigh.
+func (s *Postgres) DesignHistoryUnreadOf(ctx context.Context, tx pgx.Tx, questions []DesignHistoryQuestion) (map[DesignHistoryQuestion]DesignHistoryUnread, error) {
+	recorded := make(map[DesignHistoryQuestion]DesignHistoryUnread, len(questions))
+	if len(questions) == 0 {
+		return recorded, nil
+	}
+	artifacts, tos := make([]string, len(questions)), make([]int, len(questions))
+	for i, question := range questions {
+		artifacts[i], tos[i] = question.ArtifactID, question.To
+	}
+	rows, err := tx.Query(ctx, `select artifact_id, to_version, reason, read_at from design_history_unread
+		join unnest($1::text[], $2::int[]) as asked (artifact_id, to_version) using (artifact_id, to_version)`, artifacts, tos)
+	if err != nil {
+		return nil, fmt.Errorf("read the unread review history of %d questions: %w", len(questions), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var unread DesignHistoryUnread
+		if err := rows.Scan(&unread.ArtifactID, &unread.To, &unread.Reason, &unread.ReadAt); err != nil {
+			return nil, fmt.Errorf("read the unread review history of %d questions: %w", len(questions), err)
+		}
+		unread.ReadAt = unread.ReadAt.UTC()
+		recorded[unread.DesignHistoryQuestion] = unread
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the unread review history of %d questions: %w", len(questions), err)
+	}
+	return recorded, nil
+}
+
+// PutDesignHistoryUnread records that the review history could not answer one question, with the
+// reason, replacing what an earlier reconcile recorded of it: the reason and the time are the last
+// failure's. It refuses a row the table's shape does not hold: a version To not above 0, and no
+// reason.
+func (s *Postgres) PutDesignHistoryUnread(ctx context.Context, tx pgx.Tx, unread DesignHistoryUnread) error {
+	switch {
+	case unread.To <= 0:
+		return fmt.Errorf("record the unread review history of %+v: to must be above 0", unread.DesignHistoryQuestion)
+	case unread.Reason == "":
+		return fmt.Errorf("record the unread review history of %+v: a failed read says why", unread.DesignHistoryQuestion)
+	}
+	if _, err := tx.Exec(ctx, `insert into design_history_unread (artifact_id, to_version, reason, read_at) values ($1, $2, $3, $4)
+		on conflict (artifact_id, to_version) do update set reason = excluded.reason, read_at = excluded.read_at`,
+		unread.ArtifactID, unread.To, unread.Reason, unread.ReadAt); err != nil {
+		return fmt.Errorf("record the unread review history of %+v: %w", unread.DesignHistoryQuestion, err)
+	}
+	return nil
+}
+
+// ClearDesignHistoryUnread deletes what the record holds of question's unread review history: the
+// history has answered it, and the told rows that asked hold the version it gave. A question with
+// none recorded deletes nothing.
+func (s *Postgres) ClearDesignHistoryUnread(ctx context.Context, tx pgx.Tx, question DesignHistoryQuestion) error {
+	if _, err := tx.Exec(ctx, `delete from design_history_unread where artifact_id = $1 and to_version = $2`,
+		question.ArtifactID, question.To); err != nil {
+		return fmt.Errorf("clear the unread review history of %+v: %w", question, err)
 	}
 	return nil
 }

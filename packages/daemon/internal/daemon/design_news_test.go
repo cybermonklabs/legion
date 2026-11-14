@@ -226,6 +226,20 @@ func (r *newsReconcileRig) recorded(pair record.VersionPair) (record.DesignChang
 	return changes, held
 }
 
+// historyUnread is what the record holds of question's unread review history, and whether it holds
+// any.
+func (r *newsReconcileRig) historyUnread(question record.DesignHistoryQuestion) (record.DesignHistoryUnread, bool) {
+	r.t.Helper()
+	var unread record.DesignHistoryUnread
+	var held bool
+	r.inTx(func(tx pgx.Tx) error {
+		recorded, err := r.records.DesignHistoryUnreadOf(r.ctx, tx, []record.DesignHistoryQuestion{question})
+		unread, held = recorded[question]
+		return err
+	})
+	return unread, held
+}
+
 // toldOf is issue's audience row as the record holds it, the zero row where there is none.
 func (r *newsReconcileRig) toldOf(issue string, audience record.DesignAudience) record.DesignTold {
 	r.t.Helper()
@@ -986,43 +1000,53 @@ func TestTheMergersStartWaitsWhileItsMembersChangeSetIsUnrecorded(t *testing.T) 
 
 // The review history is read under the bound a change set is: a merger whose record knows no
 // version it took waits while Dispatch keeps failing to say which version came before, each attempt
-// of the design_changes row returning the failure for its retry, and the row's third attempt fills
-// the step with 0 and records the pair from 0 unavailable, naming the failed read. That releases the
-// merger within the row's bounded attempts, and its task says the change list could not be read and
-// why, never that the version is a first approval.
-func TestThreeFailedHistoryReadsLeaveThePairUnavailableAndReleaseTheMerger(t *testing.T) {
+// of the design_changes row returning the failure for its retry. The row's third attempt records the
+// history unread, naming the failed read, and writes no version: the told row still knows none, and
+// no pair from version 0 is recorded, since a read that failed says nothing about the document.
+// That releases the merger within the row's bounded attempts, and its task says the version its
+// phase last took could not be read and why, never that the version is a first approval, carrying
+// the item with no earlier version. Once Dispatch answers, the next reconcile reads the history
+// again, fills the told row with the version it gives and clears what it recorded unread.
+func TestThreeFailedHistoryReadsRecordTheHistoryUnreadWithNoVersionAndReleaseTheMerger(t *testing.T) {
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Merging)
 	r.told(reconcileRoot, record.AudienceHolder, -1)
 	r.holder(reconcileRoot, claim.RoleMerger, supervise.StateQueued, "", 0)
-	r.client.before = func(string, int) (int, error) { return 0, errors.New("dispatch: 502 BAD_GATEWAY") }
+	answers := false
+	r.client.before = func(string, int) (int, error) {
+		if !answers {
+			return 0, errors.New("dispatch: 502 BAD_GATEWAY")
+		}
+		return 3, nil
+	}
 	const own = "Merge it."
 	row := mustOutboxRow(t, reconcileRoot, record.SuperviseRequest{Op: "start", Tree: reconcileRoot, Role: claim.RoleMerger,
 		Generation: 1, Phase: phase.Merging, Entry: 1, Task: own}, time.Now())
-	unread := record.VersionPair{ArtifactID: reconcileDoc, From: 0, To: 5}
+	question := record.DesignHistoryQuestion{ArtifactID: reconcileDoc, To: 5}
 
 	for attempts := range designChangesAttempts - 1 {
 		if err := r.reconcile(attempts); err == nil || !strings.Contains(err.Error(), "502 BAD_GATEWAY") {
 			t.Fatalf("attempt %d under a failing review history = %v, want the failure returned for the outbox to retry", attempts+1, err)
 		}
-		if _, known := r.toldOf(reconcileRoot, record.AudienceHolder).Took(record.DesignStepSpec); known {
-			t.Fatalf("attempt %d wrote a taken version, want none before the last attempt", attempts+1)
+		if _, held := r.historyUnread(question); held {
+			t.Fatalf("attempt %d recorded the history unread, want nothing recorded before the last attempt", attempts+1)
 		}
 		if err := r.runner.execute(r.ctx, row); !errors.Is(err, wait.ErrWaiting) {
 			t.Fatalf("the merger's start after attempt %d = %v, want it held (wait.ErrWaiting)", attempts+1, err)
 		}
 	}
 	if err := r.reconcile(designChangesAttempts - 1); err != nil {
-		t.Fatalf("the last attempt under a failing review history = %v, want the pair recorded unavailable and the row finished", err)
+		t.Fatalf("the last attempt under a failing review history = %v, want the history recorded unread and the row finished", err)
 	}
-	if took, known := r.toldOf(reconcileRoot, record.AudienceHolder).Took(record.DesignStepSpec); !known || took != 0 {
-		t.Fatalf("the merger's told version = %d (known %t), want 0 filled", took, known)
+	if took, known := r.toldOf(reconcileRoot, record.AudienceHolder).Took(record.DesignStepSpec); known {
+		t.Fatalf("the merger's told version = %d after the last attempt, want none written: a read that failed is no version", took)
 	}
-	changes, held := r.recorded(unread)
-	if !held || changes.State != record.DesignChangesUnavailable ||
-		!strings.Contains(changes.Reason, "the version this issue last took could not be read from the review history") ||
-		!strings.Contains(changes.Reason, "502 BAD_GATEWAY") {
-		t.Fatalf("the recorded change set of %+v = %+v (held %t), want it unavailable, naming the failed history read", unread, changes, held)
+	unread, held := r.historyUnread(question)
+	if !held || !strings.Contains(unread.Reason, "review history") || !strings.Contains(unread.Reason, "502 BAD_GATEWAY") {
+		t.Fatalf("the unread history of %+v = %+v (held %t), want it recorded, naming the failed read and its error", question, unread, held)
+	}
+	if changes, held := r.recorded(record.VersionPair{ArtifactID: reconcileDoc, From: 0, To: 5}); held {
+		t.Fatalf("the change set from version 0 = %+v, want none recorded: nobody read that no version came before", changes)
 	}
 	if len(r.client.history) != designChangesAttempts || len(r.client.changes) != 0 {
 		t.Fatalf("Dispatch was asked the history %d times and a change set %d times, want %d and none", len(r.client.history),
@@ -1030,7 +1054,7 @@ func TestThreeFailedHistoryReadsLeaveThePairUnavailableAndReleaseTheMerger(t *te
 	}
 
 	if err := r.runner.execute(r.ctx, row); err != nil {
-		t.Fatalf("the merger's start once the pair is recorded = %v, want it released", err)
+		t.Fatalf("the merger's start once the history is recorded unread = %v, want it released", err)
 	}
 	machine, found := r.sup.Machine(mustClaimToken(t, reconcileRoot, claim.RoleMerger))
 	if !found {
@@ -1038,13 +1062,170 @@ func TestThreeFailedHistoryReadsLeaveThePairUnavailableAndReleaseTheMerger(t *te
 	}
 	task, news := pendingNews(t, machine)
 	for _, want := range []string{"version 5, since a version the daemon could not read",
-		"The change list could not be read: the version this issue last took could not be read from the review history"} {
+		"The version your phase last took could not be read: Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY."} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("the merger's task = %q, want it to say %q", task, want)
 		}
 	}
-	if strings.Contains(task, "first version a person approved") || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 0)}) {
-		t.Fatalf("the merger's task = %q carrying %+v, want no first approval and the item from the filled 0", task, news)
+	unknown := heldItem(reconcileRoot, 0)
+	unknown.From = nil
+	if strings.Contains(task, "first version a person approved") || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{unknown}) {
+		t.Fatalf("the merger's task = %q carrying %+v, want no first approval and the item with no earlier version", task, news)
+	}
+
+	answers = true
+	if err := r.reconcile(0); err != nil {
+		t.Fatalf("reconcile once Dispatch answers: %v", err)
+	}
+	if took, known := r.toldOf(reconcileRoot, record.AudienceHolder).Took(record.DesignStepSpec); !known || took != 3 {
+		t.Fatalf("the merger's told version once Dispatch answers = %d (known %t), want 3 written from the review history", took, known)
+	}
+	if unread, held := r.historyUnread(question); held {
+		t.Fatalf("the unread history once Dispatch answers = %+v, want it cleared", unread)
+	}
+}
+
+// queueReconcile queues the tree's design_changes row (record.QueueDesignNews), due now, as the
+// attempt after attempts failed ones, for the outbox's own drain (outbox.RunOnce) to claim, lease,
+// run and finish as a lane does.
+func (r *newsReconcileRig) queueReconcile(attempts int) {
+	r.t.Helper()
+	r.inTx(func(tx pgx.Tx) error {
+		if err := record.QueueDesignNews(r.ctx, r.records, tx, reconcileRoot, time.Now()); err != nil {
+			return err
+		}
+		_, err := tx.Exec(r.ctx, `update outbox set attempts = $2 where kind = 'design_changes' and issue = $1`, reconcileRoot, attempts)
+		return err
+	})
+}
+
+// reconcilesQueued is how many design_changes rows of the tree the outbox holds.
+func (r *newsReconcileRig) reconcilesQueued() int {
+	r.t.Helper()
+	var queued int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from outbox where kind = 'design_changes' and issue = $1`, reconcileRoot).Scan(&queued); err != nil {
+		r.t.Fatalf("count the design_changes rows: %v", err)
+	}
+	return queued
+}
+
+// An unread review history stands only while no reconcile of its tree is pending: a pending one
+// reads the history again and replaces the row. So a merger whose news is an unread history that a
+// finished reconcile recorded is released on it, but once a transition queues the tree's reconcile
+// beside the merger's start, as it does in production, the start waits and its news says nothing of
+// the old failure; and when that reconcile has run, Dispatch answering now, the merger is released
+// with the version the history gives, and never told the failure its confirmation would have kept.
+func TestAPendingReconcileHoldsTheMergerOffAnUnreadHistoryUntilItReadsItAgain(t *testing.T) {
+	r := newNewsReconcileRig(t)
+	root := r.member(reconcileRoot, "", phase.Merging)
+	r.told(reconcileRoot, record.AudienceHolder, -1)
+	r.holder(reconcileRoot, claim.RoleMerger, supervise.StateQueued, "", 0)
+	answers := false
+	r.client.before = func(string, int) (int, error) {
+		if !answers {
+			return 0, errors.New("dispatch: 502 BAD_GATEWAY")
+		}
+		return 3, nil
+	}
+	question := record.DesignHistoryQuestion{ArtifactID: reconcileDoc, To: 5}
+	const own = "Merge it."
+	start := record.SuperviseRequest{Op: "start", Tree: reconcileRoot, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging, Entry: 1, Task: own}
+	row := mustOutboxRow(t, reconcileRoot, start, time.Now())
+
+	// The reconcile's last attempt runs in the outbox and finishes, the history unread.
+	r.queueReconcile(designChangesAttempts - 1)
+	if err := r.runner.RunOnce(r.ctx); err != nil {
+		t.Fatalf("run the tree's reconcile: %v", err)
+	}
+	if _, held := r.historyUnread(question); !held || r.reconcilesQueued() != 0 {
+		t.Fatalf("after the reconcile's last attempt the history is recorded unread %t with %d reconciles queued, want it recorded and the row finished",
+			held, r.reconcilesQueued())
+	}
+	// The control: with no reconcile pending, the unread history stands and the merger would be
+	// released on it.
+	if err := r.runner.mergerWaitsForTheDesignGate(r.ctx, root, claim.RoleMerger); err != nil {
+		t.Fatalf("the merger's hold with the history unread and no reconcile pending = %v, want it released", err)
+	}
+
+	// Dispatch answers again, and a transition queues the tree's reconcile beside the merger's start.
+	answers = true
+	r.queueReconcile(0)
+	if err := r.runner.mergerWaitsForTheDesignGate(r.ctx, root, claim.RoleMerger); !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the merger's hold with a reconcile pending = %v, want it held (wait.ErrWaiting): that reconcile reads the history again", err)
+	}
+	if err := r.runner.execute(r.ctx, row); !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the merger's start with a reconcile pending = %v, want it held (wait.ErrWaiting)", err)
+	}
+	if spawns := len(r.rt.CallsOf("Spawn")); spawns != 0 {
+		t.Fatalf("the runtime spawned %d sessions while the reconcile was pending, want none", spawns)
+	}
+	held, err := r.runner.newsForStart(r.ctx, root, start, mustClaimToken(t, reconcileRoot, claim.RoleMerger))
+	if err != nil {
+		t.Fatalf("read the news the merger's start would carry: %v", err)
+	}
+	if held.task != own || held.news != nil || strings.Contains(held.task, "could not be read") || strings.Contains(held.task, "502 BAD_GATEWAY") {
+		t.Fatalf("the news the merger's start would carry with a reconcile pending = %q carrying %s, want its own text alone and no word of the old failure",
+			held.task, held.news)
+	}
+
+	// The pending reconcile runs, reads the history again, and replaces the unread row.
+	if err := r.runner.RunOnce(r.ctx); err != nil {
+		t.Fatalf("run the pending reconcile: %v", err)
+	}
+	if took, known := r.toldOf(reconcileRoot, record.AudienceHolder).Took(record.DesignStepSpec); !known || took != 3 {
+		t.Fatalf("the merger's told version after the reconcile = %d (known %t), want 3 written from the review history", took, known)
+	}
+	if unread, held := r.historyUnread(question); held || r.reconcilesQueued() != 0 {
+		t.Fatalf("after the reconcile the unread history = %+v (held %t) with %d reconciles queued, want it cleared and the row finished",
+			unread, held, r.reconcilesQueued())
+	}
+	if err := r.runner.execute(r.ctx, row); err != nil {
+		t.Fatalf("the merger's start once the reconcile read the history = %v, want it released", err)
+	}
+	machine, found := r.sup.Machine(mustClaimToken(t, reconcileRoot, claim.RoleMerger))
+	if !found {
+		t.Fatal("the merger's start created no claim")
+	}
+	task, news := pendingNews(t, machine)
+	if !strings.Contains(task, "version 5, since version 3, which your phase last took") || strings.Contains(task, "could not be read") ||
+		strings.Contains(task, "502 BAD_GATEWAY") || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 3)}) {
+		t.Fatalf("the merger's task = %q carrying %+v, want the spec from version 3, which the history gave, and no word of the old failure", task, news)
+	}
+}
+
+// The reconcile that records an unread history settles on it in the same run: the outbox leases its
+// own row while it runs, so the row is not a pending reconcile, and the news goes. A reconcile that
+// records it while another of the tree is still to run settles nothing on it, since that one reads
+// the history again.
+func TestTheReconcileThatRecordsAnUnreadHistorySettlesOnItUnlessAnotherIsPending(t *testing.T) {
+	r := newNewsReconcileRig(t)
+	r.member(reconcileRoot, "", phase.Reviewing)
+	r.told(reconcileRoot, record.AudienceHolder, -1)
+	r.holder(reconcileRoot, claim.RoleReviewer, supervise.StateIdle, "", 1)
+	r.client.before = func(string, int) (int, error) { return 0, errors.New("dispatch: 502 BAD_GATEWAY") }
+	question := record.DesignHistoryQuestion{ArtifactID: reconcileDoc, To: 5}
+
+	// Another reconcile of the tree is queued while this one gives up on the history.
+	r.queueReconcile(designChangesAttempts - 1)
+	if err := r.reconcile(designChangesAttempts - 1); err != nil {
+		t.Fatalf("the last attempt beside a queued reconcile = %v, want the row finished", err)
+	}
+	if _, held := r.historyUnread(question); !held {
+		t.Fatal("the last attempt recorded no unread history, want it recorded")
+	}
+	if starts := r.newsStarts(); len(starts) != 0 {
+		t.Fatalf("the news-only starts beside a queued reconcile = %v, want none: that reconcile reads the history again", startsTo(starts))
+	}
+
+	// The queued reconcile runs in the outbox, under its lease, and its own last attempt settles.
+	if err := r.runner.RunOnce(r.ctx); err != nil {
+		t.Fatalf("run the queued reconcile: %v", err)
+	}
+	if r.reconcilesQueued() != 0 {
+		t.Fatalf("design_changes rows after the queued reconcile ran = %d, want it finished", r.reconcilesQueued())
+	}
+	if got := startsTo(r.newsStarts()); !reflect.DeepEqual(got, []string{reconcileRoot + "/reviewer@reviewing"}) {
+		t.Fatalf("the news-only starts after the reconcile that ran under its lease = %v, want the reviewer's: its own row is no pending reconcile", got)
 	}
 }
 

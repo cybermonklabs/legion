@@ -13,10 +13,15 @@ body: |-
   a worker did not confirm goes with its next start or with the entry sweep.
 
   The daemon reads the change set from Dispatch (`GET /api/v1/artifacts/{id}/changes`). Against a
-  Dispatch without that route, the task names the two versions and says why it lists no change. A
-  merger's start waits until that read is recorded, and so does the wake of a released merger for
-  the message that its pull request left the merge queue. At the gate's opening, a holder owed
-  news gets the opening as the first sentence of that task's news, and every other holder gets the
-  opened message, which now says, where the record shows it, that nothing its issue holds changed.
-  Migration `20261114082752_design_news` adds the tables `design_news_told` and `design_changes`
-  and the column `pending_task_deliveries.design_news`. A rollback needs no schema restore.
+  Dispatch without that route, the task names the two versions and says why it lists no change.
+  Where the record does not know the version a worker last took, the daemon reads it from the
+  document's review history. If Dispatch cannot answer that read, the task says that the version
+  could not be read and why, never that no version was approved before, and the next reconcile
+  reads the history again. While that reconcile is queued, no task tells the old failure. A
+  merger's start waits until those reads are recorded, and so does the wake of a released merger
+  for the message that its pull request left the merge queue. At the gate's opening, a holder
+  owed news gets the opening as the first sentence of that task's news, and every other holder
+  gets the opened message, which now says, where the record shows it, that nothing its issue holds
+  changed. Migration `20261114082752_design_news` adds the tables `design_news_told`,
+  `design_changes` and `design_history_unread`, and the column `pending_task_deliveries.design_news`.
+  A rollback needs no schema restore.

@@ -216,6 +216,62 @@ func TestChangeSetsAreRecordedPerPairAndAReadOneIsFinal(t *testing.T) {
 	})
 }
 
+// A review history the reconcile could not read is recorded per question, apart from every
+// version: a later failure of the same question replaces its reason and time, the read that answers
+// clears it, and a clear of a question with nothing recorded deletes nothing. A row whose shape the
+// table refuses, with no reason or of no version, is refused before the write, naming the question.
+func TestAnUnreadReviewHistoryIsRecordedPerQuestionUntilItIsRead(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	question := DesignHistoryQuestion{ArtifactID: "doc-spec", To: 5}
+	other := DesignHistoryQuestion{ArtifactID: "doc-spec", To: 6}
+	at := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+	recorded := func() map[DesignHistoryQuestion]DesignHistoryUnread {
+		t.Helper()
+		var unread map[DesignHistoryQuestion]DesignHistoryUnread
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			unread, err = records.DesignHistoryUnreadOf(ctx, tx, []DesignHistoryQuestion{question, other})
+			must(t, err)
+		})
+		return unread
+	}
+
+	later := DesignHistoryUnread{DesignHistoryQuestion: question, ReadAt: at.Add(time.Hour),
+		Reason: "Dispatch failed 3 reads of the document's review history, the last with: 503 SERVICE_UNAVAILABLE"}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutDesignHistoryUnread(ctx, tx, DesignHistoryUnread{DesignHistoryQuestion: question, ReadAt: at,
+			Reason: "Dispatch failed 3 reads of the document's review history, the last with: 502 BAD_GATEWAY"}))
+		must(t, records.PutDesignHistoryUnread(ctx, tx, later))
+	})
+	if got := recorded(); !reflect.DeepEqual(got, map[DesignHistoryQuestion]DesignHistoryUnread{question: later}) {
+		t.Fatalf("the unread histories after two failures = %+v, want the question alone, with the later failure's reason and time", got)
+	}
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.ClearDesignHistoryUnread(ctx, tx, question))
+		must(t, records.ClearDesignHistoryUnread(ctx, tx, other))
+	})
+	if got := recorded(); len(got) != 0 {
+		t.Fatalf("the unread histories after the read that answered = %+v, want none", got)
+	}
+
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, refused := range []DesignHistoryUnread{
+			{DesignHistoryQuestion: other, ReadAt: at},
+			{DesignHistoryQuestion: DesignHistoryQuestion{ArtifactID: "doc-spec"}, Reason: "a failed read", ReadAt: at},
+		} {
+			if err := records.PutDesignHistoryUnread(ctx, tx, refused); err == nil {
+				t.Fatalf("recording %+v was taken, want it refused", refused)
+			}
+		}
+		if unread, err := records.DesignHistoryUnreadOf(ctx, tx, nil); err != nil || len(unread) != 0 {
+			t.Fatalf("the unread histories of no questions = %+v, %v, want none", unread, err)
+		}
+	})
+}
+
 // A generation's clear takes what its holders took of the gate with the gate itself: an issue's
 // told rows go with the generation, so the next generation's work takes its own baseline. A tree's
 // clear takes every member's rows, and an issue's own clear takes its rows alone.

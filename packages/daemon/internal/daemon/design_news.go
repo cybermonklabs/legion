@@ -17,14 +17,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// designChangesAttempts is how many attempts of one design_changes row read a pair's change set
-// from Dispatch before the pair is recorded unavailable with the last error: a failure Dispatch
-// may stop giving is ridden out on the row's backoff, and a run of three, with about three seconds
-// of backoff between the first and the last (retryBackoff), is no longer a moment's fault.
-// Recording the pair is what lets the news go, naming the versions and why the change list could
-// not be read, and what releases a merger held for it (mergerWaitsForTheDesignGate).
+// designChangesAttempts is how many attempts of one design_changes row read from Dispatch before
+// the reconcile gives up on a read and records why: a pair's change set is recorded unavailable
+// with the last error, and a question of the review history is recorded unread with it
+// (record.DesignHistoryUnread). A failure Dispatch may stop giving is ridden out on the row's
+// backoff, and a run of three, with about three seconds of backoff between the first and the last
+// (retryBackoff), is no longer a moment's fault. Recording it is what lets the news go, naming why
+// the change list, or the version the holder last took, could not be read, and what releases a
+// merger held for it (mergerWaitsForTheDesignGate). An unread history is still asked again by
+// every later reconcile, since a read that failed says nothing about the document, and nothing is
+// told from it while such a reconcile is pending (readNewsRecorded).
 const designChangesAttempts = 3
 
 // toldKey names one told row: an audience of one issue (record.DesignTold).
@@ -61,25 +66,30 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 //  1. In one read transaction, it reads what the tree owes (record.OwedNews over
 //     record.TreeNewsFacts).
 //  2. For each pair of versions an owed item needs whose change set is not recorded, it reads
-//     Dispatch. An item whose told row knows no version of its step takes its earlier version from
-//     Dispatch's review history first (dispatch.Client.ApprovedVersionBefore, 0 where nothing was
-//     approved before), and that version is written into the told row itself (step 3), so every
-//     later reader names the same pair. A pair from version 0 has no earlier version to compare,
-//     and Dispatch's route refuses it, so it is recorded read with no change listed, which the
-//     news says as a first approval, and Dispatch is not asked.
-//  3. In one write transaction, it records each change set it read (record.Store.PutDesignChanges)
-//     and each version it resolved (record.Store.FillTold). A Dispatch without the changes route,
-//     which answers 404 or 405 (dispatch.ErrNoChangesRoute), and a document Dispatch no longer
-//     holds, which it answers 404 ARTIFACT_NOT_FOUND (dispatch.ErrDocumentNotFound), each have
-//     their pair recorded unavailable at once, with Dispatch's refusal as the reason; any other
-//     failed read returns its error, so the row retries on its backoff, and the attempt that is
-//     the row's designChangesAttempts-th records the pair unavailable with the last error instead.
-//     A failed read of the review history is bounded the same way: until that attempt it is
-//     retried, and on it the step is filled with 0 and the pair from 0 recorded unavailable, its
-//     reason naming the failed read, which the news says as a version the daemon could not read
-//     (workflow.RenderNews) and never as a first approval. So every read this row makes ends
-//     within its bounded attempts, and a merger held for the news is released then
-//     (mergerWaitsForTheDesignGate).
+//     Dispatch. An item whose told row knows no version of its step first asks Dispatch's review
+//     history which version a person approved before its To (dispatch.Client.ApprovedVersionBefore,
+//     0 where none was), at every reconcile, whatever an earlier one recorded, and the version it
+//     answers is written into the told row itself (step 3), so every later reader names the same
+//     pair. A pair from version 0 has no earlier version to compare, and Dispatch's route refuses
+//     it, so it is recorded read with no change listed, which the news says as a first approval,
+//     and Dispatch is not asked.
+//  3. In one write transaction, it records each change set it read (record.Store.PutDesignChanges),
+//     each version the review history answered (record.Store.FillTold), clearing what the record
+//     held of that history as unread (record.Store.ClearDesignHistoryUnread), and each history it
+//     gave up on (record.Store.PutDesignHistoryUnread). A Dispatch without the changes route, which
+//     answers 404 or 405 (dispatch.ErrNoChangesRoute), and a document Dispatch no longer holds,
+//     which it answers 404 ARTIFACT_NOT_FOUND (dispatch.ErrDocumentNotFound), each have their pair
+//     recorded unavailable at once, with Dispatch's refusal as the reason; any other failed read
+//     returns its error, so the row retries on its backoff, and the attempt that is the row's
+//     designChangesAttempts-th records the pair unavailable with the last error instead. A failed
+//     read of the review history is bounded the same way: until that attempt it is retried, and on
+//     it the question is recorded unread with the last error, and the told row is left knowing no
+//     version. A read that failed says nothing about the document, so it is never written as
+//     version 0, which says no version was approved before: the news says the version could not
+//     be read, and why (workflow.RenderNews), and the next reconcile asks the history again,
+//     nothing being told from the unread row while that one is pending (readNewsRecorded). So
+//     every read this row makes ends within its bounded attempts, and a merger held for the news
+//     is released then (mergerWaitsForTheDesignGate).
 //  4. In one transaction under the fact lock (intake.SerializeFacts), it settles each owed member
 //     (settleNews).
 //  5. In that same transaction, it settles the tree root's architect row, and queues the root
@@ -114,17 +124,17 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 	if len(items) == 0 {
 		return nil
 	}
-	fills, pairs, unread, historyErr := r.resolveBaselines(ctx, row, items)
+	baselines, historyErr := r.resolveBaselines(ctx, row, items)
 	var recorded map[record.VersionPair]record.DesignChanges
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
-		recorded, err = r.records.DesignChangesOf(ctx, tx, pairs)
+		recorded, err = r.records.DesignChangesOf(ctx, tx, baselines.pairs)
 		return err
 	}); err != nil {
 		return fmt.Errorf("read the recorded change sets of the tree of %s: %w", root.Tree, err)
 	}
-	read, readErr := r.readChangeSets(ctx, row, pairs, recorded, unread)
-	if len(read) > 0 || len(fills) > 0 {
+	read, readErr := r.readChangeSets(ctx, row, baselines.pairs, recorded)
+	if len(read) > 0 || len(baselines.fills) > 0 || len(baselines.unread) > 0 {
 		at := r.now().UTC()
 		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 			for _, changes := range read {
@@ -132,14 +142,24 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 					return err
 				}
 			}
-			for key, versions := range fills {
+			for key, versions := range baselines.fills {
 				if err := r.records.FillTold(ctx, tx, key.issue, key.audience, versions, at); err != nil {
+					return err
+				}
+			}
+			for _, question := range baselines.answered {
+				if err := r.records.ClearDesignHistoryUnread(ctx, tx, question); err != nil {
+					return err
+				}
+			}
+			for _, unread := range baselines.unread {
+				if err := r.records.PutDesignHistoryUnread(ctx, tx, unread); err != nil {
 					return err
 				}
 			}
 			return nil
 		}); err != nil {
-			return fmt.Errorf("record the change sets of the tree of %s: %w", root.Tree, err)
+			return fmt.Errorf("record what the reconcile of the tree of %s read from Dispatch: %w", root.Tree, err)
 		}
 	}
 	if err := errors.Join(historyErr, readErr); err != nil {
@@ -148,89 +168,85 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 	return r.settleNews(ctx, row, root.Tree)
 }
 
+// resolvedBaselines is what the second step's first half resolved (resolveBaselines): the version
+// each told row is filled with, by row and step (fills); each question of the review history that
+// answered (answered), whose unread row, where the record holds one, goes in the same write; each
+// question the reconcile gave up on, to be recorded unread (unread); and every pair of versions the
+// items name once their versions are known (pairs), each once.
+type resolvedBaselines struct {
+	fills    map[toldKey]map[record.DesignStep]int
+	answered []record.DesignHistoryQuestion
+	unread   []record.DesignHistoryUnread
+	pairs    []record.VersionPair
+}
+
 // resolveBaselines is the second step's first half (designChanges): for each item whose told row
-// knows no version of its step, the version before its To that Dispatch's review history shows
-// approved, by told row and step (fills), read once for each document and version; and every pair
-// of versions the items name once those are known (pairs), each once. An item whose history read
-// failed names no pair, and the failure is returned beside what was read, until the row's
-// designChangesAttempts-th attempt: there the step is filled with 0, and its pair from 0 is named
-// among unread with the reason it is recorded unavailable (readChangeSets), since nothing else can
-// end a read Dispatch keeps failing.
-func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, items []owedNewsItem) (map[toldKey]map[record.DesignStep]int,
-	[]record.VersionPair, map[record.VersionPair]string, error) {
-	type question struct {
-		artifact string
-		to       int
-	}
+// knows no version of its step, it asks Dispatch's review history which version a person approved
+// before its To, once for each document and version, and at every reconcile, whatever an earlier
+// one recorded of that question; and it names every pair of versions the items name once those
+// are known. A read that answered fills the step, with 0 where no version was approved before. An
+// item whose read failed names no pair and fills nothing, and the failure is returned beside what
+// was read, until the row's designChangesAttempts-th attempt: there its question is recorded
+// unread with the reason instead, since nothing else can end a read Dispatch keeps failing, and a
+// failure is never written as a version.
+func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, items []owedNewsItem) (resolvedBaselines, error) {
 	type answer struct {
 		version int
 		err     error
 	}
-	// approvedBefore is Dispatch's answer to one question, read the first time it is asked
-	// (fresh) and taken from the answers after; a failed read answers version 0.
-	answers := map[question]answer{}
-	approvedBefore := func(asked question) (answer, bool) {
-		if got, read := answers[asked]; read {
-			return got, false
-		}
-		version, err := r.dispatch.ApprovedVersionBefore(ctx, asked.artifact, asked.to)
-		if err != nil {
-			version = 0
-		}
-		answers[asked] = answer{version: version, err: err}
-		return answers[asked], true
-	}
-	fills := map[toldKey]map[record.DesignStep]int{}
-	unread := map[record.VersionPair]string{}
-	var pairs []record.VersionPair
+	answers := map[record.DesignHistoryQuestion]answer{}
+	resolved := resolvedBaselines{fills: map[toldKey]map[record.DesignStep]int{}}
+	at := r.now().UTC()
 	var failed error
 	for _, owed := range items {
 		item := owed.item
 		pair, known := item.Pair()
 		if !known {
-			got, fresh := approvedBefore(question{item.ArtifactID, item.To})
-			switch {
-			case got.err != nil && row.Attempts+1 < designChangesAttempts:
-				if fresh {
-					failed = errors.Join(failed, fmt.Errorf("read the version of %s approved before version %d: %w", item.ArtifactID, item.To, got.err))
+			question := item.Question()
+			got, asked := answers[question]
+			if !asked {
+				got.version, got.err = r.dispatch.ApprovedVersionBefore(ctx, question.ArtifactID, question.To)
+				answers[question] = got
+				switch {
+				case got.err == nil:
+					resolved.answered = append(resolved.answered, question)
+				case row.Attempts+1 >= designChangesAttempts:
+					resolved.unread = append(resolved.unread, record.DesignHistoryUnread{DesignHistoryQuestion: question, ReadAt: at,
+						Reason: fmt.Sprintf("Dispatch failed %d reads of the document's review history, the last with: %v", row.Attempts+1, got.err)})
+				default:
+					failed = errors.Join(failed, fmt.Errorf("read the version of %s approved before version %d: %w", question.ArtifactID, question.To, got.err))
 				}
+			}
+			if got.err != nil {
 				continue
-			case got.err != nil:
-				unread[record.VersionPair{ArtifactID: item.ArtifactID, To: item.To}] =
-					fmt.Sprintf("the version this issue last took could not be read from the review history: %v", got.err)
 			}
-			if fills[owed.told] == nil {
-				fills[owed.told] = map[record.DesignStep]int{}
+			if resolved.fills[owed.told] == nil {
+				resolved.fills[owed.told] = map[record.DesignStep]int{}
 			}
-			fills[owed.told][item.Step] = got.version
+			resolved.fills[owed.told][item.Step] = got.version
 			pair = record.VersionPair{ArtifactID: item.ArtifactID, From: got.version, To: item.To}
 		}
-		if !slices.Contains(pairs, pair) {
-			pairs = append(pairs, pair)
+		if !slices.Contains(resolved.pairs, pair) {
+			resolved.pairs = append(resolved.pairs, pair)
 		}
 	}
-	return fills, pairs, unread, failed
+	return resolved, failed
 }
 
 // readChangeSets is the second step's second half (designChanges): the change set of each of
-// pairs that recorded does not hold, as it is to be recorded. A pair unread names — from 0, for a
-// version the review history could not give — is recorded unavailable with its reason. Any other
-// pair from version 0 is recorded read with nothing listed, and Dispatch is not asked. A Dispatch
-// without the changes route, and a document Dispatch no longer holds, have the pair recorded
-// unavailable at once; any other failure is returned, beside every set that was read, until the
-// row's designChangesAttempts-th attempt, which records the pair unavailable with that failure as
-// its reason.
+// pairs that recorded does not hold, as it is to be recorded. A pair from version 0, which only a
+// told row or a review history that answered names, is recorded read with nothing listed, and
+// Dispatch is not asked. A Dispatch without the changes route, and a document Dispatch no longer
+// holds, have the pair recorded unavailable at once; any other failure is returned, beside every
+// set that was read, until the row's designChangesAttempts-th attempt, which records the pair
+// unavailable with that failure as its reason.
 func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs []record.VersionPair,
-	recorded map[record.VersionPair]record.DesignChanges, unread map[record.VersionPair]string) ([]record.DesignChanges, error) {
+	recorded map[record.VersionPair]record.DesignChanges) ([]record.DesignChanges, error) {
 	at := r.now().UTC()
 	var read []record.DesignChanges
 	var failed error
 	for _, pair := range pairs {
 		if _, known := recorded[pair]; known {
-			continue
-		}
-		if reason, ok := unread[pair]; ok {
-			read = append(read, record.DesignChanges{VersionPair: pair, State: record.DesignChangesUnavailable, Reason: reason, ReadAt: at})
 			continue
 		}
 		if pair.From == 0 {
@@ -269,9 +285,11 @@ func changesFromDispatch(pair record.VersionPair, answer dispatch.ArtifactChange
 type newsSettlement int
 
 const (
-	// settleLater leaves the news owed: a pair it names has no change set recorded yet, which
-	// only a later approval or a later told version since the first step can cause, and the row
-	// that approval queued, or the sweep, settles it then.
+	// settleLater leaves the news owed: an item the record cannot tell yet, its pair's change set
+	// not recorded, or its earlier version neither resolved nor recorded unread with no reconcile of
+	// its tree pending (readNewsRecorded). A later approval, a later told version since the first
+	// step, or a reconcile queued since causes it, and the row that queued it, or the sweep,
+	// settles it then.
 	settleLater newsSettlement = iota
 	// settleRaise raises the told versions directly and sends nothing: every pair changed
 	// decision blocks alone, which tells nobody anything of the work, and no opening is owed.
@@ -280,26 +298,24 @@ const (
 	settleSend
 )
 
-// settlementOf is what the reconcile does for one told row owed items, given the change sets
-// recorded: settleLater while any pair is unrecorded; settleRaise, with the version of each step
-// to raise to, when every pair changed decision blocks alone and the row owes no opening; and
-// settleSend otherwise. A decision-only change the row owes the opening with is sent, not raised:
-// the gate closed on that version, the holder was told it closed, and a person approved it later,
-// so the holder is owed the opening as a task, with the words that nothing its issue holds changed
-// and no change list (workflow.RenderNews), since no role message carried that opening.
-func settlementOf(items []record.NewsItem, recorded map[record.VersionPair]record.DesignChanges, openingOwed bool) (newsSettlement, map[record.DesignStep]int) {
+// settlementOf is what the reconcile does for one told row owed items, given what is recorded:
+// settleLater while the record cannot tell any item (newsRecorded.change); settleRaise, with the
+// version of each step to raise to, when every pair changed decision blocks alone and the row owes
+// no opening; and settleSend otherwise. An item whose review history could not be read is sent,
+// never raised: nothing says what changed since the version its holder took. A decision-only
+// change the row owes the opening with is sent, not raised: the gate closed on that version, the
+// holder was told it closed, and a person approved it later, so the holder is owed the opening as
+// a task, with the words that nothing its issue holds changed and no change list
+// (workflow.RenderNews), since no role message carried that opening.
+func settlementOf(items []record.NewsItem, recorded newsRecorded, openingOwed bool) (newsSettlement, map[record.DesignStep]int) {
 	versions := map[record.DesignStep]int{}
 	decisionsOnly := true
 	for _, item := range items {
-		pair, known := item.Pair()
-		if !known {
+		change, told := recorded.change(item)
+		if !told {
 			return settleLater, nil
 		}
-		changes, recordedSet := recorded[pair]
-		if !recordedSet {
-			return settleLater, nil
-		}
-		decisionsOnly = decisionsOnly && changes.State == record.DesignChangesRead && changes.DecisionOnly
+		decisionsOnly = decisionsOnly && change.HistoryUnread == nil && change.Changes.State == record.DesignChangesRead && change.Changes.DecisionOnly
 		versions[item.Step] = item.To
 	}
 	if decisionsOnly && !openingOwed {
@@ -308,15 +324,105 @@ func settlementOf(items []record.NewsItem, recorded map[record.VersionPair]recor
 	return settleSend, nil
 }
 
-// owedPairs is every pair of versions news names that has a known earlier version, each once.
-func owedPairs(news record.TreeNews, root string) []record.VersionPair {
-	var pairs []record.VersionPair
-	for _, owed := range owedNewsItems(news, root) {
-		if pair, known := owed.item.Pair(); known && !slices.Contains(pairs, pair) {
-			pairs = append(pairs, pair)
+// newsAsks is what of the record a set of owed items is told from, each once: the pair of versions
+// each item names, and the question of the review history each item whose told row knows no
+// version of its step asks (record.NewsItem.Question), with each tree whose item asks it.
+type newsAsks struct {
+	pairs     []record.VersionPair
+	questions map[record.DesignHistoryQuestion][]string
+}
+
+// add adds what each of items, items of tree, is told from.
+func (a *newsAsks) add(tree string, items ...record.NewsItem) {
+	for _, item := range items {
+		if pair, known := item.Pair(); known {
+			if !slices.Contains(a.pairs, pair) {
+				a.pairs = append(a.pairs, pair)
+			}
+			continue
+		}
+		if a.questions == nil {
+			a.questions = map[record.DesignHistoryQuestion][]string{}
+		}
+		if question := item.Question(); !slices.Contains(a.questions[question], tree) {
+			a.questions[question] = append(a.questions[question], tree)
 		}
 	}
-	return pairs
+}
+
+// newsRecorded is what the record holds that owed news is told from: the change set of each pair
+// recorded (record.Store.DesignChangesOf), and each question of the review history recorded unread
+// (record.Store.DesignHistoryUnreadOf) that still stands (readNewsRecorded).
+type newsRecorded struct {
+	changes map[record.VersionPair]record.DesignChanges
+	unread  map[record.DesignHistoryQuestion]record.DesignHistoryUnread
+}
+
+// readNewsRecorded is what the record holds of asks, read in the caller's transaction, at the
+// moment the clock now gives.
+//
+// A question's unread row stands only while no reconcile of a tree that asks it is pending
+// (record.Store.DesignNewsPending: queued, backing off or retrying, under no live lease). A pending
+// reconcile asks the history again, and what it reads replaces the row: a fill of the told row with
+// the row cleared, or, on its last attempt, a fresh unread row. Telling the row before then would
+// keep the failure it records, since the confirmation of a task that tells it raises the told
+// version past the item: so until that reconcile has run, the item is not recorded, the reconcile
+// leaves it owed, a merger waits for it, and a send drops it. The reconcile that runs holds a live
+// lease on its own row, so the row it records on its last attempt stands for its own settle. Only
+// a set that asks a question reads the clock and whether a reconcile is pending.
+func readNewsRecorded(ctx context.Context, tx pgx.Tx, records record.Store, asks newsAsks, now func() time.Time) (newsRecorded, error) {
+	changes, err := records.DesignChangesOf(ctx, tx, asks.pairs)
+	if err != nil {
+		return newsRecorded{}, err
+	}
+	var at time.Time
+	var pending map[string]bool
+	var standing []record.DesignHistoryQuestion
+	for question, trees := range asks.questions {
+		stands := true
+		for _, tree := range trees {
+			held, read := pending[tree]
+			if !read {
+				if at.IsZero() {
+					at = now().UTC()
+				}
+				if held, err = records.DesignNewsPending(ctx, tx, tree, at); err != nil {
+					return newsRecorded{}, err
+				}
+				if pending == nil {
+					pending = map[string]bool{}
+				}
+				pending[tree] = held
+			}
+			stands = stands && !held
+		}
+		if stands {
+			standing = append(standing, question)
+		}
+	}
+	unread, err := records.DesignHistoryUnreadOf(ctx, tx, standing)
+	if err != nil {
+		return newsRecorded{}, err
+	}
+	return newsRecorded{changes: changes, unread: unread}, nil
+}
+
+// change is what news tells of item, and whether the record can tell it yet: the change set of
+// its pair where its told row knows the version it took, and, where the row knows none, the review
+// history that could not say which (workflow.NewsChange.HistoryUnread). An item whose change set
+// is not recorded, or whose row knows no version and whose history has no unread row that stands
+// (readNewsRecorded), cannot be told yet: the reconcile has not read it, or reads its history
+// again.
+func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
+	if pair, known := item.Pair(); known {
+		changes, recorded := n.changes[pair]
+		return workflow.NewsChange{Step: item.Step, Changes: changes}, recorded
+	}
+	unread, recorded := n.unread[item.Question()]
+	if !recorded {
+		return workflow.NewsChange{}, false
+	}
+	return workflow.NewsChange{Step: item.Step, HistoryUnread: &unread}, true
 }
 
 // newsHolderStart is one news-only start the reconcile may queue: the member whose news it tells
@@ -328,8 +434,8 @@ type newsHolderStart struct {
 }
 
 // settleNews is the reconcile's fourth and fifth steps (designChanges): in one transaction under
-// the fact lock, it reads again what tree owes and the change sets recorded, and settles each told
-// row owed news (settlementOf):
+// the fact lock, it reads again what tree owes, the change sets recorded and the review histories
+// recorded unread that stand (readNewsRecorded), and settles each told row owed news (settlementOf):
 //
 //   - a row whose every pair changed decision blocks alone, and that owes no opening, has its
 //     versions raised directly (record.Store.RaiseTold), and nothing is sent;
@@ -366,7 +472,11 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			return err
 		}
 		owed := record.OwedNews(facts)
-		recorded, err := r.records.DesignChangesOf(ctx, tx, owedPairs(owed, root.Tree))
+		var asks newsAsks
+		for _, item := range owedNewsItems(owed, root.Tree) {
+			asks.add(root.Tree, item.item)
+		}
+		recorded, err := readNewsRecorded(ctx, tx, r.records, asks, r.now)
 		if err != nil {
 			return err
 		}
@@ -567,10 +677,12 @@ type startNews struct {
 // newsForStart is the news a start of role on issue carries, read from the record in one read
 // transaction when the start runs, with no Dispatch read: the items record.OwedNews owes the told
 // rows the claim speaks for (owedToClaim), and the opening where its row owes it and the standing
-// gate is open, each rendered as a send renders it (readNewsAtSend). An item whose change set is
-// not recorded yet is left out and stays owed, for the reconcile or a later start to carry. The
-// task is the start's own text (record.DeliveryNews.Task), a blank line, then the news; a start
-// that carries nothing delivers its own text.
+// gate is open, each rendered as a send renders it (readNewsAtSend). An item the record cannot tell
+// yet — its change set not recorded, or, where its told row knows no version, that version neither
+// read from the review history nor recorded unread with no reconcile of its tree pending
+// (readNewsRecorded) — is left out and stays owed, for the reconcile or a later start to carry.
+// The task is the start's own text (record.DeliveryNews.Task), a blank line, then the news; a
+// start that carries nothing delivers its own text.
 func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload record.SuperviseRequest, token claim.Token) (startNews, error) {
 	carried := record.DeliveryNews{Task: payload.Task, NewsOnly: payload.News}
 	var sent newsAtSend
@@ -585,7 +697,7 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 		if carried.Empty() {
 			return nil
 		}
-		sent, err = readNewsAtSend(ctx, tx, r.records, r.gatedSteps, carried)
+		sent, err = readNewsAtSend(ctx, tx, r.records, r.gatedSteps, carried, r.now)
 		return err
 	}); err != nil {
 		return startNews{}, fmt.Errorf("read the news the start of %s's %s carries: %w", issue.Key, payload.Role, err)
@@ -659,10 +771,13 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 
 // mergerNewsUnrecorded says whether issue's holder is owed news of the approved design that no
 // start can carry yet: the reconcile would leave it owed (settlementOf's settleLater), since an
-// owed item's earlier version is unknown to the record, or its change set is not recorded, read or
-// unavailable. A merger released without it could merge before it reads what changed, so its start
-// waits (mergerWaitsForTheDesignGate). The wait ends within the design_changes row's bounded
-// attempts, since a pair Dispatch cannot read is recorded unavailable (designChangesAttempts).
+// owed item's change set is not recorded, read or unavailable, or its earlier version is unknown to
+// the record and its review history has no unread row that stands: none is recorded, or a
+// reconcile of the tree is pending, which reads that history again (readNewsRecorded). A merger
+// released without it could merge before it reads what changed, or be told a failure the pending
+// reconcile would replace, so its start waits (mergerWaitsForTheDesignGate). The wait ends within
+// the design_changes row's bounded attempts, since a pair Dispatch cannot read is recorded
+// unavailable, and a review history it cannot read is recorded unread (designChangesAttempts).
 func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (bool, error) {
 	var unrecorded bool
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -674,16 +789,9 @@ func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (
 			if member.Issue != issue.Key {
 				continue
 			}
-			pairs := make([]record.VersionPair, 0, len(member.Items))
-			for _, item := range member.Items {
-				pair, known := item.Pair()
-				if !known {
-					unrecorded = true
-					return nil
-				}
-				pairs = append(pairs, pair)
-			}
-			recorded, err := r.records.DesignChangesOf(ctx, tx, pairs)
+			var asks newsAsks
+			asks.add(issue.Tree, member.Items...)
+			recorded, err := readNewsRecorded(ctx, tx, r.records, asks, r.now)
 			if err != nil {
 				return err
 			}

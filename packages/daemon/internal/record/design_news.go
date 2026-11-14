@@ -66,11 +66,42 @@ func ToldRow(told []DesignTold, issue string, audience DesignAudience) DesignTol
 }
 
 // VersionPair is two versions of one document, the earlier From and the later To: the key of a
-// change set (DesignChanges). From 0 is a document with no approved version before To.
+// change set (DesignChanges). From 0 is a document with no approved version before To: a step its
+// audience took while none stood, or one Dispatch's review history read and found none before To.
+// A review history that could not be read names no pair at all (DesignHistoryUnread).
 type VersionPair struct {
 	ArtifactID string
 	From       int
 	To         int
+}
+
+// DesignHistoryQuestion is one question the reconcile asks Dispatch's review history
+// (dispatch.Client.ApprovedVersionBefore): which version of the document ArtifactID a person last
+// approved before version To. An owed item whose told row knows no version of its step asks it
+// (NewsItem.Question), since that answer is the version its audience is taken to have worked from.
+type DesignHistoryQuestion struct {
+	ArtifactID string
+	To         int
+}
+
+// DesignHistoryUnread is a question of Dispatch's review history that the reconcile could not
+// answer within its bounded attempts (the daemon's designChanges): Reason names the failed read,
+// and ReadAt is when the reconcile gave up on it.
+//
+// It is a state of its own, and never a version. A read that failed says nothing about the
+// document, so the told row that asked keeps no version of the step, and its item names no pair:
+// the news says the version its audience took could not be read, and why, never that no version
+// was approved before To, which is what a version 0 says. Every later reconcile asks the history
+// again, and the read that answers fills the told row and deletes this row in one write
+// (Postgres.ClearDesignHistoryUnread), so a failure Dispatch stops giving is never kept as a fact.
+// For the same reason the row stands only while no reconcile of the tree that asks it is pending
+// (Store.DesignNewsPending): a pending one reads the history again and replaces the row, so
+// nothing is told from it, and no merger is released on it, until that reconcile has run (the
+// daemon's readNewsRecorded).
+type DesignHistoryUnread struct {
+	DesignHistoryQuestion
+	Reason string
+	ReadAt time.Time
 }
 
 // DesignChangesState is how a change set was recorded: read from Dispatch, or recorded as one
@@ -158,7 +189,8 @@ func (m MemberNews) HeldByArchitect() bool {
 
 // NewsItem is one step whose approved version is news to its audience: the step's document, the
 // version the audience took (From, nil where the record does not know it, which the reconcile
-// reads from Dispatch's review history), and the version the gate stands approved at now (To).
+// reads from Dispatch's review history, and which stays nil while that history cannot be read),
+// and the version the gate stands approved at now (To).
 type NewsItem struct {
 	Step       DesignStep
 	ArtifactID string
@@ -168,12 +200,19 @@ type NewsItem struct {
 
 // Pair is the change set the item names, and whether it names one: from From to To. An item whose
 // told row knows no version of its step names none, until the reconcile resolves that version into
-// the row (Store.FillTold, from Dispatch's review history).
+// the row (Store.FillTold, from Dispatch's review history). While the history cannot be read it
+// still names none, and the record says why under its question (Question, DesignHistoryUnread).
 func (i NewsItem) Pair() (VersionPair, bool) {
 	if i.From == nil {
 		return VersionPair{}, false
 	}
 	return VersionPair{ArtifactID: i.ArtifactID, From: *i.From, To: i.To}, true
+}
+
+// Question is the question of Dispatch's review history the item asks while its told row knows no
+// version of its step: which version of its document a person approved before To.
+func (i NewsItem) Question() DesignHistoryQuestion {
+	return DesignHistoryQuestion{ArtifactID: i.ArtifactID, To: i.To}
 }
 
 // StepConcerns says whether step concerns issue, a member of tree: spec and decisions concern

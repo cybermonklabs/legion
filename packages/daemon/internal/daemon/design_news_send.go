@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -35,7 +36,11 @@ import (
 //     and from the news the delivery carries, so its confirmation raises only what was told;
 //   - an opening stands while the told row of its audience still owes it;
 //   - an item whose change set is not recorded yet is dropped as well: nothing else can say what
-//     changed, and the item stays owed for a later start, or the reconcile, to carry;
+//     changed, and the item stays owed for a later start, or the reconcile, to carry. So is an
+//     item whose told row knows no version of its step, unless the reconcile recorded its review
+//     history unread (record.DesignHistoryUnread) and no reconcile of its tree is pending, which
+//     would read that history again (readNewsRecorded): that item stands, and is said as a version
+//     the daemon could not read, with the reason, never as a first approval;
 //   - the root architect's summary of a tree that lingers is dropped whole: linger holds every
 //     member where it stood, record.OwedNews owes such a tree nothing, and nothing goes to it.
 //
@@ -47,8 +52,8 @@ import (
 // under writes nothing.
 //
 // An item dropped from the text and the delivery queues one design_changes row for its tree
-// (record.QueueDesignNews): the item no longer stands, or its change set was not recorded, and the
-// reconcile weighs again what that tree's holders are owed now and records what changed.
+// (record.QueueDesignNews): the item no longer stands, or the record could not tell it yet, and
+// the reconcile weighs again what that tree's holders are owed now and records what changed.
 //
 // It is the machine that asks, because the machine owns the pending delivery: it holds its own
 // lock and asks this in a short read-only transaction of its own, as rootHears is asked. A send
@@ -66,7 +71,7 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 	var sent newsAtSend
 	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
-		sent, err = readNewsAtSend(ctx, tx, w.records, w.gatedSteps, carried)
+		sent, err = readNewsAtSend(ctx, tx, w.records, w.gatedSteps, carried, time.Now)
 		return err
 	}); err != nil {
 		return "", nil, fmt.Errorf("read what the news the task held for %s carries says now: %w", c.Token, err)
@@ -158,15 +163,17 @@ type newsListened struct {
 	members  []memberDraft
 }
 
-// readNewsAtSend reads, in the caller's one transaction, what carried says as the record stands,
-// and renders it (designNews). An item, an opening or a listener whose issue the record does not
-// hold is dropped: nothing can say what the gate of a tree the record does not know stands at. So
-// is the architect of a tree that lingers, items, opening and summary alike. Every other item it
-// drops names its tree among the dropped, for the reconcile its caller queues.
-func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, carried record.DeliveryNews) (newsAtSend, error) {
+// readNewsAtSend reads, in the caller's one transaction, what carried says as the record stands at
+// the moment the clock now gives, and renders it (designNews). An item, an opening or a listener
+// whose issue the record does not hold is dropped: nothing can say what the gate of a tree the
+// record does not know stands at. So is the architect of a tree that lingers, items, opening and
+// summary alike. Every other item it drops names its tree among the dropped, for the reconcile its
+// caller queues.
+func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, carried record.DeliveryNews,
+	now func() time.Time) (newsAtSend, error) {
 	trees := map[string]*newsTree{}
 	var listened []newsListened
-	var pairs []record.VersionPair
+	var asks newsAsks
 	for _, listener := range listenersOf(carried) {
 		issue, err := records.Issue(ctx, tx, listener.issue)
 		if err != nil {
@@ -192,10 +199,8 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 			if !itemStands(item, tree.gates[item.Step], heard.told) {
 				continue
 			}
-			if pair, ok := item.Pair(); ok {
-				heard.items = append(heard.items, i)
-				pairs = append(pairs, pair)
-			}
+			heard.items = append(heard.items, i)
+			asks.add(issue.Tree, item.NewsItem())
 		}
 		heard.opening = listener.opening && heard.told.OpeningOwed
 		if listener.audience == record.AudienceArchitect && claim.IsTreeRoot(issue.Key, issue.Tree) {
@@ -203,12 +208,12 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 				return newsAtSend{}, err
 			}
 			for _, member := range heard.members {
-				pairs = append(pairs, member.pairs()...)
+				asks.add(issue.Tree, member.owed...)
 			}
 		}
 		listened = append(listened, heard)
 	}
-	recorded, err := records.DesignChangesOf(ctx, tx, pairs)
+	recorded, err := readNewsRecorded(ctx, tx, records, asks, now)
 	if err != nil {
 		return newsAtSend{}, err
 	}
@@ -219,14 +224,12 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 		news := workflow.News{Audience: heard.listener.audience, Tree: heard.issue.Tree, Issue: heard.issue.Key,
 			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, OpeningOwed: heard.opening}
 		for _, i := range heard.items {
-			item := carried.Items[i]
-			pair, _ := item.Pair()
-			changes, ok := recorded[pair]
+			change, ok := recorded.change(carried.Items[i].NewsItem())
 			if !ok {
 				continue
 			}
 			keep[i] = true
-			news.Items = append(news.Items, workflow.NewsChange{Step: item.Step, Changes: changes})
+			news.Items = append(news.Items, change)
 		}
 		for _, member := range heard.members {
 			news.Members = append(news.Members, member.told(recorded))
@@ -302,37 +305,22 @@ type memberDraft struct {
 	openingOwed bool
 }
 
-// pairs is each change set the member's owed items name, leaving out an item whose From the
-// record does not know, which names no pair.
-func (m memberDraft) pairs() []record.VersionPair {
-	var pairs []record.VersionPair
-	for _, item := range m.owed {
-		if pair, known := item.Pair(); known {
-			pairs = append(pairs, pair)
-		}
-	}
-	return pairs
-}
-
-// told is the member as the summary names it, given the change sets recorded: its owed items with
-// their change sets, or told nothing, for that reason, where the reconcile raises what its holder
-// took and sends nothing (settlementOf's settleRaise): every item it is owed is recorded as
-// decision blocks alone, and its holder row owes no opening. A member whose row owes the opening
-// is sent a task with it, so it is named with its items and how its holder is told. An owed item
-// whose change set is not recorded is named by none.
-func (m memberDraft) told(recorded map[record.VersionPair]record.DesignChanges) workflow.NewsMember {
+// told is the member as the summary names it, given what is recorded: its owed items with their
+// change sets, or with the review history that could not say which version its holder took, or
+// told nothing, for that reason, where the reconcile raises what its holder took and sends nothing
+// (settlementOf's settleRaise): every item it is owed is recorded as decision blocks alone, and its
+// holder row owes no opening. A member whose row owes the opening is sent a task with it, so it is
+// named with its items and how its holder is told. An owed item the record cannot tell yet
+// (newsRecorded.change) is named by none.
+func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state}
 	if settlement, _ := settlementOf(m.owed, recorded, m.openingOwed); len(m.owed) > 0 && settlement == settleRaise {
 		member.State = workflow.NewsDecisionOnly
 		return member
 	}
 	for _, item := range m.owed {
-		pair, known := item.Pair()
-		if !known {
-			continue
-		}
-		if changes, ok := recorded[pair]; ok {
-			member.Items = append(member.Items, workflow.NewsChange{Step: item.Step, Changes: changes})
+		if change, ok := recorded.change(item); ok {
+			member.Items = append(member.Items, change)
 		}
 	}
 	return member
