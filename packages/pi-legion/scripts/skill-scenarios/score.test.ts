@@ -28,6 +28,19 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
  */
 const stagings: (() => void)[] = [];
 
+// A hang guard, not a bound on the work: what can hang is draining the stagings, which builds a
+// repository — the pushed-code run's clone source, its git init, its commits and all. Timed round
+// the body on this two-CPU pod: 1376.98 / 1394.75 / 1591.83 ms (min / median / max) over 3 idle
+// runs of this file, and 28259.94 / 43733.27 / 74782.68 ms over 10 runs at 96 busy loops (48 per
+// CPU), this suite's calibrated rung. Bun's unwritten 5 s default for a hook is what failed
+// correct runs of these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms; at that default this
+// hook failed 10 of those 10 loaded runs, charged 31550.05 ms in the first, and Bun killed the
+// git commit still running inside it. Three times the worst is 224 s, which does fit under the
+// 600 s the pi-legion job's timeout-minutes: 10 allows (.github/workflows/ci.yaml); 180_000, 2.4
+// times that worst, is the value taken because this change already carries 180_000 on
+// claude-envoy's hook row, so there is one precedent rather than two. It leaves the job room to
+// redden with this file named instead of cancelling, which names nothing; Bun reports a
+// timed-out `beforeAll` as `(unnamed)`, so the row itself is not named.
 beforeAll(() => {
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
@@ -36,7 +49,7 @@ beforeAll(() => {
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
-});
+}, 180_000);
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
@@ -2650,12 +2663,24 @@ specRun("spec-writing-head-109", {
     ).slice(1),
   ],
 });
+// A hang guard, not a bound on the work: this row spawns nothing and awaits nothing, so what can
+// hang is its own scan of `out`, the whole `score.ts runs` output the hook below captured — one
+// `toContain` pass over it, an `out.split("\n")` in each of the three `rowOf` calls (`scoresOf`'s
+// included), and the ten `scoresOf` regexes over the row that scan finds. Measured on this
+// two-CPU pod, the row alone: 1.30 / 1.46 / 1.82 ms (min / median / max) over 5 idle runs, and
+// 1.95 / 71.33 / 262.84 ms over 20 runs at 96 busy loops (48 per CPU), this suite's calibrated
+// rung. Run with the rest of the file at that same load the row is charged far more than it
+// works, and Bun's unwritten 5 s default for a test is what failed a correct run of it at
+// 6027.43 ms, in run 9 of a 20-run campaign. 60_000 is 9.9 times that worst charge and the value
+// this file's live-read row carries, and sits well inside the pi-legion job's timeout-minutes: 10
+// (600 s, .github/workflows/ci.yaml), so a row that never returns reddens with this test named
+// instead of cancelling the job, which names nothing.
 test("a run scored from a copy reads the paths it ran with as its own", () => {
   expect(out).not.toContain("spec-writing-head-109\trig error");
   expect(scoresOf("spec-writing-head-109")).toEqual(allPass);
   expect(rowOf("spec-writing-head-109")).not.toContain(" outside=");
   expect(rowOf("spec-writing-head-109")).not.toContain(" skills=");
-});
+}, 60_000);
 // A usage refusal the CLI both prints and logs (an unknown command, under tool `dispatch`), after a
 // skill read earlier in the same call. The ledger line and the printed refusal are one refusal:
 // counted once, at the command, so the read before it is no read between it and its fix.
@@ -3083,11 +3108,21 @@ for (const [n, faults] of [2, 4, 3].entries())
  *  read in a hook, below the one that stages that world. */
 let out = "";
 let scoredExitCode: number | null = null;
+// A hang guard, not a bound on the work: what can hang is the `score.ts runs` subprocess this
+// hook spawns over the staged world. Timed round the body on this two-CPU pod: 2213.74 / 2243.03
+// / 2319.58 ms (min / median / max) over 3 idle runs, and 24833.04 / 60288.11 / 60932.92 ms over
+// the 7 of 10 runs at 96 busy loops (48 per CPU) that reached it. Bun's unwritten 5 s default for
+// a hook is what failed correct runs of these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms,
+// and at that default no loaded run reached this hook at all: the drain above it was charged past
+// the default first. 180_000 is 3.0 times the worst measured here and the number the hook above
+// carries, and sits well inside the pi-legion job's timeout-minutes: 10 (600 s), so a subprocess
+// that never returns reddens with this file named instead of cancelling the job, which names
+// nothing; Bun reports a timed-out `beforeAll` as `(unnamed)`, so the row itself is not named.
 beforeAll(() => {
   const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
-});
+}, 180_000);
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
@@ -3550,6 +3585,14 @@ beforeAll(() => {
   );
 });
 
+// A hang guard, not a bound on the work: what can hang is the `score.ts live-read` subprocess this
+// row spawns. Measured on this two-CPU pod: 276 ms to 337 ms idle, median 277 ms over 5 runs, and
+// 4.0 s to 19.7 s under 96 busy loops (48 per CPU, the lowest rung that reddens this file), median
+// 12.4 s over 20 runs, where Bun's unwritten 5 s default for a test failed this row in 9 of 10
+// loaded runs. Six times that worst is 118 s, past the ceiling a guard may take here, so this
+// takes 60_000: 3.1 times the worst measured, and well inside the pi-legion job's
+// timeout-minutes: 10 (.github/workflows/ci.yaml), so a subprocess that never returns still
+// reddens with this test named instead of cancelling the job, which names nothing.
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
   const read = Bun.spawnSync([
     "bun",
@@ -3570,7 +3613,7 @@ test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]
     `skill://demo/references/notes.md\t${[...otherHeader].length}\t${notesChars}\tfalse\tfalse`,
   ]);
   expect(text).toContain("2 of 4 reads arrived whole\n");
-});
+}, 60_000);
 
 /** A run's row and the lines printed under it. */
 function rowOf(name: string): string {

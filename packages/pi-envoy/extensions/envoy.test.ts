@@ -1832,14 +1832,39 @@ async function settle(): Promise<void> {
 
 // Polls `condition` between event-loop turns. Only the resubscribe path waits on a real timer
 // (`ENVOY_RESUBSCRIBE_DELAY_MS`, 10 ms in these tests), which no fake clock reaches, and a busy
-// machine runs it later than any fixed sleep allows; the deadline is measured on the monotonic
-// clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
-// than on this process's own work passes a longer bound: starting a shell and killing its group
-// is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
-async function until(condition: () => boolean, what: string, timeoutMs = 2_000): Promise<void> {
-  const deadline = performance.now() + timeoutMs;
+// machine runs it later than any fixed sleep allows; the wait is measured on the monotonic
+// clock, which `setSystemTime` leaves alone.
+// The deadline is a hang guard rather than a budget: what can hang here is a condition no
+// listener, relay or resubscribe path ever makes true, which would spin this loop forever.
+// 60_000 sits above the per-test limit of every row in this file but the four that carry
+// 120_000 — the two live-stack freeze rows and the two session_shutdown hang guards — so a
+// stuck row reddens at the runner's limit, which names the test, and never here. The warning at
+// 2_000 keeps the diagnosis the old deadline gave — once per call, not once per poll — while the
+// polling goes on, and from then on each poll also yields a real millisecond: `settle()` alone is
+// 25 `setImmediate` round trips and no delay, so a condition that never holds would spin a core
+// for the rest of the guard, beside the rows still running, long after the runner failed this
+// one at its own limit. The pacing starts only once the wait is already pathological, so a
+// healthy wait is untouched. That pacing is also why this helper is for real-timer scopes only:
+// under `jest.useFakeTimers()` a `Bun.sleep` never resolves (measured on bun 1.4.4: a row
+// awaiting `Bun.sleep(5)` there timed out, where real timers resolve it in 14 ms), so from the
+// first warning on the loop would stop polling and the throw below would be unreachable. No
+// caller is in such a scope: the file's fake-timer scopes are `onTestClock`, the store-beat row
+// and the session_shutdown budget row, and none of them calls this.
+// The base's `timeoutMs` parameter is gone with the deadline it fed: a caller waiting on a real
+// child process now waits under the same guard as every other, which is above its per-test limit
+// rather than below it, so the runner's limit names the row instead of this helper throwing
+// first.
+async function until(condition: () => boolean, what: string): Promise<void> {
+  const start = performance.now();
+  let warned = false;
   while (!condition()) {
-    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    const waited = performance.now() - start;
+    if (waited > 60_000) throw new Error(`timed out waiting for ${what}`);
+    if (!warned && waited > 2_000) {
+      warned = true;
+      console.warn(`still waiting for ${what} after 2 s`);
+    }
+    if (warned) await Bun.sleep(1);
     await settle();
   }
 }
@@ -5183,7 +5208,10 @@ console.log(JSON.stringify(args));
         const idle = new Date(Date.now() - MARKER_MAX_AGE_MS - 60_000);
         utimesSync(store, idle, idle);
         jest.advanceTimersByTime(STORE_BEAT_MS);
-        expect(Date.now() - statSync(store).mtimeMs).toBeLessThan(STORE_BEAT_MS);
+        // The row's subject is the touch: the beat left an mtime newer than the deliberately old
+        // one set two lines above. The old form compared `Date.now()` — bun's fake clock, this
+        // row runs under `jest.useFakeTimers()` — with the real filesystem's mtime: two clocks.
+        expect(statSync(store).mtimeMs).toBeGreaterThan(idle.getTime());
         rmSync(store, { recursive: true });
         jest.advanceTimersByTime(STORE_BEAT_MS);
         expect(statSync(join(store, "markers")).isDirectory()).toBe(true);
@@ -11831,16 +11859,18 @@ console.log(JSON.stringify(args));
         setInterval: (callback) => intervals.push(callback),
       };
       /**
-       * Ticks until the listener has accepted one more registration, and answers with the count it
-       * reached. A tick that lands inside the refresh interval posts nothing, so the row ticks
+       * Ticks until the listener has accepted one more registration, and answers with the count
+       * it reached. A tick that lands inside the refresh interval posts nothing, so the row ticks
        * again after a grace instead of deciding on one tick, and a refresh is awaited where it
-       * shows — at the listener. The deadline only a stopped refresh reaches leaves the count as
-       * it was, so the caller's own assertion says what was missing.
+       * shows — at the listener. It polls until the count moves: a refresh that never resumes is
+       * left to the row's own limit, which names the test, rather than decided on a deadline
+       * here, which would hand the caller a stale count and say nothing about why.
        */
       const refreshed = async (): Promise<number> => {
         const seen = registrations;
-        const until = Date.now() + 5_000;
-        while (registrations === seen && Date.now() < until) {
+        while (registrations === seen) {
+          // The tick's own pacing, not a bound on the row: a tick inside the refresh interval
+          // posts nothing, so this hands the loop on to the next tick.
           const waiting = Promise.withResolvers<void>();
           accepted = () => waiting.resolve();
           const grace = setTimeout(() => waiting.resolve(), 250);
@@ -14164,7 +14194,7 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-switched"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        await until(() => existsSync(join(work, "running")), "the command to be running");
 
         // A `/new` while the command runs. The viewer follows the session the host moved to, as
         // the relay's watch does, so the publisher is armed again and the frame this command
@@ -14220,7 +14250,7 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-host-moved"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        await until(() => existsSync(join(work, "running")), "the command to be running");
 
         // The host is on another conversation now. No handler is fired for it, so the plugin's
         // own `sessionID` still reads ses_delivery.
@@ -14909,8 +14939,7 @@ console.log(JSON.stringify(args));
         agent.push(directDispatchEnvelope("steer", "shell-command-busy-other-1"));
         await until(
           () => existsSync(join(work, "running")),
-          "the first session's command to be running",
-          10_000
+          "the first session's command to be running"
         );
 
         // A `/new` to a conversation of its own, with ses_delivery's command still running.
@@ -14963,7 +14992,7 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-withheld-copy"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        await until(() => existsSync(join(work, "running")), "the command to be running");
 
         await moveHost(fixture, other);
         writeFileSync(join(work, "go"), "");
@@ -15006,7 +15035,7 @@ console.log(JSON.stringify(args));
         agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-kill"));
         // The command itself, not the agent's copy of its report: nothing is sent until the
         // command ends, and this one would run for ten minutes.
-        await until(() => existsSync(pidFile), "the command to be running", 10_000);
+        await until(() => existsSync(pidFile), "the command to be running");
         const pid = Number(readFileSync(pidFile, "utf8").trim());
         expect(Number.isInteger(pid)).toBe(true);
         // The command is still running: nothing but the shutdown below ends it.
@@ -19833,20 +19862,66 @@ console.log(JSON.stringify(args));
   });
 
   test("session_shutdown resolves within its budget when drain hangs on a dead connection", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-hang");
+    const requests: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      requests.push(`${init?.method ?? "GET"} ${new URL(input.toString()).pathname}`);
+      return responseWithRegistration(input, init, []);
+    };
+    const { default: envoyExtension, SHUTDOWN_DEADLINE_MS } = await import(
+      "./envoy.ts?shutdown-hang"
+    );
     const fixture = createPi();
 
     envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
 
     natsState.drainHangs = true;
-    const startedAt = Date.now();
-    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
+    // The budget is the composite, not the constant alone: Oh My Pi kills a `session_shutdown`
+    // handler at 2 s, and what has to fit inside that is everything this handler does — the
+    // synchronous work at `envoy.ts:3720-3741` and the race at `:3757-3760` — however many
+    // awaited steps it grows. So the handler runs on the test's clock (`jest.useFakeTimers`,
+    // which `envoy.ts:3743` obeys), where no real time passes and load cannot stretch what is
+    // read: the clock moves only as this loop advances it, and the handler's own end is what
+    // stops it. A handler that waits the hanging drain out never ends and reddens at this row's
+    // guard; one whose deadline is used wrongly at `envoy.ts:3743`, or that grows a step waiting
+    // on another timer, ends past the cap and reddens here.
+    jest.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      let settled = false;
+      const handled = fixture.handlers
+        .get("session_shutdown")?.({}, sessionContext("ses_shutdown"))
+        .finally(() => {
+          settled = true;
+        });
+      for (let step = 0; step < 100 && !settled; step += 1) {
+        for (let flush = 0; flush < 50 && !settled; flush += 1) await Promise.resolve();
+        if (!settled) jest.advanceTimersByTime(100);
+      }
+      await handled;
+      // 2_000 is Oh My Pi's own `SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`, a literal here because Oh
+      // My Pi is not a dependency of this package.
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(2_000);
+    } finally {
+      jest.useRealTimers();
+    }
 
-    // OMP kills shutdown handlers at 2s; the bounded drain must finish first.
-    expect(Date.now() - startedAt).toBeLessThan(1_900);
-  });
+    // The handler deregistered and returned while the drain had started and not returned: one
+    // that waits the drain out reaches neither of these, because it hangs to this row's limit.
+    expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
+    expect(natsState.drainStarted).toBe(true);
+    // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
+    // waits for a drain that never returns. The row's own cost, read from bun's junit reporter on
+    // this two-CPU pod: 1_265 / 1_281 / 1_285 ms (min/median/max over 5 idle runs), and
+    // 2_104 / 9_888 / 22_970 ms over the 60 runs of three campaigns under 96 busy loops, 48 per
+    // CPU. Six times that worst is 137_819 ms, past the 120_000 a guard may take here, so this
+    // takes that ceiling: 5.2 times the worst of those runs, where the 30_000 it replaces sat
+    // inside the loaded cost itself and failed a correct run at 30_297.51 ms. It stays well
+    // inside the pi-envoy job's `timeout-minutes: 10` (.github/workflows/ci.yaml), so a drain
+    // that never returns reddens with this test named instead of cancelling the job, which
+    // names nothing.
+  }, 120_000);
 
   test("starts NATS drain while listener deregistration is still pending", async () => {
     const deletion = Promise.withResolvers<Response>();
@@ -19968,14 +20043,13 @@ console.log(JSON.stringify(args));
     // Real time: the registration has to be on the wire before the shutdown starts waiting it out.
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const startedAt = Date.now();
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
-    const elapsed = Date.now() - startedAt;
 
     // The DELETE is on the wire at all, which the five-second settle inside a one-second deadline
-    // never managed, and the handler is still done inside the 2 s OMP gives it.
+    // never managed. That it is sent inside the 2 s Oh My Pi gives the handler is proved by the
+    // `SHUTDOWN_DEADLINE_MS` assertion in "session_shutdown resolves within its budget when drain
+    // hangs on a dead connection".
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
-    expect(elapsed).toBeLessThan(1_900);
 
     registration.resolve(
       response({
@@ -19986,7 +20060,13 @@ console.log(JSON.stringify(args));
       })
     );
     await subscribing;
-  });
+    // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
+    // waits out a registration that never settles. Measured as the row above: 570 / 578 / 627 ms
+    // (min/median/max over 5 idle runs) and 5_922 / 13_072 / 19_279 ms over 20 runs under 96 busy
+    // loops, 48 per CPU. The old 30_000 sat inside six times that worst loaded cost, so this row
+    // is raised too: 120_000 is six times 19_279 ms (115_673 ms), rounded up, and still well
+    // inside the pi-envoy job's `timeout-minutes: 10` (.github/workflows/ci.yaml).
+  }, 120_000);
 
   // A `/new`, a fork or a branch mints a new id, and nothing heartbeats the old one from then on:
   // left registered it reads as live, and then as unresponsive, for an hour of peers' sends.
@@ -21269,7 +21349,8 @@ describe("consumer delivery", () => {
     /** Boots a session following INFRA-370's topic, relays the comment event - cut, or the
      *  stand-in when `omitted` - on the session's own consumer, the one path a frame reaches it
      *  by, and answers the comment read with `read`. Returns the card its agent was prompted
-     *  with. */
+     *  with. The rows that call it carry a 30 s hang guard, because what can hang is a card that
+     *  is never delivered for the relayed comment event. */
     async function cardForCutComment(
       name: string,
       read: (path: string) => Response | undefined,
@@ -21308,7 +21389,7 @@ describe("consumer delivery", () => {
       // blank lines (one quoted scalar), and no note, because nothing is missing.
       expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
       expect(card).not.toContain("first part only");
-    });
+    }, 30_000);
 
     test("keeps the part it carried, and the note, when that read fails", async () => {
       const card = await cardForCutComment("cut-comment-read-fails", (path) =>
@@ -21322,7 +21403,7 @@ describe("consumer delivery", () => {
       expect(card).toContain(
         `the body is its first part only; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
       );
-    });
+    }, 30_000);
 
     test("is prompted with that body for a stand-in the bus left with no body at all", async () => {
       const reads: string[] = [];
@@ -21342,7 +21423,7 @@ describe("consumer delivery", () => {
       expect(reads).toEqual([`/api/v1/comments/${CUT_COMMENT}`]);
       expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
       expect(card).not.toContain("too large for the bus");
-    });
+    }, 30_000);
 
     test("gives the note for a stand-in whose read fails, having no body to keep", async () => {
       const card = await cardForCutComment(
@@ -21358,7 +21439,7 @@ describe("consumer delivery", () => {
       expect(card).toContain(
         `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
       );
-    });
+    }, 30_000);
   });
 });
 
@@ -21380,6 +21461,10 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
 
   // The session runs on nats.js's real ping and dial timers and a real listener, so each wait
   // polls the real clock until its condition holds or its deadline passes.
+  // These deadlines stay, unlike the rest of the file's: they are hang guards against a live
+  // NATS server that never answers, and they cannot decide a healthy run. The deadlines passed
+  // below sit inside the rows' own limits and inside the `envoy-session-stall` CI job's
+  // `timeout-minutes: 15`, and these rows run only under `LEGION_E2E_ENVOY_STACK=1`.
   async function waitFor(
     condition: () => boolean | Promise<boolean>,
     deadline: number,
