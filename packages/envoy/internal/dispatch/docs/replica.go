@@ -104,8 +104,7 @@ import (
 // pointer, so it adds no resident memory: the next collection takes it, and a first run that
 // starts after that renders what it starts from, as every run after a recover does.
 type renderedReplica struct {
-	// logger is where the replica writes its lines, the service's (Service.log); nil is the
-	// package's default logger, as the service's own nil logger is.
+	// logger is where the replica writes its lines, the service's that keeps it (Service.log).
 	logger func() *slog.Logger
 	mu     sync.Mutex
 	// waiting counts the update observers waiting for mu (lockForUpdate).
@@ -753,13 +752,9 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 	return r.seq, settles
 }
 
-// writes is where the replica logs: the service that keeps it, or the package default for a
-// replica no service made.
+// writes is where the replica logs: the service that keeps it.
 func (r *renderedReplica) writes() *slog.Logger {
-	if r.logger != nil {
-		return r.logger()
-	}
-	return slog.Default()
+	return r.logger()
 }
 
 // keepReplica makes the replica live's update observer keeps, moving through log, live's update

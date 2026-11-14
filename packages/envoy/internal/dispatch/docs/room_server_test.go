@@ -58,8 +58,10 @@ func TestCloseGatesDoNotOutliveTheirRooms(t *testing.T) {
 // A repair that meets a close of its room under way writes nothing and returns rather than waiting
 // for the close: the close waits for repairs already committing, and a settlement writing a repair
 // holds the document's lock, which a failed room's close compacts under (roomServer).
+//
+// Serial: "returns rather than waiting" is the settlement returning within 10 s of wall clock
+// while the close holds its gate, a bound a parallel neighbour's load spends.
 func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	generation := owedStamp(t, service, artifactID)
@@ -82,9 +84,9 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 	}()
 	select {
 	case <-settled:
-	case <-time.After(roomWait(t)):
+	case <-time.After(10 * time.Second):
 		release()
-		t.Fatal("the settlement waited for the close under way instead of refusing its repair")
+		t.Fatal("the settlement waited for the close under way instead of refusing its repair, for more than 10 s")
 	}
 	release()
 	if repairs := pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)); repairs == 0 {

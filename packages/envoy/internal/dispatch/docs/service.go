@@ -155,17 +155,13 @@ type Service struct {
 	// maxUpdateItems, whose comment states the rule; a test lowers it, and the server's, before
 	// any room opens (shrinkPendingItems).
 	maxPendingItems int
-	// logger is where the lines a test reads are written: every site a parallel test of this
-	// package asserts on goes through s.log(), and a method holding s writes its lines that way
-	// rather than through slog directly. A few of the package's own lines still go to the
-	// process default - the free functions that hold no service, New's own lines before the
-	// service exists, and a handful of *Service methods whose only readers are serial tests -
-	// and a line added beside them should move to s.log() with them. Nil is the
-	// package's default logger, read at each line rather than at New, so a test that captures
-	// the default logger after it built its service still sees them (log). A test that must
-	// read its own service's lines beside other tests sets one of its own instead, since
-	// slog.SetDefault is the whole process's and two tests capturing it at once read each
-	// other's.
+	// logger is where the service's own lines are written: every *Service method writes through
+	// s.log(), never through slog directly, so a test that gives its service a logger reads every
+	// line that service writes and no other test's. Nil is the package's default logger, read at
+	// each line rather than at New, so a test that captures the default logger after it built its
+	// service still sees them (log). A test that must read its own service's lines beside other
+	// tests sets one of its own instead, since slog.SetDefault is the whole process's and two
+	// tests capturing it at once read each other's.
 	logger *slog.Logger
 	// coldReadTimeout bounds a cold read's fold of the stored history (coldReadTimeout, whose
 	// comment states the rule). New sets it to that constant; the test of the timeout sets a
@@ -2497,7 +2493,7 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 		// refuses its browsers' appends taken later than closeMargin after the close
 		// (refuseClosedIssueAppend).
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read the open state of an issue's documents", "issue", issueKey, "error", err)
+			s.log().Error("dispatch: read the open state of an issue's documents", "issue", issueKey, "error", err)
 		}
 		return
 	}
@@ -2534,7 +2530,7 @@ func (s *Service) documentRemoved(ctx context.Context, artifactID string) {
 		// reads it again is the lane's pass after the next LISTEN (recheckRemovedRooms),
 		// which this process makes on a reconnect. Until one of those, the error is what
 		// anyone looking at this process has to go on.
-		slog.Error("dispatch: close the editor room of a removed document", "artifact", artifactID, "error", err)
+		s.log().Error("dispatch: close the editor room of a removed document", "artifact", artifactID, "error", err)
 	}
 }
 
@@ -2566,7 +2562,7 @@ func (s *Service) recheckResidentIssues(ctx context.Context) {
 	states, err := s.readRoomIssueStates(ctx, residentIssuesStatement, rooms)
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read the open state of the resident documents' issues", "rooms", len(rooms), "error", err)
+			s.log().Error("dispatch: read the open state of the resident documents' issues", "rooms", len(rooms), "error", err)
 		}
 		return
 	}
@@ -2614,7 +2610,7 @@ func (s *Service) recheckRemovedRooms(ctx context.Context) {
 		// Every room stays as it is until the next LISTEN reads again, as a failed read of
 		// the resident rooms' issues leaves them (recheckResidentIssues).
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read which of the resident documents still exist", "rooms", len(rooms), "error", err)
+			s.log().Error("dispatch: read which of the resident documents still exist", "rooms", len(rooms), "error", err)
 		}
 		return
 	}
@@ -2684,7 +2680,7 @@ func (s *Service) refuseClosedIssueAppend(room string, instance *roomInstance) {
 	closed := state.closed
 	s.unlockState(room, state)
 	if !closed {
-		slog.Info("dispatch: closing a document room whose issue closed before this process heard of it", "room", room)
+		s.log().Info("dispatch: closing a document room whose issue closed before this process heard of it", "room", room)
 	}
 	// Shutdown joins the close, as it does a failed room's eviction (failRoomLocked); one that
 	// begins after Shutdown stopped accepting work runs unjoined, since the room still must close.
@@ -2798,7 +2794,7 @@ func (s *Service) closeRefusedAppendRoom(ctx context.Context, room string, insta
 		},
 		func(err error) error { return err })
 	if err != nil && !errors.Is(err, websocket.ErrRoomNotFound) {
-		slog.Warn("dispatch: close a document room of an issue that closed or reopened; its browsers keep the admission they had",
+		s.log().Warn("dispatch: close a document room of an issue that closed or reopened; its browsers keep the admission they had",
 			"room", room, "error", err)
 	}
 	if recorded {
@@ -2844,7 +2840,7 @@ func (s *Service) closeRoomOnReplacedHistory(room string, instance *roomInstance
 					ErrRoomBehindHead, room, err))
 			}
 		case closed:
-			slog.Info("dispatch: closed a document room whose browser's update was stored on a history replaced under it", "room", room)
+			s.log().Info("dispatch: closed a document room whose browser's update was stored on a history replaced under it", "room", room)
 		}
 	}()
 }
@@ -3072,7 +3068,7 @@ func (s *Service) persistClosedLastActor(ctx context.Context, room string, snaps
 // keep the admission they connected with until one does.
 func (s *Service) closeRoomForIssue(ctx context.Context, room string) {
 	if err := s.srv.closeRoom(ctx, room, true); err != nil && !errors.Is(err, websocket.ErrRoomNotFound) {
-		slog.Warn("dispatch: close a document room of an issue that closed or reopened; its browsers keep the admission they had",
+		s.log().Warn("dispatch: close a document room of an issue that closed or reopened; its browsers keep the admission they had",
 			"room", room, "error", err)
 	}
 }

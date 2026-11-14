@@ -320,8 +320,11 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 // sweep evicts the room within the idle timeout and a sweep of the API's last touch, as it evicts
 // a room its last browser left (roomIdleTimeout), and the document reads back what the API wrote.
 // An agent's edit of a document no room holds loads none at all (publishLiveWrite).
+//
+// Serial: the room must still be resident inside its 2 s idle timeout and gone within 10 s, two
+// wall-clock windows: a stall of this goroutine past the first lets the sweep evict the room
+// before the check that the read loaded it, and the second is the span the name asserts.
 func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	// Production waits roomIdleTimeout; two seconds keeps the test short, and ygo then sweeps
@@ -428,11 +431,12 @@ func (w *roomLoads) count() int {
 
 // minPeerWrites and minProjections are the rounds TestTheUpdateObserverNeverRendersAWriteHalfWay
 // judges on: fewer than these says nothing about an observer under concurrent writes, whatever
-// the renders showed. They are dispatch://INFRA-985's numbers and are unchanged; what changed is
-// that the test waits for them rather than counting what a two-second window held.
+// the renders showed. They are dispatch://INFRA-985's numbers and are unchanged. The test runs its
+// loops for at least minRaceWindow, the base's two seconds, and on until it has these rounds.
 const (
 	minPeerWrites  = 20
 	minProjections = 5
+	minRaceWindow  = 2 * time.Second
 )
 
 // The room's update observer renders a copy of the room brought up to date under the room's lock
@@ -467,27 +471,28 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 	}
 	ctx := context.Background()
 	bob := model.Actor{Kind: "user", ID: "bob"}
-	// The three run until the test has the rounds it judges on - minPeerWrites peer writes and
-	// minProjections projections - rather than for a window of wall clock. A window counts what
-	// the machine managed in it, and these two rounds cost wildly different things: a peer write
-	// is an in-memory Apply of a few milliseconds, while a projection's transaction also stores
-	// every peer append the room's persistence has not stored yet (recordLiveOperation's
-	// flushThrough), so it costs what Postgres charges for that backlog. On a runner where every
-	// package of the module tests against one Postgres a projection round measured 0.7 to 3.4
-	// seconds against the peers' 9 ms, and a two-second window held three of them rather than
-	// five: what the window measured was the machine's CPU-to-Postgres ratio, not this property
-	// (dispatch://INFRA-1075, run 42239459430). The numbers it judges on are unchanged; only the
-	// way it decides it has seen them is. The deadline is the package's own bound on a room's
-	// work, so only a room that stopped reaches it, and the check after the wait is the one that
-	// reports it.
+	// The three run for at least minRaceWindow, the two seconds the base ran them for, and on
+	// until the test has the rounds it judges on - minPeerWrites peer writes and minProjections
+	// projections. The window is the sample a fast machine takes: what this race test catches
+	// grows with the rounds it runs, so it never stops at the floor. The floor is the sample a
+	// slow one is held to, since these two rounds cost wildly different things: a peer write is
+	// an in-memory Apply of a few milliseconds, while a projection's transaction also stores every
+	// peer append the room's persistence has not stored yet (recordLiveOperation's flushThrough),
+	// so it costs what Postgres charges for that backlog. On a runner where every package of the
+	// module tests against one Postgres a projection round measured 0.7 to 3.4 seconds against
+	// the peers' 9 ms, and a two-second window held three of them rather than five
+	// (dispatch://INFRA-1075, run 42239459430). The deadline is the package's own bound on a
+	// room's work, so only a room that stopped reaches it, and the check after the wait is the one
+	// that reports it.
+	window := time.Now().Add(minRaceWindow)
 	deadline := time.Now().Add(roomWait(t))
 	failures := make(chan error, 3)
 	var writes, projections atomic.Int64
 	// running is what every one of the three loops runs under: it stops them all at the first
-	// round that completes the set, so the writers stop with the projections they were made to
-	// run beside rather than at a clock of their own.
+	// round past the window that completes the set, so the writers stop with the projections
+	// they were made to run beside rather than at a clock of their own.
 	running := func() bool {
-		return (writes.Load() < minPeerWrites || projections.Load() < minProjections) && time.Now().Before(deadline)
+		return (time.Now().Before(window) || writes.Load() < minPeerWrites || projections.Load() < minProjections) && time.Now().Before(deadline)
 	}
 	var writers sync.WaitGroup
 	peer := func(first int) {

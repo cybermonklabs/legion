@@ -71,8 +71,12 @@ func requireDueWithin(t *testing.T, row editNoticeRow, quiet, slack time.Duratio
 // before theirs to theirs, naming them, due a quiet time after the settlement. A second person's
 // edit inside the window keeps where it starts, moves where it ends and when it is due, and names
 // both people.
+//
+// Serial: requireDueWithin holds each notice's due time to within 2 s of the database's clock at
+// the read after the settlement that wrote it, a wall-clock window: the settlement's commit, its
+// publish and the read all have to end inside it, which a parallel neighbour's load can stall
+// past.
 func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	service.editNoticeQuiet = 30 * time.Second
@@ -145,8 +149,12 @@ func TestEditNoticeNamesThePersonWhoEditedLast(t *testing.T) {
 // The quiet window starts when the settlement writes the notice, not when its transaction began:
 // a settlement that waited on its locks longer than the quiet time still commits a notice that is
 // not due yet, so the card never goes out before the document has been quiet that long.
+//
+// Serial: the notice must still be inside its 500 ms quiet window when it is read and swept,
+// a wall-clock window: everything after the notice's insert - the settlement's commit and
+// publish, the read, the sweep's query - has to end inside it, which a parallel neighbour's load
+// can stall past (a 300 ms wait read 1.767 s on CI job 128420803760, marks_test.go).
 func TestEditNoticeQuietStartsWhenTheNoticeIsWrittenNotWhenItsTransactionBegan(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	service.editNoticeQuiet = 500 * time.Millisecond
@@ -643,6 +651,9 @@ func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
 // the document's due notice; once the settlement goes on, it moves the notice on and commits, and
 // the sweep finds nothing due. Once the quiet time passes, one notice covers both people's
 // versions, so each person's version is in exactly one sent notice's range.
+//
+// Serial: it swaps process-wide state, the default slog logger (logtest.SetDefault), and it holds
+// the notice to going within ten seconds of its quiet time, a wall-clock bound.
 func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -709,10 +720,14 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 		t.Fatal("the sweep that met the settlement never finished")
 	}
 
-	deadline := time.Now().Add(roomWait(t))
+	// Bob's settlement moved the notice on by this service's own quiet time, so the notice goes
+	// once that has passed: the bound is the quiet time and the base's ten seconds past it, not the
+	// package's give-up wait, which a notice moved on by production's thirty seconds would pass.
+	sentBy := service.editNoticeQuiet + 10*time.Second
+	deadline := time.Now().Add(sentBy)
 	for len(humanEdits(t, service.store, artifactID)) == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("no notice went once the quiet time passed")
+			t.Fatalf("no notice went within %v of bob's settlement, its quiet time of %v and ten seconds", sentBy, service.editNoticeQuiet)
 		}
 		if _, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background())); err != nil {
 			t.Fatalf("sweep after the quiet time: %v", err)

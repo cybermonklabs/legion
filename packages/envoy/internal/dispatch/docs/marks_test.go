@@ -122,8 +122,12 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 // subscribed to, so no update of that instance ever announces the mark the browser writes next.
 // The wait ends with a read of the document as it then is, which finds the mark, rather than
 // refusing an anchor the document holds.
+//
+// Serial: the hook evicts the room the verification subscribed to, so the mark is found only by
+// VerifyMark's final read when MarkWait's 300 ms run out, and the browser's write - 100 ms after
+// the hook, into the room it reloads - has to land inside the 200 ms left of that window, which a
+// parallel neighbour's load can stall past, as it does the sibling's span above.
 func TestVerifyMarkReadsTheDocumentAgainWhenItsWaitEnds(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{

@@ -390,7 +390,7 @@ func TestTheRenderShadowReadsClassesForAParkedOnlyCommit(t *testing.T) {
 	service.rooms.Store("r", state)
 	shadow := &renderShadow{service: service, artifactID: "r"}
 	room := &shadowRoom{}
-	shadow.observedWithoutUpdate(room, log, &renderedReplica{})
+	shadow.observedWithoutUpdate(room, log, &renderedReplica{logger: service.log})
 	if len(room.updates) != 1 || !room.updates[0].parkedOnly {
 		t.Fatalf("shadow updates = %+v, want one parked-only commit", room.updates)
 	}

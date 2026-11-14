@@ -296,20 +296,31 @@ func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t 
 	// and then the compaction the check sent it to, and rows made young between the two leave
 	// the step a check that found something to fold and a compaction that found nothing, which
 	// is tryDone and drops the room from the queue, so no retry comes and the wait below runs
-	// out. It failed 4 runs in 30 that way (dispatch://INFRA-1075).
+	// out. It failed 4 runs in 30 that way (dispatch://INFRA-1075). The hook runs on the worker,
+	// where a t.Fatal would end the worker's goroutine rather than the test, so it records the
+	// error, and closes aged whatever happened; the wait for it gives up by name rather than
+	// leaving a queue that never steps the busy room again to the binary's timeout.
 	aged := make(chan struct{})
 	var ageOnce sync.Once
+	var ageErr error
 	ageRows := func(room string) {
 		if room != artifactID {
 			return
 		}
 		ageOnce.Do(func() {
-			ageUpdatesThrough(t, database, artifactID, everyVersion, 0)
-			close(aged)
+			defer close(aged)
+			ageErr = ageUpdates(database, artifactID, everyVersion, 0)
 		})
 	}
 	service.compactions.beforeStep.Store(&ageRows)
-	<-aged
+	select {
+	case <-aged:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the queue never stepped the busy document again, so its rows were never made young")
+	}
+	if ageErr != nil {
+		t.Fatalf("make the busy document's rows young in the queue's worker: %v", ageErr)
+	}
 	young := storedRows(t, database, artifactID)
 	step := steps.await(t, artifactID, 0, "the retry that finds no old row to check the document again later", func(step compactionStepRecord) bool {
 		return step.retry > 0 && step.next.kind == compactionLater

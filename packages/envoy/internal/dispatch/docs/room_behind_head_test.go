@@ -785,6 +785,10 @@ func TestARoomReservedForTheInstanceItReplacedIsTriedAgain(t *testing.T) {
 // document's room is loaded and left idle after it. Once the sweep has retired that sentinel, a
 // sweep pass has run with the held room idle for longer than the timeout as well, and it is still
 // the room the document holds when the close closes it.
+//
+// Serial: on its one-second idle timeout the sweep could retire a room the close left resident
+// a second after the close's Apply stamped it, so the final wait (waitForNoLiveDocument) stops
+// at 500 ms, a wall-clock window that must begin as the close returns.
 func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour

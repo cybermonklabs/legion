@@ -116,7 +116,8 @@ func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
 
 // A row another writer holds through the whole boot pass - its own retries included - is left
 // to the retries after it, and the first of those after the writer lets go counts it; the
-// reconciliation then returns.
+// reconciliation then returns, at that retry: a loop that ran out its retries instead logs that it
+// left drift to the next start, which fails the test however soon the short schedule below ends.
 //
 // Serial: it swaps process-wide state, the default slog logger, which is how it reads the pass's
 // own line back (captureLogs).
@@ -174,5 +175,8 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	case <-done:
 	case <-time.After(roomWait(t)):
 		t.Fatal("the reconciliation did not return once no drift was left")
+	}
+	if strings.Contains(logs.String(), "left drift it could not lock to the next start") {
+		t.Fatalf("the reconciliation ran out its retries rather than returning at the one that found no drift left:\n%s", logs.String())
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"strings"
@@ -694,11 +695,20 @@ const everyVersion int64 = math.MaxInt64
 // clock: time.Hour is older than both compactTail and compactMaxTailAge.
 func ageUpdatesThrough(t *testing.T, database *store.Store, artifactID string, through int64, age time.Duration) {
 	t.Helper()
+	if err := ageUpdates(database, artifactID, through, age); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ageUpdates is ageUpdatesThrough for a goroutine that may not fail the test, such as a hook the
+// compaction queue's worker runs: it returns the error for the test to fail on.
+func ageUpdates(database *store.Store, artifactID string, through int64, age time.Duration) error {
 	if _, err := database.Pool.Exec(context.Background(), `
 		update doc_updates set created_at = now() - make_interval(secs => $3) where artifact_id = $1 and version <= $2
 	`, artifactID, through, age.Seconds()); err != nil {
-		t.Fatalf("age document updates: %v", err)
+		return fmt.Errorf("age document updates: %w", err)
 	}
+	return nil
 }
 
 // compactUnderTail compacts the document under the tail rule, waiting for its lock.

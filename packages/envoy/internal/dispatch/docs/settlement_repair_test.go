@@ -456,8 +456,11 @@ func TestSettlementThatStampsAndRepairsReleasesItsSlots(t *testing.T) {
 // room's eviction, which compacts the document's old rows under the document's advisory lock the
 // settlement holds, waits for the repair's commit to reach the room's persistence rather than
 // retiring the room's worker under it (roomServer, LEGION-498).
+//
+// Serial: it waits on a whole-process goroutine dump, closeWaitsForRepair, which counts any
+// goroutine of any test in a close that waits on a room's close gate, so a parallel neighbour's
+// close lets the pause go before this row's eviction reached the wait it forces.
 func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	pause := pauseRepairCommits(service)
@@ -496,8 +499,12 @@ func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
 // settlement holds that row (lockArtifactOwner), so a close of the issue itself commits only after
 // the settlement has. Shutdown's settlement is refused its broadcast once the room is shutting
 // down and fails the room, whose unstored updates its browsers send again when they reconnect.
+//
+// Serial: it waits on whole-process goroutine dumps - closeWaitsForRepair for the close, and
+// goroutinesIn("consumeSuppressedPersistence") for the second writer, which every room update of
+// any test reaches (websocket.go) - so a parallel neighbour's goroutines let the pause go before
+// this row's close or second writer reached the wait it forces.
 func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.T) {
-	t.Parallel()
 	for _, closer := range []struct {
 		name  string
 		close func(service *Service, artifactID string) error

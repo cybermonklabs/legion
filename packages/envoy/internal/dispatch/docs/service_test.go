@@ -1353,15 +1353,17 @@ const askBodySeed = ":::ask{#ask-lists urgency=\"med\" multiple=\"false\" state=
 
 // askBodyCasesPerDocument is how many of a suite's cases run on one document, in turn.
 //
-// A case leaves its decision valid, its row open and its document settled - which is what the next
-// case needs to start from - so the base is built once per document rather than once per case. The
-// two suites enumerate 1,957 bodies between them, and at 0.45 s a case in CI the document created,
-// seeded and settled before each one was 47 per cent of it: create 5 ms, seed 4 ms, the settlement
-// that opens the row 32 ms, the body's edit 1.5 ms, the settlement that flags it 29 ms, and the
-// refusal the case is about 55 ms and up (dispatch://INFRA-1075). The base is built by the
-// service's own writes - the seed and a settlement, never rows written here - so a case starts
-// from what production leaves, and the first case on each document runs that base and its own
-// settlement end to end.
+// A case leaves the decision as its follow left it - urgency "high" once its ask edit applied, a
+// question the follow wrote, or the broken body itself where the refusal named no delete - so
+// every case after the first on a document starts from the seed put back (restoreAskBodySeed),
+// as a fresh document would give it, and the base is built once per document rather than once
+// per case. The two suites enumerate 1,957 bodies between them, and at 0.45 s a case in CI the
+// document created, seeded and settled before each one was 47 per cent of it: create 5 ms, seed
+// 4 ms, the settlement that opens the row 32 ms, the body's edit 1.5 ms, the settlement that flags
+// it 29 ms, and the refusal the case is about 55 ms and up (dispatch://INFRA-1075). The base is
+// built by the service's own writes - the seed, a document edit and a settlement, never rows
+// written here - so a case starts from what production leaves, and the first case on each
+// document runs that base and its own settlement end to end.
 //
 // The documents run beside one another, so the suites keep the parallelism they had: the cases of
 // one document are a chain of this many, which at 64 is a tenth of a suite and shorter than its
@@ -1378,6 +1380,61 @@ func askBodyDocument(t *testing.T, service *Service, number int) string {
 	seedServiceText(t, service, artifactID, askBodySeed)
 	settleCurrentGeneration(t, service, artifactID)
 	return artifactID
+}
+
+// restoreAskBodySeed puts askBodySeed's decision back in the document's first ask, in place of
+// what the case before left there, and settles it: the base a fresh askBodyDocument gives, the
+// seed's question and options at urgency "med", valid, its row open as they read. A case run on
+// what the one before it left would check nothing of its own: an ask edit re-sending the urgency
+// the block already holds counts as applied while writing nothing (SetAskBlockText), and a row
+// the case before repaired to the same decision reads right with no re-index.
+func restoreAskBodySeed(t *testing.T, service *Service, artifactID string) {
+	t.Helper()
+	seed := parsedBlock(t, askBodySeed)
+	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+		ask := firstAsk(tree)
+		ask.Children = seed.Children
+		ask.Attrs["urgency"] = seed.Attrs["urgency"]
+		return tree
+	})
+	settleCurrentGeneration(t, service, artifactID)
+	restored := firstAsk(liveTree(t, service, artifactID))
+	if reason := readAskBlockStrictly(restored); reason != nil || restored.Attrs["urgency"] != "med" {
+		t.Fatalf("the seed put back reads %v with urgency %v, want it valid at med", reason, restored.Attrs["urgency"])
+	}
+	assertAskRepaired(t, service, artifactID, "ask-lists", "Should we ship?", []model.AskOption{
+		{Label: "Ship", Description: "Release it"},
+		{Label: "Hold", Description: "Wait for review"},
+	})
+}
+
+// runAskBodyGroups runs a suite's cases a document of askBodyCasesPerDocument at a time, the
+// documents beside one another and each one's cases in turn, the seed put back before every case
+// after the first. A case that fails leaves the decision as it found it or worse, so the cases
+// after it on that document start from a document of their own, on the failed case's number.
+func runAskBodyGroups[C any](t *testing.T, service *Service, cases []C, describe func(C) (shape string, number int), run func(*testing.T, string, C)) {
+	t.Helper()
+	for start := 0; start < len(cases); start += askBodyCasesPerDocument {
+		group := cases[start:min(start+askBodyCasesPerDocument, len(cases))]
+		t.Run(fmt.Sprintf("document-%d", start/askBodyCasesPerDocument+1), func(t *testing.T) {
+			t.Parallel()
+			_, first := describe(group[0])
+			artifactID, fresh := askBodyDocument(t, service, first), true
+			for _, one := range group {
+				shape, number := describe(one)
+				if !t.Run(shape, func(t *testing.T) {
+					if !fresh {
+						restoreAskBodySeed(t, service, artifactID)
+					}
+					run(t, artifactID, one)
+				}) {
+					artifactID, fresh = askBodyDocument(t, service, number), true
+					continue
+				}
+				fresh = false
+			}
+		})
+	}
 }
 
 // Every decision body of one to five blocks - each a paragraph holding text (P), a paragraph
@@ -1528,20 +1585,7 @@ func TestSetAskBlockTextRefusalOfEveryBrokenBodyLeadsToAValidDecision(t *testing
 		defer mu.Unlock()
 		followed++
 	}
-	for start := 0; start < len(cases); start += askBodyCasesPerDocument {
-		group := cases[start:min(start+askBodyCasesPerDocument, len(cases))]
-		t.Run(fmt.Sprintf("document-%d", start/askBodyCasesPerDocument+1), func(t *testing.T) {
-			t.Parallel()
-			artifactID := askBodyDocument(t, service, group[0].number)
-			for _, one := range group {
-				if !t.Run(one.shape, func(t *testing.T) { runCase(t, artifactID, one) }) {
-					// A case that failed leaves the decision as it found it or worse, so the
-					// cases after it on this document start from a base of their own.
-					artifactID = askBodyDocument(t, service, one.number)
-				}
-			}
-		})
-	}
+	runAskBodyGroups(t, service, cases, func(one askBodyCase) (string, int) { return one.shape, one.number }, runCase)
 }
 
 // askBodyBlock is the block of kind - P a paragraph holding text, E a paragraph holding none, L a
@@ -1786,20 +1830,7 @@ func TestSetAskBlockTextRefusalOfEveryBrokenBodyHoldingADecisionLeadsToAValidDec
 			}
 		}
 	}
-	for start := 0; start < len(cases); start += askBodyCasesPerDocument {
-		group := cases[start:min(start+askBodyCasesPerDocument, len(cases))]
-		t.Run(fmt.Sprintf("document-%d", start/askBodyCasesPerDocument+1), func(t *testing.T) {
-			t.Parallel()
-			artifactID := askBodyDocument(t, service, group[0].number)
-			for _, one := range group {
-				if !t.Run(one.shape, func(t *testing.T) { runCase(t, artifactID, one) }) {
-					// A case that failed leaves the decision as it found it or worse, so the
-					// cases after it on this document start from a base of their own.
-					artifactID = askBodyDocument(t, service, one.number)
-				}
-			}
-		})
-	}
+	runAskBodyGroups(t, service, cases, func(one askBodyCase) (string, int) { return one.shape, one.number }, runCase)
 }
 
 // The four shapes the review of sjawhar/legion#2433 found, word for word: a decision and the one
@@ -5467,8 +5498,14 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 	assertTableCellPipeVersionAndEventCounts(t, database, artifactID, 2, 1)
 }
 
+// Shutdown honours its caller's deadline: with a settlement blocked on the document's lock, a
+// Shutdown given 50 ms returns its context's error within a second rather than waiting on the
+// settlement or out its own drain budget.
+//
+// Serial: what it checks is that Shutdown returns inside one second of wall clock, and a test
+// running beside it takes the cores that second is measured against, as it does
+// TestShutdownDrainsPendingUpdateBeforeSettling's.
 func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = 5 * time.Millisecond
 	seedServiceText(t, service, artifactID, "before")
@@ -5512,8 +5549,8 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("shutdown error = %v, want deadline exceeded", err)
 		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("shutdown waited on the blocked settlement")
+	case <-time.After(time.Second):
+		t.Fatal("shutdown waited on the blocked settlement past its 50 ms deadline, for more than a second")
 	}
 }
 
@@ -6222,16 +6259,31 @@ func waitForRoomFailure(t *testing.T, service *Service, artifactID string) {
 	t.Fatal("document room did not become unavailable after append failure")
 }
 
+// waitForNoLiveDocument waits for the close its caller made to take the document's room away.
+// The wait is the package's give-up (roomWait), cut to half the service's room idle timeout
+// (Server.RoomIdleTimeout) when that is shorter: ygo's idle sweep retires a room no peer is in
+// once it has been idle that long, and a room is stamped idle when its last peer leaves or the
+// last Apply on it returns, which is what comes just before every close these callers make. A
+// wait as long as the sweep's would pass a close that left the room resident, the sweep retiring
+// it in the close's place. The sweep retires a room no sooner than a whole timeout after its
+// stamp, so a wait of half that, begun within the other half, ends before the sweep can answer
+// for the close. With the default minute that is 30 s; a row on a shorter timeout is serial, so
+// the wait begins as the close returns.
 func waitForNoLiveDocument(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	deadline := time.Now().Add(roomWait(t))
+	wait := roomWait(t)
+	if idle := service.srv.RoomIdleTimeout; idle > 0 {
+		wait = min(wait, idle/2)
+	}
+	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		if service.srv.GetDoc(artifactID) == nil {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("document room remained resident after closure")
+	t.Fatalf("document room remained resident %v after closure (the wait stops at half the room idle timeout of %v, after which ygo's idle sweep could retire it in the close's place)",
+		wait, service.srv.RoomIdleTimeout)
 }
 func waitForDocumentText(t *testing.T, service *Service, artifactID, want string) {
 	t.Helper()

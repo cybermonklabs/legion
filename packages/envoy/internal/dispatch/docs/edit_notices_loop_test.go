@@ -25,7 +25,7 @@ func newEditNoticeSweeper(t *testing.T, database *store.Store) *Service {
 }
 
 // runEditNoticeLoop runs the sweep until the test ends, and fails the test if it does not return
-// promptly once its context ends.
+// within loopStopBound once its context ends.
 func runEditNoticeLoop(t *testing.T, run func(ctx context.Context)) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -38,8 +38,8 @@ func runEditNoticeLoop(t *testing.T, run func(ctx context.Context)) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(roomWait(t)):
-			t.Error("the edit notice sweep did not return once its context ended, within roomWait")
+		case <-time.After(loopStopBound):
+			t.Errorf("the edit notice sweep did not return within %v of its context ending", loopStopBound)
 		}
 	})
 }
