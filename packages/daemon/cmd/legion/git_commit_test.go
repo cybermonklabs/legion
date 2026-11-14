@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -99,9 +101,11 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 		// directory of the case's own, outside the repository, and files writes into it.
 		setup [][]string
 		files func(t *testing.T, dir string)
-		// args is the command after the setup, `git` left out.
-		args  []string
-		stdin string
+		// args is the command after the setup, `git` left out. stdin is its standard input: a
+		// pipe, or a regular file that holds it when stdinFile is true.
+		args      []string
+		stdin     string
+		stdinFile bool
 		// fifo, when it is not empty, runs the command under bash with ` <(printf %s <fifo>)`
 		// after args.
 		fifo string
@@ -165,6 +169,7 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 		{name: "-t <(printf 'msg\\n'), a FIFO that is the message", fifo: "msg\n", args: []string{"commit", "--allow-empty", "-t"}, commits: true},
 		{name: "-t /dev/stdin from a pipe, the message", stdin: "msg", args: []string{"commit", "--allow-empty", "-t", "/dev/stdin"}, commits: true},
 		{name: "-F /dev/stdin from a pipe", stdin: "x\n", args: []string{"commit", "--allow-empty", "-F", "/dev/stdin"}, commits: true, lines: pair},
+		{name: "-F /dev/stdin from a regular file", stdin: "msg", stdinFile: true, args: []string{"commit", "--allow-empty", "-F", "/dev/stdin"}, commits: true, lines: pair},
 		{name: "a relative -F under git -C <dir>", setup: [][]string{{"sh", "-c", "mkdir sub && echo relative > sub/message"}},
 			args: []string{"-C", "sub", "commit", "--allow-empty", "-F", "message"}, commits: true, lines: pair},
 		{name: "a global option that takes a value", args: []string{"--shallow-file", "{files}/shallow", "-c", "x.y=z", "commit", "--allow-empty", "-m", "x"}, commits: true, lines: pair},
@@ -233,11 +238,24 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 				if wrapper {
 					command = append([]string{legion, "git", "--real", git, "--"}, args...)
 				}
+				var stdin io.Reader = strings.NewReader(tc.stdin)
+				if tc.stdinFile {
+					path := filepath.Join(t.TempDir(), "stdin")
+					if err := os.WriteFile(path, []byte(tc.stdin), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					file, err := os.Open(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer file.Close()
+					stdin = file
+				}
 				var stderr string
 				if tc.fifo != "" {
-					code, _, stderr = trailerRun(t, repo, env, tc.stdin, bash, append([]string{"-c", `f=$1; shift; "$@" <(printf %s "$f")`, "bash", tc.fifo}, command...)...)
+					code, _, stderr = trailerRunInput(t, repo, env, stdin, bash, append([]string{"-c", `f=$1; shift; "$@" <(printf %s "$f")`, "bash", tc.fifo}, command...)...)
 				} else {
-					code, _, stderr = trailerRun(t, repo, env, tc.stdin, command[0], command[1:]...)
+					code, _, stderr = trailerRunInput(t, repo, env, stdin, command[0], command[1:]...)
 				}
 				if code != 0 {
 					return code, false, stderr
@@ -259,6 +277,192 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 				assertTrailersAdded(t, alone, wrapped, tc.lines)
 			}
 		})
+	}
+}
+
+// On macOS, git's open of /dev/fd/<n> or /dev/stdin is fcntl(n, F_DUPFD, 0), which shares the
+// descriptor's offset (fd(4)), where Linux opens the file again at offset 0. So on macOS git reads
+// a message or template the wrapper hands it through a descriptor from wherever that descriptor's
+// offset is. A stand-in for the real git that reads the descriptor it is given from its current
+// offset, as macOS does (descriptorGitSource), gets the caller's whole text through
+// `legion git --real`, with both lines added: a -F process substitution and a -t one beside
+// --amend, each of which the wrapper keeps in a file of its own, and -F /dev/stdin from a regular
+// file. On macOS the wrapper's own read of /dev/stdin moves standard input to its end, and a Linux
+// run cannot show that, since Linux opens the file again for that read. So for standard input the
+// stand-in must also read another descriptor than 0: the file the wrapper kept.
+func TestGitWrapperTrailerHandsGitTheMessageFromItsStart(t *testing.T) {
+	git := fixturegit.CompiledGit(t)
+	legion := trailerLegion(t)
+	standIn := goGitProgram(t, descriptorGitSource)
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const message = "the caller message\n"
+	type report struct {
+		Args       []string
+		File       string
+		Descriptor int
+		Read       string
+	}
+	// commit runs `legion git --real <stand-in> -- commit <args…> <file>` under bash, with stdin
+	// and the session's variables, in a new repository whose HEAD is a commit `base`, and answers
+	// what the stand-in printed. The wrapper adds the lines only after it read the text, so a run
+	// with no line added fails.
+	commit := func(t *testing.T, stdin io.Reader, file string, args ...string) report {
+		t.Helper()
+		repo := trailerRepo(t, git)
+		if code, _, stderr := trailerRun(t, repo, trailerEnv(t, trailerPath(git)), "", git, "commit", "--allow-empty", "-m", "base"); code != 0 {
+			t.Fatalf("git commit: %s", stderr)
+		}
+		env := trailerEnv(t, trailerPath(git), "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=descriptor-session", "LEGION_ROLE=implementer", "STAND_IN_REAL_GIT="+git)
+		command := append([]string{"-c", `"$@" ` + file, "bash", legion, "git", "--real", standIn, "--", "commit"}, args...)
+		code, stdout, stderr := trailerRunInput(t, repo, env, stdin, bash, command...)
+		if code != 0 {
+			t.Fatalf("legion git = %d: %s", code, stderr)
+		}
+		var got report
+		if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+			t.Fatalf("the stand-in printed %q: %v", stdout, err)
+		}
+		for _, line := range []string{"Omp-Session: descriptor-session", "Legion-Role: implementer"} {
+			if !slices.Contains(got.Args, line) {
+				t.Fatalf("the stand-in received %q, without %q", got.Args, line)
+			}
+		}
+		return got
+	}
+	t.Run("-F <(printf …), a process substitution", func(t *testing.T) {
+		if got := commit(t, strings.NewReader(""), `<(printf 'the caller message\n')`, "--allow-empty", "-F"); got.Read != message {
+			t.Fatalf("the stand-in read %q from %s, want %q", got.Read, got.File, message)
+		}
+	})
+	t.Run("-t <(printf …) beside --amend, which template_untouched alone reads", func(t *testing.T) {
+		const template = "A template\n"
+		if got := commit(t, strings.NewReader(""), `<(printf 'A template\n')`, "--amend", "--allow-empty", "-t"); got.Read != template {
+			t.Fatalf("the stand-in read %q from %s, want %q", got.Read, got.File, template)
+		}
+	})
+	t.Run("-F /dev/stdin from a regular file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "message")
+		if err := os.WriteFile(path, []byte(message), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stdin, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stdin.Close()
+		if got := commit(t, stdin, "/dev/stdin", "--allow-empty", "-F"); got.Read != message || got.Descriptor == 0 {
+			t.Fatalf("the stand-in read %q from %s, descriptor %d; want %q from the file the wrapper kept", got.Read, got.File, got.Descriptor, message)
+		}
+	})
+}
+
+// descriptorGitSource is a stand-in for the real git. For a `commit` whose last -F or -t value is
+// /dev/stdin or /dev/fd/<n>, it reads descriptor 0 or n itself, from its current offset to its
+// end, as macOS's open of that path does, and prints one JSON object: its arguments, that value,
+// the descriptor and what it read. It runs every other command, the wrapper's reads among them,
+// with the real git that STAND_IN_REAL_GIT names.
+const descriptorGitSource = `package main
+
+import (
+	"encoding/json"
+	"io"
+	"os"
+	"strconv"
+	"strings"
+	"syscall"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 || args[0] != "commit" {
+		git := os.Getenv("STAND_IN_REAL_GIT")
+		syscall.Exec(git, append([]string{git}, args...), os.Environ())
+		os.Exit(126)
+	}
+	file := ""
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-F" || args[i] == "-t" {
+			file = args[i+1]
+		}
+	}
+	descriptor := -1
+	if file == "/dev/stdin" {
+		descriptor = 0
+	} else if n, err := strconv.Atoi(strings.TrimPrefix(file, "/dev/fd/")); err == nil && strings.HasPrefix(file, "/dev/fd/") {
+		descriptor = n
+	}
+	read := []byte{}
+	if descriptor >= 0 {
+		var err error
+		if read, err = io.ReadAll(os.NewFile(uintptr(descriptor), file)); err != nil {
+			os.Exit(1)
+		}
+	}
+	json.NewEncoder(os.Stdout).Encode(struct {
+		Args       []string
+		File       string
+		Descriptor int
+		Read       string
+	}{args, file, descriptor, string(read)})
+}
+`
+
+// A -F or -t path names a descriptor when it is /dev/stdin, /dev/stdout, /dev/stderr, or a path
+// under /dev/fd/ or /proc/self/fd/: as written, once cleaned, or through symbolic links, of the
+// path itself or of a directory on it. No other path names one, a link loop and a path that is
+// not there included.
+func TestGitWrapperTrailerKnowsAPathThatNamesADescriptor(t *testing.T) {
+	dir := t.TempDir()
+	regular := filepath.Join(dir, "regular")
+	if err := os.WriteFile(regular, []byte("msg\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{
+		"to-stdin":   "/dev/stdin",
+		"to-link":    filepath.Join(dir, "to-stdin"),
+		"relative":   "to-stdin",
+		"to-fd":      "/dev/fd/0",
+		"dev":        "/dev",
+		"to-regular": regular,
+		"loop-a":     filepath.Join(dir, "loop-b"),
+		"loop-b":     filepath.Join(dir, "loop-a"),
+	} {
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		path  string
+		names bool
+	}{
+		{"/dev/stdin", true},
+		{"/dev/stdout", true},
+		{"/dev/stderr", true},
+		{"/dev/fd/0", true},
+		{"/dev/fd/12", true},
+		{"/proc/self/fd/3", true},
+		{"//dev/./stdin", true},
+		{"/dev/../dev/fd/3", true},
+		{filepath.Join(dir, "to-stdin"), true},
+		{filepath.Join(dir, "to-link"), true},
+		{filepath.Join(dir, "relative"), true},
+		{filepath.Join(dir, "to-fd"), true},
+		{filepath.Join(dir, "dev", "stdin"), true},
+		{regular, false},
+		{filepath.Join(dir, "to-regular"), false},
+		{filepath.Join(dir, "loop-a"), false},
+		{filepath.Join(dir, "missing"), false},
+		{"/dev/null", false},
+		{"/dev/fd", false},
+		{"/dev/stdinx", false},
+		{"/dev/fdx/0", false},
+	} {
+		if got := namesADescriptor(tc.path); got != tc.names {
+			t.Errorf("namesADescriptor(%q) = %v, want %v", tc.path, got, tc.names)
+		}
 	}
 }
 

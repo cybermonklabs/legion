@@ -52,12 +52,19 @@ const wrappedGitAt = "WRAPPED_GIT_AT"
 // that git (execGit). It changes the arguments of a commit only (commitWithTrailers). For every
 // other command it prints nothing and starts no other process.
 //
-// SIGINT and SIGTERM end it as they end git. main's signal.NotifyContext catches both for the
-// whole process, and a caught signal would not stop a read that waits (`-F -` from a pipe that
-// stays open, a FIFO with no writer), and a cancelled commit would still be made. So runGit puts
-// back their actions from the process start (signal.Reset), and a signal that came before that
-// ends it with the status a shell reads a death by that signal as (endedBySignal), before it reads
-// anything or runs git.
+// main's signal.NotifyContext catches SIGINT and SIGTERM for the whole process. A caught signal
+// would not stop a read that waits (`-F -` from a pipe that stays open, a FIFO with no writer),
+// and a cancelled commit would still be made. So runGit puts back the actions those two had at
+// the process start (signal.Reset): the Go runtime's own, which ends the process as the signal's
+// default action does, or for SIGINT an ignore that the caller set. So an interrupt or a terminate
+// ends a read that waits. A signal that came before that ends runGit with the status a shell reads
+// a death by that signal as (endedBySignal), before it reads anything or runs git.
+//
+// This has a limit. The Go runtime puts its own handler over an ignore that the caller set for
+// every signal but SIGHUP and SIGINT (sigInstallGoHandler, runtime/signal_unix.go), and the exec
+// sets each handled signal back to its default action. So where the caller ignores SIGTERM,
+// SIGPIPE, SIGQUIT, SIGUSR1 or SIGUSR2, git alone lives through that signal, but legion git and
+// the git it runs die of it.
 func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
 	if len(args) > 0 && helpRequested(args[0]) {
 		fmt.Fprint(stderr, gitUsage)
@@ -92,8 +99,7 @@ func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
 	if !commit || pick.reentry {
 		return execGit(pick.run, gitArgs, env, nil, stderr)
 	}
-	script := isGitScript(pick.run)
-	helper := pick.helper(script)
+	helper := pick.helper()
 	if helper == "" {
 		return execGit(pick.run, gitArgs, env, nil, stderr)
 	}
@@ -104,7 +110,7 @@ func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
 		readChain.ran = append(slices.Clone(readChain.ran), helper)
 	}
 	reader := gitReader{path: helper, globals: gitArgs[:sub], env: withWrappedGitAt(os.Environ(), readChain)}
-	return runCommit(pick.run, script, reader, gitArgs[sub+1:], env, stderr)
+	return runCommit(pick.run, pick.script, reader, gitArgs[sub+1:], env, stderr)
 }
 
 // runCommit runs git at path, a script when script is true, with the commit's arguments args as
@@ -165,22 +171,31 @@ func withWrappedGitAt(env []string, chain gitChain) []string {
 
 // gitPick is the git that `legion git --after` runs, and what it knows of the gits on PATH.
 type gitPick struct {
-	// run is the git it replaces itself with, and chain the loop guard's value run gets.
-	run   string
-	chain gitChain
+	// run is the git it replaces itself with, script whether run is a script, and chain the loop
+	// guard's value run gets.
+	run    string
+	script bool
+	chain  gitChain
 	// reentry is whether this run came back through a host's wrapper that an earlier run of the
 	// chain chose. Such a run adds nothing: the first run added the trailers.
 	reentry bool
 	// after is each git on PATH after the first entry that is the wrapper's own directory, in
 	// PATH order: the gits it may run, and the ones the helper is chosen from.
-	after []lookpath.Found
+	after []gitCandidate
 }
 
-// gitAfter chooses the git for `legion git --after own`, from path (PATH) and marker (the loop
-// guard's variable) and nothing else. A candidate is each git on path outside own
-// (lookpath.Others). It runs the first candidate after the first entry that is own, or the first
-// candidate when own is on no entry. A script is a candidate too, so a host's own git wrapper
-// still runs.
+// gitCandidate is a git that gitAfter found on PATH, and script, whether it is a script
+// (isGitScript), which gitAfter reads once.
+type gitCandidate struct {
+	lookpath.Found
+	script bool
+}
+
+// gitAfter chooses the git for `legion git --after own`, from path (PATH), marker (the loop
+// guard's variable) and the kind of each candidate after own, which it reads once (isGitScript),
+// and nothing else. A candidate is each git on path outside own (lookpath.Others). It runs the
+// first candidate after the first entry that is own, or the first candidate when own is on no
+// entry. A script is a candidate too, so a host's own git wrapper still runs.
 //
 // A marker that lists the same file as a candidate is a re-entry, one more than the chain counted.
 // It runs the first candidate after own that the marker does not list, and the helper when the
@@ -194,7 +209,7 @@ func gitAfter(own, path, marker string) (gitPick, error) {
 	var pick gitPick
 	for _, f := range found {
 		if f.Index > ownAt {
-			pick.after = append(pick.after, f)
+			pick.after = append(pick.after, gitCandidate{Found: f, script: isGitScript(f.Path)})
 		}
 	}
 	chain, listed := parseGitChain(marker)
@@ -208,13 +223,13 @@ func gitAfter(own, path, marker string) (gitPick, error) {
 			return gitPick{}, fmt.Errorf("no git on PATH after %s", own)
 		}
 		chain = gitChain{}
-		pick.run = pick.after[0].Path
+		pick.run, pick.script = pick.after[0].Path, pick.after[0].script
 	case chain.reentries < len(found):
 		chain.reentries++
-		if i := slices.IndexFunc(pick.after, func(f lookpath.Found) bool { return !isListed(f) }); i >= 0 {
-			pick.run = pick.after[i].Path
+		if i := slices.IndexFunc(pick.after, func(c gitCandidate) bool { return !isListed(c.Found) }); i >= 0 {
+			pick.run, pick.script = pick.after[i].Path, pick.after[i].script
 		} else {
-			pick.run = pick.helper(false) // pick.run is still "", so helper reads every file
+			pick.run = pick.helper() // The helper is no script.
 		}
 	}
 	if pick.run == "" {
@@ -227,15 +242,10 @@ func gitAfter(own, path, marker string) (gitPick, error) {
 
 // helper is the git that answers a commit's reads: the first git after own that is no script, so
 // a host's script never answers them. It is "" when there is none, and then no trailer is added.
-// runScript is whether run is a script, which the caller has read, so run's file is read once.
-func (p gitPick) helper(runScript bool) string {
-	for _, f := range p.after {
-		script := runScript
-		if f.Path != p.run {
-			script = isGitScript(f.Path)
-		}
-		if !script {
-			return f.Path
+func (p gitPick) helper() string {
+	for _, c := range p.after {
+		if !c.script {
+			return c.Path
 		}
 	}
 	return ""

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,15 +63,24 @@ func trailerPath(git string) string {
 }
 
 // trailerRun runs name with args in dir, with env and stdin, and answers its exit status and what
-// it printed. A command that cannot start, or that runs for a minute, fails the test. The command
-// runs in a process group of its own, and the minute kills the whole group, so a chain of gits
-// that run one another without end stops there too and holds no output pipe open.
+// it printed (trailerRunInput).
 func trailerRun(t *testing.T, dir string, env []string, stdin, name string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	return trailerRunInput(t, dir, env, strings.NewReader(stdin), name, args...)
+}
+
+// trailerRunInput runs name with args in dir, with env, and with stdin as its standard input: a
+// pipe for any reader but an *os.File, which the command gets as its descriptor 0. It answers the
+// exit status and what the command printed. A command that cannot start, or that runs for a
+// minute, fails the test. The command runs in a process group of its own, and the minute kills the
+// whole group, so a chain of gits that run one another without end stops there too and holds no
+// output pipe open.
+func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, name string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir, cmd.Env, cmd.Stdin = dir, env, strings.NewReader(stdin)
+	cmd.Dir, cmd.Env, cmd.Stdin = dir, env, stdin
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
@@ -302,7 +312,7 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 		})
 	}
 
-	compiled := hostGitProgram(t)
+	compiled := goGitProgram(t, hostGitSource)
 	firstNotSelf := func(log string) string {
 		return "#!" + bash + "\nprintf 'run\\n' >> '" + log + "'\n" +
 			"IFS=:\nfor dir in $PATH; do\n" +
@@ -394,32 +404,33 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 	}
 }
 
-// hostGitProgram is a compiled host's git wrapper, built once per test with the Go toolchain that
-// runs the tests: it writes a line to `runs` beside itself on each run, and runs the first git on
-// PATH that is not itself (os.SameFile), as a compiled multiplexer of a host does.
-func hostGitProgram(t *testing.T) string {
+// goGitProgram is a compiled program named git, built from source, one main package, with the Go
+// toolchain that runs the tests.
+func goGitProgram(t *testing.T, source string) string {
 	t.Helper()
 	goTool, err := exec.LookPath("go")
 	if err != nil {
 		goTool = filepath.Join(runtime.GOROOT(), "bin", "go")
 	}
 	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "go.mod"), []byte("module hostgit\n\ngo 1.21\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "go.mod"), []byte("module standin\n\ngo 1.21\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte(hostGitSource), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "git")
 	build := exec.Command(goTool, "build", "-o", out, ".")
 	build.Dir = src
 	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build the compiled host's git: %v: %s", err, output)
+		t.Fatalf("build a compiled git: %v: %s", err, output)
 	}
 	return out
 }
 
-// hostGitSource is hostGitProgram's program.
+// hostGitSource is a compiled host's git wrapper: it writes a line to `runs` beside itself on each
+// run, and runs the first git on PATH that is not itself (os.SameFile), as a compiled multiplexer
+// of a host does.
 const hostGitSource = `package main
 
 import (
@@ -575,23 +586,29 @@ func TestGitWrapperInstallsAPanesTrailers(t *testing.T) {
 	}
 }
 
+// gitSubcommand finds the subcommand of each argument list of the table that the pod's wrapper's
+// test reads too (fixturegit.Subcommands), so legion git and packages/daemon/docker/git agree on
+// which command is a commit.
+func TestGitWrapperFindsTheSubcommandThePodsWrapperFinds(t *testing.T) {
+	for _, tc := range fixturegit.Subcommands() {
+		if got := gitSubcommand(tc.Args); got != tc.Sub {
+			t.Errorf("gitSubcommand(%q) = %d, want %d", tc.Args, got, tc.Sub)
+		}
+	}
+}
+
 // A word that ends git's own options before any subcommand makes git run its help or version
 // command, or print a path and end, whatever follows: `git --help commit` is no commit. legion git
-// hands git such a command as it came, under either form. Under --real the git it runs also
-// answers its reads, and that git runs once, so legion git read nothing first.
+// hands git each command of the shared table (fixturegit.Subcommands) that has no subcommand as it
+// came, under either form. Under --real the git it runs also answers its reads, and that git runs
+// once, so legion git read nothing first.
 func TestGitWrapperLeavesGitsHelpAndPathWordsAlone(t *testing.T) {
 	legion := trailerLegion(t)
-	for _, args := range [][]string{
-		{"--help", "commit", "-m", "x"},
-		{"-h", "commit"},
-		{"--version", "commit"},
-		{"-v", "commit"},
-		{"-C", "/", "--exec-path", "commit"},
-		{"--exec-pathx", "commit"},
-		{"--html-path", "commit"},
-		{"--man-path", "commit"},
-		{"--info-path", "commit"},
-	} {
+	for _, tc := range fixturegit.Subcommands() {
+		if tc.Sub >= 0 {
+			continue
+		}
+		args := tc.Args
 		for _, form := range []string{"--real", "--after"} {
 			dir := t.TempDir()
 			log := filepath.Join(dir, "calls")
@@ -655,7 +672,9 @@ func TestGitWrapperRefusesAnyOtherForm(t *testing.T) {
 // git hands git the text it read as standard input again, and the commit carries both lines. A
 // process substitution, which git reads once, is left for git to read when the git to run is a
 // script, so its commit is git alone's: through that host both fail alike, and through a host's
-// script that keeps the descriptor both commit `msg`, with no line added.
+// script that keeps the descriptor both commit `msg`, with no line added. A path that names a
+// descriptor, `-F /dev/stdin` from a regular file, is left for git in the same way: through that
+// host both commit `msg`, with no line added.
 func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *testing.T) {
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
@@ -681,6 +700,8 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 		{"-F - through a host that closes descriptors", closer, "git commit -q --allow-empty -F -", "msg", true, lines},
 		{"-F <(printf msg) through a host that closes descriptors", closer, "git commit -q --allow-empty -F <(printf msg)", "", false, ""},
 		{"-F <(printf msg) through a host's script that keeps them", keeper, "git commit -q --allow-empty -F <(printf msg)", "", true, ""},
+		{"-F /dev/stdin from a regular file through a host that closes descriptors", closer,
+			`printf msg > "$TMPDIR/msg" && git commit -q --allow-empty -F /dev/stdin < "$TMPDIR/msg"`, "", true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outcome := func(path string) (int, string) {

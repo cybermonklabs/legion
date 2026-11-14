@@ -145,39 +145,48 @@ func TestTheGitWrapperHandsACommitToLegionGit(t *testing.T) {
 	}
 }
 
-// A word that ends git's own options before any subcommand makes git run its help or version
-// command, or print a path and stop, whatever follows it: `git --help push` is no push, and
-// `git --help commit` no commit. Each reaches the real git byte for byte, with no hooks path of
-// the wrapper's, and legion is not run.
-func TestTheGitWrapperPassesGitsHelpAndPathWordsThroughByteForByte(t *testing.T) {
-	for _, args := range [][]string{
-		{"--help", "push", "--no-verify"},
-		{"-C", "/tmp/repo", "--help", "commit", "-m", "x"},
-		{"-h", "push"},
-		{"--version", "commit"},
-		{"-v", "push"},
-		{"--exec-path", "push"},
-		{"--exec-pathx", "commit"},
-		{"--html-path", "push"},
-		{"--man-path", "commit"},
-		{"--info-path", "push"},
-	} {
-		dir := t.TempDir()
-		log, legionLog := filepath.Join(dir, "argv"), filepath.Join(dir, "legion-argv")
-		script := wrapperCopy(t, dir, "git",
-			[2]string{"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), log)},
-			[2]string{"legion=/opt/legion/bin/legion", "legion=" + logging(t, filepath.Join(dir, "stand-in-legion"), legionLog)},
-		)
-		run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
-		if out, err := run.Try(dir, append([]string{script}, args...)...); err != nil {
-			t.Fatalf("the wrapper failed on %q: %v\n%s", args, err, out)
-		}
-		if got := ranAs(t, log); !slices.Equal(got, args) {
-			t.Errorf("the wrapper ran git with %q, want %q as they came", got, args)
-		}
-		if _, err := os.Stat(legionLog); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("the wrapper ran legion for %q", args)
-		}
+// The wrapper finds each command's subcommand where legion git's gitSubcommand finds it: the tests
+// of both read one table (fixturegit.Subcommands). A word that ends git's own options before any
+// subcommand makes git run its help or version command, or print a path and stop, whatever
+// follows it: `git --help push` is no push, and `git --help commit` no commit. A global option's
+// value is no subcommand, also when it is the word push or commit. So a commit reaches
+// `legion git --real`, and the real git does not run. A push or a send-pack reaches the real git
+// with the wrapper's hooks path in front of the subcommand and without the `--no-verify` after it.
+// Every other command reaches the real git byte for byte. Neither of the last two runs legion.
+func TestTheGitWrapperRoutesEachCommandByItsSubcommand(t *testing.T) {
+	for _, tc := range fixturegit.Subcommands() {
+		t.Run(strings.Join(tc.Args, " "), func(t *testing.T) {
+			dir := t.TempDir()
+			gitLog, legionLog := filepath.Join(dir, "argv"), filepath.Join(dir, "legion-argv")
+			git := logging(t, filepath.Join(dir, "stand-in-git"), gitLog)
+			script := wrapperCopy(t, dir, "git",
+				[2]string{"real=/usr/bin/git", "real=" + git},
+				[2]string{"legion=/opt/legion/bin/legion", "legion=" + logging(t, filepath.Join(dir, "stand-in-legion"), legionLog)},
+			)
+			run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
+			if out, err := run.Try(dir, append([]string{script}, tc.Args...)...); err != nil {
+				t.Fatalf("the wrapper failed: %v\n%s", err, out)
+			}
+			word := ""
+			if tc.Sub >= 0 {
+				word = tc.Args[tc.Sub]
+			}
+			ran, ranLog, otherLog, want := "git", gitLog, legionLog, tc.Args
+			switch word {
+			case "commit":
+				ran, ranLog, otherLog = "legion", legionLog, gitLog
+				want = slices.Concat([]string{"git", "--real", git, "--"}, tc.Args)
+			case "push", "send-pack":
+				after := slices.DeleteFunc(slices.Clone(tc.Args[tc.Sub:]), func(arg string) bool { return arg == "--no-verify" })
+				want = slices.Concat(tc.Args[:tc.Sub], []string{"-c", "core.hooksPath=/opt/legion/githooks"}, after)
+			}
+			if got := ranAs(t, ranLog); !slices.Equal(got, want) {
+				t.Errorf("the wrapper ran %s with %q, want %q", ran, got, want)
+			}
+			if _, err := os.Stat(otherLog); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the wrapper ran %s, and the stand-in at %s too", ran, otherLog)
+			}
+		})
 	}
 }
 
