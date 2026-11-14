@@ -89,10 +89,15 @@ const (
 	SuspendedByExit SuspendSource = "exit"
 	// SuspendedByReleased: the daemon released the claim's idle issue pod, whose disk and Sandbox
 	// went with it and whose unpushed work was saved as a git bundle. The claim keeps its phase and
-	// its pending task, and the next wake for its role resumes the same session; a daemon restart
-	// resumes no such claim, since only that wake brings the pod back (workflow's booted). It is no
-	// source ByRule names: the rules that act on a released claim name it themselves — the wake
-	// that brings its pod back, and the stranded report once a wake has run out with no turn.
+	// its pending task, and the next wake for its role resumes the same session; the boot's resume
+	// by rule resumes no such claim, since only that wake brings the pod back (workflow's booted).
+	// Two other steps can start such a claim: admission's pass sends the work of an entry to a
+	// released claim behind the entry its phases row names (admit's owedEntryRoles), and, once per
+	// project at a boot, the cutover repair owes a start to each merger the `awaiting_merge`
+	// cutover left released with no wake to come (workflow's cutoverMergerRepair). It is no source
+	// ByRule names: the rules that act on a released claim name it themselves — the wake that brings
+	// its pod back, the stranded report once a wake has run out with no turn, and that cutover
+	// repair.
 	SuspendedByReleased SuspendSource = "released"
 )
 
@@ -361,9 +366,8 @@ type Claim struct {
 	// round ends when the process it waits for is replaced. The daemon asks each role of the
 	// round and replaces the pod once every asked role has answered and no turn runs, or at the
 	// round's bound (pod_update_grace_minutes) whatever the roles answered, an operator's
-	// suspension excepted. The push check runs before every replacement, so the issue's own work
-	// that a role did not push goes to the issue's rescue branch rather than dying with the disk
-	// the replacement deletes.
+	// suspension excepted. Work that a role did not push goes with the disk the replacement
+	// deletes.
 	UpdateRound string
 	// UpdateReasons is what the round was opened for, as the daemon found the drift: the task's
 	// text and the operator's reading of why this pod is being replaced.

@@ -675,15 +675,20 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // build the database shapes a deployment really has: one that recorded the other release's
 // versions and none of this one's. The list is what
 // `jj diff --from main@origin --to @ --name-only packages/daemon/internal/store/migrations`
-// names, so a migration this branch adds later belongs in it; one left out makes the cases below
-// weaker, never red, which is why the comment says where it comes from.
+// named on dispatch://INFRA-714's branch. A migration a later branch adds that rewrites
+// outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
+// 20261114031356 and dispatch://INFRA-175's 20261114082752 do: the case of a database main
+// migrated applies a version left out of the list before the list's own rewrites of that check,
+// which do not name the later kind, so the row seeded of that kind fails the upgrade. Any other
+// version left out makes the cases below weaker, never red, which is why the comment says where
+// the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
 	20261029120900: true, 20261029121000: true, 20261029121100: true, 20261029121200: true,
 	20261102003600: true, 20261105081500: true, 20261105183200: true, 20261107095842: true,
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
-	20261113082214: true, 20261113110610: true, 20261113212423: true,
+	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261114082752: true,
 }
 
 const idleRelease = 20261101222956
@@ -703,7 +708,10 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // check, and a database that ran 0031 through 0038 before 0029 and 0030 applies those two last, so
 // a queued close suspension must survive them and both kinds must stand at the end in either
 // order. Migrations from 0039 on ship only in binaries that carry 0030, and Migrate applies in
-// ascending order, so none can run before it: 0043 sets the list after every kind it names.
+// ascending order, so none can run before it: 0043 sets the list after every kind it names. On a
+// fresh database the rewrite with the highest version is the last word, so a kind that only a
+// lower one names is refused there: design_changes would be, had its 20261114082752 stood below
+// the merge-queue kinds' 20261114031356, whose list leaves it out.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	all, err := migrations.All()
 	if err != nil {
@@ -711,9 +719,11 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 	}
 	// Every kind the daemon runs, read from the lanes rather than listed here: a kind added to a
 	// lane and forgotten in a hand-kept list is exactly the omission this case exists to catch,
-	// and it is how phase_ended came to be missing from two of this release's rewrites.
+	// and it is how phase_ended came to be missing from two of this release's rewrites. Every
+	// lane is read, the claim lane's claim_release and the documents lane's design_changes among
+	// them.
 	var kinds []record.OutboxKind
-	for _, lane := range []record.OutboxLane{record.LaneLifecycle, record.LaneBoard, record.LaneRoleMessage} {
+	for _, lane := range []record.OutboxLane{record.LaneLifecycle, record.LaneBoard, record.LaneRoleMessage, record.LaneClaim, record.LaneDocuments} {
 		kinds = append(kinds, record.LaneKinds(lane)...)
 	}
 	insert := "insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ($1, 'LEGION-208', '{}', 0, now(), '')"

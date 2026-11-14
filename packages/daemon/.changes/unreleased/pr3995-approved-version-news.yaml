@@ -14,8 +14,9 @@ body: |-
 
   The daemon reads the change set from Dispatch (`GET /api/v1/artifacts/{id}/changes`). Against a
   Dispatch without that route, the task names the two versions and says why it lists no change. A
-  merger's start waits until that read is recorded. At the gate's opening, a holder owed news gets
-  the opening as the first sentence of that task's news, and every other holder gets the opened
-  message, which now says, where the record shows it, that nothing its issue holds changed.
-  Migration `20261113212423_design_news` adds the tables `design_news_told` and `design_changes`
+  merger's start waits until that read is recorded, and so does the wake of a released merger for
+  the message that its pull request left the merge queue. At the gate's opening, a holder owed
+  news gets the opening as the first sentence of that task's news, and every other holder gets the
+  opened message, which now says, where the record shows it, that nothing its issue holds changed.
+  Migration `20261114082752_design_news` adds the tables `design_news_told` and `design_changes`
   and the column `pending_task_deliveries.design_news`. A rollback needs no schema restore.

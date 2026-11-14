@@ -1,4 +1,4 @@
--- 20261113212423_design_news.up.sql — what each holder of a tree's work took of its approved
+-- 20261114082752_design_news.up.sql — what each holder of a tree's work took of its approved
 -- design, the change sets between two approved versions, the news a delivery carries, and the
 -- outbox kind that reconciles the two (dispatch://INFRA-175).
 --
@@ -36,7 +36,16 @@
 --
 -- The outbox kind design_changes is the row that runs that reconcile for one tree. The check is
 -- one list, so it is rewritten whole naming every kind, as 20261110235320 did: the list of
--- 20261113082214, which stands below this one and added update_ask, with design_changes added.
+-- 20261114031356, which stands below this one and added the two merge-queue kinds to the update
+-- ask of 20261113082214, with design_changes added. Its version stands above 20261114031356 on
+-- purpose. Migrate applies every unrecorded migration in version order, so the list with the
+-- higher version is the last word on any database. Numbered below it, as this file first was
+-- (20261113212423), this list would have run first on a fresh database, and the list of
+-- 20261114031356, which does not name design_changes, would then have refused every reconcile
+-- row. No release carries 20261113212423 and main never merged it, so no deployment's database
+-- records it. Only a database that a build of this branch migrated before the forward merge does,
+-- and such a database is a test's own: it would apply this file a second time and fail on the
+-- first create table below, so make it again rather than upgrade it.
 --
 -- Rolling the image back needs no restore of the schema. The release before this one names
 -- neither table nor the new column in any statement, its pending_task_deliveries insert names its
@@ -76,7 +85,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'design_changes'));
+  'merge_queue_read', 'merge_queue_removal', 'design_changes'));
 
 -- The seed. Each tree root holding gate rows, with the approved version of each row that holds
 -- one (versions) and whether it holds any (approved). A row whose approval a changes request

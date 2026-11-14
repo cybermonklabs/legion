@@ -184,7 +184,7 @@ func TestALaterEntryKeepsTheHolderRowItsFirstEntryWrote(t *testing.T) {
 }
 
 // A holder row that knows no version is what the upgrade seeds for work in flight under a gate a
-// changes request had closed (20261113212423_design_news): what its holder took is unknown. The
+// changes request had closed (20261114082752_design_news): what its holder took is unknown. The
 // row stands as it is across the member's next phase entry, which takes no baseline over it, so
 // the approval that reopened the gate stays news to the member, owed from a version the record
 // does not know (From nil), which the reconcile reads from Dispatch's review history. Without the

@@ -10,9 +10,9 @@ import (
 
 // designNewsVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const designNewsVersion = 20261113212423
+const designNewsVersion = 20261114082752
 
-// 20261113212423 records what each holder of a tree's work took of its approved design
+// 20261114082752 records what each holder of a tree's work took of its approved design
 // (design_news_told), the change sets between two approved versions (design_changes), the news a
 // delivery carries (pending_task_deliveries.design_news) and the outbox kind that reconciles them
 // (design_changes), and seeds the told rows from the gates the release before it left, so the
@@ -35,10 +35,11 @@ const designNewsVersion = 20261113212423
 // started, so its first opening and each member's first phase take their own. The done member gets
 // none.
 //
-// The negative control is the schema before the migration, which holds no told rows table and
-// refuses a design_changes outbox row; after it, every kind the constraint already named is still
-// taken.
-func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261113212423(t *testing.T) {
+// The negative control is the schema before the migration, the merge-queue kinds' list of
+// 20261114031356 included, which holds no told rows table and refuses a design_changes outbox row;
+// after it, every kind the constraint already named is still taken, the merge-queue kinds among
+// them, since this migration writes the list last on any database.
+func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261114082752(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, designNewsVersion-1)
@@ -161,7 +162,7 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261113212423(t 
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"design_changes",
+		"merge_queue_read", "merge_queue_removal", "design_changes",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)

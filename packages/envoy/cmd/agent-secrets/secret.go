@@ -51,7 +51,7 @@ func init() {
 		{command{"secret show", "agent-secrets secret show NAME [--json] [--profile P]",
 			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
 		{command{"secret create", "agent-secrets secret create NAME --owner me|shared --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session] [--profile P]",
-			"Create an agent secret under your own cloud sign-in. Then ask the broker to serve it. Read\nits value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
+			"Create an agent secret under your own cloud sign-in. On Google Cloud, a person may lend their\naccess token in CLOUDSDK_AUTH_ACCESS_TOKEN only to create a new secret that person owns. Then\nask the broker to serve it. Read its value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME [--profile P]",
 			"Set a new agent-secret value under your own cloud sign-in. Then ask the broker to serve it.\nRead the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
 		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
@@ -440,6 +440,17 @@ type secretSession struct {
 
 // Close releases the session's backend connection.
 func (s *secretSession) Close() error { return s.backend.close() }
+
+type lentExistingWriteRefuser interface {
+	refuseLentExistingWrite(slug string) error
+}
+
+func (s *secretSession) refuseLentExistingWrite(slug string) error {
+	if backend, ok := s.backend.(lentExistingWriteRefuser); ok {
+		return backend.refuseLentExistingWrite(slug)
+	}
+	return nil
+}
 
 // storeName is the store this session reads and writes, for a line that names where an answer
 // came from: the secret forms call the store directly under the person's own cloud sign-in, so
@@ -918,6 +929,9 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
+	if err := s.refuseLentExistingWrite(slug); err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
 	// The value is read under the shape the secret already carries: a set names no tag, and
 	// reading a one-line value the untagged way would store a document's own final line ending
 	// away from an owner who declared it a document, who could then store no such value at all.
@@ -959,6 +973,9 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
+	if err := s.refuseLentExistingWrite(slug); err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
 	deletion, err := s.backend.delete(s.ctx, slug)
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
@@ -983,6 +1000,9 @@ func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
+	if err := s.refuseLentExistingWrite(slug); err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
 	if err := s.backend.restore(s.ctx, slug); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}

@@ -14,7 +14,7 @@ import (
 // What a task tells of news of the approved design (record.DeliveryNews, carried as
 // supervise.Delivery.News and persisted as pending_task_deliveries.design_news) is taken by the
 // audience it speaks to only when the turn that carries it starts. So the record of what each
-// audience took (design_news_told, 20261113212423_design_news) rises in the write that records that
+// audience took (design_news_told, 20261114082752_design_news) rises in the write that records that
 // delivery's confirmation, and nowhere else a delivery reaches: the write that queues it, sends it
 // or rewrites it at a send raises nothing, and the write that retires it unconfirmed raises nothing,
 // so news a retired task carried stays owed and a later start or the reconcile tells it again. The
