@@ -222,9 +222,16 @@
 # repository may import. The first-party sets matched a run over a full module cache file for
 # file when this check was written.
 #
-# EXCLUDED leaves worker_image to check-image-trigger-paths.sh, which proves it covers every file
-# its image build reads. envoy_smoke is a gate whose image inputs are that check's: this one holds
-# it to the job's go commands and other step reads. The RULES and the static reads are kept by
+# EXCLUDED leaves worker_image and browser_image to check-image-trigger-paths.sh, which proves
+# each covers every file its image build reads. It holds dispatch_references to no job's reads:
+# that filter gates ci.yaml's dispatch-references job, a pull-request preview of the reference
+# rows that ci-ok does not need (CI_OK_EXEMPT), and it names less than the job reads on purpose,
+# since the dispatch_browser gate's job runs those rows on the merge queue's full lane and that
+# filter is held to every read. EXCLUDED also skips the go-command claims of a job its filters
+# alone gate, so the binaries job that call reaches is read under the dispatch_browser gate's
+# dispatch-browser job, which calls the same file. envoy_smoke is a gate whose image inputs are
+# that check's: this one holds it to the job's go commands and other step reads. The RULES and
+# the static reads are kept by
 # hand: this check proves the filters cover them, not that they are complete, so a change that
 # makes a test read a new file through `..` or start a new go command adds it to ci_job_reads.py.
 #

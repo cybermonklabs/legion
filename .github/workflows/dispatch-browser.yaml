@@ -2,19 +2,33 @@ name: Dispatch browser suite
 
 # Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 # with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
-# on everything else, and the nightly workflow calls it with the full lane. The rows are spread
+# on everything else, ci.yaml's dispatch-references job calls it with the references lane on a
+# pull request that changes what the reference rows test, and the nightly workflow calls it with
+# the full lane. The rows are spread
 # over four shard machines, the three `-alone` projects get a machine each, the two-process job,
 # the fake-embedder job and the containerised visual review take one each, and one merge job
 # joins what the shard and alone legs wrote into a single report and publishes the run's flake
 # rate.
 #
-# Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
+# Three lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 # `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
 # fake-embedder job, which holds a check of the pull request it is on; `full` runs every
 # parallel project, the three `-alone` ones, the two-process job, the visual review and that
 # same embedder job, over every row. So an unlabelled pull request pays for the rows that
 # answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
-# run pay for the rest, each of which has the wall time for them.
+# run pay for the rest, each of which has the wall time for them. `references` runs the
+# `chromium` project over every row of the eleven spec files dispatch://INFRA-1702's
+# Verification document names, on the four shard machines and the merge job alone, so a pull
+# request that changes the reference framework gets those rows from CI at its head rather than
+# from a run by hand. It gates nothing: ci.yaml's head comment on the dispatch-references job
+# says why.
+#
+# Two lanes can run in one workflow run - the references lane beside the pull-request lane, on
+# a pull request that selects both callers - and an artifact name is unique within a run, so the
+# references lane names every artifact it uploads `dispatch-references-…` where the other two
+# name theirs `dispatch-browser-…` (and `dispatch-e2e-binaries`), and its merge job reads only
+# its own legs. The names of the other two lanes are what they were before the references lane
+# existed.
 #
 # A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 # gives: `services:` is a job-level key and a composite action's step keys do not include
@@ -52,8 +66,11 @@ on:
       lane:
         description: >-
           Which projects run, and over which rows: `pull-request` for `chromium`, `iphone`
-          and the two stubbed projects, held to the rows tagged `@pr`, or `full` for every
-          project, the `-alone` ones and the two-process job among them, over every row. The shard job reads it for the projects it runs; no job reads it for a
+          and the two stubbed projects, held to the rows tagged `@pr`; `full` for every
+          project, the `-alone` ones and the two-process job among them, over every row; or
+          `references` for `chromium` alone, over every row of the eleven spec files the shard
+          job's browser step names, on the shard and merge jobs alone. The shard job reads it
+          for the projects it runs; no job reads it for a
           browser to install any more, since the image the shard and alone jobs run in carries
           all three engines. Any other value fails the shard job's browser step by name, before
           it starts a row.
@@ -98,8 +115,10 @@ jobs:
   #
   # It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
   # already decided the call. ci.yaml's dispatch-browser job holds the `dispatch_browser` filter
-  # and the merge-group attempt term, and the nightly calls this file unconditionally, so a
-  # condition here could only hold back a run its caller had asked for.
+  # and the merge-group attempt term, its dispatch-references job holds the
+  # `dispatch_references` filter and runs on a pull request alone, and the nightly calls this
+  # file unconditionally, so a condition here could only hold back a run its caller had asked
+  # for.
   binaries:
     runs-on: ubuntu-24.04
     # Measured over three dispatched runs, jobs 128520516081 (83 s), 128528093378 (84 s) and
@@ -152,10 +171,13 @@ jobs:
         working-directory: packages/envoy
       # One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
       # failed jobs re-runs a shard or an alone leg without this one, and that attempt must find
-      # the artifact this job uploaded on the attempt before.
+      # the artifact this job uploaded on the attempt before. One name per caller, though: the
+      # references lane can run in the same run as the pull-request lane, and the second of two
+      # uploads under one name is refused. The shard and alone jobs download it under the same
+      # expression.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dispatch-e2e-binaries
+          name: ${{ inputs.lane == 'references' && 'dispatch-references-e2e-binaries' || 'dispatch-e2e-binaries' }}
           path: ${{ runner.temp }}/dispatch-e2e-bin
           if-no-files-found: error
 
@@ -330,7 +352,7 @@ jobs:
       # binary rides along in it and is named by path below.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: dispatch-e2e-binaries
+          name: ${{ inputs.lane == 'references' && 'dispatch-references-e2e-binaries' || 'dispatch-e2e-binaries' }}
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
       # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
@@ -503,14 +525,15 @@ jobs:
           # reports keep their own names when the merge job downloads them into one directory.
           export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
           export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-${{ matrix.shard }}.zip"
-          # The lane's projects, named rather than left to the config, and the one place either
+          # The lane's projects, named rather than left to the config, and the one place each
           # lane's list is written. An unknown lane ends the step here rather than running the
           # default set under a name nobody meant, and this is the one place that refuses it now
           # that no install step reads the lane for engines.
           #
-          # `stub` and `stub-phone` are in both lanes: a stubbed row is a row of this suite like
-          # any other, and it runs here rather than in a leg of its own so that neither the leg
-          # capture of the merge job's readings nor its row accounting has to learn a new name.
+          # `stub` and `stub-phone` are in the pull-request and full lanes: a stubbed row is a
+          # row of this suite like any other, and it runs here rather than in a leg of its own so
+          # that neither the leg capture of the merge job's readings nor its row accounting has
+          # to learn a new name.
           # They start no harness of their own either - this run starts one stack per worker
           # already, for the real-stack rows beside them - and the config starts their static
           # file server itself, for a run that names one of them (e2e/playwright.config.ts's
@@ -538,15 +561,34 @@ jobs:
               # would also take a row titled `@prototype`, and the two readings of this lane
               # must select the same rows or the budget test measures another lane.
               lane_grep="--grep=(^|\\s)@pr(\\s|$)"
+              lane_files=""
               ;;
             full)
               projects="--project=chromium --project=iphone --project=webkit --project=webkit-iphone
               --project=firefox --project=firefox-download-navigation --project=chromium-plain-http
               --project=chromium-plain-http-sign-out --project=stub --project=stub-phone"
               lane_grep=""
+              lane_files=""
+              ;;
+            references)
+              # The eleven spec files dispatch://INFRA-1702's Verification document names, and
+              # the one place they are written: ci.yaml's dispatch-references job runs them on
+              # a pull request that changes what they test, so that document's checks read CI
+              # at the head rather than a run of an hour and a half by hand. Every Chromium row
+              # of them, `@pr` or not, so no grep. Each is a Playwright file filter, a regular
+              # expression matched against a spec's absolute path, and each matches the one
+              # file of that name under e2e/ and no other. A file added to or taken from this
+              # list moves ci.yaml's `dispatch_references` filter with it, which names these
+              # files and what they test.
+              projects="--project=chromium"
+              lane_grep=""
+              lane_files="e2e/bare-references.e2e.ts e2e/btw.e2e.ts e2e/mention-composer.e2e.ts
+              e2e/mention-reference.e2e.ts e2e/reference-kinds.e2e.ts e2e/reference-naming.e2e.ts
+              e2e/reference-picker.e2e.ts e2e/reference-titles.e2e.ts e2e/refetch-budget.e2e.ts
+              e2e/writing-surfaces.e2e.ts e2e/search.e2e.ts"
               ;;
             *)
-              echo "::error::lane must be pull-request or full, not '${{ inputs.lane }}'"
+              echo "::error::lane must be pull-request, full or references, not '${{ inputs.lane }}'"
               exit 1
               ;;
           esac
@@ -559,16 +601,17 @@ jobs:
           # `filterProjects` reads `default` only where the command line named no project
           # (`projects.filter((project) => includeNonDefault || project.default)` at
           # node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2136,
-          # under the `if (!projectNames)` at :2135), and both lanes above name theirs: four in
-          # the pull-request lane and ten in the full one. The `default: false` each `-alone`
+          # under the `if (!projectNames)` at :2135), and every lane above names its own: four in
+          # the pull-request lane, ten in the full one and one in the references one. The
+          # `default: false` each `-alone`
           # project carries (the three entries of `aloneProjects` in e2e/playwright.config.ts) is
           # what keeps them out of a run that names no project, which this is not. The alone job
           # names them, one machine each.
           #
           # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
           # read from the list reporter's `Running N tests using M workers` line, which the merge
-          # job reports against the merged report's own count. $projects is left unquoted on
-          # purpose, to split into words.
+          # job reports against the merged report's own count. $projects and $lane_files are
+          # left unquoted on purpose, to split into words.
           #
           # `./e2e/failure-reporter.ts` beside them, and it has to be named HERE: a `--reporter`
           # on the command line REPLACES the config's reporter list rather than adding to it
@@ -585,7 +628,7 @@ jobs:
           # is its own subshell, so a variable set in the left-hand one does not survive it; the
           # `||` is what keeps `sh -e` from ending the subshell before the status is written.
           rm -f "$RUNNER_TEMP/suite-status"
-          { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
+          { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep $lane_files --shard=${{ matrix.shard }}/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
           [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
@@ -617,10 +660,15 @@ jobs:
       # The browser step writes blob-report/ and rows/ into one directory instead, so the
       # artifact holds the same two entries under the same names, which is what
       # .github/scripts/dispatch-browser-latest-blobs.sh and the merge job read.
+      #
+      # The name's prefix is the lane's, for the reason this file's head gives: the references
+      # lane can run in the same run as the pull-request lane, so its three uploads here are
+      # `dispatch-references-…` and the other two lanes' are `dispatch-browser-…` as before. The
+      # merge job downloads and selects under the same prefix.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: dispatch-browser-blob-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          name: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-blob-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/leg-report
       # What the run left behind: in the job's own log, where a reader of a failed row looks
       # first, and collected into the one directory the artifact below takes. A failed row's
@@ -666,7 +714,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: dispatch-browser-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          name: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/dispatch-e2e-record
       # The traces of the rows that failed, which the step above does not collect: they are
       # under the checkout, so this path needs no translation and stays as it was. Always, for
@@ -678,7 +726,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: dispatch-browser-test-results-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          name: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-test-results-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
 
@@ -783,7 +831,7 @@ jobs:
       # and this job runs the same two scripts from the same directory.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: dispatch-e2e-binaries
+          name: ${{ inputs.lane == 'references' && 'dispatch-references-e2e-binaries' || 'dispatch-e2e-binaries' }}
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
       # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
@@ -1136,10 +1184,12 @@ jobs:
   # no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
   # This job is where it runs.
   #
-  # On both lanes, where the alone and multiprocess jobs above run on `full` alone: this is one
-  # Chromium install and two rows of about 90 s, and it holds a check of the pull request it is
-  # on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second server shape.
-  # A lane that skipped it would leave the claim unread until the merge queue.
+  # On the pull-request and full lanes, where the alone and multiprocess jobs above run on `full`
+  # alone: this is one Chromium install and two rows of about 90 s, and it holds a check of the
+  # pull request it is on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a
+  # second server shape. A lane that skipped it would leave the claim unread until the merge
+  # queue. Not on `references`: that lane runs eleven named spec files and e2e/search-tiers.e2e.ts
+  # is none of them, and this job's check stays the pull-request lane's, which runs it.
   #
   # Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
   # shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
@@ -1153,6 +1203,7 @@ jobs:
   # rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
   # their own, as this file's head requires.
   embedder:
+    if: inputs.lane == 'pull-request' || inputs.lane == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 11
     services:
@@ -1449,11 +1500,13 @@ jobs:
       # tell the attempts apart. A run's artifact list holds every attempt's artifacts and this
       # pattern matches them all; two attempts of one leg hold the same inner paths, so merging
       # them into one directory let one attempt overwrite the other in an order nothing fixes.
+      # The pattern is this lane's prefix, which is the shard job's upload's: a references run
+      # beside a pull-request run in one workflow run must not join the other's legs.
       - name: Download every leg's blob report
         id: download-blobs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: dispatch-browser-blob-*
+          pattern: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-blob-*
           path: ${{ runner.temp }}/blobs
       # A download `actions/download-artifact` could not complete is a failed read of the run's
       # artifacts and not a failed browser row, and the download step's own message says only
@@ -1479,9 +1532,10 @@ jobs:
       # is what .github/scripts/ci-ok-report.sh already does with the jobs' ci-ok reports; the
       # script's head says what two attempts of one leg did to a merged report when they were
       # downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory,
-      # and its log names the attempt it took for each leg.
+      # and its log names the attempt it took for each leg. The third argument is the lane's
+      # artifact prefix, which the download step above matched.
       - name: Take the newest attempt of each leg's blob report
-        run: .github/scripts/dispatch-browser-latest-blobs.sh "$RUNNER_TEMP/blobs" "$RUNNER_TEMP/selected-blobs"
+        run: .github/scripts/dispatch-browser-latest-blobs.sh "$RUNNER_TEMP/blobs" "$RUNNER_TEMP/selected-blobs" "${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-blob-"
       - name: Merge the legs' blob reports into one report
         # The JSON report is the one packages/dispatch/e2e/tools/check-slow-rows.ts reads, and
         # this merged report is now its source: one run's rows, from every leg, in one file. The
@@ -1516,7 +1570,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dispatch-browser-report-${{ github.run_attempt }}
+          name: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}-report-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/report-html
             ${{ runner.temp }}/report.json
@@ -1581,10 +1635,24 @@ jobs:
           # and runs the filter as a second `jq`, gh refusing `--slurp` beside `--jq`; the
           # script's head says the rest.
           .github/scripts/dispatch-browser-run-reads.sh jobs "$jobs"
+          # One caller's jobs and no other's. ci.yaml's dispatch-references job calls this file
+          # with the references lane in the same run as its dispatch-browser job, and the jobs
+          # API lists both callers' jobs - `dispatch-references / shard (1)` beside
+          # `dispatch-browser / shard (1)` - which the script's name filter takes alike. So the
+          # references lane keeps the jobs under that caller's name and every other lane drops
+          # them: read together, each merge job would owe a blob for the other's legs and add up
+          # their printed rows against a merged report that holds none of them. A run with no
+          # dispatch-references job holds no such name, so the other lanes read what they read
+          # before. The name is that ci.yaml job's id, which carries no `name:`. Written back to
+          # the same file, so reading three below takes the same jobs.
+          own=$(jq --arg lane "${{ inputs.lane }}" \
+            '[.[] | select((.name | startswith("dispatch-references / ")) == ($lane == "references"))]' "$jobs")
+          printf '%s\n' "$own" > "$jobs"
           # The legs this lane owed, read from those jobs rather than written out a second time
           # here. A leg the lane does not run is skipped by its job's own `if:` - the alone and
-          # multiprocess jobs on the pull-request lane - and owes nothing. A leg that failed
-          # before it could upload is in the list and still owes its blob.
+          # multiprocess jobs on the pull-request lane, and those two, the embedder job and the
+          # visual job on the references lane - and owes nothing. A leg that failed before it
+          # could upload is in the list and still owes its blob.
           legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$jobs" |
             sort)
           if [ -z "$legs" ]; then
@@ -1855,13 +1923,15 @@ jobs:
             fi
           fi
           exit "$failed"
-      # ci.yaml's call only: on a merge-group run whose group ci.yaml's dispatch-browser job's
-      # own result decides it posts the failing ci-ok at once, and on every other run it posts
-      # nothing, the verdict being ci.yaml's `ci-ok` job's own check run
+      # ci.yaml's dispatch-browser call only: on a merge-group run whose group ci.yaml's
+      # dispatch-browser job's own result decides it posts the failing ci-ok at once, and on
+      # every other run it posts nothing, the verdict being ci.yaml's `ci-ok` job's own check run
       # (.github/actions/ci-ok-report says how). This is the job that posts for that call: it
       # needs every other job of this workflow, and the step is its last, which is the shape
       # .github/scripts/ci_filter_coverage.py's check_ci_ok holds a called workflow to. The
-      # nightly workflow passes no `ci-ok-changes`, and the step skips.
+      # nightly workflow passes no `ci-ok-changes`, and the step skips; nor does ci.yaml's
+      # dispatch-references job, which is outside ci-ok on purpose (CI_OK_EXEMPT), and which
+      # check_ci_ok refuses to let report.
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && inputs.ci-ok-changes != ''
         uses: ./.github/actions/ci-ok-report

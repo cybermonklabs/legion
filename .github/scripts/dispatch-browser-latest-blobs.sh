@@ -19,13 +19,22 @@
 # leg the re-run did not run keeps the artifact of the attempt that ran it, since a failed-only
 # re-run uploads nothing for the legs that were green.
 #
-# It takes the directory `actions/download-artifact` filled and the directory to write:
-#   .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir>
-# Each entry of <download-dir> must be a directory named `dispatch-browser-blob-<leg>-<attempt>`,
-# where <attempt> is the run of digits at the end and <leg> is everything between the prefix and
-# it (`shard-1`, `alone-webkit-alone`). A name that does not read is a failure, not a file passed
+# It takes the directory `actions/download-artifact` filled, the directory to write and the
+# artifact prefix of the lane whose blobs these are:
+#   .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <prefix>
+# Each entry of <download-dir> must be a directory named `<prefix><leg>-<attempt>`, where
+# <attempt> is the run of digits at the end and <leg> is everything between the prefix and it
+# (`shard-1`, `alone-webkit-alone`). A name that does not read is a failure, not a file passed
 # over: a blob silently dropped is a merged report short of a leg's rows, which reads as a
 # shorter suite rather than as an error.
+#
+# The prefix is an argument because two lanes can run in one workflow run: ci.yaml's
+# dispatch-browser job and its dispatch-references job both call dispatch-browser.yaml on a pull
+# request that changes what the reference rows test, and an artifact name is unique within a
+# run. So the `pull-request` and `full` lanes name their blobs `dispatch-browser-blob-` and the
+# `references` lane names its blobs `dispatch-references-blob-`, and the merge job passes the
+# prefix of its own lane. A directory under any other prefix is refused like any other name
+# that does not read.
 #
 # It writes <out-dir>/blob-report and <out-dir>/rows, holding each leg's selected attempt's files
 # and no other's, and prints one line per leg saying which attempt it took and which it passed
@@ -35,22 +44,22 @@
 # and says so. The merge step after it already fails when there is nothing to merge, and the
 # merge job's reading one names the legs that owed a blob.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir>
+# Run from anywhere: .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <prefix>
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Take the newest attempt of each
 # leg's blob report", and its tests in ci.yaml's test job, at "Test the browser lane's blob
 # attempt selection".
 set -euo pipefail
 shopt -s inherit_errexit
 
-if [ "$#" -ne 2 ]; then
-  echo "::error::dispatch-browser-latest-blobs.sh takes the download directory and the" \
-    "directory to write, and was given $# argument(s):" \
-    ".github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir>"
+if [ "$#" -ne 3 ]; then
+  echo "::error::dispatch-browser-latest-blobs.sh takes the download directory, the directory" \
+    "to write and the lane's artifact prefix, and was given $# argument(s):" \
+    ".github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <prefix>"
   exit 1
 fi
 download_dir=$1
 out_dir=$2
-prefix=dispatch-browser-blob-
+prefix=$3
 
 mkdir -p "$out_dir/blob-report" "$out_dir/rows"
 

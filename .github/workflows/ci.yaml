@@ -194,10 +194,13 @@ env:
   # `merge_group`, holds `actions: write`, runs no dependency code, reports no result to ci-ok
   # and is no job any verdict waits for. `ci-ok` is the verdict: it reports nothing to itself,
   # and the jobs it judges are its `needs:`, which check-ci-filters.sh holds to every job of this
-  # file but these three. `pr-title` is the other check main's ruleset requires, carried by that
+  # file but these four. `pr-title` is the other check main's ruleset requires, carried by that
   # job's own check run: its result is nothing the verdict waits for, it carries no report step,
   # and the queue reads it as a check of its own, so a verdict that needed it would only make one
-  # required check wait for the other.
+  # required check wait for the other. `dispatch-references` runs a slice of the browser suite on
+  # a pull request for feedback alone: the merge queue's full lane gates every row of it already,
+  # and a required check is the repository owner's to change, so it carries no report step and
+  # the verdict waits for nothing of it (that job's head comment says the rest).
   # That check asks none of the ci-ok rules of a job named here, and refuses
   # one that carries the ci-ok-report step: ci-ok.sh fails a result for a job CI_OK_SELECTED_BY
   # cannot map. The list is written as CI_OK_SELECTED_BY above is, a JSON array over lines rather
@@ -206,6 +209,7 @@ env:
     [
       "cancel-started",
       "ci-ok",
+      "dispatch-references",
       "pr-title"
     ]
 
@@ -264,6 +268,11 @@ jobs:
       # only which lane it runs: that job's `lane:` input reads the label, and the comment there
       # says what each event gets.
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
+      # The reference rows' preview (dispatch-references): every Chromium row of the eleven spec
+      # files dispatch://INFRA-1702's Verification document names, on a pull request that
+      # changes what they test. No `full-ci` term: the job runs on a pull request alone and
+      # gates nothing, and the merge queue's full lane runs the same rows either way.
+      dispatch_references: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_references }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
       # The eight slow suites, whose runner time dwarfs every other job's. The merge queue runs
       # them on the tree the change lands as, and that is where their result normally comes from;
@@ -1334,6 +1343,56 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
+            # The reference rows' preview (dispatch-references): the eleven spec files
+            # dispatch://INFRA-1702's Verification document names, which dispatch-browser.yaml's
+            # `references` lane runs on Chromium, and what they test. Narrow on purpose: unlike
+            # every gate's filter here it names less than its job reads (the Bun install, the
+            # Dispatch server's whole closure, the rest of the dashboard, the e2e harness every
+            # spec shares, this file). That job gates nothing, so a change this list misses loses
+            # a preview and no check, and the full lane the merge queue runs through the
+            # dispatch_browser filter above, which does name every read, runs every one of these
+            # rows. It names the reference framework itself and no more: over the 200 newest
+            # pull-request runs of 2026-11-13, a list that also named the six feature directories
+            # mounting the field and the shared harness selected about half of them (about 300
+            # runs and 6,000 runner-minutes a day), so the four shard machines start for a pull
+            # request that changes the references and not for every dashboard change.
+            # For the same reason .github/scripts/ci_job_reads.py lists it in EXCLUDED rather
+            # than as a gate.
+            dispatch_references:
+              # The workflow that holds the lane's steps.
+              - '.github/workflows/dispatch-browser.yaml'
+              # The eleven spec files, and the helpers only they share: the reference surfaces'
+              # own helpers and the search helpers.
+              - 'packages/dispatch/e2e/bare-references.e2e.ts'
+              - 'packages/dispatch/e2e/btw.e2e.ts'
+              - 'packages/dispatch/e2e/mention-composer.e2e.ts'
+              - 'packages/dispatch/e2e/mention-reference.e2e.ts'
+              - 'packages/dispatch/e2e/reference-kinds.e2e.ts'
+              - 'packages/dispatch/e2e/reference-naming.e2e.ts'
+              - 'packages/dispatch/e2e/reference-picker.e2e.ts'
+              - 'packages/dispatch/e2e/reference-titles.e2e.ts'
+              - 'packages/dispatch/e2e/refetch-budget.e2e.ts'
+              - 'packages/dispatch/e2e/writing-surfaces.e2e.ts'
+              - 'packages/dispatch/e2e/search.e2e.ts'
+              - 'packages/dispatch/e2e/reference-surfaces.ts'
+              - 'packages/dispatch/e2e/search.ts'
+              # The reference framework: the shared field, the picker, the reader and the
+              # renderers all live here.
+              - 'packages/dispatch/web/src/features/refs/**'
+              # The contracts the reference rows' shapes come from.
+              - 'packages/contracts/src/dispatch-text-references*.ts'
+              - 'packages/contracts/src/dispatch-writing-boxes.ts'
+              - 'packages/contracts/src/dispatch-reading-surfaces.ts'
+              # The server side of references: the text and reference resolution, the document
+              # model, and the API files that answer search, references, comments and replies.
+              - 'packages/envoy/internal/dispatch/text/**'
+              - 'packages/envoy/internal/dispatch/refs/**'
+              - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/api/search*.go'
+              - 'packages/envoy/internal/dispatch/api/references*.go'
+              - 'packages/envoy/internal/dispatch/api/comment*.go'
+              - 'packages/envoy/internal/dispatch/api/replies*.go'
+              - 'packages/envoy/internal/dispatch/api/reply*.go'
             # The dashboard's and the proof editor's fast checks (dispatch-ui): what their lint,
             # typecheck, unit tests and the dashboard's build and asset checks read. No Go and no
             # Dispatch server: the job runs neither.
@@ -4633,6 +4692,37 @@ jobs:
       # `dispatch_browser` output above runs the suite either way.
       lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # The reference rows' preview: every Chromium row of the eleven spec files
+  # dispatch://INFRA-1702's Verification document names, through dispatch-browser.yaml's
+  # `references` lane - its binaries job, its four shard legs and its merge job, and none of its
+  # alone, two-process, embedder or visual jobs. The pull-request lane above runs only the 5 of
+  # those 77 rows that carry `@pr`, so without this job a change to the reference framework got
+  # the other 72 from a run by hand.
+  #
+  # Outside ci-ok on purpose: CI_OK_EXEMPT names it, ci-ok does not need it, and it passes no
+  # `ci-ok-changes`, so its merge job posts no ci-ok report. What a required check runs is the
+  # repository owner's decision, and the `@pr` budget the pull-request lane is held to
+  # (packages/dispatch/e2e/__tests__/pull-request-lane.test.ts) stays as it is, so this job adds
+  # rows to no check that gates. A red here does not block a merge: it is a reading for the
+  # author and the reviewer of the pull request. What gates these rows is the merge queue: every
+  # merge group runs the dispatch-browser job above on the full lane, which holds every one of
+  # them, and ci-ok needs that job.
+  #
+  # Pull requests alone: the merge queue's full lane already runs these rows, so a merge group
+  # would pay for them twice. The merge-group attempt term is the one every job of this file but
+  # ci-ok and pr-title carries; with the pull_request term it holds nothing back, and it is here
+  # because check-ci-filters.sh's rule 12 holds every job to it. The `dispatch_references`
+  # filter selects it; its comment says why that filter is narrower than what the job reads.
+  #
+  # No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
+  # Each job of dispatch-browser.yaml carries its own limit.
+  dispatch-references:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.dispatch_references == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/dispatch-browser.yaml
+    with:
+      lane: references
 
   claude-envoy:
     needs: changes

@@ -1631,4 +1631,8 @@ EXCLUDED = {
                     "every file the build reads",
     "browser_image": "gates browser-image.yaml's image build; .github/scripts/check-image-trigger-paths.sh proves it covers "
                      "every file the build reads",
+    "dispatch_references": "gates ci.yaml's dispatch-references job, a pull-request preview of the reference rows that is "
+                           "outside ci-ok (CI_OK_EXEMPT) and so gates no merge; its filter names the eleven spec files "
+                           "and what they test, less than the job reads on purpose, and the dispatch_browser gate, "
+                           "whose full lane the merge queue runs, holds every read of those rows",
 }

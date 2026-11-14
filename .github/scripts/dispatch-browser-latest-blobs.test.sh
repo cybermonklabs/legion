@@ -40,21 +40,23 @@ fixture() {
   echo "$root"
 }
 
-# leg <root> <leg> <attempt> <mark>: the artifact one leg's upload leaves at one attempt - a
-# directory named for the artifact, holding the leg's blob report and the row count beside it.
-# <mark> is written into both files, so the output says which attempt's copy arrived.
+# leg <root> <leg> <attempt> <mark> [<prefix>]: the artifact one leg's upload leaves at one
+# attempt - a directory named for the artifact, holding the leg's blob report and the row count
+# beside it. <mark> is written into both files, so the output says which attempt's copy arrived.
+# <prefix> is the lane's artifact prefix, `dispatch-browser-blob-` unless a case names another.
 leg() {
-  local dir="$1/down/dispatch-browser-blob-$2-$3"
+  local dir="$1/down/${5:-dispatch-browser-blob-}$2-$3"
   mkdir -p "$dir/blob-report" "$dir/rows"
   printf '%s\n' "$4" > "$dir/blob-report/report-$2.zip"
   printf '%s\n' "$4" > "$dir/rows/$2.txt"
 }
 
-# run_select <root>: runs the script under test over that case's directories, setting `out` to
+# run_select <root> [<prefix>]: runs the script under test over that case's directories with the
+# lane's artifact prefix, `dispatch-browser-blob-` unless a case names another, setting `out` to
 # its combined output and `status` to its exit code. Not a subshell, so both survive the call.
 run_select() {
   set +e
-  out=$("$select_script" "$1/down" "$1/out" 2>&1)
+  out=$("$select_script" "$1/down" "$1/out" "${2:-dispatch-browser-blob-}" 2>&1)
   status=$?
   set -e
 }
@@ -189,12 +191,37 @@ check "its blob lands under its own name" \
 check "and its rows travel with it" \
   "$(is "$(held "$root" 'rows/alone-chromium hidpi.txt')" spaced)"
 
+echo "case: the references lane's prefix reads its own blobs and refuses the other lanes'"
+# ci.yaml's dispatch-browser and dispatch-references jobs can both call dispatch-browser.yaml in
+# one run, and an artifact name is unique within a run, so the references lane names its blobs
+# under a prefix of its own and its merge job passes that prefix here. A blob of the other
+# prefix in its download directory is a download pattern that took another lane's rows, which
+# fails rather than merging them into this lane's report.
+root=$(fixture references-prefix)
+leg "$root" shard-1 1 references-first dispatch-references-blob-
+leg "$root" shard-1 2 references-second dispatch-references-blob-
+leg "$root" shard-4 1 references-shard-4 dispatch-references-blob-
+run_select "$root" dispatch-references-blob-
+check "exits 0" "$(is "$status" 0)"
+check "the output holds attempt 2's blob" "$(is "$(held "$root" blob-report/report-shard-1.zip)" references-second)"
+check "and the other leg's" "$(is "$(held "$root" blob-report/report-shard-4.zip)" references-shard-4)"
+check "says which attempt it took" "$(contains "$out" '^shard-1: attempt 2, passing over attempt(s) 1$')"
+
+root=$(fixture references-prefix-other-lane)
+leg "$root" shard-1 1 references-blob dispatch-references-blob-
+leg "$root" shard-1 1 pull-request-blob
+run_select "$root" dispatch-references-blob-
+check "a blob of the other lanes' prefix fails" "$(is "$status" 1)"
+check "naming it" "$(contains "$out" 'down/dispatch-browser-blob-shard-1-1 is not a leg')"
+check "and the name it must have" "$(contains "$out" 'dispatch-references-blob-<leg>-<attempt>')"
+check "and merges nothing" "$(is "$(grep -rl references-blob "$root/out" | wc -l)" 0)"
+
 echo "case: a call that names no directories"
 set +e
 out=$("$select_script" 2>&1)
 status=$?
 set -e
 check "fails" "$(is "$status" 1)"
-check "says what it takes" "$(contains "$out" '<download-dir> <out-dir>')"
+check "says what it takes" "$(contains "$out" '<download-dir> <out-dir> <prefix>')"
 
 summary "dispatch-browser-latest-blobs.sh"
