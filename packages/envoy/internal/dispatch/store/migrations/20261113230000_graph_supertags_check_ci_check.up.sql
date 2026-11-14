@@ -26,16 +26,18 @@
 -- records no event, so every row it writes carries the `source_event` sentinel 0, and its rows
 -- carry a writer of their own, so a reader of the store can tell them from the seed's.
 
--- The attribute node. Its id is `<supertag>/<name>`, and its attributes are what the seed builds
--- for an attribute of the file: the attribute's own JSON, `{"kind": "string"}`, with its name and
--- its position beside it. The position is its place among the type's attributes, counted from 0:
--- serves, surface, run, when and negative_control hold 0 to 4, so ci_check holds 5.
+-- The attribute node. Its id is `<supertag>/<store name>`, and its attributes are what the seed
+-- builds for an attribute of the file: the attribute's own JSON, `{"kind": "string"}`, with its
+-- name, its store name and its position beside it. `ci_check` is the name of no base attribute,
+-- so its store name is its own name (pmdoc/schemanodes.StoreName). The position is its place
+-- among the type's attributes, counted from 0: serves, surface, run, when and negative_control
+-- hold 0 to 4, so ci_check holds 5.
 with change as (
   select now() as at, '{"kind": "system", "id": "block-schema-check-ci-check"}'::jsonb as writer
 )
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
 select 'attribute', 'check/ci_check', 'attribute', 'project', 'live',
-       '{"kind": "string"}'::jsonb || jsonb_build_object('name', 'ci_check', 'position', 5),
+       '{"kind": "string"}'::jsonb || jsonb_build_object('name', 'ci_check', 'store_name', 'ci_check', 'position', 5),
        change.at, change.writer, 0
 from change
 on conflict (kind, id) do update set

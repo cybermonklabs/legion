@@ -132,8 +132,8 @@ export async function applySupertagMigration(
            'version', ${builtSchemaVersion}::int, 'position', 99),
          now(), ${migrationWriter}, 0),
        ('attribute', '${ADDED_TYPE}/supports', 'attribute', 'project', 'live',
-         jsonb_build_object('name', 'supports', 'position', 0, 'kind', 'block[]',
-           'targets', jsonb_build_array('requirement')),
+         jsonb_build_object('name', 'supports', 'store_name', 'supports', 'position', 0,
+           'kind', 'block[]', 'targets', jsonb_build_array('requirement')),
          now(), ${migrationWriter}, 0)
      on conflict (kind, id) do update set state = 'live', attributes = excluded.attributes`,
     `insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)

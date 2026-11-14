@@ -158,7 +158,9 @@ func requireBaseAttributes(t *testing.T, ctx context.Context, pool *store.Pool, 
 // requireAttributeNodesMatchTheFile holds every typed block type's attribute nodes to the file,
 // field by field and in both directions: an attribute only in the file, or only in the store,
 // fails, and so does one whose kind, choices, default, server flag, targets or scope differs.
-// Each type and attribute it fails on is recorded in drift.
+// The file names an attribute as a document writes it, and its node is the one
+// schemanodes.StoreName names, `<type>/<store name>`, so ask's `state` is the node
+// ask/answer_state. Each type and attribute it fails on is recorded in drift.
 func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema, drift *schemaDrift) {
 	t.Helper()
 	nodes, err := graphstore.NodesOfKind(ctx, pool, schemanodes.KindAttribute)
@@ -184,7 +186,7 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 			tied[tuple.FromID] = struct{}{}
 		}
 		for position, declared := range typ.Attributes {
-			id := typ.Name + "/" + declared.Name
+			id := typ.Name + "/" + schemanodes.StoreName(typ.Name, declared.Name)
 			wanted[id] = struct{}{}
 			if _, tiedToType := tied[id]; !tiedToType {
 				t.Errorf("no %s tuple ties attribute node %q to supertag %q", schemanodes.TupleAttributeOf, id, typ.Name)
@@ -196,7 +198,7 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 				drift.add(id)
 				continue
 			}
-			requireAttributeNodeCarries(t, node, position, declared, drift)
+			requireAttributeNodeCarries(t, node, typ.Name, position, declared, drift)
 		}
 		if len(tied) != len(typ.Attributes) {
 			t.Errorf("supertag %q is tied to %d attribute nodes, want the %d its type declares", typ.Name, len(tied), len(typ.Attributes))
@@ -211,14 +213,18 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 	}
 }
 
-// requireAttributeNodeCarries holds one attribute node to what the file says about that
-// attribute: its name and place, and each of the six fields a BlockAttributeSchema carries. A
-// node that differs is recorded in drift.
-func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, position int, declared pmdoc.BlockAttribute, drift *schemaDrift) {
+// requireAttributeNodeCarries holds one attribute node of type typeName to what the file says
+// about that attribute: its name and place, the store name schemanodes.StoreName gives it, and
+// each of the six fields a BlockAttributeSchema carries. A node that differs is recorded in drift.
+func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName string, position int, declared pmdoc.BlockAttribute, drift *schemaDrift) {
 	t.Helper()
 	carried := node.Attributes
 	if name, _ := carried["name"].(string); name != declared.Name {
 		t.Errorf("attribute node %q carries name %q, want %q", node.ID, name, declared.Name)
+		drift.add(node.ID)
+	}
+	if held, want := carried["store_name"], schemanodes.StoreName(typeName, declared.Name); held != want {
+		t.Errorf("attribute node %q carries store name %v, want %q", node.ID, held, want)
 		drift.add(node.ID)
 	}
 	if at, ok := carried["position"].(float64); !ok || int(at) != position {
@@ -226,11 +232,11 @@ func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, position in
 		drift.add(node.ID)
 	}
 	// The six fields of BlockAttributeSchema, compared as the file writes them: the node's
-	// attributes are the attribute's own JSON with the name and the position beside it, so one
-	// encoding of each side names every difference at once.
+	// attributes are the attribute's own JSON with the name, the store name and the position
+	// beside it, so one encoding of each side names every difference at once.
 	stored := map[string]any{}
 	for key, value := range carried {
-		if key == "name" || key == "position" {
+		if key == "name" || key == "store_name" || key == "position" {
 			continue
 		}
 		stored[key] = value
@@ -269,7 +275,8 @@ const typeMigrationExample = "20261113230000_graph_supertags_check_ci_check.up.s
 // report each field. A failing run ends on one instruction naming them all (report), so whoever
 // changed the file reads once what the change still needs rather than once for every field.
 type schemaDrift struct {
-	// names are the types, each by its name, and the attributes, each as `<type>/<attribute>`.
+	// names are the types, each by its name, and the attributes, each by its node's id,
+	// `<type>/<store name>`.
 	names                     []string
 	fileVersion, storeVersion int
 }
@@ -708,7 +715,7 @@ func requireAnUnknownKindIsSkipped(t *testing.T, ctx context.Context, pool *stor
 				jsonb_build_object('block_type', true, 'content', 'paragraph+', 'render', 'host', 'version', $2::int, 'position', 99),
 				now(), $1::jsonb, 0),
 			('attribute', 'claim/supports', 'attribute', 'project', 'live',
-				jsonb_build_object('name', 'supports', 'position', 0, 'kind', 'block[]', 'targets', jsonb_build_array('requirement')),
+				jsonb_build_object('name', 'supports', 'store_name', 'supports', 'position', 0, 'kind', 'block[]', 'targets', jsonb_build_array('requirement')),
 				now(), $1::jsonb, 0)
 	`, writer, file.Version); err != nil {
 		t.Fatalf("add a block type as a row: %v", err)

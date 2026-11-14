@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -60,6 +61,20 @@ const (
 	attributeVisibility = "visibility"
 	attributeState      = "state"
 )
+
+// baseAttributes is the set BaseAttributes answers and IsBaseAttribute reads, held once.
+var baseAttributes = [...]string{attributeVisibility, attributeState}
+
+// BaseAttributes is the tuple kind of every base attribute, a fresh slice for each caller. No
+// other attribute's values may be stored under one of these kinds: a value tuple of one of them
+// out of a node reads as that node's own visibility or state, whoever wrote it, so an attribute a
+// type declares under one of these names is stored under another name
+// (pmdoc/schemanodes.StoreName).
+func BaseAttributes() []string { return slices.Clone(baseAttributes[:]) }
+
+// IsBaseAttribute is whether kind is the tuple kind of a base attribute (BaseAttributes), asked
+// without building the list.
+func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:], kind) }
 
 // writeNodes is one statement, whose rows arrive in ascending (kind, id): a write touching
 // several nodes takes its row locks in that order, so two such writes cannot each hold the row
@@ -184,7 +199,7 @@ type baseAttribute struct{ kind, id, attribute string }
 func statedAttributes(tuples []Tuple) map[baseAttribute]struct{} {
 	stated := make(map[baseAttribute]struct{}, len(tuples))
 	for _, tuple := range tuples {
-		if tuple.ToKind != KindValue || (tuple.Kind != attributeVisibility && tuple.Kind != attributeState) {
+		if tuple.ToKind != KindValue || !IsBaseAttribute(tuple.Kind) {
 			continue
 		}
 		stated[baseAttribute{tuple.FromKind, tuple.FromID, tuple.Kind}] = struct{}{}

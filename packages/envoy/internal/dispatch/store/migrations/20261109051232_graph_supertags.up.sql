@@ -52,9 +52,20 @@ execute function block_schema_changed();
 
 -- The nodes. One `supertag` node for each name of the closed list and no other, and one
 -- `attribute` node for each attribute the block schema declares, whose id is
--- `<supertag>/<name>`. A supertag the block schema declares carries that type's content rule,
--- who draws it and the schema's version; one it does not declare carries no attribute of its
--- own, and the kinds that move in a later child bring theirs with them.
+-- `<supertag>/<store name>` and which carries that store name as `store_name`, beside the name a
+-- document writes the attribute under. A supertag the block schema declares carries that type's
+-- content rule, who draws it and the schema's version; one it does not declare carries no
+-- attribute of its own, and the kinds that move in a later child bring theirs with them.
+--
+-- An attribute's store name is the kind of the tuple that states one of its values, so it must
+-- not be one of the two base attributes every node carries, `visibility` and `state`
+-- (graphstore.IsBaseAttribute): a value tuple of either kind reads as the node's own. It is what
+-- pmdoc/schemanodes.StoreName answers: the attribute's own name, except that ask's `state` is
+-- stored as `answer_state` and any other attribute named for a base attribute as its type's
+-- name, `_` and its own name. The rule is written out in `block_attributes` below rather than
+-- taken from Go, as the schema's text is copied in, because a migration states what the
+-- database held at one version. TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds
+-- every node this writes to StoreName.
 with seed as (
   select
     now() as at,
@@ -201,11 +212,18 @@ block_types as (
 block_attributes as (
   select
     type.value->>'name' as type_name,
-    attribute.key as name,
-    attribute.value::jsonb || jsonb_build_object('name', attribute.key, 'position', attribute.ordinality - 1) as attributes
+    store.name as store_name,
+    attribute.value::jsonb || jsonb_build_object(
+      'name', attribute.key, 'store_name', store.name, 'position', attribute.ordinality - 1
+    ) as attributes
   from seed,
        json_array_elements(seed.document->'types') as type(value),
-       json_each(type.value->'attributes') with ordinality as attribute(key, value, ordinality)
+       json_each(type.value->'attributes') with ordinality as attribute(key, value, ordinality),
+       lateral (select case
+         when attribute.key not in ('visibility', 'state') then attribute.key
+         when type.value->>'name' = 'ask' and attribute.key = 'state' then 'answer_state'
+         else (type.value->>'name') || '_' || attribute.key
+       end) as store(name)
 ),
 nodes as (
   select 'supertag' as kind, names.name as id, 'supertag' as supertag,
@@ -213,7 +231,7 @@ nodes as (
   from supertag_names names
   left join block_types types on types.name = names.name
   union all
-  select 'attribute', attributes.type_name || '/' || attributes.name, 'attribute', attributes.attributes
+  select 'attribute', attributes.type_name || '/' || attributes.store_name, 'attribute', attributes.attributes
   from block_attributes attributes
 )
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
@@ -243,9 +261,10 @@ where node.kind in ('supertag', 'attribute')
   )
 order by node.kind, node.id, fact.kind;
 
--- What ties an attribute to its supertag. The id of an attribute node is `<supertag>/<name>`, so
--- the supertag it belongs to is read back from the id here, and from this tuple everywhere else:
--- a reader of the schema follows the tuple, never the spelling of an id.
+-- What ties an attribute to its supertag. The id of an attribute node is
+-- `<supertag>/<store name>`, and no type name holds a `/`, so the supertag it belongs to is read
+-- back from the id here, and from this tuple everywhere else: a reader of the schema follows the
+-- tuple, never the spelling of an id.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 select node.kind, node.id, 'attribute_of', 'supertag', split_part(node.id, '/', 1),
        node.made_at, node.made_by, 0, null, true

@@ -373,7 +373,7 @@ func addTheClaimType(t *testing.T, ctx context.Context, pool *store.Pool) {
 					'version', $2::int, 'position', 99),
 				now(), $1::jsonb, 0),
 			('attribute', 'claim/supports', 'attribute', 'project', 'live',
-				jsonb_build_object('name', 'supports', 'position', 0, 'kind', 'block[]',
+				jsonb_build_object('name', 'supports', 'store_name', 'supports', 'position', 0, 'kind', 'block[]',
 					'targets', jsonb_build_array('requirement')),
 				now(), $1::jsonb, 0)
 	`, writer, pmdoc.BuiltSchemaVersion()); err != nil {

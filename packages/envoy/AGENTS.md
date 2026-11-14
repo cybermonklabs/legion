@@ -1983,6 +1983,8 @@ The browser counts no footnote definition, which only lets it draw deeper than t
 Typed document blocks are declared only in `internal/dispatch/pmdoc/schema/blocks.json`.
 The embedded file is the server-owned schema, `GET /api/v1/schema/blocks` returns its exact JSON, and the fixture generator reads that checked-in file.
 The store holds each of those types as nodes: one `supertag` node per type and one `attribute` node per attribute, tied to its type by an `attribute_of` tuple (migration `20261109051232`, which seeded them from this file).
+An attribute node's id is `<supertag>/<store name>` and it carries that store name as `store_name`: the kind of the tuple that states one of the attribute's values, which `schemanodes.StoreName` gives and which is never a base attribute (`visibility`, `state`) every node carries.
+So `ask`'s `state` is the node `ask/answer_state` while documents, the editor and the served schema still call it `state`, and `TestNoAttributeNodeStoresItsValuesUnderABaseAttribute` fails on an attribute node whose store name is a base attribute.
 The server installs the schema it builds from those nodes (`pmdoc/schemanodes`), so it serves the file's schema only while the store's type migrations match the file.
 A change to `blocks.json` therefore ships with a store migration that writes the node of each type or attribute the change adds or alters and moves every block type's supertag node to the file's new version;
 migration `20261113230000_graph_supertags_check_ci_check`, which added `check`'s `ci_check` at version 4, is the example.
