@@ -351,7 +351,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// marked fork checkout's rows below); otherwise every github.com remote and gh-resolved
 		// setting names an owner, and they must name one.
 		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone), owner: "acme"},
-		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved base")), owner: "acme"},
+		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone, originBase), owner: "acme"},
 		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"repo", "view"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"api", "repos/{owner}/{repo}"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
@@ -366,11 +366,13 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"-R", "acme/widgets", "pr", "view", "1"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: paneWith("GH_REPO", "acme/widgets"), remotes: remotes(sjawharClone), owner: "acme"},
 		{argv: []string{"pr", "view", "--help"}, env: pane, remotes: remotes(sjawharClone)},
-		// R1 of dispatch://INFRA-3399, in the marked fork checkout unless a row says otherwise: the
-		// conditions the real gh's capture test cannot reach with real git. The leaf must honour
-		// the marker: a group gh builds without it (secret) takes the first of gh's sorted
-		// remotes, upstream, and repo set-default reads every remote's network unless --view or
-		// --unset is true, which a value that is no boolean is not.
+		// R1 of dispatch://INFRA-3399, in the marked fork checkout unless a row says otherwise: its
+		// conditions as unit rows, among them the remote lists real git cannot print (a push line
+		// alone, two origin fetch lines) and the marker lines it writes in no config file (a dotted
+		// key with no remote, a key with no dot). The leaf must honour the marker: a group gh builds
+		// without it (secret) takes the first of gh's sorted remotes, upstream, and repo set-default
+		// reads every remote's network unless --view or --unset is true, which a value that is no
+		// boolean is not.
 		{argv: []string{"secret", "set", "TOKEN", "--body", "dummy"}, remotes: markedFork(), err: "more than one owner"},
 		{argv: []string{"repo", "set-default", "--view"}, remotes: markedFork(), owner: "acme"},
 		{argv: []string{"repo", "set-default", "-v"}, remotes: markedFork(), owner: "acme"},
@@ -832,16 +834,7 @@ func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
 	}
 	// git config writes no key without a value, so that line is written into the repository's
 	// configuration file itself.
-	config, err := os.OpenFile(filepath.Join(repository, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := config.WriteString("[remote \"upstream\"]\n\tgh-resolved\n"); err != nil {
-		t.Fatal(err)
-	}
-	if err := config.Close(); err != nil {
-		t.Fatal(err)
-	}
+	appendTo(t, filepath.Join(repository, ".git", "config"), "[remote \"upstream\"]\n\tgh-resolved\n")
 	remotes, err := readGitRemotes()
 	want := []ghRemote{
 		{name: "origin", url: "https://github.com/acme/widgets.git"},

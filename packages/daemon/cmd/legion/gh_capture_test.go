@@ -580,16 +580,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// git config writes no key without a value, so that line is written into the checkout's
 	// configuration file itself.
 	valueless := markedFork()
-	configFile, err := os.OpenFile(filepath.Join(valueless, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := configFile.WriteString("[remote \"upstream\"]\n\tgh-resolved\n"); err != nil {
-		t.Fatal(err)
-	}
-	if err := configFile.Close(); err != nil {
-		t.Fatal(err)
-	}
+	appendTo(t, filepath.Join(valueless, ".git", "config"), "[remote \"upstream\"]\n\tgh-resolved\n")
 	repoView := []string{"repo", "view", "--json", "nameWithOwner"}
 	rows = append(rows,
 		row{marked, nil, repoView, "acme", ""},

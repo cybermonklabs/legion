@@ -921,19 +921,16 @@ func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error
 // printing nothing, where no key matches, and any other answer fails the provision. The feed does
 // not take the line, for the reason configureCloneReads gives.
 func configureCloneDefaultRepository(ctx context.Context, run Runner, cloneDir string) error {
-	gitDir := "--git-dir=" + cloneDir + "/.git"
-	read := []string{"git", gitDir, "config", "--local", "--get-regexp", `^remote\..*\.gh-resolved$`}
+	gitDir := cloneDir + "/.git"
+	read := []string{"git", "--git-dir=" + gitDir, "config", "--local", "--get-regexp", `^remote\..*\.gh-resolved$`}
 	markers, err := runCommand(ctx, run, read, nil, cloneDir)
-	if err != nil {
-		return fmt.Errorf("run %s: %w", strings.Join(read, " "), err)
+	// Exit 0 is a gh-resolved line the clone holds, so nothing is written; checkedResult answers
+	// it with no error and every other answer but exit 1 with the error that fails the provision.
+	if err != nil || markers.TimedOut || markers.ExitCode != 1 {
+		_, err = checkedResult(read, markers, err)
+		return err
 	}
-	if markers.TimedOut || (markers.ExitCode != 0 && markers.ExitCode != 1) {
-		return commandFailure(read, markers)
-	}
-	if markers.ExitCode == 0 {
-		return nil
-	}
-	_, err = RunChecked(ctx, run, []string{"git", gitDir, "config", "--local", "remote.origin.gh-resolved", "base"}, nil, cloneDir)
+	_, err = RunChecked(ctx, run, []string{"git", "--git-dir=" + gitDir, "config", "--local", "remote.origin.gh-resolved", "base"}, nil, cloneDir)
 	return err
 }
 
