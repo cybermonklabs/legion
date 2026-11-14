@@ -378,7 +378,7 @@ func foldHistoryPastRoom(t *testing.T, holder pgx.Tx, artifactID string, head in
 		t.Fatalf("write the document as task B: %v", err)
 	}
 	folding := persistence.Version(writtenAt)
-	state, _, misread, err := fold(ctx, storedUpdates(ctx, holder, artifactID, folding), maxUpdateItems)
+	state, _, _, misread, err := fold(ctx, storedUpdates(ctx, holder, artifactID, folding), maxUpdateItems)
 	if err != nil {
 		t.Fatalf("fold the document's history: %v", err)
 	}

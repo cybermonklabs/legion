@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/reearth/ygo/crdt"
+	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
+	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -301,6 +303,163 @@ func measureCopyPaths(t *testing.T, state []byte) {
 				path.name, transient, float64(transient)/float64(bytes), bytes, loadSlotBytes)
 		}
 	}
+}
+
+// stateAnswerMessageBytes is how long ygo's server lets one sync message of a state answer be on
+// a y-websocket connection: the 64 KiB one frame of the answer may be, less the one byte of the
+// frame's own message type (theorem-labs/ygo v1.55.1-theorem.2, provider/websocket/peer.go,
+// stateFrameBytes and stateMessageBytes).
+const stateAnswerMessageBytes = 64<<10 - 1
+
+// stateAnswerParker is the client whose struct the state-answer measurement parks in a document
+// and lands again, one clock further each time (measureStateAnswers).
+const stateAnswerParker = 7_000_001
+
+// A state answer holds no more heap than its grant, on either of the two paths ygo answers a
+// browser's SyncStep1 by (weighStateAnswer, answerWeight): a room that parks nothing is cut from
+// its own structs (crdt.SplitStateAsUpdateV1), and a room holding parked structs or deletions
+// from its encoded state, which the encode's merge of what it parks (withParked) and the cut
+// (crdt.SplitUpdateV1) each decode whole. For each shape this answers a browser that holds
+// nothing six times on one document, three times a path and alternating: it parks a struct
+// before each answer on the second path and lands it after, so both paths answer the same
+// structs. Each answer is what ygo's server builds between the hook's admission and its release
+// (answerFrames), measured as a copy is (measureLoad, copyMeasurementGCPercent): the most heap it
+// held above the document, which is what the grant covers, since the frames are that heap's
+// until the release and the browser's write queue's after it; what it allocated; and in how many
+// objects. These are the readings answerHeapAStateByte, answerHeapAClient and
+// parkedAnswerCopyPercent are set from.
+//
+// Every row is a measurement, run with DISPATCH_MEASURE_COPY_HEAP=1 alone: an answer's peak moves
+// with where the collector runs, by half again on a busy machine (a mebibyte of prose cut from
+// its encoded state held 47,280,064 to 73,004,928 bytes in one run of three), so a later run can
+// pass a grant set past the most an earlier one measured. The shapes are a
+// mebibyte of prose; one paragraph of a mebibyte typed in one transaction, a few structs; and,
+// each of about a million structs, a run of a million keystrokes, each its own item as a room
+// takes them one transaction at a time (chainedRun), a run of 1,024,000 characters with every
+// other one deleted, a struct for each character (splitDenseRoom), and a million clients of one
+// struct each, the shape a sender makes by naming a client id of its own in each group it sends.
+// None is at the decode cap itself: one struct parked in a room at the cap takes its state past
+// the 1,048,576 structs the old path's decode reads, and that answer fails (crdt: invalid
+// update).
+func TestAStateAnswerHoldsNoMoreHeapThanItsGrantOnEitherPath(t *testing.T) {
+	skipUnderRace(t)
+	if os.Getenv(copyHeapMeasurement) == "" {
+		t.Skip("set " + copyHeapMeasurement + "=1 to measure the state answers")
+	}
+	for _, shape := range []struct {
+		name string
+		doc  func(t *testing.T) *crdt.Doc
+	}{
+		{"a mebibyte of prose", func(t *testing.T) *crdt.Doc { return residentRoomDocument(t, 1<<20) }},
+		{"one paragraph of a mebibyte typed in one transaction", func(t *testing.T) *crdt.Doc {
+			doc := newDocumentCopy()
+			if err := crdt.ApplyUpdateV1(doc, longRunState(t, 1), nil); err != nil {
+				t.Fatal(err)
+			}
+			return doc
+		}},
+		{"a run of a million keystrokes", func(t *testing.T) *crdt.Doc {
+			doc := seededDocumentCopy(t)
+			chainedRun(t, doc, lastCharacter(t, doc), 1_000, 1_000_000)
+			return doc
+		}},
+		{"a run of 1,024,000 characters with every other one deleted", func(t *testing.T) *crdt.Doc {
+			before, cut := splitDenseRoom(t, 1_024_000)
+			doc := newDocumentCopy()
+			for _, update := range [][]byte{before, cut} {
+				if err := crdt.ApplyUpdateV1(doc, update, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return doc
+		}},
+		{"a million clients of one struct each", func(t *testing.T) *crdt.Doc {
+			doc := seededDocumentCopy(t)
+			const clients, perFrame = 1_000_000, 1 << 16
+			for first := 0; first < clients; first += perFrame {
+				n := min(perFrame, clients-first)
+				frame := newV1Frame(n)
+				for c := range n {
+					frame = frame.group(1, uint64(gcFillClient+first+c), 0).gc(1)
+				}
+				if err := crdt.ApplyUpdateV1(doc, frame.noDeletes(), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return doc
+		}},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			measureStateAnswers(t, shape.doc(t))
+		})
+	}
+}
+
+// measureStateAnswers answers doc's state to a browser that holds nothing three times on each
+// of ygo's two paths, alternating, and fails an answer whose peak passes its grant
+// (TestAStateAnswerHoldsNoMoreHeapThanItsGrantOnEitherPath).
+func measureStateAnswers(t *testing.T, doc *crdt.Doc) {
+	if parks(doc) {
+		t.Fatal("the document parks something before the measurement parked anything")
+	}
+	step1 := ygsync.EncodeSyncStep1(crdt.New())
+	apply := func(what string, update []byte) {
+		if err := crdt.ApplyUpdateV1(doc, update, nil); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	for run := range 3 {
+		for _, parked := range []bool{false, true} {
+			parker := uint64(stateAnswerParker + run)
+			if parked {
+				apply("park a struct", parkedGCFrame(parker, 1))
+			}
+			if parks(doc) != parked {
+				t.Fatalf("run %d: the document parks something: %t, want %t", run, parks(doc), parked)
+			}
+			state := int64(len(crdt.EncodeStateAsUpdateV1(doc, nil)))
+			structs := int64(doc.StructCount() + doc.PendingStats().Items)
+			weight := answerWeight(doc, state, structs)
+			cost := func() loadCost {
+				defer debug.SetGCPercent(debug.SetGCPercent(copyMeasurementGCPercent))
+				return measureLoad(t, func() any { return answerFrames(t, doc, step1) })
+			}()
+			path := "cut from its own structs"
+			if parked {
+				path = "cut from its encoded state"
+			}
+			t.Logf("run %d, %s: %d structs, %d-byte state: %s, %d peak, %d bytes allocated in %d objects, %d held; %.2f a state byte, %.3f of the %d-byte copy, against a %d-byte grant",
+				run, path, structs, state, cost.took.Round(time.Millisecond), cost.peak, cost.allocated, cost.allocations, cost.held,
+				float64(cost.peak)/float64(state), float64(cost.peak)/float64(max(state*bytesOfHeapAStateByte, structs*bytesOfHeapAStruct)),
+				max(state*bytesOfHeapAStateByte, structs*bytesOfHeapAStruct), weight)
+			if int64(cost.peak) > weight {
+				t.Errorf("run %d: an answer %s held %d bytes above the document, past its %d-byte grant", run, path, cost.peak, weight)
+			}
+			if parked {
+				apply("land the parked struct", gcFrameFrom(parker, 1))
+			}
+		}
+	}
+}
+
+// answerFrames is what ygo's server builds to answer step1 from doc's room between the hook's
+// admission and its release: the sync messages sync.EncodeSyncStep2Split cuts doc's state into,
+// each wrapped in the frame the browser's writer is handed (theorem-labs/ygo
+// v1.55.1-theorem.2, provider/websocket's answerSyncStep1, sendSyncSeries and syncFrame).
+func answerFrames(t *testing.T, doc *crdt.Doc, step1 []byte) [][]byte {
+	t.Helper()
+	messages, err := ygsync.EncodeSyncStep2Split(doc, step1, stateAnswerMessageBytes)
+	if err != nil {
+		t.Fatalf("answer the browser: %v", err)
+	}
+	frames := make([][]byte, len(messages))
+	for i, message := range messages {
+		frames[i] = encoding.EncodeBytes(func(e *encoding.Encoder) {
+			e.WriteVarUint(0)
+			e.WriteRaw(message)
+		})
+	}
+	return frames
 }
 
 // useLoadSlots makes slots the process's load concurrency for the rest of t (podLoadSlots).
@@ -682,14 +841,16 @@ func cachedAgentRewrittenState(t *testing.T) []byte {
 }
 
 // loadCost is what one run of a load cost at GOMAXPROCS=1: how long it took, what it allocated
-// (runtime.MemStats.TotalAlloc across it), the most heap its objects held above what the heap held
-// before it, sampled every millisecond the scheduler lets the sampler run
-// (/memory/classes/heap/objects:bytes), and what it still holds once collected.
+// (runtime.MemStats.TotalAlloc across it) in how many objects (runtime.MemStats.Mallocs), the
+// most heap its objects held above what the heap held before it, sampled every millisecond the
+// scheduler lets the sampler run (/memory/classes/heap/objects:bytes), and what it still holds
+// once collected.
 type loadCost struct {
-	took      time.Duration
-	allocated uint64
-	peak      uint64
-	held      int64
+	took        time.Duration
+	allocated   uint64
+	allocations uint64
+	peak        uint64
+	held        int64
 }
 
 // measureLoad runs load once at GOMAXPROCS=1 and returns its cost (loadCost).
@@ -733,12 +894,13 @@ func measureLoad(t *testing.T, load func() any) loadCost {
 	stopSampling()
 	peak := <-peaked
 	runtime.ReadMemStats(&after)
-	allocated := after.TotalAlloc - before.TotalAlloc
+	allocated, allocations := after.TotalAlloc-before.TotalAlloc, after.Mallocs-before.Mallocs
 	runtime.GC()
 	runtime.GC()
 	runtime.ReadMemStats(&after)
 	runtime.KeepAlive(kept)
-	return loadCost{took: took, allocated: allocated, peak: peak - base, held: int64(after.HeapAlloc) - int64(before.HeapAlloc)}
+	return loadCost{took: took, allocated: allocated, allocations: allocations, peak: peak - base,
+		held: int64(after.HeapAlloc) - int64(before.HeapAlloc)}
 }
 
 // A holder that already holds a grant keeps it and takes only the difference where its next copy

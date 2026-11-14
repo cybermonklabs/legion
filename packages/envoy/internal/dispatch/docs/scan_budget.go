@@ -69,8 +69,9 @@ const roomScanTotal = 1_000_000
 // honestHandoffScans is what one honest offline handoff scans: a browser that typed into a hundred
 // paragraphs while another person typed at the same places hands over an update scanning 35,800
 // items, every place's scans summed in one update (7,160 at twenty paragraphs). A history within
-// it of roomScanTotal is near the scan total, as one within smallestReplacementAdds of
-// maxUpdateItems is near the decode cap.
+// it of roomScanTotal is near the scan total, as one within a write of its whole text of
+// maxUpdateItems is near the decode cap (nearTheDecodeCap): each figure is the most one write a
+// document must still take adds.
 const honestHandoffScans = 35_800
 
 // scanCeiling is the most items the scans of a browser's update of updateBytes bytes may pass:

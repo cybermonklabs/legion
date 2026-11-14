@@ -818,7 +818,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	comment.RepliesToBlock = threadTarget.ReplyBlock.nodeID()
 	comment.Answers = threadTarget.Answers
 	if comment.Anchor != nil {
-		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, nil, projectionKind), actor); err != nil {
+		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, docs.CommentMarkRecord(comment, nil, projectionKind), actor); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -868,7 +868,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			if kindErr == nil {
 				rootProjectionKind = kind
 			}
-			if err := s.deps.Docs.ProjectMark(documentCtx, root.Anchor.ArtifactID, root.Anchor.MarkID, commentMarkRecord(root, replies, rootProjectionKind), actor); err != nil {
+			if err := s.deps.Docs.ProjectMark(documentCtx, root.Anchor.ArtifactID, root.Anchor.MarkID, docs.CommentMarkRecord(root, replies, rootProjectionKind), actor); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}

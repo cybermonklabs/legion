@@ -4,7 +4,9 @@ package docs
 // share (foldRead), which folds rows totalling at most foldBufferBytes from memory once its
 // transaction has ended and streams larger logs inside it; the state the rows make (stateThrough);
 // the document that state decodes into (documentThrough, LoadDocument); the fold itself (fold,
-// readsBackOtherwise); and whether a document holds anything it cannot place (parks).
+// readsBackOtherwise); the rows applied in the order they were stored where the fold does not read
+// back (runsThrough, runsState, runsDocument); and whether a document holds anything it cannot
+// place (parks).
 
 import (
 	"context"
@@ -50,65 +52,132 @@ func parks(doc *crdt.Doc) bool {
 // re-encoding that keeps every clock and moves text, such as a lost right origin:
 // TestACompactedDocumentKeepsItsOrderThroughLaterUpdates guards that on each ygo bump. A state that
 // reads back otherwise, or a log the fold's document cannot apply (one parking more than its
-// pending queue, maxPending, holds), is not used: stateThrough returns the same stored updates
-// merged whole, as they were stored (mergedThrough), and a compaction, which calls fold itself,
-// leaves them as stored. The merge of a log the fold cannot apply is what a load of it decodes and
-// refuses (ErrDocumentUnloadable), which offers its rebuild.
+// pending queue, maxPending, holds), is not used, and a compaction, which calls fold itself, leaves
+// the updates as stored. stateThrough returns them applied in the order they were stored, never
+// merged across that order (runsThrough, runsState): rows that form one run are returned as that
+// run, their merge, which holds what applying them one after another holds; rows of several runs
+// are applied run by run to one document of maxPending pending items (runsDocument), and that
+// document's encoding is returned. Whether a struct parks is decided by the document that receives
+// it, which no merge of updates has, so a merge of two runs can keep a struct that a document
+// applying them parks and drop the rows it covers. A document that parks a struct over clocks it
+// holds encodes as ygo's merge of its parked structs leaves it (crdt.EncodeStateAsUpdateV1), so
+// such a state is as whole as that merge, where documentThrough's document, which nothing encodes,
+// holds what the runs applied. A log whose runs do not apply in order either, parking past the
+// pending queue, makes no state: stateThrough answers it as an unappliedHistory, which is
+// ErrDocumentUnloadable, carrying what the rebuild that error offers reads. A merge of such runs
+// is no stand-in for them. Twenty keystrokes with the parked row stored after the first three,
+// then another client's rows that park past the queue until a later row of that client's arrives,
+// merged into bytes a room's load decoded holding three of the twenty keystrokes, under ygo
+// v1.55.1-theorem.3 and with the fix of its parked merge ported onto it alike; with the parked row
+// stored after all twenty, three under v1.55.1-theorem.3 and all twenty with the fix
+// (TestAHistoryWhoseRunsDoNotApplyInOrderIsUnloadableAndItsRebuildRetiresItsClients).
 //
 // A log of one update is returned as stored: a compaction leaves the rows it folds as one update
 // holding their state, and a document's first update deletes nothing an earlier one inserted.
 func stateThrough(ctx context.Context, room string, version persistence.Version, updates updateSource, maxPending int) ([]byte, error) {
-	state, _, misread, err := fold(ctx, updates, maxPending)
+	state, _, _, misread, err := fold(ctx, updates, maxPending)
 	if err != nil {
 		return nil, err
 	}
 	if misread == nil {
 		return state, nil
 	}
-	slog.Warn(misreadWarning+"; serving them merged",
+	slog.Warn(misreadWarning+"; serving them applied in order",
 		"room", room, "version", int64(version), "error", misread)
-	return mergedThrough(updates)
-}
-
-// documentThrough is the document stateThrough's state decodes into, decoded once: the document
-// the fold's read-back check decoded when the state reads back, and otherwise - a log of one
-// update, which the fold returns as stored, or a log that does not fold, which is served merged -
-// the state decoded into a document with the store's pending queue, maxPending, as a room decodes
-// it, under the load grant ctx carries or one of its own, weighed on the state it decodes
-// (holdLoad, copyWeight). The structs that state holds are not known until this decode counts
-// them, so the state term alone weighs the grant. A state
-// that does not decode is ErrDocumentUnloadable; a log holding no update is no document.
-func documentThrough(ctx context.Context, room string, version persistence.Version, updates updateSource, maxPending int) (*crdt.Doc, error) {
-	state, readBack, misread, err := fold(ctx, updates, maxPending)
-	switch {
-	case err != nil:
-		return nil, err
-	case misread != nil:
-		slog.Warn(misreadWarning+"; serving them merged",
-			"room", room, "version", int64(version), "error", misread)
-		if state, err = mergedThrough(updates); err != nil {
-			return nil, err
-		}
-	case readBack != nil:
-		return readBack, nil
-	}
-	if len(state) == 0 {
-		return nil, nil
-	}
-	release, err := holdLoad(ctx, copyWeight(int64(len(state)), 0))
+	runs, err := runsThrough(updates)
 	if err != nil {
 		return nil, err
 	}
-	defer release()
-	doc := newCappedDocumentCopy(maxPending)
-	if err := decodeStoredState(doc, state); err != nil {
-		return nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, err)
-	}
-	return doc, nil
+	return runsState(ctx, version, runs, maxPending)
 }
 
-// mergedThrough is the stored updates updates replays merged whole, as they were stored.
-func mergedThrough(updates updateSource) ([]byte, error) {
+// runsState is the state runs, a log's stored updates through version as runsThrough cuts them,
+// make applied in order, as one V1 update: a single run as it is, and several applied to one
+// document (runsDocument) and encoded, under the load grant ctx carries. Several runs that do not
+// apply (ErrDocumentUnloadable) make no state, and are answered as an unappliedHistory.
+func runsState(ctx context.Context, version persistence.Version, runs [][]byte, maxPending int) ([]byte, error) {
+	if len(runs) == 1 {
+		return runs[0], nil
+	}
+	doc, err := runsDocument(ctx, runs, maxPending)
+	switch {
+	case errors.Is(err, ErrDocumentUnloadable):
+		return nil, newUnappliedHistory(version, runs, err)
+	case err != nil:
+		return nil, err
+	}
+	return crdt.EncodeStateAsUpdateV1(doc, nil), nil
+}
+
+// unappliedHistory is a stored history whose runs do not apply in order to one document of the
+// store's pending queue (runsDocument, refused): it makes no state, so Load and MaterializeAt
+// answer it as this error, which is ErrDocumentUnloadable, and no bytes. A socket's admission
+// (loadTree) and a cold write's fork (coldFork) answer it as the document's own failure, as they
+// answer a history ygo refuses the bytes of, and a room's load fails on it (LoadDoc). What the
+// rebuild ErrDocumentUnloadable offers reads of a history (rebuildSource) it carries itself: the
+// version the history stands at, and every client its runs name at the clock each reached, which
+// for a history ygo refuses the bytes of is read from those bytes (undecodableHistoryClients).
+type unappliedHistory struct {
+	version persistence.Version
+	clients map[crdt.ClientID]uint64
+	refused error
+}
+
+// newUnappliedHistory is the unappliedHistory through version whose runs runsDocument refused.
+func newUnappliedHistory(version persistence.Version, runs [][]byte, refused error) error {
+	clients := make(map[crdt.ClientID]uint64)
+	for _, run := range runs {
+		_, to, err := crdt.ParseUpdateMeta(run)
+		if err != nil {
+			return fmt.Errorf("read the clocks of a stored update: %w", err)
+		}
+		for client, clock := range to {
+			clients[client] = max(clients[client], clock)
+		}
+	}
+	return &unappliedHistory{version: version, clients: clients, refused: refused}
+}
+
+func (h *unappliedHistory) Error() string { return h.refused.Error() }
+
+func (h *unappliedHistory) Unwrap() error { return h.refused }
+
+// documentThrough is the document the room's stored updates through version make, as stateThrough
+// reads them, decoded once: the document the fold's read-back check decoded when the state reads
+// back; a log of one update, which the fold returns as stored, decoded into a document with the
+// store's pending queue, maxPending, as a room decodes it; and the runs of a log that does not fold
+// (runsThrough) applied in order to such a document (runsDocument) - the document whose encoding
+// stateThrough returns for a log of several runs, which holds what the runs applied even where
+// that encoding keeps a parked struct over them. Each decode runs under the load grant ctx carries
+// or one of its own (runsDocument). A history that does not decode is ErrDocumentUnloadable; a log
+// holding no update is no document.
+func documentThrough(ctx context.Context, room string, version persistence.Version, updates updateSource, maxPending int) (*crdt.Doc, error) {
+	state, readBack, _, misread, err := fold(ctx, updates, maxPending)
+	switch {
+	case err != nil:
+		return nil, err
+	case readBack != nil:
+		return readBack, nil
+	case misread == nil && len(state) == 0:
+		return nil, nil
+	case misread == nil:
+		return runsDocument(ctx, [][]byte{state}, maxPending)
+	}
+	slog.Warn(misreadWarning+"; serving them applied in order",
+		"room", room, "version", int64(version), "error", misread)
+	runs, err := runsThrough(updates)
+	if err != nil {
+		return nil, err
+	}
+	return runsDocument(ctx, runs, maxPending)
+}
+
+// runsThrough is the stored updates updates replays, in the order they were stored, as the runs
+// a document applies them in (mergedRuns, which a catch-up applies its rows by): a run ends before
+// a row carrying some client's clocks below the end of an earlier row of the run, and each run is
+// its rows merged, which within a run keeps every struct whole. Rows typed one after another are
+// one run.
+func runsThrough(updates updateSource) ([][]byte, error) {
 	var stored [][]byte
 	if err := updates(func(update []byte) error {
 		stored = append(stored, update)
@@ -116,11 +185,35 @@ func mergedThrough(updates updateSource) ([]byte, error) {
 	}); err != nil {
 		return nil, err
 	}
-	merged, err := crdt.MergeUpdatesV1(stored...)
+	runs, err := mergedRuns(stored)
 	if err != nil {
-		return nil, fmt.Errorf("merge document updates: %w", err)
+		return nil, fmt.Errorf("merge document updates into runs: %w", err)
 	}
-	return merged, nil
+	return runs, nil
+}
+
+// runsDocument is runs applied in order to one document of maxPending pending items, as a room
+// decodes its load (decodeStoredState), under the load grant ctx carries or one of its own weighed
+// on the runs' bytes (holdLoad, copyWeight): the structs they hold are not known until this decode
+// counts them, so the state term alone weighs the grant. A run that does not decode is
+// ErrDocumentUnloadable.
+func runsDocument(ctx context.Context, runs [][]byte, maxPending int) (*crdt.Doc, error) {
+	var bytes int64
+	for _, run := range runs {
+		bytes += int64(len(run))
+	}
+	release, err := holdLoad(ctx, copyWeight(bytes, 0))
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	doc := newCappedDocumentCopy(maxPending)
+	for _, run := range runs {
+		if err := decodeStoredState(doc, run); err != nil {
+			return nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, err)
+		}
+	}
+	return doc, nil
 }
 
 // foldBufferBytes is the most stored update bytes a fold reads into memory (foldRead): a load or a
@@ -287,16 +380,27 @@ func memoryUpdates(ctx context.Context, updates [][]byte) updateSource {
 }
 
 // fold is the state the updates make, the document its read-back check decoded that state into,
-// readBack, nil unless the state reads back, or misread naming why the updates do not fold into a
-// state that reads back as them - an update the fold's document could not apply within its pending
-// queue of maxPending items, or a state that reads back otherwise. A log of one update is returned
-// as stored, with no document. The fold holds one document at once: its own, until it has encoded
+// readBack, nil unless the state reads back, whether the fold's document parked anything once it
+// had applied every update (parks), or misread naming why the updates do not fold into a state
+// that reads back as them - an update the fold's document could not apply within its pending queue
+// of maxPending items, or a state that reads back otherwise. A log of one update is returned as
+// stored, with no document. The fold holds one document at once: its own, until it has encoded
 // the state, then the read-back's.
+//
+// parked is the one case in which ygo's encoding of the fold's document merges anything
+// (crdt.EncodeStateAsUpdateV1's parked structs and deletions) and the fold merges the stored
+// updates back in, so it is the one fold whose state a change to how ygo merges parked structs can
+// change: a compaction checks the stored versions inside such a fold before it writes it
+// (disagreeingVersion).
+// What the fold merges back of each stored update lies past the state vector of its document,
+// which applied every update in order (crdt.DiffUpdateV1), with the update's deletes, so that
+// merge decides nothing the document placed: only the structs it parks, which a document's own
+// pending queue merges as they arrive.
 //
 // Whoever read the updates took the load grant ctx carries (foldRead), and the read-back's decode
 // runs inside it. A fold under a context carrying no grant takes one of its own, weighed on the
 // state it is about to read back, and given back as it returns (holdLoad).
-func fold(ctx context.Context, updates updateSource, maxPending int) (state []byte, readBack *crdt.Doc, misread error, err error) {
+func fold(ctx context.Context, updates updateSource, maxPending int) (state []byte, readBack *crdt.Doc, parked bool, misread error, err error) {
 	var doc *crdt.Doc
 	apply := func(update []byte) error {
 		if doc == nil {
@@ -325,15 +429,15 @@ func fold(ctx context.Context, updates updateSource, maxPending int) (state []by
 	})
 	switch {
 	case errors.Is(err, errUnfoldable):
-		return nil, nil, err, nil
+		return nil, nil, false, err, nil
 	case err != nil:
-		return nil, nil, nil, err
+		return nil, nil, false, nil, err
 	case seen <= 1:
-		return first, nil, nil, nil
+		return first, nil, false, nil, nil
 	}
 	state = crdt.EncodeStateAsUpdateV1(doc, nil)
 	made := doc.StateVector()
-	if parks(doc) {
+	if parked = parks(doc); parked {
 		parts := [][]byte{state}
 		if err := updates(func(update []byte) error {
 			rest, err := crdt.DiffUpdateV1(update, made)
@@ -343,10 +447,10 @@ func fold(ctx context.Context, updates updateSource, maxPending int) (state []by
 			parts = append(parts, rest)
 			return nil
 		}); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, false, nil, err
 		}
 		if state, err = crdt.MergeUpdatesV1(parts...); err != nil {
-			return nil, nil, nil, fmt.Errorf("keep parked document updates: %w", err)
+			return nil, nil, false, nil, fmt.Errorf("keep parked document updates: %w", err)
 		}
 	}
 	doc = nil
@@ -354,11 +458,11 @@ func fold(ctx context.Context, updates updateSource, maxPending int) (state []by
 	// (copyWeight).
 	release, err := holdLoad(ctx, copyWeight(int64(len(state)), 0))
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, false, nil, err
 	}
 	defer release()
 	readBack, misread = readsBackOtherwise(state, made, maxPending)
-	return state, readBack, misread, nil
+	return state, readBack, parked, misread, nil
 }
 
 // readsBackOtherwise decodes state into a fresh document of maxPending pending items and names how
@@ -426,7 +530,9 @@ type LoadedDocument struct {
 // pool, folded once that transaction has ended when the rows at or below the head total at most
 // foldBufferBytes and while it streams them inside it otherwise (foldRead), and noted once it has
 // read more than one row. Its document is the one Load's state decodes into (documentThrough), so
-// a read of it shows what a room load would. A history that does not decode is
+// a read of it shows what a room load would, save for a log that does not fold whose runs leave a
+// struct parked over clocks the document holds: its document holds the rows the runs applied,
+// whatever Load's encoding of it keeps (stateThrough). A history that does not decode is
 // ErrDocumentUnloadable. Its fold and decode share one grant of the pod's load concurrency,
 // weighed on the rows they fold, given back as it returns the document to its caller.
 func (p *PgVersioned) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {

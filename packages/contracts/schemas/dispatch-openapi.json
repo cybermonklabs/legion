@@ -1167,6 +1167,48 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/artifacts/{id}/_test/near-decode-cap": {
+      "post": {
+        "description": "Test hook: close the document's room and append deleted characters that leave its history near the decode cap, so the rebuild takes it and the page's read says so.",
+        "operationId": "postApiV1ArtifactsByIdTestNearDecodeCap",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/artifacts/{id}/_test/outside-schema": {
       "post": {
         "description": "Test hook: write a crafted tree outside the Proof schema.",
@@ -2102,7 +2144,7 @@
     },
     "/api/v1/artifacts/{id}/rebuild": {
       "post": {
-        "description": "Rebuild a document's history into one fresh update: a history ygo cannot load, from its latest saved markdown or supplied {markdown}; a history so near the decode cap or the edit-scan total that every write is refused, from its own text or supplied markdown, closing its room in this server first, whose connected browsers drop their unsent edits; 409 DOCUMENT_LIVE for any other document live in this server, 409 DOCUMENT_LOADS for any other history that loads.",
+        "description": "Rebuild a document's history into one fresh update, keeping its block ids, anchors and margin records as far as its history or its rows record them: a history ygo cannot load, from its latest saved markdown or supplied {markdown}; a history so near the decode cap or the edit-scan total that a write it must still take is refused (a write of its whole text, near the decode cap), from its own text or supplied markdown, closing its room in this server first, whose connected browsers drop their unsent edits - a room this server holds decides that on its own; 409 DOCUMENT_LIVE for any other document live in this server, 409 DOCUMENT_LOADS for any other history that loads.",
         "operationId": "postApiV1ArtifactsByIdRebuild",
         "parameters": [
           {
@@ -13360,6 +13402,12 @@
               "type"
             ],
             "type": "object"
+          },
+          "near_decode_cap": {
+            "type": "boolean"
+          },
+          "near_decode_cap_reason": {
+            "type": "string"
           },
           "token": {
             "type": "string"

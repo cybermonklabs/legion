@@ -295,6 +295,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/artifacts/{id}/_test/near-decode-cap": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Test hook: close the document's room and append deleted characters that leave its history near the decode cap, so the rebuild takes it and the page's read says so. */
+    post: operations["postApiV1ArtifactsByIdTestNearDecodeCap"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/artifacts/{id}/_test/outside-schema": {
     parameters: {
       query?: never;
@@ -544,7 +561,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Rebuild a document's history into one fresh update: a history ygo cannot load, from its latest saved markdown or supplied {markdown}; a history so near the decode cap or the edit-scan total that every write is refused, from its own text or supplied markdown, closing its room in this server first, whose connected browsers drop their unsent edits; 409 DOCUMENT_LIVE for any other document live in this server, 409 DOCUMENT_LOADS for any other history that loads. */
+    /** @description Rebuild a document's history into one fresh update, keeping its block ids, anchors and margin records as far as its history or its rows record them: a history ygo cannot load, from its latest saved markdown or supplied {markdown}; a history so near the decode cap or the edit-scan total that a write it must still take is refused (a write of its whole text, near the decode cap), from its own text or supplied markdown, closing its room in this server first, whose connected browsers drop their unsent edits - a room this server holds decides that on its own; 409 DOCUMENT_LIVE for any other document live in this server, 409 DOCUMENT_LOADS for any other history that loads. */
     post: operations["postApiV1ArtifactsByIdRebuild"];
     delete?: never;
     options?: never;
@@ -3359,6 +3376,8 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      near_decode_cap?: boolean;
+      near_decode_cap_reason?: string;
       token: string;
       version: null | number;
     };
@@ -6910,6 +6929,38 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["LiveWritePauseState"];
         };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ArtifactsByIdTestNearDecodeCap: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {

@@ -1,4 +1,5 @@
 import { beforeEach, expect, spyOn, test } from "bun:test";
+import type { QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -15,6 +16,7 @@ import {
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
 import type { ArtifactText } from "../../api/types";
+import { plainWrite, writesOf } from "../writes/write-store";
 import { openPendingEdits } from "./pending-edits";
 
 // Whether the live editor may connect, and what the page shows when it may not or cannot: the
@@ -390,6 +392,216 @@ test("ProofDocument offers a rebuild for a history that cannot load and reconnec
     view.unmount();
     confirm.mockRestore();
     rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+  }
+});
+
+/** The refusal the document service answers a write with when the document stands so near the
+ *  decode cap that only a rebuild lets it take that write (`refuseUndecodable`, in the words it
+ *  uses only once the rebuild route's own test answers near): it names the rebuild route of the
+ *  document it refused the write for. */
+function nearCapRefusal(id: string): ApiError {
+  return new ApiError(413, {
+    code: "CAP_EXCEEDED",
+    error: `document too large to store: this change would leave the document's live state past the 1048576 items ygo decodes in one update, and its history rather than its text holds it there: a person can rebuild the document (POST /api/v1/artifacts/${id}/rebuild, which the document's page offers), which keeps its text and leaves its history small, and the change can then be made again`,
+  });
+}
+
+/** The same bound's refusal of a document far from the cap - a change so large that it would
+ *  carry the document past the cap by itself - which no rebuild mends, so it names none. */
+const farFromCapRefusal = new ApiError(413, {
+  code: "CAP_EXCEEDED",
+  error:
+    "document too large to store: this change would leave the document's live state past the 1048576 items ygo decodes in one update; shorten the change, or split the document",
+});
+
+/** A write refused with `refusal`, made through the app's one write store as every surface's
+ *  write is - the margin's, an ask block's, an upload's - and not by the document itself. */
+async function refuseWrite(queryClient: QueryClient, refusal: Error): Promise<void> {
+  await act(async () => {
+    await writesOf(queryClient)
+      .run({
+        detail: null,
+        inline: true,
+        kind: plainWrite,
+        label: "Comment on spec.md",
+        presentation: "indicator",
+        write: () => Promise.reject(refusal),
+      })
+      .catch(() => undefined);
+  });
+}
+
+const NEAR_CAP_NOTICE =
+  "This document has been edited so much that it must be rebuilt before it can take your change.";
+
+// A write the server refused at the decode cap with words naming this document's rebuild route is
+// one only a rebuild lets the document take, and a person who cannot edit the document meets it:
+// the page offers that rebuild with the button and the request the editor's own refusal offers,
+// closes the editor before it asks, and admits it again once the rebuild has answered.
+test("ProofDocument offers the rebuild for a write to it refused near the decode cap", async () => {
+  const user = userEvent.setup();
+  const queryClient = createQueryClient();
+  const { connections, sync, view } = renderProofDocument({ queryClient });
+  const closedBeforeTheRebuild: boolean[] = [];
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(async () => {
+    closedBeforeTheRebuild.push(connections[0]?.destroyed === true);
+    return {
+      head: 1,
+      removed_checkpoints: 0,
+      removed_snapshots: 0,
+      removed_updates: 40,
+      source_version: 1,
+      validation_error:
+        "the document's live state holds 1047004 structs, and replacing its text adds 12171 more",
+    };
+  });
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  try {
+    await sync();
+    expect(screen.queryByRole("button", { name: "Rebuild this document" })).not.toBeInTheDocument();
+
+    await refuseWrite(queryClient, nearCapRefusal(artifact.id));
+    expect(await screen.findByText(NEAR_CAP_NOTICE)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Rebuild this document" }));
+    expect(confirm).toHaveBeenCalledWith(
+      "Rebuild this document from its current text? Every browser connected to it, this one included, drops the edits it has not sent yet."
+    );
+    await waitFor(() => expect(rebuildArtifact).toHaveBeenCalledTimes(1));
+    expect(rebuildArtifact.mock.calls[0]).toEqual([artifact.id, undefined, keyedAttempt]);
+    expect(closedBeforeTheRebuild).toEqual([true]);
+    await waitFor(() => expect(connections).toHaveLength(2));
+    expect(screen.queryByText(NEAR_CAP_NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rebuild this document" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+  }
+});
+
+// The offer goes only where the route takes the document. A refusal of the same bound that names
+// no rebuild - a change that would carry a document far from the cap past it - is the change's
+// own; one naming another document's rebuild is that document's; and a reading column is not the
+// document's page. None of them offers it, and the page's own refusal still does afterwards.
+test("ProofDocument offers no rebuild for a refused write the rebuild route would refuse", async () => {
+  const queryClient = createQueryClient();
+  const pane = renderProofDocument({ queryClient, surface: "pane" });
+  try {
+    await pane.sync();
+    await refuseWrite(queryClient, nearCapRefusal(artifact.id));
+    expect(screen.queryByText(NEAR_CAP_NOTICE)).not.toBeInTheDocument();
+  } finally {
+    pane.view.unmount();
+  }
+
+  const { sync, view } = renderProofDocument({ queryClient });
+  try {
+    await sync();
+    await refuseWrite(queryClient, farFromCapRefusal);
+    await refuseWrite(queryClient, nearCapRefusal("another-document"));
+    expect(screen.queryByText(NEAR_CAP_NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rebuild this document" })).not.toBeInTheDocument();
+
+    await refuseWrite(queryClient, nearCapRefusal(artifact.id));
+    expect(
+      await screen.findByRole("button", { name: "Rebuild this document" })
+    ).toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+const NEAR_CAP_READ_NOTICE =
+  "This document has been edited so much that it must be rebuilt before it can take larger changes.";
+const NEAR_CAP_REASON =
+  "the document's live state holds 1047004 structs, and a write of its whole text, 12171 more, would carry it past the 1048576 ygo decodes in one update";
+
+/** The document's text read as the server answers it, saying whether the rebuild route takes the
+ *  document by the decode cap (`near_decode_cap`) and, where it does, why. */
+function textRead(nearDecodeCap: boolean): ArtifactText {
+  return {
+    markdown: "The live document",
+    near_decode_cap: nearDecodeCap,
+    ...(nearDecodeCap ? { near_decode_cap_reason: NEAR_CAP_REASON } : {}),
+    token: "sha256:live-document",
+    version: 1,
+  };
+}
+
+// The person who opens a document someone else's write was refused for - an agent's, from the
+// command line - meets no refusal of their own: their typing and their comments still land. The
+// document's own read says the rebuild route takes it, so the page offers that rebuild at once,
+// with the server's reason, the same button and the same request, and the read after the rebuild
+// takes the offer away.
+test("ProofDocument offers the rebuild for a document its read finds near the decode cap", async () => {
+  const user = userEvent.setup();
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(textRead(true));
+  const { connections, sync, view } = renderProofDocument();
+  const closedBeforeTheRebuild: boolean[] = [];
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(async () => {
+    closedBeforeTheRebuild.push(connections[0]?.destroyed === true);
+    getArtifactText.mockResolvedValue(textRead(false));
+    return {
+      head: 1,
+      removed_checkpoints: 0,
+      removed_snapshots: 0,
+      removed_updates: 40,
+      source_version: 1,
+      validation_error: NEAR_CAP_REASON,
+    };
+  });
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  try {
+    await sync();
+    expect(await screen.findByText(NEAR_CAP_READ_NOTICE)).toBeInTheDocument();
+    expect(screen.getByText(NEAR_CAP_REASON)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Rebuild this document" }));
+    expect(confirm).toHaveBeenCalledWith(
+      "Rebuild this document from its current text? Every browser connected to it, this one included, drops the edits it has not sent yet."
+    );
+    await waitFor(() => expect(rebuildArtifact).toHaveBeenCalledTimes(1));
+    expect(rebuildArtifact.mock.calls[0]).toEqual([artifact.id, undefined, keyedAttempt]);
+    expect(closedBeforeTheRebuild).toEqual([true]);
+    await waitFor(() => expect(connections).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByText(NEAR_CAP_READ_NOTICE)).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Rebuild this document" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+  }
+});
+
+// The read's answer is the route's own test, so the page offers the rebuild only where it says
+// the route takes the document: never for a read that says it does not, never in a reading
+// column, and not again once the person has dismissed it.
+test("ProofDocument offers no rebuild where its read says the rebuild route would refuse", async () => {
+  const user = userEvent.setup();
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(textRead(false));
+  try {
+    const far = renderProofDocument();
+    await far.sync();
+    expect(screen.queryByText(NEAR_CAP_READ_NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rebuild this document" })).not.toBeInTheDocument();
+    far.view.unmount();
+
+    getArtifactText.mockResolvedValue(textRead(true));
+    const pane = renderProofDocument({ surface: "pane" });
+    await pane.sync();
+    expect(screen.queryByText(NEAR_CAP_READ_NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rebuild this document" })).not.toBeInTheDocument();
+    pane.view.unmount();
+
+    const near = renderProofDocument();
+    await near.sync();
+    expect(await screen.findByText(NEAR_CAP_READ_NOTICE)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(NEAR_CAP_READ_NOTICE)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rebuild this document" })).not.toBeInTheDocument();
+    near.view.unmount();
+  } finally {
     getArtifactText.mockRestore();
   }
 });

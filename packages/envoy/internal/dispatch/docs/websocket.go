@@ -849,30 +849,42 @@ func (s *Service) onPeerUpdate(info websocket.PeerUpdateInfo, apply func() error
 // weighStateAnswer is ygo's Server.OnStateAnswer: the room runs it immediately before it answers
 // a browser's SyncStep1 with the room's state, and runs the release it returns once that answer
 // is in that browser's write queue, by every way out including the one that sends nothing
-// (sjawhar/ygo v1.55.1-sami.8, provider/websocket/state_answer.go). It holds a grant of the pod's
-// copy heap for the answer, weighted by the state that answer carries, and refuses the answer
-// with the room's busy close where the pool has no room for it inside the server's wait bound.
+// (theorem-labs/ygo v1.55.1-theorem.2, provider/websocket/state_answer.go). It holds a grant of
+// the pod's copy heap for the answer, weighed by the path ygo's answer takes for that room
+// (answerWeight), and refuses the answer with the room's busy close where the pool has no room
+// for it inside the server's wait bound.
 //
 // A join of a room already loaded was free here before, and it is not free. The answer does not
-// read the room's state and send it: it decodes the whole of what that browser is missing into a
-// merge store, so that it can be cut into frames each small enough for a browser to apply in one
-// task (ygo's sync.EncodeSyncStep2Split, crdt.SplitUpdateV1). That is a whole second copy of the
-// document, built on the peer's read loop, and it costs what a whole-document decode costs
-// rather than what the frame that asked for it costs: measured by the fork on a document of
-// 1,048,576 structs, one answer peaked at 360,954,408 bytes of heap against 77,362,528 for a
-// single encode of the same document (sjawhar/ygo v1.55.1-sami.8, websocket.StateAnswerHook).
-// Nothing in ygo bounds how many of those run together, so until now a reconnect storm on one
-// big room built one such copy per browser side by side, off the pod's load concurrency
-// entirely, while every other whole-document copy in the process queued for it.
+// send the room's state as one frame: it cuts what that browser is missing into frames each
+// small enough for a browser to apply in one task and holds every one of them until they are in
+// the browser's write queue (ygo's sync.EncodeSyncStep2Split), all of it built on the peer's read
+// loop, so a room holds its state once more for each browser it answers. How much more depends
+// on what the room parks. A room that parks nothing is cut from its own structs
+// (crdt.SplitStateAsUpdateV1), which builds the frames and the cut's own record of each client
+// and decodes nothing. A room holding parked structs or parked deletions is cut from its
+// encoded state instead: the encode merges what it parks into the state (withParked) and the
+// cut decodes the merge back (crdt.SplitUpdateV1), so its answer decodes the whole document
+// twice. Measured on a run of a million keystrokes, 1,000,010 structs, over two runs of three
+// answers a path to a browser holding nothing, an answer held 24,071,008 to 25,428,848 bytes
+// above the document cut from its structs, having allocated about 25.7 MB in under 900 objects,
+// and 371,149,976 to 429,891,496 cut from its encoded state, having allocated about 840 MB in
+// six million objects (TestAStateAnswerHoldsNoMoreHeapThanItsGrantOnEitherPath). Nothing in ygo
+// bounds how many answers run together, so before this hook a reconnect storm on one big room
+// built one per browser side by side, off the pod's load concurrency entirely, while every
+// other whole-document copy in the process queued for it.
 //
-// The grant is the copy's own weight, as every other taker's is (copyWeight): the room's tracked
-// state bytes, which the service holds without encoding anything (roomWeighing.roomStateBytes),
-// and the structs the answer may have to encode, which ygo counts with the room's parked structs
-// in, since the answer carries those too (websocket.StateAnswerInfo.Structs). Both are read
-// again once the grant is in hand and the grant topped up where the room grew while this answer
-// waited for it, which costs nothing where it did not grow (StateAnswerInfo.StructsNow, and
-// loadSlot.take, which takes the difference alone): the answer is built after this returns, so a
-// grant sized before a wait is otherwise a grant sized on a room that has since grown.
+// The grant is read off the room without encoding anything: its tracked state bytes, which the
+// service holds (roomWeighing.roomStateBytes); the structs the answer may have to encode, which
+// ygo counts with the room's parked structs in, since the answer carries those too
+// (websocket.StateAnswerInfo.Structs); and whether the room parks anything, read off its pending
+// queue (parks). All three are read again once the grant is in hand and the grant topped up where
+// the room grew, or parked something, while this answer waited for it, which costs nothing where
+// it did not (StateAnswerInfo.StructsNow, and loadSlot.take, which takes the difference alone):
+// the answer is built after this returns, so a grant sized before a wait is otherwise a grant
+// sized on a room that has since changed. The library decides the path under the document's
+// lock as the cut begins, which no hook can take, so a room that parks something in the instant
+// between the second read and that lock is answered on the old path under the grant of the new
+// one.
 //
 // A wait is bounded by WriteWaitBound, the server's own bound on what a caller spends at a
 // memory bound, and the browser a refusal closes is closed DOC_BUSY, the transient close the
@@ -885,27 +897,106 @@ func (s *Service) weighStateAnswer(info websocket.StateAnswerInfo) (func(), erro
 	ctx, cancel := context.WithTimeout(context.Background(), WriteWaitBound)
 	defer cancel()
 	state := s.roomWeighingOf(info.Doc).roomStateBytes()
-	if err := slot.take(ctx, copyWeight(state, int64(info.Structs))); err != nil {
-		return nil, s.refusedStateAnswer(info, state, err)
+	weight := answerWeight(info.Doc, state, int64(info.Structs))
+	if err := slot.take(ctx, weight); err != nil {
+		return nil, s.refusedStateAnswer(info, state, weight, err)
 	}
 	state = s.roomWeighingOf(info.Doc).roomStateBytes()
-	if err := slot.take(ctx, copyWeight(state, int64(info.StructsNow()))); err != nil {
+	weight = answerWeight(info.Doc, state, int64(info.StructsNow()))
+	if err := slot.take(ctx, weight); err != nil {
 		slot.release()
-		return nil, s.refusedStateAnswer(info, state, err)
+		return nil, s.refusedStateAnswer(info, state, weight, err)
 	}
 	return slot.release, nil
 }
 
+// answerWeight is what one answer to a browser's SyncStep1 takes of the pod's copy heap, for the
+// room live tracked at stateBytes of state and holding structs structs, by the path ygo's answer
+// takes for that room as it stands (crdt.SplitStateAsUpdateV1, weighStateAnswer): an answer cut
+// from the room's own structs (cutAnswerWeight), or, for a room that parks anything, one cut from
+// its encoded state (parkedAnswerWeight).
+//
+// Whether the room parks is the library's own test of the path - a struct in its pending queue
+// or a deletion in its pending delete set - read as Doc.PendingStats reports it (parks): the
+// document's read lock and two counters, and, for a room that parks a struct, a slice of the
+// clients its parked structs wait for, sorted. ygo reads the same stats for each answer already,
+// to count the structs it hands this hook.
+func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
+	if parks(live) {
+		return parkedAnswerWeight(stateBytes, structs)
+	}
+	return cutAnswerWeight(stateBytes, int64(live.ClientCount()))
+}
+
+// cutAnswerWeight is what an answer cut from a room's own structs takes of the pod's copy heap:
+// the larger of the room's tracked state at answerHeapAStateByte and its clients at
+// answerHeapAClient, at least a byte and at most one slot, as every taker is (copyWeight).
+//
+// The room's clients are what this answer's heap follows, and the library counts them in constant
+// time under the document's read lock (crdt.Doc.ClientCount, theorem.3). A room of many structs
+// and few clients is therefore priced for the clients it has: a run of a million keystrokes is
+// granted 63,869,984 bytes where it measures 25,428,848 at most, against the 340,003,400 the
+// room's struct count would have charged it.
+func cutAnswerWeight(stateBytes, clients int64) int64 {
+	return min(max(stateBytes*answerHeapAStateByte, clients*answerHeapAClient, 1), loadSlotBytes)
+}
+
+// answerHeapAStateByte is the heap an answer cut from a room's own structs holds for each byte of
+// the room's state: its frames, held twice over while each message is wrapped in its frame, and
+// what the cut builds besides them, the room's whole delete set among it
+// (crdt.SplitStateAsUpdateV1). Measured 2026-11-13 and 14 on theorem-labs/ygo v1.55.1-theorem.2
+// at copyMeasurementGCPercent, in two to three runs of three answers a shape to a browser holding
+// nothing, on a two-processor machine other measurements were running on
+// (TestAStateAnswerHoldsNoMoreHeapThanItsGrantOnEitherPath, run with
+// `DISPATCH_MEASURE_COPY_HEAP=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" go test
+// ./internal/dispatch/docs/ -count=1 -timeout 60m -run
+// TestAStateAnswerHoldsNoMoreHeapThanItsGrantOnEitherPath -v`), over the shapes of few clients:
+// the most 7.83 bytes a state byte (a run of 1,024,000 characters with every other one deleted,
+// 83,953,128 bytes above a 10,727,526-byte state, where the same answer's other five held
+// 41,912,680 to 71,945,360), then 4.96 (one paragraph of a mebibyte typed in one transaction),
+// 3.19 (a run of a million keystrokes) and the least 3.06 (a mebibyte of prose). It is set past
+// the most, as the room budget's prices are (bytesOfHeapAStateByte).
+const answerHeapAStateByte = 8
+
+// answerHeapAClient is the heap an answer cut from a room's own structs holds for each client the
+// room holds: the cut keeps a queue, a place in its walk and an entry of each map it keys by
+// client for every one of them, whatever the client wrote. Measured as answerHeapAStateByte is,
+// on a room of a million clients that wrote one struct each, which any browser can make, since
+// the library takes a client id from whoever sends it: 296,397,272 to 331,374,744 bytes above
+// the document, the most 331.37 bytes a client, which is 22.09 bytes a byte of its state. It is
+// set past the most, as bytesOfHeapAStruct is, and is charged on the room's structs while they
+// stand in for its clients (cutAnswerWeight).
+const answerHeapAClient = 340
+
+// parkedAnswerWeight is what an answer cut from a room's encoded state takes of the pod's copy
+// heap, the path a room holding parked structs or parked deletions takes: parkedAnswerCopyPercent
+// of a whole copy of the room (copyWeight), at most one slot. It exists only while a room that
+// parks takes that path, and goes with it.
+func parkedAnswerWeight(stateBytes, structs int64) int64 {
+	return min(copyWeight(stateBytes, structs)*parkedAnswerCopyPercent/100, loadSlotBytes)
+}
+
+// parkedAnswerCopyPercent is the most an answer cut from a room's encoded state measured of what a
+// whole copy of the room weighs before copyWeight caps it at a slot, in percent, set past it as
+// answerHeapAStateByte is set: measured as answerHeapAStateByte is, the most 148.56 (a room of a
+// million clients that wrote one struct each, 935,943,064 bytes above the document, where the
+// same answer's other five held 707,863,848 to 799,813,904), then 141.49 (a mebibyte of prose,
+// 73,004,928 bytes, where its other eight held 44,962,144 to 58,715,216), 70.47 (a run of
+// 1,024,000 characters with every other one deleted), 68.24 (a run of a million keystrokes) and
+// 24.43 (one paragraph of a mebibyte typed in one transaction).
+const parkedAnswerCopyPercent = 149
+
 // refusedStateAnswer is the close a browser is given whose first sync the pod's copy heap had no
 // room to answer inside the server's wait bound, and the one line that says so: the room, what
-// the answer would have had to decode, and the bound it waited to (weighStateAnswer). ygo logs a
+// the answer would have carried, the grant it waited for (answerWeight), and the bound it waited
+// to (weighStateAnswer). ygo logs a
 // refused state answer at Debug alone (provider/websocket/state_answer.go, "state answer
 // refused"), which the pod's level drops, so without this line an operator sees a browser's
 // socket close before its first sync and nothing says why.
-func (s *Service) refusedStateAnswer(info websocket.StateAnswerInfo, state int64, err error) error {
+func (s *Service) refusedStateAnswer(info websocket.StateAnswerInfo, state, weight int64, err error) error {
 	used, limit := s.budget.figures()
-	slog.Warn("dispatch: refused to answer a browser's first sync; the pod had no room to decode this document's state",
-		"room", info.Room, "structs", info.Structs, "state_bytes", state,
+	slog.Warn("dispatch: refused to answer a browser's first sync; the pod's copy heap had no room for the answer",
+		"room", info.Room, "structs", info.Structs, "state_bytes", state, "grant_bytes", weight,
 		"wait_bound", WriteWaitBound, "charged", used, "limit", limit, "error", err.Error())
 	return &websocket.PeerClose{Code: contracts.DocumentBusyCloseCode, Reason: contracts.DocumentBusyCloseReason}
 }

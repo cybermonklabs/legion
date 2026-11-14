@@ -1002,9 +1002,10 @@ func New(deps Deps) *Service {
 	// Every update and whole-state message a read-write browser sends is weighed before the room
 	// takes it, which is what keeps a browser from growing a document past the bound every server
 	// write obeys (weighPeerUpdate), and what the apply parks is stored before ygo answers the
-	// browser (onPeerUpdate). Every answer to a browser's first sync is weighed too: it decodes
-	// the whole of what that browser is missing into a merge store, so it takes a grant of the
-	// pod's copy heap for as long as it holds one (weighStateAnswer).
+	// browser (onPeerUpdate). Every answer to a browser's first sync is weighed too: it holds the
+	// whole of what that browser is missing at once, cut into frames, and a room holding parked
+	// structs decodes its whole state twice to cut it, so it takes a grant of the pod's copy heap
+	// for as long as it holds them (weighStateAnswer).
 
 	if newServiceHook != nil {
 		newServiceHook(service)

@@ -69,6 +69,10 @@ const (
 	// compactUnfoldable: the rows do not fold into a state that reads back as them, now or at an
 	// earlier compaction of the same fold point, and are left as stored.
 	compactUnfoldable
+	// compactDisagreeing: a stored version recorded at one of the rows disagrees with them, found
+	// now or at an earlier compaction of the same fold point, and they are left as stored
+	// (disagreeingVersion).
+	compactDisagreeing
 )
 
 // compactResult is a compaction's outcome, how many rows it deleted, and, for one that folded
@@ -97,16 +101,27 @@ type foldedRow struct {
 }
 
 // compactFold is what a compaction's read and fold found: the rows at or below the fold point,
-// oldest first, and the state they fold into, or misread naming why they do not fold.
+// oldest first, and the bytes they store; the state they fold into and whether the fold's document
+// parked anything (fold); or misread naming why they do not fold.
 type compactFold struct {
 	rows    []foldedRow
+	bytes   int64
 	state   []byte
+	parked  bool
 	misread error
 }
 
 // point is the fold point, the newest row the fold read.
 func (f compactFold) point() rowVersion {
 	return f.rows[len(f.rows)-1].rowVersion
+}
+
+// standsAs reports whether standing, the rows at or below the fold point as a later transaction
+// reads them (standingRows), are the rows the fold read, version for version and xmin for xmin.
+func (f compactFold) standsAs(standing []rowVersion) bool {
+	return slices.EqualFunc(standing, f.rows, func(stands rowVersion, read foldedRow) bool {
+		return stands == read.rowVersion
+	})
 }
 
 // compactRoom folds the room's rows at or below the fold point rule picks into that row, which then
@@ -135,8 +150,17 @@ func (f compactFold) point() rowVersion {
 // for their fold point; a later compaction of the same fold point skips them without folding
 // (compactUnfoldable), and one after the rows changed folds them again.
 //
+// Rows whose fold parked anything are written only once every stored version recorded at one of
+// them renders what they replay to through its update (disagreeingVersion). A version whose text
+// disagrees with them is evidence that a read of the document once dropped what the rows hold, and
+// the rows are the only record its text can be rebuilt from, which is a person's to do: the rows
+// are left as stored, the document is logged once (recordDisagreeing), and a later compaction of
+// the same fold point skips them without folding (compactDisagreeing). Nothing here rewrites a
+// version.
+//
 // A compaction that waits for the lock and writes nothing - nothing to fold, rows that do not
-// fold, or a read or fold that failed - still waits for the lock and lets it go (passRoomLock).
+// fold or that a stored version disagrees with, or a read, fold or check that failed - still waits
+// for the lock and lets it go (passRoomLock).
 func (p *PgVersioned) compactRoom(ctx context.Context, room string, rule compactRule, wait bool) (compactResult, error) {
 	if err := ctx.Err(); err != nil {
 		return compactResult{}, err
@@ -161,6 +185,19 @@ func (p *PgVersioned) compactRoom(ctx context.Context, room string, rule compact
 	if p.duringCompactionFold != nil {
 		p.duringCompactionFold(room)
 	}
+	if folded.parked {
+		mismatch, disagrees, err := p.disagreeingVersion(ctx, pool, room, folded)
+		if err != nil {
+			if passed := p.passRoomLock(ctx, pool, room, wait); passed != nil {
+				err = errors.Join(err, passed)
+			}
+			return compactResult{}, err
+		}
+		if disagrees {
+			p.recordDisagreeing(room, folded.point(), mismatch)
+			return compactResult{outcome: compactDisagreeing}, p.passRoomLock(ctx, pool, room, wait)
+		}
+	}
 	if folded.misread != nil {
 		p.recordUnfoldable(room, folded.point(), folded.misread)
 		return compactResult{outcome: compactUnfoldable}, p.passRoomLock(ctx, pool, room, wait)
@@ -168,6 +205,7 @@ func (p *PgVersioned) compactRoom(ctx context.Context, room string, rule compact
 	result, err := p.writeCompaction(ctx, pool, room, wait, folded)
 	if err == nil && result.outcome == compactCompacted {
 		p.forgetUnfoldable(room)
+		p.forgetDisagreeing(room)
 	}
 	return result, err
 }
@@ -189,7 +227,8 @@ func (p *PgVersioned) passRoomLock(ctx context.Context, pool *pgxpool.Pool, room
 // readCompaction reads the rows at or below the room's fold point and folds them: in memory once
 // its transaction has ended when they total at most foldBufferBytes, streamed inside it otherwise
 // (foldRead, which a load shares). It returns no rows, and the outcome the compaction ends with,
-// when there is nothing to fold or the negative cache already holds this fold point.
+// when there is nothing to fold or a negative cache already holds this fold point (knownUnfoldable,
+// knownDisagreeing).
 func (p *PgVersioned) readCompaction(ctx context.Context, pool *pgxpool.Pool, room string, rule compactRule) (compactFold, compactOutcome, error) {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -213,7 +252,6 @@ func (p *PgVersioned) readCompaction(ctx context.Context, pool *pgxpool.Pool, ro
 		return compactFold{}, compactNothing, fmt.Errorf("list compacted document updates: %w", err)
 	}
 	var folded compactFold
-	var total int64
 	for rows.Next() {
 		var row foldedRow
 		var size int64
@@ -222,7 +260,7 @@ func (p *PgVersioned) readCompaction(ctx context.Context, pool *pgxpool.Pool, ro
 			return compactFold{}, compactNothing, fmt.Errorf("scan compacted document update: %w", err)
 		}
 		folded.rows = append(folded.rows, row)
-		total += size
+		folded.bytes += size
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -234,10 +272,13 @@ func (p *PgVersioned) readCompaction(ctx context.Context, pool *pgxpool.Pool, ro
 	if p.knownUnfoldable(room, folded.point()) {
 		return compactFold{}, compactUnfoldable, nil
 	}
+	if p.knownDisagreeing(room, folded.point()) {
+		return compactFold{}, compactDisagreeing, nil
+	}
 	through := persistence.Version(*point)
-	if err := p.foldRead(ctx, tx, room, through, len(folded.rows), total, "compaction read", func(ctx context.Context, updates updateSource) error {
+	if err := p.foldRead(ctx, tx, room, through, len(folded.rows), folded.bytes, "compaction read", func(ctx context.Context, updates updateSource) error {
 		var err error
-		if folded.state, _, folded.misread, err = fold(ctx, updates, p.maxPendingItems); err != nil {
+		if folded.state, _, folded.parked, folded.misread, err = fold(ctx, updates, p.maxPendingItems); err != nil {
 			return fmt.Errorf("fold compacted document updates: %w", err)
 		}
 		return nil
@@ -276,9 +317,7 @@ func (p *PgVersioned) writeCompaction(ctx context.Context, pool *pgxpool.Pool, r
 		if err != nil {
 			return err
 		}
-		if !slices.EqualFunc(standing, folded.rows, func(stands rowVersion, read foldedRow) bool {
-			return stands == read.rowVersion
-		}) {
+		if !folded.standsAs(standing) {
 			return nil
 		}
 		var cursor int64
@@ -395,6 +434,132 @@ func (p *PgVersioned) forgetUnfoldable(room string) {
 	p.unfoldableMu.Lock()
 	defer p.unfoldableMu.Unlock()
 	delete(p.unfoldable, room)
+}
+
+// versionDisagreesWarning is the line a compaction logs once for each document whose stored
+// version disagrees with the rows it was taken at (recordDisagreeing), so a search for it lists
+// every such document.
+const versionDisagreesWarning = "dispatch: a document's stored version disagrees with the stored updates it was taken at; compaction keeps them as stored"
+
+// errVersionDisagrees ends disagreeingVersion's replay at the first version that disagrees.
+var errVersionDisagrees = errors.New("a stored version disagrees with the stored updates")
+
+// disagreeingVersion is the first stored version, in update order, recorded at one of the rows
+// folded holds whose markdown is not the render of those rows replayed through the update it
+// records, compared by md5 and length as the stored-order check compares a version
+// (compareStoredVersion), and whether there is one. It reads in one repeatable-read, read-only
+// transaction on pool, opened once the fold's own read has ended, and finds none when the rows at
+// or below the fold point are no longer the ones the fold read: the write that follows drops that
+// fold (writeCompaction). It replays the rows one at a time through the last update a version in
+// their range records, under a load grant weighed on their bytes as the fold's read is (foldRead),
+// and stops at the first version that disagrees.
+//
+// A compaction runs it only for a fold whose document parked something (fold). ygo merges a
+// document's encoding only when it holds parked structs or deletions, and under
+// github.com/theorem-labs/ygo v1.55.1-theorem.3 a struct parked over clocks the document already
+// holds wins that merge's clock tie and drops every struct after it, so a read of the document,
+// and a version written from that read, holds a fraction of the text the rows hold. The fold's
+// read-back refuses such rows (readsBackOtherwise); once the merge keeps the held structs they
+// fold, and the fold would delete the only rows that version's text can be rebuilt from. A fold of
+// a document that parks nothing is written with no check: the stored-order check's replay
+// (CheckStoredOrder), which renders every row, took a median 2,396 ms beside a 327 ms compaction
+// of a mebibyte of prose and 1,162 ms beside 835 ms for a room of a million keystrokes, over ten
+// runs each, base row and 16 keystrokes. A version an older renderer wrote can disagree as well,
+// and is kept the same way: which of the two a version is, is a person's reading of it.
+func (p *PgVersioned) disagreeingVersion(ctx context.Context, pool *pgxpool.Pool, room string, folded compactFold) (StoredOrderMismatch, bool, error) {
+	if p.duringVersionCheck != nil {
+		p.duringVersionCheck(room)
+	}
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return StoredOrderMismatch{}, false, fmt.Errorf("begin compaction version check: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	point := folded.point()
+	standing, err := standingRows(ctx, tx, room, point.version)
+	if err != nil || !folded.standsAs(standing) {
+		return StoredOrderMismatch{}, false, err
+	}
+	versions, err := readStoredVersions(ctx, tx, room, folded.rows[0].version, point.version)
+	if err != nil || len(versions) == 0 {
+		return StoredOrderMismatch{}, false, err
+	}
+	at := make(map[int64][]storedVersion, len(versions))
+	var through int64
+	for _, version := range versions {
+		at[version.docUpdateVersion] = append(at[version.docUpdateVersion], version)
+		through = max(through, version.docUpdateVersion)
+	}
+	release, err := holdLoad(ctx, copyWeight(folded.bytes, 0))
+	if err != nil {
+		return StoredOrderMismatch{}, false, err
+	}
+	defer release()
+	doc := newCappedDocumentCopy(p.maxPendingItems)
+	var disagreeing StoredOrderMismatch
+	err = replayStoredRange(ctx, tx, room, 0, through, func(version int64, update []byte) error {
+		if err := decodeStoredState(doc, update); err != nil {
+			return err
+		}
+		recorded := at[version]
+		if len(recorded) == 0 {
+			return nil
+		}
+		render := renderStoredFold(doc)
+		for _, written := range recorded {
+			if mismatch, differs := compareStoredVersion(written, render); differs {
+				disagreeing = mismatch
+				return errVersionDisagrees
+			}
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, errVersionDisagrees):
+		return disagreeing, true, nil
+	case err != nil:
+		return StoredOrderMismatch{}, false, fmt.Errorf("check the compacted document's versions: %w", err)
+	}
+	return StoredOrderMismatch{}, false, nil
+}
+
+// knownDisagreeing reports whether an earlier compaction found a stored version disagreeing with
+// the room's rows through point (recordDisagreeing).
+func (p *PgVersioned) knownDisagreeing(room string, point rowVersion) bool {
+	p.disagreeingMu.Lock()
+	defer p.disagreeingMu.Unlock()
+	known, ok := p.disagreeing[room]
+	return ok && known == point
+}
+
+// recordDisagreeing remembers that a stored version disagrees with the room's rows through point,
+// and logs it, naming the document and the version, the first time it finds the room so. The
+// rows stay through every compaction after it, whatever is appended above them, so the line is
+// logged once for the document, not once for each fold point, compaction or sweep: a search for
+// it lists each such document once a process.
+func (p *PgVersioned) recordDisagreeing(room string, point rowVersion, mismatch StoredOrderMismatch) {
+	p.disagreeingMu.Lock()
+	_, known := p.disagreeing[room]
+	if p.disagreeing == nil {
+		p.disagreeing = make(map[string]rowVersion)
+	}
+	p.disagreeing[room] = point
+	p.disagreeingMu.Unlock()
+	if known {
+		return
+	}
+	slog.Warn(versionDisagreesWarning,
+		"room", room, "version", mismatch.Version, "doc_update_version", mismatch.DocUpdateVersion,
+		"stored_md5", mismatch.StoredMD5, "stored_length", mismatch.StoredLength,
+		"fold_renders", mismatch.FoldRenders, "fold_md5", mismatch.FoldMD5, "fold_length", mismatch.FoldLength)
+}
+
+// forgetDisagreeing drops the room's entry once it has compacted, as forgetUnfoldable does: the
+// rows the entry named are folded now, so a disagreement found later is logged again.
+func (p *PgVersioned) forgetDisagreeing(room string) {
+	p.disagreeingMu.Lock()
+	defer p.disagreeingMu.Unlock()
+	delete(p.disagreeing, room)
 }
 
 // Compact is ygo's VersionedPersistence compaction, under the keep-N rule: it folds the room's rows

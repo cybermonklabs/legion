@@ -44,7 +44,7 @@ type catchUpOutcome int
 const (
 	// catchUpCurrent: the room already held every stored row; nothing was applied.
 	catchUpCurrent catchUpOutcome = iota
-	// catchUpApplied: the room took in the stored rows it lacked, as one batch.
+	// catchUpApplied: the room took in the stored rows it lacked, in the order they were stored.
 	catchUpApplied
 	// catchUpReplaced: the stored history is no longer the one the room holds a prefix of
 	// (historyReplaced), so no row can bring it up to date: the room is closed and reloaded.
@@ -103,15 +103,16 @@ func readCatchUp(ctx context.Context, q Queryer, room string, through int64) (lo
 // catchUpRoom brings live, room's resident instance, up to the stored head: it reads the stored
 // rows past the instance's cursor through q (catchUpStatement, one snapshot), skips the ones the
 // instance already holds - its own browsers' appends and published live writes made while it was
-// behind (roomCursor.above) - and applies the rest as one batch, the way publishLiveUpdate applies
-// a committed write: a Yjs transaction tagged remoteUpdateOrigin, under a suppression slot so the
-// room's persistence does not store again what is already stored, then a broadcast to the room's
-// peers. Each applied row then enters the instance's hold (so an upload on this process consumes
-// its pending-author rows, as for a reload) and its cursor, which folds whatever the instance
-// appended past the gap. The hold and the cursor move after the update is in the document, not
-// before: a derived write reads the cursor under the document's advisory lock, which this does not
-// hold, and a cursor ahead of the document would let a settlement version text missing the rows
-// it says are held.
+// behind (roomCursor.above) - and applies the rest in the order they were stored, merged into
+// batches only where merging keeps that order (mergedRuns), each the way publishLiveUpdate
+// applies a committed write: a Yjs transaction tagged remoteUpdateOrigin, under a suppression
+// slot so the room's persistence does not store again what is already stored. Once every batch
+// is in, what each changed is broadcast to the room's peers, in the same order. Each applied row
+// then enters the instance's hold (so an upload on this process consumes its pending-author rows,
+// as for a reload) and its cursor, which folds whatever the instance appended past the gap. The
+// hold and the cursor move after the update is in the document, not before: a derived write reads
+// the cursor under the document's advisory lock, which this does not hold, and a cursor ahead of
+// the document would let a settlement version text missing the rows it says are held.
 //
 // It writes through srv.GetDoc and roomServer.holdOpen, never Server.Apply, which would load an
 // absent room and wait on a failed one: a room that has gone, or that a close holds, is left
@@ -123,10 +124,10 @@ func readCatchUp(ctx context.Context, q Queryer, room string, through int64) (lo
 // room. A batch that cannot be merged, applied or broadcast fails the room, which reloads from
 // the store, and is returned as the error.
 //
-// After a batch the document must have nothing pending: every row past the cursor was applied,
-// and each depends only on rows before it, so an item left waiting for a missing dependency is a
-// store that holds a state the document never held (plan D3.8). That is logged at ERROR, naming
-// the room and the versions, and the room is left as it is.
+// After the batches the document must have nothing pending: every row past the cursor was
+// applied, and each depends only on rows before it, so an item left waiting for a missing
+// dependency is a store that holds a state the document never held (plan D3.8). That is logged at
+// ERROR, naming the room and the versions, and the room is left as it is.
 func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live *crdt.Doc) (catchUpOutcome, error) {
 	instance := s.instanceOf(live)
 	if instance == nil {
@@ -160,20 +161,26 @@ func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live 
 	if len(updates) == 0 {
 		return catchUpCurrent, nil
 	}
-	batch, err := mergeUpdates(updates)
+	batches, err := mergedRuns(updates)
 	if err != nil {
 		err = fmt.Errorf("merge the stored updates a catch-up applies: %w", err)
 		s.failRoom(room, err)
 		return 0, err
 	}
-	applied, open, err := s.applyRemoteBatch(room, live, batch)
-	if !open {
-		return catchUpGone, nil
-	}
-	if err != nil {
-		err = fmt.Errorf("apply the stored updates a catch-up read: %w", err)
-		s.failRoom(room, err)
-		return 0, err
+	var broadcasts [][]byte
+	for _, batch := range batches {
+		applied, open, err := s.applyRemoteBatch(room, live, batch)
+		if !open {
+			return catchUpGone, nil
+		}
+		if err != nil {
+			err = fmt.Errorf("apply the stored updates a catch-up read: %w", err)
+			s.failRoom(room, err)
+			return 0, err
+		}
+		if applied != nil {
+			broadcasts = append(broadcasts, applied)
+		}
 	}
 	for _, version := range versions {
 		instance.hold.add(version)
@@ -184,18 +191,69 @@ func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live 
 		slog.Error("dispatch: a document room holds updates it cannot place after catching up to the stored head",
 			"room", room, "versions", versions, "pending_items", pending.Items, "pending_delete_ranges", pending.DeleteRanges)
 	}
-	if applied == nil {
-		return catchUpApplied, nil
-	}
-	if err := s.srv.BroadcastUpdate(withOwnerVerified(WithoutRecoveryWait(ctx)), room, applied); err != nil &&
-		!errors.Is(err, websocket.ErrRoomNotFound) && !errors.Is(err, websocket.ErrServerShutdown) && !errors.Is(err, ErrServiceUnavailable) {
-		// The room holds what its browsers did not receive; failing it closes them, and they sync
-		// the stored document when they reconnect.
-		err = fmt.Errorf("broadcast the stored updates a catch-up applied: %w", err)
-		s.failRoom(room, err)
-		return 0, err
+	for _, applied := range broadcasts {
+		if err := s.srv.BroadcastUpdate(withOwnerVerified(WithoutRecoveryWait(ctx)), room, applied); err != nil &&
+			!errors.Is(err, websocket.ErrRoomNotFound) && !errors.Is(err, websocket.ErrServerShutdown) && !errors.Is(err, ErrServiceUnavailable) {
+			// The room holds what its browsers did not receive; failing it closes them, and they sync
+			// the stored document when they reconnect.
+			err = fmt.Errorf("broadcast the stored updates a catch-up applied: %w", err)
+			s.failRoom(room, err)
+			return 0, err
+		}
 	}
 	return catchUpApplied, nil
+}
+
+// mergedRuns is updates, stored rows in the order they were stored, as batches that each apply as
+// its rows applied one after another do: a batch ends before a row carrying some client's clocks
+// below the end of an earlier row of the batch, and each batch is its rows merged (mergeUpdates).
+// Within a batch no two rows carry one clock of one client, so the merge keeps every struct
+// whole. Across such a row it does not: a merge keeps the longest struct starting at a clock, so a
+// row parked over clocks the room already holds - a struct whose right origin no document holds,
+// stored ahead of the keystrokes that later take those clocks - covered every keystroke stored
+// after it, and one merged batch dropped them all, where the room applying the rows in order holds
+// them and parks the struct. Whether a struct parks is decided by the document that receives it,
+// which a merge of updates does not have, so a merge cannot tell which of two structs on one clock
+// that document keeps. Rows typed one after another carry no such row and are one batch, merged as
+// they always were; a single row is returned as stored. A catch-up applies its rows by these
+// batches, and so does a load whose fold does not read back (runsThrough).
+//
+// Over 1,000 typed rows the cut cost one ParseUpdateMeta a row on top of the one merge, six
+// allocations and 480 bytes a row; one apply per row cost more than 25 times the merge's time
+// and 11 times its allocations.
+func mergedRuns(updates [][]byte) ([][]byte, error) {
+	if len(updates) == 1 {
+		return updates, nil
+	}
+	var batches [][]byte
+	start := 0
+	ends := make(crdt.StateVector)
+	for i, update := range updates {
+		from, to, err := crdt.ParseUpdateMeta(update)
+		if err != nil {
+			return nil, fmt.Errorf("read the clocks of a stored update: %w", err)
+		}
+		for client, clock := range from {
+			if clock < ends[client] {
+				batch, err := mergeUpdates(updates[start:i])
+				if err != nil {
+					return nil, err
+				}
+				batches = append(batches, batch)
+				start = i
+				clear(ends)
+				break
+			}
+		}
+		for client, clock := range to {
+			ends[client] = max(ends[client], clock)
+		}
+	}
+	batch, err := mergeUpdates(updates[start:])
+	if err != nil {
+		return nil, err
+	}
+	return append(batches, batch), nil
 }
 
 // applyRemoteBatch applies batch to live under a suppression slot of its own, holding the room

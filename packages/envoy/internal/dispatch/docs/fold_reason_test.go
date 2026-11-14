@@ -13,8 +13,8 @@ import (
 // every other decode of stored state refuses it (decodeStoredState): the fold a room's load, a cold
 // read and a compaction make of a document's rows reports such a row as an invalid update carrying
 // ygo's own refusal of it, whatever reason ygo gives, stated once. The compaction and the load log
-// that refusal (recordUnfoldable, "serving them merged"), so the error must be the line an
-// operator can act on.
+// that refusal (recordUnfoldable, "serving them applied in order"), so the error must be the line
+// an operator can act on.
 func TestAStoredLogThatDoesNotFoldIsRefusedNamingItsReasonOnce(t *testing.T) {
 	writer := newProofHistory(t, 101)
 	first := writer.write("A first paragraph.\n")
@@ -29,7 +29,7 @@ func TestAStoredLogThatDoesNotFoldIsRefusedNamingItsReasonOnce(t *testing.T) {
 		t.Fatal("the cut second row decoded, so nothing here is tested")
 	}
 
-	_, _, misread, err := fold(context.Background(), memoryUpdates(context.Background(), [][]byte{first, cut}), maxUpdateItems)
+	_, _, _, misread, err := fold(context.Background(), memoryUpdates(context.Background(), [][]byte{first, cut}), maxUpdateItems)
 	if err != nil {
 		t.Fatalf("fold the stored rows: %v", err)
 	}

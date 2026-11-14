@@ -699,93 +699,13 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 			unchanged = true
 			return nil
 		}
-		type reanchor struct {
-			mark   anchoredMark
-			range_ pmdoc.Range
-			attrs  pmdoc.Attrs
-		}
-		reanchors := make([]reanchor, 0, len(anchors))
+		var reanchors []reanchor
 		if !repairing {
-			// One walk reads every row's mark, where one per row would make an upload cost the
-			// document once per open anchor.
-			keys := make([]pmdoc.MarkRef, len(anchors))
-			for index, mark := range anchors {
-				keys[index] = mark.markRef()
-			}
-			marks := pmdoc.FindMarks(current, keys)
-			for index, mark := range anchors {
-				found, ok := marks[keys[index]]
-				if !ok {
-					continue
-				}
-				reanchors = append(reanchors, reanchor{mark: mark, range_: found.Range, attrs: found.Attrs})
-			}
+			reanchors = heldReanchors(current, anchors)
 		}
-		// An upload over open anchors writes the room the target with its anchors already on it,
-		// built first in a scratch document no one else sees: the target written there, each open
-		// anchor marked again where its quote now stands, and the tree read back. Writing the
-		// target to the room without its anchors and marking them again re-formats every anchored
-		// run twice, stripping each anchor and adding it back: a tombstone per anchor per upload
-		// that the room keeps for the document's life, even where the upload left the anchored text
-		// unchanged. pmdoc.Update leaves the text it finds unchanged as it is, so writing the tree
-		// with its anchors leaves the anchored text the upload did not touch alone.
-		write := target
-		if len(reanchors) > 0 {
-			scratch := newDocumentCopy()
-			scratchFragment := scratch.GetXmlFragment(fragmentName)
-			if err := scratch.TransactE(func(txn *crdt.Transaction) error {
-				if err := pmdoc.Update(txn, scratchFragment, target); err != nil {
-					return err
-				}
-				// One finder over target and one writer over the scratch fragment serve every row, so
-				// the upload flattens target and reads the fragment's text ranges once, not once a row.
-				// Both read nothing until the first row needs them. A row whose quote no longer
-				// resolves keeps no mark, so its miss is never described. Each row is marked at the
-				// occurrence of its quote nearest where it stood, and where that occurrence stands
-				// somewhere the schema allows no mark of its type (pmdoc.ErrMarkNotAllowed: an ask's
-				// quote in a code block, any anchor's in the front matter), at the next nearest that
-				// allows it: an upload that copies anchored text into a code block or the front matter
-				// and keeps the original leaves the anchor on the original. Only when no occurrence
-				// allows the mark is the upload refused, as its markdown's to fix (reanchorError).
-				finder := pmdoc.NewQuoteFinder(target)
-				writer := pmdoc.NewMarkWriter(scratchFragment)
-			reanchors:
-				for _, reanchor := range reanchors {
-					occurrences, err := finder.NearestFirst(reanchor.mark.anchor.Quote, reanchor.range_.From)
-					if errors.Is(err, pmdoc.ErrTargetNotFound) {
-						continue
-					}
-					if err != nil {
-						return reanchorError(reanchor.mark, err)
-					}
-					mark := MarkSpec{
-						Kind:  MarkKind(reanchor.mark.markType),
-						ID:    reanchor.mark.anchor.MarkID,
-						Attrs: reanchor.attrs,
-					}.pmMark()
-					// Every occurrence the schema refuses the mark on is kept, so a quote with
-					// nowhere left to stand names each place it stands, and how many places of each
-					// kind, rather than the last place tried, and one fix of the markdown resolves
-					// the upload.
-					var notAllowed []error
-					for _, occurrence := range occurrences {
-						refused := writer.Mark(txn, occurrence, mark)
-						if refused == nil || errors.Is(refused, pmdoc.ErrTargetNotFound) {
-							continue reanchors
-						}
-						if !errors.Is(refused, pmdoc.ErrMarkNotAllowed) {
-							return reanchorError(reanchor.mark, refused)
-						}
-						notAllowed = append(notAllowed, refused)
-					}
-					return reanchorError(reanchor.mark, notAllowed...)
-				}
-				var err error
-				write, err = pmdoc.ReadInTransaction(txn, scratchFragment)
-				return err
-			}); err != nil {
-				return err
-			}
+		write, err := reanchored(target, reanchors, false)
+		if err != nil {
+			return err
 		}
 		var updateErr error
 		transact(func(transaction *crdt.Transaction) {
@@ -809,6 +729,110 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// one of it (Ledger.ReadBackOf).
 	ledgerFrom(ctx).wroteReadBack(artifactID, read)
 	return canonical, nil
+}
+
+// reanchor is one open anchor a write marks again in the text it writes: the row's mark, where
+// the mark stood in the text the write replaces (range_; for a row whose text no tree holds, where
+// its block now stands), and the attributes it carries.
+type reanchor struct {
+	mark   anchoredMark
+	range_ pmdoc.Range
+	attrs  pmdoc.Attrs
+}
+
+// heldReanchors is each of anchors whose mark current holds, with where it stands and the
+// attributes it carries there. One walk reads every row's mark, where one per row would make an
+// upload cost the document once per open anchor.
+func heldReanchors(current *pmdoc.Node, anchors []anchoredMark) []reanchor {
+	keys := make([]pmdoc.MarkRef, len(anchors))
+	for index, mark := range anchors {
+		keys[index] = mark.markRef()
+	}
+	marks := pmdoc.FindMarks(current, keys)
+	reanchors := make([]reanchor, 0, len(anchors))
+	for index, mark := range anchors {
+		found, ok := marks[keys[index]]
+		if !ok {
+			continue
+		}
+		reanchors = append(reanchors, reanchor{mark: mark, range_: found.Range, attrs: found.Attrs})
+	}
+	return reanchors
+}
+
+// reanchored is target with each of reanchors marked again where its quote now stands, built in a
+// scratch document no one else sees: the target written there, each anchor marked, and the tree
+// read back; target itself where there is none to mark. A write over open anchors writes its
+// document that tree, with its anchors already on it. Writing the target without its anchors and
+// marking them again re-formats every anchored run twice, stripping each anchor and adding it back:
+// a tombstone per anchor per upload that the room keeps for the document's life, even where the
+// upload left the anchored text unchanged. pmdoc.Update leaves the text it finds unchanged as it
+// is, so writing the tree with its anchors leaves the anchored text the upload did not touch alone.
+//
+// One finder over target and one writer over the scratch fragment serve every row, so the write
+// flattens target and reads the fragment's text ranges once, not once a row. Both read nothing
+// until the first row needs them. A row whose quote no longer resolves keeps no mark, so its miss is
+// never described. Each row is marked at the occurrence of its quote nearest where it stood, and
+// where that occurrence stands somewhere the schema allows no mark of its type
+// (pmdoc.ErrMarkNotAllowed: an ask's quote in a code block, any anchor's in the front matter), at
+// the next nearest that allows it: an upload that copies anchored text into a code block or the
+// front matter and keeps the original leaves the anchor on the original. Where no occurrence
+// allows the mark, a caller's markdown is refused, its to fix (reanchorError); with skipRefused -
+// a rebuild restoring a document's anchors from their rows, which has no markdown of a caller's
+// to send back - that row keeps no mark instead, as one whose quote is gone keeps none.
+func reanchored(target *pmdoc.Node, reanchors []reanchor, skipRefused bool) (*pmdoc.Node, error) {
+	if len(reanchors) == 0 {
+		return target, nil
+	}
+	write := target
+	scratch := newDocumentCopy()
+	scratchFragment := scratch.GetXmlFragment(fragmentName)
+	if err := scratch.TransactE(func(txn *crdt.Transaction) error {
+		if err := pmdoc.Update(txn, scratchFragment, target); err != nil {
+			return err
+		}
+		finder := pmdoc.NewQuoteFinder(target)
+		writer := pmdoc.NewMarkWriter(scratchFragment)
+	reanchors:
+		for _, reanchor := range reanchors {
+			occurrences, err := finder.NearestFirst(reanchor.mark.anchor.Quote, reanchor.range_.From)
+			if errors.Is(err, pmdoc.ErrTargetNotFound) {
+				continue
+			}
+			if err != nil {
+				return reanchorError(reanchor.mark, err)
+			}
+			mark := MarkSpec{
+				Kind:  MarkKind(reanchor.mark.markType),
+				ID:    reanchor.mark.anchor.MarkID,
+				Attrs: reanchor.attrs,
+			}.pmMark()
+			// Every occurrence the schema refuses the mark on is kept, so a quote with nowhere
+			// left to stand names each place it stands, and how many places of each kind, rather
+			// than the last place tried, and one fix of the markdown resolves the upload.
+			var notAllowed []error
+			for _, occurrence := range occurrences {
+				refused := writer.Mark(txn, occurrence, mark)
+				if refused == nil || errors.Is(refused, pmdoc.ErrTargetNotFound) {
+					continue reanchors
+				}
+				if !errors.Is(refused, pmdoc.ErrMarkNotAllowed) {
+					return reanchorError(reanchor.mark, refused)
+				}
+				notAllowed = append(notAllowed, refused)
+			}
+			if skipRefused {
+				continue
+			}
+			return reanchorError(reanchor.mark, notAllowed...)
+		}
+		var err error
+		write, err = pmdoc.ReadInTransaction(txn, scratchFragment)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return write, nil
 }
 
 // anchorKinds names, for a person, each mark type an open anchor carries (openAnchoredMarks).
@@ -1044,7 +1068,8 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 // since both decode the same bytes under the same pending cap.
 //
 // A durable history that does not decode is ErrDocumentUnloadable and fails the room, as ygo's
-// own load of it would.
+// own load of it would, and so is one whose runs do not apply in order (unappliedHistory), which
+// the store answers with no bytes to decode.
 //
 // The read's fold, when the history holds several updates, and the decode run under one grant of
 // the pod's load concurrency (loadSlots), whose wait ends with ctx, the socket's request: one
@@ -1063,6 +1088,10 @@ func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node,
 			return nil, nil, 0, err
 		}
 		s.failRoom(artifactID, err)
+		var unapplied *unappliedHistory
+		if errors.As(err, &unapplied) {
+			return nil, nil, 0, err
+		}
 		return nil, nil, 0, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 	}
 	if history.refused != nil {

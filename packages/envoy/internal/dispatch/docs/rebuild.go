@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -53,17 +54,199 @@ const smallestReplacementAdds = 3
 // not help them.
 const nearTheStateCap = maxPeerByteCreep
 
-// nearACap reports whether doc, a document's decoded history or its live room, stands so near a
-// cap that it must be rebuilt, and why. Near the decode cap means a write's smallest replacement
-// would carry it past the cap: its struct total as a load decodes it (structCeiling) and
-// smallestReplacementAdds pass maxUpdateItems, so refuseUndecodable refuses every write that
-// adds a struct, as it refuses the write of a document no room holds by the count of its fork, a
-// decode of the same history (leavesRoomPastDecodeCap). Near the scan total means a re-scan of
-// its state (rescan) scans at least roomScanTotal less honestHandoffScans items, a state the
-// decode refuses counting as no answer.
+// wholeTextWriteCeiling is more structs than the near-cap measure (wholeTextWriteAdds) counts for
+// any document a whole-text upload can write, so a document holding maxUpdateItems less this many
+// structs or fewer is far from the decode cap whatever its text, and nearTheDecodeCap reads no
+// tree for it. An upload is held to pmdoc.MaxDocumentElements, and of the nine documents measured
+// at that bound the heaviest, one paragraph of bold italic runs each carrying an anchor mark,
+// counts 360,424 structs, 16,384 headings 163,840 and 16,384 paragraphs 131,072
+// (TestNoDocumentAnUploadCanWriteCountsPastTheWholeTextWriteCeiling, which holds each under this).
+// A document browsers grew past the element bound takes no whole-text upload at all, so the
+// decode cap is not what refuses one.
+const wholeTextWriteCeiling = maxUpdateItems / 2
+
+// wholeTextWriteAdds is how many structs a write replacing tree, a document's whole current text,
+// with text of its own shape adds to the document's struct total at most, as refuseUndecodable
+// counts a write (updatesAdd): the structs a fresh encode of tree holds, which is what the write
+// inserts where it replaces a block (pmdoc.Update writes a new block as encodeDocumentTree
+// writes the whole document), and two for each text of tree, for each of its runs and for each
+// mark a run carries, the structs the write splits off the ones it deletes or formats. A text it
+// keeps is written as one delete and one insert between the text's common prefix and suffix
+// (simpleDiff), a range that splits only the two items its ends fall inside; then each run
+// whose marks changed is formatted, which splits the two items at the run's ends, and each mark a
+// run no longer carries is cleared, a format at each end of it. What the write deletes whole adds
+// nothing: ygo marks an item deleted where it stands.
 //
-// The struct total costs neither an encode nor a decode (crdt.Doc.StructCount). The scan test
-// encodes doc's state and decodes it afresh, a whole-document decode like any other, so the
+// Measured on the document the decode cap refused (dispatch://INFRA-179): 3,000 paragraphs, whose
+// fresh encode holds 12,000 structs, and 2 for each of 3,000 texts and 3,000 runs, 24,000 in all,
+// where each of the agent's uploads added 6,000 (12,000 the first time it rewrote a paragraph,
+// splitting the paragraph's text) (TestADocumentWholeUploadsCarriedPastTheCapIsNearAndItsRebuildTakesTheUpload).
+func wholeTextWriteAdds(tree *pmdoc.Node) (uint64, error) {
+	fresh := crdt.New()
+	fragment := fresh.GetXmlFragment(fragmentName)
+	if err := fresh.TransactE(func(txn *crdt.Transaction) error { return pmdoc.Update(txn, fragment, tree) }); err != nil {
+		return 0, err
+	}
+	adds := uint64(fresh.StructCount())
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "text" {
+			adds += 2 + 2*uint64(len(node.Marks))
+			return true
+		}
+		// Consecutive text runs are one text (pmdoc's normalizePNodeContent).
+		inText := false
+		for _, child := range node.Children {
+			if child.Type == "text" && !inText {
+				adds += 2
+			}
+			inText = child.Type == "text"
+		}
+		return true
+	})
+	return adds, nil
+}
+
+// wholeTextWriteFloor is a floor under wholeTextWriteAdds(tree) that writes nothing: a walk of
+// tree counting the one item a fresh encode holds for each element and each text (pmdoc.Update
+// inserts one ygo type for each), and the splits wholeTextWriteAdds counts for each text, run and
+// mark, which it counts the same way. What the floor leaves out - the attributes, the strings,
+// the formats - a fresh encode holds as well, so the floor never passes the measure.
+func wholeTextWriteFloor(tree *pmdoc.Node) uint64 {
+	var floor uint64
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "text" {
+			floor += 2 + 2*uint64(len(node.Marks))
+			return true
+		}
+		if node.Type != "doc" {
+			floor++
+		}
+		inText := false
+		for _, child := range node.Children {
+			if child.Type == "text" && !inText {
+				floor += 1 + 2
+			}
+			inText = child.Type == "text"
+		}
+		return true
+	})
+	return floor
+}
+
+// measuredWholeText is the whole-text count nearTheDecodeCap reads for the rebuild route and the
+// decode cap's refusal: tree read, and wholeTextWriteAdds of it, a fresh write of the whole text.
+// A tree that does not read or does not write is no whole-text write to count.
+func measuredWholeText(tree func() (*pmdoc.Node, error)) func() (uint64, bool) {
+	return func() (uint64, bool) {
+		current, err := tree()
+		if err != nil {
+			return 0, false
+		}
+		adds, err := wholeTextWriteAdds(current)
+		return adds, err == nil
+	}
+}
+
+// nearTheDecodeCap reports whether a document holding structs structs as a load decodes them
+// (structCeiling) stands so near the decode cap that a write it must still take is refused, and
+// why: the smallest replacement any write makes (smallestReplacementAdds), or a write of its whole
+// text in its own shape (wholeTextWriteAdds), would carry it past maxUpdateItems, which
+// refuseUndecodable refuses. wholeText counts what that write adds - the measure itself
+// (measuredWholeText), or for a document's read a floor under it that the read already holds
+// (NearDecodeCap) - and is called only where the answer turns on it: a document further from
+// the cap than wholeTextWriteCeiling is far without it. A whole text it cannot count leaves the
+// smallest replacement alone to decide.
+//
+// It is the rebuild route's own test of the decode cap (nearACap), the one the decode cap's
+// refusal of a write names the rebuild by (refuseUndecodable), and the one a document's read
+// reports to the page with its floor (NearDecodeCap), which can only answer near where the route
+// does.
+//
+// It was the smallest replacement alone, which a document of 3,000 paragraphs an agent rewrote
+// whole until the cap refused its upload, at 1,047,000 structs, never met: a small write still
+// landed, the agent's every upload was refused, and the route answered that the document loads
+// and there was nothing to rebuild (dispatch://INFRA-179).
+func nearTheDecodeCap(structs uint64, wholeText func() (adds uint64, counted bool)) (why string, near bool) {
+	if structs+smallestReplacementAdds > maxUpdateItems {
+		return fmt.Sprintf("the document's live state holds %d structs, and a write's smallest replacement, %d more, would carry it past the %d ygo decodes in one update",
+			structs, smallestReplacementAdds, maxUpdateItems), true
+	}
+	if structs+wholeTextWriteCeiling <= maxUpdateItems {
+		return "", false
+	}
+	adds, counted := wholeText()
+	if !counted || structs+adds <= maxUpdateItems {
+		return "", false
+	}
+	return fmt.Sprintf("the document's live state holds %d structs, and a write of its whole text counts %d more, which would carry it past the %d ygo decodes in one update",
+		structs, adds, maxUpdateItems), true
+}
+
+// NearDecodeCap reports whether the rebuild route takes artifactID because it stands near the
+// decode cap, and why, so the page can offer the rebuild to a person who has met no refusal of
+// their own: an agent's uploads are what a document past the cap by its history refuses, while
+// that person's typing still lands. It is nearTheDecodeCap, the route's own test, read from what
+// the service holds of the document without encoding or writing anything, and with a floor under
+// the whole-text count in place of the fresh write the route makes (wholeTextWriteAdds), so it
+// answers near only where the route does, and may answer far where the route would take the
+// document:
+//
+//   - a room this server holds: its struct total (structCeiling, a walk of its client slices, as
+//     the route counts that room), and one struct for each of its top-level blocks, which its
+//     replica's latest rendering records (pmdoc.Layout.Blocks) - a block is at least the one
+//     element a fresh encode holds for it. A room whose replica holds no rendering, a document
+//     outside the schema, counts no blocks.
+//   - otherwise its stored state, which the cold read decoded and judged once a stamp with the
+//     tree it rendered (foldLoaded, wholeTextWriteFloor), and keeps beside that rendering
+//     (documentRead.nearDecodeCap), as the route decodes the stored history (rebuildSource). A
+//     document with no stored state, or one whose tree the rendering refuses, is answered far;
+//     one whose history does not load is the read's error, ErrDocumentUnloadable, which the
+//     rebuild takes on its own.
+//
+// It answers the decode cap alone. The route also takes a document near the state cap or the scan
+// total, whose refusals the browser meets on its own edits (DOC_NEEDS_REBUILD), and the route's
+// scan test encodes the whole state and decodes it again, which no read pays for.
+func (s *Service) NearDecodeCap(ctx context.Context, artifactID string) (why string, near bool, err error) {
+	if live := s.srv.GetDoc(artifactID); live != nil {
+		why, near = nearTheDecodeCap(structCeiling(live), func() (uint64, bool) { return s.roomBlocks(live) })
+		return why, near, nil
+	}
+	read, _, err := s.coldRead(ctx, artifactID)
+	if err != nil || read == nil {
+		return "", false, err
+	}
+	return read.nearDecodeCap, read.nearDecodeCap != "", nil
+}
+
+// roomBlocks is how many top-level blocks live's replica last rendered (pmdoc.Layout.Blocks), and
+// whether it holds a rendering to count: read under the replica's lock, which its update observer
+// holds across one update's render, without reading or rendering the document.
+func (s *Service) roomBlocks(live *crdt.Doc) (uint64, bool) {
+	replica := s.replicaOf(live)
+	if replica == nil {
+		return 0, false
+	}
+	replica.mu.Lock()
+	rendering := replica.rendering
+	replica.mu.Unlock()
+	if rendering == nil || rendering.layout == nil {
+		return 0, false
+	}
+	return uint64(rendering.layout.Blocks()), true
+}
+
+// nearACap reports whether doc, a document's decoded history or its live room, stands so near a
+// cap that it must be rebuilt, and why. Near the decode cap is nearTheDecodeCap of doc's struct
+// total as a load decodes it (structCeiling) and its tree: a write it must still take, a write of
+// its whole text or a write's smallest replacement, would carry it past the cap, which
+// refuseUndecodable refuses, as it refuses the write of a document no room holds by the count of
+// its fork, a decode of the same history (leavesRoomPastDecodeCap). Near the scan total means a
+// re-scan of its state (rescan) scans at least roomScanTotal less honestHandoffScans items, a
+// state the decode refuses counting as no answer.
+//
+// The struct total costs neither an encode nor a decode (crdt.Doc.StructCount), and the tree is
+// read and written afresh only for a document within wholeTextWriteCeiling of the cap. The scan
+// test encodes doc's state and decodes it afresh, a whole-document decode like any other, so the
 // check holds bytes of the pod's load concurrency (holdLoad) from before that encode until it
 // answers: its own where ctx carries none, as the check of a live room makes it
 // (RebuildDocument, which weighs it at a whole copy of that room, copyOfRoom), and the caller's
@@ -75,9 +258,8 @@ func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (w
 		return "", false, err
 	}
 	defer release()
-	if structs := structCeiling(doc); structs+smallestReplacementAdds > maxUpdateItems {
-		return fmt.Sprintf("the document's live state holds %d structs, and a write's smallest replacement, %d more, would carry it past the %d ygo decodes in one update",
-			structs, smallestReplacementAdds, maxUpdateItems), true, nil
+	if why, near := nearTheDecodeCap(structCeiling(doc), measuredWholeText(func() (*pmdoc.Node, error) { return treeOf(doc) })); near {
+		return why, true, nil
 	}
 	state := crdt.EncodeStateAsUpdateV1(doc, nil)
 	// The state cap, which is what the room's hook refuses a browser's update by (ruleStateCap,
@@ -106,18 +288,20 @@ func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (w
 // RebuildDocument replaces a history no write can change with one fresh update, inside the
 // transaction the context's ledger joined: a history ygo cannot load, built afresh from its latest
 // saved markdown or supplied markdown; and a history that loads but stands so near the decode cap
-// or the scan total that every write to it is refused (nearACap), built from its own text or
-// supplied markdown. It is deliberately never a load fallback: a history that loads can contain
+// or the scan total that a write it must still take is refused (nearACap), built from its own text
+// or supplied markdown. It is deliberately never a load fallback: a history that loads can contain
 // unsettled edits newer than its latest version, so one further from both caps than that is
 // refused unchanged, and one that is rebuilt keeps those edits, since what it is built from is its
-// own tree.
+// own tree. Every path keeps the block ids, the open anchors and the margin records of what it is
+// built from, as far as that names them (rebuild_keeps.go).
 //
-// A document near a cap cannot be grown by anyone: a write that adds a struct is refused, a
-// browser's edit is refused by the room's totals, and only a rebuild leaves it small. A write
-// that only deletes can land, since a delete range splits an item only where one of its ends
-// falls inside that item, so a range covering whole items splits none of them and adds no struct
-// (sjawhar/ygo v1.55.1-sami.7, crdt/yarray.go:829-846), and it leaves the state as large as it
-// was: the document's own text is what a trim shortens, not its history. Supplied markdown does
+// A document near a cap cannot take the writes its writers make: near the decode cap, a write of
+// its whole text is refused while a small one may still land, and at the cap every write that adds
+// a struct is; a browser's edit is refused by the room's totals; and only a rebuild leaves it
+// small. A write that only deletes can land, since a delete range splits an item only where one of
+// its ends falls inside that item, so a range covering whole items splits none of them and adds no
+// struct (sjawhar/ygo v1.55.1-sami.7, crdt/yarray.go:829-846), and it leaves the state as large as
+// it was: the document's own text is what a trim shortens, not its history. Supplied markdown does
 // not widen this: a history further from both caps is refused with or without it, and is trimmed
 // by a write.
 //
@@ -197,17 +381,25 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// (roomCatchUps.closeReplaced), and until then its settlement and its browser's append are
 	// refused (ErrRoomBehindHead) and lead to the same close, and the reload reads the rebuilt
 	// document.
+	// A room this server holds that stands near a cap decides the rebuild: the history the rebuild
+	// reads once the room is closed is judged again only where no room decided (rebuildSource). A
+	// decode of that history can read otherwise - it merges the runs of typing the room holds a
+	// struct a keystroke, and the room's tracked state runs at or above its encode between
+	// re-bases - so a room judged near was once closed and then answered DOCUMENT_LOADS, which
+	// offered the rebuild and refused it on the same click.
+	var decided string
 	if live := s.srv.GetDoc(artifactID); live != nil {
 		// The check decodes the room's whole state, so it waits for its grant of the copy-heap
 		// bound within this request (nearACap): a wait this request ends leaves the rebuild to
 		// the caller's retry, as a close the server could not make does below.
-		_, near, err := nearACap(ctx, live, s.copyOfRoom(live), int64(s.roomStateBytes(live)))
+		why, near, err := nearACap(ctx, live, s.copyOfRoom(live), int64(s.roomStateBytes(live)))
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: weigh document %s before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
 		}
 		if !near {
 			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is live in this server; close its editors and retry two minutes later, or replace it from markdown instead", ErrDocumentLive, artifactID)
 		}
+		decided = why
 		// The loads its browsers make as they reconnect are refused until this transaction
 		// ends (refuseIfRebuilding), so the room stays closed while the history is replaced. A
 		// Server.Apply already inside its callback on the room is the one thing that close gives
@@ -230,7 +422,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is live in another server process; close its editors and retry two minutes later, or replace it from markdown instead", ErrDocumentLive, artifactID)
 		}
 	}
-	history, loaded, why, retired, err := s.rebuildSource(ctx, artifactID)
+	history, loaded, why, retired, err := s.rebuildSource(ctx, artifactID, decided)
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
@@ -245,19 +437,40 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
+	if markdown != nil && !open {
+		return RebuildReport{}, VersionResult{}, ErrIssueClosed
+	}
+	// What the rebuild keeps beside the text (rebuild_keeps.go): every path keeps the document's
+	// block ids, its open anchors and its margin records as far as what it is built from names
+	// them. A history that loads holds all three: its own tree is the document, with every edit
+	// settlement has not yet written into a version, its anchor marks and its typed blocks' state,
+	// and its marks map holds the margin; supplied markdown over it is taken as an upload over it
+	// is, its unchanged blocks keeping their ids and its anchors marked again (keptReplacement). A
+	// tree outside the schema has no text to carry anything from, and the markdown repairs it, as
+	// an upload repairs one. A history that does not load holds nothing that reads, so the text it
+	// is rebuilt from takes back what the rows record of it (restoredFromRows).
 	var tree *pmdoc.Node
-	switch {
-	case markdown != nil:
-		if !open {
-			return RebuildReport{}, VersionResult{}, ErrIssueClosed
+	var margin map[string]any
+	if history != nil {
+		margin = marginRecords(history)
+		current, treeErr := treeOf(history)
+		switch {
+		case markdown == nil:
+			tree, err = current, treeErr
+		case treeErr != nil:
+			tree, err = parseInput(*markdown)
+		default:
+			tree, err = s.keptReplacement(ctx, tx, artifactID, current, *markdown)
 		}
-		tree, err = parseInput(*markdown)
-	case history != nil:
-		// The history loads, so its own tree is the document, with every edit settlement has not
-		// yet written into a version, its anchor marks and its typed blocks' state.
-		tree, err = treeOf(history)
-	default:
-		tree, err = uploadedInput(pmdoc.ParseRendering(latest.markdown))
+	} else {
+		if markdown != nil {
+			tree, err = parseInput(*markdown)
+		} else {
+			tree, err = uploadedInput(pmdoc.ParseRendering(latest.markdown))
+		}
+		if err == nil {
+			tree, margin, err = s.restoredFromRows(ctx, tx, artifactID, tree)
+		}
 	}
 	history = nil
 	if err != nil {
@@ -324,7 +537,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, err
 		}
 	}
-	seed, err := rebuiltSeed(tree, retired)
+	seed, err := rebuiltSeed(tree, retired, margin)
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("seed rebuilt document tree: %w", err)
 	}
@@ -390,15 +603,22 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 // rebuildSource is what a rebuild of artifactID starts from: the stored history decoded (nil for
 // one that does not decode), the version that history stood at, which RebuildTx replaces only
 // while the head is still it, why it must be rebuilt - how near a cap it stands (nearACap), or
-// the decode's refusal - and the clients it retires. A history that loads and stands near no cap
-// is ErrDocumentLoads. The read's fold, its decode (loadDecodedHistory) and the check's re-scan
-// of it run under one slot of the pod's load concurrency, whose wait ends with ctx, held here
-// rather than by the read, since the check runs inside it, and given back once the history is
-// the rebuild's.
-func (s *Service) rebuildSource(ctx context.Context, artifactID string) (*crdt.Doc, persistence.Version, string, map[crdt.ClientID]uint64, error) {
+// the decode's refusal - and the clients it retires. A history whose runs do not apply in order
+// has no bytes to decode, and carries its version and clients itself (unappliedHistory). decided
+// is why the room this server held stood near a cap, which RebuildDocument judged and closed, or
+// "" where no room decided: a history that loads is judged here only then, and one that stands
+// near no cap is ErrDocumentLoads. The read's fold, its decode (loadDecodedHistory) and the
+// check's re-scan of it run under one slot of the pod's load concurrency, whose wait ends with
+// ctx, held here rather than by the read, since the check runs inside it, and given back once
+// the history is the rebuild's.
+func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string) (*crdt.Doc, persistence.Version, string, map[crdt.ClientID]uint64, error) {
 	ctx, _, done := withLoadSlot(ctx)
 	defer done()
 	read, err := loadDecodedHistory(ctx, s.persistence, artifactID, s.maxPendingItems, nil)
+	var unapplied *unappliedHistory
+	if errors.As(err, &unapplied) {
+		return nil, unapplied.version, unapplied.Error(), unapplied.clients, nil
+	}
 	if err != nil {
 		return nil, 0, "", nil, fmt.Errorf("%w: load document before rebuild: %v", ErrServiceUnavailable, err)
 	}
@@ -410,6 +630,9 @@ func (s *Service) rebuildSource(ctx context.Context, artifactID string) (*crdt.D
 	history := read.decoded.doc
 	if history == nil {
 		history = newCappedDocumentCopy(s.maxPendingItems)
+	}
+	if decided != "" {
+		return history, read.loaded.Version, decided, historyClients(history), nil
 	}
 	// The stored history has not been decoded here, so no struct count can be read of it and
 	// the state term alone weighs the grant nearACap takes (copyWeight).
@@ -425,15 +648,19 @@ func (s *Service) rebuildSource(ctx context.Context, artifactID string) (*crdt.D
 
 // rebuiltSeed writes tree into a fresh document, as encodeDocumentTree does, with the retired
 // clients listed under retiredMapName, each its client id in decimal against the clock it had
-// reached, and returns the document's first durable update.
-func rebuiltSeed(tree *pmdoc.Node, retired map[crdt.ClientID]uint64) ([]byte, error) {
+// reached, and margin, the margin records the rebuild keeps, in the marks map under their keys,
+// and returns the document's first durable update.
+func rebuiltSeed(tree *pmdoc.Node, retired map[crdt.ClientID]uint64, margin map[string]any) ([]byte, error) {
 	doc := crdt.New()
 	fragment := doc.GetXmlFragment(fragmentName)
-	doc.GetMap(marksMapName)
+	marks := doc.GetMap(marksMapName)
 	list := doc.GetMap(retiredMapName)
 	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
 		for client, clock := range retired {
 			list.Set(transaction, strconv.FormatUint(uint64(client), 10), int64(clock))
+		}
+		for _, key := range sortedKeys(margin) {
+			marks.Set(transaction, key, margin[key])
 		}
 		return pmdoc.Update(transaction, fragment, tree)
 	}); err != nil {

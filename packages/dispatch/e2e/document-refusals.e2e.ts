@@ -1,3 +1,4 @@
+import type { ArtifactText } from "@legion/contracts";
 import { type Browser, expect, type Page, test } from "@playwright/test";
 
 import {
@@ -5,6 +6,7 @@ import {
   createIssueArtifact,
   createProject,
   dashboardOrigin,
+  editArtifact,
   getArtifactText,
   patchIssue,
   quiesceDocuments,
@@ -31,7 +33,8 @@ import { asUser } from "./users";
 // the document is read again and no rebuild is offered), as one holding content the
 // document does not take (the same code with DOC_UPDATE_REFUSED, permanent: the edit is dropped),
 // or for want of room for open documents (DOCUMENT_BUSY_CLOSE_CODE, transient: the edit waits and
-// saves once room frees).
+// saves once room frees). A document whose own read finds it near the decode cap is offered the
+// rebuild before anyone is refused, and one far from the cap is offered none.
 
 const TOO_LARGE = "Your last edit was not saved: it would make this document larger";
 const NEEDS_REBUILD =
@@ -43,6 +46,8 @@ const TOO_TANGLED =
 const UPDATE_REFUSED =
   "Your last edit was not saved: it holds content this document does not take.";
 const OUT_OF_ROOM = "Dispatch is out of room for open documents right now.";
+const NEAR_CAP =
+  "This document has been edited so much that it must be rebuilt before it can take larger changes.";
 const ROOM_BUDGET = "/api/v1/artifacts/_test/room-budget";
 /** The sentence both browsers of the used-up row write after, the end of its paragraph's text. */
 const MEETING_POINT = "Both browsers write after this sentence.";
@@ -195,6 +200,17 @@ async function recordDocumentSockets(page: Page): Promise<() => Promise<Document
 // cookie-authenticated write whose `Origin` is not the dashboard's (enforceCookieOrigin).
 function postAsPage(page: Page, path: string, data?: object) {
   return page.request.post(path, { data, headers: { Origin: dashboardOrigin } });
+}
+
+/** The document's text read as the dashboard makes it, asking for display trees
+ *  (`Dispatch-Trees: 1`): the read that says whether the rebuild route takes the document by the
+ *  decode cap (`near_decode_cap`) and, where it does, why. */
+async function dashboardTextRead(page: Page, artifactId: string): Promise<ArtifactText> {
+  const response = await page.request.get(`/api/v1/artifacts/${artifactId}/text`, {
+    headers: { "Dispatch-Trees": "1" },
+  });
+  expect(response.status(), await response.text()).toBe(200);
+  return (await response.json()) as ArtifactText;
 }
 
 test.beforeEach(async () => {
@@ -693,6 +709,119 @@ test("a browser holding the history someone else's rebuild replaced is told the 
   } finally {
     await alice.close();
     await bob.close();
+  }
+});
+
+// The person who opens a document an agent's writes have carried near the decode cap meets no
+// refusal of their own, and the rebuild route is a person's alone, so unless the page offers it
+// nobody can run it. The document's read says the route takes it (near_decode_cap, the route's
+// own test), so the page offers it at once with the server's reason; the rebuild leaves the
+// document small, its text whole, its editor taking edits and the refused write landing.
+// SLOW(>=2s): the hook writes a million deleted characters into the stored history, the page's
+// browser is handed that history, and the rebuild loads and replaces it.
+test("a document near the decode cap offers its rebuild to a person who met no refusal, and takes edits after it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "NEARCAP", name: "Documents near the decode cap" });
+  // Four top-level blocks, so the hook leaves the document where a keystroke still lands and a
+  // larger write does not: the state a person meets after an agent's rewrites were refused.
+  const issue = await createIssue({
+    project: "NEARCAP",
+    spec: `${MEETING_POINT}\n\nAn agent rewrote this document many times.\n\nIts history holds every rewrite.\n\nIts text is four short paragraphs.\n`,
+    title: "Rebuild a document near the decode cap",
+  });
+  const artifactId = issue.primary_artifact_id;
+  /** The agent's next version: ten paragraphs more, far more structs than the cap has room for. */
+  const nextVersion = {
+    ops: [
+      {
+        after: "end",
+        markdown: Array.from(
+          { length: 10 },
+          (_, index) => `The agent's paragraph ${index}.\n`
+        ).join("\n"),
+        op: "insert" as const,
+      },
+    ],
+  };
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // The hook appends to the stored history one update of deleted characters that carries the
+    // document just past the band its read answers near for, as a history of many whole-text
+    // rewrites does, and leaves its text as it was.
+    const nearCap = await postAsPage(page, `/api/v1/artifacts/${artifactId}/_test/near-decode-cap`);
+    expect(nearCap.status(), await nearCap.text()).toBe(204);
+    await expect(editArtifact(artifactId, nextVersion)).rejects.toThrow(
+      "a person can rebuild the document"
+    );
+    const read = await dashboardTextRead(page, artifactId);
+    expect(read.near_decode_cap).toBe(true);
+    const reason = read.near_decode_cap_reason ?? "";
+    expect(reason).not.toBe("");
+
+    // The offer comes from the page's read of the text, before the editor has drawn the million
+    // structs the browser is handed: the person need not wait for those to be offered the remedy.
+    await page.goto(`/issues/${issue.key}/spec`);
+    await expect(page.getByText(NEAR_CAP)).toBeVisible();
+    await expect(page.getByText(reason)).toBeVisible();
+    await expect(page.getByText(NEEDS_REBUILD)).toHaveCount(0);
+    const offer = page.getByRole("button", { name: "Rebuild this document" });
+    await expect(offer).toBeVisible();
+
+    let confirmation: string | undefined;
+    page.once("dialog", (dialog) => {
+      confirmation = dialog.message();
+      void dialog.accept();
+    });
+    await offer.click();
+    await expect(page.getByText(NEAR_CAP)).toHaveCount(0);
+    await expect(offer).toHaveCount(0);
+    expect(confirmation).toContain(
+      "Every browser connected to it, this one included, drops the edits it has not sent yet."
+    );
+    expect((await dashboardTextRead(page, artifactId)).near_decode_cap).toBe(false);
+    await expect(connectedDot(page)).toHaveText("connected");
+    await expect(documentEditor(page)).toContainText("Its text is four short paragraphs.");
+
+    await typeAtEnd(page, "saved after the rebuild");
+    await expect
+      .poll(async () => (await getArtifactText(artifactId)).markdown)
+      .toContain("saved after the rebuild");
+    await editArtifact(artifactId, nextVersion);
+    expect((await getArtifactText(artifactId)).markdown).toContain("The agent's paragraph 9.");
+  } finally {
+    await alice.close();
+  }
+});
+
+// A document far from the cap is one a write can still change, and the route refuses to rebuild
+// it: its read says so, and the page offers no rebuild.
+// SLOW(>=2s): opens the document's page and waits for its editor to draw the text the read that
+// decides the offer answered.
+test("a document far from the decode cap offers no rebuild", async ({ browser }) => {
+  await createProject({ key: "FARCAP", name: "Documents far from the decode cap" });
+  const issue = await createIssue({
+    project: "FARCAP",
+    spec: `${MEETING_POINT}\n`,
+    title: "No rebuild for a document far from the cap",
+  });
+  const artifactId = issue.primary_artifact_id;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    expect((await dashboardTextRead(page, artifactId)).near_decode_cap).toBe(false);
+    // The editor draws only after the page's read of the text, which is the read the offer
+    // would come from: once the text shows, an offer that was coming would be on the page.
+    await page.goto(`/issues/${issue.key}/spec`);
+    await expect(documentEditor(page)).toContainText(MEETING_POINT);
+    await expect(page.getByText(NEAR_CAP)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Rebuild this document" })).toHaveCount(0);
+    const rebuilt = await postAsPage(page, `/api/v1/artifacts/${artifactId}/rebuild`, {});
+    expect(rebuilt.status(), await rebuilt.text()).toBe(409);
+  } finally {
+    await alice.close();
   }
 });
 

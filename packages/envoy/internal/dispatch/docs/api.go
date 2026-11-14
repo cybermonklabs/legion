@@ -21,6 +21,7 @@ type API interface {
 	ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
 	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error)
 	RebuildDocument(ctx context.Context, artifactID string, markdown *string, actor model.Actor) (RebuildReport, VersionResult, error)
+	NearDecodeCap(ctx context.Context, artifactID string) (why string, near bool, err error)
 	InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error
 	SetRoomBudgetForTest(bytes int64) int64
 	RoomLiveForTest(artifactID string) bool
@@ -30,6 +31,7 @@ type API interface {
 	RefuseNextPeerUpdateForTest(artifactID string)
 	UseUpScanTotalForTest(ctx context.Context, artifactID string) error
 	TangleBeyondOneApplyForTest(ctx context.Context, artifactID string) error
+	NearDecodeCapForTest(ctx context.Context, artifactID string) error
 	Text(ctx context.Context, artifactID string) (string, error)
 	TextWithToken(ctx context.Context, artifactID string) (string, string, error)
 	Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error)

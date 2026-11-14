@@ -47,9 +47,12 @@ import (
 //
 // The fourth is the answer to one browser's first sync, held from before that answer is built
 // until its frames are in the browser's write queue (Service.weighStateAnswer): answering a
-// SyncStep1 decodes the whole of what the browser is missing into a merge store before cutting
-// it into frames (ygo's sync.EncodeSyncStep2Split), so a room many browsers join at once decodes
-// its own state once per join, and nothing in ygo bounds how many of those run together.
+// SyncStep1 cuts the whole of what the browser is missing into frames and holds every one of
+// them at once (ygo's sync.EncodeSyncStep2Split), so a room many browsers join at once holds its
+// own state once more per join, and nothing in ygo bounds how many of those run together. A room
+// that parks nothing is cut from its own structs and decodes nothing; a room holding parked
+// structs or parked deletions is cut from its encoded state, which decodes the whole document
+// twice, so each answer takes the weight of the path it takes (answerWeight).
 //
 // Every taker takes its bytes before it takes a database connection, so no grant is held behind
 // a connection pool a holder of another grant could fill, and a wait a request's context ends is
@@ -335,7 +338,8 @@ type loadedHistory struct {
 // The read's fold, when the history holds several updates, covers the grant where it reads them,
 // taking it on the rows' own bytes (foldRead), and the decode runs inside it. The error is the
 // read's, the refusal's or the grant's, a wait ctx ended included, and leaves nothing decoded;
-// ygo's refusal of the bytes themselves is the history's refused.
+// ygo's refusal of the bytes themselves is the history's refused. A history whose runs do not
+// apply in order is the read's error (unappliedHistory): the store has no bytes of it to decode.
 func loadDecodedHistory(ctx context.Context, load VersionedStore, artifactID string, maxPending int, refuse func(update []byte) error) (loadedHistory, error) {
 	ctx, slot, done := withLoadSlot(ctx)
 	defer done()

@@ -72,6 +72,12 @@ type liveWrite struct {
 	// weighed by (updatesAdd). A fork rebuilt after an operation abandoned it records it again,
 	// before the transaction's updates go back on (rebuildFork).
 	forkStructs uint64
+	// coldNear is why a cold fork's document stood near the decode cap when the fork was built,
+	// as the rebuild route's own test reads it (nearTheDecodeCap, coldForkNear), and "" where it
+	// did not or the fork is warm. It is read before the transaction's writes, since the text a
+	// write leaves is not the document the rebuild route judges, and kept for the decode cap's
+	// refusal of the write, which names the rebuild only where it holds (refuseUndecodable).
+	coldNear string
 	// slot is the transaction's grant of the pod's load concurrency (forkSlot, loadSlots),
 	// shared with every other live write the transaction opens, and holdsSlot whether this
 	// write's own fork holds a share of it: taken before the fork is built, at what that fork
@@ -660,6 +666,10 @@ func (s *Service) rebuildFork(ctx context.Context, write *liveWrite) (*crdt.Doc,
 		}
 	}
 	write.forkStructs = structCeiling(fork)
+	write.coldNear = ""
+	if write.cold {
+		write.coldNear = coldForkNear(write.forkStructs, fork)
+	}
 	if err := applyTransactionWrites(fork, write.updates); err != nil {
 		return nil, err
 	}
@@ -845,6 +855,12 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 			return nil, err
 		}
 		s.failRoom(write.artifactID, err)
+		// A history whose runs do not apply in order is the document's own failure, as one that
+		// does not decode is below (unappliedHistory).
+		var unapplied *unappliedHistory
+		if errors.As(err, &unapplied) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 	}
 	if live := s.srv.GetDoc(write.artifactID); live != nil && !closedIssueCommentMark(ctx, write) && !s.roomBehindHead(ctx, write.artifactID, live, head) {
@@ -865,6 +881,7 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 		return nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, err)
 	}
 	write.forkStructs = structCeiling(fork)
+	write.coldNear = coldForkNear(write.forkStructs, fork)
 	write.clientID = fork.ClientID()
 	// The zero point: no cursor, so no gate. The gate is about a room (gateAppend), and
 	// this write holds none. Its update is a Yjs update, which commutes with whatever its room

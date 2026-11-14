@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,7 +18,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/persistence"
-	"github.com/reearth/ygo/provider/websocket"
+	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
@@ -844,52 +845,126 @@ func TestUnauthenticatedDocumentRequestsDoNotAllocateRooms(t *testing.T) {
 	}
 }
 
-// Answering a browser's SyncStep1 is not a read of the room's state and a send of it: ygo decodes
-// the whole of what that browser is missing into a merge store, so that it can cut it into frames
-// each small enough for a browser to apply in one task (sync.EncodeSyncStep2Split). That is a
-// whole second copy of the document, built on the peer's read loop, and nothing in ygo bounds how
-// many of them run together, so a room many browsers join at once decoded its own state once per
-// browser with the pod's copy heap looking on. Each answer now takes a grant of that heap, sized
-// as every other whole-document copy is (copyWeight), holds it until the answer has been sent,
-// and gives it back; and a browser whose answer the pool has no room for inside the server's wait
-// bound is closed DOC_BUSY, the transient close it comes back from, rather than left waiting on a
-// sync that is not coming.
-func TestTheAnswerToABrowsersFirstSyncHoldsAGrantOfThePodsCopyHeap(t *testing.T) {
+// Answering a browser's SyncStep1 is not a read of the room's state and a send of it: ygo cuts
+// what that browser is missing into frames each small enough for a browser to apply in one task
+// and holds every one of them until they are queued (sync.EncodeSyncStep2Split), on the peer's
+// read loop, and nothing in ygo bounds how many of those answers run together. Each answer takes
+// a grant of the pod's copy heap, weighed by the path its room's answer takes (answerWeight),
+// holds it until the answer has been sent, and gives it back.
+//
+// A room that parks nothing is cut from its own structs (crdt.SplitStateAsUpdateV1), which
+// decodes nothing, so a browser joining it is answered under what that cut costs
+// (cutAnswerWeight) rather than under a whole copy of the document.
+func TestAnAnswerFromARoomThatParksNothingIsGrantedWhatItsCutCosts(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour // no settlement takes a grant while the browser joins
+	seedServiceText(t, service, artifactID, "One paragraph of ordinary prose.")
+	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	t.Cleanup(httpServer.Close)
+	awaitAnswer(t, connectPeer(t, httpServer.URL, artifactID, "alice"), "the document")
+	live, replica := answeringRoom(t, service, artifactID)
+	if parks(live) {
+		t.Fatal("the room parks something, so its answer is cut from its encoded state")
+	}
+
+	granted := grantOfAJoin(t, httpServer.URL, artifactID)
+	state, structs := replica.roomStateBytes(), int64(live.StructCount())
+	if want := cutAnswerWeight(state, structs); granted != want {
+		t.Fatalf("the answer to a room that parks nothing held %d bytes of the pod's copy heap, want the %d its cut costs; a room that parks is granted %d",
+			granted, want, parkedAnswerWeight(state, structs))
+	}
+	t.Logf("an answer carrying %d structs of %d bytes of tracked state, cut from the room's structs, held %d bytes of the pod's copy heap",
+		structs, state, granted)
+}
+
+// A room holding a parked struct is cut from its encoded state instead: the encode merges what
+// the room parks into its state and the cut decodes the merge back (crdt.SplitUpdateV1), which
+// decodes the whole document twice, so a browser joining it is answered under that path's grant
+// (parkedAnswerWeight). The parked struct is a browser's keystroke sent before the keystroke it
+// was typed after, as a browser whose earlier update was lost sends it.
+func TestAnAnswerFromARoomHoldingAParkedStructIsGrantedWhatItsDecodesCost(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour // no settlement takes a grant while the browser joins
+	seedServiceText(t, service, artifactID, "One paragraph of ordinary prose.")
+	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	t.Cleanup(httpServer.Close)
+	writer := connectPeer(t, httpServer.URL, artifactID, "alice")
+	awaitAnswer(t, writer, "the document")
+	typist := crdt.New()
+	if err := crdt.ApplyUpdateV1(typist, crdt.EncodeStateAsUpdateV1(writer.Doc, nil), nil); err != nil {
+		t.Fatalf("copy the browser's document: %v", err)
+	}
+	docstest.Transact(typist, typeParagraph(typist, "first"))
+	second := docstest.Transact(typist, typeParagraph(typist, "second"))
+	if err := writer.Write(ygsync.EncodeUpdate(second)); err != nil {
+		t.Fatalf("send the second keystroke: %v", err)
+	}
+	waitFor(t, 10*time.Second, "the room to park the second keystroke", func() bool {
+		live := service.srv.GetDoc(artifactID)
+		return live != nil && live.PendingStats().Items > 0
+	})
+	live, replica := answeringRoom(t, service, artifactID)
+
+	granted := grantOfAJoin(t, httpServer.URL, artifactID)
+	state, structs := replica.roomStateBytes(), int64(live.StructCount()+live.PendingStats().Items)
+	if want := parkedAnswerWeight(state, structs); granted != want {
+		t.Fatalf("the answer to a room holding a parked struct held %d bytes of the pod's copy heap, want the %d its decodes cost; a room that parks nothing is granted %d",
+			granted, want, cutAnswerWeight(state, structs))
+	}
+	t.Logf("an answer carrying %d structs of %d bytes of tracked state, cut from the room's encoded state, held %d bytes of the pod's copy heap",
+		structs, state, granted)
+}
+
+// answeringRoom is artifactID's resident room and the replica its load listed it with, which
+// tracks the state bytes an answer to it is weighed by.
+func answeringRoom(t *testing.T, service *Service, artifactID string) (*crdt.Doc, *renderedReplica) {
+	t.Helper()
+	live := service.srv.GetDoc(artifactID)
+	replica := service.replicaOf(live)
+	if live == nil || replica == nil {
+		t.Fatal("the document's room is not resident with a browser connected")
+	}
+	return live, replica
+}
+
+// grantOfAJoin is the bytes of the pod's copy heap the answer to one more browser's first sync
+// held, read once that browser has its answer and the grant has been given back. The pool it
+// joins under has a whole slot free, far above a test document's answer, so nothing waits, and
+// the answer is the only taker: the room is resident, so the socket's admission takes nothing,
+// and the browser's own empty document sends an update far under unslottedApplyBytes.
+func grantOfAJoin(t *testing.T, serverURL, artifactID string) int64 {
+	t.Helper()
+	pool, outstanding := loadSlotsWithRoomFor(t, 2, loadSlotBytes)
+	var taken slotsHeld
+	pool.taken = taken.record
+	awaitAnswer(t, connectPeer(t, serverURL, artifactID, "bob"), "the document")
+	waitFor(t, 10*time.Second, "the answer to give its grant back", func() bool {
+		return pool.held.Load() == outstanding
+	})
+	grants := taken.all()
+	if len(grants) == 0 {
+		t.Fatal("the room answered the browser holding nothing of the pod's copy heap")
+	}
+	return slices.Max(grants) - outstanding
+}
+
+// A browser whose answer the pool has no room for inside the server's wait bound is closed
+// DOC_BUSY, the transient close it comes back from, rather than left waiting on a sync that is
+// not coming; and the browser already in the room is untouched by that refusal.
+func TestABrowserWhoseAnswerThePodsCopyHeapHasNoRoomForIsClosedBusy(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "One paragraph of ordinary prose.")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 	reader := connectPeer(t, httpServer.URL, artifactID, "alice")
 	awaitAnswer(t, reader, "the document")
-	live := service.srv.GetDoc(artifactID)
-	replica := service.replicaOf(live)
-	if live == nil || replica == nil {
-		t.Fatal("the document's room is not resident with a browser connected")
-	}
 
-	// A pool of two slots with one of them free: what the hook takes is the weight of the copy
-	// its answer builds and not a whole slot, so the free slot stands well above it.
-	pool, outstanding := loadSlotsWithRoomFor(t, 2, loadSlotBytes)
-	want := copyWeight(replica.roomStateBytes(), int64(live.StructCount()+live.PendingStats().Items))
-	release, err := service.weighStateAnswer(websocket.StateAnswerInfo{Room: artifactID, Doc: live, Structs: live.StructCount()})
-	if err != nil || release == nil {
-		t.Fatalf("the hook answered (%v, release %v) with a slot free, want the answer admitted under a grant", err, release != nil)
-	}
-	if held := pool.held.Load() - outstanding; held != want {
-		t.Fatalf("the answer holds %d bytes of the pool, want the %d its copy costs", held, want)
-	}
-	t.Logf("an answer carrying %d structs of %d bytes of tracked state holds %d bytes of the pod's %d-byte copy heap",
-		live.StructCount(), replica.roomStateBytes(), want, pool.poolBytes())
-	release()
-	if held := pool.held.Load() - outstanding; held != 0 {
-		t.Fatalf("the pool holds %d bytes once the answer has been sent, want none of them", held)
-	}
-
-	// With the rest of the pool held by somebody else, the browser that joins is closed rather
-	// than left waiting: the answer cannot be built without the bytes.
+	// With the whole pool held by somebody else, the browser that joins is closed rather than
+	// left waiting: the answer cannot be built without the bytes.
+	useLoadSlots(t, newLoadSlots(1))
 	filler := newLoadSlot()
 	if !filler.tryTake(loadSlotBytes) {
-		t.Fatal("the pool refused the free slot a holder asked for")
+		t.Fatal("the empty pool refused its one slot")
 	}
 	t.Cleanup(filler.release)
 	started := time.Now()
@@ -897,7 +972,7 @@ func TestTheAnswerToABrowsersFirstSyncHoldsAGrantOfThePodsCopyHeap(t *testing.T)
 	select {
 	case <-refused.Ended:
 	case <-refused.Answers:
-		t.Fatal("the room answered a browser's first sync with no room in the pod's copy heap for the decode it costs")
+		t.Fatal("the room answered a browser's first sync with no room in the pod's copy heap for the answer")
 	case <-time.After(WriteWaitBound + time.Minute):
 		t.Fatal("the room neither answered nor closed the browser whose answer the copy heap had no room for")
 	}

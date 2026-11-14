@@ -53,6 +53,47 @@ type MarkRecord struct {
 	Status    string      `json:"status,omitempty"`
 }
 
+// CommentMarkRecord is the margin record of comment, a thread's root anchored on a document, with
+// replies, its thread's replies oldest first, and suggestionKind, the kind its suggestion mark
+// carries, for a suggestion: the record every comment route projects (ProjectMark), and the one a
+// rebuild of a history that does not load restores from the rows (restoreFromRows).
+func CommentMarkRecord(comment model.Comment, replies []model.Comment, suggestionKind string) MarkRecord {
+	record := MarkRecord{
+		Kind:      "comment",
+		By:        ActorRef(comment.Author),
+		CreatedAt: markTimestamp(comment.CreatedAt),
+		Text:      comment.Body,
+		Resolved:  comment.Resolved,
+		Replies:   make([]MarkReply, 0, len(replies)),
+	}
+	for _, reply := range replies {
+		record.Replies = append(record.Replies, MarkReply{
+			By:   ActorRef(reply.Author),
+			Text: reply.Body,
+			At:   markTimestamp(reply.CreatedAt),
+		})
+	}
+	if comment.Suggestion != nil {
+		record.Kind = suggestionKind
+		record.Content = comment.Suggestion.ReplaceWith
+		record.Status = "pending"
+		if comment.Suggestion.Accepted != nil {
+			if *comment.Suggestion.Accepted {
+				record.Status = "accepted"
+			} else {
+				record.Status = "rejected"
+			}
+		}
+	}
+	return record
+}
+
+// markTimestamp is a margin record's time: UTC, RFC 3339 with nanoseconds, as every API answer
+// writes one.
+func markTimestamp(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
 var (
 	// ErrAnchorMissing reports a mark that did not appear before verification timed out.
 	ErrAnchorMissing = errors.New("anchor mark is not in the document")

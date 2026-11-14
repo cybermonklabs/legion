@@ -1,4 +1,4 @@
-import { decodeBlockId, isIdPrefix } from "@legion/contracts";
+import { DOCUMENT_NEEDS_REBUILD_CLOSE_REASON, decodeBlockId, isIdPrefix } from "@legion/contracts";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -16,6 +16,7 @@ import {
   isArtifactNotFound,
   isDocumentSchemaError,
   isDocumentUnloadable,
+  nearCapRefusalDocument,
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, AuthenticatedUser, BlockSchema, Version } from "../../api/types";
@@ -53,11 +54,12 @@ import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useWrites } from "../writes/write-store";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
-import { colorForLogin } from "./connection";
+import { colorForLogin, refusedEditNotice } from "./connection";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
@@ -284,9 +286,20 @@ export function ProofDocument({
   // The server refused this browser's last edit, as one that would take the document past its size
   // bound, one it could not merge quickly enough, one the document cannot take until it is
   // rebuilt, or one typed against the history someone else's rebuild replaced: the close reason
-  // that says which, which RefusedEditNotice reads its sentence and its rebuild offer from. The
-  // edit is gone and the notice stays until the person dismisses it or rebuilds the document.
+  // that says which, which the notice's sentence (`refusedEditNotice`) and its rebuild offer are
+  // read from. The edit is gone and the notice stays until the person dismisses it or rebuilds
+  // the document.
   const [refusedEdit, setRefusedEdit] = useState<string | undefined>(undefined);
+  // A write to this document that the server refused because only a rebuild lets the document
+  // take it, made from its margin, one of its ask blocks or anywhere else in the app: the refusal
+  // names this document's rebuild route (`nearCapRefusalDocument`), which the server does only
+  // once that route's own test answers that the document stands near the decode cap. The write's
+  // own control shows the server's reason; this page, which holds the editor a rebuild closes
+  // first, carries the offer until the person dismisses it or rebuilds the document.
+  const [refusedWrite, setRefusedWrite] = useState(false);
+  // The person dismissed the offer the document's own read made (`near_decode_cap`), which every
+  // read of a document still near the cap would otherwise make again.
+  const [nearCapDismissed, setNearCapDismissed] = useState(false);
   // The server is out of room for open documents: the connection keeps trying, and the edits it
   // could not send wait in this browser.
   const [busy, setBusy] = useState(false);
@@ -307,6 +320,7 @@ export function ProofDocument({
   marginRef.current = margin;
   highlightTermRef.current = highlightTerm;
   const queryClient = useQueryClient();
+  const writes = useWrites();
   // Where a `#id` in this document's text resolves: this document, whose question blocks
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
   const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
@@ -369,6 +383,16 @@ export function ProofDocument({
     }
     onUnavailableRef.current?.(admission.message);
   }, [admission, page]);
+  useEffect(() => {
+    if (!page) {
+      return;
+    }
+    return writes.onOutcome((outcome) => {
+      if (outcome.kind === "refused" && nearCapRefusalDocument(outcome.refusal) === artifact.id) {
+        setRefusedWrite(true);
+      }
+    });
+  }, [artifact.id, page, writes]);
   const repairError = page && admission?.kind === "repair" ? admission : undefined;
   const rebuildError = page && admission?.kind === "rebuild" ? admission : undefined;
   const shownLoadError = admission?.kind === "failed" ? admission.message : loadError;
@@ -1088,6 +1112,43 @@ export function ProofDocument({
     }
   }, [highlightTerm, page]);
 
+  // The one rebuild this page offers for a document that takes changes no more, whatever led to
+  // the offer. The editor's connection closes first and is admitted again once the rebuild has
+  // answered (`suspendRef`), and every notice the rebuild answers goes once it lands.
+  const rebuildLiveDocument = () => {
+    const resume = suspendRef.current?.();
+    rebuild.mutate(undefined, {
+      onSuccess: () => {
+        setRefusedEdit(undefined);
+        setRefusedWrite(false);
+      },
+      onSettled: () => resume?.(),
+    });
+  };
+  // Of the edits the server refuses, a rebuild mends only `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`'s,
+  // a document whose edit history has used up what the server lets it hold or scan. A document
+  // someone else's rebuild replaced (`DOCUMENT_REBUILT_CLOSE_REASON`) has just been rebuilt, and
+  // the route answers a second rebuild of it `409`; an edit too large, too tangled or holding
+  // content the document does not take is the edit's own refusal, which no rebuild mends.
+  const refusedEditOffersRebuild = page && refusedEdit === DOCUMENT_NEEDS_REBUILD_CLOSE_REASON;
+  // The document's own read says the rebuild route takes it by the decode cap (`near_decode_cap`),
+  // whether or not any write was refused yet: the person who opens the page of a document someone
+  // else's write was refused for - an agent's, from the command line - meets the offer here, with
+  // the server's reason beside it. The server sets it from what it holds without an encode, only
+  // where the route's own test (`nearACap`) takes the document: it may be unset where the route
+  // would take it, which a refused write or edit then offers, and is never set where it would not.
+  const nearDecodeCap = page && liveTextQuery.data?.near_decode_cap === true;
+  // A refused write and the read carry the same offer in one notice, unless the refused edit's
+  // notice already carries it: one document, one button.
+  let nearCapNotice: string | undefined;
+  if (refusedWrite && !refusedEditOffersRebuild) {
+    nearCapNotice =
+      "This document has been edited so much that it must be rebuilt before it can take your change.";
+  } else if (nearDecodeCap && !nearCapDismissed && !refusedEditOffersRebuild) {
+    nearCapNotice =
+      "This document has been edited so much that it must be rebuilt before it can take larger changes.";
+  }
+
   return (
     <section aria-label="Document editor" className="space-y-4">
       <NameVersionDialog
@@ -1106,16 +1167,24 @@ export function ProofDocument({
       {isClosed ? <p>This issue is closed. Its document is read-only.</p> : null}
       {refusedEdit === undefined ? null : (
         <RefusedEditNotice
+          notice={refusedEditNotice(refusedEdit)}
+          offersRebuild={refusedEditOffersRebuild}
           onDismiss={() => setRefusedEdit(undefined)}
-          onRebuild={() => {
-            const resume = suspendRef.current?.();
-            rebuild.mutate(undefined, {
-              onSuccess: () => setRefusedEdit(undefined),
-              onSettled: () => resume?.(),
-            });
+          onRebuild={rebuildLiveDocument}
+          rebuildError={rebuild.isError ? rebuild.error : undefined}
+          rebuilding={rebuild.isPending}
+        />
+      )}
+      {nearCapNotice === undefined ? null : (
+        <RefusedEditNotice
+          detail={nearDecodeCap ? liveTextQuery.data?.near_decode_cap_reason : undefined}
+          notice={nearCapNotice}
+          offersRebuild
+          onDismiss={() => {
+            setRefusedWrite(false);
+            setNearCapDismissed(true);
           }}
-          page={page}
-          reason={refusedEdit}
+          onRebuild={rebuildLiveDocument}
           rebuildError={rebuild.isError ? rebuild.error : undefined}
           rebuilding={rebuild.isPending}
         />

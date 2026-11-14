@@ -2415,6 +2415,38 @@ func TestTangledHookIsGatedByTestHooksEnabled(t *testing.T) {
 	}
 }
 
+// The near-decode-cap hook is a browser test's alone: unmounted without DISPATCH_TEST_HOOKS, and
+// with them it leaves a document of four top-level blocks near the decode cap, so the page's read
+// says so with no write refused and the rebuild it refused before takes it, for a write of its
+// whole text (docs.Service.NearDecodeCapForTest).
+func TestNearDecodeCapHookIsGatedByTestHooksEnabled(t *testing.T) {
+	handler := newTestHandler(t)
+	unhooked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/00000000-0000-0000-0000-000000000001/_test/near-decode-cap", nil, "alice")
+	if unhooked.Code != http.StatusNotFound {
+		t.Fatalf("near-decode-cap hook without TestHooksEnabled: status=%d, want %d", unhooked.Code, http.StatusNotFound)
+	}
+	hooked, _, _ := newTestServer(t, testServerOptions{testHooks: true})
+	issue := createInteractionIssue(t, hooked, "TEST", "Near the cap", "# Spec\n\nOne.\n\nTwo.\n\nThree.\n")
+	rebuildPath := "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/rebuild"
+	if refused := dispatchRequest(t, hooked, http.MethodPost, rebuildPath, map[string]any{}, "alice"); refused.Code != http.StatusConflict {
+		t.Fatalf("rebuild before the hook: status=%d body=%s, want %d", refused.Code, refused.Body.String(), http.StatusConflict)
+	}
+	if near := dispatchRequest(t, hooked, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/_test/near-decode-cap", nil, "alice"); near.Code != http.StatusNoContent {
+		t.Fatalf("near-decode-cap hook: status=%d body=%.300s, want %d", near.Code, near.Body.String(), http.StatusNoContent)
+	}
+	read := treesRequest(t, hooked, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", true)
+	if got, ok := valueAt(t, read, "near_decode_cap"); !ok || string(got) != "true" {
+		t.Fatalf("the page's read after the hook: near_decode_cap=%s (present %t), want true", got, ok)
+	}
+	rebuilt := dispatchRequest(t, hooked, http.MethodPost, rebuildPath, map[string]any{}, "alice")
+	if rebuilt.Code != http.StatusOK {
+		t.Fatalf("rebuild after the hook: status=%d body=%s, want 200", rebuilt.Code, rebuilt.Body.String())
+	}
+	if why := decodeBody[docs.RebuildReport](t, rebuilt).ValidationError; !strings.Contains(why, "a write of its whole text") {
+		t.Fatalf("the rebuild after the hook names %q as why, want a write of the document's whole text", why)
+	}
+}
+
 func TestJSONMutationsRequireApplicationJSON(t *testing.T) {
 	handler := newTestHandler(t)
 	body := `{"key":"TEST","name":"Test project"}`

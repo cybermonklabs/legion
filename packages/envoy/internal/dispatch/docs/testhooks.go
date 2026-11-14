@@ -229,6 +229,100 @@ func (s *Service) UseUpScanTotalForTest(ctx context.Context, artifactID string) 
 	return nil
 }
 
+// nearCapClient is the client NearDecodeCapForTest types its deleted characters under. A
+// browser's client ID is a random 32-bit number, so it collides with one no more often than any
+// two browsers' do.
+const nearCapClient = 4_100_000_000
+
+// NearDecodeCapForTest closes artifactID's room if this server holds it and appends to its stored
+// history one update of deleted characters that leaves the document near the decode cap as the
+// rebuild route judges it (nearACap), for the reason the agent's uploads of dispatch://INFRA-179
+// met: its struct total within a write of its whole text of the cap, while a write's smallest
+// replacement still fits, so a keystroke still lands and a write that adds a paragraph is refused
+// naming the rebuild. The total is carried one past the cap less the document's top-level
+// blocks, the floor the page's read of a resident room counts (NearDecodeCap), which every other
+// count of the whole text clears, so the page offers the rebuild however its read finds the
+// document. A document of three top-level blocks or fewer is carried past a write's smallest
+// replacement instead, which refuses its keystrokes too; one with no text is refused.
+//
+// The characters are typed into the document's last written text as longEditedAtCapState types
+// its fixture's - one at its head, and every later one just after that one, each its own item,
+// none merging with its neighbour in the room or in a decode of the stored state - and then
+// deleted, so the document reads as it did. A real document gets there only through hundreds of
+// whole-text uploads (TestADocumentWholeUploadsCarriedPastTheCapIsNearAndItsRebuildTakesTheUpload),
+// which no browser test can make. It refuses to return without error unless the stored history
+// then decodes to that total and the route answers it near. It is mounted only through
+// Dispatch's test-hook route.
+func (s *Service) NearDecodeCapForTest(ctx context.Context, artifactID string) error {
+	if err := s.Evict(ctx, artifactID); err != nil {
+		return err
+	}
+	loaded, err := s.persistence.Load(ctx, artifactID)
+	if err != nil {
+		return err
+	}
+	doc := newCappedDocumentCopy(s.maxPendingItems, crdt.WithClientID(nearCapClient))
+	if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
+		return err
+	}
+	tree, err := treeOf(doc)
+	if err != nil {
+		return err
+	}
+	text := lastWrittenText(doc.GetXmlFragment(fragmentName))
+	if text == nil || len(tree.Children) == 0 {
+		return fmt.Errorf("document %s holds no text to type into", artifactID)
+	}
+	target := maxUpdateItems + 1 - min(uint64(len(tree.Children)), smallestReplacementAdds+1)
+	if structs := structCeiling(doc); structs >= target {
+		return fmt.Errorf("document %s already holds %d structs, at or past the %d this hook carries it to", artifactID, structs, target)
+	}
+	before := doc.StateVector()
+	doc.Transact(func(txn *crdt.Transaction) { text.Insert(txn, 0, "x", nil) })
+	typed := 1
+	for counted := structCeiling(doc); counted < target; counted = structCeiling(doc) {
+		more := int(target - counted)
+		doc.Transact(func(txn *crdt.Transaction) {
+			for range more {
+				text.Insert(txn, 1, "x", nil)
+			}
+		})
+		typed += more
+	}
+	doc.Transact(func(txn *crdt.Transaction) { text.Delete(txn, 0, typed) })
+	// The update row is written in a transaction of the shared pool, as every keyed write's is
+	// (api's TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks), and not through the room's
+	// own append path, which writes on a pooled connection of its own. AppendUpdateTx takes the
+	// document's advisory lock itself. The characters it stores are deleted, so the update
+	// changes no content.
+	tx, err := s.store.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := s.persistence.AppendUpdateTx(ctx, tx, artifactID, crdt.EncodeStateAsUpdateV1(doc, before), false); err != nil {
+		return fmt.Errorf("persist the deleted characters: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit the deleted characters: %w", err)
+	}
+	stored, err := s.persistence.Load(ctx, artifactID)
+	if err != nil {
+		return err
+	}
+	decoded, err := decodeStoredCopy(stored.Update, s.maxPendingItems)
+	if err != nil {
+		return err
+	}
+	if structs := structCeiling(decoded.doc); structs != target {
+		return fmt.Errorf("document %s's history decodes to %d structs with the deleted characters, want %d", artifactID, structs, target)
+	}
+	if why, near, err := nearACap(ctx, decoded.doc, copyWeight(int64(len(stored.Update)), 0), int64(len(stored.Update))); err != nil || !near {
+		return fmt.Errorf("document %s's history is not near a cap with the deleted characters (%q, %v)", artifactID, why, err)
+	}
+	return nil
+}
+
 // The tangle TangleBeyondOneApplyForTest appends: a chain of tangledChain one-character items,
 // each of a client of its own from tangledChainClient on, and the client of the probe item the
 // hook measures the chain with, which stands for the browser whose insert meets it. A browser's

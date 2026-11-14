@@ -319,6 +319,45 @@ func TestACatchUpSkipsTheRowsItsInstanceHolds(t *testing.T) {
 	}
 }
 
+// A catch-up applies the stored rows in the order they were stored, so a row the other process
+// stored ahead of the keystrokes whose clocks it names - a struct of deleted content over the
+// typist's clocks 5 to 1004, parked behind a right origin no document holds
+// (parked_row_first_test.go) - leaves this process's room holding every keystroke, as the
+// writer's room does, and its browser receiving them. Merged into one batch, the parked struct is
+// the longest at clock 5 and covers every keystroke stored after it, so the merge dropped them:
+// the room held 3 of the 1,000 characters, and a named version taken on this process stored those.
+func TestACatchUpOfAParkedRowStoredBeforeTheKeystrokesItCoversHoldsTheKeystrokes(t *testing.T) {
+	pair := newSeededProcessPair(t, "Seed.\n")
+	ctx := context.Background()
+	if err := pair.taskA.warmLiveDocument(ctx, pair.artifactID); err != nil {
+		t.Fatalf("load task A's room: %v", err)
+	}
+	roomA := pair.taskA.srv.GetDoc(pair.artifactID)
+	reader := connectPeer(t, pair.serverA.URL, pair.artifactID, "carol")
+	waitFor(t, roomWait(t), "the browser on task A to hold the document", func() bool {
+		return strings.Contains(peerMarkdown(reader), "Seed.")
+	})
+	storeParkedRowFirst(t, pair.taskB, pair.serverB.URL, pair.artifactID)
+	roomB := pair.taskB.srv.GetDoc(pair.artifactID)
+
+	outcome, err := pair.taskA.catchUpRoom(ctx, pair.database.Pool, pair.artifactID, roomA)
+	if err != nil || outcome != catchUpApplied {
+		t.Fatalf("catch task A's room up = %v, %v, want catchUpApplied", outcome, err)
+	}
+	requireTheKeystrokes(t, "task A's room after its catch-up", roomA, roomB)
+	if head, through := storedHead(t, pair.database, pair.artifactID), pair.taskA.cursorOf(roomA).heldThrough(); through != head {
+		t.Fatalf("task A's cursor holds %d after its catch-up, want the head %d", through, head)
+	}
+	deadline := time.Now().Add(roomWait(t))
+	for strings.Count(peerMarkdown(reader), "a") != parkedFirstKeystrokes {
+		if time.Now().After(deadline) {
+			t.Fatalf("the browser on task A holds %d of %d keystrokes after the catch-up's broadcasts",
+				strings.Count(peerMarkdown(reader), "a"), parkedFirstKeystrokes)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // Another process's update is credited on that process, whose append recorded its authors, and
 // introduced its ask blocks there: a catch-up that applies it credits none of this room's
 // connected peers with it (creditContentChange) and names none of them the author of its ask

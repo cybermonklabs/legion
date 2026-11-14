@@ -97,7 +97,11 @@ type documentRead struct {
 	token      string
 	blocks     []model.ArtifactBlock
 	paths      map[string]pmdoc.BlockPath
-	weight     int64
+	// nearDecodeCap is why the stored state stands near the decode cap, as the rebuild route's
+	// own test reads it (nearTheDecodeCap), or "": answered from the document the fold decoded,
+	// which no read has once the fold is done (NearDecodeCap).
+	nearDecodeCap string
+	weight        int64
 }
 
 // documentReads holds a documentRead for each document a cold read rendered, the most recently
@@ -189,7 +193,7 @@ const (
 // is counted once however many share it (tablePositionsWeight), and so is a table block's rows
 // (blockTableWeight).
 func (read *documentRead) measure() int64 {
-	weight := readEntryOverhead + int64(len(read.artifactID)+len(read.stamp.Row)+len(read.markdown)+len(read.token))
+	weight := readEntryOverhead + int64(len(read.artifactID)+len(read.stamp.Row)+len(read.markdown)+len(read.token)+len(read.nearDecodeCap))
 	weight += int64(cap(read.blocks)) * int64(unsafe.Sizeof(model.ArtifactBlock{}))
 	tables := make(map[*model.BlockTable]struct{})
 	for _, block := range read.blocks {
@@ -387,7 +391,10 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 // (buildDocumentRead). A tree the read refuses is the fold's treeErr, the read's error through
 // documentSchemaError as treeOf gives it; a tree the rendering refuses is the fold's tree without
 // a read, and renderErr is the rendering's refusal. A loaded state without a document is the
-// empty fold.
+// empty fold. A rendered fold also answers whether the state stands near the decode cap
+// (documentRead.nearDecodeCap), from the decoded document's struct total and a floor under its
+// whole-text count, a walk of the tree it rendered (wholeTextWriteFloor), which only the fold
+// holds; it writes nothing and encodes nothing (NearDecodeCap).
 func foldLoaded(artifactID string, loaded LoadedDocument) (fold coldFold, renderErr error) {
 	if loaded.Doc == nil {
 		return coldFold{}, nil
@@ -400,5 +407,7 @@ func foldLoaded(artifactID string, loaded LoadedDocument) (fold coldFold, render
 	if err != nil {
 		return coldFold{tree: valid.Node()}, err
 	}
+	read.nearDecodeCap, _ = nearTheDecodeCap(structCeiling(loaded.Doc), func() (uint64, bool) { return wholeTextWriteFloor(valid.Node()), true })
+	read.weight += int64(len(read.nearDecodeCap))
 	return coldFold{read: read, tree: valid.Node()}, nil
 }

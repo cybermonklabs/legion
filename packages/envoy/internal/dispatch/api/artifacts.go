@@ -795,6 +795,13 @@ type artifactText struct {
 	Token        string                 `json:"token"`
 	Version      *int                   `json:"version"`
 	Blocks       *[]model.ArtifactBlock `json:"blocks,omitempty"`
+	// NearDecodeCap is whether the rebuild route takes this document because it stands near the
+	// decode cap (docs.Service.NearDecodeCap, the route's own test), and NearDecodeCapReason why,
+	// present only where it is. Both are answered only to a caller that sent `Dispatch-Trees: 1`,
+	// the page, which offers the rebuild on it to a person who has met no refusal of their own;
+	// the command line and the agents, whom the route's person scope refuses, pay nothing for it.
+	NearDecodeCap       *bool  `json:"near_decode_cap,omitempty"`
+	NearDecodeCapReason string `json:"near_decode_cap_reason,omitempty"`
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
@@ -825,14 +832,21 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answer := artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks}
-	// The tree is built only for a caller that asked for one: the command line and the agent
-	// clients read this route for its markdown, and a tree they discard would cost them the
-	// read and evict from the cache what a browser is reading.
+	// The tree, and whether the rebuild takes the document for the decode cap, are answered only
+	// to a caller that asked for trees, the page: the command line and the agent clients read this
+	// route for its markdown, and a tree they discard would cost them the read and evict from the
+	// cache what a browser is reading.
 	//
 	// This markdown is a document version's own text, which the ledger stored the tree of behind
 	// the commit that wrote it (docs.Ledger.storeVersionTrees), so a browser opening a document
 	// this process has not served since it started copies those bytes.
 	if wantsDisplayTrees(r) {
+		why, near, err := s.deps.Docs.NearDecodeCap(r.Context(), artifact.ID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		answer.NearDecodeCap, answer.NearDecodeCapReason = &near, why
 		reader := s.readDisplayTrees(r.Context(), true)
 		reader.text(&answer.MarkdownTree, markdown)
 		reader.resolve()
@@ -2387,10 +2401,10 @@ func (s *server) refuseNextDocumentUpdate(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// useUpScanTotal and tangleBeyondOneApply are the two document test hooks' handlers, each the
-// shared body below with one of docs.API's hooks. Each route names a method of its own rather
-// than a handler this file builds, so the static guards that read the routes table resolve the
-// handler behind every row (keyed_write_guard_test.go, copy_lock_test.go).
+// useUpScanTotal, tangleBeyondOneApply and nearDecodeCap are the three document test hooks'
+// handlers, each the shared body below with one of docs.API's hooks. Each route names a method of
+// its own rather than a handler this file builds, so the static guards that read the routes table
+// resolve the handler behind every row (keyed_write_guard_test.go, copy_lock_test.go).
 func (s *server) useUpScanTotal(w http.ResponseWriter, r *http.Request) {
 	s.runDocumentTestHook(w, r, docs.API.UseUpScanTotalForTest)
 }
@@ -2399,20 +2413,27 @@ func (s *server) tangleBeyondOneApply(w http.ResponseWriter, r *http.Request) {
 	s.runDocumentTestHook(w, r, docs.API.TangleBeyondOneApplyForTest)
 }
 
+func (s *server) nearDecodeCap(w http.ResponseWriter, r *http.Request) {
+	s.runDocumentTestHook(w, r, docs.API.NearDecodeCapForTest)
+}
+
 // runDocumentTestHook answers a POST that runs run, one of docs.API's document test hooks, on the
 // request's artifact: the caller must be authenticated, the artifact must be a document
 // (NOT_DOCUMENT), and a hook that returns an error answers it as every handler answers one. run is
 // a method expression of docs.API, so the caller names the hook without reading Deps.Docs, which
 // routes() is called with unset (TestRoutesTablePinsEveryRegisteredRoute).
-// Test-only: the rows that mount its two callers are appended by routes() only when
+// Test-only: the rows that mount its three callers are appended by routes() only when
 // Deps.TestHooksEnabled is set. They are the used-up row (docs.Service.UseUpScanTotalForTest,
 // which gives the document a stored history whose re-scan uses up a room's scan total, closing
 // its room first, so a browser test can drive the editor's handling of DOC_NEEDS_REBUILD and the
-// rebuild it offers without typing the 1,000,000 scans a real room takes) and the tangled row
+// rebuild it offers without typing the 1,000,000 scans a real room takes), the tangled row
 // (docs.Service.TangleBeyondOneApplyForTest, which gives it a stored history ending in a tangle
 // no one apply of a browser's may scan through, so a browser test can drive 4413 DOC_TOO_TANGLED
 // without making the tens of thousands of items at one place a browser would have to meet for an
-// honest apply to pass the scans one apply is allowed).
+// honest apply to pass the scans one apply is allowed), and the near-decode-cap row
+// (docs.Service.NearDecodeCapForTest, which gives it a stored history of deleted characters near
+// the decode cap, so a browser test can drive the page's offer of the rebuild to a person who met
+// no refusal, without the hundreds of whole-text uploads a real document takes to get there).
 func (s *server) runDocumentTestHook(w http.ResponseWriter, r *http.Request, run func(service docs.API, ctx context.Context, artifactID string) error) {
 	if !s.requireAuthenticated(w, r) {
 		return

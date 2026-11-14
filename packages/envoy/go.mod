@@ -239,4 +239,4 @@ require (
 // its tombstone structs by Structs. The release owner's own probes measured a 2^40 tombstone at
 // about 48 objects and a 2^30 park growth at about 32, both independent of the span, and a flood
 // of 10,000 ranges still refused by Decoded, so the loosening opens no memory attack.
-replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.1
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.4

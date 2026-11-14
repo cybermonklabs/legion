@@ -50,11 +50,14 @@ body: |-
     integrates no struct, cuts no item the room holds and adds no byte of content - a delete of
     whole items, or a frame of structs the room already holds - so a full document can still be cut
     and every other update is refused `4503`. What is transient rather than resident is held by one
-    pool of bytes, the pod's load concurrency: a whole-document decode, a live write's fork, one
-    apply of a browser's update over 2 MiB and the answer to one browser's first sync each take out
-    of it what their own copy costs, at the same two prices, and a taker heavier than the whole pool
-    waits for all of it and runs alone rather than being refused, so a stored document always loads
-    and no honest handoff is turned away.
+    pool of bytes, the pod's load concurrency: a whole-document decode, a live write's fork and one
+    apply of a browser's update over 2 MiB each take out of it what their own copy costs, at the
+    same two prices, and the answer to one browser's first sync takes what the path ygo answers
+    that room by measured - for a room that parks nothing, 8 bytes a byte of its state or 340 bytes
+    a struct it holds, whichever is more, and for a room holding an update it cannot place yet,
+    whose answer decodes the whole document twice, 149 per cent of a whole copy. A taker heavier
+    than the whole pool waits for all of it and runs alone rather than being refused, so a stored
+    document always loads and no honest handoff is turned away.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone - 512 of them, whatever
@@ -81,13 +84,21 @@ body: |-
     against a signed-in person's write.
 
     A document no write can change is recovered by `POST /api/v1/artifacts/{id}/rebuild`, which now
-    also accepts a history that loads but stands at or near the decode cap or the room's scan total,
-    rebuilds it from its own text with the edits no version holds yet, closes this server's room for it
-    first and retires the replaced history's clients, so no browser hands the old document back; the
-    dashboard offers that rebuild to the person whose edit was refused `DOC_NEEDS_REBUILD`. The three
-    server writes that add no caller text - the block-id stamp, the sweep of unrecorded marks and
-    settlement's repair of a returning answer - each ask whether the document their write would leave
-    still decodes, and leave one they would carry past the cap as it was.
+    also accepts a history that loads but stands so near the decode cap or the room's scan total that
+    a write it must still take is refused - near the decode cap counting a write of its whole text,
+    so a document an agent's uploads carried to within one upload of the cap is taken while a small
+    write still lands - rebuilds it from its own text with the edits no version holds yet, closes this
+    server's room for it first and retires the replaced history's clients, so no browser hands the old
+    document back. A room this server holds decides on its own whether the document is near, so the
+    rebuild never closes it and then refuses. Every rebuild keeps the document's block ids, its open
+    comments', suggestions' and asks' anchors and its margin records, as far as a history that loads
+    or, for one that does not, the rows still record them. The dashboard offers that rebuild to the
+    person whose edit was refused `DOC_NEEDS_REBUILD`, wherever the page's read of the document says
+    it is near the decode cap (`near_decode_cap`, answered only where the route takes it), and after a
+    write the decode cap refused on such a document, whose refusal now names the rebuild and its
+    route. The three server writes that add no caller text - the block-id stamp, the sweep of
+    unrecorded marks and settlement's repair of a returning answer - each ask whether the document
+    their write would leave still decodes, and leave one they would carry past the cap as it was.
 
     The room's scan ceiling and scan total, in place of the fixed per-update bound the server had,
     and the per-apply allowance every bound above is counted against, are built on the ygo fork

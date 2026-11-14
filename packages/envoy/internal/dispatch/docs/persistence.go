@@ -65,10 +65,21 @@ type PgVersioned struct {
 	// (compactRoom). An entry goes when the room compacts.
 	unfoldableMu sync.Mutex
 	unfoldable   map[string]rowVersion
+	// disagreeingMu guards disagreeing: for each room whose stored version a compaction found
+	// disagreeing with the rows at or below its fold point (disagreeingVersion), that fold point,
+	// so the next compaction of the same rows skips them rather than folding and checking them
+	// again, and the document is logged once (recordDisagreeing). An entry goes when the room
+	// compacts.
+	disagreeingMu sync.Mutex
+	disagreeing   map[string]rowVersion
 	// duringCompactionFold runs once a compaction has read and folded a room's rows, before it
 	// takes the room's lock to write the fold back. Nil outside tests; tests use it to hold a
 	// compaction inside its fold while another writer changes the document.
 	duringCompactionFold func(room string)
+	// duringVersionCheck runs as a compaction starts to check the stored versions inside a fold
+	// whose document parked something (disagreeingVersion). Nil outside tests; tests count the
+	// checks.
+	duringVersionCheck func(room string)
 	// beforeFold runs as a load or a compaction starts to fold a room's rows (foldRead): once its
 	// read transaction has committed when it read them into memory, inside that transaction when
 	// it streams them. Nil outside tests; tests use it to see which connection a fold holds.

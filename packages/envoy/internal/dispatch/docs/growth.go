@@ -397,12 +397,55 @@ func elements(size pmdoc.DocumentSize) string {
 //
 // A state past the cap is refused whether or not the write grew the document: storing it would
 // leave every read unable to load it.
+//
+// Where the document is one the rebuild takes for this cap - nearTheDecodeCap, the rebuild route's
+// own test, of the document as it stood before the write (writeNearTheDecodeCap) - the refusal
+// names the rebuild (rebuildRemedy) and the route with the document's id, since the write it
+// refuses is one no shortening makes room for: the history, not the change, fills the cap. A
+// person, not the agent that usually meets this refusal, can run it: the route needs the person
+// scope. Every other refusal says to shorten the change, as before, so no one is sent to a rebuild
+// the route refuses.
 func (s *Service) refuseUndecodable(ctx context.Context, write *liveWrite, fork *crdt.Doc, updates [][]byte) error {
-	if s.leavesRoomPastDecodeCap(ctx, write, fork, updates) {
-		return fmt.Errorf("%w: this change would leave the document's live state past the %d items ygo decodes in one update; shorten the change, or split the document",
-			ErrDocumentTooLarge, maxUpdateItems)
+	if !s.leavesRoomPastDecodeCap(ctx, write, fork, updates) {
+		return nil
 	}
-	return nil
+	if _, near := writeNearTheDecodeCap(write); near {
+		return fmt.Errorf("%w: this change would leave the document's live state past the %d items ygo decodes in one update, and its history rather than its text holds it there: %s (POST /api/v1/artifacts/%s/rebuild, which the document's page offers), which keeps its text and leaves its history small, and the change can then be made again",
+			ErrDocumentTooLarge, maxUpdateItems, rebuildRemedy, write.artifactID)
+	}
+	return fmt.Errorf("%w: this change would leave the document's live state past the %d items ygo decodes in one update; shorten the change, or split the document",
+		ErrDocumentTooLarge, maxUpdateItems)
+}
+
+// rebuildRemedy is the words the decode cap's refusal names the rebuild in, and only where the
+// rebuild takes the document (refuseUndecodable). The dashboard offers the rebuild on a refused
+// write whose message holds them, so they are held to one spelling here.
+const rebuildRemedy = "a person can rebuild the document"
+
+// writeNearTheDecodeCap is nearTheDecodeCap of the document write was refused on, before the
+// write: the room its fork was read from, which the refusal counted and which holds none of the
+// transaction's writes until it publishes, with that room's tree; or, where no room is behind it,
+// the fork as it was built (liveWrite.coldNear). The text a write leaves is not the text the
+// rebuild route judges - a write appending thousands of headings would make a far document's
+// measure a near one's - so neither reads the fork as the write left it.
+func writeNearTheDecodeCap(write *liveWrite) (string, bool) {
+	if live := write.forkedFrom.Value(); live != nil {
+		return nearTheDecodeCap(structCeiling(live), measuredWholeText(func() (*pmdoc.Node, error) { return treeOf(live) }))
+	}
+	return write.coldNear, write.coldNear != ""
+}
+
+// coldForkNear is why fork, a write's cold fork as it was just built, a decode of the stored
+// history as the rebuild route's own is (rebuildSource), stands near the decode cap, or "": its
+// struct total, structs, and its tree, which is read, and written into a fresh document, only
+// for a fork within wholeTextWriteCeiling of the cap - one whose decode already cost the write a
+// document of more than half a million structs.
+func coldForkNear(structs uint64, fork *crdt.Doc) string {
+	why, _ := nearTheDecodeCap(structs, measuredWholeText(func() (*pmdoc.Node, error) {
+		valid, err := treeOfUnshared(fork)
+		return valid.Node(), err
+	}))
+	return why
 }
 
 // leavesRoomPastDecodeCap is refuseUndecodable's question: whether updates, with write's earlier

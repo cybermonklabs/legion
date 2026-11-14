@@ -70,6 +70,7 @@ Each item below names a variable, then its purpose.
   `POST /api/v1/artifacts/{id}/_test/refuse-next-update` makes the document's room refuse the next update a read-write browser sends it;
   `POST /api/v1/artifacts/{id}/_test/used-up` leaves the document a history whose re-scan uses up a room's scan total;
   `POST /api/v1/artifacts/{id}/_test/tangled` leaves it one ending in a tangle no one apply of a browser's may scan through;
+  `POST /api/v1/artifacts/{id}/_test/near-decode-cap` leaves it a history of deleted characters near the decode cap, which the rebuild takes and the dashboard's `/text` read reports (`near_decode_cap`);
   and `POST /api/v1/writes/_test/slow` `{method, path, delay_ms}` makes every keyed run of that method and exact path wait `delay_ms` once its key is claimed.
   The first four act on every process serving the database, whichever one the call reached (Running more than one process, below), and the flag costs each process one more Postgres connection outside the shared pool, the one those hooks listen on.
   The routes table in `AGENTS.md` has each one's rules.
@@ -3029,6 +3030,13 @@ Each item below names a path with its method and identity, then its purpose.
   Close the document's room and append a stored history ending in a tangle - tens of thousands of items chained onto the end of its last text - that no one apply of a browser's may scan through, so an edit a browser made at that place before the tangle arrived is refused `4413 DOC_TOO_TANGLED` rather than `DOC_NEEDS_REBUILD`:
   the tangle costs the room's load about one scan an item, which leaves far more of its 1,000,000-item scan total than one apply may scan.
   The hook answers an error rather than leave a tangle an insert at its head scans within the items one unweighed apply may (`scanCeiling`), or one that leaves the room near its scan total.
+  Not mounted otherwise.
+
+- `/api/v1/artifacts/{id}/_test/near-decode-cap` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  Close the document's room and append deleted characters to its last written text - each its own item, none merging in the room or a decode - that carry its stored history to 1,048,577 structs less its top-level blocks, at most four, so a browser test can drive the page's offer of the rebuild to a person who met no refusal without the hundreds of whole-text uploads a real document takes.
+  A document of four top-level blocks or more is then near for a write of its whole text while a keystroke still fits; one of fewer is carried past a write's smallest replacement, which refuses its keystrokes too.
+  The document reads as it did; the hook answers an error unless the stored history then decodes to that total and the rebuild route's own check answers it near.
   Not mounted otherwise.
 
 - `/api/v1/artifacts/{id}/_test/room-counters` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)

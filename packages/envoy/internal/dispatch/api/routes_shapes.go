@@ -994,6 +994,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/artifacts/{id}/_test/refuse-next-update":       {Status: http.StatusNoContent},
 	"POST /api/v1/artifacts/{id}/_test/used-up":                  {Status: http.StatusNoContent},
 	"POST /api/v1/artifacts/{id}/_test/tangled":                  {Status: http.StatusNoContent},
+	"POST /api/v1/artifacts/{id}/_test/near-decode-cap":          {Status: http.StatusNoContent},
 	"GET /api/v1/artifacts/_test/rooms":                          {Status: http.StatusOK, Response: residentRooms{}},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":             {Status: http.StatusOK, Response: docs.RoomCounters{}},
 	"POST /api/v1/artifacts/{id}/_test/hold-persistence":         {Status: http.StatusNoContent, Request: holdPersistenceInput{}},

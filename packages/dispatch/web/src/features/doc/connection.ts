@@ -86,9 +86,9 @@ export function connectionLabel(
  *
  * The rebuilt document's notice promises no other edit is kept, because none typed against the
  * replaced history is: the restore drops each of those rows and reports when they were saved
- * (`pending-sync.ts`, `addsParking`). `RefusedEditNotice` offers a rebuild only for
- * `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`, the one a rebuild helps; a rebuild of a document just
- * rebuilt is answered 409.
+ * (`pending-sync.ts`, `addsParking`). Of these refusals the page offers a rebuild only for
+ * `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`, the one a rebuild helps (`ProofDocument`); a rebuild of a
+ * document just rebuilt is answered 409.
  */
 export function refusedEditNotice(reason: string): string {
   switch (reason) {
