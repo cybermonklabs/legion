@@ -44,8 +44,11 @@ const LoadRecoveredMessage = "agent secret policy load succeeded again"
 // been failing: name (the secret's whole name in the store), version (the version of the value it
 // read, secrets.Listing.Version) and error (the store's error, which names the call and the class
 // of the failure, such as AccessDeniedException, PermissionDenied or a deadline, and never a byte
-// of the value). A failed read marks nothing and keeps the state the secret had; each load after
-// it reads the value again and writes nothing more until a read succeeds
+// of the value). A read whose value is not text (secrets.ErrValueNotText) is no failed read but
+// the decoder's case, ReasonValueMalformed. A failed read decodes nothing and keeps a
+// value-malformed refusal of the version it read, but a failed read of a version listed since
+// that refusal ends it, the secret servable again until a read decodes the new version. Each load
+// after a failed read reads the value again and writes nothing more until a read succeeds
 // (ValueReadRecoveredMessage), so a failure of any length is two lines.
 const ValueReadFailedMessage = "agent secret value read failed; its state kept"
 
@@ -130,12 +133,13 @@ const (
 	// leaves it unable to say what a release of the secret would hand over.
 	ReasonShapeMalformed = "shape-malformed"
 	// ReasonValueMalformed: a kind secret's stored value is one secrets.ParseValue refuses under
-	// its kind and shape, so no release could mint from it. It is no tag's: a load sets it from the
-	// value Current reads and decodes once for each version, kind and shape it lists, and a mint
-	// sets it from its own decode (Current.RefuseValue). It is keyed on the secret and the version
-	// refused: later loads keep it while they list that version, a new version is decoded afresh
-	// and keeps it only when that value is refused too, and a value that decodes or a secret that
-	// leaves the listing ends it.
+	// its kind and shape, or one that is not text (secrets.ErrValueNotText), so no release could
+	// mint from it. It is no tag's: a load sets it from the value Current reads and decodes once
+	// for each version, kind and shape it lists, and a mint sets it from its own decode
+	// (Current.RefuseValue). It is keyed on the secret and the version refused: later loads keep
+	// it while they list that version, a new version is decoded afresh and keeps it only when
+	// that value is refused too, and a value that decodes or a secret that leaves the listing
+	// ends it.
 	ReasonValueMalformed = "value-malformed"
 )
 

@@ -37,7 +37,7 @@
 #     tagged an administrator's that the rules give the judge 900 seconds of all the same, which
 #     the judge must refuse because the tag says a person approves every release of it.
 #   - TWO broker processes, each with the whole BROKER_AIRLOCK_* block, both on one database and
-#     each on two ports of its own (--one-broker starts one).
+#     each on three ports of its own, its API, proxy and metrics ports (--one-broker starts one).
 #   - One TCP front over both brokers' API ports and one over both proxy ports
 #     (cmd/dev-airlock-stands front), so a client reaches either process. Each new connection
 #     goes to the next broker in turn; round-robin per connection is all the checks ask for,

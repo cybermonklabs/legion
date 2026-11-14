@@ -86,8 +86,11 @@ func rateLimited(response *http.Response, body []byte) bool {
 // serverWait is the wait an answer names before the next request, read against now, and whether
 // it names one: Retry-After's seconds or HTTP date, else the time until X-RateLimit-Reset's epoch
 // seconds when X-RateLimit-Remaining is 0, else, for a rate limit, rateLimitedWait, the one minute
-// GitHub asks for when it gives neither. A wait already past is no wait at all rather than a
-// negative one. It is internal/dispatch/githubapp's rateLimitWait on a clock the caller sets.
+// GitHub asks for when it gives neither, and for any other answer no wait at all. A wait already
+// past is no wait rather than a negative one. It reads the two headers as
+// internal/dispatch/githubapp's rateLimitWait does, on a clock the caller sets, and adds
+// Retry-After's HTTP date, a floor of zero on its seconds, and no wait for an answer that is no
+// rate limit.
 func serverWait(header http.Header, rateLimited bool, now time.Time) (time.Duration, bool) {
 	retryAfter := header.Get("Retry-After")
 	if seconds, err := strconv.Atoi(retryAfter); err == nil {

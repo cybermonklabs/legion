@@ -299,7 +299,7 @@ func (l *Local) versionsToStages(s LocalSecret) map[string][]string {
 	if s.Value == "" {
 		return nil
 	}
-	return map[string][]string{l.versionID(s.Name): {"AWSCURRENT"}}
+	return map[string][]string{l.versionID(s.Name): {currentStage}}
 }
 
 func matchesNameFilters(name string, filters []types.Filter) bool {
@@ -395,7 +395,7 @@ func (l *Local) PutSecretValue(_ context.Context, in *secretsmanager.PutSecretVa
 	s.Value = *in.SecretString
 	l.hold(s)
 	return &secretsmanager.PutSecretValueOutput{
-		Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), VersionId: aws.String(l.versionID(s.Name)), VersionStages: []string{"AWSCURRENT"},
+		Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), VersionId: aws.String(l.versionID(s.Name)), VersionStages: []string{currentStage},
 	}, nil
 }
 

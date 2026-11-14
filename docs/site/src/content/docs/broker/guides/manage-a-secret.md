@@ -179,10 +179,10 @@ machine's Application Default Credentials are its own identity, and so does ever
   reads it, before it writes, and `set` does the same under the kind tag the secret holds. A value
   that minter could not mint from is refused (exit 2) with the minter's own reason, such as
   `GitHub App secret needs an app_id and private_key`, and nothing is written. The broker reads
-  every kind secret's value with the same decoder, so it refuses a secret whose value was stored
-  some other way, with `gcloud` or the AWS console, as `value-malformed`
-  ([the value read](/legion/broker/operate/#the-value-read)). `set` on a secret whose kind tag
-  names no kind the broker mints is refused before it asks for the value.
+  every kind secret's value with the same decoder, so when a value stored some other way, such as
+  with `gcloud` or the AWS console, is one the decoder refuses, the broker refuses the secret as
+  `value-malformed` ([the value read](/legion/broker/operate/#the-value-read)). `set` on a secret
+  whose kind tag names no kind the broker mints is refused before it asks for the value.
 
 **Keeping a value's final line ending.** Tag the secret `--shape document`, and the broker removes
 nothing from its value. The CLI still removes one final line feed wherever the rule removes
@@ -406,7 +406,11 @@ value, that retag is refused while the value is not yet of that kind, and so is 
 with no value: create the kind secret under a new name instead, as below. Where your sign-in may
 not read the value, the retag writes the tags, and the broker refuses the secret as
 `value-malformed` until `set` stores a value of that kind. The retag then exits 1 on
-`reason=value-malformed`, which says the broker reads the new tags. A reread can read the tags
+`reason=value-malformed`, which says the broker reads the new tags. A secret with no value is
+refused `no-current-value` whichever kind tag the broker reads, so there the retag exits 1 on
+`reason=no-current-value`, which says nothing of the tags: `set` is the next step, since it
+checks the value under the kind the retag wrote, and its reread prints
+`broker: serving NAME (kind <kind>)` once the broker reads the new tags. A reread can read the tags
 stale (Secret Manager's metadata can lag a write by hours), and while the broker still serves the
 secret as stored, a grant of it releases its stored value raw. So a retag whose reread answers
 another kind than the one it wrote exits 1: the broker still sees the old tags. Run the retag
@@ -447,7 +451,10 @@ Where you must convert, before you store an App key or a Google login:
   (`DescribeSecret`, `GetSecret`) rather than through a listing, and the retag exits 1 unless the
   kind it reads back is the one it wrote. On Secrets Manager that read answers a write at once;
   on Secret Manager a single read is eventually consistent like the listing, which is why a retag
-  there can need running more than once.
+  there can need running more than once. A secret with no value answers `reason=no-current-value`
+  whichever tags a process reads, so no retag of it says this. For such a secret, `secret set` is
+  the next step, and the line its own reread prints, `broker: serving NAME (kind <kind>)`, says
+  the answering process has the new tags.
 - **It says nothing about the peers, and no log line will.** A peer's reread reads the one name
   too, so on Secret Manager it can succeed while still reading the old tags: the broker warns
   only when that read returns an error, and a successful read of stale tags is not one. The

@@ -359,17 +359,52 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 	}
 }
 
+// TestTheAirlocksRefusalRecordCutsWhatTheCallerWrote: the method, the host and the path a refusal
+// record names are the caller's own text, and the record keeps at most 256 bytes of each, as the
+// API port's record keeps of its method (answer.Clip). A request that is no proxy request is
+// refused before any credential is read, so anyone who reaches the port writes this record.
+func TestTheAirlocksRefusalRecordCutsWhatTheCallerWrote(t *testing.T) {
+	r := newRig(t, Options{})
+	long := func(c string) string { return strings.Repeat(c, 300) }
+	request, err := http.NewRequest(long("M"), "http://"+r.addr+"/"+long("p"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = long("h")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("a request to the proxy port: %v", err)
+	}
+	got := answeredBy(response, bodyOf(t, response))
+	if got.status != http.StatusBadRequest {
+		t.Fatalf("the answer is %d %q, want 400", got.status, got.body)
+	}
+	records := linesNaming(r.logs.refusals(), got.id())
+	if len(records) != 1 {
+		t.Fatalf("the refusal wrote %d records naming its answer id, want 1: %v", len(records), r.logs.refusals())
+	}
+	for field, want := range map[string]string{"method": long("M")[:256], "host": long("h")[:256], "path": ("/" + long("p"))[:256]} {
+		if kept := fmt.Sprint(records[0].fields[field]); kept != want {
+			t.Errorf("the record's %s is %d bytes, want the first 256 of the caller's: %q", field, len(kept), kept)
+		}
+	}
+}
+
 // TestEveryAnswerOfTheAirlockThatIsNoRefusalIsCountedAndWritesNoRecord: a call the airlock
 // carried writes its one call line, a failure keeps the line its writer writes, and neither
 // writes a refusal record; each carries its answer id and is counted, a carried call served
-// whatever the service answered, and a failure failed under its code. A call to the bound host
-// is two answers of the port, each counted: the 200 of the CONNECT its client opened, and the
-// call's own on the decrypted connection.
+// whatever the service answered, and a failure failed under its code. A token endpoint's 429 the
+// proxy forwards is no refusal record either, as a 429 of the API port is none: it keeps its
+// call line and is counted rate_limited. A call to the bound host is two answers of the port,
+// each counted: the 200 of the CONNECT its client opened, and the call's own on the decrypted
+// connection.
 func TestEveryAnswerOfTheAirlockThatIsNoRefusalIsCountedAndWritesNoRecord(t *testing.T) {
 	registry := metrics.New()
 	answers := answer.NewAnswers(registry)
 	for _, row := range []struct {
-		name  string
+		name string
+		// rig is the row's rig; nil is the plain one.
+		rig   func(t *testing.T) *rig
 		drive func(t *testing.T, r *rig) proxyAnswer
 		// status is the answer's; calls is how many call lines name its answer id; counted is
 		// how many answers of the row its labels count.
@@ -421,9 +456,26 @@ func TestEveryAnswerOfTheAirlockThatIsNoRefusalIsCountedAndWritesNoRecord(t *tes
 			},
 			status: http.StatusServiceUnavailable, calls: 1, counted: 1, labels: `outcome="failed",code="` + codeGrantUnreadable + `",caller_class="airlock"`,
 		},
+		{
+			name: "a token endpoint's 429, forwarded",
+			rig: func(t *testing.T) *rig {
+				r, stand := newAzureRig(t, Options{Answers: answers})
+				stand.Refuse(http.StatusTooManyRequests)
+				return r
+			},
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				return answeredBy(tokenRequest(t, r, r.client(azureFederatedPlaceholder), azureFederatedPlaceholder))
+			},
+			status: http.StatusTooManyRequests, calls: 1, counted: 1, labels: `outcome="rate_limited",code="` + codeExchangeRefused + `",caller_class="airlock"`,
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			r := newRig(t, Options{Answers: answers})
+			var r *rig
+			if row.rig != nil {
+				r = row.rig(t)
+			} else {
+				r = newRig(t, Options{Answers: answers})
+			}
 			before := answersCounted(t, registry, row.labels)
 			got := row.drive(t, r)
 			id := got.id()
@@ -432,6 +484,9 @@ func TestEveryAnswerOfTheAirlockThatIsNoRefusalIsCountedAndWritesNoRecord(t *tes
 			}
 			if got.status != row.status {
 				t.Fatalf("the answer is %d %q, want %d", got.status, got.body, row.status)
+			}
+			if strings.Contains(got.body, "(answer "+id+")") {
+				t.Errorf("an answer that refused nothing ends its body with its answer id, as a refusal's does: %q", got.body)
 			}
 			answersCountedReach(t, registry, row.labels, before+row.counted)
 			if records := r.logs.refusals(); len(records) != 0 {

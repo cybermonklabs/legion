@@ -198,6 +198,17 @@ func TrimForShape(value, shape string) (string, bool) {
 	}
 }
 
+// DecodeValue refuses value, which a secret of kind holds under shape, its shape tag, when that
+// kind's minter would refuse it: it decodes the value a release hands the minter (TrimForShape)
+// with secrets.ParseValue, the decoder every minter calls, so the error names what is wrong in the
+// minter's own words and never quotes the value. It is the one statement of trim-then-decode,
+// which Current's value reads and `agent-secrets`' writes both call.
+func DecodeValue(kind, shape, value string) error {
+	spend, _ := TrimForShape(value, shape)
+	_, err := secrets.ParseValue(kind, spend)
+	return err
+}
+
 // ErrMaxGrantMalformed is a max-grant tag that is not a Go duration of at least one second.
 var ErrMaxGrantMalformed = errors.New("max-grant is a duration of at least 1s")
 

@@ -122,6 +122,21 @@ func TestAWSReadReturnsSecretStringOnSuccess(t *testing.T) {
 	}
 }
 
+// TestAWSReadOfAValueThatIsNotTextIsErrValueNotText: a secret whose current value is SecretBinary
+// alone, or an empty SecretString, holds nothing the broker can hand a command, and Read answers
+// it as ErrValueNotText, never as a secret the store does not hold.
+func TestAWSReadOfAValueThatIsNotTextIsErrValueNotText(t *testing.T) {
+	for name, out := range map[string]*secretsmanager.GetSecretValueOutput{
+		"binary": {SecretBinary: []byte{0xff, 0x00}},
+		"empty":  {SecretString: aws.String("")},
+	} {
+		_, err := (AWS{Client: stubSMAPI{out: out}}).Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:"+name)
+		if !errors.Is(err, ErrValueNotText) || errors.Is(err, ErrNotFound) || strings.Contains(err.Error(), "\xff") {
+			t.Fatalf("Read(a %s value) = %v; want ErrValueNotText, never quoting the bytes", name, err)
+		}
+	}
+}
+
 func TestAWSReadWrapsGenericErrorInsteadOfMappingToErrNotFound(t *testing.T) {
 	boom := errors.New("boom")
 	r := AWS{Client: stubSMAPI{err: boom}}

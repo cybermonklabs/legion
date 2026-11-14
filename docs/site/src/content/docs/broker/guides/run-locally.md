@@ -389,7 +389,8 @@ refresh token ends that login and every token of its family.
 
 The broker writes its log to the first shell and to `$DEV_BROKER_DIR/broker.log`, one JSON object
 per line, so `jq` finds a line by any of its fields. Each refusal writes one line,
-`broker: answer refused`, naming the answer id, which the answer carries in its
+`broker: answer refused`, but a `429` and the two answers of a device login's poll, which the
+broker counts and does not log. The line names the answer id, which the answer carries in its
 `X-Broker-Answer-Id` header and, in a JSON body, as `answer_id`. A reread of a name no secret can
 carry is one such refusal, and its route takes no credential:
 
@@ -441,8 +442,11 @@ broker_unservable_secrets{secret="example/agent-secrets/demo-broken-app",reason=
 
 The release made two calls to the stand. Its listing of the App's installations took one attempt,
 and its token request two: the first answered `503`, `outcome="upstream"`, and the broker's second
-attempt minted. `broker_unservable_secrets` holds the one secret the broker refuses now, and drops
-it at the first scrape after a value that decodes is stored.
+attempt minted. `broker_unservable_secrets` holds the one secret the broker refuses now. It drops
+that secret at the first scrape after a reread or a load reads a new version of its value, unless
+the decoder refuses that value too. After an edit of the fake secrets file, that is the next
+reread of the name (`curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/<NAME>/reread"`) or the
+five-minute reload.
 
 ## Reach a secret behind the airlock
 

@@ -455,7 +455,7 @@ func main() {
 		VMServicesByAccount: cfg.VMServicesByAccount,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, registry)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry))
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
@@ -673,10 +673,10 @@ func main() {
 	// API's, since a scraper is a caller like any other to the server.
 	metricsServer := &http.Server{
 		Handler:           metricsHandler(registry),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      writeTimeout,
-		IdleTimeout:       2 * time.Minute,
+		ReadHeaderTimeout: srv.ReadHeaderTimeout,
+		ReadTimeout:       srv.ReadTimeout,
+		WriteTimeout:      srv.WriteTimeout,
+		IdleTimeout:       srv.IdleTimeout,
 	}
 	// From here a second signal belongs to the drain below rather than to the watchdog's exit:
 	// the socket is bound and srv.Serve is about to take it, so there are requests to finish and
@@ -1015,9 +1015,10 @@ func airlockListen(cfg config.Config) func() (net.Listener, error) {
 }
 
 // metricsHandler is what the metrics port serves: registry's scrape at GET /metrics in the
-// Prometheus text format, and nothing else - every other path is 404 and any other method there
-// is 405 - so a scraper reaches no route of the API through it, and no caller of the API reaches
-// the scrape (the API's mux registers no /metrics).
+// Prometheus text format (the pattern takes HEAD too, as every GET pattern of a ServeMux does),
+// and nothing else - every other path is 404 and every method there but GET and HEAD is 405 - so
+// a scraper reaches no route of the API through it, and no caller of the API reaches the scrape
+// (the API's mux registers no /metrics).
 func metricsHandler(registry *metrics.Registry) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", registry.Handler())
@@ -1048,13 +1049,12 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // secret, the one account the deployment binds it to and so the only one its release mints a
 // token for. A grant lasts the lifetime its request signed, or until its session ends. rules and
 // caCertificate are the airlock's, read at boot: a name the rules name is released as
-// placeholders, and every such release carries the proxy's URL and this certificate. registry is
-// the process's own, which the minters' broker_mint_attempts_total is counted on.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, registry *metrics.Registry) *requests.Machine {
-	// The one retry policy and process-wide retry budget of the three minters that call an
-	// upstream over HTTP, so a GitHub brownout that spends the budget leaves a Google mint's
-	// failure unretried too: each holds the one pointer, which kindMinters' copies keep.
-	retry := secrets.NewRetry(registry)
+// placeholders, and every such release carries the proxy's URL and this certificate. retry is the
+// one retry policy and process-wide retry budget of the three minters that call an upstream over
+// HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
+// counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
+// unretried too: each holds the one pointer, which kindMinters' copies keep.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,

@@ -115,7 +115,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, airlock.Rules{}, "", metrics.New())
+	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, airlock.Rules{}, "", nil)
 	for _, kind := range policy.Kinds {
 		if machine.Minters[kind] == nil {
 			t.Fatalf("request machine has no minter for %s", kind)
@@ -135,10 +135,11 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	}
 }
 
-// TestKindMintersShareOneRetryBudget: the GitHub and Google minters kindMinters copies hold one
-// Retry, so their retries draw from one process-wide budget: thirty GitHub mints, each failing at
-// a 503 three times, spend its 60 retries, and a Google login's 503 is then tried once. Two
-// seconds on, the budget holds two retries again, and the same Google minter asks three times.
+// TestKindMintersShareOneRetryBudget: the GitHub and Google minters newRequestMachine builds, as
+// main builds them, hold the one Retry it is given, so their retries draw from one process-wide
+// budget: thirty GitHub mints, each failing at a 503 three times, spend its 60 retries, and a
+// Google login's 503 is then tried once. Two seconds on, the budget holds two retries again, and
+// the same Google minter asks three times.
 func TestKindMintersShareOneRetryBudget(t *testing.T) {
 	var githubCalls, googleCalls atomic.Int64
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -155,12 +156,7 @@ func TestKindMintersShareOneRetryBudget(t *testing.T) {
 	retry := secrets.NewRetry(metrics.New())
 	retry.Now = func() time.Time { return now }
 	retry.Sleep = func(context.Context, time.Duration) error { return nil }
-	minters := kindMinters(
-		secrets.GitHubApp{Base: github.URL, HTTP: github.Client(), Retry: retry},
-		secrets.GoogleLogin{TokenURL: google.URL, HTTP: google.Client(), Retry: retry},
-		secrets.AzureLogin{},
-		&secrets.GoogleServiceAccount{Retry: retry},
-	)
+	minters := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: github.URL, AirlockTestGoogleTokenURL: google.URL}, nil, nil, nil, nil, airlock.Rules{}, "", retry).Minters
 	app := secrets.MintRequest{Kind: policy.KindGitHubApp, Value: policytest.KindValue(policy.KindGitHubApp), GitHubOwners: []string{"acme-org"}}
 	login := secrets.MintRequest{Kind: policy.KindGoogleLogin, Value: policytest.KindValue(policy.KindGoogleLogin)}
 
@@ -182,8 +178,8 @@ func TestKindMintersShareOneRetryBudget(t *testing.T) {
 }
 
 // TestRequestMachineCountsEachMintAttemptOnItsRegistry: the minters newRequestMachine builds
-// retry under the Retry it builds on the registry it is given. A github-app mint against the
-// GitHub stand answering its token request 503 once and then as ordinary mints at the second
+// retry under the Retry main builds on its registry (secrets.NewRetry). A github-app mint against
+// the GitHub stand answering its token request 503 once and then as ordinary mints at the second
 // attempt, and the registry's own handler serves both attempts in broker_mint_attempts_total.
 func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
 	service, err := airlocktest.NewService(airlocktest.ServiceOptions{Plain: true})
@@ -194,7 +190,7 @@ func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
 	stand := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}, Answer: airlocktest.GitHubTokensFailOnce})
 	service.AnswerWith(stand.Answer)
 	registry := metrics.New()
-	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, airlock.Rules{}, "", registry)
+	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, airlock.Rules{}, "", secrets.NewRetry(registry))
 
 	minted, err := machine.Minters[policy.KindGitHubApp](t.Context(), secrets.MintRequest{
 		Kind: policy.KindGitHubApp, Value: policytest.KindValue(policy.KindGitHubApp), GitHubOwners: []string{"acme-org"},

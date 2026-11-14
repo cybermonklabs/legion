@@ -449,14 +449,13 @@ die_if_broker_exited() {
 # being written parses as nothing, so half an address is never read as the whole one. It sets a
 # variable rather than printing, since die_if_broker_exited's exit has to end this script and
 # not a command substitution's subshell. ---
-LOGGED_ADDR=""
 await_logged_addr() { # <message>
   LOGGED_ADDR=""
   for _ in $(seq 1 30); do
     die_if_broker_exited
-    # `|| true`: under this script's own set -o pipefail, jq failing on a log it cannot read yet
-    # must not trip this script's own errexit and abort before the loop ever gets to sleep and
-    # retry; no line yet is the normal case on every iteration before the broker has bound.
+    # `|| true`: under this script's set -e, a jq that failed would end the script here, since
+    # the assignment takes the command substitution's status, before the loop could sleep and
+    # read again. Before the broker has logged the line, jq prints nothing and exits 0.
     LOGGED_ADDR="$(jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$BROKER_LOG" 2>/dev/null || true)"
     if [ -n "$LOGGED_ADDR" ]; then
       return 0

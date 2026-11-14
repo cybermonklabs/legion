@@ -90,11 +90,17 @@ type apiError struct {
 	AnswerID string
 }
 
-// Error is the broker's message and code, and the answer id to quote when it named one.
+// Error is the broker's message and code, and the answer id to quote when it named one. A body
+// that was not the envelope is the message as it came, a line ending and all (the mux's
+// "404 page not found\n"), so the message is cut at its trailing line endings before the id goes
+// after it on the same line.
 func (e *apiError) Error() string {
-	text := fmt.Sprintf("%s (%s)", e.Message, e.Code)
+	message := strings.TrimRight(e.Message, "\r\n")
+	var text string
 	if e.Code == "" {
-		text = fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
+		text = fmt.Sprintf("HTTP %d: %s", e.Status, message)
+	} else {
+		text = fmt.Sprintf("%s (%s)", message, e.Code)
 	}
 	if e.AnswerID != "" {
 		text += " (answer " + e.AnswerID + ")"

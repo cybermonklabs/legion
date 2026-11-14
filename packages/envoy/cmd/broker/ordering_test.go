@@ -629,8 +629,8 @@ func TestBootRefusesWhenTheMetricsPortCannotBeBound(t *testing.T) {
 // TestStopDrainsTheMetricsPortBesideTheAPI pins the metrics port's drain: it closes out of the
 // one shutdown budget beside the API rather than after it, and before the work that outlived the
 // drain stops. The API's fake shutdown here returns only once the metrics port's has begun, so a
-// stop that drained the two one after the other is caught by the hang guard rather than read as
-// an order.
+// stop that drained the metrics port after the API's is caught by the hang guard rather than
+// read as an order.
 //
 // The named revert: drop ShutdownMetrics from stop, or call it after Shutdown has returned.
 func TestStopDrainsTheMetricsPortBesideTheAPI(t *testing.T) {

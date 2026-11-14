@@ -59,7 +59,7 @@ func apiPage(a *api) (string, error) {
 	g, routes, classes := a.g, a.routes, a.classes
 	var b strings.Builder
 	b.WriteString(frontMatter("HTTP API", "Every route the secrets broker serves, the credential each needs, and what each answers.", apiDir))
-	b.WriteString("The broker's API answers JSON. A refusal is `{\"code\": \"…\", \"error\": \"…\", \"answer_id\": \"…\"}` with the HTTP status below, and a refusal that carries more lists its body under its route; `answer_id` is the id the broker's own record of that answer names, which every answer, refused or not, carries in its `X-Broker-Answer-Id` header. The [error reference](/legion/broker/reference/errors/) lists every code. The broker's own approval page, whose routes take a broker sign-in session, answers a person's browser with HTML pages and redirects instead, listed by status.\n\n")
+	b.WriteString("The broker's API answers JSON. An error is `{\"code\": \"…\", \"error\": \"…\"}` with the HTTP status below, and one that carries more lists its body under its route. A 4xx refusal's body adds `\"answer_id\": \"…\"`, the answer's own id, and every answer, refused or not, carries that id in its `X-Broker-Answer-Id` header. The [error reference](/legion/broker/reference/errors/) lists every code. The broker's own approval page, whose routes take a broker sign-in session, answers a person's browser with HTML pages and redirects instead, listed by status.\n\n")
 
 	b.WriteString("## Authentication\n\nEach route takes one kind of credential, or none. These are the refusals the broker answers for the credential itself, before the route runs.\n\n")
 	b.WriteString("| Credential | Description | Refusals |\n| --- | --- | --- |\n")
@@ -297,7 +297,7 @@ func errorsPage(root string, a *api) (string, error) {
 
 	var b strings.Builder
 	b.WriteString(frontMatter("Error codes", "Every refusal code the secrets broker, its host helper and the agent-secrets CLI answer.", apiDir+", "+helperDir+" and "+cliDir))
-	b.WriteString("## Broker HTTP API\n\nThe broker refuses a request with an HTTP status and a JSON body `{\"code\": \"…\", \"error\": \"…\", \"answer_id\": \"…\"}`, whose `answer_id` is the answer's own id, for a refused caller to quote. `agent-secrets` prints a refusal as `<error> (<code>) (answer <answer_id>)`. A message shown as an error's own text may arrive wrapped in more detail; " + varies + " marks a message built at run time.\n\n")
+	b.WriteString("## Broker HTTP API\n\nThe broker answers an error with an HTTP status and a JSON body `{\"code\": \"…\", \"error\": \"…\"}`. A 4xx refusal's body adds `\"answer_id\": \"…\"`, the answer's own id, for a refused caller to quote, and every answer carries that id in its `X-Broker-Answer-Id` header. `agent-secrets` prints an error as `<error> (<code>) (answer <id>)`, the id read from the body or the header. A message shown as an error's own text may arrive wrapped in more detail; " + varies + " marks a message built at run time.\n\n")
 	b.WriteString("| Code | Status | Message | Where |\n| --- | --- | --- | --- |\n")
 	for _, code := range sortedKeys(codes) {
 		e := codes[code]

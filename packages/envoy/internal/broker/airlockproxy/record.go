@@ -206,9 +206,6 @@ func fail(w http.ResponseWriter, status int, code, message string) {
 	http.Error(w, "airlock: "+message, status)
 }
 
-// refusal reports whether status is a refusal's, 400 to 499, which writes the refusal line.
-func refusal(status int) bool { return status >= 400 && status < 500 }
-
 // callerOf is the caller a refusal's line names: the grant the proxy password proved and the
 // enrollment it belongs to, as <grant>@<enrollment>, and empty before a grant is proved.
 func callerOf(grant requests.AirlockConnection) string {

@@ -31,19 +31,19 @@ func (k writerKey) String() string {
 // writes one of them with the code the refusal's line and its count name: in the API package
 // writeError and writePageRefusal, whose JSON bodies carry the code; on the approval page
 // writeMessage, whose callers note theirs (answer.NoteCode); on the airlock's proxy port
-// Server.refuse, which writes the port's refusal line itself, and Server.refuseCredential, its
-// 407. A status from 400 to 499 reaches the wire only as the status argument of one of these, and
-// what one writes in its own body is its own. The API package has a third registered writer that
-// is no function: the Status field of an oauth.Refusal composite, which oauth.WriteRefusal writes
-// with its code in a package this rule does not read; a composite literal is no write, so the rule
-// has nothing of it to check.
+// Server.refuse, which writes the port's refusal line itself (its 407, refuseCredential, is a
+// call of refuse and writes nothing of its own). A status from 400 to 499 reaches the wire only
+// as the status argument of one of these, and what one writes in its own body is its own. The
+// API package has a third registered writer that is no function: the Status field of an
+// oauth.Refusal composite, which oauth.WriteRefusal writes with its code in a package this rule
+// does not read; a composite literal is no write, so the rule has nothing of it to check.
 //
 // A table is needed for the reason pageAnswerers is one: refgen parses with go/ast and runs no
 // type checker, so it names a writer by its package, its receiver and its name.
 var registeredWriters = map[string][]writerKey{
 	apiDir:      {{"", "writeError"}, {"", "writePageRefusal"}},
 	approvalDir: {{"", "writeMessage"}},
-	airlockDir:  {{"Server", "refuse"}, {"Server", "refuseCredential"}},
+	airlockDir:  {{"Server", "refuse"}},
 }
 
 // forwardingWrites is each write checkRefusalWrites leaves out, because the status it writes is

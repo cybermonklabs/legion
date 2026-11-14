@@ -1053,7 +1053,7 @@ check_k10c() {
 	observe "the forged record naming two secrets (grant $two_grant): the CLI exited ${K10C[two_secrets_exit]} — '${K10C[two_secrets_cli]}'; the call through its own placeholder answered ${K10C[two_secrets_proxy]} '${K10C[two_secrets_body]}'; S recorded ${K10C[two_secrets_recorded]} request(s)"
 	observe "the forged record carrying 1800 seconds, past the $AIRLOCK_JUDGE_SECONDS the entry allows the judge (grant $long_grant): the CLI exited ${K10C[long_ttl_exit]} — '${K10C[long_ttl_cli]}'; the call through its own placeholder answered ${K10C[long_ttl_proxy]} '${K10C[long_ttl_body]}'; S recorded ${K10C[long_ttl_recorded]} request(s)"
 	observe "the forged record whose reason names no issue (grant $no_issue_grant): the CLI exited ${K10C[no_issue_exit]} — '${K10C[no_issue_cli]}'; the call through its own placeholder answered ${K10C[no_issue_proxy]} '${K10C[no_issue_body]}'; S recorded ${K10C[no_issue_recorded]} request(s)"
-	observe "the broker's log: $(airlock_refusal_holds "$refusal" && printf '%s' "$BROKER_LOG_LINE" | cut -c1-300 || echo 'no refusal record whose reason names the chain refusal')"
+	observe "the broker's log: $([ "$logged" = 0 ] && printf '%s' "$BROKER_LOG_LINE" | cut -c1-300 || echo 'no refusal record whose reason names the chain refusal')"
 	assert "$([ "${K10C[two_secrets_exit]}" != 0 ] && [ "${K10C[long_ttl_exit]}" != 0 ] && [ "${K10C[no_issue_exit]}" != 0 ] &&
 		[ "${K10C[two_secrets_recorded]}" = 0 ] && [ "${K10C[long_ttl_recorded]}" = 0 ] && [ "${K10C[no_issue_recorded]}" = 0 ] &&
 		[ "${K10C[two_secrets_proxy]}" = 403 ] && [ "${K10C[long_ttl_proxy]}" = 403 ] && [ "${K10C[no_issue_proxy]}" = 403 ] &&

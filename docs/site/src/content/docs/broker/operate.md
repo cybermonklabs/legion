@@ -846,13 +846,13 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `approval page decision login=<email> record=<record id> decision=<approve or deny> outcome=<outcome>` | A person decided a secret request on the page; `outcome` is what became of it (`granted`, for one). |
 | `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR: the provider's discovery document could not be read at a sign-in, and the page answered `503` naming the issuer. |
 | `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); and the metrics port (the line below). |
-| `broker metrics listening addr=<host:port>` | Just after `broker listening`: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
+| `broker metrics listening addr=<host:port>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
 | `broker: fatal error=…` | Startup refused; the error names the variable or dependency. The process exits 1. |
 | `agent secret policy refused name=<secret's name in the store> reason=<reason> owner=<owner tag> first_load=<true or false>` | At ERROR, when a secret becomes one the broker refuses to serve, and when it is refused for another reason than before, with `was=<the reason before>`: one line at the change, not one for each read of the store. A pod's first load writes one for each secret it refuses, each with `first_load=true`. A load or a reread that finds a secret refused for the reason it had writes nothing, and `broker_unservable_secrets` ([Metrics](#metrics)) holds every secret refused now. `name` is the secret's whole name in the store, such as `production/agent-secrets/deel-api-key`. `owner` is its owner tag, and empty for `owner-tag-missing` and `owner-tag-malformed`. Reasons include `owner-tag-missing`, `owner-tag-malformed`, `tier-tag-missing`, `tier-tag-malformed`, `name-malformed`, `service-owner-human-tier`, `not-on-agent-secrets-key`, `no-current-value`, `kind-unknown`, `github-owners-missing`, `github-owners-malformed`, `requesters-malformed` (a `requesters` list holding a comma, naming nobody, carrying an email with a capital letter, or naming a service the deployment does not register), `max-grant-required` (an `admin` secret, or a `google-service-account` one, with no `max-grant` or one longer than an hour), `requesters-not-owner` (a `google-service-account` secret whose `requesters` are not its one person owner, or that lists a service it may not: any service at agent tier, and any service at all on a secret `BROKER_SERVICE_ACCOUNT_SECRETS` binds to a `dev-<name>` account), `admin-malformed` (an `admin` tag set to anything but `true`), `admin-tier` (an `admin` secret that is not human tier), `admin-requesters` (an `admin` secret with no `requesters` list), `scopes-malformed` (a `scopes` list holding a comma, naming no scope, naming one twice, or holding an entry that is no scope name, a whole `https://www.googleapis.com/auth/…` URL among them), `scopes-kind` (a `scopes` tag on a secret that is not a `google-service-account` one), `shape-malformed` (a `shape` tag set to anything but `token` or `document`), `max-grant-malformed`, `default-grant-malformed` and `value-malformed` (a `github-app`, `google-login`, `google-service-account` or `azure-login` secret whose stored value that kind's minter could not mint from: [the value read](#the-value-read)). |
 | `agent secret policy no longer refused name=<secret's name in the store> reason=<the reason it had> owner=<owner tag> now=<servable or absent>` | At INFO, when a secret the broker refused is refused no longer: `now=servable` when the broker serves it, and `now=absent` when the store no longer holds it (deleted, or scheduled for deletion). |
 | `agent secret policy load failed; previous policy kept error=…` | At ERROR, in two cases. The five-minute reload of the namespace failed (the secret store out of reach, or refusing the broker; a Secret Manager failure names its gRPC status code alone, never the status message), and the broker keeps serving the policy from its last good read: the first failed reload of a run writes the line, and the reloads after it write nothing until one succeeds, which writes `agent secret policy load succeeded again`. Or, with `name=<NAME>` (the name a request asked for), the request named a secret the broker did not serve and the broker's reread of that one secret failed, so the request is refused `UNKNOWN_SECRET`: one line for each such request. A read in flight when the broker shuts down, and a request's reread its own caller abandoned, are not one of these and log nothing. |
 | `agent secret policy load succeeded again` | At INFO: the first reload that succeeds after the line above began a run of failed ones. |
-| `agent secret value read failed; its state kept name=<secret's name in the store> version=<version> error=…` | At WARN: the broker could not read a kind secret's stored value to check it ([the value read](#the-value-read)), for a permission, a timeout or the store's own failure, which `error` names by its call and its class and never by a byte of the value. The secret keeps the state it had. Each load after it reads the value again and writes nothing more until a read succeeds. |
+| `agent secret value read failed; its state kept name=<secret's name in the store> version=<version> error=…` | At WARN: the broker could not read a kind secret's stored value to check it ([the value read](#the-value-read)), for a permission, a timeout or the store's own failure, which `error` names by its call and its class and never by a byte of the value. A stored value that is not text is no failed read: it is refused `value-malformed`. The secret keeps the state it had, but for a `value-malformed` refusal of an older version: a failed read of a version the store listed since ends that refusal, which writes `agent secret policy no longer refused`. Each load after it reads the value again and writes nothing more until a read succeeds. |
 | `agent secret value read succeeded again name=<secret's name in the store> version=<version>` | At INFO: the first read of that secret's value that succeeds after the line above. |
 | `broker: answer refused answer_id=<id> status=<status> code=<code> method=<method> route=<route> caller_class=<class> caller=<caller> secrets=[<names>]` | At WARN, once for each refusal of the API port and of the airlock's proxy port: every answer from 400 to 499 but a `429` and the two answers a machine gets while it polls a device login, `slow_down` and `authorization_pending`, which are counted and not logged. It is written before the answer is sent, and it names the answer id the refused caller was given ([Refusals and the answer id](#refusals-and-the-answer-id)). |
 | `broker: <operation> failed error=…` | A request failed with a 500 or 503; the line carries the cause the response does not. A reread whose own request ended before it finished - its caller went away, or it reached the 45-second bound - is not one of these: it answers `503 REQUEST_ENDED` and logs nothing, since anyone can end a request. |
@@ -887,19 +887,21 @@ Each request is bounded to 45 seconds. Request bodies are JSON of at most 1 MiB.
 ### Refusals and the answer id
 
 Every answer of the API port and of the airlock's proxy port carries an answer id, 32 hexadecimal
-characters, in its `X-Broker-Answer-Id` header. A refusal carries it in its body too: a JSON
-refusal as its `answer_id` member, a refusal of the airlock's proxy port at the end of its text as
-`(answer <id>)`, and a refusal page of the approval page as an id to quote. `agent-secrets` ends
-the broker's refusal with it, so whoever was refused has a thing to quote to whoever runs the
-broker:
+characters, in its `X-Broker-Answer-Id` header. An answer from 400 to 499 carries it in its body
+too: a JSON one as its `answer_id` member, a refusal of the airlock's proxy port at the end of its
+text as `(answer <id>)`, and a refusal page of the approval page as an id to quote. A `429` is no
+refusal, so two bodies carry no id: the text of a `429` that the Azure token endpoint answered and
+the airlock's proxy port forwards, and the approval page's `429` page. The header of each still
+carries it. `agent-secrets` ends each error the broker answers with the id, a refusal or a
+failure, so whoever was refused has a thing to quote to whoever runs the broker:
 
 ```console
 $ agent-secrets NO_SUCH_SECRET -- true
 agent-secrets: no agent secret has this name (UNKNOWN_SECRET) (answer ed22ee417e5933b629d7182fc52ce9e6); asked the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 ```
 
-The broker writes the refusal's line, `broker: answer refused`, before it sends the answer, so
-that id finds the line:
+For a refusal, the broker writes its line, `broker: answer refused`, before it sends the answer,
+so that id finds the line:
 
 ```json
 {"time":"2026-11-14T02:28:40.768728789Z","severity":"WARNING","message":"broker: answer refused","answer_id":"ed22ee417e5933b629d7182fc52ce9e6","status":400,"code":"UNKNOWN_SECRET","method":"POST","route":"POST /v1/requests","caller_class":"session","caller":"be3624bc-7b88-4e9c-8657-ebbf4b2651d7","secrets":["NO_SUCH_SECRET"]}
@@ -920,9 +922,11 @@ Its fields:
 - `caller_class` and `caller`: how the broker learnt who sent the request, and who that is.
   - `public`: a route that takes no credential, or a path no route serves. `caller` is empty, but
     on the OAuth token route, where it is the OAuth client the token request named.
-  - `unauthenticated`: a route that takes a credential, refused while the broker authenticated
-    the request: a missing or bad credential, or a listed caller on a route its name does not
-    carry. `caller` is empty.
+  - `unauthenticated`: a route that takes a credential, refused before the broker knew who sent
+    the request: a missing or bad credential, a listed caller on a route its name does not
+    carry, a refusal that the two routes that decide a credential request answer before they
+    read the credential, such as `DECIDE_ON_BROKER_PAGE`, and a refusal of the approval page or
+    its sign-in to a browser with no live sign-in. `caller` is empty.
   - `launcher`: a machine's launcher, by the id of its launcher credential.
   - `session`: an agent session or a pod, by its enrollment id.
   - `account`: a caller `BROKER_API_ACCOUNTS` lists, by the name it gives that caller.
@@ -947,12 +951,20 @@ A refusal of the airlock's proxy port has more fields:
 A refused call to a bound host writes this line in place of its call line,
 `airlock proxy: a call to a bound host`, so each such call still writes one line
 ([Run the broker locally](/legion/broker/guides/run-locally/#reach-a-secret-behind-the-airlock)
-shows both).
+shows both). A `429` that the Azure token endpoint answers and the proxy forwards is no refusal:
+it keeps its call line at INFO, which names its answer id and its status, and writes no refusal
+line.
 
 No refusal line holds a secret's value or a placeholder, and the API port's line holds no message
 text either: it names the code. Each answer, a refusal or not, also counts in
-`broker_answers_total` ([Metrics](#metrics)), which is the one record of a `429` and of a device
-grant's poll answers.
+`broker_answers_total` ([Metrics](#metrics)), which is the one record of the API port's `429` and
+of a device grant's poll answers.
+
+On the API port, an answer that no refusal line records names its id in no line: a `429`, the two
+answers of a device login's poll, and every answer of 500 and above. `agent-secrets` prints the id
+of a `429` and of a failure as well. For a `502 MINT_FAILED`, read the `broker: mint failed` line
+instead ([Health and logs](#health-and-logs)). It names the secret as `name` and holds no answer
+id, so find it by that name and the time of the answer.
 
 ### The value read
 
@@ -966,15 +978,27 @@ after it starts, and once more for each new version, kind or shape, and never at
 
 A value the decoder refuses makes the secret unservable as `value-malformed` from that load,
 before any mint: one `agent secret policy refused` line and one `broker_unservable_secrets`
-series. A live grant of the secret releases nothing (`GRANT_NOT_LIVE`). The refusal holds while
-the store lists that version. A new version is decoded again, so when `agent-secrets secret set`
-stores a value that decodes, the reread that follows the write serves the secret again and
-writes one `agent secret policy no longer refused` line. A mint whose minter cannot read the value
-refuses the secret in the same way, so a pod whose load could not read the value still refuses
-the secret at its first mint.
+series. So does a stored value that is not text, which no minter can read either: an empty value
+or one stored as binary alone on Secrets Manager, and a payload that is not valid UTF-8 on Secret
+Manager. That is a refusal of the value and no failed read, so it writes no
+`agent secret value read failed` line and is not read again at each load. A live grant of the
+secret releases nothing (`GRANT_NOT_LIVE`).
 
-A read that fails, for a permission, a timeout or the store's own failure, marks nothing: the
-secret keeps its state, and each load reads the value again. The first failure writes
+The refusal holds while the store lists that version, until a read under a new kind or shape
+decodes the value. A new version, or a retag of the kind or the shape, is read and decoded again,
+so when `agent-secrets secret set` stores a value that decodes, the reread that follows the write
+serves the secret again and writes one `agent secret policy no longer refused` line. A mint whose
+minter cannot read the value refuses the secret in the same way, so a pod whose load could not
+read the value still refuses the secret at its first mint. That refusal is of the version, kind
+and shape the release read the value under. When a load or a reread has listed another one since,
+a retag's among them, the mint refuses nothing, and the broker decodes the value under the new
+one.
+
+Any other read that fails, for a permission, a timeout or the store's own failure, refuses
+nothing, and each load reads the value again. The secret keeps its state, but for a
+`value-malformed` refusal of an older version: a failed read of a version the store listed since
+ends that refusal, so the broker serves the secret again, and a mint whose minter cannot read the
+new value refuses it again. The first failure writes
 `agent secret value read failed; its state kept`, and the read that succeeds after it writes
 `agent secret value read succeeded again`. The read needs no permission the broker lacks, since
 a release reads the same value ([What it depends on](#what-it-depends-on)). The `version` these
@@ -987,7 +1011,8 @@ A minter's call to GitHub or Google is made again when another attempt can succe
 500 or above, a rate limit (a `429`, GitHub's `X-RateLimit-Remaining: 0`, or a body naming a rate
 limit), or a call or a read of its answer that failed while the caller's request was still open.
 The broker does not retry a `4xx` that is no rate limit, a call whose request its caller ended, an
-answer larger than the minter reads, or an answer of a status the call did not ask for.
+answer larger than the minter reads, or a `2xx` or `3xx` answer other than the one the call asked
+for.
 
 - Each call gets at most 3 attempts, each under a 5-second timeout.
 - Before the second attempt the broker waits a time drawn at random from 0 to 2 seconds, and
@@ -1011,10 +1036,11 @@ request, and that stops the retry at once.
 
 The broker serves its metrics in the Prometheus text format at `GET /metrics`, on a port of its
 own: `BROKER_METRICS_LISTEN_ADDR`, by default `127.0.0.1:13382`. The API's port serves no
-`/metrics`, and the metrics port serves nothing else: every other path answers `404`, and every
-other method `405`. The boot binds it after the API's port and the airlock's proxy port and logs
-`broker metrics listening addr=<host:port>`, and a pod that cannot bind it does not start. A
-draining pod goes on answering scrapes through its drain, and the port closes with the others.
+`/metrics`, and the metrics port serves nothing else: every other path answers `404`, and a method
+other than `GET` or `HEAD` answers `405`. The boot binds it after the API's port and the airlock's
+proxy port and logs `broker metrics listening addr=<host:port>`, and a pod that cannot bind it
+does not start. A draining pod goes on answering scrapes through its drain, and the port closes
+with the others.
 
 The default address answers on the pod itself alone, so a scraper in another pod needs an address
 it can reach, such as `0.0.0.0:13382`. Let that scraper alone reach the port, and never route it
@@ -1029,7 +1055,7 @@ own listing.
 | `broker_answers_total` | counter | `outcome`, `code`, `caller_class` | Each answer of the API port and of the airlock's proxy port. `outcome` is `served` (below 400), `refused` (a refusal the `broker: answer refused` line records), `rate_limited` (a `429`, and the device grant's `slow_down`), `pending` (the device grant's `authorization_pending`, a machine's poll while its person has not decided) or `failed` (500 and above). `code` is a refusal's code, as its line names it, or the code the airlock's proxy port names for a failure of its own, such as `UPSTREAM_UNREACHABLE`. Every other answer's `code` is `HTTP_<status>`. `caller_class` is as the refusal line names it. A call the proxy carried to a service counts as `served`, with the service's own status as its `HTTP_<status>`. |
 | `broker_mint_attempts_total` | counter | `kind`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `kind` is the secret's kind. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
 | `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. |
-| `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one kind secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves, and on Secret Manager every read but a value's spends the project's read quota. |
+| `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one kind secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves. On Secret Manager each of them spends the project's read quota. A `list` is one `ListSecrets` for each page and one `GetSecretVersion` for each secret, and a `describe` is one `GetSecret` and one `GetSecretVersion`. A `value` is one `GetSecret`, or none when this pod read that secret in the 30 seconds before, and then the `AccessSecretVersion` that reads the value, which counts against Secret Manager's separate access quota. |
 
 Each pod counts its own answers, attempts and reads, from zero at its start.
 [Run the broker locally](/legion/broker/guides/run-locally/#read-the-log-and-the-metrics) shows a

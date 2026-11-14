@@ -26,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/api"
+	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
@@ -149,9 +150,11 @@ func refusalRecords(capture *logtest.Recorder, answerID string) []map[string]any
 // caller's class and identity, the route and the answer id, which the answer carries in its
 // X-Broker-Answer-Id header and, in a JSON body, as answer_id, and on the approval page's HTML
 // as text; a caller's X-Correlation-Id; and the refusal counted. A refusal raised in
-// authentication names caller_class unauthenticated. A 500, a 503, a 429 of writeError and of the
-// approval page, and the device grant's authorization_pending and slow_down write no record and
-// are counted. No record holds the value of a secret the port released, or a refusal's message.
+// authentication names caller_class unauthenticated, and so does a listed caller's lack of a
+// route's power, on the decision routes that authenticate for themselves as on every other
+// account route. A 500, a 503, a 429 of writeError and of the approval page, and the device
+// grant's authorization_pending and slow_down write no record and are counted. No record holds
+// the value of a secret the port released, or a refusal's message.
 func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
@@ -167,6 +170,8 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 		d.Draining = draining.Load
 		// One reread an hour from an address, so the second answers writeError's 429.
 		d.RereadLimit = &ratelimit.Limit{Every: time.Hour, Burst: 1}
+		// The Envoy listener, a listed caller that holds no decision's power.
+		d.APIAccounts[listenerAccount] = brokertest.Caller(t, listenerCaller)
 	})
 	// A server whose page and account routes take one request an hour from an address, so the
 	// second answers the approval page's own 429 (Page.WriteRateLimited).
@@ -250,6 +255,15 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 			},
 			status: http.StatusBadRequest, code: "APPROVER_REQUIRED", route: "POST /v1/credential-requests/{record}/approve",
 			class: answer.CallerAccount, caller: dispatchCaller, isJSON: true,
+		},
+		{
+			writer: writerWriteError, name: "a decision by a listed caller without its power",
+			drive: func(t *testing.T) answered {
+				return send(t, http.DefaultClient, request(t, http.MethodPost, ts.URL+"/v1/credential-requests/"+looked.RecordID+"/approve",
+					jsonBody(t, map[string]any{"approver": testApprover}), map[string]string{"Authorization": "Bearer " + ts.accountToken(t, listenerAccount, "", time.Hour), "Content-Type": "application/json"}))
+			},
+			status: http.StatusForbidden, code: "ACCOUNT_LACKS_POWER", route: "POST /v1/credential-requests/{record}/approve",
+			class: answer.CallerUnauthenticated, isJSON: true,
 		},
 		{
 			writer: writerWriteError, name: "a service's token login",

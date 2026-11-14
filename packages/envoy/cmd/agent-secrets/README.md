@@ -14,10 +14,13 @@ environment, writing one line to standard error first: the names it injected, th
 AGENT_SECRETS_URL names (GCP Secret Manager)`, never a value. Every other line about a secret names
 its source the same way - `request`, `status` and `self` as a `source:` line, a denial, a pending
 request and every refusal as `; asked the broker AGENT_SECRETS_URL names (<store kind>)` - so an
-answer of this CLI's is never taken for another secrets CLI's about the same name. A refusal of
-the broker also ends with its answer id, `(answer <id>)`, the id of the broker's own log line for
-that refusal, for whoever was refused to quote to whoever runs the broker. Those lines are
-quoted wherever an agent's output is, so none names the store's account, region or project, and
+answer of this CLI's is never taken for another secrets CLI's about the same name. An error the
+broker answers also ends with its answer id, `(answer <id>)`, for whoever was refused to quote to
+whoever runs the broker. For a refusal, from 400 to 499 but a `429`, the id names the broker's own
+log line for it. A `429` and a failure of 500 and above name their id in no line: for
+`MINT_FAILED`, the broker's `broker: mint failed` line names the secret and the time. This CLI's
+lines are quoted wherever an agent's output is, so none names the store's account, region or
+project, and
 none names the broker's host but two: a broker that could not be reached, named by its URL so a
 stale address reads as one, and a pending secret request, whose line names the page on the broker
 where its approver decides it, the `approve_url` the broker's own answer carries. The secret

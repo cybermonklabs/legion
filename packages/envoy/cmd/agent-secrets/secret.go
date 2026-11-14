@@ -342,14 +342,13 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 
 // checkValueFor refuses value, which a secret of kind (a policy.Kinds entry) holds or is about to
 // hold under shape, its shape tag, when the broker's minter for kind would refuse it: it decodes
-// the value the broker's release hands that minter (policy.TrimForShape, as requests' shapedValue
-// reads it) with secrets.ParseValue, the decoder every minter calls, so the refusal names what is
-// wrong in the minter's own words and never quotes the value. Create and set call it before they
-// write, and retag on the value it read (checkRetagValue); a refusal is a usage error, as
-// readSecretValue's refusals of a value are.
+// the value by the broker's own rule (policy.DecodeValue: the value its release hands that
+// minter, decoded with secrets.ParseValue, the decoder every minter calls), so the refusal names
+// what is wrong in the minter's own words and never quotes the value. Create and set call it
+// before they write, and retag on the value it read (checkRetagValue); a refusal is a usage
+// error, as readSecretValue's refusals of a value are.
 func checkValueFor(kind, shape, value string) error {
-	spend, _ := policy.TrimForShape(value, shape)
-	if _, err := secrets.ParseValue(kind, spend); err != nil {
+	if err := policy.DecodeValue(kind, shape, value); err != nil {
 		return usageErr{fmt.Errorf("the broker refuses this value as a %s secret's, so nothing is written: %w", kind, err)}
 	}
 	return nil

@@ -593,8 +593,9 @@ const (
 
 // githubAnswerRequest is the body POST <records URL>/answers/github takes.
 type githubAnswerRequest struct {
-	// Mode is which of the GitHub stand's four answers every token request from then on gets:
-	// ordinary, refuse, widen or fail-once (airlocktest.GitHubTokenAnswer).
+	// Mode is which of the GitHub stand's four answers the token requests from then on get:
+	// ordinary, refuse or widen for every one, or fail-once for the next one alone, after which
+	// the stand answers as ordinary (airlocktest.GitHubTokenAnswer).
 	Mode string `json:"mode"`
 }
 

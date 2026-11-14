@@ -121,11 +121,13 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 		return
 	}
 	// Register noted this route's caller unauthenticated, since it is this handler that reads
-	// the credential; from here on the refusals are the listed caller's.
-	answer.FromContext(r.Context()).NoteCaller(answer.CallerAccount, who.account.Name)
+	// the credential, and a caller without the route's power is refused as unauthenticated, as
+	// authenticate's refusal of every other account route records it; from here on the
+	// refusals are the listed caller's.
 	if refuseWithoutPower(w, who.account, needs, r.Pattern) {
 		return
 	}
+	answer.FromContext(r.Context()).NoteCaller(answer.CallerAccount, who.account.Name)
 	switch {
 	case errors.Is(kindErr, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such credential request")

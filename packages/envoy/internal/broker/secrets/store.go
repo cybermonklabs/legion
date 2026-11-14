@@ -22,10 +22,18 @@ const (
 // and Read's for a source the store no longer holds or that has no current value.
 var ErrNotFound = errors.New("secret not found in the store")
 
+// ErrValueNotText is what Read's error wraps for a current value that is not text the broker can
+// hand a command - an empty value, a Secrets Manager SecretBinary with no SecretString, a Secret
+// Manager payload that is not UTF-8 - so no release and no mint could use it. It is the value's
+// fault and not the read's, so the policy refuses such a kind secret as it refuses one its
+// decoder refuses (policy.ReasonValueMalformed), rather than reading it again at every load.
+var ErrValueNotText = errors.New("value is not a non-empty UTF-8 string")
+
 // Reader answers a granted secret's value: what releasing a grant needs, and nothing more.
 type Reader interface {
 	// Read answers the current value of the secret source names (Listing.Source): ErrNotFound
-	// for one the store no longer holds, one scheduled for deletion or one with no current value.
+	// for one the store no longer holds, one scheduled for deletion or one with no current value,
+	// and an error wrapping ErrValueNotText for a current value that is not text.
 	Read(ctx context.Context, source string) (string, error)
 }
 

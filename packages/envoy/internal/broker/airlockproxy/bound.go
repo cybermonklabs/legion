@@ -568,17 +568,17 @@ func (info connInfo) callFor(chosen pair) call {
 // here, on the connection the proxy opened. c is what is known of the call, code names the
 // refusal, and reason is the broker's own words for it.
 //
-// A status from 400 to 499 is a refusal: one line under answer.RefusalMessage at WARN
-// (refusalFields), and then the answer, whose text body ends with its answer id, which its
-// X-Broker-Answer-Id header carries too. That line is a refused call's one line, written in
-// place of callMessage's. Any other status is a failure its callers pass here as well - an
-// exchange the token endpoint could not make, a grant read that did not happen, an endpoint's
-// own status that is no refusal - which keeps callMessage's line at INFO and writes no refusal
-// line.
+// A refusal (answer.Refused: a status from 400 to 499 but a 429) is one line under
+// answer.RefusalMessage at WARN (refusalFields), and then the answer, whose text body ends with
+// its answer id, which its X-Broker-Answer-Id header carries too. That line is a refused call's
+// one line, written in place of callMessage's. Any other status is one its callers pass here as
+// well - an exchange the token endpoint could not make, a grant read that did not happen, an
+// endpoint's own status that is no refusal, a 429 among them - which keeps callMessage's line at
+// INFO and writes no refusal line, as the API port writes none for a 429.
 func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status int, code, reason string) {
 	rec := answerOf(w)
 	rec.note(code)
-	if !refusal(status) {
+	if !answer.Refused(status, code) {
 		s.log.Info(callMessage, s.callFields(rec.ID(), c, r, status, reason)...)
 		http.Error(w, "airlock: "+reason, status)
 		return
@@ -592,7 +592,8 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status i
 // its enrollment as the caller once the proxy password has proved them; the name the call was
 // handled for as its secrets, once one was chosen - and beside them the host, the reason, the
 // path, and the issue the grant was given for. Never the placeholder and never the value, as
-// callFields: the reason is the broker's own words, which name neither.
+// callFields: the reason is the broker's own words, which name neither. The method, the host and
+// the path are the caller's, each cut as the API port's line cuts its method (answer.Clip).
 func (s *Server) refusalFields(id string, c call, r *http.Request, status int, code, reason string) []any {
 	secrets := []string{}
 	if c.chosen.name != "" {
@@ -602,15 +603,15 @@ func (s *Server) refusalFields(id string, c call, r *http.Request, status int, c
 		"answer_id", id,
 		"status", status,
 		"code", code,
-		"method", r.Method,
+		"method", answer.Clip(r.Method),
 		"route", "",
 		"caller_class", answer.CallerAirlock,
 		"caller", callerOf(c.grant),
 		"secrets", secrets,
-		"host", c.host,
+		"host", answer.Clip(c.host),
 		"reason", reason,
 		// The path alone, as callFields: a query can carry anything a command put in it.
-		"path", r.URL.Path,
+		"path", answer.Clip(r.URL.Path),
 	}
 	if correlation := answer.CorrelationID(r); correlation != "" {
 		fields = append(fields, "correlation_id", correlation)

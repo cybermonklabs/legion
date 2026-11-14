@@ -390,10 +390,11 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // for Values to log as a refused narrowing, and is no mint failure. A minter that refuses the
 // stored value itself (secrets.ErrMintStoredValue, its secrets.ParseValue) also has the policy
 // refuse the secret as value-malformed (policy.Current.RefuseValue), at the version the live
-// policy listed when this release read the value, so the grants of it pause until a new value
-// is stored; the failure line and this release's answer are every other mint failure's. A
-// deleted secret stops releasing once the policy drops it: `agent-secrets secret delete` rereads
-// the name at once.
+// policy listed when this release read the value and under the kind and shape it was decoded
+// under, so the grants of it pause until a new value is stored; a retag since leaves the secret
+// to the decode of its new kind or shape. The failure line and this release's answer are every
+// other mint failure's. A deleted secret stops releasing once the policy drops it:
+// `agent-secrets secret delete` rereads the name at once.
 func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret, narrowing *secrets.GitHubNarrowing) (secrets.Minted, error) {
 	kind, source, minted, err := policy.ParseKindSource(g.source)
 	if err != nil {
@@ -433,7 +434,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		// line is safe to log; the session sees the same words as MINT_FAILED.
 		slog.Error(MintFailedMessage, "name", g.name, "kind", kind, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
 		if errors.Is(err, secrets.ErrMintStoredValue) {
-			m.Policy.RefuseValue(ctx, g.name, version)
+			m.Policy.RefuseValue(ctx, g.name, version, kind, served.Shape)
 		}
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}

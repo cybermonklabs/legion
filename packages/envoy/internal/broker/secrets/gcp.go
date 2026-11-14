@@ -303,8 +303,8 @@ func (g GCP) onKey(keyVersion string) bool {
 // ErrNotFound when Secret Manager holds no such secret or no version (NOT_FOUND), when the
 // secret has an expire_time, or when the latest version is disabled or destroyed
 // (FAILED_PRECONDITION), all the same answer to the caller: the secret is not readable. The value
-// must be non-empty UTF-8, since the broker injects it into an environment; an error names the
-// secret and never the bytes.
+// must be non-empty UTF-8, since the broker injects it into an environment, and one that is not
+// wraps ErrValueNotText; an error names the secret and never the bytes.
 func (g GCP) Read(ctx context.Context, source string) (string, error) {
 	if err := g.held.verdict(source, func() error {
 		secret, err := g.Client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: source})
@@ -352,7 +352,7 @@ func (g GCP) Read(ctx context.Context, source string) (string, error) {
 	}
 	data := out.GetPayload().GetData()
 	if len(data) == 0 || !utf8.Valid(data) {
-		return "", fmt.Errorf("secret manager %s: value is not a non-empty UTF-8 string", latest)
+		return "", fmt.Errorf("secret manager %s: %w", latest, ErrValueNotText)
 	}
 	return string(data), nil
 }

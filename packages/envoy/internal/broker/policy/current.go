@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"maps"
 	"slices"
@@ -72,8 +73,9 @@ type valueState struct {
 	// reread of it; one whose keys agree is read by none.
 	decoded valueKey
 	// refused is whether the value is refused, ReasonValueMalformed, at the version refusedAt:
-	// by the decoder of a read (readValues) or by a mint's own (RefuseValue). It holds while that
-	// version is listed, and while a read of another version listed since has not yet succeeded.
+	// by the decoder of a read (readValues) or by a mint's own (RefuseValue). Each read that
+	// decodes sets it afresh; a read that fails keeps it when the read was of that version, and
+	// ends it when the read was of another version listed since.
 	refused   bool
 	refusedAt string
 	// failing is whether the last read of the value failed: ValueReadFailedMessage was written for
@@ -371,23 +373,26 @@ func (c *Current) listOne(name string) (valueRead, bool) {
 }
 
 // readValues reads each value reads names through the loader's store (Store.Read, counted as
-// read=value) and decodes it with secrets.ParseValue under its kind, after its shape's rule
-// (TrimForShape, as a release spends it), dropping the value at once; the reads are made without
-// the writer lock. A read that fails once ctx has ended stops them, and records nothing for it
-// or for the reads after it, which the next load or reread makes again. It then takes the writer
-// lock, waiting on whichever writer holds it rather than on ctx, so the reads made are recorded
-// however ctx ends, and records each outcome whose key is still the one listed (a load or
-// reread since that lists another reads that itself):
+// read=value) and decodes it under its kind and shape (DecodeValue), dropping the value at once;
+// the reads are made without the writer lock. A read that fails once ctx has ended stops them,
+// and records nothing for it or for the reads after it, which the next load or reread makes
+// again. It then takes the writer lock, waiting on whichever writer holds it rather than on ctx,
+// so the reads made are recorded however ctx ends, and records each outcome whose key is still
+// the one listed (a load or reread since that lists another reads that itself):
 //
-//   - the decoder refuses the value: the secret's value is refused at that version, and the set
-//     made live leaves the secret out under ReasonValueMalformed (withhold), which publish
-//     writes as one RefusedMessage line, marked first_load when first;
+//   - the decoder refuses the value, or the store answers a value that is not text
+//     (secrets.ErrValueNotText), which no mint could use either: the secret's value is refused at
+//     that version, and the set made live leaves the secret out under ReasonValueMalformed
+//     (withhold), which publish writes as one RefusedMessage line, marked first_load when first;
 //   - the value decodes: any refusal of the value ends, which publish writes as one
 //     ServableMessage line;
 //   - the read fails (a permission, a timeout, the store's own failure): nothing is decoded, and
 //     the secret keeps the state it had, but for a refusal of another version than the one read,
 //     which ends, since a new version was listed. The first failure of a run writes
-//     ValueReadFailedMessage, and the read that succeeds after it ValueReadRecoveredMessage.
+//     ValueReadFailedMessage, and the read that succeeds after it ValueReadRecoveredMessage. A
+//     failure recorded after a read of the same key succeeded - a reload and a reread that read
+//     it at once - is stale and records nothing: that key is decoded, so no later read would come
+//     to end the failure it would start.
 func (c *Current) readValues(ctx context.Context, reads []valueRead, first bool) {
 	if len(reads) == 0 {
 		return
@@ -399,11 +404,14 @@ func (c *Current) readValues(ctx context.Context, reads []valueRead, first bool)
 		if err != nil && ctx.Err() != nil {
 			break
 		}
-		outcome := valueOutcome{valueRead: read, err: err}
-		if err == nil {
-			spend, _ := TrimForShape(value, read.key.shape)
-			_, decodeErr := secrets.ParseValue(read.key.kind, spend)
-			outcome.refused = decodeErr != nil
+		outcome := valueOutcome{valueRead: read}
+		switch {
+		case errors.Is(err, secrets.ErrValueNotText):
+			outcome.refused = true
+		case err != nil:
+			outcome.err = err
+		default:
+			outcome.refused = DecodeValue(read.key.kind, read.key.shape, value) != nil
 		}
 		outcomes = append(outcomes, outcome)
 	}
@@ -415,7 +423,7 @@ func (c *Current) readValues(ctx context.Context, reads []valueRead, first bool)
 	changed := false
 	for _, o := range outcomes {
 		state, known := c.values[o.name]
-		if !known || state.listed != o.key {
+		if !known || state.listed != o.key || (o.err != nil && state.decoded == o.key) {
 			continue
 		}
 		id := c.storeID(o.name)
@@ -444,23 +452,24 @@ func (c *Current) readValues(ctx context.Context, reads []valueRead, first bool)
 	}
 }
 
-// RefuseValue refuses the value of the kind secret name at version, as a load's decode refuses
-// one (ReasonValueMalformed): the mint path calls it when secrets.ParseValue refused the value a
-// release read, with the version the live policy listed for name when that release read it
-// (Set.ValueVersion), so a pod whose own load could not read the value refuses the secret from
-// its first mint. A version that is no longer the one listed - a load or reread has listed a new
-// value since - is not refused, since that value is decoded afresh; nor is a name Current holds
-// no kind secret for. A secret it newly refuses is published, writing one RefusedMessage line.
-// It waits on the writer lock for as long as ctx lives, the release's own request: one whose
-// caller has gone marks nothing, and the next mint of the secret, or the next load that reads a
-// new version, marks it then.
-func (c *Current) RefuseValue(ctx context.Context, name, version string) {
+// RefuseValue refuses the value of the kind secret name at version, read as kind under shape, as
+// a load's decode refuses one (ReasonValueMalformed): the mint path calls it when
+// secrets.ParseValue refused the value a release read, with the version the live policy listed
+// for name when that release read it (Set.ValueVersion) and the kind and shape that release
+// decoded it under, so a pod whose own load could not read the value refuses the secret from its
+// first mint. A key that is no longer the one listed - a load or reread has listed a new value
+// since, or a retag a new kind or shape for the same value - is not refused, since that key is
+// decoded afresh; nor is a name Current holds no kind secret for. A secret it newly refuses is
+// published, writing one RefusedMessage line. It waits on the writer lock for as long as ctx
+// lives, the release's own request: one whose caller has gone marks nothing, and the next mint of
+// the secret, or the next load that reads a new version, marks it then.
+func (c *Current) RefuseValue(ctx context.Context, name, version, kind, shape string) {
 	if c.lock(ctx) != nil {
 		return
 	}
 	defer c.unlock()
 	state, known := c.values[name]
-	if !known || state.listed.version != version {
+	if !known || state.listed != (valueKey{version: version, kind: kind, shape: shape}) {
 		return
 	}
 	wasRefused := state.refused

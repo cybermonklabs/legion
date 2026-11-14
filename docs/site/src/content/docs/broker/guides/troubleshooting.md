@@ -7,19 +7,22 @@ sidebar:
 
 Find the message you see. `agent-secrets` prints a broker refusal as
 `<message> (<CODE>) (answer <id>)` and a helper refusal as `<CODE>: <message>`; the
-[error reference](/legion/broker/reference/errors/), generated from the code, lists every code. The
-answer id names the broker's own log line for that refusal, so quote it to whoever runs the broker
-([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A broker from
-before the answer id sends none, and the message then ends at `(<CODE>)`. Every message about a
-secret also names where `agent-secrets` looked - `the broker AGENT_SECRETS_URL names (<store
-kind>)`, or `the broker AGENT_SECRETS_URL names` alone where the broker did not say what its store
-is - so a message of this CLI's is never read as another secrets CLI's about the same name. It
-names no host, account or project; a message about a broker that was never reached names the
-address it tried when that address is a plain http(s) URL, and says `(not printed: the value
-carries a credential or is not a plain http(s) URL)` instead when it carries a user name, password,
-query, fragment or `%` escape, with the failure named by its class alone (`connection refused`,
-`name resolution failed`, `timed out`, and so on). The messages below leave that part and the
-answer id out.
+[error reference](/legion/broker/reference/errors/), generated from the code, lists every code. For
+a refusal, an answer from 400 to 499 but a `429`, the answer id names the broker's own log line
+for it, so quote it to whoever runs the broker
+([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A `429` and a
+failure of 500 and above print an id too, which names no line. For `MINT_FAILED`, tell whoever
+runs the broker the secret's name and the time instead: its `broker: mint failed` line names
+both. A broker from before the answer id sends none, and the message then ends at `(<CODE>)`.
+Every message about a secret also names where `agent-secrets` looked - `the broker
+AGENT_SECRETS_URL names (<store kind>)`, or `the broker AGENT_SECRETS_URL names` alone where the
+broker did not say what its store is - so a message of this CLI's is never read as another
+secrets CLI's about the same name. It names no host, account or project; a message about a broker
+that was never reached names the address it tried when that address is a plain http(s) URL, and
+says `(not printed: the value carries a credential or is not a plain http(s) URL)` instead when
+it carries a user name, password, query, fragment or `%` escape, with the failure named by its
+class alone (`connection refused`, `name resolution failed`, `timed out`, and so on). The
+messages below leave that part and the answer id out.
 
 ## The session has no broker identity
 
@@ -130,8 +133,8 @@ nothing. SIGHUP, Ctrl-C, Ctrl-\\ or SIGTERM at the value prompt ends the CLI by 
 | `the value must be valid UTF-8` (exit 2) | The prompt or standard input contained bytes that Secrets Manager's text value cannot preserve. Nothing was written. | Supply a UTF-8 text value. |
 | `the broker refuses this value as a <kind> secret's, so nothing is written: the stored value cannot be minted from: …` (exit 2) | The CLI checked the value as the broker's minter for that kind reads it, and that minter could not mint from it: a `create --kind`, a `set` of a secret of that kind, or a `retag` that changes the kind, or the shape of a secret that keeps a kind, which checks the value the secret holds. The rest of the message is the minter's own reason, such as `GitHub App secret needs an app_id and private_key`, `Google login secret must be an authorized_user credential` or `Azure login secret must name tenant_id and client_id`, and never quotes the value. Nothing was written. | For `create` and `set`, give a value of the form that kind stores, such as the JSON object of a GitHub App's `app_id` and `private_key` ([GitHub App for a development box](/legion/broker/guides/github-app-for-a-dev-box/#store-the-app-key)). For a `retag` to a kind, the secret's own value is not of that kind: create the kind secret under a new name ([change its kind](/legion/broker/guides/manage-a-secret/#change-its-owner-tier-kind-requesters-or-max-grant)). |
 | `…'s kind tag "<tag>" names no kind the broker mints, and it refuses the secret as kind-unknown: retag it --kind github-app, google-login, azure-login, google-service-account or none before setting its value` (exit 2) | `set` found a kind tag the broker does not mint, so the broker refuses the secret and would serve no value of it. It asks for no value and writes nothing. | Retag the secret to a kind the message names, or remove its kind with `--kind none`, then set the value. |
-| `read …'s value to check it as a <kind> secret's, so nothing is written: …` | A `retag` that changes the kind, or the shape of a secret that keeps a kind, could not read the secret's value to check it, for a cause other than a refused permission: the store failed, or the secret has no value to read. Nothing was written. | For a secret with no value, create the kind secret with its value instead (`secret create --kind`). Otherwise run the retag again once the store answers. |
-| `the tags are written, but …'s value was not checked as a <kind> secret's: the store refused this sign-in the read, which needs …. The broker refuses a value its decoder refuses, and reports … unservable with the decoder's reason` (after a `retag`) | Your sign-in may change the secret's tags and may not read its value, so the retag wrote the tags without the check. The message names the permission the read needs: `secretsmanager:GetSecretValue` on the secret and `kms:Decrypt` on its key (AWS), or `secretmanager.versions.access` on the secret (GCP). The broker reads the value with its own access at the reread that follows, and refuses the secret as `value-malformed` when that kind's minter could not mint from it. | Nothing, when the value is of that kind. When the broker refuses it `value-malformed`, store a value of that kind with `secret set`, which checks it, and the broker serves the secret again. |
+| `read …'s value to check it as a <kind> secret's, so nothing is written: …` (exit 1) | A `retag` that changes the kind, or the shape of a secret that keeps a kind, could not read the secret's value to check it, for a cause other than a refused permission: the store failed, or the secret has no value to read. Nothing was written. | For a secret with no value, create the kind secret with its value instead (`secret create --kind`). Otherwise run the retag again once the store answers. |
+| `the tags are written, but …'s value was not checked as a <kind> secret's: the store refused this sign-in the read, which needs …. The broker refuses a value its decoder refuses, and reports … unservable with the decoder's reason` (after a `retag`) | Your sign-in may change the secret's tags and may not read its value, so the retag wrote the tags without the check. The message names the permission the read needs: `secretsmanager:GetSecretValue` on the secret and `kms:Decrypt` on its key (AWS), or `secretmanager.versions.access` on the secret (GCP). The broker reads the value with its own access at the reread that follows, and refuses the secret as `value-malformed` when that kind's minter could not mint from it. | Nothing, when the value is of that kind. When the broker refuses it `value-malformed`, store a value of that kind with `secret set`, which checks it, and the broker serves the secret again. A secret with no value is refused `no-current-value` whichever kind tag the broker reads, so the retag exits 1 on that reason: store its value with `secret set`, which checks it under the new kind. |
 | `your sign-in's email … is not an email the broker accepts as an owner` (exit 2) | `--owner me` would write an owner tag the broker refuses: your AWS Identity Center session name, or your Google sign-in's email, is not one. Nothing was written. | AWS: sign in with an Identity Center user whose user name is your email. GCP: write as a Google Account whose email the broker accepts. A write runs as your Application Default Credentials' account where they are a person's sign-in, and as your gcloud login's otherwise ([Before you start](/legion/broker/guides/manage-a-secret/#before-you-start)). |
 | `the control byte 0x… cannot be typed at the prompt` (exit 2) | An unhandled control byte was typed or pasted. The prompt discards input through the line ending and any bracketed paste's end before reporting the error. | Finish with Enter or Ctrl-D, then type the value again or pipe it in: `agent-secrets secret set NAME < value.txt`. |
 | `nothing was stored: the terminal stopped while reading the value; run … again and type the whole value` (exit 2) | Ctrl-Z (or another stop) came while the value was being typed. The prompt discards what the terminal held unread when it stopped, so nothing that arrived with or before Ctrl-Z reaches your shell, and refuses the whole entry, even if some of it had already been read. Keys typed after the stop took effect went to your shell. | After `fg`, press Enter to finish discarding the entry, then run the command in the message and enter the whole value again. |

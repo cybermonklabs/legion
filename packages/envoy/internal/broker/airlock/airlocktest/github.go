@@ -120,15 +120,16 @@ func NewGitHubStand(o GitHubOptions) *GitHubStand {
 	return &GitHubStand{options: o, answer: answer, scopes: map[string]githubScope{}}
 }
 
-// Answers replaces what every token request from here on is answered with, which is how one run
-// of a stack drives the ordinary mint, the refusal, the token wider than asked and the one outage
-// a retry rides out, one after another. It mints nothing itself, so a token already minted keeps
-// its string, but it does not keep what that string reaches: one string stands for one owner and
-// one repository list (token), and every mint of that scope records anew what it reaches
-// (remember), under the answer in force at the time. So a widened mint of a scope an ordinary
-// mint already minted widens what that one string reaches, and the minter's revoke of the widened
-// token leaves the string a credential of nobody's (forget). A check that wants an ordinary token
-// after another answer minted its scope mints it again.
+// Answers replaces what the token requests from here on are answered with - every one of them,
+// but for GitHubTokensFailOnce, which answers the next one alone and then the ordinary mint - which
+// is how one run of a stack drives the ordinary mint, the refusal, the token wider than asked and
+// the one outage a retry rides out, one after another. It mints nothing itself, so a token already
+// minted keeps its string, but it does not keep what that string reaches: one string stands for
+// one owner and one repository list (token), and every mint of that scope records anew what it
+// reaches (remember), under the answer in force at the time. So a widened mint of a scope an
+// ordinary mint already minted widens what that one string reaches, and the minter's revoke of the
+// widened token leaves the string a credential of nobody's (forget). A check that wants an
+// ordinary token after another answer minted its scope mints it again.
 func (g *GitHubStand) Answers(answer GitHubTokenAnswer) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

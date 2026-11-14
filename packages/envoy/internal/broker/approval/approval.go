@@ -299,8 +299,9 @@ type message struct {
 	chrome
 	Lines []string
 	Link  *link
-	// AnswerID is the answer's id (answer.Recorder.ID), printed on a refusal so the person has
-	// a thing to quote to whoever runs the broker; empty on any other page.
+	// AnswerID is the answer's id (answer.Recorder.ID), printed on a refusal that writes its
+	// record (writeMessage) so the person has a thing to quote to whoever runs the broker; empty
+	// on any other page.
 	AnswerID string
 }
 
@@ -348,9 +349,10 @@ const (
 )
 
 // writeMessage writes m as the page's answer with status. A refusal's page prints the answer's
-// id, so a person refused on it has the id the broker's own record of that refusal names.
+// id, so a person refused on it has the id the broker's own record of that refusal names; a 429
+// (WriteRateLimited) writes no such record (answer.Refused), so its page prints none.
 func writeMessage(w http.ResponseWriter, status int, m message) {
-	if status >= 400 && status < 500 {
+	if answer.Refused(status, "") {
 		m.AnswerID = answer.FromWriter(w).ID()
 	}
 	writePage(w, status, "message.html", m)

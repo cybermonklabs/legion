@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -175,5 +176,31 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 	// The page that answers a sign-out refuses nothing, and prints no answer id.
 	if res := b.FromPage(t, "/signin/logout", url.Values{"next": {page}}); res.Status != http.StatusOK || strings.Contains(res.Body, "answer id") {
 		t.Errorf("a sign-out = %d, want 200 with no answer id printed:\n%s", res.Status, res.Body)
+	}
+}
+
+// TestTheRateLimitedPagePrintsNoAnswerID: the page's 429 (Page.WriteRateLimited), behind the
+// answer recorder cmd/broker installs, carries its answer id in its X-Broker-Answer-Id header
+// alone. A 429 is counted and writes no record (answer.Refused), so the page prints no id that
+// would name a line the broker never wrote.
+func TestTheRateLimitedPagePrintsNoAnswerID(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	limited := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		new(approval.Page).WriteRateLimited(w, 1)
+	}), nil)
+	w := httptest.NewRecorder()
+	limited.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/approve/not-a-record", nil))
+	id := w.Header().Get(answer.Header)
+	if w.Code != http.StatusTooManyRequests || len(id) != 32 {
+		t.Fatalf("the rate-limited page = %d with answer id %q, want 429 with one:\n%s", w.Code, id, w.Body)
+	}
+	if body := w.Body.String(); strings.Contains(body, id) || strings.Contains(body, "answer id") {
+		t.Errorf("the rate-limited page prints an answer id, though a 429 writes no record:\n%s", body)
+	}
+	for _, record := range capture.Records() {
+		if record.Message == answer.RefusalMessage {
+			t.Errorf("the rate-limited page wrote a refusal record: %v", record)
+		}
 	}
 }

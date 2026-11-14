@@ -36,8 +36,9 @@ func NewCloudHandler(w io.Writer) slog.Handler {
 	return slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo, ReplaceAttr: cloudAttr})
 }
 
-// cloudAttr is NewCloudHandler's ReplaceAttr. The three built-in keys are renamed only outside a
-// group, where slog passes them, so an attribute of the same name inside a group is left alone.
+// cloudAttr is NewCloudHandler's ReplaceAttr. Of the three built-in keys, level and msg are
+// renamed (severity, message) and time is kept and converted to UTC, each only outside a group,
+// where slog passes them, so an attribute of the same name inside a group is left alone.
 func cloudAttr(groups []string, a slog.Attr) slog.Attr {
 	if len(groups) == 0 {
 		switch a.Key {

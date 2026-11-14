@@ -328,11 +328,13 @@ logged_addr() { # <message> <log>
 	jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" || true
 }
 
-# bound_call_lines prints, one JSON object per line, every line the named broker logs hold for a
-# call through the airlock's proxy port: the call line of a call to a bound host the proxy
-# carried or failed (`airlock proxy: a call to a bound host`), and the refusal record of a call
-# it refused (`broker: answer refused` with caller_class airlock), which the proxy writes in the
-# call line's place. A line still being written parses as nothing and is left out.
+# bound_call_lines prints, one JSON object per line, the lines the named broker logs hold for
+# the airlock's proxy port: the call line of a call to a bound host the proxy carried or failed
+# (`airlock proxy: a call to a bound host`), and every refusal record of that port (`broker:
+# answer refused` with caller_class airlock). Those records are a refused call's to a bound
+# host, which the proxy writes in its call line's place, and the port's other refusals too: a
+# request that is no proxy request, a 407, a refused address. A line still being written parses
+# as nothing and is left out.
 bound_call_lines() { # <log>...
 	jq -Rc 'fromjson? | select(.message == "airlock proxy: a call to a bound host" or (.message == "broker: answer refused" and .caller_class == "airlock"))' "$@" 2>/dev/null || true
 }
@@ -732,12 +734,14 @@ EOF
 	# handshake fails before a request exists. A carried call logs its call line and a refused
 	# one its refusal record in that line's place, so the two are counted together
 	# (bound_call_lines). The run also checks that both a carried and a refused call are among
-	# them, the refused one with the reason its record names.
-	local log_after log_lines allowed refused
-	log_after="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
-	log_lines="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | tail -n 3 | sed 's/^/    /')"
-	allowed="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length')"
-	refused="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | jq -s '[.[] | select(.message == "broker: answer refused" and (.reason // "") != "")] | length')"
+	# them, the refused one with the reason its record names. Each number comes from one read of
+	# the logs, so a line written between two reads cannot make them disagree.
+	local calls log_after log_lines allowed refused
+	calls="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log)"
+	log_after="$(jq -s length <<<"$calls")"
+	log_lines="$(printf '%s' "$calls" | tail -n 3 | sed 's/^/    /')"
+	allowed="$(jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length' <<<"$calls")"
+	refused="$(jq -s '[.[] | select(.message == "broker: answer refused" and (.reason // "") != "")] | length' <<<"$calls")"
 	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run (call lines and the proxy's refusal records), $allowed of them allowed and $refused refused with a reason; the last three:"
 	observe "$log_lines"
 	judge "$([ "$((log_after - log_before))" -ge 13 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
@@ -1175,7 +1179,7 @@ EOF
 	mapfile -t K6_AZ_ARM_HEADERS < <(printf '%s' "$recs" | jq -r '.[] | select(.path == "/subscriptions") | .header.Authorization // [] | .[]')
 	K6_AZ_ARM_STATUS="$(grep '^exit ' "$d/runs.log" | tr '\n' ' ')"
 	K6_AZ_EXCHANGES="$(printf '%s' "$recs" | jq '[.[] | select(.path | endswith("/token"))] | length')"
-	K6_AZ_SERVED="$(for log in "$AIRLOCK_DIR"/broker*.log; do printf '%s:%s ' "${log##*/}" "$(grep -c 'a call to a bound host' "$log")"; done)"
+	K6_AZ_SERVED="$(for log in "$AIRLOCK_DIR"/broker*.log; do printf '%s:%s ' "${log##*/}" "$(bound_call_lines "$log" | jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host")] | length')"; done)"
 }
 
 # k6_aws runs the AWS CLI's three calls and boto3's two against the stand-in AWS service.
@@ -1567,12 +1571,14 @@ check_k7() {
 
 	# What the broker logged: one line per call to a bound host - its call line, or the refusal
 	# record a refused call writes in that line's place (bound_call_lines) - which is how a call
-	# is known to have reached the proxy port and been decided there.
-	local logged swapped
-	logged="$(bound_call_lines "$WORK_DIR/k7/broker.log" | wc -l)"
-	swapped="$(bound_call_lines "$WORK_DIR/k7/broker.log" | jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length')"
+	# is known to have reached the proxy port and been decided there. Each number comes from one
+	# read of the log.
+	local calls logged swapped
+	calls="$(bound_call_lines "$WORK_DIR/k7/broker.log")"
+	logged="$(jq -s length <<<"$calls")"
+	swapped="$(jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length' <<<"$calls")"
 	observe "this check's broker logged $logged calls to a bound host, $swapped of them allowed; the last three:"
-	observe "$(bound_call_lines "$WORK_DIR/k7/broker.log" | tail -n 3 | sed 's/^/    /')"
+	observe "$(printf '%s' "$calls" | tail -n 3 | sed 's/^/    /')"
 	judge "$([ "$logged" -ge 10 ] && [ "$swapped" -ge 10 ] && echo 0 || echo 1)" \
 		"each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses" \
 		"$logged calls to a bound host were logged by the proxy, $swapped of them allowed and so swapped"

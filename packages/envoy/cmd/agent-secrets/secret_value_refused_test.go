@@ -54,10 +54,10 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	}))
 	t.Cleanup(github.Close)
 
-	local := secrets.NewLocal()
-	rig := brokertest.NewRig(t, brokertest.WithSecrets(local), brokertest.WithMinters(map[string]requests.Minter{
+	rig := brokertest.NewRig(t, brokertest.WithMinters(map[string]requests.Minter{
 		policy.KindGitHubApp: secrets.GitHubApp{Base: github.URL, HTTP: github.Client()}.Mint,
 	}))
+	local := rig.Secrets
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
 	local.Put(policytest.Secret("APP_KEY", rig.Operator, policy.TierAgent, noAppID))
 	// The person's own sign-in reads through valueReads, which refuses every GetSecretValue as

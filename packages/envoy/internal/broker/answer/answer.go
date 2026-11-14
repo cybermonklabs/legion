@@ -60,8 +60,8 @@ const Header = "X-Broker-Answer-Id"
 // carries as correlation_id, at most fieldBytes of it.
 const correlationHeader = "X-Correlation-Id"
 
-// fieldBytes bounds each piece of caller-written text the line keeps: the correlation id, the
-// method, and each secret name.
+// fieldBytes bounds each piece of caller-written text a refusal's line keeps (Clip): the
+// correlation id, the method, each secret name, and on the airlock's proxy port the host and path.
 const fieldBytes = 256
 
 // The caller classes a line and the counter name: how the broker established who sent the
@@ -131,7 +131,7 @@ type recorderKey struct{}
 type Recorder struct {
 	http.ResponseWriter
 	id string
-	// correlation is the caller's X-Correlation-Id, clipped (correlationID); empty when it sent
+	// correlation is the caller's X-Correlation-Id, clipped (CorrelationID); empty when it sent
 	// none.
 	correlation string
 
@@ -169,7 +169,7 @@ func Middleware(next http.Handler, answers *metrics.Counter) http.Handler {
 				rec.mu.Lock()
 				class := rec.class
 				rec.mu.Unlock()
-				answers.Inc(outcome(outcomeFailed), code(httpCode(http.StatusInternalServerError)), callerClass(class))
+				Count(answers, http.StatusInternalServerError, "", class)
 			}
 		}()
 		next.ServeHTTP(rec, r)
@@ -242,13 +242,15 @@ func (rec *Recorder) NoteSecrets(names ...string) {
 	}
 	rec.mu.Lock()
 	for _, name := range names {
-		rec.secrets = append(rec.secrets, clip(name))
+		rec.secrets = append(rec.secrets, Clip(name))
 	}
 	rec.mu.Unlock()
 }
 
 // NoteCode names the code of the refusal about to be written, for a writer whose body names none
-// (the approval page's HTML). A code the body names wins over it (refusalCode).
+// (the approval page's HTML). A code the body names wins over it (refusalCode), and an answer
+// outside 400 to 499 is counted under HTTP_<status> whatever was noted: a 500 its writer answered
+// in place of the refusal it noted is the 500 it is.
 func (rec *Recorder) NoteCode(code string) {
 	if rec == nil {
 		return
@@ -373,11 +375,8 @@ func (rec *Recorder) finish(answers *metrics.Counter) {
 	if refusal(rec.status) {
 		fields = jsonObject(rec.Header(), body)
 		answerCode = refusalCode(rec.status, fields, noted)
-	} else if noted != "" && codePattern.MatchString(noted) {
-		answerCode = noted
 	}
-	result := outcomeOf(rec.status, answerCode)
-	if result == outcomeRefused {
+	if Refused(rec.status, answerCode) {
 		if secrets == nil {
 			secrets = []string{}
 		}
@@ -385,7 +384,7 @@ func (rec *Recorder) finish(answers *metrics.Counter) {
 			"answer_id", rec.id,
 			"status", rec.status,
 			"code", answerCode,
-			"method", clip(request.Method),
+			"method", Clip(request.Method),
 			"route", request.Pattern,
 			"caller_class", class,
 			"caller", caller,
@@ -440,6 +439,14 @@ func callerClass(value string) [2]string { return [2]string{"caller_class", valu
 
 // refusal reports whether status is a refusal's: 400 to 499.
 func refusal(status int) bool { return status >= 400 && status < 500 }
+
+// Refused reports whether an answer of status naming answerCode is a refusal that writes its
+// line under RefusalMessage: a status from 400 to 499 but a 429 and the device grant's slow_down
+// and authorization_pending, which are counted and not logged (outcomeOf). The airlock's proxy
+// port writes its refusal line by it, and the approval page prints the answer id by it.
+func Refused(status int, answerCode string) bool {
+	return outcomeOf(status, answerCode) == outcomeRefused
+}
 
 // outcomeOf is the outcome label of an answer of status naming answerCode.
 func outcomeOf(status int, answerCode string) string {
@@ -537,8 +544,9 @@ func CorrelationID(r *http.Request) string {
 	return string(kept)
 }
 
-// clip cuts caller-written text to fieldBytes, dropping a rune the cut splits.
-func clip(text string) string {
+// Clip cuts caller-written text to fieldBytes, dropping a rune the cut splits: what a refusal's
+// line keeps of the method, a secret name, and on the airlock's proxy port the host and the path.
+func Clip(text string) string {
 	if len(text) <= fieldBytes {
 		return text
 	}

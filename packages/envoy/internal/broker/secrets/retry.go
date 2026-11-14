@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -69,22 +71,19 @@ type Retry struct {
 	// Draw is the jitter: a wait from zero to ceiling, both included, uniform at random when nil.
 	// What it answers is held to that range.
 	Draw func(ceiling time.Duration) time.Duration
-	// Attempts counts each attempt in broker_mint_attempts_total by kind, outcome and attempt;
-	// nil counts nothing.
-	Attempts *metrics.Counter
+	// attempts counts each attempt in broker_mint_attempts_total by kind, outcome and attempt;
+	// nil counts nothing. NewRetry sets it.
+	attempts *metrics.Counter
 
-	// mu guards the budget, which every release of the process may draw from at once.
-	mu sync.Mutex
-	// tokens is what the budget holds as of filled, the last whole refill; started is false
-	// until the first draw, which finds the budget full.
-	tokens  int
-	filled  time.Time
-	started bool
+	// budget is the process-wide retry budget, built at the first draw (take), since a Retry is
+	// a struct a caller may build itself; once guards that build, and the limiter its own draws.
+	once   sync.Once
+	budget *rate.Limiter
 }
 
 // NewRetry is the broker's Retry, counting its attempts on r as broker_mint_attempts_total.
 func NewRetry(r *metrics.Registry) *Retry {
-	return &Retry{Attempts: r.NewCounter("broker_mint_attempts_total",
+	return &Retry{attempts: r.NewCounter("broker_mint_attempts_total",
 		"Attempts of the calls the minters make upstream, by the secret's kind, the outcome (ok, upstream, rate_limited, refused, cancelled) and the attempt's number (1 to 3).")}
 }
 
@@ -152,27 +151,12 @@ func (r *Retry) draw(ceiling time.Duration) time.Duration {
 }
 
 // take draws one retry from the process-wide budget, and reports false, drawing nothing, when it
-// is spent. The budget starts full, gains one each retryBudgetRefill of the clock up to its size,
-// and banks no time while it is full.
+// is spent. The budget is a token bucket on the Retry's clock: it starts full, at
+// retryBudgetSize, gains one each retryBudgetRefill up to that size, and banks nothing while it
+// is full.
 func (r *Retry) take() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	now := r.now()
-	if !r.started {
-		r.started, r.tokens, r.filled = true, retryBudgetSize, now
-	}
-	if refills := now.Sub(r.filled) / retryBudgetRefill; refills > 0 {
-		r.tokens = min(retryBudgetSize, r.tokens+int(refills))
-		r.filled = r.filled.Add(refills * retryBudgetRefill)
-	}
-	if r.tokens == retryBudgetSize {
-		r.filled = now
-	}
-	if r.tokens == 0 {
-		return false
-	}
-	r.tokens--
-	return true
+	r.once.Do(func() { r.budget = rate.NewLimiter(rate.Every(retryBudgetRefill), retryBudgetSize) })
+	return r.budget.AllowN(r.now(), 1)
 }
 
 // mintRetry is one mint's share of its minter's Retry: the kind its attempts are counted under,
@@ -194,7 +178,7 @@ func (m *mintRetry) count(outcome string, attempt int) {
 	if m.retry == nil {
 		return
 	}
-	m.retry.Attempts.Inc([2]string{"kind", m.kind}, [2]string{"outcome", outcome}, [2]string{"attempt", strconv.Itoa(attempt)})
+	m.retry.attempts.Inc([2]string{"kind", m.kind}, [2]string{"outcome", outcome}, [2]string{"attempt", strconv.Itoa(attempt)})
 }
 
 // again reports whether a call whose attempt numbered attempt failed with err, a failure classify

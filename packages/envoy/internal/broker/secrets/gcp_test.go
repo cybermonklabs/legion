@@ -353,8 +353,8 @@ func TestGCPDescribeAndRead(t *testing.T) {
 	}
 	for _, name := range []string{"empty", "binary"} {
 		_, err := store.Read(ctx, fakePrefix+name)
-		if err == nil || errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "non-empty UTF-8") || strings.Contains(err.Error(), "\xff") {
-			t.Fatalf("Read(%s) = %v; want a refusal naming the rule and never the bytes", name, err)
+		if !errors.Is(err, ErrValueNotText) || errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "non-empty UTF-8") || strings.Contains(err.Error(), "\xff") {
+			t.Fatalf("Read(%s) = %v; want ErrValueNotText, naming the rule and never the bytes", name, err)
 		}
 	}
 }

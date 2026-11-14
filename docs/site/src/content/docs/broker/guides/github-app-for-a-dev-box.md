@@ -90,7 +90,12 @@ key. To change a secret without a kind to `github-app`, do these steps in this s
 2. Make sure that the broker uses the new tags. The retag shows `broker: serving NAME (kind
    github-app)`, or it exits 1 with `reason=value-malformed`, because the old value is not an App
    key. If the retag exits 1 and tells you that the broker still sees the old tags, do the retag
-   again. Do not set the private key until the broker uses the new tags.
+   again. Do not set the private key until the broker uses the new tags. If the secret has no
+   value, the retag exits 1 with `reason=no-current-value`. The broker gives that reason for a
+   secret with no value, with the old tags and with the new tags, so the retag cannot show which
+   tags the broker uses. Then set the private key (step 3): `secret set` checks it as an App key
+   before it writes it, and shows `broker: serving NAME (kind github-app)` when the broker uses the
+   new tags.
 3. Set the private key.
 
 You can do this step on your own computer or on the box. The procedure is the same. The agents on
@@ -124,6 +129,19 @@ agent-secrets secret set GITHUB_APP_<PERSON> < app-key.json && rm app-key.json '
 `app_id` of digits and a `private_key` that signs. If the check fails, the command exits 2, writes
 nothing, and names the problem, for example `GitHub App secret needs an app_id and private_key`.
 The key files stay, so fix `app-key.json` and set the secret again.
+
+If the command shows `set a new value of GITHUB_APP_<PERSON> in …` and then exits 1, the key is
+stored. The exit 1 means that the command could not ask the broker to read the secret again, or
+that the broker refuses the secret. The `&&` does not delete the key files in this case, so delete
+them yourself:
+
+```sh
+rm app-key.json '<private key file>.pem'
+```
+
+The line after `set a new value` tells you why the command exits 1.
+[Troubleshooting](/legion/broker/guides/troubleshooting/#managing-a-secret) gives the fix for
+each message.
 
 If you do this step on the box, delete your Google sign-in from the box after you set the secret:
 

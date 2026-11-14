@@ -16,8 +16,8 @@ import (
 // TestARefusalNamesTheBrokersAnswerID: a broker behind the answer recorder its binary installs
 // refuses in its JSON envelope, which carries answer_id, and in the text of a path it does not
 // serve, which carries the id in its header alone; either way the error this client reads ends
-// with the id that answer carried. A broker from before the id sends neither, and the error
-// reads as it always did.
+// with the id that answer carried, on the line of the broker's message, the text's own line
+// ending cut. A broker from before the id sends neither, and the error reads as it always did.
 func TestARefusalNamesTheBrokersAnswerID(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/requests/{id}", func(w http.ResponseWriter, _ *http.Request) {
@@ -41,7 +41,7 @@ func TestARefusalNamesTheBrokersAnswerID(t *testing.T) {
 		name, base, path, want string
 	}{
 		{"a refusal in the broker's envelope", recorded.URL, "/v1/requests/req-1", "this request belongs to another session (NOT_YOURS)"},
-		{"a path the broker does not serve", recorded.URL, "/v1/nowhere", "HTTP 404: 404 page not found\n"},
+		{"a path the broker does not serve", recorded.URL, "/v1/nowhere", "HTTP 404: 404 page not found"},
 		{"a broker from before the id", older.URL, "/v1/requests/req-1", "this request belongs to another session (NOT_YOURS)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {

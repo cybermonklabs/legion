@@ -257,6 +257,28 @@ func TestTheAnswersThatWriteNoLineAreCounted(t *testing.T) {
 	}
 }
 
+// A code a writer noted for the refusal it was about to write names no other answer: a writer
+// that notes one and then answers 500 instead, as the approval page does when its template
+// fails, is counted failed under HTTP_500, and writes no line.
+func TestACodeNotedForARefusalNamesNoOtherAnswer(t *testing.T) {
+	r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		answer.FromWriter(w).NoteCode("RECORD_ID_INPUT")
+		http.Error(w, "the approval page failed to render", http.StatusInternalServerError)
+	}))
+	if w := r.serve(httptest.NewRequest(http.MethodGet, "/", nil)); w.Code != http.StatusInternalServerError {
+		t.Fatalf("answer = %d, want 500", w.Code)
+	}
+	if lines := r.lines(t); len(lines) != 0 {
+		t.Errorf("a 500 wrote %v, want no line", lines)
+	}
+	if got := r.count(t, `outcome="failed",code="HTTP_500",caller_class="public"`); got != "1" {
+		t.Errorf("the 500 counted %s under HTTP_500, want 1", got)
+	}
+	if got := r.count(t, `outcome="failed",code="RECORD_ID_INPUT",caller_class="public"`); got != "0" {
+		t.Errorf("the 500 counted %s under the code noted for a refusal, want 0", got)
+	}
+}
+
 // The line names the pattern of the route the mux matched, read from the request the mux was
 // handed through a middleware between it and the recorder, and an empty route for the mux's own
 // 404 and 405. A caller's X-Correlation-Id is kept as its printable ASCII, at most 256 bytes.
