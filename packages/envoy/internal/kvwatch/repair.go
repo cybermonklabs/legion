@@ -17,6 +17,8 @@ const (
 	timedOutCause    = "a timed-out scan"
 	recreatedCause   = "a recreated bucket"
 	unconfirmedCause = "a read whose stream could not be confirmed"
+	// scheduledCause is the read a completed read arms (WithScheduledRead, armScheduledRead).
+	scheduledCause = "a scheduled read"
 )
 
 // unrepairedDelay is how long a stop nobody asked for waits for a repair before it is reported as
@@ -50,11 +52,12 @@ func (w *Watcher) armReread(generation uint64, delay time.Duration, cause string
 }
 
 // reread reads the bucket again for generation, whose read timed out, could not be confirmed, or
-// was found to be of a bucket since recreated: only while generation is still current and the
-// watcher not stopped, since whatever moved the generation began a read of its own, and through
-// watch's expect, so a Rewatch that installs first wins. A re-read whose setup fails (the stream
-// read or the watcher's create; a recreated bucket deleted again, say) logs a WARN naming cause and
-// is armed again for the same generation after rereadDelay.
+// was found to be of a bucket since recreated, or whose scheduled read is due (armScheduledRead):
+// only while generation is still current and the watcher not stopped, since whatever moved the
+// generation began a read of its own, and through watch's expect, so a Rewatch that installs first
+// wins. A re-read whose setup fails (the stream read or the watcher's create; a recreated bucket
+// deleted again, say) logs a WARN naming cause and is armed again for the same generation after
+// rereadDelay; the watcher it would have replaced goes on, and so does whether its copy follows.
 func (w *Watcher) reread(generation uint64, cause string) {
 	w.mu.RLock()
 	due := generation == w.generation && !w.stopped
@@ -84,6 +87,32 @@ func (w *Watcher) clearRereadArm() {
 	}
 	w.rereadTimer.Stop()
 	w.rereadTimer = nil
+}
+
+// armScheduledRead arms generation's scheduled read (WithScheduledRead), a re-read of its bucket
+// (reread) after the scheduled interval, under mu, in place of any armed before; with no interval
+// it arms nothing. Its one caller is generation's read that completed (completeRead), so the wait
+// counts from the copy's last complete read, and none is armed while a read is under way: the
+// watch that installs the next read clears it. It is armed apart from the re-read a timed-out scan
+// or a recreate arms (scheduledTimer says why).
+func (w *Watcher) armScheduledRead(generation uint64) {
+	w.clearScheduledArm()
+	if w.scheduledInterval <= 0 {
+		return
+	}
+	w.scheduledTimer = w.after(w.scheduledInterval, func() { w.reread(generation, scheduledCause) })
+}
+
+// clearScheduledArm drops the armed scheduled read, under mu: a watch that installs (its read is
+// the one the wait was for), the current watcher's own end, a disconnect and Stop call it. A
+// callback of the wait already running reads nothing once the generation has moved (reread), and
+// a watch it starts is discarded when a newer one installed first (watch).
+func (w *Watcher) clearScheduledArm() {
+	if w.scheduledTimer == nil {
+		return
+	}
+	w.scheduledTimer.Stop()
+	w.scheduledTimer = nil
 }
 
 // reportUnrepaired logs the one ERROR for the stop nobody asked for that the watcher of generation
