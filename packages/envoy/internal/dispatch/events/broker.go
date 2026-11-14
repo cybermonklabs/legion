@@ -42,9 +42,10 @@ func NewBroker() *Broker {
 // child.status; a parent patch locks the parent and then the child) would each hold the lock the
 // other waits for, until Postgres killed one. Taking every owner up front in one order leaves no
 // cycle to wait in: each Append then takes its owner's lock again, which returns at once, and its
-// owner's row, which no other writer holds without that lock. An ownerless event addressed to a
-// session has no owner lock and adds none; its Append takes the transaction id itself. LockOwners
-// locks no row, so the transaction holds no transaction id on its account.
+// owner's row, which no other writer holds without that lock. An ownerless event, addressed to a
+// session or a priority's write, has no owner lock and adds none; its Append takes the
+// transaction id itself. LockOwners locks no row, so the transaction holds no transaction id on
+// its account.
 func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Event) error {
 	if b == nil {
 		return fmt.Errorf("event broker required")
@@ -82,11 +83,11 @@ func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Even
 //     write that drew id 7 can still be open after the write that drew id 8 has committed. A
 //     reader that pages the log by a global id cursor reads through a Horizon, only up to the
 //     safe horizon, never up to max(id).
-//   - An ownerless (session-addressed) event takes no lock of its own: its seq is 0, so there
-//     is no sequence to allocate, and two transactions that touch no common row have no defined
-//     order, so either commit order is a valid serialization. Order matters only between writes
-//     that conflict, and every ownerless append follows its transaction's own lock on the row
-//     it changes, which orders it against every write that changes that row. A message create
+//   - An ownerless (session-addressed or priority) event takes no lock of its own: its seq is 0,
+//     so there is no sequence to allocate, and two transactions that touch no common row have no
+//     defined order, so either commit order is a valid serialization. Order matters only between
+//     writes that conflict, and every ownerless append follows its transaction's own lock on the
+//     row it changes, which orders it against every write that changes that row. A message create
 //     (api/messages.go createStoredMessage) and a broadcast (api/broadcasts.go writeBroadcast)
 //     append after inserting the new message row, a reply's insert taking its parent message
 //     row for key share through the foreign key, and a broadcast's new broadcasts and
@@ -99,10 +100,14 @@ func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Even
 //     user_agent_reply_read row. A delivery settle (api/envoy_resolve.go settleDeliveryAttempt)
 //     appends after its update writes the attempt row it claimed; on the branch where that
 //     update finds the row already settled by the session's committed reply, it only reads the
-//     row, which no transaction writes a receipt for again. A per-session lock would add no
-//     order these row locks do not give, only deadlock cycles: the accept path would take it
-//     before the message row and a pending delivery after, and a broadcast one per recipient
-//     in no sorted order.
+//     row, which no transaction writes a receipt for again. A priority's write (api/priorities.go
+//     createPriority, patchPriority, deletePriority) appends `priority.updated` after writing
+//     its priority_nodes row: a create's insert, which a second create of the same id waits on
+//     through the row's (kind, id) key and then finds written, and the update of a rename, a
+//     rank move or a delete, which holds the row locked until the transaction ends. A
+//     per-session or per-priority lock would add no order these row locks do not give, only
+//     deadlock cycles: the accept path would take it before the message row and a pending
+//     delivery after, and a broadcast one per recipient in no sorted order.
 func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Event, error) {
 	var appended model.Event
 	if err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
@@ -114,9 +119,10 @@ func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Ev
 }
 
 // nextOwnerSeq is the sequence an append takes: one past its owner row's last_seq, and 0 for an
-// event with no owner row (a session-addressed message). The insert names it for the event's own
-// seq and, for a payload that carries the owner row (ownerLastSeqPayload), for the last_seq that
-// payload stores; both read the one snapshot the statement runs in, so they are the same number.
+// event with no owner row (a session-addressed message or a priority's write). The insert names
+// it for the event's own seq and, for a payload that carries the owner row (ownerLastSeqPayload),
+// for the last_seq that payload stores; both read the one snapshot the statement runs in, so they
+// are the same number.
 const nextOwnerSeq = `coalesce(
 				(select last_seq from issues where key = $1) + 1,
 				(select last_seq from artifacts where id = $2) + 1,
@@ -188,11 +194,11 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	// it inserted. Every statement of a data-modifying CTE reads one snapshot, so the insert reads
 	// last_seq as the statements before it left it, and the owner's update writes the very
 	// sequence the insert took. Only the owner the event names matches a row: the other two keys
-	// are null, and an ownerless event (a session-addressed message) takes sequence 0 and advances
-	// nothing. The thread_logins the payload names are read in the same snapshot, which holds
-	// every write the transaction made before it, and so is the last_seq a payload that carries
-	// the owner row names (ownerLastSeqPayload): it reads nextOwnerSeq, the expression the event's
-	// own seq reads, so the payload records the sequence the event took.
+	// are null, and an ownerless event (a session-addressed message or a priority's write) takes
+	// sequence 0 and advances nothing. The thread_logins the payload names are read in the same
+	// snapshot, which holds every write the transaction made before it, and so is the last_seq a
+	// payload that carries the owner row names (ownerLastSeqPayload): it reads nextOwnerSeq, the
+	// expression the event's own seq reads, so the payload records the sequence the event took.
 	storedPayload, storedLogins := `$6`, `null::jsonb`
 	args := []any{e.IssueKey, e.ArtifactID, e.ProjectKey, e.Type, actor, payload, e.Notify}
 	if logins != nil {
@@ -256,13 +262,23 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	return nil
 }
 
-// eventOwnerKey requires exactly one of IssueKey/ArtifactID/ProjectKey (or a session-addressed
-// message payload, handled by its caller before this is reached) -- there is no "ownerless"
-// event for a plain configuration change. A cross-project singleton settings table (no project,
-// issue, or artifact of its own) has nothing valid to pass here: see
-// api/settings_delivery.go's putDeliverySettings doc comment for a worked example of a route
-// that checked this directly and deliberately skips appending an event rather than inventing an
-// owner.
+// eventOwnerKey requires at most one of IssueKey/ArtifactID/ProjectKey, and an event naming none
+// of them is one of exactly two kinds, each told by its payload: a session-addressed message or
+// viewer state (agentEventSessionID), keyed "agent:<session>", and a priority's write
+// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>". Any other ownerless
+// event is refused, so there is still no ownerless event for a plain configuration change: a
+// cross-project singleton settings table (no project, issue, or artifact of its own) has
+// nothing valid to pass here. See api/settings_delivery.go's putDeliverySettings doc comment for
+// a worked example of a route that checked this directly and deliberately skips appending an
+// event rather than inventing an owner.
+//
+// The key of an ownerless event locks nothing: eventOwnerLock names no owner lock for it, so
+// LockOwners takes none and lockEventOwner takes only the transaction id, and QueueAppend's
+// insert takes sequence 0 for it and advances no owner row. What orders two writes of one
+// priority is the priority_nodes row each wrote before it appended (Append's doc). Two writes of
+// different priorities share no row, so the broker adds no wait between them; they wait on each
+// other only where their own writes do, as a create and a rank move both take the order's
+// allocation lock (prioritystore.RankAt).
 func eventOwnerKey(e model.Event) (string, error) {
 	owners := 0
 	if e.IssueKey != nil {
@@ -275,6 +291,12 @@ func eventOwnerKey(e model.Event) (string, error) {
 		owners++
 	}
 	if owners == 0 {
+		if payload, ok := e.Payload.(model.PriorityEventPayload); ok {
+			if e.Type != "priority.updated" || payload.ID == "" {
+				return "", fmt.Errorf("ownerless priority event requires type priority.updated and a priority id")
+			}
+			return "priority:" + payload.ID, nil
+		}
 		sessionID, err := agentEventSessionID(e)
 		if err != nil {
 			return "", err
@@ -319,9 +341,9 @@ func agentEventSessionID(e model.Event) (string, error) {
 }
 
 // eventOwnerLock is the owner lock of e's owner, false for an ownerless event (a session-addressed
-// message), which has no owner row and no lock. An event on an issue or a document names its
-// owner as every other row of that collaboration does (store.OwnerOf); a project event, which no
-// such row has, names the project.
+// message or a priority's write), which has no owner row and no lock. An event on an issue or a
+// document names its owner as every other row of that collaboration does (store.OwnerOf); a
+// project event, which no such row has, names the project.
 func eventOwnerLock(e model.Event) (store.Owner, bool) {
 	if owner := store.OwnerOf(e.IssueKey, e.ArtifactID); owner != nil {
 		return *owner, true
@@ -404,10 +426,12 @@ func Quiet(e model.Event) bool {
 	case "project.created", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",
-		"user_thread_state.updated", "decision.kept":
+		"user_thread_state.updated", "decision.kept", "priority.updated":
 		// Settings, importer and per-viewer bookkeeping: retained on their log and carried by
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
-		// decision and agreed with it, which asks its agent for nothing.
+		// decision and agreed with it, which asks its agent for nothing. A priority's write is
+		// the deployment's own configuration of what work advances, which open pages refetch on
+		// and nobody is asked anything by.
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

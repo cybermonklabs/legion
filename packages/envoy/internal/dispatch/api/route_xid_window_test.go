@@ -254,6 +254,16 @@ var routeXidWindowTable = []routeXidWindowCase{
 			"the create's inline steering writes - the project's next number, the mapping's key-share lock, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
 				"the two reads that load the issue it answers with, the queued batch and its COMMIT"),
 	},
+	// A patch stating a relation to a priority decides the revision rule on the issue it read
+	// under its owner lock (refuseAdvancesRevision) and writes the relation after the row's own
+	// update (writeIssueAdvances), whose reads of the issue and of the priority's state are its
+	// write phase's.
+	{
+		name: "the issue patch stating an advances relation", route: "PATCH /api/v1/issues/{key} naming advances (patchIssue, writeIssueAdvances)",
+		ready: readyIssuePatchStatingAdvances, window: storetest.XidWindowOf(8,
+			"the issue row's own update, the reads of the issue and of the priority it advances, the relation's tuple, "+
+				"the two reads that load the issue it answers with, the batch appending issue.updated and its COMMIT"),
+	},
 }
 
 // TestXidWindowRouteTable measures every row of routeXidWindowTable.
@@ -413,6 +423,27 @@ func readyIssueCreateNamingRepository(t *testing.T, base routeFixture) lockedIte
 			}
 			if created := decodeBody[model.Issue](t, answer); created.Repo == nil || *created.Repo != "owner/repo" {
 				t.Fatalf("the created issue's repo = %v, want owner/repo", created.Repo)
+			}
+		})
+}
+
+// readyIssuePatchStatingAdvances drives PATCH /api/v1/issues/{key} naming one priority in
+// advances, with no revision, which a single act needs none of (refuseAdvancesRevision).
+func readyIssuePatchStatingAdvances(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Patch stating advances")
+	createTestPriority(t, fixture.handler, map[string]any{"id": "ship-the-daemon", "title": "Ship the daemon"}, "alice")
+	return fixture.routeWrite(t, "the issue's advances relation",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
+				map[string]any{"advances": []string{"ship-the-daemon"}}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("state the advances relation: status=%d body=%s", answer.Code, answer.Body.String())
+			}
+			if patched := decodeBody[model.Issue](t, answer); len(patched.Advances) != 1 || patched.Advances[0].ID != "ship-the-daemon" {
+				t.Fatalf("the patched issue advances %+v, want ship-the-daemon", patched.Advances)
 			}
 		})
 }

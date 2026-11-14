@@ -17,10 +17,11 @@ import (
 // A running issue pod whose configuration has drifted is not replaced where it is found: every
 // role of the issue runs in that one pod, and ending it ends each of their processes mid-turn and
 // deletes the disk they work on, with everything unpushed on it. The daemon opens an update round
-// over such a pod instead — every worker claim in it is tasked to push its work and answer
-// (api's claims/ready-for-update) — and replaces the pod only once each has answered. PodDrift is
-// what the round is opened on, and ReplacePod what ends the round; the round itself, its task and
-// its sweep are the daemon's (internal/daemon).
+// over such a pod instead. The round asks each role in it to push its work and answer (api's
+// claims/ready-for-update), and replaces the pod once every asked role has answered and no turn
+// runs, or at the round's bound (pod_update_grace_minutes) whatever the roles answered, an
+// operator's suspension excepted. PodDrift is what the round is opened on, and ReplacePod what
+// ends the round; the round itself, its ask and its sweep are the daemon's (internal/daemon).
 //
 // A launch never replaces a live pod a round covers for one of these reasons (relaunch,
 // roundCovers): it keeps the pod and starts its role in it, since the round, not the launch, is

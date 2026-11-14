@@ -827,8 +827,7 @@ func TestProvisionFromAFeedHoldsNoCredential(t *testing.T) {
 // behind holds no working tree at all — its clone takes --no-checkout, and the clear and the
 // abandon that follow keep jj's first snapshot from recording that absent tree as deleted — while
 // the issue's own workspace holds the default branch's files. A clone whose working copy recorded
-// the tree as deleted would show here as a dirty status, a visible deletion commit, or a record of
-// one in .jj/legion-held, which a check of the pod's work reads (internal/rescue).
+// the tree as deleted would show here as a dirty status or a visible deletion commit.
 func TestProvisionFromAFeedLeavesTheSharedCloneWithNoWorkingTree(t *testing.T) {
 	run := newLocalRunner(t)
 	pushRemoteBranch(t, run.remote, "main", "history.txt")
@@ -869,21 +868,14 @@ func TestProvisionFromAFeedLeavesTheSharedCloneWithNoWorkingTree(t *testing.T) {
 	}
 	at := commitOf(t, cloneDir, "@")
 	// The repository's visible heads are the clone's own empty working-copy commit and the one the
-	// issue's workspace works on, which `jj workspace add` created after the clone was recorded:
-	// the deletion commit a clone with no working tree would otherwise carry is one of neither.
+	// issue's workspace works on, which `jj workspace add` created after the clone was made: the
+	// deletion commit a clone with no working tree would otherwise carry is one of neither.
 	heads := strings.Fields(runSetup(t, cloneDir, "jj", "log", "-r", "visible_heads()", "--no-graph", "-T", `commit_id ++ "\n"`, "--ignore-working-copy", "-R", cloneDir))
 	slices.Sort(heads)
 	wantHeads := []string{at, commitOf(t, working.Dir, "@")}
 	slices.Sort(wantHeads)
 	if !slices.Equal(heads, wantHeads) {
 		t.Errorf("the shared clone's visible heads are %q, want %q: its empty working-copy commit and the issue workspace's, and no commit deleting the tree", heads, wantHeads)
-	}
-	recorded, ok, err := Held(cloneDir)
-	if err != nil || !ok {
-		t.Fatalf("Held = %v, %t, %v; want the clone's record of what it held", recorded, ok, err)
-	}
-	if !slices.Equal(recorded, []string{at}) {
-		t.Errorf("the clone's record of what it held names %q, want its empty working-copy commit %s alone: no commit deleting the tree", recorded, at)
 	}
 	if clone := findCall(t, calls, "git", "clone", "--quiet"); !slices.Contains(clone.Argv, "--no-checkout") {
 		t.Errorf("the clone was made with %q, want --no-checkout: no working tree", clone.Argv)

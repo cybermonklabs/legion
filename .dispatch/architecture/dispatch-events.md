@@ -45,6 +45,7 @@ most other writers send that phase a statement at a time, each row write on its 
 Some writers do not yet hold the rule: they make a write or take a row lock before they wait on the owner lock of the event they append, so they hold an id while another writer's document work holds that lock.
 dispatch://INFRA-3397 converts them and keeps the list of them;
 at commit `9e578bcc` of sjawhar/legion#2468 it was `keepDecision`, `putArchitectureSource`, `deleteArchitectureSource`, `putAskSnooze`, `deleteAskSnooze`, `markInboxReadThreads`, `dismissInboxThreads`, the architecture importer's `Importer.project` and `Importer.recordFailure`, and delivery's `UpsertPullRequestHead`, which locks and upserts the pull request's head row before it locks the issues the head moved between.
+Main's `patchPriority` is one more, of another lock: a priority has no owner, but a rename with a move writes the priority's row (`prioritystore.SetAttributes`) before the move takes the order's allocation lock and reads the order (`prioritystore.Move`, `RankAt`), so it holds an id while it waits for that lock.
 A pending observation older than five seconds logs the oldest holder.
 A live event stream that resumes from an id opens at once and heartbeats while the horizon is held, a cold one opens once its subscription is in place, and shutdown ends a stream still waiting.
 A cold stream starts at the relay's published cursor.

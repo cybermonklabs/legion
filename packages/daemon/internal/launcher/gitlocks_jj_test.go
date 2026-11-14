@@ -86,8 +86,8 @@ func newJJClone(t *testing.T) *jjClone {
 	// PUBLIC_LEAK_CHECK with the rest of what reaches past the test — so without a check of this
 	// row's own the push stops with LEAK CHECK SETUP ERROR and the row fails before it has
 	// planted a lock. The stand-in is one that clears every write, written beside the fixture as
-	// every other fixture that pushes writes one (rescuetest's disk), so the row proves the same
-	// thing in a pod as on a runner whose git is the real one.
+	// every other fixture that pushes writes one, so the row proves the same thing in a pod as on
+	// a runner whose git is the real one.
 	run = run.With("PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, root, leakguardtest.Passes))
 	feed, seed := filepath.Join(root, "feed"), filepath.Join(root, "seed")
 	// The clone and the workspace sit where provisioning puts them under a state directory,

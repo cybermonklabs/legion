@@ -129,6 +129,19 @@ function refuseUnsavedRepository(
   );
 }
 
+/** The revision a whole-set write of `advances` carries: the one the caller named, which answers
+ *  a 409 ADVANCES_REVISION, else the one the read answered. A Dispatch server from before
+ *  priorities answers no revision and refuses a write naming `advances`, so whichever revision
+ *  was named the call says so and sends nothing, the closing reason included. */
+function advancesRevisionToSend(issue: IssueDetails, named: number | undefined): number {
+  if (issue.advances_revision === undefined) {
+    throw new Error(
+      `Dispatch read ${issue.key} without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server`
+    );
+  }
+  return named ?? issue.advances_revision;
+}
+
 /** `dispatch issue`: open an issue, or report the one an external reference already holds. */
 export async function issueCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, linkBase } = context;
@@ -144,12 +157,14 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   const repo = optionalString(args, "repo");
   const labels = args.labels;
   const blockedBy = args.blocked_by;
+  const advances = optionalStringArray(args, "advances");
   try {
     const created = await client.issue({
       project,
       title,
       ...(parent === undefined ? {} : { parent }),
       ...(Array.isArray(blockedBy) ? { blocked_by: blockedBy as string[] } : {}),
+      ...(advances === undefined ? {} : { advances }),
       ...(external === undefined ? {} : { external }),
       ...(force === undefined ? {} : { force }),
       ...(spec === undefined ? {} : { spec }),
@@ -245,6 +260,8 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const assignee = optionalNullableString(args, "assignee");
   const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
   const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
+  const advances = optionalStringArray(args, "advances");
+  const advancesRevision = optionalNumber(args, "advances_revision");
   const requestedLinks = Array.isArray(args.external_links)
     ? [...new Set(args.external_links as string[])]
     : undefined;
@@ -254,6 +271,14 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   } catch (error) {
     throw refusalWithCode(error);
   }
+  // The command replaces the issue's own set, so the write carries a revision: with none the
+  // server takes one act alone and refuses a write that moves two relations
+  // (409 ADVANCES_REVISION). The caller's own revision answers that refusal against the
+  // revision it named; with none, the read above is the read this write answers.
+  const advancesWrite =
+    advances === undefined
+      ? undefined
+      : { advances, advances_revision: advancesRevisionToSend(before, advancesRevision) };
   // The schema admits reason only beside status done. The reason is posted first, so the
   // close carries its note and an issue that cannot take the note stays open. Dispatch takes
   // messages on a closed issue (though not asks or artifacts) and answers a second close with
@@ -323,6 +348,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(route === undefined ? {} : { route }),
       ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
       ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
+      ...advancesWrite,
       ...(components === undefined ? {} : { components }),
       ...(repo === undefined ? {} : { repo: repo === "" ? null : repo }),
       ...(sentLinks === undefined ? {} : { external_links: sentLinks }),
@@ -358,6 +384,11 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   refuseUnsavedRepository("updated", after, repo);
   const links = after.external_links ?? [];
   const linkCount = `(${links.length} ${links.length === 1 ? "link" : "links"})`;
+  // What the issue states itself after the write: the answer carries the inherited ones beside
+  // them, and this write replaced only its own.
+  const stated = (after.advances ?? [])
+    .filter((advance) => !advance.inherited)
+    .map((advance) => advance.id);
   const changes = [
     ...(closingNote === undefined
       ? []
@@ -407,6 +438,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
             ? "blocked_by cleared"
             : `blocked by ${(after.blocked_by ?? []).join(", ")}`,
         ]),
+    ...(advances === undefined
+      ? []
+      : [stated.length === 0 ? "advances cleared" : `advances ${stated.join(", ")}`]),
     ...(components === undefined ? [] : [componentsChange(components, after.components)]),
     ...(repo === undefined
       ? []
