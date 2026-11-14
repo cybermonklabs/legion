@@ -15,8 +15,13 @@ import (
 // dirty with nothing in the record saying so. Recording the commit the push left the base at says
 // which base the recorded mergeability and merge state were read against, so the next read of the
 // pull request is known to be needed rather than waited for; it decides nothing else, and the phase
-// of every issue is left exactly where it is. The pull request's own facts - a head, a settlement,
-// a review - are what move an issue, and a base that moved is none of them.
+// of every issue is left exactly where it is. The pull request's own facts - a head, a
+// settlement, a review - are what move an issue, and a base that moved is none of them. So the
+// write below is one of the two in this package that call record.Store.PutPullRequest directly
+// rather than through the helper that marks the issue moved (putPullRequest): the one field it
+// writes is no news of the pull request (pullRequestNews), the record of when the issue last
+// moved is left where it stands, and the walk holds each row already, which a read apiece would
+// only repeat.
 //
 // One fact serves every pull request on the base, so the fact lock is taken once per (repo, base)
 // push however many pull requests sit on it, rather than once per pull request. The first read is
