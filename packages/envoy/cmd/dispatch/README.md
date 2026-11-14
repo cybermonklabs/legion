@@ -2389,6 +2389,9 @@ It refuses:
     The census reads the catalog as it was before the write, and it does not tell a read of such a relation from a write.
     A statement that names such a relation also takes the exemption from every later migration (below).
     A call of `set_config` changes a setting as a `set` does, `search_path` included.
+    A view's query or a rule that calls `set_config`, of a relation that the statement names, stops the reads too, through views over views to any depth.
+    A `select` of a view runs the view's query, and an `insert`, `update` or `delete` runs the rules of its table.
+    The census counts every rule of such a relation, whatever the statement does, which only refuses more.
 
     Every other statement stops the reads, for its own migration and for every later one, and it also takes the exemption from every later migration (below).
     A `do` block, a `call`, an `alter function`, an `alter role … set` and an `alter database … set` stop them.
@@ -2407,7 +2410,8 @@ It refuses:
     Such a migration is not exempt itself either, and no later migration is exempt (below).
 
   The census reads every statement that a pending migration's text shows, whoever may run it, a superuser included.
-  It does not read the code that a function body or a trigger body runs when a statement that keeps the catalog reads on calls it.
+  It also reads the query of every view and every rule of a relation that a statement names, for a relation of `pg_catalog` and for a call of `set_config`.
+  It does not read the body of a function, whether a statement, a view's query or a rule calls it, and it does not read a trigger's body.
   Such code can, for example, create or enable an event trigger that the census does not see.
 
   A marked single non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` has a separate size exception: its scans do not hold off ordinary writes, not because the build is catalog-only.
@@ -2427,7 +2431,7 @@ It refuses:
     A pending `set` of `search_path`, a `drop table`, a `drop view`, a rename or a `set schema` can change which relation the name finds, and the census reads the catalog before any of them applies.
     So a statement that names a table counts when a view over a `pg_catalog` relation in another schema has the table's name, as the view `information_schema.columns` has the name `columns`.
     A name that no relation has does not count, because the statement that creates the relation is judged itself.
-    A statement on the list that stops the reads only because it creates a function, a table or a view whose name `pg_catalog` holds, or because it calls `set_config`, takes no exception away.
+    A statement on the list that stops the reads only because it creates a function, a table or a view whose name `pg_catalog` holds, or because it calls `set_config` itself or through a view or a rule, takes no exception away.
     A function that such a statement creates or replaces runs only when a statement calls it.
 
   - every statement of a kind that is not on the list of statements that keep the catalog reads on, such as a `do` block, a `call`, a `create extension`, an `alter extension` or a `create table … as`.
