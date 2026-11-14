@@ -115,7 +115,7 @@ assertion_table() {
 claim-form|replay|every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
 claim-mark|replay|every claim carries one of the marks its requirement fixes|a claim with no mark
 predicate-form|replay|every row that carries a command carries exactly one predicate over its output, and every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
-install-pinned|replay|every package a recorded command installs or runs names its version, or a constraints file, a pinned list or a local path|a recorded command that runs a package with no version
+install-pinned|replay|every package a recorded command installs or runs names its version, or a constraints file, a pinned list or a local path built under a build constraint, and so does every build backend|a recorded command that runs a package with no version
 replay-command|replay|every recorded command runs again, no read inside it failed unless its predicate is an exit status, and its output meets the predicate the row carries|a recorded output changed by one character
 absence-still-empty|replay|every absence search reads its corpus and still finds nothing, and a read that failed before the search is no empty search|an absence search that now finds something
 quotation-marked|replay|every quotation of a project's prose is marked a claim of the project and not of its code|a quotation marked as evidence of the code
@@ -2262,7 +2262,7 @@ mode_replay() {
         [ -n "$unpinned_id" ] || continue
         fail install-pinned "$unpinned_id runs '$unpinned_what': a package with no version reads whatever release is newest, and a form this reader cannot read is refused rather than passed"
     done <<<"$unpinned"
-    [ -z "$unpinned" ] && pass install-pinned "every package a recorded command installs or runs names its version, or is pinned by a constraints file, a pinned list or a local path"
+    [ -z "$unpinned" ] && pass install-pinned "every package a recorded command installs or runs names its version, or is pinned by a constraints file, a pinned list or a local path built under a build constraint, and so does every build backend"
 
     [ "$bad_form" -eq 0 ] && pass claim-form "every claim of $(claims | wc -l) carries one of the five forms"
     [ "$bad_mark" -eq 0 ] && pass claim-mark "every claim carries a mark its requirement fixes"
