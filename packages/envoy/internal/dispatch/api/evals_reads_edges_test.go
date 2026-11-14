@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -152,6 +155,59 @@ func TestAnItemsLinkKeepsItsRepository(t *testing.T) {
 			if repos := link.Query()["repo"]; len(repos) != 1 || repos[0] != "acme/web" {
 				t.Errorf("%s row %s links to %s, whose repo is %v; want acme/web", read, row.RowKey, row.Href, repos)
 			}
+		}
+	}
+}
+
+// TestALegionItemShowsTheRepositoryItIsFilteredBy: a Legion eval's issue row shows the repository
+// its repo filter keeps it by, the one the day rows cut it by: the repository the issue resolves
+// to when the route reads it (legionfacts.ReadRepos). The stored row holds the repository its
+// facts pass resolved, so a move of the project's default mapping that no pass has carried into
+// the row yet would show one repository while filtering by another. After the move the row reads
+// the new repository unfiltered, answers the new one's filter showing the new one, and answers
+// the old one's filter with nothing.
+func TestALegionItemShowsTheRepositoryItIsFilteredBy(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	ctx := t.Context()
+	exec := func(what, statement string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, statement, args...); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	actor := `{"kind":"user","id":"alice"}`
+	exec("map EVL's default repository", `insert into repo_projects (repo, project, created_by, is_default) values ('acme/old', 'EVL', $1, true)`, actor)
+	exec("write the issue", `insert into issues (key, project_key, number, title, status, rank, created_by) values ('EVL-1', 'EVL', 1, 'Shipped', 'done', 'U', $1)`, actor)
+	day := measures.Midnight(time.Now()).AddDate(0, 0, -1)
+	closed := day.Add(12 * time.Hour)
+	// The row as the facts pass wrote it while acme/old was the default.
+	if _, err := legionfacts.WriteProject(ctx, database.Pool, legionfacts.ProjectWrite{Project: "EVL", Whole: true, Rows: []legionfacts.Row{{
+		Project: "EVL", Issue: "EVL-1", OpenedAt: closed.Add(-3 * time.Hour), ClosedAt: &closed, RootKey: "EVL-1", WorkHours: 2,
+		HoursByPhase: map[string]float64{}, Bars: map[string]metrics.BarPart{}, IdleByRole: map[string]float64{}, Repo: "acme/old",
+	}}}); err != nil {
+		t.Fatalf("write the facts: %v", err)
+	}
+	// The default moves, and no facts pass runs here to carry it into the stored row.
+	exec("unmap acme/old", `delete from repo_projects where repo = 'acme/old'`)
+	exec("map EVL's new default repository", `insert into repo_projects (repo, project, created_by, is_default) values ('acme/new', 'EVL', $1, true)`, actor)
+
+	for _, read := range []struct{ filter, want string }{{"", "acme/new"}, {"acme/new", "acme/new"}, {"acme/old", ""}} {
+		query := url.Values{"row_kind": {"issue"}, "from": {day.Format(time.RFC3339)}, "to": {day.AddDate(0, 0, 1).Format(time.RFC3339)}}
+		if read.filter != "" {
+			query.Set("repo", read.filter)
+		}
+		items := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/EVL/evals/legion-work-time/items?"+query.Encode())
+		var shown []string
+		for _, row := range items.Items {
+			shown = append(shown, fmt.Sprintf("%s in %v", row.RowKey, row.Cols[legionfacts.ColumnRepo]))
+		}
+		want := []string{}
+		if read.want != "" {
+			want = []string{"EVL-1 in " + read.want}
+		}
+		if strings.Join(shown, ", ") != strings.Join(want, ", ") {
+			t.Errorf("the items read with repo %q answer %v, want %v", read.filter, shown, want)
 		}
 	}
 }

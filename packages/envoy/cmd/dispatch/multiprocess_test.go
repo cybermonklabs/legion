@@ -333,20 +333,6 @@ func authenticateEditor(t *testing.T, editor *docstest.Peer) string {
 	return scope
 }
 
-// residentRooms lists the documents the process holds a room of now
-// (GET /api/v1/artifacts/_test/rooms).
-func (p *dispatchProcess) residentRooms(t *testing.T) []string {
-	t.Helper()
-	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/_test/rooms", "", http.StatusOK)
-	var listed struct {
-		Rooms []string `json:"rooms"`
-	}
-	if err := json.Unmarshal(answer, &listed); err != nil {
-		t.Fatalf("decode the resident rooms: %v: %s", err, answer)
-	}
-	return listed.Rooms
-}
-
 // roomCounters is what the process did with the document's rooms and owed settlement since it
 // started: its room failures, lock-waiting compactions, room closes and settlement resumptions
 // (GET /api/v1/artifacts/{id}/_test/room-counters).

@@ -31,8 +31,11 @@
 --   repo             the repository the issue resolves to by the server's one rule (its own,
 --                    the nearest one up its parent chain, else its project's default mapping,
 --                    refs.IssueRepoTerms), and null where none resolves, as of the pass that
---                    wrote the row: an eval item shows it, while the day rows and the items
---                    route's repo filter resolve the issue again when they read it.
+--                    wrote the row. No read shows it or cuts by it: the day rows and the eval
+--                    items route resolve the issue when they read it. A pass's write compares it
+--                    with the repository the pass resolved, so a move of the issue's repository
+--                    is a change of its row, which makes the day-row refresher rebuild a closed
+--                    issue's day under the repository it moved to.
 --
 -- Twelve columns in one statement, so issue_facts is locked once. Each is nullable or carries a
 -- constant default, which Postgres records in the catalog and writes into no stored row; the

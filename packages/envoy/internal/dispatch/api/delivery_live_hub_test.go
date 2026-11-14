@@ -2262,8 +2262,14 @@ func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
 	if !slices.Equal(items, []string{"prs"}) || !slices.Equal(liveUpsertIDs(t, delta, "prs"), []string{"acme/widgets#2"}) || len(delta.Items["prs"].Remove) != 0 {
 		t.Fatalf("delta items = %v, prs upsert %v remove %v; want acme/widgets#2 upserted alone", items, liveUpsertIDs(t, delta, "prs"), delta.Items["prs"].Remove)
 	}
-	if !slices.Equal(set, []string{"measures", "window"}) || len(mapsChanged) != 0 {
-		t.Fatalf("delta set = %v, maps = %v; want measures and window, and no map", set, mapsChanged)
+	// The timeline's measures do not move, so the delta sets the window alone. No deploy shipped
+	// the pull request, so no deploy or lead-time-to-production measure moves; it was open two
+	// hours as the first was (hubPR), so the opened-to-merge spread stays; rework share stays 0.
+	// The one measure that counted every merged pull request was change failure rate's per-PR
+	// total, and change failure rate reads null while no failure source exists
+	// (deliveryFlagsSourceNone).
+	if !slices.Equal(set, []string{"window"}) || len(mapsChanged) != 0 {
+		t.Fatalf("delta set = %v, maps = %v; want the window alone, and no map", set, mapsChanged)
 	}
 	var held struct {
 		FacetCounts map[string]map[string]int `json:"facet_counts"`

@@ -259,11 +259,13 @@ var reposStatement = `
 	where i.key = any($1::text[])`
 
 // ReadRepos is the repository each of the keys resolves to, by key, and no entry for an issue
-// none resolves for: the repository a row of issue_facts holds, and the one the Legion evals' day
-// rows cut a filing by (evals.ReadLegionDay). A parent chain the walk could not finish names no
-// answer either: the issue page refuses such an issue rather than answer its project's default,
-// which would be a wrong one, and a refusal here would stop every pass of the project's facts for
-// good. The row holds no repository for it, which is the answer a chain that names none gets.
+// none resolves for: the repository a pass stores in a row of issue_facts, and the one the Legion
+// evals' day rows cut an issue and a filing by (evals.ReadLegionDay) and the eval items route
+// shows and filters an issue by, each resolved when it is read. A parent chain the walk could not
+// finish names no answer either: the issue page refuses such an issue rather than answer its
+// project's default, which would be a wrong one, and a refusal here would stop every pass of the
+// project's facts for good. The row holds no repository for it, which is the answer a chain that
+// names none gets.
 func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string, error) {
 	repos := map[string]string{}
 	if len(keys) == 0 {
@@ -295,10 +297,13 @@ func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string
 // (ReadRepos) and rewrites the repo of each row whose repository moved, in tx, answering their
 // keys. It is what a change of a repository's mapping owes the stored rows (readChangePage): the
 // rule falls back to the project's default mapping, so a mapping change moves the repository of
-// rows whose issue no feed names, and the eval items route shows each row's repo. The rows' other
-// columns and their updated_at stand, since nothing they were computed from moved. It reads every
-// stored row and resolves them all in one statement: a mapping is an operator's setting, written
-// rarely beside every other change this loop reads.
+// rows whose issue no feed names. No read shows the stored repo; a pass's write compares it with
+// the repository the pass resolved (upsert), so a later move of the issue's repository is a
+// change of its row, which makes the day-row refresher rebuild the issue's day. A stored repo left
+// behind by a mapping would make a move back to it no change at all. The rows' other columns and
+// their updated_at stand, since nothing they were computed from moved. It reads every stored row
+// and resolves them all in one statement: a mapping is an operator's setting, written rarely
+// beside every other change this loop reads.
 func reresolveRepos(ctx context.Context, tx pgx.Tx) ([]string, error) {
 	rows, err := tx.Query(ctx, `select project_key, issue_key, coalesce(repo, '') from issue_facts order by project_key, issue_key`)
 	if err != nil {

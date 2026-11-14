@@ -9,7 +9,7 @@
 // by value, against the eval routes over the same window. The routes read whole UTC days, so
 // -from and -to are UTC midnights in a comparison.
 //
-//	go run ./internal/dispatch/evals/independent/cmd -project LEGK -database "$DATABASE_URL" \
+//	go run ./internal/dispatch/evals/independent/cmd -project LEGK -database <url> \
 //	  -from 2026-10-28T00:00:00Z -to 2026-11-04T00:00:00Z
 package main
 
@@ -22,6 +22,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/evals/independent"
@@ -29,7 +31,7 @@ import (
 
 func main() {
 	project := flag.String("project", "", "the project to read")
-	database := flag.String("database", os.Getenv("DATABASE_URL"), "the Postgres URL to read, or $DATABASE_URL")
+	database := flag.String("database", "", "the Postgres URL to read")
 	from := flag.String("from", "", "the start of the window, RFC 3339")
 	to := flag.String("to", "", "the end of the window, RFC 3339, not included")
 	flag.Parse()
@@ -45,7 +47,7 @@ func run(project, database, from, to string) error {
 		return errors.New("name the project to read with -project")
 	}
 	if database == "" {
-		return errors.New("name the database to read with -database or $DATABASE_URL")
+		return errors.New("name the database to read with -database <url>")
 	}
 	var window independent.Window
 	for _, one := range []struct {
@@ -65,7 +67,19 @@ func run(project, database, from, to string) error {
 		return fmt.Errorf("-from %s must be before -to %s", from, to)
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, database)
+	config, err := pgxpool.ParseConfig(database)
+	if err != nil {
+		return fmt.Errorf("read -database: %w", err)
+	}
+	// pgx scans a timestamptz in the host's zone, and the reading prints its first observations
+	// as they were scanned: scan them in UTC, the zone of the window and of the eval routes.
+	config.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
+		conn.TypeMap().RegisterType(&pgtype.Type{
+			Name: "timestamptz", OID: pgtype.TimestamptzOID, Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC},
+		})
+		return nil
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return fmt.Errorf("open the database: %w", err)
 	}

@@ -8,7 +8,7 @@
 // nothing.
 //
 //	go run ./internal/dispatch/legionfacts/independent/cmd \
-//	  -project INFRA -database "$DATABASE_URL" -to 2026-11-11T12:00:00Z
+//	  -project INFRA -database <url> -to 2026-11-11T12:00:00Z
 //
 // -to defaults to this moment, which is the moment an open issue's work time runs to, and -from
 // to the beginning of the project's history. A reading of a whole project takes the default.
@@ -29,7 +29,7 @@ import (
 
 func main() {
 	project := flag.String("project", "", "the project to read, which is the scope of the answer")
-	database := flag.String("database", os.Getenv("DATABASE_URL"), "the Postgres URL to read, or $DATABASE_URL")
+	database := flag.String("database", "", "the Postgres URL to read")
 	to := flag.String("to", "", "the moment of the computation, RFC 3339; this moment by default")
 	from := flag.String("from", "", "the start of the window, RFC 3339; the beginning of the history by default")
 	flag.Parse()
@@ -45,7 +45,7 @@ func run(project, database, from, to string) error {
 		return fmt.Errorf("name the project to read with -project")
 	}
 	if database == "" {
-		return fmt.Errorf("name the database to read with -database or $DATABASE_URL")
+		return fmt.Errorf("name the database to read with -database <url>")
 	}
 	window := independent.Window{To: time.Now().UTC()}
 	if to != "" {

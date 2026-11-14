@@ -381,42 +381,47 @@ func evalItemsPath(project, slug string) string {
 // closed in it (legionfacts.ReadClosedIn), and for legion-splitting the filings its sessions made
 // in it (legionfacts.ReadFilingsIn); a `filed:<class>` series reads the filings of that class
 // alone, and any other series of legion-splitting the closed issues alone. A series' cut keeps
-// the issues of that cut, by the stored root (metrics.InCut), and repo the issues that resolve to
-// one of the repositories named (legionfacts.ReadRepos, the repository the day rows cut by). Each
-// row carries its issue's title and priority (legionfacts.WithIssues).
+// the issues of that cut, by the stored root (metrics.InCut). The repository each issue resolves
+// to now is read once (legionfacts.ReadRepos, the repository the day rows cut by): a closed
+// issue's row shows it, and repo keeps the issues that resolve to one of the repositories named,
+// so a row never shows one repository while it is kept by another. Each row carries its issue's
+// title and priority (legionfacts.WithIssues).
 func (s *server) legionItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	pool := s.deps.Store.Pool
 	base, cut := metrics.SplitCutSeries(read.request.series)
 	class, filedSeries := strings.CutPrefix(base, metrics.FilingSeriesPrefix)
 	splitting := read.entry.Definition.Slug == evals.SlugLegionSplitting
-	var items []legionfacts.ItemRow
+	var filings []legionfacts.Filing
+	var closed []legionfacts.Row
 	if splitting && (read.request.series == "" || filedSeries) {
-		filings, err := legionfacts.ReadFilingsIn(ctx, pool, read.project, read.rng.days.From, read.rng.days.To)
+		filed, err := legionfacts.ReadFilingsIn(ctx, pool, read.project, read.rng.days.From, read.rng.days.To)
 		if err != nil {
 			return nil, err
 		}
-		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool {
+		filings = slices.DeleteFunc(filed, func(filing legionfacts.Filing) bool {
 			return (filedSeries && filing.Class != class) || !metrics.InCut(cut, filing.RootKey == filing.Issue)
 		})
-		items = append(items, legionfacts.FilingItemRows(filings)...)
 	}
 	if !filedSeries {
-		closed, err := legionfacts.ReadClosedIn(ctx, pool, read.project, read.rng.days.From, read.rng.days.To)
+		stored, err := legionfacts.ReadClosedIn(ctx, pool, read.project, read.rng.days.From, read.rng.days.To)
 		if err != nil {
 			return nil, err
 		}
-		closed = slices.DeleteFunc(closed, func(row legionfacts.Row) bool { return !metrics.InCut(cut, row.RootKey == row.Issue) })
-		items = append(items, legionfacts.ItemRows(closed)...)
+		closed = slices.DeleteFunc(stored, func(row legionfacts.Row) bool { return !metrics.InCut(cut, row.RootKey == row.Issue) })
 	}
-	keys := make([]string, len(items))
-	for index, item := range items {
-		keys[index] = item.RowKey
+	keys := make([]string, 0, len(filings)+len(closed))
+	for _, filing := range filings {
+		keys = append(keys, filing.Issue)
 	}
+	for _, row := range closed {
+		keys = append(keys, row.Issue)
+	}
+	repos, err := legionfacts.ReadRepos(ctx, pool, keys)
+	if err != nil {
+		return nil, err
+	}
+	items := append(legionfacts.FilingItemRows(filings), legionfacts.ItemRows(closed, repos)...)
 	if len(read.request.repos) > 0 {
-		repos, err := legionfacts.ReadRepos(ctx, pool, keys)
-		if err != nil {
-			return nil, err
-		}
 		items = slices.DeleteFunc(items, func(item legionfacts.ItemRow) bool { return !slices.Contains(read.request.repos, repos[item.RowKey]) })
 	}
 	issues, err := legionfacts.ReadItemIssues(ctx, pool, keys)

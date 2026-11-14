@@ -9,7 +9,9 @@ import (
 // items.go turns the stored rows into the rows an eval's issue list serves (dispatch://INFRA-2915,
 // R5). dispatch://INFRA-2916 mounts `GET /api/v1/projects/{key}/evals/{slug}/items`; this file
 // holds the row that route answers for an issue and the function that shapes it, so the route
-// reads stored rows and computes nothing, as every other reader of the facts does.
+// reads stored rows and computes no fact, as every other reader of the facts does. The one column
+// it does not take from the stored row is the issue's repository, which it resolves when it reads
+// (ItemRows).
 
 // ItemRowKind is the row kind an issue's row carries. A row kind is a registered name rather
 // than a fixed list (dispatch://INFRA-979/spec#b-r18), and `issue` is the name of this one.
@@ -22,7 +24,8 @@ const ItemSource = "legionfacts"
 
 // The columns of an issue's row that every row carries, whatever the issue. Each is the
 // issue_facts column of the same name, so a reader of a column and a reader of the table read one
-// word for one number.
+// word for one number, but for ColumnRepo: the repository the issue resolves to when the row is
+// read (ItemRows), not the one the stored row's pass resolved.
 const (
 	ColumnOpenedAt                     = "opened_at"
 	ColumnClosedAt                     = "closed_at"
@@ -91,7 +94,13 @@ type ItemRow struct {
 // recomputed; and an open issue's row's own UpdatedAt, the moment its still-moving facts were
 // computed as of. It is never the moment of this call: a row read an hour after it was written was
 // measured an hour ago, and an eval that charts it reads it at the moment it was true.
-func ItemRows(rows []Row) []ItemRow {
+//
+// The repo column is repos' entry for the issue, "" for none: the repository the issue resolves
+// to now (ReadRepos), which the items route filters by and the Legion day rows cut by
+// (evals.ReadLegionDay). The stored row's repo is the one its facts pass resolved, which a move
+// of a mapping leaves behind until the pass that rewrites it, so a row showing it could stand in
+// one repository's list while naming another.
+func ItemRows(rows []Row, repos map[string]string) []ItemRow {
 	items := make([]ItemRow, 0, len(rows))
 	for _, row := range rows {
 		measured := row.UpdatedAt
@@ -102,7 +111,7 @@ func ItemRows(rows []Row) []ItemRow {
 			Project:    row.Project,
 			RowKey:     row.Issue,
 			RowKind:    ItemRowKind,
-			Columns:    itemColumns(row),
+			Columns:    itemColumns(row, repos[row.Issue]),
 			MeasuredAt: measured,
 			Source:     ItemSource,
 			Href:       "/issues/" + row.Issue,
@@ -112,10 +121,10 @@ func ItemRows(rows []Row) []ItemRow {
 }
 
 // itemColumns is one row's facts by column name: the twenty columns every issue's row carries,
-// one column for each phase the issue has hours in, six for each of the seven bars (its hours and
-// its five segments) and one for each role's idle hours. A bar's holds_hours is no column: it is
-// what a fold counts a bar's issues by, and no issue list shows it.
-func itemColumns(row Row) map[string]any {
+// repo among them, one column for each phase the issue has hours in, six for each of the seven
+// bars (its hours and its five segments) and one for each role's idle hours. A bar's holds_hours
+// is no column: it is what a fold counts a bar's issues by, and no issue list shows it.
+func itemColumns(row Row, repo string) map[string]any {
 	columns := map[string]any{
 		ColumnOpenedAt:                     row.OpenedAt,
 		ColumnClosedAt:                     row.ClosedAt,
@@ -136,7 +145,7 @@ func itemColumns(row Row) map[string]any {
 		ColumnImplementingAfterFirstReview: row.ImplementingAfterFirstReview,
 		ColumnTestingAfterFirstReview:      row.TestingAfterFirstReview,
 		ColumnChildren:                     row.Children,
-		ColumnRepo:                         row.Repo,
+		ColumnRepo:                         repo,
 	}
 	for phase, hours := range row.HoursByPhase {
 		columns[ColumnHoursPrefix+phase] = hours

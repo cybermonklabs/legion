@@ -949,6 +949,25 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	process := startDispatchProcess(t, relay.url)
 	process.waitHealthy(t)
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STOP","name":"Shutdown"}`, http.StatusCreated)
+	// Creating a project seeds its evals and its `evals-md` document, which owes a settlement two
+	// seconds later, and that settlement loads the document's room, which stays resident for a
+	// minute after. The bound below assumes the document service has no room to visit: Shutdown
+	// reads whether each resident room owes a settlement, a read the frozen database never
+	// answers, which would spend the document service's whole drain budget. So wait, on the test's
+	// own pool rather than through the relay, for that settlement to commit, and then close the
+	// room with the quiesce hook (which would cancel a settlement still owed, hence the order).
+	var evalsDocument string
+	if err := database.Pool.QueryRow(ctx, `
+		select id::text from artifacts
+		where project_key = 'STOP' and issue_key is null and session_id is null and slug = 'evals-md'
+	`).Scan(&evalsDocument); err != nil {
+		t.Fatalf("read the project's evals-md: %v", err)
+	}
+	waitForSettlementOwed(t, database, evalsDocument, false)
+	process.call(t, http.MethodPost, "/api/v1/artifacts/_test/quiesce", "", http.StatusOK)
+	if rooms := process.residentRooms(t); len(rooms) != 0 {
+		t.Fatalf("the process holds rooms %v after the quiesce, want none", rooms)
+	}
 
 	// An issue create takes its number from the project's row, so it queues behind this lock.
 	holder, err := database.Pool.Begin(ctx)
@@ -1763,6 +1782,20 @@ func waitForSettlementOwed(t *testing.T, database *store.Store, artifactID strin
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// residentRooms lists the documents the process holds a room of now
+// (GET /api/v1/artifacts/_test/rooms).
+func (p *dispatchProcess) residentRooms(t *testing.T) []string {
+	t.Helper()
+	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/_test/rooms", "", http.StatusOK)
+	var listed struct {
+		Rooms []string `json:"rooms"`
+	}
+	if err := json.Unmarshal(answer, &listed); err != nil {
+		t.Fatalf("decode the resident rooms: %v: %s", err, answer)
+	}
+	return listed.Rooms
 }
 
 // latestVersion is the number, markdown and authors (JSON) of the document's latest version.

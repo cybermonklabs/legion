@@ -3,7 +3,7 @@
 // JSON, what each mode wrote: the project, the counts, the times a check reads its windows from,
 // and for -attribution each row with the projects it counts for.
 //
-//	go run ./internal/dispatch/evals/evalfixture/cmd -database "$DATABASE_URL" -project LEGK \
+//	go run ./internal/dispatch/evals/evalfixture/cmd -database <url> -project LEGK \
 //	  -legion -issues 240 -seed 1 -now 2026-11-13T12:00:00Z
 //
 // The modes add to one project and write its projects row only where it has none, so they
@@ -59,7 +59,7 @@ type output struct {
 func main() {
 	var o options
 	var now string
-	flag.StringVar(&o.database, "database", os.Getenv("DATABASE_URL"), "the Postgres URL to write into, or $DATABASE_URL; it must hold Dispatch's schema")
+	flag.StringVar(&o.database, "database", "", "the Postgres URL to write into; it must hold Dispatch's schema")
 	flag.StringVar(&o.project, "project", "", "the project every mode writes into")
 	flag.BoolVar(&o.legion, "legion", false, "write the Legion history and the project's legion_settings row")
 	flag.BoolVar(&o.base, "base", false, "write the Legion history into a database of the base head 02a7b3c6")
@@ -95,7 +95,7 @@ func run(ctx context.Context, o options) error {
 	case o.project == "":
 		return errors.New("name the project to write with -project")
 	case o.database == "":
-		return errors.New("name the database to write with -database or $DATABASE_URL")
+		return errors.New("name the database to write with -database <url>")
 	case !o.legion && !o.base && !o.attribution && !o.delivery && o.mergePR == "":
 		return errors.New("name at least one mode: -legion, -base, -attribution, -delivery or -merge-pr")
 	case o.base && (o.legion || o.attribution || o.delivery || o.mergePR != ""):

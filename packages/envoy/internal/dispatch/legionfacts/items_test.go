@@ -14,7 +14,9 @@ import (
 // the computation as the source and the issue's own address as the link (R5). The columns are
 // compared field by field against the row they came from, so a column that carried another
 // issue's number, or the moment of the call in place of the moment the facts were measured,
-// fails here.
+// fails here. The repo column is the repository the caller resolved for the issue, not the
+// stored row's: each issue is handed one no stored row holds, so a column read from the row
+// fails.
 func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 	seeded := seed(t, 4)
 	project := seeded.fixture.Project
@@ -23,7 +25,11 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
-	items := ItemRows(rows)
+	repos := map[string]string{}
+	for _, row := range rows {
+		repos[row.Issue] = "example/resolved-" + row.Issue
+	}
+	items := ItemRows(rows, repos)
 
 	if len(items) != len(rows) {
 		t.Fatalf("%d rows made %d items, want one item per row", len(rows), len(items))
@@ -55,7 +61,7 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 		} else {
 			withHours++
 		}
-		compareItemColumns(t, row, item.Columns)
+		compareItemColumns(t, row, repos[row.Issue], item.Columns)
 	}
 	// Both shapes are in the answer, so the columns above were read over an issue whose work
 	// took measured time and over one whose work took none.
@@ -68,11 +74,12 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 		seeded.fixture.To.Format(time.RFC3339), withHours, withoutHours)
 }
 
-// compareItemColumns reads each column of one row against the stored value it comes from: the
-// twenty every row carries, one `hours_<phase>` column for each phase the issue has hours in and
-// no other, six `bar_<role>` columns for each of the seven bars, and one `idle_<role>` for each
-// of the six roles.
-func compareItemColumns(t *testing.T, row Row, columns map[string]any) {
+// compareItemColumns reads each column of one row against the stored value it comes from, and
+// the repo column against repo, the repository the issue resolves to: the twenty every row
+// carries, one `hours_<phase>` column for each phase the issue has hours in and no other, six
+// `bar_<role>` columns for each of the seven bars, and one `idle_<role>` for each of the six
+// roles.
+func compareItemColumns(t *testing.T, row Row, repo string, columns map[string]any) {
 	t.Helper()
 	want := map[string]any{
 		ColumnOpenedAt:                     row.OpenedAt,
@@ -94,7 +101,7 @@ func compareItemColumns(t *testing.T, row Row, columns map[string]any) {
 		ColumnImplementingAfterFirstReview: row.ImplementingAfterFirstReview,
 		ColumnTestingAfterFirstReview:      row.TestingAfterFirstReview,
 		ColumnChildren:                     row.Children,
-		ColumnRepo:                         row.Repo,
+		ColumnRepo:                         repo,
 	}
 	for phase, hours := range row.HoursByPhase {
 		want[ColumnHoursPrefix+phase] = hours

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,18 @@ Ship on Tuesday?
 			t.Errorf("the restored ask reads %s %s %s, want its decided options and urgency, still answered", label, urgency, state)
 		}
 	}
+	// The boot also seeds CORE's evals (the eval seed's boot pass, or the refresher's for a
+	// project it finds unseeded), and the seed creates the project's `evals-md` document, which
+	// owes a settlement of its own like every document write. Once the boot pass has logged, that
+	// seed has committed, so the owed set is exact: the spec, the record copy and that document.
+	process.WaitForOutput(t, `msg="dispatch: the eval seed ran"`)
+	var evalsDocument string
+	if err := database.Pool.QueryRow(ctx, `
+		select id::text from artifacts
+		where project_key = 'CORE' and issue_key is null and session_id is null and slug = 'evals-md'
+	`).Scan(&evalsDocument); err != nil {
+		t.Fatalf("read CORE's evals-md: %v", err)
+	}
 	var owed []string
 	rows, err := database.Pool.Query(ctx, `select artifact_id::text from doc_settlements_pending order by artifact_id`)
 	if err != nil {
@@ -172,8 +185,10 @@ Ship on Tuesday?
 		owed = append(owed, document)
 	}
 	rows.Close()
-	if len(owed) != 2 || owed[0] != spec || owed[1] != record {
-		t.Errorf("the documents owing a settlement after the boot are %v, want the spec %s and the record copy %s", owed, spec, record)
+	want := []string{spec, record, evalsDocument}
+	slices.Sort(want)
+	if !slices.Equal(owed, want) {
+		t.Errorf("the documents owing a settlement after the boot are %v, want the spec %s, the record copy %s and CORE's evals-md %s", owed, spec, record, evalsDocument)
 	}
 	if t.Failed() {
 		t.Logf("Dispatch's output:\n%s", output)
