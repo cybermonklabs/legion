@@ -6,15 +6,22 @@ body: |-
   directory, when the directory holds any entry or is not a directory. So the controller's Dispatch
   and Envoy credentials never trade the operator's `agent-secrets login` sign-in: they trade the
   machine. The start also sets `AGENT_SECRETS_KEY_DIR` to `<state_dir>/controller-keys`, a key
-  directory of the controller's own. It makes that directory 0700 and keeps what it holds, and
-  refuses to start, naming it, when it is not a directory. So `agent-secrets` writes a machine
-  session it registers for the controller there, never into the operator's own key directory,
-  where every later `agent-secrets` call in the operator's shells would sign as it. The
-  controller's `agent-secrets` reads use the helper's session where a helper runs, a machine
-  session of the controller's own where `AGENT_SECRETS_MACHINE_IDENTITY` is set and no helper
-  runs, and otherwise fail with `no session identity`. Two cases change, both intended: a
-  `key.pem` in the operator's own key directory (an agent box's, or that of a pod that ran
-  `agent-secrets enroll --pod`) and the operator's own sign-in no longer sign the controller's
-  reads.
+  directory of the controller's own. It makes that directory 0700, and refuses to start, naming
+  it, when it is not a directory. So `agent-secrets` writes a machine session it registers for the
+  controller there, never into the operator's own key directory, where every later
+  `agent-secrets` call in the operator's shells would sign as it. The controller's
+  `agent-secrets` reads use the helper whenever a helper socket is set or present
+  (`AGENT_SECRETS_HELPER_SOCK` set, or the helper's default socket there), a machine session of
+  the controller's own where `AGENT_SECRETS_MACHINE_IDENTITY` is set and no helper socket is, and
+  otherwise fail with `no session identity`. `legion controller start` drops a machine session
+  `agent-secrets` kept in `<state_dir>/controller-keys` (its key, its enrollment and its
+  `machine-session` marker) whenever a helper socket is set or present, so one read made while
+  the helper was down cannot pin every later read to the machine identity. It keeps that session
+  while no helper socket is set or present, keeps the directory's other entries, and refuses to
+  start, naming the directory and the socket, when the drop fails. A socket that is set with
+  nothing listening fails the read rather than registering a session. Two cases change, both
+  intended: a `key.pem` in the operator's own key directory (an agent box's, or that of a pod
+  that ran `agent-secrets enroll --pod`) and the operator's own sign-in no longer sign the
+  controller's reads.
 custom:
     Issue: pr4029

@@ -34,8 +34,8 @@
 # of them under this run's own work directory, the directories it writes into already there, and
 # its metadata stand-in taking its port file from the environment rather than from the one baked
 # path two stand-ins would fight over; (h) a run given --binaries calls no go at all, copies the
-# seven prebuilt stubs into its own bin directory, and runs them, held to everything (a), (b),
-# (c) and (e) hold a built run to; and (i) a --binaries directory short of one of the seven, or
+# prebuilt stubs into its own bin directory, and runs them, held to everything (a), (b),
+# (c) and (e) hold a built run to; and (i) a --binaries directory short of one of them, or
 # holding one that is not an executable file, is refused with exit 2, naming each such file,
 # before anything is created or started.
 set -euo pipefail
@@ -716,11 +716,11 @@ done
 printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DSN, DATABASE_URL and dev-postgres.sh, and exits 2\n'
 
 # (h) Prebuilt binaries, as the builds farm makes them for a pod that compiles no Go: the fake go
-# makes the seven stubs in a directory of their own, and a run given that directory with
+# makes a stub of each binary in a directory of its own, and a run given that directory with
 # --binaries calls no go at all, puts a copy of each in its own bin directory, and runs those.
 # Every check a built run passes, (a) to (c), holds for it, and so does the stop of (e).
 prebuilt="${temporary_dir}/prebuilt"
-# One list of the seven packages; the binary names the copy check reads come from it.
+# One list of the stack's packages; the binary names the copy check reads come from it.
 prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
   ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
@@ -740,11 +740,11 @@ wait_for_exit 1
 [[ "$exited_status" -eq 130 ]] || fail "the --binaries run exited $exited_status on INT, not 130"
 assert_everything_stopped 'the --binaries run'
 assert_databases_dropped 'the --binaries run' "$psql_calls1" "$run_suffix"
-printf 'PASS: --binaries called no go, copied the seven prebuilt stubs into its own bin directory (%s/bin) and ran them\n' "$work_dir"
+printf 'PASS: --binaries called no go, copied the %d prebuilt stubs into its own bin directory (%s/bin) and ran them\n' "${#prebuilt_packages[@]}" "$work_dir"
 
-# (i) A --binaries directory that is not the seven executable files is refused with exit 2,
-# naming each file that is missing or not executable and no other, before anything is created
-# or started: no work directory, and no psql, curl or go call.
+# (i) A --binaries directory that does not hold each of those executable files is refused with
+# exit 2, naming each file that is missing or not executable and no other, before anything is
+# created or started: no work directory, and no psql, curl or go call.
 work_dirs_made() { compgen -G "${temporary_dir}/dev-stack.*" | wc -l || true; }
 refuse_binaries() {
   local label="$1" dir="$2" made_before tool

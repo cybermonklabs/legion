@@ -21,10 +21,10 @@
 # applying every migration it does not find in its own table, and production gives them separate
 # databases for the same reason.
 #
-# It builds the seven Go binaries it runs into this run's own directory with one go build, unless
+# It builds the Go binaries it runs into this run's own directory with one go build, unless
 # --binaries <dir> names a directory that already holds them, built elsewhere: a Legion pod sends
 # a Go build out to the builds farm rather than running it itself. Then it runs those in place of
-# its go build, and needs no go on PATH. It requires all seven in that directory, broker,
+# its go build, and needs no go on PATH. It requires each of them in that directory, broker,
 # dev-oidc-issuer, dispatch, listener, agent-secrets, agent-secrets-helper and natsd, each an
 # executable file, and refuses before it creates or starts anything -- no database, no port, no
 # process -- when one is missing or is not, naming each such file. It copies them into this run's
@@ -105,7 +105,7 @@
 # server for someone to drop by hand, as does any other signal this script does not trap.
 #
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh    # a Legion pod: the variable is already set
-#   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the seven binaries
+#   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the binaries
 #     --binaries "$TMPDIR/dev-stack-bin"                # the builds farm made
 #   bash scripts/dev-postgres.sh                        # a box with Docker: start the shared
 #   bash scripts/dev-stack.sh \                         # dispatch-pg, then name it here
@@ -132,8 +132,8 @@ DATABASE_URL; this run creates and drops two databases of its own on that server
 
 With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, agent-secrets,
 agent-secrets-helper and natsd in <dir> in place of building them; a directory short of any of
-the seven, or holding one that is not an executable file, is refused, naming each, before
-anything is created or started.
+them, or holding one that is not an executable file, is refused, naming each, before anything is
+created or started.
 EOF
 }
 
@@ -155,7 +155,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --binaries)
       if [ "$#" -lt 2 ] || [ -z "$2" ]; then
-        echo "dev-stack: --binaries needs the directory that holds the seven binaries" >&2
+        echo "dev-stack: --binaries needs the directory that holds the stack's binaries" >&2
         exit 2
       fi
       BINARIES_OPTION="$2"
@@ -164,7 +164,7 @@ while [ "$#" -gt 0 ]; do
     --binaries=*)
       BINARIES_OPTION="${1#--binaries=}"
       if [ -z "$BINARIES_OPTION" ]; then
-        echo "dev-stack: --binaries needs the directory that holds the seven binaries" >&2
+        echo "dev-stack: --binaries needs the directory that holds the stack's binaries" >&2
         exit 2
       fi
       shift
@@ -213,8 +213,8 @@ done
 
 # --- The prebuilt binaries --binaries names, checked here for the reason the URL is: a directory
 # short of one leaves nothing behind, since nothing is created or started before this. Every one
-# of the seven is required, each an executable file, and the refusal names every file that is
-# not, rather than the first, so one look at it says what the build left out. ---
+# of them is required, each an executable file, and the refusal names every file that is not,
+# rather than the first, so one look at it says what the build left out. ---
 if [ -n "$BINARIES_OPTION" ]; then
   unusable=()
   for binary in "${STACK_BINARIES[@]}"; do
@@ -226,7 +226,7 @@ if [ -n "$BINARIES_OPTION" ]; then
     fi
   done
   if [ "${#unusable[@]}" -gt 0 ]; then
-    echo "dev-stack: refused: --binaries $BINARIES_OPTION does not hold the seven binaries this stack runs (${STACK_BINARIES[*]}), each an executable file:" >&2
+    echo "dev-stack: refused: --binaries $BINARIES_OPTION does not hold the ${#STACK_BINARIES[@]} binaries this stack runs (${STACK_BINARIES[*]}), each an executable file:" >&2
     printf '%s\n' "${unusable[@]}" >&2
     exit 2
   fi
@@ -439,8 +439,8 @@ DISPLAY_SERVER="$(printf '%s' "$POSTGRES_SERVER" | sed -E 's#^(postgres(ql)?://[
 
 # --- Every binary this stack runs, in this run's own directory. One go build: the packages share
 # most of their closure, so building them together is one compile of it. With --binaries, a copy
-# of each of the seven checked above instead, into the directory the build writes, so nothing
-# below can tell the two apart. ---
+# of each one checked above instead, into the directory the build writes, so nothing below can
+# tell the two apart. ---
 if [ -n "$BINARIES_OPTION" ]; then
   echo "dev-stack: copying ${STACK_BINARIES[*]} from $BINARIES_OPTION..." >&2
   for binary in "${STACK_BINARIES[@]}"; do

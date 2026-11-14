@@ -116,8 +116,8 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // first turn — in the foreground with the same environment, and answer
 // its exit code. A refusal before the secret is written removes the directories made for the
 // probe, the sign-in directory and the key directory, so the state directory is as it was, but
-// for a machine session dropped from the key directory under a helper socket: the helper signs in
-// its place.
+// for a machine session dropped from the key directory under a helper socket, which stays
+// dropped: the helper signs the controller's agent-secrets reads in its place.
 func controllerStart(ctx context.Context, configPath, daemonURL string, stderr io.Writer) (int, error) {
 	absolute, err := filepath.EvalSymlinks(configPath)
 	if err == nil {
