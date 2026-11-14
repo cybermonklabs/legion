@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -514,15 +515,31 @@ func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
 	requireConditional(t, h, sentBefore, h.passLine())
 }
 
-// slowRecordLimits is a shared ledger whose write of a limit GitHub answered takes longer than
-// the pass has left, which is a busy database or a pass already near its bound.
-type slowRecordLimits struct {
+// boundRecordLimits is a shared ledger whose write of a limit GitHub answered waits until the
+// pass that met the limit has run out of its own bound, which is a busy database or a pass
+// already near its end. It takes the pass's context from the ledger read the client makes before
+// each request (githubapp.Client.send), which is given the caller's own context; the write is
+// given whatever context the client chose for it.
+type boundRecordLimits struct {
 	githubapp.Limits
-	delay time.Duration
+	mu   sync.Mutex
+	pass context.Context
 }
 
-func (l slowRecordLimits) Record(ctx context.Context, scope string, wait time.Duration) error {
-	time.Sleep(l.delay)
+func (l *boundRecordLimits) Wait(ctx context.Context, scope string) (time.Duration, time.Time, error) {
+	l.mu.Lock()
+	l.pass = ctx
+	l.mu.Unlock()
+	return l.Limits.Wait(ctx, scope)
+}
+
+func (l *boundRecordLimits) Record(ctx context.Context, scope string, wait time.Duration) error {
+	l.mu.Lock()
+	pass := l.pass
+	l.mu.Unlock()
+	if pass != nil {
+		<-pass.Done()
+	}
 	return l.Limits.Record(ctx, scope, wait)
 }
 
@@ -538,7 +555,7 @@ func TestALimitAnsweredAsTheBoundFallsIsALimit(t *testing.T) {
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
 	h.reconciler.PassTimeout = 2 * time.Second
-	h.reconciler.GitHub = h.github.client(slowRecordLimits{Limits: ratelimit.New(h.pool), delay: 3 * time.Second})
+	h.reconciler.GitHub = h.github.client(&boundRecordLimits{Limits: ratelimit.New(h.pool)})
 	h.github.rateLimitNext(suitesOf(head(8)))
 
 	h.pass()
