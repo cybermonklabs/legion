@@ -262,8 +262,14 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		stated := record.CatchUpGate{Step: step, Gated: slices.Contains(steps, step)}
 		if recorded, ok := gates[step]; ok {
 			stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, classify.DesignGateOpen(recorded)
-			if recorded.ApprovedVersion != nil {
+			// A step open on an ancestor's approval holds the version the root registered as its
+			// ApprovedVersion, which no person approved, so it states no approved version: the
+			// basis beside it is what opened the step (dispatch://INFRA-3320, R2).
+			if recorded.ApprovedVersion != nil && !recorded.OnBasis() {
 				stated.Approved = *recorded.ApprovedVersion
+			}
+			if recorded.Basis != nil {
+				stated.Pending, stated.Basis = recorded.PendingOnBasis(), record.CatchUpBasisOf(*recorded.Basis)
 			}
 		} else {
 			stated.Unregistered = true

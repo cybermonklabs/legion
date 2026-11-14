@@ -51,6 +51,7 @@
       "phase": "admitted",
       "status": "in_progress",
       "tree": "LEGION-208",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
@@ -126,6 +127,7 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-210",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {},
@@ -155,6 +157,7 @@
       "phase": "implementing",
       "status": "todo",
       "tree": "LEGION-211",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {},

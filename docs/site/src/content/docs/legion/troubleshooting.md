@@ -401,8 +401,19 @@ until someone approves the latest version from the document's header or the Inbo
 earlier version does not count: the spec changed since. The gate holds the tree's start, not its merge.
 Where `gates.design` lists more than one step, `gatedSteps` carries one entry per step, each with
 its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
-`approved` or `changes_requested`): the tree waits until every entry reads `approved`, and
-`designGate` beside it is the `spec` step's record alone.
+`approved`, `changes_requested`, `open_on_basis` or `pending_on_basis`): the tree waits until every
+entry reads `approved` or `open_on_basis`, and `designGate` beside it is the `spec` step's record
+alone.
+
+A root whose architect wrote its spec as a view on an ancestor can register the step on that
+ancestor's approval. Then the step reads `open_on_basis`: it is open, and no person approved the
+root's own version. `basis` names the ancestor `issue`, its `artifactId`, the approved `version`,
+the `approver` and `approvedAt`, and `approvedVersion` is the root's version that its architect
+registered. A step that reads `pending_on_basis` is closed until a person approves the ancestor's
+version that `basis` names; `basis.askId` is the open approval request, so read that request on the
+ancestor, not an approval request on the root. On a root, `treeRuns` says whether its tree runs:
+`false` on a root that lingers, or that waits in the line for its tree to open after a
+re-admission, whatever its architect's claim reads.
 
 ## A parked tree did not come back after a decision
 

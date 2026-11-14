@@ -2,12 +2,14 @@ package workflow
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -420,5 +422,65 @@ func TestEachRegistrationOfTheSpecStepWritesItsViewFact(t *testing.T) {
 	apply("register-spec-again", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 5})
 	if got := recordedRoot(t, pool).ViewOf; got != "" {
 		t.Fatalf("the view fact after a spec registration that reads no view = %q, want none", got)
+	}
+}
+
+// A relaunched architect reads a step on its ancestor's basis from its catch-up as the step stands
+// (dispatch://INFRA-3320, R2). A step a basis opened reads open and registered at the root's
+// version, with no version a person approved, since no person approved it, and the ancestor's
+// approval beside it, so the architect neither asks a person for an approval nor reads one that
+// was never given. A step that waits on the ancestor's open request reads closed and pending,
+// with the person's approval of the root's own earlier version it holds and the request beside
+// it. Once the wait ends, the step reads as registered on the root's own document, with no basis.
+func TestACatchUpStatesAStepOnABasisAsItStands(t *testing.T) {
+	personal := 2
+	own := record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc, LatestVersion: 4,
+		ApprovedVersion: &personal, ApprovedMark: record.EventMark{Seq: 3, At: basisApprovedAt.Add(-time.Hour)}}
+	registered := func(basis *record.GateBasis) record.GateBasis {
+		basis.RegisteredAt = basisEngineNow
+		return *basis
+	}
+	pending := record.PendOnBasis(own, registered(pendingBasis()), "ask-100")
+	for _, tc := range []struct {
+		name string
+		gate record.DesignGate
+		want record.CatchUpGate
+	}{
+		{"a step a basis opened", record.OpenOnBasis(own, registered(approvedBasis())), record.CatchUpGate{
+			Step: record.DesignStepSpec, Gated: true, Artifact: gateDoc, Version: 4, Open: true,
+			Basis: &record.CatchUpBasis{Issue: basisAncestor, Artifact: basisDoc, Version: 3, Approver: "user:alice", ApprovedAt: basisApprovedAt},
+		}},
+		{"a step that waits on the ancestor's request", pending, record.CatchUpGate{
+			Step: record.DesignStepSpec, Gated: true, Artifact: gateDoc, Version: 4, Approved: 2, Pending: true,
+			Basis: &record.CatchUpBasis{Issue: basisAncestor, Artifact: basisDoc, Version: 4, Ask: "ask-100"},
+		}},
+		{"a step whose wait ended", record.EndPendingBasis(pending), record.CatchUpGate{
+			Step: record.DesignStepSpec, Gated: true, Artifact: gateDoc, Version: 4, Approved: 2,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedGatedTree(t, pool)
+			seedGate(t, pool, tc.gate)
+			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), gatedRoot, claim.RoleArchitect, 1)
+			gates := lastCatchUp(t, pool).Gates
+			if len(gates) != 1 {
+				t.Fatalf("the catch-up states %#v, want the one spec step", gates)
+			}
+			got := gates[0]
+			// Dispatch's time of the approval is compared as an instant: the notice crossed the
+			// outbox as JSON.
+			if got.Basis != nil && tc.want.Basis != nil {
+				if !got.Basis.ApprovedAt.Equal(tc.want.Basis.ApprovedAt) {
+					t.Fatalf("the catch-up names the approval at %s, want %s", got.Basis.ApprovedAt, tc.want.Basis.ApprovedAt)
+				}
+				basis, want := *got.Basis, *tc.want.Basis
+				basis.ApprovedAt, want.ApprovedAt = time.Time{}, time.Time{}
+				got.Basis, tc.want.Basis = &basis, &want
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the catch-up states %#v (basis %#v), want %#v (basis %#v)", got, got.Basis, tc.want, tc.want.Basis)
+			}
+		})
 	}
 }

@@ -551,19 +551,53 @@ type CatchUp struct {
 // Unregistered says the root holds no record of the step at all, which is the step its architect
 // has still to register.
 //
+// A step can also stand open on an ancestor's approval, or wait, closed, on an ancestor's open
+// approval request (dispatch://INFRA-3320, R1 and R2): Basis names that approval or that request,
+// and Pending says the step waits on the request. A step open on a basis reads Open with no
+// Approved, since no person approved the version the root registered, so a relaunched architect
+// reads the step as open and registered on its ancestor's approval rather than as one a person
+// approved, or as one it must ask a person to approve. A pending step reads Open false, Pending,
+// and the version a person approved of the root's own document, if any. A step whose basis has
+// ended carries neither, and reads as registered on the root's own document.
+//
 // A catch-up carries one entry for each step the root must hold open before its tree works
 // (classify.RequiredSteps), so a deployment that gates nothing carries the one spec entry with
 // Gated false: that registration opens the step at once and asks no person, which is what the
 // policy word `off` said. The list replaced that word, because one word cannot name a list and
 // each entry now says its own step's part of it.
 type CatchUpGate struct {
-	Step         DesignStep `json:"step"`
-	Gated        bool       `json:"gated"`
-	Unregistered bool       `json:"unregistered,omitempty"`
-	Artifact     string     `json:"artifact,omitempty"`
-	Version      int        `json:"version,omitempty"`
-	Approved     int        `json:"approved,omitempty"`
-	Open         bool       `json:"open"`
+	Step         DesignStep    `json:"step"`
+	Gated        bool          `json:"gated"`
+	Unregistered bool          `json:"unregistered,omitempty"`
+	Artifact     string        `json:"artifact,omitempty"`
+	Version      int           `json:"version,omitempty"`
+	Approved     int           `json:"approved,omitempty"`
+	Open         bool          `json:"open"`
+	Pending      bool          `json:"pending,omitempty"`
+	Basis        *CatchUpBasis `json:"basis,omitempty"`
+}
+
+// CatchUpBasis is the ancestor's approval a step stands open on, or the ancestor's open approval
+// request it waits on, as a catch-up names it (GateBasis): the ancestor, its document and
+// the version a person approved or is asked to approve; for an approval, who gave it and
+// Dispatch's time of it; for a request, its ask id.
+type CatchUpBasis struct {
+	Issue      string    `json:"issue"`
+	Artifact   string    `json:"artifact"`
+	Version    int       `json:"version"`
+	Approver   string    `json:"approver,omitempty"`
+	ApprovedAt time.Time `json:"approved_at,omitzero"`
+	Ask        string    `json:"ask,omitempty"`
+}
+
+// CatchUpBasisOf is basis as a catch-up names it.
+func CatchUpBasisOf(basis GateBasis) *CatchUpBasis {
+	stated := &CatchUpBasis{Issue: basis.Issue, Artifact: basis.ArtifactID, Version: basis.Version,
+		Approver: basis.Approver, ApprovedAt: basis.Approval.At}
+	if basis.Pending != nil {
+		stated.Ask = basis.Pending.Ask
+	}
+	return stated
 }
 
 // CatchUpIssue is one issue of the tree as a catch-up lists it.

@@ -516,6 +516,17 @@ type Issue struct {
 	// find the members of a tree that lingers. Absent on an issue the workflow does not record
 	// (an operator's claim, Unrecorded), which stands in no tree.
 	Tree string `json:"tree,omitempty"`
+	// TreeRuns is whether the tree this root roots is running under the workflow, as the daemon's
+	// own rule answers it (record.TreeRuns): its lifecycle stands open under the workflow, the
+	// root does not linger, and the root does not wait in the line for that tree to be opened
+	// (record.QueuedRoot). It is on every root the record holds of this daemon's project and on
+	// no other issue, since no other field of the record decides it in every case: a root a
+	// re-admission left at todo waiting for a slot runs nothing whatever its architect's claim
+	// reads, and a root a person answered runs while it waits in the line for its resume
+	// (dispatch://INFRA-3320, R4). A pointer, so a tree that does not run writes `false`. It is
+	// absent from the body the route serves a caller below gateBasisContract (api's stateFor,
+	// withoutGateBasis).
+	TreeRuns *bool `json:"treeRuns,omitempty"`
 	// Repo is the repository (owner/name) the issue targets and DefaultBranch that repository's
 	// default branch, both taken when the daemon first recorded the issue and never changed after.
 	// Both are absent on an issue the workflow does not record (an operator's claim, Unrecorded).
@@ -558,7 +569,9 @@ type Issue struct {
 	// gate itself is, for an issue that is not its tree's root, for a deployment that gates no
 	// step and for an issue the workflow does not record, so the wire never carries an empty
 	// list. DesignGate is unchanged beside it: it is the spec step's row, which every reader that
-	// asks one question of one gate still takes.
+	// asks one question of one gate still takes. A caller below gateBasisContract is served no
+	// GatedSteps on an issue any step of which reads `open_on_basis` or `pending_on_basis`, since
+	// no word such a caller knows is true of that step (api's stateFor, withoutGateBasis).
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
 	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present
@@ -999,7 +1012,9 @@ type PullRequestView struct {
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, and the
 // version a human approved. ApprovedVersion is nil until someone approves one; the gate is open
-// exactly when it equals CurrentVersion.
+// exactly when it equals CurrentVersion. A spec step that stands open on an ancestor's approval
+// (dispatch://INFRA-3320, R1) holds the version its root registered there, which no person
+// approved: the step's entry in GatedSteps reads `open_on_basis` and names that approval.
 type GateView struct {
 	ArtifactID      string `json:"artifactId"`
 	CurrentVersion  int    `json:"currentVersion"`
@@ -1007,7 +1022,7 @@ type GateView struct {
 }
 
 // GatedStepStatus is where one gated step of a deployment stands, as the issue's gate records say
-// it: the four answers a record can give.
+// it: the six answers a record can give.
 type GatedStepStatus string
 
 const (
@@ -1019,19 +1034,32 @@ const (
 	// the approval or the changes request it records, if any, is of a version below the current
 	// one, which a newer version of the document left behind. It waits on a person.
 	GatedStepWaiting GatedStepStatus = "waiting"
-	// GatedStepApproved is a step a person approved at its current document version: the one
-	// status that lets the tree's work past the step (classify.DesignGateOpen).
+	// GatedStepApproved is a step a person approved at its current document version, which lets
+	// the tree's work past the step (classify.DesignGateOpen).
 	GatedStepApproved GatedStepStatus = "approved"
 	// GatedStepChangesRequested is a step whose reviewer asked for changes at its current document
 	// version, which the architect was told of; ChangesReason carries the reason the reviewer gave.
 	GatedStepChangesRequested GatedStepStatus = "changes_requested"
+	// GatedStepOpenOnBasis is a step that stands open on an ancestor's approval
+	// (record.DesignGate.OnBasis): its root's architect registered the current version of the
+	// root's document on a person's approval of the ancestor's document, which Basis names, and
+	// no person approved the root's own version. It lets the tree's work past the step as an
+	// approval does, and is no person's approval of the root.
+	GatedStepOpenOnBasis GatedStepStatus = "open_on_basis"
+	// GatedStepPendingOnBasis is a step that waits, closed, on an ancestor's open approval request
+	// (record.DesignGate.PendingOnBasis), which Basis names with its ask id: the person's approval
+	// of that version opens the step, and the step asks for no approval of the root's own.
+	GatedStepPendingOnBasis GatedStepStatus = "pending_on_basis"
 )
 
 // GatedStepView is one step of the deployment's design gate as one issue stands in it: the step,
 // the document its architect registered for the step, that document's current version, the
 // version a person approved, where the step stands and, for a step whose reviewer asked for
 // changes, the reason they gave. A step nobody has registered carries no document, no version and
-// no approval.
+// no approval. A step open on an ancestor's approval carries the root's version registered as its
+// ApprovedVersion, which the planner reads as the version its tree works from, and Basis beside it
+// says that no person approved that version; a step pending on an ancestor's request carries the
+// version a person approved of the root's own document, if any, and Basis names the request.
 type GatedStepView struct {
 	Step            record.DesignStep `json:"step"`
 	ArtifactID      string            `json:"artifactId,omitempty"`
@@ -1039,6 +1067,33 @@ type GatedStepView struct {
 	ApprovedVersion *int              `json:"approvedVersion"`
 	Status          GatedStepStatus   `json:"status"`
 	ChangesReason   string            `json:"changesReason,omitempty"`
+	Basis           *GatedStepBasis   `json:"basis,omitempty"`
+}
+
+// GatedStepBasis is the ancestor's approval a step stands open on, or the ancestor's open approval
+// request it waits on (record.GateBasis): the ancestor issue, its document and the version a
+// person approved or is asked to approve; for an approval, who gave it as Dispatch names an actor
+// and Dispatch's time of it, where Dispatch gave one; for a request, its ask id. It is present only
+// on a step whose status is GatedStepOpenOnBasis or GatedStepPendingOnBasis.
+type GatedStepBasis struct {
+	Issue      string     `json:"issue"`
+	ArtifactID string     `json:"artifactId"`
+	Version    int        `json:"version"`
+	Approver   string     `json:"approver,omitempty"`
+	ApprovedAt *time.Time `json:"approvedAt,omitempty"`
+	AskID      string     `json:"askId,omitempty"`
+}
+
+// gatedStepBasisOf is basis as a step's entry names it.
+func gatedStepBasisOf(basis record.GateBasis) *GatedStepBasis {
+	view := &GatedStepBasis{Issue: basis.Issue, ArtifactID: basis.ArtifactID, Version: basis.Version, Approver: basis.Approver}
+	if at := basis.Approval.At; !at.IsZero() {
+		view.ApprovedAt = &at
+	}
+	if basis.Pending != nil {
+		view.AskID = basis.Pending.Ask
+	}
+	return view
 }
 
 // GatedStepViewsOf is steps, the design-gate steps a deployment gates, as one issue stands in
@@ -1050,6 +1105,11 @@ type GatedStepView struct {
 // state — and appears in no entry here, because it holds no work: every reader of the gate asks
 // the configured steps (classify.DesignGatesOpen). A configured step with no row is the other
 // direction, and is answered unregistered: it holds the tree's work, so a reader must see it.
+//
+// A step on an ancestor's basis is read before the person's review, so a step a basis opened is
+// never answered `approved`, the word for a person's approval, and a step waiting on the
+// ancestor's request never `waiting`, which would send its architect to ask a person for an
+// approval of its own (dispatch://INFRA-3320, R2).
 func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []GatedStepView {
 	views := make([]GatedStepView, 0, len(steps))
 	for _, step := range steps {
@@ -1066,6 +1126,10 @@ func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]rec
 			Status:          GatedStepWaiting,
 		}
 		switch {
+		case gate.PendingOnBasis():
+			view.Status, view.Basis = GatedStepPendingOnBasis, gatedStepBasisOf(*gate.Basis)
+		case gate.OnBasis() && classify.DesignGateOpen(gate):
+			view.Status, view.Basis = GatedStepOpenOnBasis, gatedStepBasisOf(*gate.Basis)
 		case classify.DesignGateOpen(gate):
 			view.Status = GatedStepApproved
 		case gate.ToldChangesVersion != nil && *gate.ToldChangesVersion == gate.LatestVersion:
