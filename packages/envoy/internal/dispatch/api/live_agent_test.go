@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -646,40 +647,43 @@ func (s *failingSource) Watch(sessionID string) error {
 // A relay that cannot subscribe the view or tell the session it is attached ends the subscription
 // as dropped, so its page subscribes again rather than watching a session that never hears of it;
 // and it waits the server's retry first, so a relay that keeps failing is asked again at that
-// pace rather than as fast as the page can subscribe. The test sets a retry of its own: what it
-// proves is that the view waits that retry out, not how long production's second is.
+// pace rather than as fast as the page can subscribe. The retry is the server's own when a test
+// gives it one, and production's agentStreamRetry on a server built as production builds it.
 func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
-	for name, source := range map[string]*failingSource{
-		"its subscribe": {Memory: agentstream.NewMemory(), subscribe: errors.New("nats: connection closed")},
-		"its watch":     {Memory: agentstream.NewMemory(), watch: errors.New("nats: connection reconnecting")},
+	// No t.Parallel: this test measures the process. The failed view must leave the session's
+	// frames within half of the retry, and another test's work on the same machine would read as
+	// a view that held on to them.
+	for name, retry := range map[string]time.Duration{
+		"a retry the server was given": 100 * time.Millisecond,
+		"production's retry":           0,
 	} {
-		t.Run(name, func(t *testing.T) {
-			const retry = 100 * time.Millisecond
-			_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source, agentStreamRetry: retry})
-			stream := newGatedStream()
-			close(stream.gate)
-			began := time.Now()
-			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
-			t.Cleanup(running.stop)
-			pollUntil(t, retry/2, "the failed view leaves the session's frames before its end", func() bool {
-				return source.Viewers(plannerSessionID) == 0
+		want := cmp.Or(retry, agentStreamRetry)
+		for failing, source := range map[string]*failingSource{
+			"its subscribe": {Memory: agentstream.NewMemory(), subscribe: errors.New("nats: connection closed")},
+			"its watch":     {Memory: agentstream.NewMemory(), watch: errors.New("nats: connection reconnecting")},
+		} {
+			t.Run(name+", "+failing, func(t *testing.T) {
+				_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source, agentStreamRetry: retry})
+				stream := newGatedStream()
+				close(stream.gate)
+				began := time.Now()
+				running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
+				t.Cleanup(running.stop)
+				pollUntil(t, want/2, "the failed view leaves the session's frames before its end", func() bool {
+					return source.Viewers(plannerSessionID) == 0
+				})
+				ended, ok := stream.next(t, "agent's end").(LiveEnded)
+				if !ok || ended.Sub != "agent" || ended.Reason != "dropped" {
+					t.Fatalf("the first frame of a view whose relay failed = %+v, want its end, dropped", ended)
+				}
+				if waited := time.Since(began); waited < want {
+					t.Fatalf("the view ended %s after it started, before the relay's retry (%s)", waited, want)
+				}
+				pollUntil(t, concurrentWait, "the failed view leaves the session's frames", func() bool {
+					return source.Viewers(plannerSessionID) == 0
+				})
 			})
-			ended, ok := stream.next(t, "agent's end").(LiveEnded)
-			if !ok || ended.Sub != "agent" || ended.Reason != "dropped" {
-				t.Fatalf("the first frame of a view whose relay failed = %+v, want its end, dropped", ended)
-			}
-			if waited := time.Since(began); waited < retry {
-				t.Fatalf("the view ended %s after it started, before the relay's retry (%s)", waited, retry)
-			}
-			pollUntil(t, concurrentWait, "the failed view leaves the session's frames", func() bool {
-				return source.Viewers(plannerSessionID) == 0
-			})
-		})
+		}
 	}
 }
 

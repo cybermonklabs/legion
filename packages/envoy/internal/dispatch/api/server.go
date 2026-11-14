@@ -619,10 +619,14 @@ type Background struct {
 	EventHead func(context.Context) (int64, error)
 	// EventHorizon answers the server's one events.Horizon (horizon(), event_stream_relay.go),
 	// built on the first call: the safe horizon every reader that pages the event log by a global
-	// id cursor reads up to. The suggestion outcome sweep takes it (RunSuggestionOutcomeSweep) so
-	// it trails that horizon as the live event feed does, rather than observing on a Horizon of
-	// its own: one per process is what lets its readers share an observation. Only a server
-	// registered with a Store has an event log to answer for.
+	// id cursor reads up to. The suggestion outcome sweep takes it (RunSuggestionOutcomeSweep),
+	// but caps its pages at a writer floor rather than at that horizon: the floor is read through
+	// this Horizon (events.Horizon.WriterFloor) from marks of the log the sweep keeps for itself,
+	// it waits on no transaction outside this database's event writes, and the sweep awaits the
+	// horizon itself only when the floor reads 0 with events in the log - a process's first pass
+	// under an event write older than every mark it holds (suggestionOutcomeFloor.read). Taking
+	// this Horizon, not one of its own, is what lets that await share the live event feed's
+	// observations. Only a server registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
 }
 

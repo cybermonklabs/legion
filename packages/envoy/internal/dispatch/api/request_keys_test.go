@@ -189,10 +189,7 @@ func TestAKeyReusedForAnotherRequestIsRefused(t *testing.T) {
 // A repeat while the first request still runs is 409 KEY_IN_FLIGHT with Retry-After: 1, which a
 // client asks again after; once the first has answered, the repeat is that answer.
 func TestARepeatWhileTheFirstRunsIsInFlight(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	running := make(chan struct{})
 	release, releaseOnce := heldUntilReleased(t)
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -438,10 +435,7 @@ func TestAWriteWithoutAKeyRunsEachTime(t *testing.T) {
 // a 5xx the key does not keep - so a client can tell a Dispatch that judged the key from one that
 // ignored the header, and retries a 5xx under its key only against the first.
 func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	running := make(chan struct{})
 	var slowRuns atomic.Int32
 	release, releaseOnce := heldUntilReleased(t)
@@ -519,10 +513,7 @@ func TestAMalformedKeyIsRefusedBeforeAnythingRuns(t *testing.T) {
 // the lease, which runs the request. The old holder, only slow, still answers its own client, but
 // writes nothing to the key: the repeat's answer is the one replayed.
 func TestALapsedHolderIsTakenOver(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	running := make(chan struct{})
 	release, releaseOnce := heldUntilReleased(t)
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -532,6 +523,10 @@ func TestALapsedHolderIsTakenOver(t *testing.T) {
 		}
 		answerRun(run, w, r)
 	})
+	// The holder renews no lease while this test runs: a renewal landing between the lapse below
+	// and the repeat would keep the key, which is a holder still renewing, not the lapsed one
+	// this test is about.
+	rig.server.requestKeyRenewal = time.Hour
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "stalled") }()
 	<-running

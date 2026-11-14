@@ -1008,11 +1008,14 @@ func TestAReconnectCatchesUpWhatTheListenerMissed(t *testing.T) {
 	start := rig.mark()
 
 	// The listener loses its connection and cannot dial again; a merge commits while it is blind,
-	// once the listener's backend is gone (terminateListener).
+	// once the listener's backend is gone (terminateListener). For viewMaxWait and a second past
+	// it nothing reaches the page: a view the hub marked would have been recomputed and sent by
+	// then, so the delta after the reconnection below is the reconnection's catch-up and no
+	// frame of a hub that heard or read the merge while blind.
 	blind.Store(true)
 	terminateListener(t, rig.database)
 	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-time.Hour)))
-	conn.none(t, viewMaxWait+300*time.Millisecond, "a merge the listener could not hear")
+	conn.none(t, viewMaxWait+time.Second, "a merge the listener could not hear")
 	blind.Store(false)
 	rig.waitFor(t, start, eventFeedWait, "the listener's reconnection", func(note deliveryHubNote) bool { return note.what == "connected" })
 	delta := conn.delta(t, eventFeedWait, "t")
@@ -2075,9 +2078,11 @@ func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
 			t.Fatalf("record a reconcile: %v", err)
 		}
 		// The hub notes each freshness row it applied once it has judged the verdict and queued
-		// any frame that verdict changed, so by that note a frame owed is on the conn.
+		// any frame that verdict changed, so by that note a frame owed is on the conn. It also
+		// wakes the worker, which judges the verdict again on its own goroutine, after the note
+		// or before it, so the window runs a second past the note to see a frame that judge sends.
 		rig.waitFor(t, reconciled, eventFeedWait, "the reconcile the hub heard", noteIs("freshness applied"))
-		conn.none(t, 0, "a reconcile that changed no verdict")
+		conn.none(t, time.Second, "a reconcile that changed no verdict")
 	}
 	if err := delivery.RecordReconcileError(t.Context(), pool, "GitHub answered 502"); err != nil {
 		t.Fatalf("record a reconcile error: %v", err)

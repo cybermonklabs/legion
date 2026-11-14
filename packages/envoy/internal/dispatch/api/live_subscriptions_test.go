@@ -68,9 +68,20 @@ func (k *fakeLiveKind) next(t *testing.T, within time.Duration, what string) *fa
 	}
 }
 
-// none fails when the kind starts a subscription within within.
+// none fails when the kind starts a subscription within within. A zero window reads the queue
+// once without waiting: time.After(0) is ready as the select starts, and a select with two ready
+// cases picks one at random, so a subscription already started would be missed about one run in
+// two.
 func (k *fakeLiveKind) none(t *testing.T, within time.Duration, what string) {
 	t.Helper()
+	if within <= 0 {
+		select {
+		case running := <-k.started:
+			t.Fatalf("%s: started %q", what, running.sub)
+		default:
+		}
+		return
+	}
 	select {
 	case running := <-k.started:
 		t.Fatalf("%s: started %q", what, running.sub)
@@ -142,11 +153,7 @@ func hubSubs(hub *deliveryHub) int {
 }
 
 func TestASubscriptionPastTheCapIsRefused(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	events := newFakeLiveKind(0, 0)
 	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, nil)
 	client := rig.dial(t, asUser("alice"))
@@ -195,10 +202,10 @@ func TestASubscriptionPastTheCapIsRefused(t *testing.T) {
 }
 
 func TestARepeatedSubReplacesAnotherKind(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	// No t.Parallel: this test measures the process. It holds the socket's writer at the gate
+	// (heldWrites), which lets the write go at the connection's write deadline
+	// (liveSocketWriteWait, 10 s): everything up to the release must happen inside that span,
+	// or the held write fails and ends the socket.
 	events := newFakeLiveKind(-1, 512)
 	held := &heldWrites{}
 	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
@@ -461,11 +468,10 @@ func TestASubscriptionKnowsWhichScopesItsCallerHolds(t *testing.T) {
 // queue rather than dropping frames or closing the socket; once the page reads again it is sent
 // every frame, in order.
 func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	// No t.Parallel: this test measures the process. The page reads nothing while the stream
+	// queue fills, and the server's write blocked on the full TCP buffers gives up at the
+	// connection's write deadline (liveSocketWriteWait, 10 s): the stall must end inside that
+	// span, or the socket ends.
 	const frames = 400
 	events := newFakeLiveKind(frames, 512)
 	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}},
@@ -479,8 +485,9 @@ func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
 	// The queue is full and the page reads nothing, so the subscription can only be waiting in
 	// SendWait: what it has queued stops moving. Two reads of its count that agree, one poll
 	// apart, are that standstill, where a subscription that dropped frames instead of waiting
-	// would run on to all of them, which is what the check below would then see.
-	stalled := running.sent.Load()
+	// would run on to all of them, which is what the check below would then see. The first poll
+	// only records the count, so the comparison is never of two reads taken back to back.
+	stalled := int64(-1)
 	pollUntil(t, concurrentWait, "the subscription stops queueing while the page reads nothing", func() bool {
 		sent := running.sent.Load()
 		if sent == stalled {
@@ -511,10 +518,9 @@ func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
 }
 
 func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	// No t.Parallel: this test measures the process. Its first case holds the socket's writer
+	// at the gate (heldWrites), which lets the write go at the connection's write deadline
+	// (liveSocketWriteWait, 10 s): the unsubscribe must end the wait inside that span.
 	t.Run("the page unsubscribes", func(t *testing.T) {
 		events := newFakeLiveKind(-1, 512)
 		held := &heldWrites{}

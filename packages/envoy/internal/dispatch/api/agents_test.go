@@ -470,7 +470,8 @@ func TestConcurrentAgentsListsAndIssueReadsLeaveTheSharedListAsTheListenerSentIt
 // An agents list whose request ends while it waits on the shared fetch answers 503
 // ENVOY_UNAVAILABLE at once, saying why; the fetch runs on, and the next list is its answer.
 func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. It bounds the 503 at 5 s after its request
+	// ends, which another test's work on the same machine would stretch.
 	database := storetest.Open(t)
 	mux := http.NewServeMux()
 	_, calls, release := heldRosterMux(t, mux, Deps{Store: database, Identity: headerIdentity(database)})
@@ -489,8 +490,8 @@ func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing
 	cancel()
 	select {
 	case <-answered:
-	case <-time.After(concurrentWait):
-		t.Fatalf("an agents list did not answer within %s of its request ending", concurrentWait)
+	case <-time.After(5 * time.Second):
+		t.Fatal("an agents list did not answer within 5 s of its request ending")
 	}
 	body := response.Body.String()
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"ENVOY_UNAVAILABLE"`) ||

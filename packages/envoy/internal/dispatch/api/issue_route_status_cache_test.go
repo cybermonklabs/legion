@@ -224,10 +224,11 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 }
 
 // A listener that does not answer holds a fetch only for the fetch's own bound, not the client's
-// window (a minute here), and the reads after it read unknown at once without asking again. The
-// bound is half a second, so even a loaded machine's request reaches the listener inside it.
+// window (a minute here), and the reads after it read unknown at once without asking again.
 func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. Its read must reach the listener inside
+	// the 500 ms fetch bound, or no call is counted, and must return within 10 s of starting:
+	// another test's work on the same machine would read as a fetch that ran past its bound.
 	served, calls, _ := heldRosterServer(t)
 	served.rosters.timeout, served.rosters.silenceTTL = 500*time.Millisecond, time.Minute
 
@@ -388,7 +389,9 @@ func TestConcurrentReadsOnAColdCacheMakeOneListenerCall(t *testing.T) {
 // route as unknown, whether it started that fetch or joined it; the fetch runs on for the other
 // readers, and its answer is the one the cache keeps.
 func TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. It bounds a read's return at one second of
+	// real time after its request ends, and the joiner can still be in its own read of the
+	// stored row when the request ends.
 	served, calls, release := heldRosterServer(t)
 	read := func(ctx context.Context) <-chan routeRoster {
 		answer := make(chan routeRoster, 1)

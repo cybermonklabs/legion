@@ -75,8 +75,14 @@ func sweepHorizon(pool *store.Pool) *events.Horizon {
 	return events.NewHorizon(pool)
 }
 
+// sweepReturnBound is how long a sweep loop may take to return once its context ends before
+// runSweep fails the test: a loop that keeps running past a cancelled context for longer is a
+// defect, so this is a bound the test asserts, not a give-up wait, and a test that runs a sweep
+// through runSweep is serial.
+const sweepReturnBound = 10 * time.Second
+
 // runSweep runs run on a goroutine until the test ends, and fails the test if it does not return
-// promptly once its context ends.
+// within sweepReturnBound once its context ends.
 func runSweep(t *testing.T, run func(ctx context.Context)) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -89,8 +95,8 @@ func runSweep(t *testing.T, run func(ctx context.Context)) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(concurrentWait):
-			t.Errorf("the suggestion outcome sweep did not return within %s of its context ending", concurrentWait)
+		case <-time.After(sweepReturnBound):
+			t.Errorf("the sweep did not return within %s of its context ending", sweepReturnBound)
 		}
 	})
 }
@@ -175,7 +181,9 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 // one before at the soonest, and no wake earns more than one. A pass is counted by the cursor row
 // it holds, one read per pass, since the loop takes no lease and logs nothing of its own.
 func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. runSweep requires the sweep to return
+	// within sweepReturnBound (10 s) of its context ending, which another test's work on the
+	// same machine would read as a loop that ignored its cancellation.
 	database := storetest.Open(t)
 	pool, statements := recordedPool(t, database)
 	wake := make(chan struct{}, 1)

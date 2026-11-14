@@ -181,12 +181,15 @@ func deliveryReceiptsOf(t *testing.T, database *store.Store, receiptType, field,
 // listener says - the session does not take this mode, the send itself is refused - is its
 // answer, and the attempt settles failed on that first try. The listener client's window is this
 // test's own: nothing here is answered on a timer any more, so the window only has to be longer
-// than an answer a loaded machine takes, and the one try nothing answers in time - the receipt
+// than an answer of this listener takes, and the one try nothing answers in time - the receipt
 // timeout's - is all it costs this table. The take-over window is the generous one for the same
 // reason, so every try a case takes still starts inside it: that missed try's retry, and the
 // starting gate's two retries 250 ms and 750 ms after the first try.
 func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. Each answer of the listener must come back
+	// inside the client's 1.5 s window, where a later one is a receipt timeout the send retries,
+	// and each retry must start inside the 6 s take-over window: another test's work on the same
+	// machine would read as a listener that did not answer.
 	listener := startTakeOverListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{
 		envoyURL: listener.server.URL, envoyTimeout: 1500 * time.Millisecond, takeoverWindow: 6 * time.Second,
@@ -306,7 +309,8 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 // With no listener configured there is no take-over to wait out: the send settles failed at once,
 // well inside the production window the server runs.
 func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. It bounds the whole database-backed send
+	// at 3 s, and another test's work on the same machine would read as a send that waited.
 	handler, _, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
 	started := time.Now()
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",

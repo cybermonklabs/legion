@@ -55,14 +55,13 @@ func keyedPostContext(ctx context.Context, server *httptest.Server, path, body, 
 // the moment that run has started: the 409 is read while the gate is shut and the replay once the
 // run has finished, so both are read off the run itself rather than off twenty seconds of clock.
 func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	release, releaseOnce := heldUntilReleased(t)
 	running := make(chan struct{})
 	rig := newWritingRig(t, func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
-		close(running)
+		if run == 1 {
+			close(running)
+		}
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -90,7 +89,7 @@ func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 	giveUp()
 	<-gaveUp
 
-	status, body, header, err := keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", 5*time.Second)
+	status, body, header, err := keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", concurrentWait)
 	if err != nil || status != http.StatusConflict || !strings.Contains(body, contracts.IdempotencyKeyInFlight) ||
 		header.Get("Retry-After") != "1" {
 		t.Fatalf("the repeat after the client gave up: %d %s (%v), want 409 %s: the first run is still going",
@@ -102,7 +101,7 @@ func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 	releaseOnce()
 	rig.server.detached.wait()
 
-	status, body, header, err = keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", 5*time.Second)
+	status, body, header, err = keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", concurrentWait)
 	if err != nil || status != http.StatusCreated || header.Get(contracts.IdempotencyReplayedHeader) != "?1" || !strings.Contains(body, `"run":1`) {
 		t.Fatalf("the repeat once the first run finished: %d %s replayed=%q (%v), want the first run's 201 replayed",
 			status, body, header.Get(contracts.IdempotencyReplayedHeader), err)
@@ -120,10 +119,9 @@ func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 // handler renews while its client waits on an httptest connection, which no synctest bubble can
 // hold.
 func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	// No t.Parallel: this test measures the process. Its repeat comes two 2 s leases into the
+	// run, and only renewals every 200 ms keep the key held that long: a renewal the machine
+	// delays past a lease lets the key lapse, which would read as a run that stopped renewing.
 	release, releaseOnce := heldUntilReleased(t)
 	running := make(chan struct{})
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -134,14 +132,16 @@ func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 		answerRun(run, w, r)
 	})
 	// A lease of 2 s renewed every 200 ms, the deployment's ratio (IdempotencyLease and the
-	// renewal that divides it), so the wait below is the lease itself.
+	// renewal that divides it).
 	rig.server.requestKeyLease, rig.server.requestKeyRenewal = 2*time.Second, 200*time.Millisecond
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "long-run") }()
 	<-running
-	// The lease, and a margin: what the repeat below proves is that a lease this old is still
-	// held, which only the renewals running under the handler can do.
-	time.Sleep(rig.server.requestKeyLease + 100*time.Millisecond)
+	// Two leases, a wait this test chooses: the key counts as in flight while it was leased
+	// within the last lease (requestKeyInFlight), so a repeat two leases in finds it held only
+	// if renewals went on through the wait - the first renewal alone, at 200 ms, keeps it only
+	// until 2.2 s.
+	time.Sleep(2 * rig.server.requestKeyLease)
 	repeat := rig.send(t, "a", nil, "alice", "long-run")
 	if code, _ := refusalOf(t, repeat); repeat.Code != http.StatusConflict || code != contracts.IdempotencyKeyInFlight {
 		t.Fatalf("a repeat past the lease while the first run renews it: status=%d body=%s, want 409 %s",
@@ -226,10 +226,7 @@ func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 // A keyed handler still running is part of the server's background work: shutdown's wait does not
 // return before it does, so the database pool is never closed under it.
 func TestTheBackgroundWaitWaitsForARunningKeyedHandler(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	release, releaseOnce := heldUntilReleased(t)
 	running := make(chan struct{})
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -491,10 +488,10 @@ func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
 // Postgres rows the handler renews while its client waits on an httptest connection, which no
 // synctest bubble can hold.
 func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	// No t.Parallel: this test measures the process. The run's last renewal comes at its 1 s
+	// limit, so the 2 s lease lapses at 3 s, and the repeat comes 200 ms after that: a renewal
+	// or a limit the machine delays by more than 200 ms keeps the key past the repeat, which
+	// would read as a run that renewed past its limit.
 	release, releaseOnce := heldUntilReleased(t)
 	running := make(chan struct{})
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -529,7 +526,11 @@ func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
 // cancellation, so a close held on the issue's row kept its background-work slot, and the
 // shutdown's wait for it, as long as the row stayed held.
 func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test holds the issue's row `for no key update` open on purpose, a row
+	// lock that takes a transaction id, for the second the first close waits on it. The event
+	// log's safe horizon is proven from pg_snapshot_xmin, the oldest transaction id running
+	// anywhere on the instance (internal/dispatch/events, horizon.go), so the hold stalls every
+	// test reading that feed beside it.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.requestKeyRunLimit = time.Second
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while its row is held", "Context\n")
@@ -613,7 +614,12 @@ func (h *closeCommitHold) Join(ctx context.Context, tx pgx.Tx) (context.Context,
 // waited for as long as another writer held the row, past the bound, holding the keyed run's
 // background-work slot all the while.
 func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. The close must commit inside the keyed
+	// run's 1 s bound (requestKeyRunLimit, counted from the claim): a close the machine slows
+	// past it ends at the bound before the sweep's Join, and hold.committed never closes. It
+	// also holds the issue's row `for no key update` on purpose, a row lock that takes a
+	// transaction id, which holds back the event log's instance-wide safe horizon
+	// (internal/dispatch/events, horizon.go) while it is held.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.requestKeyRunLimit = time.Second
 	issue := createInteractionIssue(t, handler, "TEST", "Swept while its row is held", "Context\n")

@@ -726,34 +726,42 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 // A subscription whose read fails (here, a database that no longer answers) ends with an ended
 // frame (behind), so its page subscribes again, rather than going silent; and it waits the relay's
 // retry first, so a read that keeps failing is asked again at that pace rather than as fast as the
-// page can resubscribe.
+// page can resubscribe. The retry is the relay's own when a test gives it one, and production's
+// eventRelayRetry when nothing does, reached through the path production takes (failedReadWait).
 func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
 	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
 	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
 	// lock on purpose out of the parallel set left five of these timing out on events_start;
 	// the whole family is out of it (dispatch://INFRA-1075).
-	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
-	// The retry is the subject, so the test sets one short enough to wait out and long enough
-	// to tell a subscription that waited it from one that ended at once.
-	const retry = 100 * time.Millisecond
-	served.eventRelay.retry = retry
-	database.Pool.Close()
-	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
-	if err != nil {
-		t.Fatalf("mark the subscription's context for the pool: %v", err)
-	}
-	stream := newGatedStream()
-	close(stream.gate)
-	began := time.Now()
-	running := served.startEventsSubscription(ctx, stream, "feed", nil)
-	t.Cleanup(running.stop)
-	ended, ok := stream.next(t, "feed's end").(LiveEnded)
-	if !ok || ended.Sub != "feed" || ended.Reason != "behind" {
-		t.Fatalf("the first frame of a subscription whose read failed = %+v, want its end, behind", ended)
-	}
-	if waited := time.Since(began); waited < retry {
-		t.Fatalf("the subscription ended %s after it started, before the relay's retry (%s)", waited, retry)
+	for name, retry := range map[string]time.Duration{
+		"a retry the relay was given": 100 * time.Millisecond,
+		"production's retry":          0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+			want := eventRelayRetry
+			if retry != 0 {
+				served.eventRelay.retry, want = retry, retry
+			}
+			database.Pool.Close()
+			ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
+			if err != nil {
+				t.Fatalf("mark the subscription's context for the pool: %v", err)
+			}
+			stream := newGatedStream()
+			close(stream.gate)
+			began := time.Now()
+			running := served.startEventsSubscription(ctx, stream, "feed", nil)
+			t.Cleanup(running.stop)
+			ended, ok := stream.next(t, "feed's end").(LiveEnded)
+			if !ok || ended.Sub != "feed" || ended.Reason != "behind" {
+				t.Fatalf("the first frame of a subscription whose read failed = %+v, want its end, behind", ended)
+			}
+			if waited := time.Since(began); waited < want {
+				t.Fatalf("the subscription ended %s after it started, before the relay's retry (%s)", waited, want)
+			}
+		})
 	}
 }
 
@@ -984,6 +992,9 @@ func liveFixtureEventFrame(t *testing.T) LiveEventFrame {
 // on a socket, so the frame never waits to be asked. The tree is the one ReadForDisplay makes of
 // that text.
 func TestALiveEventFrameCarriesItsTrees(t *testing.T) {
+	// No t.Parallel: this test swaps process-wide state. liveFixtureEventFrame points pmdoc's
+	// block id generator (pmdoc.SetBlockIDGenerator) at one fixed id while it builds the frame,
+	// and every test making a block in this process would draw that id.
 	frame := liveFixtureEventFrame(t)
 	var carried struct {
 		Trees map[string]json.RawMessage `json:"trees"`
@@ -1009,11 +1020,7 @@ func TestALiveEventFrameCarriesItsTrees(t *testing.T) {
 // the socket's writer keeps those bytes; and fixtures/live/event.json, which the contracts' and
 // the dashboard's tests read, is that frame.
 func TestAnEventFrameCarriesTheEventsOwnBytes(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	event := liveFixtureEvent()
 	sent := event
 	sent.Trees = eventDisplayTrees(event)

@@ -633,6 +633,18 @@ func (r *callerRechecks) await(t *testing.T, n int, what string) {
 	}
 }
 
+// drain discards the re-resolutions counted so far, so the count that follows starts at the
+// moment a test changed what the caller resolves to.
+func (r *callerRechecks) drain() {
+	for {
+		select {
+		case <-r.resolved:
+		default:
+			return
+		}
+	}
+}
+
 // streamFull reports whether socket's stream queue holds all it can.
 func streamFull(socket *liveSocket) bool {
 	return cap(socket.stream) > 0 && len(socket.stream) == cap(socket.stream)
@@ -728,8 +740,10 @@ func TestABearerMayReadTheSocket(t *testing.T) {
 // A bearer revoked while its socket is open loses the socket at the next re-resolution of its
 // caller, as the document socket does: the request's context ends, and the socket closes with
 // 1008. The server re-resolves on liveRecheck and the heartbeat is long, so the socket's life
-// here is decided by the re-resolutions this test waits for and never by a pong a loaded runner
-// delayed past the pong deadline, which is two heartbeats.
+// here is decided by the re-resolutions this test counts and never by a pong a loaded runner
+// delayed past the pong deadline, which is two heartbeats. The close is a give-up wait; what
+// bounds it is the count: at most one re-resolution, the one under way as the revoke
+// committed, may still find the revoked token resolving.
 func TestARevokedBearerClosesItsSocketWithPolicyViolation(t *testing.T) {
 	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
 	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
@@ -750,8 +764,12 @@ func TestARevokedBearerClosesItsSocketWithPolicyViolation(t *testing.T) {
 	if response := dispatchRequest(t, rig.handler, http.MethodDelete, "/api/v1/me/agent-tokens/"+minted.ID, nil, "alice"); response.Code != http.StatusNoContent {
 		t.Fatalf("revoke the token: status=%d body=%s", response.Code, response.Body.String())
 	}
+	rechecks.drain()
 	if code, _ := client.closeCode(t, concurrentWait); code != gws.ClosePolicyViolation {
 		t.Fatalf("the revoked token's socket closed with %d, want 1008", code)
+	}
+	if resolved := len(rechecks.resolved); resolved > 1 {
+		t.Fatalf("the revoked token resolved again %d times before its socket closed, want at most the one under way as it was revoked", resolved)
 	}
 	rig.sockets(t, 0)
 }
@@ -986,11 +1004,7 @@ func TestASocketPastItsAgeClosesWithMaxAge(t *testing.T) {
 }
 
 func TestEachSocketsAgeFallsInItsWindow(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	t.Parallel()
 	served := &server{}
 	drawn := map[time.Duration]struct{}{}
 	for range 1000 {
@@ -1080,10 +1094,10 @@ func TestTheLiveTestHooksAreMountedOnlyUnderTestHooks(t *testing.T) {
 // back the hub's frames nor overflows the hub's queue: the hub's queue fills beside it, and once
 // the writer writes again every hub frame is written ahead of the stream frames still queued.
 func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	// No t.Parallel: this test measures the process. It holds the socket's writer at the gate
+	// (heldWrites), which lets the write go at the connection's write deadline
+	// (liveSocketWriteWait, 10 s): the hub's eight answers must queue inside that span, or the
+	// held write fails and ends the socket.
 	busy := newFakeLiveKind(-1, 512)
 	held := &heldWrites{}
 	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: busy.kind(true)}}, held.listen)
@@ -1142,11 +1156,9 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 // Real time, at the server's heartbeat: the pings and pongs cross a real websocket, which no
 // synctest bubble can hold.
 func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
-	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
-	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
-	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
-	// lock on purpose out of the parallel set left five of these timing out on events_start;
-	// the whole family is out of it (dispatch://INFRA-1075).
+	// No t.Parallel: this test measures the process. Its page's fourth ping must come within
+	// five of the server's 1 s heartbeats, and the page's pongs must meet the server's pong
+	// deadline, two heartbeats, on a machine whose other tests could delay either.
 	const heartbeat = time.Second
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
 	answering := rig.open(t, gws.DefaultDialer, asUser("alice"))
@@ -1162,8 +1174,11 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 
 	// The fourth ping comes four heartbeats in, twice the pong deadline, so a socket still open
 	// when it arrives is one the page's pongs have kept: waiting for the ping itself is what says
-	// the heartbeats passed.
+	// the heartbeats passed. It must come within five heartbeats of the page opening - one ping
+	// each and a heartbeat to spare - so a writer that pings less often than its heartbeat fails
+	// here, though pongs to its slower pings would still keep the socket inside the deadline.
 	const pings = 4
+	opened := time.Now()
 	for ping := range pings {
 		select {
 		case <-pinged:
@@ -1172,6 +1187,9 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 		case <-time.After(concurrentWait):
 			t.Fatalf("the idle page was pinged %d times within %s, want one every %s", ping, concurrentWait, heartbeat)
 		}
+	}
+	if took := time.Since(opened); took > 5*heartbeat {
+		t.Fatalf("the idle page's fourth ping came %s after it opened, want one every %s: within %s", took, heartbeat, 5*heartbeat)
 	}
 	if !answering.open() {
 		t.Fatalf("an idle page that answers every ping lost its socket: %v", answering.err)

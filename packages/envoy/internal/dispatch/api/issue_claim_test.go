@@ -564,7 +564,12 @@ func TestClaimSurvivesAFailingLegionLabelWalk(t *testing.T) {
 // ends it is the bound; nothing in this test races a Go timer against the database, and nothing
 // asserts on elapsed time.
 func TestClaimSurvivesAHangingLegionLabelWalk(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
+	// purpose: the claim's transaction takes the issue's row `for no key update`, which takes a
+	// transaction id, and its stand-in walk holds it for the walk's 500 ms bound. The event log's
+	// safe horizon is proven from pg_snapshot_xmin, the oldest transaction id running anywhere
+	// on the instance (internal/dispatch/events, horizon.go), so the hold stalls every test
+	// reading that feed beside it.
 	live := &liveRegistry{}
 	live.set("session-one")
 	handler, served := claimWalkHandler(t, live, `select count(*) > 0 from (select pg_sleep(5)) slow where $1 <> ''`)

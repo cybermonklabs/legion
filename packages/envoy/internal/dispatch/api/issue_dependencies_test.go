@@ -803,7 +803,11 @@ func TestStatusWriteRefusesAParentThatMovesAtEveryAttempt(t *testing.T) {
 }
 
 func TestChildCreateWithoutBlockersDoesNotWaitOnParentRow(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
+	// purpose: the parent's row `for no key update`, a row lock that takes a transaction id. The
+	// event log's safe horizon is proven from pg_snapshot_xmin, the oldest transaction id
+	// running anywhere on the instance (internal/dispatch/events, horizon.go), so the hold
+	// stalls every test reading that feed beside it.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	parent := createListedIssues(t, handler, "CORE", 1)[0]
 	gate, err := database.Pool.Begin(context.Background())

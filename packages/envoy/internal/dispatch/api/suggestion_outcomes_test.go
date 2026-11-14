@@ -125,6 +125,22 @@ type idleSweep struct {
 // the window a test watches holds many of them.
 const idleSweepGap = 200 * time.Millisecond
 
+// sweepTracer counts the statements of a sweep's pool and records them, so a test can wait for a
+// pass by the cursor row it holds (cursorHeld) as well as for the pool going quiet.
+type sweepTracer struct {
+	counter  *storetest.StatementCounter
+	recorder *storetest.StatementRecorder
+}
+
+func (s sweepTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return s.recorder.TraceQueryStart(s.counter.TraceQueryStart(ctx, conn, data), conn, data)
+}
+
+func (s sweepTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	s.counter.TraceQueryEnd(ctx, conn, data)
+	s.recorder.TraceQueryEnd(ctx, conn, data)
+}
+
 func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSweep {
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -149,9 +165,9 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 
 	srv := directServer(deps)
 	counter := &storetest.StatementCounter{}
-	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
+	recorder := &storetest.StatementRecorder{}
+	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, sweepTracer{counter: counter, recorder: recorder}, nil)}
 	schedule := suggestionSchedule{minGap: idleSweepGap, settle: settle, page: suggestionOutcomePage}
-	started := time.Now()
 	// The sweep reads through the counted pool and observes the horizon through the server's own
 	// (store.Pool.Horizon), so the counter sees the sweep's own statements alone.
 	runSweep(t, func(ctx context.Context) { runSuggestionOutcomeSweep(ctx, counted.Pool, srv.horizon(), wake, schedule) })
@@ -162,8 +178,12 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	}
 	waitUntil(t, concurrentWait, "the boot pass to set the cursor", func() bool { return outcomeCursor(t, database) != nil })
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the boot
-	// pass began; after it the loop is idle.
-	time.Sleep(time.Until(started.Add(idleSweepGap + 300*time.Millisecond)))
+	// pass began; after it the loop is idle. That pass is waited for, not assumed: a sweep whose
+	// wakes all arrived late would otherwise run it after the test's own write and judge that
+	// write on a wake the write never sent.
+	waitUntil(t, concurrentWait, "the pass the hub's signal after its LISTEN earned", func() bool {
+		return countStatements(recorder.Statements(), cursorHeld) >= 2
+	})
 	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
 	return idleSweep{handler: handler, server: srv, counter: counter, target: target, source: source}
 }
@@ -188,16 +208,18 @@ func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
 }
 
 // An event the suggestion's actor writes on the suggested issue wakes the idle sweep through its
-// notification on a real pglisten.Hub, and the suggestion is marked acted_on within seconds.
+// notification on a real pglisten.Hub, and the suggestion is marked acted_on within five seconds.
 func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *testing.T) {
-	// No t.Parallel: startIdleSweep measures a quiet window of the sweep it runs
-	// (storetest.AwaitQuiet) before the test's own write, and a parallel test's CPU is what
-	// would stretch that window.
+	// No t.Parallel: this test measures the process. It requires the suggestion marked acted_on
+	// within 5 s of the actor's write, a bound another test's work on the same machine would
+	// stretch; and startIdleSweep measures a quiet window of the sweep it runs
+	// (storetest.AwaitQuiet) before the test's own write, which a parallel test's CPU would
+	// stretch too.
 	sweep := startIdleSweep(t, "OWAKE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
-	waitUntil(t, concurrentWait, "the suggestion to be marked acted_on", func() bool {
+	waitUntil(t, 5*time.Second, "the suggestion to be marked acted_on", func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome == "acted_on"
 	})
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Detail != "the suggested issue was updated directly" {

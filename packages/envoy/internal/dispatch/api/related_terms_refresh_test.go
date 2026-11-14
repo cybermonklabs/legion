@@ -521,19 +521,24 @@ func TestRelatedTermDFAfterAStepPassEqualsAFullRebuilds(t *testing.T) {
 // itemTables are the six tables a pass must not read when nothing is queued.
 var itemTables = []string{"issues", "artifacts", "artifact_versions", "comments", "asks", "messages"}
 
-// itemRowsReadSQL is how many rows of those tables the calling transaction has read - the rows
-// it took sequentially and the rows it fetched through an index.
+// itemRowsReadSQL is how many rows of those tables the calling backend has read and not yet
+// reported - the rows it took sequentially and the rows it fetched through an index.
 //
 // pg_stat_xact_user_tables, not pg_stat_user_tables: the second is the database's count and
 // nobody's in particular, and two other things move it on a database this harness hands out.
 // Another connection of the test reports what it read up to a second after it goes idle
 // (PostgreSQL's PGSTAT_MIN_INTERVAL), so the fixture's writes and its first full pass can be
 // reported between two readings and read as the measured pass's work; and a reading summed by
-// relname alone also counts any other table of that name the database holds. The
-// transaction's own count has none of those: it is what this backend did in this transaction
-// and nothing else, so the reading needs no flush and no quiet database. CI run 41939604288 is
-// the red that says a database-wide reading cannot be held to the pass: six rows read with an
-// empty queue, where the pass's own statement reads no item table at all.
+// relname alone also counts any other table of that name the database holds. The xact view is
+// this backend's own counts, but not this transaction's alone: it shows what the backend has not
+// yet reported, and a backend reports between transactions at most once a second, so a reading
+// can also hold what earlier transactions of the same connection read. That is the nine rows
+// CI run 42061247130 counted under the race detector with no item node in the plan: the drain
+// passes the test runs first, on the same connection, inside the same second. Nothing is
+// reported inside a transaction, so a difference between two readings in one transaction is
+// exactly what that transaction did between them (itemRowsReadBy). CI run 41939604288 is the red
+// that says a database-wide reading cannot be held to the pass: six rows read with an empty
+// queue, where the pass's own statement reads no item table at all.
 const itemRowsReadSQL = `
 select coalesce(sum(seq_tup_read + idx_tup_fetch), 0) from pg_stat_xact_user_tables
  where schemaname = 'public' and relname = any($1)`
@@ -546,6 +551,17 @@ func itemRowsRead(t *testing.T, tx pgx.Tx) int64 {
 		t.Fatalf("read what this transaction read of the item tables: %v", err)
 	}
 	return read
+}
+
+// itemRowsReadBy runs statement in tx and answers how many rows of the item tables it read: the
+// difference of two readings taken in tx around it.
+func itemRowsReadBy(t *testing.T, tx pgx.Tx, statement func() error) int64 {
+	t.Helper()
+	before := itemRowsRead(t, tx)
+	if err := statement(); err != nil {
+		t.Fatalf("run the statement whose item reads are counted: %v", err)
+	}
+	return itemRowsRead(t, tx) - before
 }
 
 // itemNodesThatRan names every node of a plan that reads one of the item tables and ran at
@@ -562,11 +578,14 @@ func itemNodesThatRan(root analyzedNode) []string {
 }
 
 // A3. A pass with nothing queued reads no item at all, which is what makes the refresh's work
-// proportional to what changed. It is read of the pass's own statement, twice over: the plan
-// that statement ran, where no node on an item table ran at all, and the rows this
-// transaction took of those tables, which is none. Both are the backend's own count of its
-// own transaction, so no other connection, no reset session of the harness and no autovacuum
-// is in them (itemRowsReadSQL).
+// proportional to what changed. It is read of the pass's own statements, run again as a step
+// pass runs them (refreshSearchTermStats: the totals claim, the mode read and the step) in one
+// transaction: the rows each statement took of the item tables, which is none for every one, and
+// the plan the step ran, where no node on an item table ran at all. The rows are what the
+// backend counted between two readings inside that transaction, so no other connection, no
+// earlier transaction of this one, no reset session of the harness and no autovacuum is in them
+// (itemRowsReadSQL), and they count what no plan node shows - a trigger's or a function's read
+// beneath a statement - as well.
 func TestARefreshWithNoChangeReadsNoItem(t *testing.T) {
 	t.Parallel()
 	fixture := newTermFixture(t, "QUIET")
@@ -607,19 +626,37 @@ func TestARefreshWithNoChangeReadsNoItem(t *testing.T) {
 		t.Fatalf("the pass ran mode=%s changes=%d, want a step with nothing to apply", measured.Mode, measured.Changes)
 	}
 
-	// The pass again, in a transaction of its own that is rolled back: searchTermStatsStep is
-	// the one statement of a step pass that can reach an item, and running it under EXPLAIN
-	// (ANALYZE) is what makes the reading the pass's own rather than the database's. The queue
-	// is empty, so this pass has the same nothing to apply as the one above.
+	// The pass again, statement by statement, in a transaction of its own that is rolled back.
+	// The queue is empty, so this pass has the same nothing to apply as the one above.
 	ctx := context.Background()
 	tx, err := alone.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the reading's transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
+	if read := itemRowsReadBy(t, tx, func() error {
+		_, err := tx.Exec(ctx, searchTermTotalsClaim, fixture.project)
+		return err
+	}); read != 0 {
+		t.Errorf("the pass's claim of its totals row read %d rows of the item tables, want none", read)
+	}
+	var step bool
+	if read := itemRowsReadBy(t, tx, func() error {
+		var items int
+		return tx.QueryRow(ctx, searchTermTotalsMode, fixture.project).Scan(&items, &step)
+	}); read != 0 {
+		t.Errorf("the pass's read of its mode read %d rows of the item tables, want none", read)
+	}
+	if !step {
+		t.Fatal("the pass's mode read answered a full rebuild, want a step: the passes above left a snapshot")
+	}
+	// The step under EXPLAIN (ANALYZE), which runs it as the pass does and answers the plan it
+	// ran beside the rows it read.
 	var explained []byte
-	if err := tx.QueryRow(ctx, "explain (analyze, format json) "+searchTermStatsStep, fixture.project).Scan(&explained); err != nil {
-		t.Fatalf("explain the pass: %v", err)
+	if read := itemRowsReadBy(t, tx, func() error {
+		return tx.QueryRow(ctx, "explain (analyze, format json) "+searchTermStatsStep, fixture.project).Scan(&explained)
+	}); read != 0 {
+		t.Errorf("the pass's step read %d rows of the item tables, want none:\n%s", read, explained)
 	}
 	var plans []struct {
 		Plan analyzedNode `json:"Plan"`
@@ -627,12 +664,6 @@ func TestARefreshWithNoChangeReadsNoItem(t *testing.T) {
 	if err := json.Unmarshal(explained, &plans); err != nil || len(plans) != 1 {
 		t.Fatalf("decode the pass's plan (%v): %s", err, explained)
 	}
-	// The plan is the whole reading. A row counter over the same transaction is not: it also
-	// counts what a trigger and a foreign-key check read beneath the pass's own update, which no
-	// node of the plan shows, and under the race detector it read nine rows of the item tables
-	// while the plan showed no item node running at all (run 42061247130). What the test claims
-	// - a pass with nothing queued reads no item - is what the plan says, so the plan is what it
-	// asserts (dispatch://INFRA-1075).
 	if ran := itemNodesThatRan(plans[0].Plan); len(ran) > 0 {
 		t.Errorf("the pass read %s, want no item read at all:\n%s", strings.Join(ran, ", "), explained)
 	}

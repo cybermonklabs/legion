@@ -15,7 +15,8 @@ import (
 // token a few seconds later, so the send settles failed on its first try instead of retrying the
 // registry read for the whole take-over window.
 func TestAListenerRefusingTheTokenSettlesTheSendAtOnce(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. It bounds the whole database-backed send
+	// at 2 s, and another test's work on the same machine would read as a send that waited.
 	listener := startTakeOverListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.server.URL)
 

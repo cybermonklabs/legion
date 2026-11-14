@@ -810,7 +810,8 @@ func TestWriteAdviceOnIdempotentExternalIssueCreate(t *testing.T) {
 }
 
 func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. Its assertion is a time: the advice round
+	// trip over 5,001 events within 2 s.
 	handler, database := newTestHandlerWithStore(t)
 	createAdviceProject(t, handler, "PERF")
 	spec := "# Performance\n"
@@ -860,7 +861,9 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 }
 
 func TestWriteAdviceFailureDoesNotAbortWrite(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. Its assertion is a time: the write must not
+	// wait out the 2 s advice stall, which the advice's 500 ms statement timeout cuts, leaving the
+	// write's other database work the rest of the 2 s.
 	handler, database := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "FAIL")
 	spec := "# Failure isolation\n"

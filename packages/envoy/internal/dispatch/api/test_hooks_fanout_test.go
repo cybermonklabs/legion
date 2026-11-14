@@ -42,10 +42,11 @@ func holdTestHookLock(t *testing.T, database *store.Store) (*pgx.Conn, int32) {
 // A hook answers only once every process holding the test-hook lock has acted, so a process that
 // holds it and never acknowledges is reported rather than passed over: the caller answers
 // 504 TEST_HOOK_TIMEOUT once the timeout has run out, naming that process's key. The server runs
-// a two-second timeout of its own (Deps.TestHookTimeout) rather than the production ten: long
-// enough that a loaded machine still takes the caller's own lock inside it.
+// a two-second timeout of its own (Deps.TestHookTimeout) rather than the production ten.
 func TestATestHookNamesTheProcessThatNeverAcknowledged(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. The 2 s test-hook timeout also bounds this
+	// process's own listener taking its lock and the call's send (awaitOwnLock, then the
+	// NOTIFY): either taking longer answers a 504 naming only the caller's own key.
 	const timeout = 2 * time.Second
 	handler, database, _ := newTestServer(t, testServerOptions{testHooks: true, testHookTimeout: timeout})
 	_, silent := holdTestHookLock(t, database)
@@ -73,7 +74,9 @@ func TestATestHookNamesTheProcessThatNeverAcknowledged(t *testing.T) {
 // not at the timeout. Until then it does not answer, since that process was alive when the call
 // was sent.
 func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. The hook must answer inside the 10 s
+	// test-hook timeout once the silent process's lock goes at 500 ms, and that timeout also
+	// bounds this process's own listener taking its lock and the call's send.
 	handler, database := newTestHandlerWithTestHooks(t)
 	conn, _ := holdTestHookLock(t, database)
 	const alive = 500 * time.Millisecond

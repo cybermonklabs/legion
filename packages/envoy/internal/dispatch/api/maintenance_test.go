@@ -31,7 +31,9 @@ func startOfPeriodAfterNext(interval time.Duration) time.Time {
 // each pass records its period under the lease (duty.RunLeased), so the other process's tick
 // inside a period already served makes no statement of its own.
 func TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. runSweep requires each runner to return
+	// within sweepReturnBound (10 s) of its context ending, which another test's work on the
+	// same machine would read as a loop that ignored its cancellation.
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	recorders := make([]*storetest.StatementRecorder, 0, 2)

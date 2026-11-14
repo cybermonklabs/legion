@@ -688,22 +688,23 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 	})
 	// Attempt 1 committed with the listener's refusal on it, which is the resolution this case
 	// is about: it is kept, never taken again, so the comment reaches no holder that appears
-	// later. The lookups counted from here are that proof, and they start at zero because the
-	// creation's own count is not fixed - a lookup it gave up on at mentionLookupTimeout is
-	// resolved again by the mention's sender, which is the product doing what an attempt with
-	// nothing recorded on it asks for.
-	mu.Lock()
-	roleLookups = 0
-	mu.Unlock()
+	// later. The lookups counted since the last creation began are that proof: the creation's
+	// own lookup is the one, and a sender that looked the role up again for the attempt makes
+	// two. They are counted from the creation's start, not from its answer: the creation queues
+	// the mention's send before it writes its response (createCommentFor), so the sender can
+	// claim the attempt and look the role up again before the answer is read. An earlier
+	// creation whose lookup was given up at mentionLookupTimeout - which the mention's sender
+	// resolves again, as an attempt with nothing recorded on it asks - has settled before
+	// again() zeroed the count (aResolvedMentionCreation).
 	settled := settledCommentDeliveries(t, database, created.ID)
 	mu.Lock()
 	lookups, sendCount := roleLookups, sends
 	mu.Unlock()
-	if lookups != 0 || sendCount != 0 || len(created.Mentions) != 1 || created.Mentions[0].SessionID != nil ||
+	if lookups != 1 || sendCount != 0 || len(created.Mentions) != 1 || created.Mentions[0].SessionID != nil ||
 		created.Deliveries[0].ResolveError == nil || *created.Deliveries[0].ResolveError != "no holder for role reviewer" ||
 		len(settled) != 1 || settled[0].SessionID != nil || settled[0].State != "failed" ||
 		settled[0].Error == nil || *settled[0].Error != "no holder for role reviewer" {
-		t.Fatalf("missing-holder mention = lookups after the creation:%d sends:%d comment:%#v attempts:%#v, want one unresolved failed attempt",
+		t.Fatalf("missing-holder mention = lookups by the creation and its send:%d sends:%d comment:%#v attempts:%#v, want the creation's one lookup and one unresolved failed attempt",
 			lookups, sendCount, created, settled)
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")

@@ -532,7 +532,9 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 // soon as its answer is out, and a body that stalls just past the limit is answered 413 within the
 // deadline and closed after it, as a 4 MiB body, of which net/http reads nothing more, always was.
 func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: this test measures the process. Its assertion is a time: the answer within
+	// 10 s (a 1 s drain and the request's own database reads), and the server's close within the
+	// drain's 1 s of the answer.
 	const drainLimit = time.Second
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	served.drainReadLimit = drainLimit
