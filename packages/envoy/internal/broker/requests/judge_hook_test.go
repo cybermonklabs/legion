@@ -42,7 +42,7 @@ func TestCreateHandsAPendingRequestToTheJudgeOnce(t *testing.T) {
 	watched := watchJudge(m)
 
 	const reason = "Rotating the Deel key for INFRA-1353"
-	req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, reason, 900, "DEEL_API_KEY"), "")
+	req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, reason, 900, "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request", req, err)
 	}
@@ -78,7 +78,7 @@ func TestCreateHandsAPendingRequestToTheJudgeOnce(t *testing.T) {
 func TestTheJudgeIsHandedAnAnyoneApproverRecord(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	watched := watchJudge(m)
-	if req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "Reading the shared key for INFRA-1353", 900, "SHARED_KEY"), ""); err != nil || req.State != "pending" {
+	if req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "Reading the shared key for INFRA-1353", 900, "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want a pending request", req, err)
 	}
 	if len(watched.handed) != 1 || watched.handed[0].Approver != record.AnyoneApprover {
@@ -93,11 +93,11 @@ func TestTheJudgeIsNotHandedACoalescedRequest(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	watched := watchJudge(m)
 	const reason = "Rotating the Deel key for INFRA-1353"
-	first, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, reason, 900, "DEEL_API_KEY"), "")
+	first, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, reason, 900, "DEEL_API_KEY"), "", nil)
 	if err != nil || first.State != "pending" {
 		t.Fatalf("the first Create = %+v, %v; want a pending request", first, err)
 	}
-	again, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, reason, 900, "DEEL_API_KEY"), "")
+	again, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, reason, 900, "DEEL_API_KEY"), "", nil)
 	if err != nil || !again.Coalesced || again.ID != first.ID {
 		t.Fatalf("the second Create = %+v, %v; want it coalesced onto request %s", again, err, first.ID)
 	}
@@ -117,7 +117,7 @@ func TestTheJudgeIsNotHandedARequestThePolicyDecided(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			watched := watchJudge(m)
-			req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "need it for INFRA-1353", c.secret), "")
+			req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "need it for INFRA-1353", c.secret), "", nil)
 			if err != nil || req.State != c.state {
 				t.Fatalf("Create(%s) = %+v, %v; want %s", c.secret, req, err, c.state)
 			}
@@ -136,7 +136,7 @@ func TestANilJudgeIsNoJudge(t *testing.T) {
 	if m.Judge != nil {
 		t.Fatal("newFixture built a machine with a judge; a machine nobody wires has none")
 	}
-	req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "Rotating the Deel key for INFRA-1353", 900, "DEEL_API_KEY"), "")
+	req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "Rotating the Deel key for INFRA-1353", 900, "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil || req.Approver == nil || *req.Approver != approver {
 		t.Fatalf("Create with no judge = %+v, %v; want the pending request %s waits for", req, err, approver)
 	}
@@ -189,7 +189,7 @@ func TestJudgePolicyReportsAnAdminSecret(t *testing.T) {
 // outcome: a name its owner took back is not one the judge hands straight back.
 func TestJudgePolicyReportsAWithheldName(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
-	auto, err := m.Create(t.Context(), enr, signRequest(t, m, key, "need it for INFRA-1353", "AUTO_TOKEN"), "")
+	auto, err := m.Create(t.Context(), enr, signRequest(t, m, key, "need it for INFRA-1353", "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want an automatic grant", auto, err)
 	}

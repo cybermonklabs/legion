@@ -70,6 +70,7 @@ dev-broker: ready.
   export DEV_BROKER_GITHUB_OWNER=acme-org
   export DEV_BROKER_GITHUB_CASE_SECRET=DEMO_GITHUB_APP_CASE_PAIR
   export DEV_BROKER_GITHUB_CASE_OWNER=ada
+  export DEV_BROKER_GITHUB_HUMAN_SECRET=DEMO_GITHUB_APP_HUMAN
   export PATH=/tmp/agent-secrets-dev.LsGorY/bin:$PATH
 ...
 ```
@@ -109,19 +110,25 @@ An account `BROKER_API_ACCOUNTS` does not list at all is `403 ACCOUNT_NOT_LISTED
 entry naming a caller the broker does not know refuses the boot, naming that name and the names it
 knows, so a typo never becomes a caller that reaches nothing.
 
-The fake secrets file holds two secrets of `ada@example.com`'s, under the namespace
+The fake secrets file holds three secrets of `ada@example.com`'s, under the namespace
 `example/agent-secrets/` and on its example key: `DEMO_READ_TOKEN`, tagged `tier=agent`, which her
 own sessions ([the kinds of session](/legion/broker/concepts/#sessions-and-enrollment)) get without
-asking, and `DEMO_API_KEY`, tagged `tier=human`, which she approves. Three more are the
-registered service's own, each tagged `owner=legion-daemon tier=agent`: a pod session enrolled
-under that service gets each without asking, and no person's session sees any of them at all.
+asking, and `DEMO_API_KEY` and `DEMO_GITHUB_APP_HUMAN`, tagged `tier=human`, which she approves.
+The last of those is a `github-app` secret whose `github-owners` tag names `acme-org`, and it is
+the one GitHub App secret of this stack a request for reaches a person: a secret the registered
+service owns is granted to that service's own sessions and denied to every other, and put to
+nobody. Three more are the registered service's own, each tagged
+`owner=legion-daemon tier=agent`: a pod session enrolled under that service gets each without
+asking, and no person's session sees any of them at all.
 They are `DEMO_SERVICE_TOKEN`, a stored value, and two `github-app` secrets minted at the GitHub
 stand this stack starts: `DEMO_GITHUB_APP`, whose `github-owners` tag names `acme-org`, and
 `DEMO_GITHUB_APP_CASE_PAIR`, whose tag names `ada`, on which that stand's App is installed twice
 under logins that differ only in case (`ada` and `Ada`), so a release of it holds two
-installations and `agent-secrets --github-token` refuses it. The exports name both secrets, the
-stand's address, the route that reads back every call it was sent, and the route that sets what
-it answers the next token request (`ordinary`, `refuse` or `widen`). They also name the pod and
+installations and `agent-secrets --github-token` refuses it. The exports name all three
+`github-app` secrets, the stand's address, the route that reads back every call it was sent, and
+the route that sets what it answers the next token request (`ordinary`, `refuse`,
+`refuse-repository`, `refuse-permissions` or `widen`, with `repository` naming the one
+`refuse-repository` refuses). They also name the pod and
 the registered service of the enrolment command the banner prints (`DEV_BROKER_POD_UID` and
 `DEV_BROKER_SERVICE`), so a script enrols that same session from the exports alone. A grant lasts
 for the `--ttl` its request names; with none, 15 minutes when any secret it names is human tier

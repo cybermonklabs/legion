@@ -45,11 +45,18 @@
 // and the permissions it names - and serves GET /repos/{owner}/{repo} to a token it minted whose
 // scope holds that repository, so a check spends a narrowed token as a caller does. What it
 // answers a token request is set while it runs by the same device as the model's: POST
-// <records URL>/answers/github, whose body is {"mode": "ordinary"|"refuse"|"widen"}. The three
-// are the answer each body asked for; the HTTP 422 that mints nothing, as GitHub answers a body
-// naming a permission the installation does not hold; and a token wider than the body asked for,
-// which the broker must refuse to release. The report names that address (github_answer_url),
-// and until a check calls it the stand answers each token request what its body asked for.
+// <records URL>/answers/github, whose body is {"mode": "<word>", "repository": "<name>"}, where
+// the repository is the one the refuse-repository mode reads and every other mode leaves out.
+// The five modes are ordinary, the answer each body asked for; refuse, the HTTP 422 that mints
+// nothing, as GitHub answers a body naming a permission the installation does not hold;
+// refuse-repository, that same 422 to a token request whose repositories name the one this body
+// named and the ordinary answer to every other, which is how a check drives a caller that asks
+// GitHub again with less of a narrowing to find the refused part; refuse-permissions, that 422
+// to a token request whose body names any permissions and the ordinary answer to every other;
+// and widen, a token wider than the body asked for, which the broker must refuse to release. A
+// refuse-repository that names no repository is refused 400, as a mode outside the five is. The
+// report names that address (github_answer_url), and until a check calls it the stand answers
+// each token request what its body asked for.
 //
 // Every stand's requests are read back at the recording route this prints for it, GET
 // <records URL>/records/<stand>, whose answer is the JSON array of what that stand was sent:
@@ -550,8 +557,8 @@ func recordsHandler(services map[string]*airlocktest.Service, model *airlocktest
 			return map[string]string{"text": answer.Text, "delay": answer.Delay.String()}
 		}))
 	mux.HandleFunc("POST "+githubAnswerPath, answerRoute(githubAnswerOf, github.Answers,
-		func(answer airlocktest.GitHubTokenAnswer) map[string]string {
-			return map[string]string{"mode": string(answer)}
+		func(answer airlocktest.GitHubAnswer) map[string]string {
+			return map[string]string{"mode": string(answer.Mode), "repository": answer.Repository}
 		}))
 	return mux
 }
@@ -581,8 +588,8 @@ func answerRoute[Body, Answer any](read func(Body) (Answer, error), set func(Ans
 
 // modelAnswerPath and githubAnswerPath are where a check sets what the model stand and the
 // GitHub stand answer from there on, and maxAnswerBody what one such request is read of: a reply
-// is a sentence or two and a mode is one word, so a body past this is a mistake rather than an
-// answer.
+// is a sentence or two and an answer a word and a repository name, so a body past this is a
+// mistake rather than an answer.
 const (
 	modelAnswerPath  = "/answers/model"
 	githubAnswerPath = "/answers/github"
@@ -591,21 +598,42 @@ const (
 
 // githubAnswerRequest is the body POST <records URL>/answers/github takes.
 type githubAnswerRequest struct {
-	// Mode is which of the GitHub stand's three answers every token request from then on gets:
-	// ordinary, refuse or widen (airlocktest.GitHubTokenAnswer).
+	// Mode is which of the GitHub stand's five answers every token request from then on gets:
+	// ordinary, refuse, refuse-repository, refuse-permissions or widen
+	// (airlocktest.GitHubTokenAnswer).
 	Mode string `json:"mode"`
+	// Repository is the repository the refuse-repository mode refuses a token request for. It is
+	// the one mode that reads it, and every other leaves it out.
+	Repository string `json:"repository"`
 }
 
 // githubAnswerOf is one such request as the answer it sets, and what is wrong with a request
-// that sets none: a mode outside the three is named back with the three, since a check that
-// misspelled one must read that rather than leave the last answer quietly in place.
-func githubAnswerOf(body githubAnswerRequest) (airlocktest.GitHubTokenAnswer, error) {
-	switch answer := airlocktest.GitHubTokenAnswer(body.Mode); answer {
-	case airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused, airlocktest.GitHubTokensWider:
+// that sets none: a mode outside the five is named back with the five, and a refuse-repository
+// that names no repository is named back with what it is missing, since a check that misspelled
+// a mode or left that name out must read it rather than drive its next case against the answer
+// still in place.
+func githubAnswerOf(body githubAnswerRequest) (airlocktest.GitHubAnswer, error) {
+	answer := airlocktest.GitHubAnswer{
+		Mode:       airlocktest.GitHubTokenAnswer(body.Mode),
+		Repository: body.Repository,
+	}
+	switch answer.Mode {
+	case airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused,
+		airlocktest.GitHubTokensRefusedPermissions, airlocktest.GitHubTokensWider:
+		return answer, nil
+	case airlocktest.GitHubTokensRefusedRepository:
+		if answer.Repository == "" {
+			return airlocktest.GitHubAnswer{}, fmt.Errorf(
+				"the mode %s names no repository to refuse: name it in the answer's repository field",
+				airlocktest.GitHubTokensRefusedRepository)
+		}
 		return answer, nil
 	default:
-		return "", fmt.Errorf("the mode %q is none of the GitHub stand's three answers: %s, %s and %s",
-			body.Mode, airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused, airlocktest.GitHubTokensWider)
+		return airlocktest.GitHubAnswer{}, fmt.Errorf(
+			"the mode %q is none of the GitHub stand's five answers: %s, %s, %s, %s and %s",
+			body.Mode, airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused,
+			airlocktest.GitHubTokensRefusedRepository, airlocktest.GitHubTokensRefusedPermissions,
+			airlocktest.GitHubTokensWider)
 	}
 }
 

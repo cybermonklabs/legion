@@ -39,7 +39,7 @@ func TestAKindChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 					return secrets.Minted{Value: "google-access-token"}, nil
 				},
 			}
-			grant, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "QUIET_KIND_KEY"), "")
+			grant, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "QUIET_KIND_KEY"), "", nil)
 			if err != nil || grant.GrantID == nil {
 				t.Fatalf("Create = %+v, %v", grant, err)
 			}
@@ -93,7 +93,7 @@ func TestAMaxGrantLoweredAndRaisedWithNoReleaseBetweenLeavesTheGrantAsItWas(t *t
 		},
 	}
 	retag(t, machine, requestKindSecret("QUIET_BOUNDED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, "1h"))
-	long, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, "QUIET_BOUNDED_LOGIN"), "")
+	long, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, "QUIET_BOUNDED_LOGIN"), "", nil)
 	if err != nil || long.GrantID == nil {
 		t.Fatalf("Create(1h) = %+v, %v", long, err)
 	}

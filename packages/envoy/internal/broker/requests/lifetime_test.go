@@ -51,11 +51,11 @@ func TestATTLGrantEndsAfterItsLifetime(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 
-	auto, err := m.Create(ctx, enr, signRequestFor(t, m, key, 120, "AUTO_TOKEN"), "")
+	auto, err := m.Create(ctx, enr, signRequestFor(t, m, key, 120, "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, 120 s) = %+v, %v, want a grant", auto, err)
 	}
-	pending, err := m.Create(ctx, enr, signRequestFor(t, m, key, 120, "DEEL_API_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequestFor(t, m, key, 120, "DEEL_API_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY, 120 s) = %+v, %v, want pending", pending, err)
 	}
@@ -89,16 +89,16 @@ func TestATTLGrantEndsAfterItsLifetime(t *testing.T) {
 		t.Fatal("the session ended; the grants must have ended on their own lifetime")
 	}
 
-	again, err := m.Create(ctx, enr, signRequestFor(t, m, key, 300, "AUTO_TOKEN"), "")
+	again, err := m.Create(ctx, enr, signRequestFor(t, m, key, 300, "AUTO_TOKEN"), "", nil)
 	if err != nil || again.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, 300 s) = %+v, %v", again, err)
 	}
-	same, err := m.Create(ctx, enr, signRequestFor(t, m, key, 300, "AUTO_TOKEN"), "")
+	same, err := m.Create(ctx, enr, signRequestFor(t, m, key, 300, "AUTO_TOKEN"), "", nil)
 	if err != nil || same.ID != again.ID {
 		t.Fatalf("a second 300 s request = %+v, %v; want the live grant of %s reused", same, err, again.ID)
 	}
 	for _, other := range []string{signRequestFor(t, m, key, 60, "AUTO_TOKEN"), signRequest(t, m, key, "until the session ends", "AUTO_TOKEN")} {
-		fresh, err := m.Create(ctx, enr, other, "")
+		fresh, err := m.Create(ctx, enr, other, "", nil)
 		if err != nil || fresh.ID == again.ID {
 			t.Fatalf("a request with another lifetime = %+v, %v; want a new request, not %s reused", fresh, err, again.ID)
 		}
@@ -129,7 +129,7 @@ func TestANoTTLRequestReusesAnUnexpiredPreMigrationGrant(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 
-	old, err := m.Create(ctx, enr, signRequestFor(t, m, key, 43200, "AUTO_TOKEN"), "")
+	old, err := m.Create(ctx, enr, signRequestFor(t, m, key, 43200, "AUTO_TOKEN"), "", nil)
 	if err != nil || old.GrantID == nil {
 		t.Fatalf("Create(pre-migration AUTO_TOKEN) = %+v, %v; want a grant", old, err)
 	}
@@ -139,7 +139,7 @@ func TestANoTTLRequestReusesAnUnexpiredPreMigrationGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reused, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL after migration", "AUTO_TOKEN"), "")
+	reused, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL after migration", "AUTO_TOKEN"), "", nil)
 	if err != nil || reused.ID != old.ID || reused.GrantID == nil || *reused.GrantID != *old.GrantID {
 		t.Fatalf("Create(no TTL after migration) = %+v, %v; want pre-migration request %s and grant %s reused", reused, err, old.ID, *old.GrantID)
 	}
@@ -160,11 +160,11 @@ func TestANoTTLRequestDoesNotReuseAPostMigration12HourGrant(t *testing.T) {
 	ctx := context.Background()
 	sessionDefaultFixture(t, m)
 
-	twelve, err := m.Create(ctx, enr, signRequestFor(t, m, key, 43200, "AUTO_TOKEN"), "")
+	twelve, err := m.Create(ctx, enr, signRequestFor(t, m, key, 43200, "AUTO_TOKEN"), "", nil)
 	if err != nil || twelve.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN --ttl 12h) = %+v, %v; want a grant", twelve, err)
 	}
-	fresh, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL", "AUTO_TOKEN"), "")
+	fresh, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL", "AUTO_TOKEN"), "", nil)
 	if err != nil || fresh.ID == twelve.ID || fresh.GrantID == nil || *fresh.GrantID == *twelve.GrantID || fresh.LifetimeSeconds != nil {
 		t.Fatalf("Create(no TTL) after a post-migration --ttl 12h grant = %+v, %v; want a new grant with no lifetime, not %s reused", fresh, err, twelve.ID)
 	}
@@ -179,23 +179,23 @@ func TestANoTTLRequestJoinsAPreMigrationPendingRequest(t *testing.T) {
 	ctx := context.Background()
 	sessionDefaultFixture(t, m)
 
-	old, err := m.Create(ctx, enr, signRequestFor(t, m, key, 43200, "DEEL_API_KEY"), "")
+	old, err := m.Create(ctx, enr, signRequestFor(t, m, key, 43200, "DEEL_API_KEY"), "", nil)
 	if err != nil || old.State != "pending" {
 		t.Fatalf("Create(pre-migration DEEL_API_KEY) = %+v, %v; want pending", old, err)
 	}
 	beforeMigration13(t, m, old.ID)
-	joined, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL after migration", "DEEL_API_KEY"), "")
+	joined, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL after migration", "DEEL_API_KEY"), "", nil)
 	if err != nil || joined.ID != old.ID || !joined.Coalesced {
 		t.Fatalf("Create(no TTL) beside a pre-migration pending request = %+v, %v; want request %s joined", joined, err, old.ID)
 	}
 
 	m2, enr2, key2, _ := newFixture(t)
 	sessionDefaultFixture(t, m2)
-	twelve, err := m2.Create(ctx, enr2, signRequestFor(t, m2, key2, 43200, "DEEL_API_KEY"), "")
+	twelve, err := m2.Create(ctx, enr2, signRequestFor(t, m2, key2, 43200, "DEEL_API_KEY"), "", nil)
 	if err != nil || twelve.State != "pending" {
 		t.Fatalf("Create(DEEL_API_KEY --ttl 12h) = %+v, %v; want pending", twelve, err)
 	}
-	if refused, err := m2.Create(ctx, enr2, signRequest(t, m2, key2, "no TTL", "DEEL_API_KEY"), ""); !errors.Is(err, ErrRequestPending) {
+	if refused, err := m2.Create(ctx, enr2, signRequest(t, m2, key2, "no TTL", "DEEL_API_KEY"), "", nil); !errors.Is(err, ErrRequestPending) {
 		t.Fatalf("Create(no TTL) beside a post-migration --ttl 12h pending request = %+v, %v; want ErrRequestPending", refused, err)
 	}
 }
@@ -207,11 +207,11 @@ func TestAPendingRequestWithAnotherLifetimeIsRefused(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 
-	first, err := m.Create(ctx, enr, signRequestFor(t, m, key, 120, "DEEL_API_KEY"), "")
+	first, err := m.Create(ctx, enr, signRequestFor(t, m, key, 120, "DEEL_API_KEY"), "", nil)
 	if err != nil || first.RecordID == nil {
 		t.Fatalf("Create(first 120s request) = %+v, %v; want pending", first, err)
 	}
-	second, err := m.Create(ctx, enr, signRequestFor(t, m, key, 300, "DEEL_API_KEY"), "")
+	second, err := m.Create(ctx, enr, signRequestFor(t, m, key, 300, "DEEL_API_KEY"), "", nil)
 	if err == nil || !strings.Contains(err.Error(), first.ID) {
 		t.Fatalf("Create(second 300s request) = %+v, %v; want a refusal naming pending request %s", second, err, first.ID)
 	}
@@ -233,11 +233,11 @@ func TestARequestOverlappingAPendingOneIsRefused(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			retag(t, m, policytest.Secret("STRIPE_KEY", fixtureOperator, policy.TierHuman, "stripe-v1"))
 			ctx := context.Background()
-			first, err := m.Create(ctx, enr, signRequest(t, m, key, "first", tc.pending...), "")
+			first, err := m.Create(ctx, enr, signRequest(t, m, key, "first", tc.pending...), "", nil)
 			if err != nil || first.State != "pending" {
 				t.Fatalf("Create(%v) = %+v, %v; want pending", tc.pending, first, err)
 			}
-			second, err := m.Create(ctx, enr, signRequest(t, m, key, "overlapping", tc.overlapping...), "")
+			second, err := m.Create(ctx, enr, signRequest(t, m, key, "overlapping", tc.overlapping...), "", nil)
 			if !errors.Is(err, ErrRequestPending) || !strings.Contains(err.Error(), first.ID) {
 				t.Fatalf("Create(%v) beside pending %v = %+v, %v; want ErrRequestPending naming %s", tc.overlapping, tc.pending, second, err, first.ID)
 			}
@@ -257,7 +257,7 @@ func TestAGrantWithNoTTLLastsTwelveHours(t *testing.T) {
 	ctx := context.Background()
 	want := int(DefaultGrantLifetime / time.Second)
 
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "no ttl", "AUTO_TOKEN"), "")
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "no ttl", "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.GrantID == nil || auto.LifetimeSeconds == nil || *auto.LifetimeSeconds != want {
 		t.Fatalf("Create(AUTO_TOKEN, no TTL) = %+v, %v; want a grant of %d s", auto, err, want)
 	}
@@ -282,7 +282,7 @@ func TestAHumanTierGrantWithNoTTLLastsFifteenMinutes(t *testing.T) {
 	ctx := context.Background()
 	want := int(DefaultHumanGrantLifetime / time.Second)
 
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "approve one PR", "DEEL_API_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "approve one PR", "DEEL_API_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil || pending.LifetimeSeconds == nil || *pending.LifetimeSeconds != want {
 		t.Fatalf("Create(DEEL_API_KEY, no TTL) = %+v, %v; want pending with lifetime %d", pending, err, want)
 	}
@@ -303,7 +303,7 @@ func TestAHumanTierGrantWithNoTTLLastsFifteenMinutes(t *testing.T) {
 		t.Fatalf("Values at 16m = %v; want ErrGrantNotLive", err)
 	}
 
-	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "AUTO_TOKEN", "DEEL_API_KEY"), "")
+	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "both", "AUTO_TOKEN", "DEEL_API_KEY"), "", nil)
 	if err != nil || mixed.LifetimeSeconds == nil || *mixed.LifetimeSeconds != want {
 		t.Fatalf("Create(AUTO_TOKEN + DEEL_API_KEY, no TTL) = %+v, %v; want lifetime %d", mixed, err, want)
 	}
@@ -317,7 +317,7 @@ func TestAHumanTierRequestNamingALongerTTLKeepsIt(t *testing.T) {
 	ctx := context.Background()
 	want := int((8 * time.Hour).Seconds())
 
-	pending, err := m.Create(ctx, enr, signRequestFor(t, m, key, want, "DEEL_API_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequestFor(t, m, key, want, "DEEL_API_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil || pending.LifetimeSeconds == nil || *pending.LifetimeSeconds != want {
 		t.Fatalf("Create(DEEL_API_KEY --ttl 8h) = %+v, %v; want pending with lifetime %d", pending, err, want)
 	}
@@ -342,11 +342,11 @@ func TestAGrantWithNoTTLLastsUntilItsSessionEnds(t *testing.T) {
 	retag(t, m, sessionDefault(policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1")),
 		sessionDefault(policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")))
 
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "until the session ends", "AUTO_TOKEN"), "")
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "until the session ends", "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v, want a grant", auto, err)
 	}
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "until the session ends", "DEEL_API_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "until the session ends", "DEEL_API_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v, want pending", pending, err)
 	}
@@ -381,7 +381,7 @@ func TestAGrantWithNoTTLLastsUntilItsSessionEnds(t *testing.T) {
 	if err != nil || len(listed) != 2 || listed[0].ExpiresAt != nil || listed[1].ExpiresAt != nil {
 		t.Fatalf("GrantsForApprover = %+v, %v; want both grants, neither with an expiry", listed, err)
 	}
-	same, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "AUTO_TOKEN"), "")
+	same, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "AUTO_TOKEN"), "", nil)
 	if err != nil || same.ID != auto.ID {
 		t.Fatalf("a second request naming no lifetime = %+v, %v; want the live grant of %s reused", same, err, auto.ID)
 	}
@@ -419,7 +419,7 @@ func TestAMixedNoTTLRequestLastsTwelveHours(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	retag(t, m, sessionDefault(policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1")),
 		policytest.Secret("OTHER_TOKEN", fixtureOperator, policy.TierAgent, "other-v1"))
-	got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "mixed", "AUTO_TOKEN", "OTHER_TOKEN"), "")
+	got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "mixed", "AUTO_TOKEN", "OTHER_TOKEN"), "", nil)
 	if err != nil || got.LifetimeSeconds == nil || *got.LifetimeSeconds != int(DefaultGrantLifetime/time.Second) {
 		t.Fatalf("Create(mixed, no TTL) = %+v, %v; want lifetime 43200", got, err)
 	}
@@ -433,7 +433,7 @@ func TestAPendingSessionLengthRequestApprovedAfterItsTagGoesGetsTheHumanDefault(
 	ctx := context.Background()
 	want := int(DefaultHumanGrantLifetime / time.Second)
 	sessionDefaultFixture(t, m)
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "pending", "DEEL_API_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "pending", "DEEL_API_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil || pending.LifetimeSeconds != nil {
 		t.Fatalf("Create = %+v, %v; want pending with no lifetime", pending, err)
 	}
@@ -463,7 +463,7 @@ func TestAMalformedTagAtApprovalKeepsTwelveHours(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	sessionDefaultFixture(t, m)
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "pending", "DEEL_API_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "pending", "DEEL_API_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create = %+v, %v", pending, err)
 	}
@@ -489,12 +489,12 @@ func TestANoTTLRetryJoinsAPendingNoLifetimeRequest(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	sessionDefaultFixture(t, m)
-	old, err := m.Create(ctx, enr, signRequest(t, m, key, "old", "DEEL_API_KEY"), "")
+	old, err := m.Create(ctx, enr, signRequest(t, m, key, "old", "DEEL_API_KEY"), "", nil)
 	if err != nil || old.LifetimeSeconds != nil {
 		t.Fatalf("Create = %+v, %v", old, err)
 	}
 	retag(t, m, policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"))
-	joined, err := m.Create(ctx, enr, signRequest(t, m, key, "retry", "DEEL_API_KEY"), "")
+	joined, err := m.Create(ctx, enr, signRequest(t, m, key, "retry", "DEEL_API_KEY"), "", nil)
 	if err != nil || joined.ID != old.ID || !joined.Coalesced {
 		t.Fatalf("retry = %+v, %v; want %s joined", joined, err, old.ID)
 	}

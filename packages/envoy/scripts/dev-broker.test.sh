@@ -463,11 +463,13 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s registers %s under both halves, tells a reader how to take the secret it owns, and exports that pod uid and service name\n' "$label" "$service"
-  # The stand-in GitHub and the two github-app secrets it mints: the stands are started for the
+  # The stand-in GitHub and the three github-app secrets it mints: the stands are started for the
   # three installations the case pair needs, the broker is pointed at that stand's own address,
-  # and the fake store holds both secrets with the kind, the tier, the owner and the
-  # github-owners tag each one's release rests on. The App key is the file the stands reported,
-  # so a report that named another file would leave the store holding something else.
+  # and the fake store holds all three with the kind, the tier, the owner and the github-owners
+  # tag each one's release rests on - the two the registered service owns, which a pod session of
+  # it gets without asking, and the approver's own human-tier one, whose release a person
+  # decides. The App key is the file the stands reported, so a report that named another file
+  # would leave the store holding something else.
   local stands_url stands_owners
   stands_url="$(grep -o 'github stand: *http://127\.0\.0\.1:[0-9]\+' "$log_file" | head -n1 | grep -o 'http://.*' || true)"
   stands_owners="$(grep -o 'fake stands: dir=[^ ]* owners=.*' "$log_file" | head -n1 | sed -E 's/.*owners=//' || true)"
@@ -477,20 +479,32 @@ assert_instance_isolated() {
     echo "FAIL: $label's broker does not mint github-app secrets at its own stand-in (owners '${stands_owners:-none}', stand ${stands_url:-none})" >&2
     exit 1
   fi
-  local tags
-  tags="$(jq -r --arg prefix "example/agent-secrets/" '
-    [.secrets[] | select(.name == ($prefix + "demo-github-app") or .name == ($prefix + "demo-github-app-case-pair"))
+  local tags want_tags
+  tags="$(jq -r '
+    [.secrets[] | select(.tags.kind == "github-app")
      | "\(.name) \(.tags.kind) \(.tags.tier) \(.tags.owner) \(.tags["github-owners"]) \(.value | fromjson | .app_id)"] | sort | join("; ")
     ' "${workdir}/fake-secrets.json" 2>/dev/null || true)"
-  if [[ "$tags" != "example/agent-secrets/demo-github-app github-app agent legion-daemon acme-org 123456; example/agent-secrets/demo-github-app-case-pair github-app agent legion-daemon ada 123456" ]]; then
-    echo "FAIL: $label's fake store holds no pair of github-app secrets the service owns: ${tags:-none}" >&2
+  want_tags="example/agent-secrets/demo-github-app github-app agent legion-daemon acme-org 123456"
+  want_tags="${want_tags}; example/agent-secrets/demo-github-app-case-pair github-app agent legion-daemon ada 123456"
+  want_tags="${want_tags}; example/agent-secrets/demo-github-app-human github-app human ada@example.com acme-org 123456"
+  if [[ "$tags" != "$want_tags" ]]; then
+    echo "FAIL: $label's fake store holds no such three github-app secrets: ${tags:-none}" >&2
     exit 1
   fi
   if ! grep -qF -- "-----BEGIN PRIVATE KEY-----" <(jq -r --arg prefix "example/agent-secrets/" '.secrets[] | select(.name == ($prefix + "demo-github-app")) | .value | fromjson | .private_key' "${workdir}/fake-secrets.json"); then
     echo "FAIL: $label's github-app secret holds no App key from the stands' report" >&2
     exit 1
   fi
-  printf 'PASS: %s starts a stand-in GitHub for three installations, mints against it, and holds both github-app secrets its service owns\n' "$label"
+  # The banner exports the name of each github-app secret, the approver's own beside the two the
+  # service owns, since a check drives each of them by the name this export names.
+  if ! grep -qF "export DEV_BROKER_GITHUB_SECRET=DEMO_GITHUB_APP" "$log_file" \
+    || ! grep -qF "export DEV_BROKER_GITHUB_CASE_SECRET=DEMO_GITHUB_APP_CASE_PAIR" "$log_file" \
+    || ! grep -qF "export DEV_BROKER_GITHUB_HUMAN_SECRET=DEMO_GITHUB_APP_HUMAN" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's banner does not export the name of each of its three github-app secrets" >&2
+    exit 1
+  fi
+  printf 'PASS: %s starts a stand-in GitHub for three installations, mints against it, holds its three github-app secrets and exports each name\n' "$label"
   # The example that takes a github-app secret runs its curl in a shell of its own, so that
   # shell expands the name the grant put in the child's environment. An example that printed
   # the name with a backslash before it, outside any shell, would have curl send those

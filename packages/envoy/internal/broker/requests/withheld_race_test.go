@@ -75,7 +75,7 @@ func TestCreateAndRevokeByApproverUnderLoadNeverDeadlockOrFail(t *testing.T) {
 			for r := range rounds {
 				enr := ids[(w+r)%len(ids)]
 				names := nameSets[(w*7+r)%len(nameSets)]
-				req, err := m.Create(ctx, enr, signRequest(t, m, keys[enr], fmt.Sprintf("w%d r%d", w, r), names...), "")
+				req, err := m.Create(ctx, enr, signRequest(t, m, keys[enr], fmt.Sprintf("w%d r%d", w, r), names...), "", nil)
 				check("Create", err)
 				if err != nil {
 					continue
@@ -128,7 +128,7 @@ func TestCreateAndRevokeByApproverUnderLoadNeverDeadlockOrFail(t *testing.T) {
 func TestReverseLockOrderAgainstRevokeByApproverDeadlocks(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", auto, err)
 	}
@@ -171,7 +171,7 @@ func TestRequestsRacingTheWithholdOnFreshSessions(t *testing.T) {
 	var failures []string
 	for s := range sessions {
 		enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-race-%d-%s", s, t.Name()), new(fixtureOperator), nil)
-		auto, err := m.Create(ctx, enr, signRequest(t, m, key, "seed", "AUTO_TOKEN"), "")
+		auto, err := m.Create(ctx, enr, signRequest(t, m, key, "seed", "AUTO_TOKEN"), "", nil)
 		if err != nil || auto.GrantID == nil {
 			t.Fatalf("seed Create = %+v, %v", auto, err)
 		}
@@ -186,7 +186,7 @@ func TestRequestsRacingTheWithholdOnFreshSessions(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				req, err := m.Create(ctx, enr, signed[i], "")
+				req, err := m.Create(ctx, enr, signed[i], "", nil)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
