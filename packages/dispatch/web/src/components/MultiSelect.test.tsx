@@ -238,7 +238,7 @@ test("the compact size changes the trigger's look alone, and the control carries
   );
   try {
     const trigger = screen.getByRole("button", { name: "Labels · 1" });
-    // The vocabulary's eleven names are the controls a page draws; this one is a part of them,
+    // The vocabulary's twelve names are the controls a page draws; this one is a part of them,
     // not one of them, so nothing reads it by that attribute.
     expect(trigger).not.toHaveAttribute("data-control");
     expect(trigger).toHaveAttribute("aria-expanded", "false");

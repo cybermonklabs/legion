@@ -17,9 +17,12 @@ export const CONTROL = Object.freeze({
   searchBox: "search-box",
   selectionBar: "selection-bar",
   tableShell: "table-shell",
+  /** A trigger of a page's own panel that narrows nothing: the project Issues tab's Save view
+   *  and its (i) hint. It is no `panel-trigger`, so a row's one filter trigger stays one. */
+  viewPanel: "view-panel",
 } as const);
 
-/** What a `data-control` attribute carries: no page invents a twelfth. */
+/** What a `data-control` attribute carries: no page invents a thirteenth. */
 export type ControlName = (typeof CONTROL)[keyof typeof CONTROL];
 
 /** How much room a control takes in its row. `compact` exists for the project List, whose toolbar

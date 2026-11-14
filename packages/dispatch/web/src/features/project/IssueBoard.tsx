@@ -373,11 +373,14 @@ function readDrop(
  * the daemon owns those stages, and so is a drop on Queue from another column.
  *
  * A sorted board takes no reorder within a column (GitHub Projects' rule), because the sort puts
- * the card back: only while the view sorts by Place, first first, does a drop within a column
- * write the rank (in Queue the card takes its new place when the daemon's next read moves its
- * Place), and a drop on a card of another column writes the rank beside the status. Under any
- * other sort a reorder is refused with `reorderRefusal`, and a drop into another column writes
- * the status alone, the card landing where the sort puts it.
+ * the card back: a drop within a column writes the rank only where the rank decides where the
+ * card lands, which is while the view sorts by Place, first first, and among cards that all have
+ * a Place or all have none (the sort puts every card with a Place ahead of those without). In
+ * Queue the card then takes its new place when the daemon's next read moves its Place. A drop on
+ * a card of another column writes the rank beside the status under that sort. Under any other
+ * sort a reorder is refused with `reorderRefusal`, and a drop into another column writes the
+ * status alone, the card landing where the sort puts it. A drop into another lane of a Legion
+ * stage column is refused, Queue's included.
  */
 export function IssueBoard({
   hasLegion,
@@ -462,15 +465,39 @@ export function IssueBoard({
     const status = stageStatus(target.stage);
     // Within its own column, and its own lane, a drop can only reorder.
     const reorders = target.stage === row.stage && Object.keys(priority).length === 0;
+    // The card a reorder lands beside: the one it is dropped on, else the column's last.
+    const beside =
+      target.key !== undefined
+        ? rows.find((item) => item.issue.key === target.key)
+        : rows
+            .filter(
+              (item) =>
+                item.stage === row.stage &&
+                item.issue.key !== key &&
+                (!lanes || issuePriority(item.issue.priority) === issuePriority(row.issue.priority))
+            )
+            .at(-1);
+    const placeRefusal = (): string | undefined => {
+      if (beside === undefined || (beside.place === undefined) === (row.place === undefined))
+        return undefined;
+      const why = hasLegion ? "Legion orders the waiting line" : "Cards with a Place come first";
+      return row.place === undefined
+        ? `${why}: a card without a Place cannot move among cards with one`
+        : `${why}: a card with a Place cannot move among cards without one`;
+    };
     if (target.stage === "queue") {
       // Within the Queue column a drop writes the rank; from anywhere else it is refused.
       if (row.stage !== "queue") {
         setNotice("Legion moves cards into Queue itself: a card cannot be dropped there");
         return;
       }
-      if (reorderRefusal !== undefined) {
-        if (reorders) setNotice(reorderRefusal);
-        else void move(key, priority);
+      if (!reorders) {
+        setNotice("Legion owns the Queue stage: a card cannot change lanes there");
+        return;
+      }
+      const refusal = reorderRefusal ?? placeRefusal();
+      if (refusal !== undefined) {
+        setNotice(refusal);
         return;
       }
       const column = rows.filter((item) => item.stage === "queue");
@@ -480,10 +507,7 @@ export function IssueBoard({
         target.key !== undefined &&
         column.findIndex((item) => item.issue.key === key) >
           column.findIndex((item) => item.issue.key === target.key);
-      void move(key, {
-        ...priority,
-        rank: movingUp ? { before: neighbour } : { after: neighbour },
-      });
+      void move(key, { rank: movingUp ? { before: neighbour } : { after: neighbour } });
       return;
     }
     if (status === undefined) {
@@ -492,9 +516,12 @@ export function IssueBoard({
       );
       return;
     }
-    if (reorders && reorderRefusal !== undefined) {
-      setNotice(reorderRefusal);
-      return;
+    if (reorders) {
+      const refusal = reorderRefusal ?? placeRefusal();
+      if (refusal !== undefined) {
+        setNotice(refusal);
+        return;
+      }
     }
     const input: UpdateIssueInput = {
       ...priority,

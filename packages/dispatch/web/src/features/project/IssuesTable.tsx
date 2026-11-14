@@ -9,7 +9,6 @@ import {
   userStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import { Chip } from "../../components/Chip";
 import { ColumnFilter } from "../../components/ColumnFilter";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import { DataTable, type DataTableNames, useDataTable } from "../../components/DataTable";
@@ -40,6 +39,7 @@ import {
   IssueViewTabs,
   LayoutSwitch,
   type SettingsFailure,
+  ToggleButton,
   ViewControls,
   type ViewLayout,
 } from "./IssueViewTabs";
@@ -813,12 +813,12 @@ function ViewsTable({
       <LayoutSwitch layout={layoutChoice} onLayout={setLayout} />
       {layoutChoice === "board" ? (
         <>
-          <Chip onClick={() => setShowIcebox(!showIcebox)} selected={showIcebox} size="compact">
+          <ToggleButton onChange={setShowIcebox} pressed={showIcebox}>
             Show Icebox
-          </Chip>
-          <Chip onClick={() => setLanes(!lanes)} selected={lanes} size="compact">
+          </ToggleButton>
+          <ToggleButton onChange={setLanes} pressed={lanes}>
             Lanes
-          </Chip>
+          </ToggleButton>
         </>
       ) : (
         <ColumnsMenu columns={offeredColumns} size="compact" />

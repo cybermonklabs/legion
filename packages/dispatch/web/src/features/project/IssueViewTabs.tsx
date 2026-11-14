@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { LegionBoardHeader } from "../../api/types";
+import { CONTROL } from "../../components/control-names";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import {
   activeTabIndicatorBorder,
@@ -36,6 +37,12 @@ const smallButton = `inline-flex min-h-9 shrink-0 items-center rounded-md border
 
 /** A tab's count: smaller than the shared pill, so seven tabs and a saved one fit one row. */
 const countClass = `rounded-full px-1 py-0.5 text-[11px] font-medium tabular-nums ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
+
+/** The box the layout control and the Board's toggles are drawn in, and the face of one option
+ *  in it, filled while pressed. */
+const TOGGLE_BOX = `inline-flex shrink-0 rounded-lg border p-0.5 ${borderDefault} ${surfaceMutedBg}`;
+const toggleFace = (pressed: boolean) =>
+  `min-h-9 rounded-md px-2 text-xs font-medium whitespace-nowrap md:min-h-7 ${pressed ? surfaceMutedStrongBg : ""} ${textSecondaryOnCanvas}`;
 
 /** The mark a tab whose view the reader changed shows. */
 function ChangedMark(): ReactNode {
@@ -105,6 +112,7 @@ function SaveView({
   return (
     <PanelTrigger
       align="right"
+      control={CONTROL.viewPanel}
       label="Save view"
       onOpenChange={(next) => {
         if (next) {
@@ -383,6 +391,7 @@ export function ViewControls({
       </span>
       <PanelTrigger
         align="right"
+        control={CONTROL.viewPanel}
         label="i"
         onOpenChange={(open) => setPanel(open ? "hint" : undefined)}
         open={panel === "hint"}
@@ -410,17 +419,12 @@ export function LayoutSwitch({
   onLayout: (layout: ViewLayout) => void;
 }): ReactNode {
   return (
-    <fieldset
-      className={`inline-flex shrink-0 rounded-lg border p-0.5 ${borderDefault} ${surfaceMutedBg}`}
-      data-layout-switch
-    >
+    <fieldset className={TOGGLE_BOX} data-layout-switch>
       <legend className="sr-only">Layout</legend>
       {(["table", "board"] as const).map((option) => (
         <button
           aria-pressed={layout === option}
-          className={`min-h-9 rounded-md px-2 text-xs font-medium md:min-h-7 ${
-            layout === option ? surfaceMutedStrongBg : ""
-          } ${textSecondaryOnCanvas}`}
+          className={toggleFace(layout === option)}
           key={option}
           onClick={() => onLayout(option)}
           type="button"
@@ -429,5 +433,29 @@ export function LayoutSwitch({
         </button>
       ))}
     </fieldset>
+  );
+}
+
+/** A choice of how the Board draws that narrows nothing (Show Icebox, Lanes): a button that
+ *  stays pressed, drawn as the layout control's options are and carrying no name of the
+ *  vocabulary, since a chip in the control row stands for a narrowing. */
+export function ToggleButton({
+  children,
+  onChange,
+  pressed,
+}: {
+  children: ReactNode;
+  onChange: (pressed: boolean) => void;
+  pressed: boolean;
+}): ReactNode {
+  return (
+    <button
+      aria-pressed={pressed}
+      className={TOGGLE_BOX}
+      onClick={() => onChange(!pressed)}
+      type="button"
+    >
+      <span className={`inline-flex items-center ${toggleFace(pressed)}`}>{children}</span>
+    </button>
   );
 }

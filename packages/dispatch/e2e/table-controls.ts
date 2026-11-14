@@ -79,8 +79,16 @@ export const SURFACE_CONTROLS: Record<SurfaceName, readonly ControlName[]> = {
     CONTROL.pager,
     CONTROL.selectionBar,
     CONTROL.dataTable,
+    CONTROL.viewPanel,
   ],
-  "project Board": [CONTROL.controlRow, CONTROL.searchBox, CONTROL.panelTrigger, CONTROL.chip],
+  // The Board draws no display menu: its one section, Group by, groups nothing on the Board.
+  "project Board": [
+    CONTROL.controlRow,
+    CONTROL.searchBox,
+    CONTROL.panelTrigger,
+    CONTROL.chip,
+    CONTROL.viewPanel,
+  ],
   "Agents page": [CONTROL.controlRow, CONTROL.searchBox, CONTROL.panelTrigger, CONTROL.chip],
   "Delivery page": [
     CONTROL.controlRow,

@@ -195,47 +195,77 @@ export function IssueTableToolbar({
             {label}
           </Chip>
         ));
+  // Every narrowing that is no column sits behind the one trigger (INFRA-3135, R3): the flags,
+  // and the narrowings an address carries (`exclude_tree`, `only`), each with its remove control
+  // as its chip in the row has.
   const flagsPanel = () => (
     <>
       <IssueFlagChips />
       <Chip onClick={() => flags.setUnclaimed(!flags.unclaimed)} selected={flags.unclaimed}>
         Unclaimed
       </Chip>
+      {extraChips.length === 0 ? null : (
+        <ul
+          aria-label="Other narrowings"
+          className={`flex w-full flex-col gap-1 border-t pt-2 ${borderDefault}`}
+        >
+          {extraChips.map(({ label, remove }) => (
+            <li className="flex w-full items-center justify-between gap-2 text-xs" key={label}>
+              <span className="min-w-0 truncate" title={label}>
+                {label}
+              </span>
+              <button
+                aria-label={`Remove ${label}`}
+                className={`inline-flex size-11 shrink-0 items-center justify-center rounded-md md:size-8 ${surfaceMutedHoverBg}`}
+                onClick={remove}
+                type="button"
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </>
   );
+  // What the trigger counts: every narrowing behind it.
+  const behind = flagged.length + extraChips.length;
   return (
     <>
       <ControlRow
         chips={chips}
+        // The Board draws no display menu: its one section, Group by, groups nothing there.
         display={
-          <DisplayMenu
-            // "View" names the views in the tab row on this page, so the menu that holds the
-            // grouping takes another word.
-            label="Display"
-            onOpenChange={(open) => setOpenPanel(open ? "display" : undefined)}
-            open={openPanel === "display"}
-            sections={[
-              {
-                id: "group",
-                label: "Group by",
-                onChange: (next) => {
-                  table.setGrouping(next ? [next] : []);
-                  table.setExpanded(true);
+          board ? undefined : (
+            <DisplayMenu
+              // "View" names the views in the tab row on this page, so the menu that holds the
+              // grouping takes another word.
+              label="Display"
+              onOpenChange={(open) => setOpenPanel(open ? "display" : undefined)}
+              open={openPanel === "display"}
+              sections={[
+                {
+                  id: "group",
+                  label: "Group by",
+                  onChange: (next) => {
+                    table.setGrouping(next ? [next] : []);
+                    table.setExpanded(true);
+                  },
+                  options: [
+                    { label: "Nothing", value: "" },
+                    ...columns
+                      .filter((column) => column.getCanGroup())
+                      .map((column) => ({
+                        label: String(column.columnDef.header),
+                        value: column.id,
+                      })),
+                  ],
+                  value: grouping[0] ?? "",
                 },
-                options: [
-                  { label: "Nothing", value: "" },
-                  ...columns
-                    .filter((column) => column.getCanGroup())
-                    .map((column) => ({
-                      label: String(column.columnDef.header),
-                      value: column.id,
-                    })),
-                ],
-                value: grouping[0] ?? "",
-              },
-            ]}
-            size="compact"
-          />
+              ]}
+              size="compact"
+            />
+          )
         }
         flows
         keepsClearRoom
@@ -255,13 +285,13 @@ export function IssueTableToolbar({
         trigger={
           board ? (
             <BoardFiltersTrigger
-              count={flags.labels.length + flagged.length}
+              count={flags.labels.length + behind}
               flagsPanel={flagsPanel}
               labelOptions={labelOptions}
             />
           ) : (
             <PanelTrigger
-              count={flagged.length}
+              count={behind}
               label="Filters"
               onOpenChange={(open) => setOpenPanel(open ? "flags" : undefined)}
               open={openPanel === "flags"}
