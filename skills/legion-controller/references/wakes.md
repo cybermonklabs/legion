@@ -128,21 +128,27 @@ it happens however full the cap is. A lost label or a foreign Dispatch claim sen
 
 A tree of your project has stopped: `<KEY>` is its root, nothing of the tree has moved for longer
 than `stalled_tree_notice_hours` (six by default), and no agent of it is at work.
-The daemon tells you when at least one issue of it waits by no rule of the daemon's own, and when
-the project's line can no longer move.
-A tree is silent only while every quiet issue of it waits on a person, on a Dispatch blocker, for
-an open child, or for an admission slot it needs and does not hold, and only while the project's
-line can still move: some issue of the project holds a slot and waits by none of those rules, some
-claim of the project is at work, or an issue of the line that waits on no other issue can start:
-on a free slot, or on none, as a root past its review takes none.
-Where none of these holds, no work of the project can start again by itself, so every tree of it is
-named however its members wait, with one exception.
-An issue the daemon started that gave its slot back to wait on another issue never makes its own
-tree read as stopped when nothing of that tree moves the wait: a `blocked_by` link to an issue of
-any project that is not `done`, or an open child the daemon has released into the tree.
-When that issue is in your project and has stopped, you are told of its tree instead.
-A wait on an open child the architect filed and has not released gets no such exception, because
-releasing that child is the tree's own work.
+The daemon does not tell you of a tree that waits by design. Two kinds of wait count:
+
+- An issue the daemon started that gave its slot back to wait on work outside its tree never makes
+  the tree read as stopped. That work is a `blocked_by` link to an issue of any project that is not
+  `done`, or an open child the daemon has released into the tree. A wait on an open child the
+  architect filed and has not released is not such a wait, because releasing that child is the
+  tree's own work.
+- A wait on a person, on a Dispatch blocker, for an open child, or for an admission slot the issue
+  needs and does not hold silences the tree only while the project's line can still move: some
+  issue of the project holds a slot and waits by none of those rules, some claim of the project is
+  at work, or an issue of the line that waits on no other issue can start, on a free slot or on
+  none, as a root past its review takes none.
+
+Every other quiet tree with no agent at work is named, and where the project's line cannot move no
+work of the project starts again by itself.
+When the issue a waiting issue waits on is in your project and its own tree has stopped, you are
+told of that tree.
+A wait on a blocker no tree runs (parked, never admitted, or in `icebox`) brings no stall notice:
+the waiting issue shows only under `admission.blocked` and in the tick notice's `blocked` list,
+which the day's report names.
+
 The
 `reason` says the root has stopped and how many hours the tree has been quiet. It then gives one
 line for each issue of the tree the workflow still runs: the phase its record carries, the role

@@ -261,8 +261,9 @@ type awaitDecision struct {
 
 // decideAwait is the rule for whether a root waits on a person, checked cheapest first:
 //
-//  0. a root not at admitted, lingering, out of the workflow, or one the daemon has not started,
-//     which holds no admission slot (record.CanWaitOnPerson), stays;
+//  0. a root not at admitted, lingering, out of the workflow, or one that holds no admission
+//     slot — one the daemon has not started, or one that gave its slot back to wait on another
+//     issue (record.CanWaitOnPerson) — stays;
 //  1. one whose architect handed nothing back since it was last given work (DeclaredSeq) stays;
 //  2. one with nothing still with the person (withHuman) takes in what it handed back
 //     (actTakeIn): that was answered or closed first, and the running architect has that act;

@@ -619,16 +619,8 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // that run back to zero; nothing is held and nothing is bounded, because a chain's bottom
 // refusing deterministically costs one request every ten minutes. A tree-stalled notice names a
 // root of the daemon's own whose tree has stopped: nothing of the tree has moved for longer than
-// `stalled_tree_notice_hours`, no claim of it is at work, and either at least one issue of it
-// waits by no rule of the daemon's own or the project's line can no longer move — a tree every
-// quiet issue of which waits by one of those rules is told to nobody while some issue of the
-// project holds a slot and waits by none of them, some claim of the project is at work, or an
-// issue of the line that waits on no other issue can start, and a tree whose only quiet issues
-// gave their slot back to wait on another issue that nothing of the tree moves — a blocked-by
-// link to an issue of any project, or an open child the daemon has released — is told to nobody
-// at all, while a wait on a child nobody released has no such exception (admit's
-// tellStalledTrees, lineCanMove, lineHolds.waitsOnIssue). Its issue is that root, and its Reason
-// names the
+// `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by design (admit's
+// tellStalledTrees says which trees are told). Its issue is that root, and its Reason names the
 // tree's quiet hours, each issue the workflow still runs with its phase, the role whose turn it
 // is and the state of its pull request, and what the controller is to decide. It is told once
 // for each stall: the daemon marks the root with the movement the notice was told for, and tells

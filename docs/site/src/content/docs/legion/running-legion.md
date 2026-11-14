@@ -590,14 +590,17 @@ What each part is for:
   absent key is no limit at all, `stalled_tree_notice_hours` (6: how long a tree the daemon runs
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
-  told, nor is one every quiet issue of which waits by design while the project's line can still
-  move — some issue of the project holds a slot and waits by no such rule, some claim of it is
-  at work, or an issue of the line that waits on no other issue can start, on a free slot or on
-  none — nor is one whose only quiet issues gave their slot back to wait on another issue that
-  nothing of their tree moves, a `blocked_by` link to an issue of any project or an open child
-  the daemon has released, whether or not the line can move (the tree of that other issue is
-  told if it has stopped; a wait on a child its architect has not released gets no such
-  exception), and no value turns the notice off,
+  told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
+  link, on its open children, or for a slot it needs and does not hold — while the project's line
+  can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
+  at work, or an issue of the line that waits on no other issue can start — nor, whether or not
+  the line can move, one whose only quiet issues gave their slot back to wait on work outside
+  their tree: a `blocked_by` link to an unfinished issue of any project, or an open child the
+  daemon has released. A wait on a child its architect has not released is no such wait. Where
+  the issue waited on is in this project and its own tree has stopped, that tree is told; a
+  wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
+  and the waiting issue shows only under `admission.blocked` and in the tick notice's `blocked`
+  list. No value turns the notice off,
   so a deployment that wants fewer notices raises the number, to 596 at most),
   `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`
