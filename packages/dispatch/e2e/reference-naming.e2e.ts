@@ -1,6 +1,15 @@
-import { createComment, createIssue, createProject, editArtifact, patchIssue } from "./api";
+import { plannerSession, setLiveSessions } from "./agents";
+import {
+  createAgentMessage,
+  createComment,
+  createIssue,
+  createProject,
+  editArtifact,
+  patchIssue,
+} from "./api";
 import { documentEditor } from "./editor";
 import {
+  RENDERED_BODY,
   referenceAgent,
   UNKNOWN_PERSON_LOGIN,
   UNKNOWN_PERSON_REFERENCE,
@@ -185,7 +194,9 @@ test("a document its issue does not hold, a component of a project with no archi
         await expect.soft(scope).toContainText(address);
         await expect.soft(scope.getByRole("link", { exact: true, name: address })).toHaveCount(0);
       }
-      await expect.soft(scope.getByRole("link", { exact: true, name: target.title })).toHaveCount(0);
+      await expect
+        .soft(scope.getByRole("link", { exact: true, name: target.title }))
+        .toHaveCount(0);
     };
 
     await page.goto(`/issues/${host.key}/conversation`);
@@ -193,6 +204,64 @@ test("a document its issue does not hold, a component of a project with no archi
 
     await page.goto(`/issues/${host.key}/spec`);
     await expectWordsWithNoLink(documentEditor(page));
+  } finally {
+    await alice.close();
+  }
+});
+
+// R8 for the one kind of target the registry alone cannot answer: a session. A session that held
+// a role and ended has left the registry but keeps its conversation, which Dispatch holds a
+// record of (here, a message sent to it), so its reference still links; an id no agent ever held
+// reads as its words; and a session the registry lists reads as its title. The comment and the
+// editor read the one answer (`reference-target.ts`'s `useReferenceData`, the registry and the
+// batched `GET /api/v1/agents/known`), so they agree.
+// SLOW(>=2s): two page loads, each waiting for the listed session's title before it reads.
+test("a session Dispatch holds a record of links though it has ended, a listed one reads as its title, and one nobody held reads as its words", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const host = await createIssue({ project: "CORE", title: "Reference host" });
+  await setLiveSessions([plannerSession]);
+  const ended = crypto.randomUUID();
+  await createAgentMessage(ended, {
+    body: "Before you go: write the hand-off.",
+    delivery: "aside",
+  });
+  const neverHeld = "00000000-0000-4000-8000-000000000001";
+  const listed = `dispatch://agent/${plannerSession.session_id}`;
+  const endedAddress = `dispatch://agent/${ended}`;
+  const neverHeldAddress = `dispatch://agent/${neverHeld}`;
+  const body = `The listed one is ${listed} now.\n\nThe ended one was ${endedAddress} once.\n\nAnd ${neverHeldAddress} never was.\n`;
+  await editArtifact(
+    host.primary_artifact_id,
+    { ops: [{ after: "end", markdown: body, op: "insert" }] },
+    referenceAgent
+  );
+  const comment = await createComment(host.key, { body }, referenceAgent);
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    const expectSessions = async (scope: Locator) => {
+      await expect(
+        scope.getByRole("link", { exact: true, name: plannerSession.title })
+      ).toHaveCount(1);
+      await expect
+        .soft(scope.getByRole("link", { exact: true, name: endedAddress }))
+        .toHaveCount(1);
+      await expect.soft(scope).toContainText(neverHeldAddress);
+      await expect
+        .soft(scope.getByRole("link", { exact: true, name: neverHeldAddress }))
+        .toHaveCount(0);
+    };
+
+    // The comment's own body: its card also names its author, the same session, in its header.
+    await page.goto(`/issues/${host.key}/conversation`);
+    await expectSessions((await expandedComment(page, comment.id)).locator(RENDERED_BODY).first());
+
+    await page.goto(`/issues/${host.key}/spec`);
+    await expectSessions(documentEditor(page));
   } finally {
     await alice.close();
   }

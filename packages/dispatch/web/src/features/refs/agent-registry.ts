@@ -56,6 +56,15 @@ function registryLookup(agents: readonly Agent[]): RegistryLookup {
   return lookup;
 }
 
+/** The agent the registry response `agents` lists under `sessionId`, through the lookup every
+ *  reader of that response shares. */
+export function registeredAgent(
+  agents: readonly Agent[] | undefined,
+  sessionId: string
+): Agent | undefined {
+  return agents === undefined ? undefined : registryLookup(agents).byId.get(sessionId);
+}
+
 let pollingReaders = 0;
 const pollingListeners = new Set<() => void>();
 

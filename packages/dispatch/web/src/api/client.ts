@@ -1182,6 +1182,14 @@ export class DispatchApiClient {
     return this.read("/api/v1/agents", {});
   }
 
+  /** `GET /api/v1/agents/known`: which of `sessions` Dispatch holds any record of - listed in its
+   *  registry copy, or named by an event, a message, a delivery, an artifact or an ask it follows
+   *  - each with its registry title when listed. At most `KNOWN_SESSIONS_MAX` ids per call;
+   *  `known-sessions.ts` batches a page's ids into one. */
+  getKnownSessions(sessions: readonly string[]) {
+    return this.read("/api/v1/agents/known", {}, { session: [...sessions] });
+  }
+
   createAsk(key: string, input: Body<"/api/v1/issues/{key}/asks", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/issues/{key}/asks", { key }, input, bounds);
   }

@@ -192,6 +192,7 @@ export type {
   IssueSummary,
   ItemBlock,
   ItemBlocks,
+  KnownSession,
   LauncherCredentialResp,
   LiveAgentFrame,
   LiveClientFrame,

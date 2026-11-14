@@ -27,7 +27,9 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
+import { agentsQuery, registeredAgent } from "./agent-registry";
 import { itemOfBlock } from "./block-reference";
+import { knownSessionQuery } from "./known-sessions";
 import { useMarkdownHeadline } from "./markdown-engine";
 import {
   buildDispatchReference,
@@ -79,6 +81,11 @@ export interface ReferenceTarget {
   /** Whether Dispatch answered that the target does not exist (`ReferenceData.missing`): such a
    *  reference reads as the words its writer wrote, with no link (R8). */
   readonly missing: boolean;
+  /** Whether Dispatch answered that a target with no title of its own exists: a session it holds
+   *  a record of that the registry does not name. A comment links such a reference in the words
+   *  its writer wrote, and the document editor draws it the same way (`document-references.tsx`),
+   *  so the two surfaces give one answer. False for every other target, whose title says it. */
+  readonly known: boolean;
 }
 
 /** How much of a target's own text becomes a reference link's title: an ask's question, a
@@ -270,12 +277,19 @@ export interface ReferenceData {
   /** The component a component reference names, once its project's architecture is read: the
    *  one record behind that kind, and what gives the reference the component's own title. */
   readonly component: ArchitectureComponentRead | undefined;
-  /** Whether Dispatch answered that the target does not exist: a read of the record behind the
-   *  reference answered 404, or the project's architecture came back without the component it
-   *  names. False while loading and for any other failure, so a reference that names a real
-   *  target never loses its link to a slow or dropped read. A document of an issue that exists
-   *  is not judged here: its reference carries its own name, which the document editor draws
-   *  whether or not the document exists, and the two surfaces keep to one answer. */
+  /** A session reference's title: the registry's, for a session it lists, else the one Dispatch
+   *  answered for a session it holds a record of (`known-sessions.ts`); undefined otherwise. */
+  readonly sessionTitle: string | undefined;
+  /** Whether Dispatch holds a record of the session a session reference names. */
+  readonly sessionKnown: boolean;
+  /** Whether Dispatch answered that the target does not exist: the read of the record behind the
+   *  reference answered 404 (a project with no architecture among them), or the read that lists
+   *  it came back without it - an issue's documents without the slug an artifact reference names,
+   *  a project's architecture without the component, Dispatch's record of sessions without the
+   *  session (one the registry lists, and one that ended, are both known). False while loading and for any other
+   *  failure, so a reference that names a real target never loses its link to a slow or dropped
+   *  read. The document editor reads the same answer (`document-references.tsx`, through
+   *  `useReferenceTarget`), so a comment and the editor cannot disagree. */
   readonly missing: boolean;
 }
 
@@ -518,6 +532,23 @@ export function useReferenceData(
   const component = (architecture.data?.components ?? []).find(
     (candidate) => candidate.id === componentRoute?.id
   );
+  // A session is a target while Dispatch holds any record of it: listed in the registry, which
+  // the page already reads, or, for one the registry does not list, answered by the one batched
+  // read of the page's unlisted sessions. An ended session keeps its conversation, so it stays a
+  // link; an id no agent ever held does not (R8).
+  const sessionRoute = route?.kind === "agent-session" ? route : undefined;
+  const registry = useQuery({
+    ...agentsQuery(),
+    enabled: sessionRoute !== undefined,
+    refetchOnMount: false,
+  });
+  const listed =
+    sessionRoute === undefined ? undefined : registeredAgent(registry.data, sessionRoute.session);
+  const recorded = useQuery({
+    ...knownSessionQuery(sessionRoute?.session),
+    enabled: sessionRoute !== undefined && registry.data !== undefined && listed === undefined,
+  });
+  const listedTitle = listed?.title.trim() === "" ? undefined : listed?.title;
   return {
     issue: issue.data,
     artifact,
@@ -528,11 +559,27 @@ export function useReferenceData(
     comment: comment.data,
     message: messageQueryResult.data,
     component,
+    sessionTitle: listedTitle ?? recorded.data?.title,
+    sessionKnown: listed !== undefined || recorded.data?.known === true,
     missing:
-      [issue, messageQueryResult, projectDocument, sessionArtifact, block, ask, comment].some(
-        (read) => answeredNotFound(read.error)
-      ) ||
-      (componentRoute !== undefined && architecture.data !== undefined && component === undefined),
+      (sessionRoute !== undefined &&
+        registry.data !== undefined &&
+        listed === undefined &&
+        recorded.data?.known === false) ||
+      [
+        issue,
+        messageQueryResult,
+        projectDocument,
+        sessionArtifact,
+        block,
+        ask,
+        comment,
+        architecture,
+      ].some((read) => answeredNotFound(read.error)) ||
+      (componentRoute !== undefined &&
+        architecture.data !== undefined &&
+        component === undefined) ||
+      (route?.kind === "artifact" && issue.data !== undefined && artifact === undefined),
     // TanStack keeps a query's last data through a failed refetch, so a link or card open when an
     // edit deletes its block would go on showing text its document or item no longer holds. The
     // read answers 404 `NOT_FOUND` for that block, and the link and card then read as a freshly
@@ -627,6 +674,8 @@ export function useReferenceTarget(
     markdownTree,
     message,
     missing,
+    sessionKnown,
+    sessionTitle,
   } = useReferenceData(route, options);
   const kind = route === undefined ? undefined : referenceTargetKind(route);
   let authored: string | undefined;
@@ -666,6 +715,18 @@ export function useReferenceTarget(
       descriptionTree: message?.message.body_tree,
       picture: undefined,
       missing,
+      known: false,
+    };
+  }
+  if (kind === "session") {
+    // A session reads as its title, and links while Dispatch holds a record of it.
+    return {
+      title: sessionTitle,
+      description: undefined,
+      descriptionTree: undefined,
+      picture: undefined,
+      missing,
+      known: sessionKnown && sessionTitle === undefined,
     };
   }
   if (kind === "component") {
@@ -678,6 +739,7 @@ export function useReferenceTarget(
       descriptionTree: component?.prose_tree,
       picture: undefined,
       missing,
+      known: false,
     };
   }
   if (kind === "ask" || kind === "comment" || kind === "block") {
@@ -687,16 +749,20 @@ export function useReferenceTarget(
       descriptionTree: headline?.cut === true ? authoredTree : undefined,
       picture: undefined,
       missing,
+      known: false,
     };
   }
   const text = markdown !== undefined && markdown.trim() !== "" ? markdown : undefined;
   const named = route === undefined ? undefined : referencedArtifact(route);
+  // A reference that names a document is titled by that document alone: one its issue does not
+  // hold has no title, never its issue's, which would name a node the reference does not name.
   return {
-    title: artifact?.name ?? issue?.title,
+    title: named === undefined ? issue?.title : artifact?.name,
     description: text ?? (artifact === undefined ? issue?.status : undefined),
     descriptionTree: text === undefined ? undefined : markdownTree,
     picture: named === undefined ? undefined : picturePath(named, artifact),
     missing,
+    known: false,
   };
 }
 

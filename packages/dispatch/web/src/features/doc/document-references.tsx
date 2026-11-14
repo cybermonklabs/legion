@@ -57,8 +57,14 @@ function ReferenceTitle({
   reference: string;
   route: DispatchReferenceRoute;
 }): null {
-  const { title } = useReferenceTarget(route, { text: false });
-  const shown = route.kind === "issue" && title !== undefined ? `${route.key} ${title}` : title;
+  const { known, title } = useReferenceTarget(route, { text: false });
+  // A target Dispatch answered exists with no title of its own - a session it holds a record of
+  // that the registry does not name - is drawn as a link in the words of its reference, as a
+  // comment draws it; every other target is drawn once its title answers, and never without one.
+  const shown =
+    route.kind === "issue" && title !== undefined
+      ? `${route.key} ${title}`
+      : (title ?? (known ? reference : undefined));
   useEffect(() => {
     onTitle(reference, shown);
   }, [onTitle, reference, shown]);

@@ -186,11 +186,14 @@ function casesFor(
     ...Object.values(world.items).map((item) => item.reference),
     ...QUESTION_IDS.map((id) => askReference(world, questions, id)),
   ]);
-  const document = new RegExp(`^dispatch://(${issues.join("|")})/(spec|artifact/)`);
-  // A document's title is the name its own reference carries, so the editor draws one whether
-  // or not that document exists; a block's title is the block's own text, so it draws only for
-  // a block this world holds.
-  const made = (link: string) => named.has(link) || (document.test(link) && !link.includes("#b-"));
+  // A spec is titled by its issue, and a document by its own name, which only a document the
+  // world holds has: this world makes one, the target's `notes.md`, and any other document's
+  // reference is its writer's words with no title (R8). A block's title is the block's own
+  // text, so it draws only for a block this world holds.
+  const document = new RegExp(
+    `^dispatch://(?:(?:${issues.join("|")})/spec|${world.target.key}/artifact/notes-md(?:@v\\d+)?)$`
+  );
+  const made = (link: string) => named.has(link) || document.test(link);
   return DISPATCH_TEXT_REFERENCES.map((row, index) => {
     const ids = new Map(
       Object.entries(row.items ?? {}).map(([id, reference]) => [

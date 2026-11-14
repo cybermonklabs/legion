@@ -60,6 +60,9 @@ const stillOut = () => new Promise<never>(() => {});
 function spyTitleReads(): () => void {
   const spies: { mockRestore: () => void }[] = [
     spyOn(api, "getAgentArtifact").mockImplementation(stillOut),
+    // A session reference reads the registry, and an unlisted one the batched known-session read.
+    spyOn(api, "listAgents").mockImplementation(stillOut),
+    spyOn(api, "getKnownSessions").mockImplementation(stillOut),
     spyOn(api, "getAsk").mockImplementation(stillOut),
     spyOn(api, "getComment").mockImplementation(stillOut),
     spyOn(api, "getMessage").mockImplementation(stillOut),

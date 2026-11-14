@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { plannerSession, setLiveSessions } from "./agents";
 import {
+  createAgentMessage,
   createAsk,
   createComment,
   createIssue,
@@ -217,8 +218,19 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
   // project's architecture; and a block, read with the document holding it. A page that read
   // once per party, per component or per block at the mount would be over the budget below,
   // which a body of issue references alone would never notice.
+  // Three bare session references besides: two sessions that ended, which Dispatch holds a
+  // record of (a message sent to each) and the registry no longer lists, and one id no agent ever
+  // held. Each one the registry does not list is asked about in the page's one batched read
+  // (`GET /api/v1/agents/known`), which a page reading once per session would exceed.
+  const ended = [crypto.randomUUID(), crypto.randomUUID()];
+  for (const session of ended) {
+    await createAgentMessage(session, { body: "Before you go: the hand-off.", delivery: "aside" });
+  }
+  const neverHeld = "00000000-0000-4000-8000-000000000002";
   const extras = [
     `[${plannerSession.title}](dispatch://agent/${plannerSession.session_id})`,
+    ...ended.map((session) => `dispatch://agent/${session}`),
+    `dispatch://agent/${neverHeld}`,
     COMPONENT_REFERENCE,
     `dispatch://${source.key}/spec#b-${await blockId(source.primary_artifact_id, anchor)}`,
   ].join("\n");
@@ -241,8 +253,22 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
       50,
       { timeout: 60_000 }
     );
+    for (const session of ended) {
+      await expect(
+        turns.getByRole("link", { exact: true, name: `dispatch://agent/${session}` })
+      ).toHaveCount(1);
+    }
+    await expect(
+      turns.getByRole("link", { exact: true, name: `dispatch://agent/${neverHeld}` })
+    ).toHaveCount(0);
     await eventBarrier(page, traffic, source.key, source.title);
     await settled(traffic);
+    // The page asked about every session the registry does not list in one read, whatever their
+    // number: three here.
+    expect(
+      traffic.gets.filter((get) => get.startsWith("/api/v1/agents/known")),
+      "batched session reads at the mount"
+    ).toHaveLength(1);
     traffic.reset();
 
     const written = new Set<string>();

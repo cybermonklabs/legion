@@ -1384,7 +1384,8 @@ jobs:
               - 'packages/contracts/src/dispatch-writing-boxes.ts'
               - 'packages/contracts/src/dispatch-reading-surfaces.ts'
               # The server side of references: the text and reference resolution, the document
-              # model, and the API files that answer search, references, comments and replies.
+              # model, and the API files that answer search, references, comments, replies and
+              # which sessions Dispatch holds a record of.
               - 'packages/envoy/internal/dispatch/text/**'
               - 'packages/envoy/internal/dispatch/refs/**'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -1393,6 +1394,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/api/comment*.go'
               - 'packages/envoy/internal/dispatch/api/replies*.go'
               - 'packages/envoy/internal/dispatch/api/reply*.go'
+              - 'packages/envoy/internal/dispatch/api/agents_known*.go'
             # The dashboard's and the proof editor's fast checks (dispatch-ui): what their lint,
             # typecheck, unit tests and the dashboard's build and asset checks read. No Go and no
             # Dispatch server: the job runs neither.
