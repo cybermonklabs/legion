@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The `envoy` skill's *Wait for CI or a merge*: the role that holds an issue's phase waits this
+  way on the re-run of a red at the head, not the implementer alone.
+custom:
+  Issue: pr3514

@@ -10,6 +10,7 @@ import {
   misnamedSkills,
   oversizedFiles,
   REPO_ROOT,
+  retiredRerunProhibitions,
   skillLinks,
   stageSkills,
 } from "@legion/pi-shared/test/skills-guard";
@@ -61,6 +62,15 @@ test("every skill://<name>/<path> link names a file that exists, and its #anchor
 
 test("every relative link resolves to a file inside the staged partition", () => {
   expect(brokenRelativeLinks(staged)).toEqual([]);
+});
+
+// INFRA-1303 gave the role that holds a phase one re-run of a red at the head the change did not
+// make (`skill://legion-worker/references/red-at-the-head.md`), and took the sentences that
+// forbade it out of this partition's skills and the daemon's prompts. A forward merge keeps both
+// sides of a deletion with no conflict for anyone to read, so the prohibitions are refused over
+// both roots rather than over the files they were deleted from.
+test("no staged skill or daemon prompt forbids the phase holder's re-run of a red at the head", () => {
+  expect(retiredRerunProhibitions([staged, promptsRoot])).toEqual([]);
 });
 
 // Reads by filesystem path stop at 300 lines, so a worker reaches a reference only through a

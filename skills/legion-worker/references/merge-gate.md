@@ -69,6 +69,10 @@ as the fingerprint decides (*The reviewer*, below, and
   still in progress: wait for it. When no
   run at the head holds the job, or nothing will run it (a check only a commit status reports, a
   workflow another repository defines), tell the architect and do not approve.
+  A required check that is red at the head is a different case, which
+  `skill://legion-worker/references/red-at-the-head.md` decides. The reviewer's first re-run of a
+  cancelled or absent check neither spends the head's one re-run nor is spent by it; a lane GitHub
+  cancelled at two attempts of the same run is read as `failure`, which that page decides.
   Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   A check carrying `ci_check` is CI's: the one result that `dispatch results` derives from the named run decides it (`skill://legion-worker/references/ci-checks.md`). While that run has not concluded, wait for it by its name, and do not approve or request changes for that check. Wait the same way where GitHub could not be read. When no run of that name answers after the head's checks settle, tell the architect as a finding and request no changes for it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
@@ -134,9 +138,9 @@ on nothing either: it ends the round whatever CI says at the head it names, sinc
 no CI verdict, and a settlement the daemon reads later — at that head or any above it — moves the
 issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub gave it,
 in one message to the tree's architect, the worker of the issue's current phase and the
-implementer, and judges none of them: a red is the implementer's to fix or re-run, the
-architect's to decide on, and GitHub's to hold the merge for. So the reviewer's own read before
-it approves is the only read that decides anything. A review that names an older head reviews
+implementer, and judges none of them: a red is the implementer's to fix or re-run while it holds
+`implementing`, the architect's to decide on, and GitHub's to hold the merge for. So the
+reviewer's own read before it approves is the only read that decides anything. A review that names an older head reviews
 code the pull request no longer has. The daemon moves the issue once all three are in — the
 decision GitHub reports, your completion, in either order, and GitHub's own answer that the
 approved head is one the issue may advance on — so a review posted without a completion leaves
@@ -222,7 +226,8 @@ it there until that answer comes clean.
     merge setting of any pull request.
   - *The watch.* On a merge-queue base it reads the pull request until GitHub merges it or takes
     it out of the queue, and acts on a removal: a head the queue took out over its own
-    `merge_group` checks is work to fix, so the issue goes back; a person's dequeue is that
+    `merge_group` checks is work to fix, so the issue goes back on the second such removal of
+    that head, the first being queued once more (the bullet below); a person's dequeue is that
     person's decision, reported to the architect. A removal is never a merge.
   - *A failed merge is the merger's decision.* Wait for what GitHub waits for (a required check
     still running, a required review only a person can give) and merge again; merge again at the
@@ -232,6 +237,17 @@ it there until that answer comes clean.
     worker can do — a repository setting or an App permission only a person can change — with
     GitHub's own answer quoted. The repository's required reviews and checks decide what may
     merge: Legion bypasses none, and a review only a person can give is waited for.
+- **A `failed_checks` ejection at an unchanged head is queued once more.** When GitHub takes the
+  pull request out of the merge queue because the group build failed a check (`failed_checks`)
+  and the head has not changed, the merger queues that same head once more. It sends the work
+  back only on a second such ejection of that head. Before it queues the head once more it
+  records the removal on the Dispatch issue as a `dispatch comment`, the same eight facts
+  `skill://legion-worker/references/red-at-the-head.md` asks of every role with the `merge_group`
+  run in place of the `pull_request` one, and after a green group build it posts the occurrence
+  as that page's *What becomes of the record* says. No role re-runs a group build. GitHub does
+  re-run one, but the re-run puts nothing back in the queue, and GitHub deletes the entry's
+  branch, after which `GET /git/ref/heads/gh-readonly-queue/main/pr-<n>-<sha>` answers 404
+  (measured on cybermonklabs/legion#2811).
 - *The completion* is `handoff_complete` with the ordinary two-sentence `summary`, which names the
   pull request, the head merged and the merge commit. It records the merger's phase row and moves
   nothing: no Dispatch message, no publish, no phase. What moves the issue is the daemon's own

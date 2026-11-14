@@ -57,12 +57,16 @@ gives them).
 Under the Go daemon a check that settles red on the head moves the issue nowhere: the daemon names
 every check GitHub reported, with the conclusion GitHub gave it, in one message to the tree's
 architect, the worker of the issue's current phase and the implementer, and judges none of them.
-That message is the implementer's to act on while it still works the issue: a red that failed on
-its own is re-run once (`gh run rerun <run-id> --failed`), woken by the pull request's checks
-event (`skill://envoy`, *Wait for CI or a merge*: subscribe, then end the turn) and never by a
-sleep loop; a red at the code is fixed, which the reviewer asks for anyway, since it reads the
+That message is the implementer's to act on while it holds `implementing`: a red that failed on
+its own, once the head's counted set reports that check `completed`, is re-run once
+(`gh run rerun <run-id> --failed`), woken by the pull request's checks event (`skill://envoy`,
+*Wait for CI or a merge*: subscribe, then end the turn) and never by a sleep loop; a red at the code is fixed, which the reviewer asks for anyway, since it reads the
 head's checks on GitHub before it approves; and a red only GitHub can settle is GitHub's, which
 holds the merge for it under the base branch's own rules.
+`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: that the
+counted set must report the check before any re-run, since a task naming a red is not that set;
+the test of whether the head's one re-run is already spent; and the record the role writes
+before it re-runs.
 A merge-group run is never re-run: the implementer finishes its round instead, and the pull request
 is tested again when it is queued again.
 
@@ -170,10 +174,12 @@ and decides there, the only gate on such an issue.
   second and the concurrent run, the party it must refuse — judge whether the implementer's tests
   would catch the ways it breaks, writing the red test for one that none would, and
   read CI on GitHub at the head you are judging for everything static: lint, types and the unit
-  and integration suites are CI's, read there and recorded for no later step, except a `ci_check` job, and no CI lane is
-  rerun as evidence. A lane GitHub shows `queued` or `in progress` is read as such: the tester
-  never waits for it, since a required red that settles sends the work back from `testing` and
-  the reviewer reads the head's checks before it approves.
+  and integration suites are CI's, read there and recorded for no later step, except a `ci_check` job. A lane GitHub shows
+  `queued` or `in progress` is read as such, and the tester waits for none of them but the
+  re-run `skill://legion-worker/references/red-at-the-head.md` gives it, since the reviewer reads
+  the head's checks before it approves. A red at the head
+  that the change did not make is the tester's to re-run once, and
+  `skill://legion-worker/references/red-at-the-head.md` holds the rule.
   A `before_merge` check the implementer left with no pass standing at the head is a test failure, not a gap
   for the tester to fill: record it in `failures` (each `{check, evidence}`, `check` the block id)
   with `implementerProof.verdict: "rejected"`, complete the phase with

@@ -6,15 +6,33 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   brokenSharedDatabaseRules,
+  MERGE_GATE,
+  PR_BODY,
+  RED_AT_THE_HEAD,
+  redAtTheHeadFaults,
   retiredWorkerLifecycleClaims,
   WORKER_SKILL,
   WORKER_TOOLS,
 } from "./skills-guard";
 
+/** The worker skill, read once: two rules below are written over it. */
+const workerSkill = readFileSync(WORKER_SKILL, "utf8");
+
 test("the worker skill says a released pod is not a stop, and never that a role stays live", () => {
-  expect(retiredWorkerLifecycleClaims(readFileSync(WORKER_SKILL, "utf8"))).toEqual([]);
+  expect(retiredWorkerLifecycleClaims(workerSkill)).toEqual([]);
 });
 
 test("the worker tool reference forbids reads through the session URL, and claims no login that creates databases", () => {
   expect(brokenSharedDatabaseRules(readFileSync(WORKER_TOOLS, "utf8"))).toEqual([]);
+});
+
+test("the re-run rule's page says who presses it, and the skill, the merge gate and the body reference point at it", () => {
+  expect(
+    redAtTheHeadFaults({
+      workerSkill,
+      redAtTheHead: readFileSync(RED_AT_THE_HEAD, "utf8"),
+      mergeGate: readFileSync(MERGE_GATE, "utf8"),
+      prBody: readFileSync(PR_BODY, "utf8"),
+    })
+  ).toEqual([]);
 });

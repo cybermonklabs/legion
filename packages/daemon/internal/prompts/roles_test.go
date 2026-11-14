@@ -324,6 +324,30 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	}
 }
 
+// A `failed_checks` ejection of a head that has not changed is queued once more, and the work goes
+// back only on the second such ejection (dispatch://INFRA-1303, R4, which says the rule is written
+// in the merger's own text). The merger's part said the opposite until it did: "a queue that took
+// the head out because its own `merge_group` checks failed is work to fix, so send the issue
+// back", which sent cybermonklabs/legion#3972 round a lap on a flaky group build (INFRA-3204's
+// retro). The record the requeue owes is pinned as a pointer to the page that holds it, so the
+// merger keeps no second list of its facts.
+func TestTheMergerQueuesAFailedChecksEjectionOnceMore(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"gets that same head queued once more",
+		"the issue goes back only on the second such removal of that head",
+		"no role re-runs a group build",
+		"carrying the facts `skill://legion-worker/references/red-at-the-head.md` names for the record",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	if strings.Contains(merger, "is work to fix, so send the issue back") {
+		t.Error("roles/merger.md still sends the issue back on the first `failed_checks` ejection")
+	}
+}
+
 // Every update round a part describes is one a daemon of this release can open. The stale-plugin
 // lane replaces a stale process at a paced wake and asks its worker nothing, so nothing builds a
 // plugin round id any more (supervise's PluginRoundPrefix has no constructor beside PodRound's),
@@ -525,16 +549,17 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 	}
 }
 
-// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth and
-// dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
-// when a later edit deletes the rule; it does not show that an agent follows it, which each
-// issue's session runs measure. Each of the first four sentences sits in the core its role
-// composes, so the rule reaches that role and no other: the simplify pass and the class search are
-// the implementer's, the procedure and can-fail rules the tester's, the open-decision rule the
-// planner's, and the planner's WAITING line is phase mechanics, so it lives in its residue rather
-// than its core. R5 is the exception: Compose names core/oracle.md for no role, and it is pinned
-// beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
-// would copy from.
+// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth,
+// dispatch://INFRA-1303's sixth and dispatch://INFRA-3204's check CI proves, each pinned by the
+// sentence that carries it. A pin fails when a later edit deletes the rule; it does not show that
+// an agent follows it, which each issue's session runs measure. Each of the first four sentences
+// sits in the core its role composes, so the rule reaches that role and no other: the simplify
+// pass and the class search are the implementer's, the procedure and can-fail rules the tester's,
+// the open-decision rule the planner's, and the planner's WAITING line is phase mechanics, so it
+// lives in its residue rather than its core. R5 is the exception: Compose names core/oracle.md for
+// no role, and it is pinned beside core/common.md to keep one wording of that rule in the prompt
+// tree, which a later core would copy from. R6 sits in the tester's core, the part that tells a
+// phase worker what to do about CI.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	// The phrase every text of dispatch://INFRA-3204's rule carries once, the skills included
 	// (packages/pi-legion/src/skills-guard.test.ts).
@@ -562,6 +587,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/common.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "Findings cite the file and the symbol, or text quoted from it."},
+		// R6: the role that holds the phase re-runs a red at the head once, after it writes the
+		// failure down, so a red the change did not cause costs the tree no extra lap
+		// (dispatch://INFRA-1303). The whole rule is in the worker skill's red-at-the-head page,
+		// which this mode-neutral part may not name.
+		{"core/tester.md", "The role that holds the issue's phase re-runs a red at the head of the pull request that the change did not cause"},
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
 		// role runs it or records its result, and `dispatch results` derives that result
 		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or

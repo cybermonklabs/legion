@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The `envoy` skill this plugin ships: the role that holds an issue's phase waits on the re-run of
+  a red at the head, not the implementer alone.
+custom:
+  Issue: pr3514

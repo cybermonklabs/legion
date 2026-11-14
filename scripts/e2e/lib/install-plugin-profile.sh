@@ -5,7 +5,7 @@
 # untouched. A Legion pane needs both: the daemon's boot gate refuses pi-legion without pi-envoy, so
 # every stage installs each in turn, into a --dest of its own.
 #
-#   scripts/e2e/lib/install-plugin-profile.sh --package <pi-envoy|pi-legion> --profile <name> --home <dir> --dest <dir> [--omp <mise tool spec>]
+#   scripts/e2e/lib/install-plugin-profile.sh --package <pi-envoy|pi-legion> --profile <name> --home <dir> --dest <dir> [--omp <mise tool spec|omp binary>]
 #
 # --home is the HOME Oh My Pi runs under for the profile, made by make_omp_home (lib/omp-home.sh): the
 # profile is <home>/.omp/profiles/<name>, and the caller's own HOME is refused.
@@ -67,7 +67,7 @@ while [ $# -gt 0 ]; do
     shift 2
     ;;
   --omp)
-    [ $# -ge 2 ] && [ -n "$2" ] || refuse "--omp needs a value: the mise tool spec of the Oh My Pi to run (github:sjawhar/oh-my-pi@<version>)"
+    [ $# -ge 2 ] && [ -n "$2" ] || refuse "--omp needs a value: the mise tool spec of the Oh My Pi to run (github:sjawhar/oh-my-pi@<version>), or the path of an omp binary to run as it is"
     omp_spec=$2
     shift 2
     ;;
@@ -118,14 +118,24 @@ fi
 # the install's own bin/omp by its absolute path, never an `omp` looked up on PATH, where an
 # operator's wrapper could answer instead (and a wrapper's own setup could rewrite the profile,
 # whose agent.db is the operator's login database under the box-login route).
+#
+# A --omp that names an executable file is that binary, run as it is and with no mise call at all:
+# a Kubernetes issue pod carries the pinned binary at LEGION_OMP_PATH and no mise, so a profile
+# built there names the binary rather than a tool spec (dispatch://INFRA-1303). Everything else is
+# the mise path, byte for byte.
 pin=${omp_spec:-$(<"$root/.omp-pin")}
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
-omp=$(realpath -e -- "$(mise where "$pin")/bin/omp" 2>/dev/null) && [ -x "$omp" ] || {
-  echo "$me: mise has no executable bin/omp for $pin" >&2
-  exit 1
-}
-mise_data=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}
-run_omp() { (cd "$dest" && HOME=$home MISE_DATA_DIR=$mise_data OMP_PROFILE=$profile mise x "$pin" -- "$omp" "$@"); }
+if [ -n "${omp_spec:-}" ] && [ -x "$omp_spec" ] && [ -f "$omp_spec" ]; then
+  omp=$(realpath -e -- "$omp_spec")
+  run_omp() { (cd "$dest" && HOME=$home OMP_PROFILE=$profile "$omp" "$@"); }
+else
+  mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+  omp=$(realpath -e -- "$(mise where "$pin")/bin/omp" 2>/dev/null) && [ -x "$omp" ] || {
+    echo "$me: mise has no executable bin/omp for $pin" >&2
+    exit 1
+  }
+  mise_data=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}
+  run_omp() { (cd "$dest" && HOME=$home MISE_DATA_DIR=$mise_data OMP_PROFILE=$profile mise x "$pin" -- "$omp" "$@"); }
+fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT

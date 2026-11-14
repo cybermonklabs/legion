@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `skill://legion-worker/references/red-at-the-head.md`: the role that holds an issue's phase
+  re-runs a red CI check at the head of its pull request once, after it records the repository,
+  the pull request, the head, the check, the run, the attempt, the failed job and the failing
+  line. The `legion-controller` skill gains the census of those tests: one issue per test, with
+  every later occurrence a comment on it.
+custom:
+  Issue: pr3514

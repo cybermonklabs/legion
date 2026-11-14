@@ -121,8 +121,9 @@ Every topic starts with `notifications.`.
 
 - Code that orders settlements of one commit follows `skill://envoy/references/check-settlement.md`.
 
-- A Legion implementer waits this way only on a re-run of a red check its task names.
-  Otherwise it pushes and completes its phase, and the daemon reads CI for it (`skill://legion-worker`).
+- The role that holds the issue's phase waits this way on the re-run of a red at the head,
+  which `skill://legion-worker/references/red-at-the-head.md` decides. Otherwise a Legion
+  worker pushes and completes its phase, and the daemon reads CI for it (`skill://legion-worker`).
 
 ## Roles and team topics
 
