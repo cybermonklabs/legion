@@ -507,9 +507,9 @@ const (
 // naming no start leaves the start to the consumer call, which then creates the consumer at the
 // first message the stream holds for the session (bus.SessionConsumers.Ensure). The start this
 // passes is a caller's start to that call, so a create lowers it to the floor the session's
-// resume record holds plus one when that is lower and the record names the stream's identity,
-// and clamps it to the sequence after the stream's last, so a start an earlier build or a
-// restored stream left on the record past the stream's end creates no consumer past it.
+// resume record holds plus one when that is lower and that resume record names the stream's
+// identity, and clamps it to the sequence after the stream's last, so a start an earlier build or
+// a restored stream left on the session's entry past the stream's end creates no consumer past it.
 //
 // A read that failed is logged rather than returned: the caller's answer does not change, and
 // the session's next registration confirms the consumer again. The line names the session, which

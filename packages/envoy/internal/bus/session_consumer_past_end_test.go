@@ -432,7 +432,8 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsEnd(t *test
 // (stream_last_seq) and the stream's identity, and the consumer created again from the record
 // (Ensure with no start of its own) starts at the sequence after that last one, is no clamp, and
 // writes no clamp line. The record's own publish moves the stream's end by one, so the case
-// compares with the last sequence read before the delete.
+// compares with the last sequence read just before the consumer's create (createAsAnEarlierBuild),
+// which stores nothing.
 func TestADeleteOfAConsumerPastTheEndRecordsTheStreamsLastSequence(t *testing.T) {
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
@@ -443,33 +444,20 @@ func TestADeleteOfAConsumerPastTheEndRecordsTheStreamsLastSequence(t *testing.T)
 		publishStored(t, owner, contracts.AgentSubject("ses_deleted_past_end_bystander"), fmt.Sprintf("bystander %d", i))
 	}
 	id := streamIDOf(t, consumers)
-	createAsAnEarlierBuild(t, consumers, session, filters, pastTheEnd)
-	info, err := consumers.Info(ctx, session)
-	if err != nil {
-		t.Fatalf("info: %v", err)
-	}
-	lastSeq := lastSeqOf(t, consumers)
+	lastSeq := createAsAnEarlierBuild(t, consumers, session, filters, pastTheEnd)
 
 	floor, err := consumers.Delete(ctx, session, nil)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if floor != lastSeq {
-		t.Errorf("the delete of a consumer created at %d answered the floor %d, want %d, the stream's last sequence", info.Config.OptStartSeq, floor, lastSeq)
+		t.Errorf("the delete of a consumer created at %d answered the floor %d, want %d, the stream's last sequence", lastSeq+pastTheEnd, floor, lastSeq)
 	}
-	stored, err := consumers.client.LastStoredMessage(ctx, SessionResumeSubject(session))
-	if err != nil {
-		t.Fatalf("read the session's resume record: %v", err)
-	}
-	var record SessionResumeRecord
-	if err := json.Unmarshal(stored.Data, &record); err != nil {
-		t.Fatalf("decode the session's resume record %q: %v", stored.Data, err)
-	}
-	if want := (SessionResumeRecord{Floor: lastSeq, StreamID: id}); record != want {
-		t.Errorf("the delete recorded %+v, want %+v: the stream's last sequence, not the floor %d past it", record, want, info.Config.OptStartSeq-1)
+	if floor, recorded, err := consumers.resumeFloor(ctx, session, id); err != nil || !recorded || floor != lastSeq {
+		t.Errorf("the session's resume record = floor %d, recorded %t, %v; want the floor %d of stream %s, the stream's last sequence, not the floor %d past it", floor, recorded, err, lastSeq, id, lastSeq+pastTheEnd-1)
 	}
 	requireOneLine(t, logs, "WARN", cappedFloorLine, session, map[string]any{
-		"floor":           info.Config.OptStartSeq - 1,
+		"floor":           lastSeq + pastTheEnd - 1,
 		"stream_last_seq": lastSeq,
 		"stream_id":       id,
 	})

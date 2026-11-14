@@ -163,11 +163,8 @@ type SessionConsumers struct {
 	// pullExpires and pullHeartbeat are sessionPullExpires and sessionPullHeartbeat, shortened by
 	// a test of a pull's later requests.
 	pullExpires, pullHeartbeat time.Duration
-	// logger is where create writes the line of a caller's start it lowered to the session's
-	// resume record and the warning of a start it clamped to the stream's end, and where
-	// recordResumeFloorAt writes the warning of a floor it recorded at the stream's last sequence:
-	// the logger the connection was opened with (ConnectSessionConsumers), slog.Default() where
-	// that was nil.
+	// logger is the logger the connection was opened with (ConnectSessionConsumers),
+	// slog.Default() where that was nil: where create and recordResumeFloorAt write their lines.
 	logger *slog.Logger
 	// pendingMu guards pending and createFault.
 	pendingMu sync.Mutex
@@ -468,31 +465,51 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 // to reads them, and true.
 //
 // A consumer whose next sequence (ackFloor plus one) is past the sequence after the stream's last
-// is not kept (RestartAtFloor). stream, joined before the consumer's info was read, can begin
-// before that read and so trail the consumer, so a next sequence past its end is held to a second
-// read (streamState, whose read begins after this call), and only one past that read's end too
-// is past the stream's end. keepAtFloor then sends no update, leaves any pending start, and
-// returns false, and RestartAtFloor deletes the consumer and creates it at that next sequence,
-// which create clamps to the sequence after the stream's last.
+// is not kept (RestartAtFloor): that sequence is held to stream, joined before the consumer's info
+// was read, and to a second read where it is past that one's end (pastStreamEnd). keepAtFloor then
+// sends no update, leaves any pending start, and returns false, and RestartAtFloor deletes the
+// consumer and creates it at that next sequence, which create clamps to the sequence after the
+// stream's last.
 func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *jetstream.ConsumerInfo, filters []string, stream *streamRead) (SessionConsumerStart, bool, error) {
 	state, err := stream.wait(ctx)
 	if err != nil {
 		return SessionConsumerStart{}, false, err
 	}
 	startSeq := ackFloor(info) + 1
-	if startSeq > state.lastSeq+1 {
-		if state, err = s.streamState(ctx); err != nil {
-			return SessionConsumerStart{}, false, err
-		}
-		if startSeq > state.lastSeq+1 {
-			return SessionConsumerStart{}, false, nil
-		}
+	state, past, err := s.pastStreamEnd(ctx, state, startSeq)
+	if err != nil {
+		return SessionConsumerStart{}, false, err
+	}
+	if past {
+		return SessionConsumerStart{}, false, nil
 	}
 	if _, err := s.update(ctx, name, info.Config, filters); err != nil {
 		return SessionConsumerStart{}, false, err
 	}
 	s.setPendingStart(name, 0)
 	return SessionConsumerStart{StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id, AckFloor: startSeq - 1}, true, nil
+}
+
+// pastStreamEnd reports whether stream sequence seq is past the sequence after the stream's last,
+// and returns the stream read that settled it: the read the caller then takes Gap and StreamID
+// from. read is the read the caller fixed seq against. A seq at or below the sequence after
+// read's last is not past the end, and pastStreamEnd returns read and false with no call of its
+// own. A seq past read's end is held to a second read (streamState, whose read begins after this
+// call), because read can trail seq: in create, a message stored after read can be the first one
+// on the session's agent subject (Client.NextStoredMessage), which a start of 0 is then fixed to;
+// in keepAtFloor, read was joined before the consumer's info was read (RestartAtFloor), so it can
+// begin before that info read and trail the consumer's next sequence. pastStreamEnd then returns
+// that newer read, and true only when seq is past its end too, so a seq that is not past the
+// stream's real end is never read as past it. A second read that fails returns its error.
+func (s *SessionConsumers) pastStreamEnd(ctx context.Context, read sessionStreamState, seq uint64) (sessionStreamState, bool, error) {
+	if seq <= read.lastSeq+1 {
+		return read, false, nil
+	}
+	newer, err := s.streamState(ctx)
+	if err != nil {
+		return sessionStreamState{}, false, err
+	}
+	return newer, seq > newer.lastSeq+1, nil
 }
 
 // Delete removes sessionID's consumer, so it holds a slot of the stream's consumer cap
@@ -806,13 +823,12 @@ func (s *SessionConsumers) updated(current jetstream.ConsumerConfig, filters []s
 // record: it is the floor of the consumer the restart deleted, which is newer than any record. A
 // read of the record that fails, for a start of 0 or a caller's, fails the create (resumeFloor).
 //
-// Whatever its source, the start is never past the sequence after the stream's last. The read the
-// start was fixed from can trail it, since a message stored after that read can be the agent
-// subject's first, so a start past that read's end is held to a second read (streamState, whose
-// read begins after this call), and is set to that read's last sequence plus one only when it is
-// past that read's end too; the second read is then the one the answer's Gap and StreamID come
-// from. So a start that is not past the stream's real end is never moved, and the answer's
-// StartSeq and AckFloor are the clamped start and the sequence before it.
+// Whatever its source, the start is never past the sequence after the stream's last: a start past
+// the end of the read it was fixed from is held to a second read (pastStreamEnd), and is set to
+// that read's last sequence plus one only when it is past that read's end too. The read
+// pastStreamEnd returns is the one the answer's Gap and StreamID come from. So a start that is not
+// past the stream's real end is never moved, and the answer's StartSeq and AckFloor are the
+// clamped start and the sequence before it.
 //
 // Once the server has confirmed the create (upsert), and only then, create logs what it did to
 // the start: an INFO line for a caller's start the record lowered, naming the caller's start
@@ -863,17 +879,15 @@ func (s *SessionConsumers) create(ctx context.Context, sessionID, name string, f
 			return SessionConsumerStart{}, err
 		}
 	}
-	// bound is the stream read the start is held to: state, or a read that began after this call
-	// when the start is past state's end.
-	bound := state
-	unclamped, clamped := startSeq, false
-	if startSeq > bound.lastSeq+1 {
-		if bound, err = s.streamState(ctx); err != nil {
-			return SessionConsumerStart{}, err
-		}
-		if startSeq > bound.lastSeq+1 {
-			startSeq, clamped = bound.lastSeq+1, true
-		}
+	// bound is the stream read the start is held to (pastStreamEnd): state, or a read that began
+	// after this call when the start is past state's end.
+	unclamped := startSeq
+	bound, clamped, err := s.pastStreamEnd(ctx, state, startSeq)
+	if err != nil {
+		return SessionConsumerStart{}, err
+	}
+	if clamped {
+		startSeq = bound.lastSeq + 1
 	}
 	config := jetstream.ConsumerConfig{
 		Durable:       name,
