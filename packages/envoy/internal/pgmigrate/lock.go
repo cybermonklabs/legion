@@ -22,8 +22,9 @@ import (
 // the services' own transactions holds a table, so an ordinary deploy never trips it, and short
 // enough that a deploy stalled behind a stray holder fails, and is noticed, instead of being
 // absorbed by every request queued behind it. Exec sets it on every migration it runs; a migration
-// that needs another bound sets its own with SET LOCAL lock_timeout, which lasts until the
-// runner's transaction ends.
+// that needs another bound sets its own with SET LOCAL lock_timeout, which lasts until its
+// statements have run. Exec then sets LockTimeout again (Pin) for the runner's own statements
+// after them, such as its insert of the migration's version.
 const LockTimeout = 5 * time.Second
 
 // diagnosisCleanupTimeout bounds the rollback and the close that end a diagnosis's connection,
@@ -88,9 +89,9 @@ func withTextSettings(settings ...setting) []setting {
 // applies the next migration on the same pooled connection. On PostgreSQL 18.6 a column default
 // that called set_config put a schema first in the search_path, and the next migration's added
 // column took a domain of that schema in place of the enum that the census read, and Postgres
-// rewrote the table. Exec and Census set each of them, transaction-local, and
-// ExecNonTransactional for the session, to the value that RESET gives it: the value of a
-// connection option, the role's default or the database's default, and never of a session SET.
+// rewrote the table. Pin and Census set each of them, transaction-local, and PinSession for the
+// session, to the value that RESET gives it: the value of a connection option, the role's
+// default or the database's default, and never of a session SET.
 // So a migration resolves its names as the census resolved them, whatever an earlier migration
 // did to the session, while the census and the runner sign in as one login with the same
 // connection options. SET … TO DEFAULT gives each its value inside the server, so no value is
@@ -115,6 +116,10 @@ func resetText(set string) string {
 	}
 	return text.String()
 }
+
+// pinSettings are the settings that Pin and PinSession give with set_config once resetSettings
+// have their reset values: lock_timeout at LockTimeout, then the text settings.
+var pinSettings = withTextSettings(setting{"lock_timeout", lockTimeoutSetting})
 
 // setConfig is a select that gives each of settings its value with set_config, for the current
 // transaction alone when local is true and for the session when it is false, and the select's
@@ -192,20 +197,67 @@ func RetryLockTimeouts(ctx context.Context, migration string, attempt func(conte
 	}
 }
 
-// Exec is how a runner applies one migration's statements in tx. It first sets
-// session_authorization, role and search_path to the values that RESET gives them
-// (resetSettings), so the migration resolves its names as the census resolved them. Then it sets
-// tx's lock_timeout to LockTimeout, so every migration a runner applies is bounded whatever the
-// migration's file says, and, in the same select, the text settings (textSettings), so Postgres
-// reads the migration's text as the census read it. All seven are transaction-local: they end
-// with tx, and they apply whatever the connection's session carries, a setting an earlier
-// migration left on a pooled connection by a SET or through stored code that called set_config,
-// a connection option or a database default. A setting the migration's own statements change
-// takes effect only after Postgres has read the text, since Postgres reads a migration's whole
-// text before it runs the first statement. Exec then runs the statements while a watch reads
-// what tx's backend waits for. A runner calls it once it holds its own advisory lock, never
-// before: a second process's runner waiting for that lock is waiting for the first to finish,
-// which queues no read or write behind it, since nothing but a runner takes that lock.
+// Pin gives tx, until it ends, the settings under which a runner applies a migration and records
+// it: session_authorization, role and search_path at the values that RESET gives them
+// (resetSettings), so a name resolves as the census resolves it, then, in one select,
+// lock_timeout at LockTimeout and the text settings (textSettings). Exec pins the migration's own
+// statements with it. A runner also pins its own statements on its version table with it, since
+// the connection its transaction runs on can carry a session that an earlier migration's stored
+// code changed: a check whether a migration is applied that resolved the version table under such
+// a session could read another schema's table of that name.
+func Pin(ctx context.Context, tx pgx.Tx) error {
+	return pin(ctx, tx, true)
+}
+
+// PinSession gives conn's session the settings that Pin gives a transaction, for a runner that
+// applies a migration outside a transaction (ExecNonTransactional) and records it on the same
+// connection. Nothing gives the session its earlier values back: a caller that keeps using conn
+// reads them first, as ExecNonTransactional does, or closes conn when it is done, as Dispatch's
+// runner does.
+func PinSession(ctx context.Context, conn *pgx.Conn) error {
+	return pin(ctx, conn, false)
+}
+
+// execer is what pin runs its statements on: a transaction or a connection.
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// pin sets resetSettings to their reset values, then pinSettings, for the current transaction
+// alone when local is true and for the session when it is false.
+func pin(ctx context.Context, db execer, local bool) error {
+	reset := resetSession
+	if local {
+		reset = resetLocal
+	}
+	if _, err := db.Exec(ctx, reset); err != nil {
+		return fmt.Errorf("set session_authorization, role and search_path to their reset values: %w", err)
+	}
+	set, args := setConfig(local, pinSettings)
+	if _, err := db.Exec(ctx, set, args...); err != nil {
+		return fmt.Errorf("set lock_timeout and text settings: %w", err)
+	}
+	return nil
+}
+
+// Exec is how a runner applies one migration's statements in tx. It first pins tx (Pin):
+// session_authorization, role and search_path at the values that RESET gives them
+// (resetSettings), so the migration resolves its names as the census resolved them, then tx's
+// lock_timeout at LockTimeout, so every migration a runner applies is bounded whatever the
+// migration's file says, and the text settings (textSettings), so Postgres reads the migration's
+// text as the census read it. All seven are transaction-local: they end with tx, and they apply
+// whatever the connection's session carries, a setting an earlier migration left on a pooled
+// connection by a SET or through stored code that called set_config, a connection option or a
+// database default. A setting the migration's own statements change takes effect only after
+// Postgres has read the text, since Postgres reads a migration's whole text before it runs the
+// first statement. Exec then runs the statements while a watch reads what tx's backend waits for.
+// Once they have run without an error, Exec pins tx again. Stored code that the migration ran can
+// change a setting for the rest of tx, as set_config(name, value, true) does, and the runner's
+// next statements in tx, its insert of the migration's version among them, must resolve the
+// version table's name under the values that RESET gives. A runner calls Exec once it holds its
+// own advisory lock, never before: a second process's runner waiting for that lock is waiting for
+// the first to finish, which queues no read or write behind it, since nothing but a runner takes
+// that lock.
 //
 // signIn is the BeforeConnect of the pool tx came from, nil when the pool has none: the watch's
 // own connection signs in as the pool's new connections do. A pool that signs in with a token
@@ -222,14 +274,16 @@ func Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(conte
 	if migration.NonTransactional || nonTransactionalHeader(migration.SQL) {
 		return fmt.Errorf("migration %s is non-transactional; this transactional runner cannot apply it", migration.Name)
 	}
-	if _, err := tx.Exec(ctx, resetLocal); err != nil {
-		return fmt.Errorf("migration %s: set session_authorization, role and search_path to their reset values: %w", migration.Name, err)
+	if err := Pin(ctx, tx); err != nil {
+		return fmt.Errorf("migration %s: %w", migration.Name, err)
 	}
-	set, args := setConfig(true, withTextSettings(setting{"lock_timeout", lockTimeoutSetting}))
-	if _, err := tx.Exec(ctx, set, args...); err != nil {
-		return fmt.Errorf("migration %s: set lock_timeout and text settings: %w", migration.Name, err)
+	if err := execWatched(ctx, tx.Conn(), migration, signIn); err != nil {
+		return err
 	}
-	return execWatched(ctx, tx.Conn(), migration, signIn)
+	if err := Pin(ctx, tx); err != nil {
+		return fmt.Errorf("migration %s: after its statements: %w", migration.Name, err)
+	}
+	return nil
 }
 
 // execWatched executes on the connection's current transaction, explicit or implicit. Both

@@ -1336,6 +1336,8 @@ The census reads with the same three values ("Pre-deploy census" below), so a mi
 The value that `reset` gives comes from a connection option, the role's default or the database's default, and never from a session `set`.
 So the census and the runner must connect as the same login with the same connection options, which gives both the same values.
 In a deployment, both take `DATABASE_URL` from the same Secret.
+The runner gives the three these values for its own check and record of a migration's version too: before the check, and again after the migration's statements (`pgmigrate.Pin`), since stored code that a migration runs can change them for the rest of its transaction.
+Without the second reset, stored code that put another schema with its own `schema_migrations` first in the `search_path` made the runner record the version in that table.
 
 The notes below describe some of the migrations, numbered and timestamped alike; not every migration has one.
 A new migration describes itself in the header comment of its own `.up.sql`, as `0129_document_edit_notices.up.sql` does, and adds nothing here, so two pull requests that each add a migration do not edit this section.

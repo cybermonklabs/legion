@@ -634,6 +634,51 @@ func TestMigrateSkipsVersionRecordedOutsideTheRunner(t *testing.T) {
 	}
 }
 
+// A migration's stored code can point the search_path at another schema for the rest of the
+// migration's transaction, as a column default that calls set_config(…, true) does, and the
+// runner inserts the migration's version in that transaction, after the migration's statements.
+// The schema other_1792 holds a schema_migrations table of its own, of the same shape, so an
+// insert that resolved the name under that search_path would record the version there, where
+// neither the census nor the runner's next check reads it. Exec pins the transaction again after
+// the migration's statements (pgmigrate.Pin), so the version lands in public.schema_migrations and
+// other_1792.schema_migrations stays empty. The value that sp_local's row holds is the control:
+// the default ran, and set_config gave the search_path the value it returned.
+func TestMigrateRecordsTheVersionUnderTheValuesResetGives(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	set := fstest.MapFS{
+		"migrations/0001_other_versions.up.sql": {Data: []byte(`create schema other_1792;
+			create table other_1792.schema_migrations (version bigint primary key, applied_at timestamptz not null default now());
+			create table sp_local (id int, sp text default set_config('search_path', 'other_1792, public', true));`)},
+		"migrations/0002_sp_local.up.sql": {Data: []byte("insert into sp_local (id) values (1)")},
+	}
+	if err := store.migrate(ctx, set); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var searchPath string
+	if err := store.Pool.QueryRow(ctx, "select sp from public.sp_local").Scan(&searchPath); err != nil || searchPath != "other_1792, public" {
+		t.Fatalf("sp_local holds %q, %v; want \"other_1792, public\": the default that moves the search_path did not run, so the row proves nothing", searchPath, err)
+	}
+	versions := func(table string) []int {
+		t.Helper()
+		rows, err := store.Pool.Query(ctx, "select version from "+table+" order by version")
+		if err != nil {
+			t.Fatalf("read %s: %v", table, err)
+		}
+		recorded, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		if err != nil {
+			t.Fatalf("read %s: %v", table, err)
+		}
+		return recorded
+	}
+	if got := versions("public.schema_migrations"); !reflect.DeepEqual(got, []int{1, 2}) {
+		t.Errorf("public.schema_migrations holds %v, want [1 2]", got)
+	}
+	if got := versions("other_1792.schema_migrations"); len(got) != 0 {
+		t.Errorf("other_1792.schema_migrations holds %v, want none: the runner recorded a version under the search_path that the migration's stored code set", got)
+	}
+}
+
 // assertRecordsEveryVersion checks that schema_migrations holds exactly the versions of the
 // embedded set.
 func assertRecordsEveryVersion(t *testing.T, ctx context.Context, store *Store) {
