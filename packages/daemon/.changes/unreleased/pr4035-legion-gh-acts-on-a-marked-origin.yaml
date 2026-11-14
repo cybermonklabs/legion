@@ -9,5 +9,6 @@ body: |-
   marker shape are refused as before, with the same text.
 
   `workspace-init provision`, and the tmux runtime's provision, write
-  `remote.origin.gh-resolved base` into an issue clone whose own configuration holds no
-  `gh-resolved` line. A clone that has a marker keeps it.
+  `remote.origin.gh-resolved base` into the clone an issue workspace is made from (a pod's own
+  clone, or the tmux runtime's shared clone of the repository) when that clone's own configuration
+  holds no `gh-resolved` line. A clone that has a marker keeps it.
