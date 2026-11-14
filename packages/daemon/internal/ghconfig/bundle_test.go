@@ -100,9 +100,12 @@ func TestWriteBundleWritesOneDirectoryPerOwnerAndRemovesTheRest(t *testing.T) {
 
 // A bundle whose directories name repositories is written two levels deep: the owner's own
 // hosts.yml and config.yml at `<root>/<owner>`, and each repository's pair at
-// `<root>/<owner>/<repo>`. WriteBundle cleans both levels, so a repository the mapping no longer
-// serves is left holding no stale token, while the owner's own two files stay where they are.
-func TestWriteBundleWritesAndPrunesRepositoryDirectories(t *testing.T) {
+// `<root>/<owner>/<repo>`. WriteBundle cleans both levels, so a repository directory a run
+// before INFRA-2543 left under an owner's own is left holding no stale token, while the
+// owner's own two files stay where they are. No bundle the daemon builds holds such a
+// directory now (appauth's bundleDirs writes one key per owner), and a root a run of before it
+// wrote outlives that run, which is what the cleaning is for.
+func TestWriteBundleWritesAndPrunesTheDirectoriesOfRepositories(t *testing.T) {
 	expires := time.Date(2026, 10, 16, 18, 0, 0, 0, time.UTC)
 	root := filepath.Join(t.TempDir(), "gh")
 	bundle := twoOwnerBundle("ghs_acme_write")

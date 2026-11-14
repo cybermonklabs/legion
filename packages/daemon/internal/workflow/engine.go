@@ -228,6 +228,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.merged(ctx, tx, fact)
 	case intake.PullRequestClosed:
 		return e.closed(ctx, tx, fact)
+	case intake.PullRequestDequeued:
+		return e.dequeued(ctx, tx, fact)
+	case intake.MergeQueueReadDone:
+		return e.mergeQueueReadDone(ctx, tx, fact)
 	case intake.PullRequestMissing:
 		return e.pullRequestMissing(ctx, tx, fact)
 	case intake.ClaimReady:
@@ -252,6 +256,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.lingerExpired(ctx, tx, fact)
 	case intake.DaemonBooted:
 		return e.booted(ctx, tx, fact)
+	case intake.CutoverMergerRepair:
+		return e.cutoverMergerRepair(ctx, tx, fact)
 	case intake.CheckReport:
 		return e.checkReported(ctx, tx, fact)
 	case intake.CheckLookEnded:
@@ -371,8 +377,9 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// what this mark is for. And the daemon's own sends of work the record already owes a phase
 	// worker are starts that mark nothing (startOrOwe's reassertion): every send of an owed
 	// entry — admission's sweep on every pass and each minute, its slot repair, readyWorkerTask,
-	// the boot's resume by rule and the silence repair (sendOwedEntry) — and the phase's resume
-	// task the boot's resume and the silence repair send a claim level with its entry. The
+	// the boot's resume by rule, the cutover's one-time repair (cutoverMergerRepair) and the
+	// silence repair (sendOwedEntry) — and the phase's resume task the boot's resume, the
+	// cutover's repair and the silence repair send a claim level with its entry. The
 	// movement is the fact that raised the entry, which the transition's phase write and its
 	// start mark below (Engine.transition, StartOrOwe), and not each delivery of it.
 	if !fact.DaemonActor {
@@ -730,46 +737,22 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	return e.notice(ctx, tx, child.Key, ChildUnderAcceptedParentNotice(child.Key, ancestor))
 }
 
-// leftPhase is the phase role has left when the issue no longer stands in a phase that role works,
-// RoleFor read the other way round: the one phase each role works, and, for the implementer, which
-// works two, implementing while the issue stands before retro and retro once it stands past it.
-// The architect works accepting with its sign-off and completes nothing, so it leaves no phase
-// here.
-func leftPhase(role claim.Role, at phase.Phase) phase.Phase {
-	switch role {
-	case claim.RolePlanner:
-		return phase.Planning
-	case claim.RoleTester:
-		return phase.Testing
-	case claim.RoleReviewer:
-		return phase.Reviewing
-	case claim.RoleMerger:
-		return phase.Merging
-	case claim.RoleImplementer:
-		if phase.MovesBack(at, phase.Retro) {
-			return phase.Retro
-		}
-		return phase.Implementing
-	}
-	return ""
-}
-
 // leftItsPhase says whether role's completion of a phase its issue has already left is recorded
 // rather than refused: the daemon started role on this issue, which is what gives it the claim the
-// completion names (record.Store.RoleRun), and role reported no completion of the phase it was in.
-// That is this completion arriving after the daemon moved the issue on without it - the review
-// event taking reviewing on, or a conflicting head taking a later phase back - and its handoff is
-// the findings the next phase reads, which a refusal would lose. Three completions are not: one
-// from a role whose handoff already stands, which is reporting a phase it finished a second time;
-// one from a role the daemon never started on this issue, which has held no phase of it to report;
-// and any while the issue stands where no role works - parked, closed or held - which is past
-// recording work at all.
+// completion names (record.Store.RoleRun), and role reported no completion of the phase it was in
+// (record.PhaseRow.Completed). That is this completion arriving after the daemon moved the issue
+// on without it - the review event taking reviewing on, or a conflicting head taking a later phase
+// back - and its handoff is the findings the next phase reads, which a refusal would lose. Three
+// completions are not: one from a role whose handoff already stands, which is reporting a phase it
+// finished a second time; one from a role the daemon never started on this issue, which has held
+// no phase of it to report; and any while the issue stands where no role works - parked, closed or
+// held - which is past recording work at all.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
-	if token == "" || RoleFor(issue.Phase) == "" || leftPhase(role, issue.Phase) == "" {
+	if token == "" || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
 		return false, nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
-	if err != nil || row.HandoffCommit != "" {
+	if err != nil || row.Completed() {
 		return false, err
 	}
 	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
@@ -800,21 +783,18 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
 	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
 	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase).
-	current := phase.RoleFor(issue.Phase) == fact.Role
+	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
+	// issue has moved on without, the phase that role has left.
+	reported := phase.Of(fact.Role, issue.Phase)
+	current := reported == issue.Phase
 	if !current {
 		left, err := e.leftItsPhase(ctx, tx, *issue, fact.Role, fact.Claim)
 		if err != nil {
 			return intake.Result{}, err
 		}
 		if !left {
-			return refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", fact.Role, issue.Phase, issue.Key)), nil
+			return intake.Result{Refusal: intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)}, nil
 		}
-	}
-	// reported is the phase this completion is of: the issue's own, or, for a role the issue has
-	// moved on without, the phase that role has left.
-	reported := issue.Phase
-	if !current {
-		reported = leftPhase(fact.Role, issue.Phase)
 	}
 	// A worker still in its turn when its tree's root closed can yet complete; linger holds the
 	// member where it stood (record.TreeLingers), so the completion records nothing.
@@ -1337,7 +1317,15 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// where it stands. The pull request goes with both because each reads it: a move made while
 	// the record holds this head as conflicting with its base is a conflict round, which
 	// review_round_cap does not count and no pair counts either (recordRound, recordPass).
-	if phase.MovesBack(issue.Phase, row.To) {
+	//
+	// The same reading goes onto the entry the start below raises, in this transaction, because
+	// it is the one thing the entry fence cannot read from anywhere else: a phase re-entered by a
+	// move back asks for its work to be done again, and the completion of the entry before it
+	// does not answer for that however its commit reads (record.PhaseRow.EntryMovedBack,
+	// api/handoff.go). It is read here and not below because issue.Phase is moved onto row.To a
+	// few lines down, which would leave the start comparing a phase with itself.
+	movedBack := phase.MovesBack(issue.Phase, row.To)
+	if movedBack {
 		if err := e.recordPass(ctx, tx, issue.Key, issue.Phase, row.To, pr); err != nil {
 			return err
 		}
@@ -1402,7 +1390,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// architect got at the merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), false); err != nil {
+		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
 			return err
 		}
 	}

@@ -22,20 +22,16 @@ import (
 // owner the role's App is installed on, each holding that owner's own write token — acme's,
 // sjawhar's and theorem-labs', the last an owner the App is installed on and the project maps
 // no repository of, since a lease reaches every repository its installation holds and the
-// installation is the whole of a role's reach (appauth.GitHubCredential, INFRA-2543) — and,
-// under sjawhar, the narrower read token of the one repository sjawhar/legion, which a bundle
-// built now holds for no repository at all and which a pod launched before that change
-// projects, since its gh is the Secret projection of its own creation. It returns the bundle's
-// root and acme's directory, which GH_CONFIG_DIR names.
+// installation is the whole of a role's reach (appauth.GitHubCredential, INFRA-2543). It
+// returns the bundle's root and acme's directory, which GH_CONFIG_DIR names.
 func gitCredentialBundle(t *testing.T) (root, defaultDir string) {
 	t.Helper()
 	root = filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
-		"acme":           ghconfig.Render("ghs_acme_write", "implement", expires),
-		"sjawhar":        ghconfig.Render("ghs_sjawhar_write", "implement", expires),
-		"sjawhar/legion": ghconfig.Render("ghs_sjawhar_legion_read", "implement", expires),
-		"theorem-labs":   ghconfig.Render("ghs_theorem_labs_write", "implement", expires),
+		"acme":         ghconfig.Render("ghs_acme_write", "implement", expires),
+		"sjawhar":      ghconfig.Render("ghs_sjawhar_write", "implement", expires),
+		"theorem-labs": ghconfig.Render("ghs_theorem_labs_write", "implement", expires),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -53,15 +49,15 @@ func runGitCredentialHere(t *testing.T, stdin string, args ...string) (code int,
 }
 
 // `legion git-credential get` answers git's credential protocol from the hosts.yml of the
-// repository the path git asks about names (credential.useHttpPath), lowercased: from
-// `<owner>/<repo>`'s directory of LEGION_GH_OWNERS_DIR where the bundle holds one, from the
-// owner's directory otherwise — a repository the bundle holds no directory for, and a second
-// segment no bundle directory can be named for, which is no reason to refuse and no way out of
-// the owner's directory — and from nothing else: it answers nothing, exit 1, naming why, for any
-// host but github.com over https, a request with no path, a path whose owner is no GitHub login
-// or one the bundle holds no directory for, an unset LEGION_GH_OWNERS_DIR, and a hosts.yml with
-// no token. GH_CONFIG_DIR, the issue owner's write token, is never an answer for another owner's
-// repository. store and erase write nothing and exit 0.
+// owner the path git asks about names (credential.useHttpPath), lowercased: from that owner's
+// directory of LEGION_GH_OWNERS_DIR, whatever the path's second segment is — a repository of
+// that owner, and a segment no repository could be named for alike, since the owner's lease
+// reaches every repository its installation holds — and from nothing else: it answers nothing,
+// exit 1, naming why, for any host but github.com over https, a request with no path, a path
+// whose owner is no GitHub login or one the bundle holds no directory for, an unset
+// LEGION_GH_OWNERS_DIR, and a hosts.yml with no token. GH_CONFIG_DIR, the issue owner's write
+// token, is never an answer for another owner's repository. store and erase write nothing and
+// exit 0.
 func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	if err := os.MkdirAll(filepath.Join(root, "empty"), 0o700); err != nil {
@@ -82,20 +78,9 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 		stderrIn string
 	}{
 		{
-			name:   "the repository's own directory",
-			env:    both,
-			args:   []string{"get"},
-			stdin:  "protocol=https\nhost=github.com\npath=sjawhar/legion.git\n\n",
-			stdout: strings.Replace(answer, "%s", "ghs_sjawhar_legion_read", 1),
-		},
-		{
-			name:   "the repository's own directory, named in another case and without .git",
-			env:    both,
-			args:   []string{"get"},
-			stdin:  "protocol=https\nhost=github.com\npath=/SJawhar/Legion\n\n",
-			stdout: strings.Replace(answer, "%s", "ghs_sjawhar_legion_read", 1),
-		},
-		{
+			// The path's second segment names nothing this reads: a repository of the owner,
+			// and `..`, which no repository is named for, are both answered from the owner's
+			// own directory, and neither is a way out of it.
 			name:   "a second segment that is no repository name",
 			env:    both,
 			args:   []string{"get"},
