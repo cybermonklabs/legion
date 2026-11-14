@@ -133,10 +133,14 @@ the project's line can no longer move.
 A tree is silent only while every quiet issue of it waits on a person, on a Dispatch blocker, for
 an open child, or for an admission slot it needs and does not hold, and only while the project's
 line can still move: some issue of the project holds a slot and waits by none of those rules, some
-claim of the project is at work, or a slot is free and an issue of the line that waits on no other
-issue will take it.
+claim of the project is at work, or an issue of the line that waits on no other issue can start:
+on a free slot, or on none, as a root past its review takes none.
 Where none of these holds, no work of the project can start again by itself, so every tree of it is
-named however its members wait. The
+named however its members wait, with one exception.
+An issue the daemon started that gave its slot back to wait on another issue never makes its own
+tree read as stopped, in whatever project the issue it waits on stands.
+When that issue is in your project and has stopped, you are told of its tree instead.
+The
 `reason` says the root has stopped and how many hours the tree has been quiet. It then gives one
 line for each issue of the tree the workflow still runs: the phase its record carries, the role
 whose turn that phase is or that no role works it, and the state of that issue's pull request or

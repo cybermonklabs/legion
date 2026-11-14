@@ -802,10 +802,8 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // line when the wait ends. A wait on another issue is the one wait that is not read here: an
 // issue the daemon has started that waits on one gives its row back and stands in the line for
 // one again, by the rule beside this (blockers.waitsOf, admit's releaseSlotsForWaits), save the
-// roots that rule names as keepers. Neither reads this one: they reach only the rows it keeps,
-// because releaseSlots runs before them in admit's promoteHolds, so an issue past its review,
-// which holds no row, has none for them to give back. The rule whole is root AGENTS.md's
-// "Admission".
+// roots that rule names as keepers. That rule reads this one first, so an issue past its review
+// waits on nothing there (blockers.waitsOf). The rule whole is root AGENTS.md's "Admission".
 //
 // The cap bounds the work in progress, and an issue whose review has passed writes no more of
 // the change: its sign-off, its retro and its merge run on no slot at all, so their starts are

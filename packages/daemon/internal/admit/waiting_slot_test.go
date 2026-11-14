@@ -37,11 +37,10 @@ func seedStarted(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, s
 //
 // Past the review the phase rule decides first (record.KeepsSlot, dispatch://INFRA-2560): an
 // issue in merging or in accepting holds no row however it waits, so the pass's ordinary release
-// takes the row it was seeded with (admit's releaseSlots, which runs before the release for a
-// wait), no mark of a release for a wait is written, and the issue stands in no waiting line at
-// all, since it needs no slot (record.Waiting asks record.NeedsSlot before it places an issue as
-// LineWaitingOnIssue). The two releases compose, and the one that answers for such an issue is
-// the phase's.
+// takes the row it was seeded with (admit's releaseSlots), no mark of a release for a wait is
+// written, because such an issue waits on nothing (blockers.waitsOf), and the issue stands in no
+// waiting line at all, since it needs no slot (record.Waiting asks record.NeedsSlot before it
+// places an issue as LineWaitingOnIssue).
 //
 // Three started issues keep theirs though a wait names them. A root in awaiting_person waits on a
 // person, and the row it holds is what its resume takes back. A tree's own root whose design

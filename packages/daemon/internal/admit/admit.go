@@ -402,6 +402,10 @@ const todoWakeDelay = 30 * time.Second
 // controller is woken about it and takes nothing for it; only a person hands Legion work
 // (skill://legion-controller, "Free slots").
 //
+// The walk is the promotion's own, in its order and by its rule (promotionStarts): each
+// candidate that waits on nothing and that the promotion starts with a row adds one to the rows
+// held, and the slot is free where rows still stand free once the line has taken its share.
+//
 // The line is the one the promotion itself would read (blockers.JudgeLine), held by the same
 // blocker hold and the same children-first wait: a line built here from its own reads would
 // answer differently from the pass that acts, and a slot this said was free would then go to
@@ -427,13 +431,13 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	taking := 0
+	held := len(own)
 	for _, candidate := range line {
-		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate) {
-			taking++
+		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate) && promotionStarts(candidate, held, a.cap) {
+			held++
 		}
 	}
-	return len(own)+taking < a.cap, nil
+	return held < a.cap, nil
 }
 
 // wakeController queues notice on issue, due at dueAt, when a controller is registered and no
@@ -1438,9 +1442,8 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // than by record.NeedsSlot, which frees the row of an issue that goes on working and waits on
 // another issue; the two are apart because they free rows for opposite reasons — this one
 // because the issue's phase holds no row, that one because the work is held — and only that one
-// leaves a mark, since only its issue stands in the line for the row again. It runs after this
-// one and reaches only the rows this one keeps, so an issue past its review, which this one has
-// released already, has no row for it to free.
+// leaves a mark, since only its issue stands in the line for the row again. An issue past its
+// review is never one it frees (blockers.waitsOf says why).
 //
 // It reads the slotted issues in one query (record.Store.SlottedIssues), never a record per slot
 // and never the whole issues table: every fact applies this under the one fact lock
@@ -1728,7 +1731,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// brought, and an answered root resumes its architect on the row it kept through
 			// the wait.
 			takes := slotFor(candidate)
-			if takes && len(own) >= a.cap {
+			if !promotionStarts(candidate, len(own), a.cap) {
 				// A full cap gives no further slot, and the scan goes on. This is not the hold
 				// above and must not be read as one: a hold is an answer for every candidate
 				// behind it, because it says the pass does not yet know what this candidate is;
@@ -2013,6 +2016,25 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // holding it back would bound nothing and would leave its tree closed for no reason.
 func slotFor(entry record.LineEntry) bool {
 	return !entry.Holds && record.KeepsSlot(entry.Issue)
+}
+
+// promotionStarts says whether the promotion starts entry as far as the cap decides it, given
+// held, the rows of the cap the project holds, and cap: an entry that takes no slot (slotFor)
+// starts whatever the cap says, and one that takes a slot starts only while a row stands free.
+// A cap that admits nothing starts nothing, since the promotion does not run under it. What an
+// entry waits on is the other half of the decision (blockers.LineWaitsOn), which each reader
+// asks beside this.
+//
+// It is the one statement of the cap's half, and three readers ask it: the promotion itself
+// (promoteHolds), the controller's free-slot wake (slotFree) and the stall measure's free-slot
+// term (lineCanMove). Read apart, the measure said the cap held a queued root past its review
+// that the promotion of the same pass started, and told the controller of a stall that was not
+// one.
+func promotionStarts(entry record.LineEntry, held, cap int) bool {
+	if cap <= 0 {
+		return false
+	}
+	return !slotFor(entry) || held < cap
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream

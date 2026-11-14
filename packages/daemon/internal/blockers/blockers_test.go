@@ -150,3 +150,33 @@ func TestBlockedIsEmptyWhenNothingWaitsOnALink(t *testing.T) {
 		t.Fatalf("Blocked = %#v, want an empty list", got)
 	}
 }
+
+// What a started issue waits on, for the release of its row, is asked only of an issue whose
+// phase keeps a row (record.KeepsSlot). The same unfinished link holds an issue in implementing
+// and holds nothing of one past its review, held from its review, or in its merge, so the rule
+// that names the wait names the phase as well and no order of the admission pass's releases
+// decides it.
+func TestAStartedIssuePastItsReviewWaitsOnNothing(t *testing.T) {
+	rows := Rows([]record.DispatchIssueRow{{Key: "LEGION-9", Status: "in_progress"}})
+	for _, tc := range []struct {
+		at   phase.Phase
+		from phase.Phase
+		want []string
+	}{
+		{at: phase.Implementing, want: []string{"LEGION-9"}},
+		{at: phase.Held, from: phase.Reviewing, want: []string{"LEGION-9"}},
+		{at: phase.Accepting},
+		{at: phase.Held, from: phase.Accepting},
+		{at: phase.Retro},
+		{at: phase.Merging},
+	} {
+		issue := record.Issue{Key: "LEGION-1", Tree: "LEGION-1", Phase: tc.at, Status: "in_progress", DispatchStatus: "in_progress"}
+		if tc.from != "" {
+			issue.Hold = &record.Hold{From: tc.from, Reason: record.HoldEscalated}
+		}
+		rows["LEGION-1"] = Row{Status: "in_progress", Blockers: []string{"LEGION-9"}}
+		if got := waitsOf(rows, issue, record.LineFacts{}); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("an issue in %s (held from %q) waits on %v, want %v", tc.at, tc.from, got, tc.want)
+		}
+	}
+}
