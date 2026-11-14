@@ -28,13 +28,21 @@ func quiet(t *testing.T, cap int) *Admission {
 	return newAdmission(t, cap, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
-// seedMirror writes what Dispatch says of key — its status and, in order, the keys it waits on —
-// as the blockers.Mirror handler writes one from an event. Its sequence is 1, so any event a test
-// then applies through the mirror (sequence 2 or more) wins the row's fence.
+// seedMirror writes what Dispatch says of key, an issue of this package's project, as
+// seedMirrorIn writes it.
 func seedMirror(t *testing.T, pool *pgxpool.Pool, key, status string, waits ...string) {
 	t.Helper()
+	seedMirrorIn(t, pool, testProject, key, status, waits...)
+}
+
+// seedMirrorIn writes what Dispatch says of key, an issue of project — its status and, in
+// order, the keys it waits on — as the blockers.Mirror handler writes one from an event. Its
+// sequence is 1, so any event a test then applies through the mirror (sequence 2 or more) wins
+// the row's fence.
+func seedMirrorIn(t *testing.T, pool *pgxpool.Pool, project, key, status string, waits ...string) {
+	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
-		row := record.DispatchIssueRow{Key: key, Project: testProject, Status: status, Blockers: waits, Seq: 1}
+		row := record.DispatchIssueRow{Key: key, Project: project, Status: status, Blockers: waits, Seq: 1}
 		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, row); err != nil {
 			t.Fatalf("seed the mirror of %s: %v", key, err)
 		}

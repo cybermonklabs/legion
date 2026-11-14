@@ -482,15 +482,18 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 // member nothing is going to move. They are the control for the waits as well: the pass that
 // leaves the waiting trees alone is a pass that still names every tree that has stopped.
 //
-// The four waits silence a tree only while the project's line can still move, and the last two
-// cases are that clause in both directions. The trees above are a project whose line moves: the
-// ones that have stopped hold slots of their own and no wait silences them, so a worker of one
-// of them can finish and give its slot back. The deadlocked project below holds nothing but
-// trees that wait by design — every slot of it held by an issue one of the four silences, every
-// claim of it idle — and no work of it can start again by itself, because a slot is freed by a
-// phase or by a status change and both need a worker that needs a slot. Every tree of it is
-// named, however its members wait. The control after it is that same project with one agent at
-// work, which is a line that can still move, and its trees are told to nobody.
+// The four waits silence a tree only while the project's line can still move, save a wait on
+// work outside the tree, which silences it whatever the line does
+// (lineHolds.waitsOnWorkOutsideItsTree, TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped),
+// and the last two cases are that clause in both directions. The trees above are a project
+// whose line moves: the ones that have stopped hold slots of their own and no wait silences
+// them, so a worker of one of them can finish and give its slot back. The deadlocked project
+// below holds nothing but trees that wait by design — every slot of it held by an issue one of
+// the four silences, every claim of it idle — and no work of it can start again by itself,
+// because a slot is freed by a phase or by a status change and both need a worker that needs a
+// slot. None of its members waits on work outside its tree, so every tree of it is named. The
+// control after it is that same project with one agent at work, which is a line that can still
+// move, and its trees are told to nobody.
 //
 // The test is written over the behaviour and not over the predicate: it seeds the trees, runs
 // an admission pass past the bound and reads what the controller is told, so a later rule that
@@ -878,7 +881,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 				" is in admitted. No role works this phase. The record holds no pull request." + decide},
 		}
 		if got := stalledNotices(t, deadPool); !reflect.DeepEqual(got, wantDeadlocked) {
-			t.Fatalf("the deadlocked project was told %#v, want %#v: where no slot holder of a project can finish and no agent of it is at work, every tree of it is named however its members wait",
+			t.Fatalf("the deadlocked project was told %#v, want %#v: where no slot holder of a project can finish and no agent of it is at work, every tree of it is named save one that waits on work outside it, and no member here does",
 				got, wantDeadlocked)
 		}
 	})
@@ -1095,7 +1098,9 @@ func TestAWorkingTreeIsNeverReportedStalled(t *testing.T) {
 // releaseSlotsForWaits) is a wait by design: a blocker holds it, and it stands in the waiting
 // line as record.LineWaitingOnIssue holding no slot, which is the line's own membership and so
 // no word of record.HeldReason (silencedTree's doc says why the table gains no row for it). Its
-// tree is told to nobody while the project's line can move. The same link on an issue past its
+// tree is told to nobody while the project's line can move, and, since the link is work outside
+// the tree, where the line cannot move as well (lineHolds.waitsOnWorkOutsideItsTree,
+// TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped). The same link on an issue past its
 // review is no such wait: that issue holds no slot by the phase rule (record.KeepsSlot), needs
 // none and stands in no line, so the walk leaves it behind as an issue already started that has
 // stopped, and its tree is told. A third tree that has simply stopped holds a slot no wait
@@ -1186,9 +1191,10 @@ func TestAStartedIssueThatGaveItsSlotBackForAWaitIsAWaitByDesign(t *testing.T) {
 // the waiter's.
 //
 // Each project runs over several passes with the clock moved past `stalled_tree_notice_hours`
-// each time, so a notice on any pass fails the case, and the first pass is the one that
-// releases the waiter's row.
-func TestATreeThatWaitsOnAnotherIssueIsNeverToldAsStopped(t *testing.T) {
+// each time, and each case says what every pass must have told: nothing for the project whose
+// only tree waits, and the stopped tree alone, on every pass, for the two that hold one. The
+// first pass is the one that releases the waiter's row.
+func TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped(t *testing.T) {
 	const (
 		waiter     = "LEGION-901"
 		otherIssue = "OTHER-9"
@@ -1210,10 +1216,11 @@ func TestATreeThatWaitsOnAnotherIssueIsNeverToldAsStopped(t *testing.T) {
 		seedClaim(t, records, waiter, waiter, claim.RoleImplementer, supervise.StateIdle)
 		return pool, admission, records
 	}
-	// The deep review's case: the only tree of the project waits on an issue of another project.
+	// The waiter alone, on a link to an issue of another project: the project's only tree waits,
+	// nothing of the project can move, and no pass tells anything.
 	t.Run("blocker-in-another-project", func(t *testing.T) {
 		pool, admission, _ := project(t, otherIssue)
-		seedOtherProjectIssue(t, pool, otherIssue)
+		seedMirrorIn(t, pool, "OTHER", otherIssue, "in_progress")
 		for pass, roots := range waitPasses(t, pool, admission, []string{waiter}, waiter) {
 			if roots != nil {
 				t.Fatalf("pass %d told the controller of %v, want nothing: a started issue that gave its slot back to wait on %s waits by design, whatever project %s is in",
@@ -1282,25 +1289,19 @@ func waitPasses(t *testing.T, pool *pgxpool.Pool, admission *Admission, waiters 
 	return told
 }
 
-// seedOtherProjectIssue writes the mirror row of key, an open issue of another project, as a
-// Dispatch blocked-by link reads it.
-func seedOtherProjectIssue(t *testing.T, pool *pgxpool.Pool, key string) {
-	t.Helper()
-	inTx(t, pool, func(tx pgx.Tx) {
-		row := record.DispatchIssueRow{Key: key, Project: "OTHER", Status: "in_progress", Seq: 1}
-		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, row); err != nil {
-			t.Fatalf("seed the mirror of %s: %v", key, err)
-		}
-	})
-}
-
 // A root whose own first phase waits for an open child (the children-first wait) gave its slot
-// back for that wait, and whether the wait is one by design depends on the child. A child the
-// daemon records in the workflow is released work, which nothing of the waiting tree moves: the
-// wait is by design, as a blocked-by link is, and the tree is told to nobody however the line
-// stands. A child the architect filed and never released is work of the tree that its architect
-// can release, so the wait leaves the tree to the stall measure exactly as any other wait of the
-// daemon's does: told once the project's line can no longer move.
+// back for that wait, and whether the wait is on work outside its tree depends on the child
+// (lineHolds.waitsOnWorkOutsideItsTree). A child the daemon has released is released work, which
+// nothing of the waiting tree moves: the tree is told to nobody however the line stands. A child
+// the architect filed and never released is work of the tree that its architect can release, so
+// the wait leaves the tree to the stall measure exactly as any other wait of the daemon's does:
+// told once the project's line can no longer move.
+//
+// What fails without the rule: at 7b31b601 every wait of a started issue on another issue was
+// silenced whatever the line did, so the unreleased child's tree was told to nobody and
+// unreleased-child fails there. Before that commit no such wait was silenced where the line
+// could not move, and released-child fails there, as it does under a rule that silences no
+// children-first wait at all.
 //
 // Each project is the root alone at admitted under a design gate that has opened, with its
 // architect idle, under a cap of four, measured over three passes past the bound.
@@ -1326,8 +1327,8 @@ func TestAWaitOnAChildIsAWaitByDesignOnlyOnceTheChildIsReleased(t *testing.T) {
 		return pool, admission, records
 	}
 
-	// The tester's case: the open child is one the architect filed and has not released, so the
-	// daemon holds no record of it. Nothing else of the project can move, and the tree is told.
+	// A child the architect filed and has not released, so the daemon holds no record of it.
+	// Nothing else of the project can move, and the tree is told on every pass.
 	t.Run("unreleased-child", func(t *testing.T) {
 		pool, admission, _ := project(t)
 		seedMirrorChild(t, pool, child, "backlog", root)
@@ -1347,7 +1348,7 @@ func TestAWaitOnAChildIsAWaitByDesignOnlyOnceTheChildIsReleased(t *testing.T) {
 		seedQuietChild(t, pool, root, child, "A1", phase.Implementing, "in_progress")
 		takeSlot(t, pool, child)
 		seedMirrorChild(t, pool, child, "in_progress", root, other)
-		seedOtherProjectIssue(t, pool, other)
+		seedMirrorIn(t, pool, "OTHER", other, "in_progress")
 		seedClaim(t, records, root, child, claim.RoleImplementer, supervise.StateIdle)
 		for pass, roots := range waitPasses(t, pool, admission, []string{root, child}, root, child) {
 			if roots != nil {
@@ -1360,9 +1361,13 @@ func TestAWaitOnAChildIsAWaitByDesignOnlyOnceTheChildIsReleased(t *testing.T) {
 
 // A queued root past its review holds no row and keeps none (slotFor), so its promotion opens
 // its tree whatever the cap says. The liveness clause's free-slot term reads that same decision
-// (promotionStarts): a project whose only slot holder waits by design under a full cap, and
-// whose only line entry is such a root, can still move, and its waiting tree is told to nobody
-// on the pass that opens the carried root's tree.
+// (capLets): a project whose only slot holder waits by design under a full cap, and whose only
+// line entry is such a root, can still move, and its waiting tree is told to nobody on the pass
+// that opens the carried root's tree.
+//
+// What fails without the rule: at 7b31b601 the free-slot term returned false at a full cap
+// before it read the line, so the project read as unable to move on the very pass that opens
+// the carried root's tree, and the controller was told that LEGION-930's tree had stopped.
 func TestAFullCapWithAHandedOverRootPastItsReviewStillMoves(t *testing.T) {
 	const (
 		awaiting = "LEGION-930"

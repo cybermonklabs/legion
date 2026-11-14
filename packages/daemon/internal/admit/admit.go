@@ -402,10 +402,6 @@ const todoWakeDelay = 30 * time.Second
 // controller is woken about it and takes nothing for it; only a person hands Legion work
 // (skill://legion-controller, "Free slots").
 //
-// The walk is the promotion's own, in its order and by its rule (promotionStarts): each
-// candidate that waits on nothing and that the promotion starts with a row adds one to the rows
-// held, and the slot is free where rows still stand free once the line has taken its share.
-//
 // The line is the one the promotion itself would read (blockers.JudgeLine), held by the same
 // blocker hold and the same children-first wait: a line built here from its own reads would
 // answer differently from the pass that acts, and a slot this said was free would then go to
@@ -431,13 +427,13 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	held := len(own)
+	taking := 0
 	for _, candidate := range line {
-		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate) && promotionStarts(candidate, held, a.cap) {
-			held++
+		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate) {
+			taking++
 		}
 	}
-	return held < a.cap, nil
+	return len(own)+taking < a.cap, nil
 }
 
 // wakeController queues notice on issue, due at dueAt, when a controller is registered and no
@@ -1731,7 +1727,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// brought, and an answered root resumes its architect on the row it kept through
 			// the wait.
 			takes := slotFor(candidate)
-			if !promotionStarts(candidate, len(own), a.cap) {
+			if !capLets(candidate, len(own), a.cap) {
 				// A full cap gives no further slot, and the scan goes on. This is not the hold
 				// above and must not be read as one: a hold is an answer for every candidate
 				// behind it, because it says the pass does not yet know what this candidate is;
@@ -2018,19 +2014,18 @@ func slotFor(entry record.LineEntry) bool {
 	return !entry.Holds && record.KeepsSlot(entry.Issue)
 }
 
-// promotionStarts says whether the promotion starts entry as far as the cap decides it, given
-// held, the rows of the cap the project holds, and cap: an entry that takes no slot (slotFor)
-// starts whatever the cap says, and one that takes a slot starts only while a row stands free.
-// A cap that admits nothing starts nothing, since the promotion does not run under it. What an
-// entry waits on is the other half of the decision (blockers.LineWaitsOn), which each reader
-// asks beside this.
+// capLets says whether the cap lets the promotion start entry, given held, the rows of the cap
+// the project holds, and cap: an entry that takes no slot (slotFor) starts whatever the cap
+// says, and one that takes a slot starts only while a row stands free. A cap that admits nothing
+// lets nothing start, since the promotion does not run under it. It answers the cap's half
+// alone: what an entry waits on is the other half (blockers.LineWaitsOn), which each reader asks
+// beside this.
 //
-// It is the one statement of the cap's half, and three readers ask it: the promotion itself
-// (promoteHolds), the controller's free-slot wake (slotFree) and the stall measure's free-slot
-// term (lineCanMove). Read apart, the measure said the cap held a queued root past its review
-// that the promotion of the same pass started, and told the controller of a stall that was not
-// one.
-func promotionStarts(entry record.LineEntry, held, cap int) bool {
+// It is the one statement of the cap's half, and two readers ask it: the promotion itself
+// (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
+// said the cap held a queued root past its review that the promotion of the same pass started,
+// and told the controller of a stall that was not one.
+func capLets(entry record.LineEntry, held, cap int) bool {
 	if cap <= 0 {
 		return false
 	}

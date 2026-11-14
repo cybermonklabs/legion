@@ -456,13 +456,18 @@ type ChildWait struct {
 }
 
 // OpenChild is one Dispatch child that holds its parent's first phase: its key, the Dispatch
-// status it holds it with, and, when a Dispatch blocked_by link of the child names an issue above
-// it on its own parent chain, that ancestor. Such a cycle is named and nothing more: breaking the
-// link is a person's decision.
+// status it holds it with, whether the daemon has released it, and, when a Dispatch blocked_by
+// link of the child names an issue above it on its own parent chain, that ancestor. Such a cycle
+// is named and nothing more: breaking the link is a person's decision.
 type OpenChild struct {
 	Key    string
 	Status string
-	Cycle  string
+	// Released says the daemon records the child and that record is in the workflow
+	// (InWorkflow): the child was released and the daemon runs it. An open child with no record
+	// of its own is work its architect filed and has not released. It is set by ChildWaits, from
+	// the same record ChildOpen reads, so that one judgement of the child answers both.
+	Released bool
+	Cycle    string
 }
 
 // treeRoots is the key of every tree root among issues, which is what a read of the trees of a

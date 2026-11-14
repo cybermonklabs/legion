@@ -143,7 +143,8 @@ func ChildWaits(issues []Issue, children map[string][]DispatchIssueRow, records,
 			if !ChildOpen(row, child) {
 				continue
 			}
-			open = append(open, OpenChild{Key: row.Key, Status: row.Status, Cycle: cycleAncestor(row, parent, chain)})
+			open = append(open, OpenChild{Key: row.Key, Status: row.Status, Released: child != nil && InWorkflow(*child),
+				Cycle: cycleAncestor(row, parent, chain)})
 		}
 		if len(open) > 0 {
 			waits[key] = ChildWait{Parent: key, Open: open}

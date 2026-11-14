@@ -305,7 +305,13 @@ func decideAwait(v awaitView) awaitDecision {
 	// two: a root it has never started, and one it started whose own standing no longer lets it
 	// wait. Two facts say it started the root: the slot row, and the mark of a row a pass took
 	// back for a wait on another issue (record.Issue.ReleasedForWaitAt, blockers.waitsOf), since
-	// such a root holds no row and was started all the same.
+	// such a root holds no row and was started all the same. blockers.startedIssues counts a
+	// third, an owed start (record.LineFacts.Owed), and rule 0 does not read it: this rule
+	// divides by what the record holds of the root's present standing, its row or the mark of the
+	// row it gave back, and an owed start is a start its worker still waits to be given, not a
+	// standing. A root at admitted that owes one and holds neither reads the never-started reason,
+	// as it did before this change; the decision is actStay either way, so only the reason could
+	// differ.
 	case !record.CanWaitOnPerson(root, record.TreeGate{Steps: v.Steps, Rows: v.Gates}, v.Slotted):
 		if !v.Slotted && root.ReleasedForWaitAt == nil {
 			return awaitDecision{Why: "the daemon has not started it, so it holds no admission slot"}
