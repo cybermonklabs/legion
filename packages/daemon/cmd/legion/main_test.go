@@ -2076,12 +2076,13 @@ func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) 
 // R5 holds the memory experiment's line to the count the memory line made before any experiment
 // was declared, and that line counted only issues whose tree a draw had reached. A unit a
 // hand-over settled at no arm (a carried child whose old tree held no draw) was in no count:
-// the earlier daemon served it none of the three memory fields, and legion state left it out.
+// a daemon without this change served it none of the three memory fields, and legion state left
+// it out.
 // The back-fill turns every such carried child into a settled row (variant, mode and instant all
-// empty), so on a deployment that ran the earlier release those rows exist from the upgrade on,
-// and the memory line must not start counting them. The want is the line the merge base's own
-// binary (045ee0762538, legion-v20.8.1) printed for the same issues, measured by INFRA-2566's
-// tester on 2026-11-13.
+// empty), so on a deployment that ran a release without this change those rows exist from the
+// upgrade on, and the memory line must not start counting them. The want is the line a binary of
+// legion-v20.8.1 (045ee0762538), a release without this change, printed for the same issues,
+// measured by INFRA-2566's tester on 2026-11-13.
 func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`

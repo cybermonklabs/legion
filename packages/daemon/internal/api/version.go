@@ -1626,11 +1626,11 @@ package api
 // b7a2f926, #3708's own, main declared 98, the entry then right above this one, still below 99,
 // so the number held; at the forward merge that brought main in at 2a6ff6c0, #3786's own, main
 // still declared 98, so the number held at 99. At the forward merge that brought main in at
-// aee2873c, #3830's own, main declared 104, the entry right above this one, so in that merge the
-// number moved to the lowest free number above 104 at its push, 113: of the heads of the 138 pull
-// requests open at 2026-11-13T19:05:49Z, read at refs/pull/<n>/head, #3659 declared 105, #2731
-// 106, #3712 107, #3519 108, #3793 109, #3937 110, #3573 and #3715 111, and #3730 112; the reads
-// of 17:53Z and 18:51:45Z, before those three moved, had named 111 and then 112. At the forward
-// merge that brought main in at 80920857, #3573's own, main declared 111, the entry right above
-// this one, still below 113, so the number held.)
+// aee2873c, #3830's own, main declared 104, the entry then right above this one, so in that
+// merge the number moved to the lowest free number above 104 at its push, 113: of the heads of
+// the 138 pull requests open at 2026-11-13T19:05:49Z, read at refs/pull/<n>/head, #3659 declared
+// 105, #2731 106, #3712 107, #3519 108, #3793 109, #3937 110, #3573 and #3715 111, and #3730 112;
+// the reads of 17:53Z and 18:51:45Z, before those three moved, had named 111 and then 112. At the
+// forward merge that brought main in at 80920857, #3573's own, main declared 111, the entry then
+// right above this one, still below 113, so the number held.)
 const DaemonAPIVersion = 113

@@ -32,14 +32,14 @@ const experimentAssignmentsVersion = 20261111045636
 //
 // The group is copied with one spelling changed: a row drawn under mode off takes the empty
 // variant, which is how this release's draw answers a mode-off experiment, rather than the word
-// `none` the column holds. The seed holds an old row in each of the three states the base's
-// column carries — drawn into the memory arm, drawn under off, and settled at a hand-over with no
-// instant — and each is read back twice: as the row the back-fill wrote, which is where the
-// normalisation shows, and through the mapping the state serves the three memory fields by
-// (projectedMemoryFields, internal/projection's memoryOf), which must answer exactly what a
-// release without this change answers off the four columns (baseMemoryFields). The second
-// reading is what says the normalisation costs no reader of those three fields anything; the
-// first is what the unnormalised copy fails.
+// `none` the column holds. The seed holds an old row in each of the three states the column
+// carries before the migration runs — drawn into the memory arm, drawn under off, and settled at
+// a hand-over with no instant — and each is read back twice: as the row the back-fill wrote,
+// which is where the normalisation shows, and through the mapping the state serves the three
+// memory fields by (projectedMemoryFields, internal/projection's memoryOf), which must answer
+// exactly what a release without this change answers off the four columns (baseMemoryFields).
+// The second reading is what says the normalisation costs no reader of those three fields
+// anything; the first is what the unnormalised copy fails.
 func TestTheMemoryDrawIsCopiedIntoTheAssignmentsBy20261111045636(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)

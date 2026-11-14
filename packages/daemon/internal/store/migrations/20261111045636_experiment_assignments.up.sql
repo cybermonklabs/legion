@@ -75,12 +75,12 @@ create table experiment_assignments (
 -- drawn after, and every reader counting arms would have to know both.
 --
 -- What that costs: the old column told a tree drawn into no arm from a tree with no answer at all
--- by the group alone — `none` against the empty string, which is what the base's own hand-over
--- wrote for a tree it settled (coalesce(source.memory_group, '')) — and after this both read as
--- the empty variant. The distinction is not lost; it moves into the two columns beside it, which
--- this row carries and which api.AssignmentView publishes: mode is `off` for the drawn-under-off
--- row and the empty string for the settled one, and drawn_at is the instant of the draw for the
--- first and null for the second.
+-- by the group alone — `none` against the empty string, which is what the hand-over of a release
+-- without this change wrote for a tree it settled (coalesce(source.memory_group, '')) — and after
+-- this both read as the empty variant. The distinction is not lost; it moves into the two
+-- columns beside it, which this row carries and which api.AssignmentView publishes: mode is
+-- `off` for the drawn-under-off row and the empty string for the settled one, and drawn_at is
+-- the instant of the draw for the first and null for the second.
 --
 -- What it does not cost: the three memory fields of the state (internal/projection's memoryOf)
 -- read nothing new. They are filled only from a row that records a draw — drawn_at set, which the

@@ -125,9 +125,8 @@ func (a *Admission) ReportCapabilities(open func() []string) {
 // mode off where the file writes no `memory` block, and a draw of an experiment at mode off
 // records its unit at no variant, so such a project has one answer recorded for each tree it
 // opens. The empty list, which draws nothing at all, is a caller that declared no experiment at
-// all: a test that builds one by hand. It is a setter rather than a parameter of New for the
-// reason ReportCapabilities is: every test that admits anything builds an admission, and none of
-// them declares an experiment.
+// all: a test that builds one by hand. It is a setter rather than a parameter of New because
+// every test that admits anything builds an admission, and most of them declare no experiment.
 func (a *Admission) UseExperiments(experiments []config.Experiment) {
 	a.experiments = experiments
 }
@@ -135,8 +134,8 @@ func (a *Admission) UseExperiments(experiments []config.Experiment) {
 // UseStalledTreeNotice registers how long a tree of this project may be quiet before the
 // admission pass tells the project's controller that it has stopped (`stalled_tree_notice_hours`,
 // config.Config.StalledTreeNotice, tellStalledTrees). It is a setter rather than a parameter of
-// New for the reason UseMemory is: every test that admits anything builds an admission, and the
-// stall rule is no part of what most of them are about. A bound of zero or less is no bound and
+// New because every test that admits anything builds an admission, and the stall rule is no part
+// of what most of them are about. A bound of zero or less is no bound and
 // tells nobody, which is what such a test leaves.
 func (a *Admission) UseStalledTreeNotice(bound time.Duration) {
 	a.stalledTreeNotice = bound
