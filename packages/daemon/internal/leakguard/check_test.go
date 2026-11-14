@@ -1,10 +1,12 @@
 package leakguard
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -127,7 +129,7 @@ func TestTheVisibilityReadIsTheOneTheSharedCheckMakes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "argv=api --hostname github.com repos/invented-org/invented-repo --jq .visibility\n" +
+	want := "argv=api --hostname github.com repos/invented-org/invented-repo --include --jq .visibility\n" +
 		"read=invented-org/invented-repo\nhost=github.com\n"
 	if string(read) != want {
 		t.Errorf("gh was called as\n%s\nwant\n%s", read, want)
@@ -196,4 +198,117 @@ exit 0
 			t.Errorf("%s answered a credential (exit 0), want a program that cannot", program)
 		}
 	}
+}
+
+// stopsAfterItsInput is a stand-in shared check that reads its standard input, as the real one
+// does, and then sleeps far past any bound these tests give it: a check whose git waits on a
+// remote that never answers, as the guard sees one.
+const stopsAfterItsInput = "cat >/dev/null\nsleep 30\n"
+
+// stoppedPush is a push under ctx through a guard whose shared check is stopsAfterItsInput, as
+// the setup failure it must be. The shared check runs before a push reads anything of its
+// repository, so the push needs none.
+func stoppedPush(t *testing.T, ctx context.Context) *SetupFailure {
+	t.Helper()
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), stopsAfterItsInput), Public)
+	started := time.Now()
+	err := guard.Push(ctx, PushRequest{
+		Dir:     t.TempDir(),
+		Remote:  "origin",
+		URL:     "https://github.com/invented-org/invented-repo.git",
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: noSHA, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+	})
+	answeredWithin10s(t, started)
+	return setupFailure(t, err)
+}
+
+// answeredWithin10s fails the test where the call that began at started took 10 s or more: the
+// stop has to end the call, well before the stand-in's own 30 s sleep would.
+func answeredWithin10s(t *testing.T, started time.Time) {
+	t.Helper()
+	if took := time.Since(started); took >= 10*time.Second {
+		t.Fatalf("the call answered after %s, want under 10 s: the stop did not end it", took.Round(time.Second))
+	}
+}
+
+// says fails the test for each of wants that the setup failure's line does not hold.
+func says(t *testing.T, failed *SetupFailure, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(failed.Error(), want) {
+			t.Errorf("the setup failure says %q, want it to hold %q", failed.Error(), want)
+		}
+	}
+}
+
+// A shared check its bound stops is a setup failure that names the check, the time it ran and
+// the bound it had, once, so a person reading the line can tell a check given too little time
+// from one that hung. The time it ran also shows that the kill reached the sleep, which bash
+// started in the check's own process group: a sleep the kill missed would hold the output pipe
+// open, and exec would wait its WaitDelay of a second more for it, which the time would show as
+// 3 s.
+func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	failed := stoppedPush(t, ctx)
+	says(t, failed, "the shared public leak check", "ran 2 s", "bound of 2 s")
+	if failed.Err != nil {
+		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)
+	}
+}
+
+// A shared check that a cancel stops, under a context with no deadline, says that a cancel
+// stopped it and how long it ran: there is no bound to name.
+func TestASharedCheckKilledByACancelSaysSoWithItsTime(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer time.AfterFunc(2*time.Second, cancel).Stop()
+	failed := stoppedPush(t, ctx)
+	says(t, failed, "the shared public leak check", "ran 2 s", "stopped by a cancel")
+	if failed.Err != nil {
+		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)
+	}
+}
+
+// The gh visibility read and the git reads of a push's records keep the setup failure of their
+// own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
+func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
+	// sleeps is the PATH entry of a directory whose one program is name, which sleeps far past
+	// the bound, in front of the test's own PATH: the guard's lookup finds it before the real
+	// one, and the check's bash still finds everything else.
+	sleeps := func(t *testing.T, name string) string {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nsleep 30\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")
+	}
+	t.Run("the gh visibility read", func(t *testing.T) {
+		guard := New(Options{
+			Check: leakguardtest.Write(t, t.TempDir(), passes),
+			Env:   append(fixtureenv.Isolated(t.TempDir()), sleeps(t, "gh")),
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		started := time.Now()
+		err := guard.Text(ctx, TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
+		answeredWithin10s(t, started)
+		says(t, setupFailure(t, err), "could not be read: gh ran 2 s and was stopped by its bound of 2 s")
+	})
+	t.Run("a git read of the push's records", func(t *testing.T) {
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, sleeps(t, "git"))
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		started := time.Now()
+		// A local commit and a ref the destination does not hold yet: the guard asks git for the
+		// commits the push would add, which is the read the stand-in git never answers.
+		err := guard.Push(ctx, PushRequest{
+			Dir:     t.TempDir(),
+			Remote:  "origin",
+			URL:     "https://github.com/invented-org/invented-repo.git",
+			Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: strings.Repeat("1", 40), RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+		})
+		answeredWithin10s(t, started)
+		says(t, setupFailure(t, err), "the push's commits could not be read: git ran 2 s and was stopped by its bound of 2 s")
+	})
 }

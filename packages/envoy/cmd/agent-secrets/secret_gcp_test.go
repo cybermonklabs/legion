@@ -73,9 +73,12 @@ type fakeSecretManager struct {
 	// race, when set, runs once on the secret named by the first GetSecret or UpdateSecret after the
 	// first GetSecret, before that call is answered, as another writer's update landing between a
 	// read and the next call does; gets counts GetSecret calls.
-	race  func(*fakeSecret)
-	gets  int
-	raced bool
+	race         func(*fakeSecret)
+	gets         int
+	raced        bool
+	beforeAdd    func(*fakeSecret)
+	getSecretErr error
+	destroyErr   error
 	// authorizations is the authorization metadata each call carried, in order: the sign-in it
 	// ran under (recordAuthorization).
 	authorizations []string
@@ -146,6 +149,9 @@ func (f *fakeSecretManager) CreateSecret(_ context.Context, req *secretmanagerpb
 func (f *fakeSecretManager) GetSecret(_ context.Context, req *secretmanagerpb.GetSecretRequest) (*secretmanagerpb.Secret, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.getSecretErr != nil {
+		return nil, f.getSecretErr
+	}
 	entry, ok := f.secrets[req.GetName()]
 	if ok {
 		f.raceOnce(entry)
@@ -159,7 +165,7 @@ func (f *fakeSecretManager) GetSecret(_ context.Context, req *secretmanagerpb.Ge
 
 // UpdateSecret refuses an Etag that does not match the secret's current one with
 // FAILED_PRECONDITION, as the real API does for optimistic concurrency, and bumps the etag on
-// every applied update; a request with no Etag (as delete/restore send) skips the check.
+// every applied update; a non-lent delete or restore that sends no Etag skips the check.
 func (f *fakeSecretManager) UpdateSecret(_ context.Context, req *secretmanagerpb.UpdateSecretRequest) (*secretmanagerpb.Secret, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -208,6 +214,10 @@ func (f *fakeSecretManager) AddSecretVersion(_ context.Context, req *secretmanag
 	if !ok {
 		return nil, status.Error(codes.NotFound, "not found")
 	}
+	if f.beforeAdd != nil {
+		f.beforeAdd(entry)
+		f.beforeAdd = nil
+	}
 	number := len(entry.versions) + 1
 	name := req.GetParent() + "/versions/" + strconv.Itoa(number)
 	version := &secretmanagerpb.SecretVersion{Name: name, State: secretmanagerpb.SecretVersion_ENABLED}
@@ -236,6 +246,26 @@ func (f *fakeSecretManager) AccessSecretVersion(_ context.Context, req *secretma
 		data = entry.payloads[newest]
 	}
 	return &secretmanagerpb.AccessSecretVersionResponse{Name: entry.versions[newest].GetName(), Payload: &secretmanagerpb.SecretPayload{Data: data}}, nil
+}
+
+func (f *fakeSecretManager) DestroySecretVersion(_ context.Context, req *secretmanagerpb.DestroySecretVersionRequest) (*secretmanagerpb.SecretVersion, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.destroyErr != nil {
+		return nil, f.destroyErr
+	}
+	parent := req.GetName()[:strings.LastIndex(req.GetName(), "/versions/")]
+	entry, ok := f.secrets[parent]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "not found")
+	}
+	for _, version := range entry.versions {
+		if version.GetName() == req.GetName() {
+			version.State = secretmanagerpb.SecretVersion_DESTROYED
+			return version, nil
+		}
+	}
+	return nil, status.Error(codes.NotFound, "not found")
 }
 
 func (f *fakeSecretManager) GetSecretVersion(_ context.Context, req *secretmanagerpb.GetSecretVersionRequest) (*secretmanagerpb.SecretVersion, error) {
@@ -366,6 +396,16 @@ func useNoADC(t *testing.T) {
 	}
 	gcpUserinfo = userinfoOf("")
 	t.Cleanup(func() { gcpCredentials, gcpUserinfo = restoreCreds, restoreUserinfo })
+}
+
+// useLentGCPAccessToken makes userinfo answer email for the caller-provided access token. Tests
+// pair it with useNoADC or a machine identity and useNoGcloud to exercise the lent-token path.
+func useLentGCPAccessToken(t *testing.T, token, email string) {
+	t.Helper()
+	restoreUserinfo := gcpUserinfo
+	gcpUserinfo = userinfoOf(email)
+	t.Cleanup(func() { gcpUserinfo = restoreUserinfo })
+	t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", token)
 }
 
 // userinfoOf answers as Google's userinfo endpoint does, the account a token was issued to: the
@@ -1075,6 +1115,294 @@ func TestGCPSecretWithNoApplicationDefaultCredentialsAndNoGcloudLoginIsRefused(t
 			}
 		})
 	}
+}
+
+func TestGCPBackendLentTokenRefusesExistingWritesBeforeCalls(t *testing.T) {
+	owner := workforcePrincipal[strings.LastIndex(workforcePrincipal, "/")+1:]
+	writes := []struct {
+		name  string
+		write func(*gcpBackend) error
+	}{
+		{"set", func(b *gcpBackend) error { return b.set(context.Background(), "scratch-test", "replacement") }},
+		{"set tags", func(b *gcpBackend) error {
+			return b.setTags(context.Background(), "scratch-test", heldTags{}, map[string]string{policy.TagTier: policy.TierHuman})
+		}},
+		{"remove tags", func(b *gcpBackend) error {
+			return b.removeTags(context.Background(), "scratch-test", heldTags{}, []string{policy.TagShape})
+		}},
+		{"delete", func(b *gcpBackend) error {
+			_, err := b.delete(context.Background(), "scratch-test")
+			return err
+		}},
+		{"restore", func(b *gcpBackend) error { return b.restore(context.Background(), "scratch-test") }},
+	}
+	for _, write := range writes {
+		t.Run(write.name, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			startFakeSecretManager(t, fake)
+			useNoADC(t)
+			useNoGcloud(t)
+			useLentGCPAccessToken(t, "lent-owner-token", owner)
+
+			backend, err := newGCPBackend(context.Background(), gcpTestSettings())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer backend.close()
+			if _, err := backend.requireWriteSignIn(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			err = write.write(backend)
+			if err == nil || !strings.Contains(err.Error(), "may only create a new secret") || !strings.Contains(err.Error(), "scratch-test") {
+				t.Fatalf("existing write error = %v, want refusal naming the secret", err)
+			}
+			if _, calls := fake.calledUnder(); calls != 0 {
+				t.Fatalf("Secret Manager got %d calls, want none", calls)
+			}
+		})
+	}
+}
+
+// TestGCPSecretCreateWithLentPersonsAccessToken: without ADC or a gcloud login, a person's lent
+// token creates the secret and supplies its --owner me email.
+func TestGCPSecretCreateWithLentPersonsAccessToken(t *testing.T) {
+	fake := newFakeSecretManager()
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	useNoGcloud(t)
+	useLentGCPAccessToken(t, "lent-ada-token", "ada@example.com")
+	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	useStdin(t, "shh")
+
+	if _, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent"); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	if owner := fake.ownerOf("scratch-test"); owner != "ada@example.com" {
+		t.Fatalf("owner annotation %q, want ada@example.com", owner)
+	}
+	if got, calls := fake.calledUnder(); got != "Bearer lent-ada-token" || calls == 0 {
+		t.Fatalf("Secret Manager calls ran under %q (%d calls), want the lent token", got, calls)
+	}
+}
+
+func TestGCPSecretCreateLentOwnerChangeUndoesVersion(t *testing.T) {
+	owner := workforcePrincipal[strings.LastIndex(workforcePrincipal, "/")+1:]
+	otherOwner := strings.Replace(owner, "ada", "grace", 1)
+	fake := newFakeSecretManager()
+	fake.beforeAdd = func(entry *fakeSecret) {
+		entry.secret.Annotations[policy.TagOwner] = otherOwner
+	}
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	useNoGcloud(t)
+	useLentGCPAccessToken(t, "lent-owner-token", owner)
+	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	useStdin(t, "stored-value")
+
+	_, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent")
+	if code != 1 || !strings.Contains(stderr, "owner changed") || !strings.Contains(stderr, "write was undone") {
+		t.Fatalf("exit %d, stderr %q; want the owner-change undo", code, stderr)
+	}
+	id := testGCPPrefix + "scratch-test"
+	fake.mu.Lock()
+	gotOwner := fake.secrets[id].secret.GetAnnotations()[policy.TagOwner]
+	versions := slices.Clone(fake.secrets[id].versions)
+	fake.mu.Unlock()
+	if gotOwner != otherOwner {
+		t.Fatalf("owner after the race = %q, want the concurrent owner", gotOwner)
+	}
+	if len(versions) != 1 || versions[0].GetState() == secretmanagerpb.SecretVersion_ENABLED {
+		t.Fatalf("versions after the owner change = %v, want no enabled version", versions)
+	}
+}
+
+func TestGCPSecretCreateLentOwnerReadFailureUndoesVersion(t *testing.T) {
+	owner := workforcePrincipal[strings.LastIndex(workforcePrincipal, "/")+1:]
+	fake := newFakeSecretManager()
+	fake.getSecretErr = status.Error(codes.Unavailable, "owner read failed")
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	useNoGcloud(t)
+	useLentGCPAccessToken(t, "lent-owner-token", owner)
+	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	useStdin(t, "stored-value")
+
+	_, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent")
+	if code != 1 || !strings.Contains(stderr, "could not re-read") || !strings.Contains(stderr, "write was undone") {
+		t.Fatalf("exit %d, stderr %q; want the owner-read undo", code, stderr)
+	}
+	id := testGCPPrefix + "scratch-test"
+	fake.mu.Lock()
+	versions := slices.Clone(fake.secrets[id].versions)
+	fake.mu.Unlock()
+	if len(versions) != 1 || versions[0].GetState() == secretmanagerpb.SecretVersion_ENABLED {
+		t.Fatalf("versions after the owner-read failure = %v, want no enabled version", versions)
+	}
+}
+
+func TestGCPSecretCreateLentOwnerChangeNamesVersionLeftBehind(t *testing.T) {
+	owner := workforcePrincipal[strings.LastIndex(workforcePrincipal, "/")+1:]
+	otherOwner := strings.Replace(owner, "ada", "grace", 1)
+	fake := newFakeSecretManager()
+	fake.beforeAdd = func(entry *fakeSecret) {
+		entry.secret.Annotations[policy.TagOwner] = otherOwner
+	}
+	fake.destroyErr = status.Error(codes.Unavailable, "destroy failed")
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	useNoGcloud(t)
+	useLentGCPAccessToken(t, "lent-owner-token", owner)
+	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	useStdin(t, "stored-value")
+
+	_, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent")
+	id := testGCPPrefix + "scratch-test"
+	if code != 1 || !strings.Contains(stderr, "version "+id+"/versions/1") || !strings.Contains(stderr, "left behind") {
+		t.Fatalf("exit %d, stderr %q; want the left version", code, stderr)
+	}
+	fake.mu.Lock()
+	versions := slices.Clone(fake.secrets[id].versions)
+	fake.mu.Unlock()
+	if len(versions) != 1 || versions[0].GetState() != secretmanagerpb.SecretVersion_ENABLED {
+		t.Fatalf("versions after the failed undo = %v, want the left enabled version", versions)
+	}
+}
+
+// TestGCPSecretWriteWithLentServiceAccountAccessTokenIsRefused: the lent-token path verifies
+// userinfo and refuses the named service account.
+func TestGCPSecretWriteWithLentServiceAccountAccessTokenIsRefused(t *testing.T) {
+	fake := newFakeSecretManager()
+	startFakeSecretManager(t, fake)
+	useGCPIdentity(t, "service_account", machineEmail)
+	useNoGcloud(t)
+	t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-service-token")
+	var inspected string
+	restoreUserinfo := gcpUserinfo
+	gcpUserinfo = func(_ context.Context, creds *google.Credentials) (string, error) {
+		token, err := creds.TokenSource.Token()
+		if err != nil {
+			return "", err
+		}
+		inspected = token.AccessToken
+		return machineEmail, nil
+	}
+	t.Cleanup(func() { gcpUserinfo = restoreUserinfo })
+	broker := startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
+	refuseValueReads(t)
+
+	_, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent")
+	if code != 1 || !strings.Contains(stderr, "lent Google access token") || !strings.Contains(stderr, machineEmail) {
+		t.Fatalf("exit %d, stderr %q; want refusal naming the lent token and service account", code, stderr)
+	}
+	if inspected != "lent-service-token" {
+		t.Fatalf("userinfo inspected token %q, want the lent token", inspected)
+	}
+	requireNothingWritten(t, fake, broker)
+}
+
+// TestGCPBackendCreateWithAnotherPersonsOwnerAndLentTokenIsRefused: create's boundary refuses a
+// caller that supplies another person's owner tag, even though the CLI normally permits only me
+// or shared.
+func TestGCPBackendCreateWithAnotherPersonsOwnerAndLentTokenIsRefused(t *testing.T) {
+	fake := newFakeSecretManager()
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	useNoGcloud(t)
+	useLentGCPAccessToken(t, "lent-ada-token", "ada@example.com")
+
+	backend, err := newGCPBackend(context.Background(), gcpTestSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.close()
+	if _, err := backend.requireWriteSignIn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	err = backend.create(context.Background(), "scratch-test", map[string]string{
+		policy.TagOwner: "grace@example.com",
+		policy.TagTier:  policy.TierAgent,
+	}, "must-not-be-stored")
+	if err == nil || !strings.Contains(err.Error(), "grace@example.com") {
+		t.Fatalf("create error = %v, want refusal naming grace@example.com", err)
+	}
+	if got := fake.written(); got != 0 {
+		t.Fatalf("Secret Manager holds %d secrets after a refused create, want none", got)
+	}
+}
+
+// TestGCPSecretLentTokenWithNoUserinfoEmailIsRefused: no empty userinfo email can become an
+// owner, before a value is read or anything is written.
+func TestGCPSecretLentTokenWithNoUserinfoEmailIsRefused(t *testing.T) {
+	fake := newFakeSecretManager()
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	useNoGcloud(t)
+	t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-unknown-token")
+	broker := startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
+	refuseValueReads(t)
+
+	_, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent")
+	if code != 1 || !strings.Contains(stderr, "names no email") {
+		t.Fatalf("exit %d, stderr %q; want the empty-userinfo refusal", code, stderr)
+	}
+	requireNothingWritten(t, fake, broker)
+}
+
+// TestGCPSecretLentServiceAccountTokenWithoutADCIsRefused: with no ADC or gcloud login, userinfo
+// identifies the lent service account and the write refuses it before reading a value.
+func TestGCPSecretLentServiceAccountTokenWithoutADCIsRefused(t *testing.T) {
+	fake := newFakeSecretManager()
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	useNoGcloud(t)
+	useLentGCPAccessToken(t, "lent-service-token", machineEmail)
+	broker := startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
+	refuseValueReads(t)
+
+	_, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent")
+	if code != 1 || !strings.Contains(stderr, "lent Google access token") || !strings.Contains(stderr, machineEmail) {
+		t.Fatalf("exit %d, stderr %q; want refusal naming the lent token and service account", code, stderr)
+	}
+	requireNothingWritten(t, fake, broker)
+}
+
+// TestGCPSecretLentTokenDoesNotOverrideGoogleApplicationCredentials: an explicit credentials
+// file keeps its existing refusal, rather than letting a lent token bypass that choice.
+func TestGCPSecretLentTokenDoesNotOverrideGoogleApplicationCredentials(t *testing.T) {
+	fake := newFakeSecretManager()
+	startFakeSecretManager(t, fake)
+	useGCPIdentity(t, "service_account", machineEmail)
+	useNoGcloud(t)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/keys/robot.json")
+	t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-ada-token")
+	broker := startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
+	refuseValueReads(t)
+
+	_, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent")
+	if code != 1 || !strings.Contains(stderr, "GOOGLE_APPLICATION_CREDENTIALS") {
+		t.Fatalf("exit %d, stderr %q; want the explicit-credentials refusal", code, stderr)
+	}
+	requireNothingWritten(t, fake, broker)
+}
+
+// TestGCPSecretGcloudLoginWinsOverLentToken: when gcloud has a person's login, it remains the
+// sign-in and the raw environment token stays an override gcloudEnv removes.
+func TestGCPSecretGcloudLoginWinsOverLentToken(t *testing.T) {
+	fake := newFakeSecretManager()
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	gcloud := useGcloud(t, "ada@example.com")
+	t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-grace-token")
+	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	useStdin(t, "shh")
+
+	if _, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent"); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	if owner := fake.ownerOf("scratch-test"); owner != "ada@example.com" {
+		t.Fatalf("owner annotation %q, want ada@example.com", owner)
+	}
+	requireRunUnder(t, fake, gcloud, "ada@example.com")
 }
 
 // TestGCPSecretUnderGoogleApplicationCredentialsNeverAsksGcloud: GOOGLE_APPLICATION_CREDENTIALS

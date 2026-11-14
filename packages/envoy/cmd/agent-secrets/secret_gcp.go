@@ -275,12 +275,25 @@ func runGcloud(ctx context.Context, gcloud string, args ...string) ([]byte, erro
 	return out, nil
 }
 
+// lentGCPAccessToken makes credentials from CLOUDSDK_AUTH_ACCESS_TOKEN, which gcloud itself
+// reads as an access token. It intentionally does not read CLOUDSDK_AUTH_ACCESS_TOKEN_FILE: that
+// is a gcloud configuration source, removed from gcloudEnv with the other identity overrides, not
+// a token this command accepts directly.
+func lentGCPAccessToken() *google.Credentials {
+	token := os.Getenv("CLOUDSDK_AUTH_ACCESS_TOKEN")
+	if token == "" {
+		return nil
+	}
+	return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: "Bearer"})}
+}
+
 // newGCPBackend loads the person's Application Default Credentials, reads the ADC JSON's own
 // "type" and dials the Secret Manager client (gcpClientDial). Where there are none to load and
 // GOOGLE_APPLICATION_CREDENTIALS is unset, every form, a read included, signs in with the
-// person's gcloud login (gcloudLogin) instead. It makes no userinfo call: that is only needed for
-// a write's --owner me, so requireWriteSignIn makes it lazily, and a read under an identity whose
-// token lacks userinfo scope (common for a machine's) still succeeds.
+// person's gcloud login (gcloudLogin) instead. Where no gcloud login is available,
+// CLOUDSDK_AUTH_ACCESS_TOKEN is a direct lent-token fallback. It makes no userinfo call: that is
+// only needed for a write's --owner me, so requireWriteSignIn makes it lazily, and a read under an
+// identity whose token lacks userinfo scope (common for a machine's) still succeeds.
 func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) {
 	b := &gcpBackend{settings: settings}
 	creds, err := gcpCredentials(ctx)
@@ -296,9 +309,14 @@ func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) 
 		// every program that uses them, and the gcloud login needs neither.
 		var account gcloudAccount
 		if creds, account, err = gcloudLogin(ctx); err != nil {
-			return nil, fmt.Errorf("found no usable Google Cloud Application Default Credentials, so this command uses your gcloud login, but %w", err)
+			if creds = lentGCPAccessToken(); creds == nil {
+				return nil, fmt.Errorf("found no usable Google Cloud Application Default Credentials, so this command uses your gcloud login, but %w", err)
+			}
+			b.lentToken = true
+			fmt.Fprintf(os.Stderr, "agent-secrets: gcloud login was unavailable (%v); using CLOUDSDK_AUTH_ACCESS_TOKEN\n", err)
+		} else {
+			b.login = account
 		}
-		b.login = account
 	case len(creds.JSON) > 0:
 		var parsed struct {
 			Type string `json:"type"`
@@ -330,6 +348,10 @@ type gcpBackend struct {
 	// they are a machine's own (requireWriteSignIn) - and zero while creds are the Application
 	// Default Credentials.
 	login gcloudAccount
+	// lentToken is true only while this backend signs in with CLOUDSDK_AUTH_ACCESS_TOKEN. Its
+	// owner is recorded after requireWriteSignIn verifies it with userinfo.
+	lentToken      bool
+	lentTokenOwner string
 }
 
 // signIn makes creds this backend's sign-in: it dials the Secret Manager client under them
@@ -371,29 +393,35 @@ func (b *gcpBackend) requireAccount(context.Context) error { return nil }
 
 // requireWriteSignIn answers, before any write, the signed-in person's lowercased email for
 // --owner me, and makes sure the write runs under a person's own Google Account sign-in:
-// Application Default Credentials of type "authorized_user", or the person's gcloud login. Where
-// the Application Default Credentials are anything else - a service account key file, a workload
-// identity federation credential (a dev box's own identity), a workforce identity federation
-// sign-in, or a GCE/GKE metadata-server identity - it signs the backend in with the person's
-// gcloud login (gcloudLogin), leaving those credentials as they are, unless
-// GOOGLE_APPLICATION_CREDENTIALS chose them, a choice it refuses rather than overrides. Under the
-// gcloud login it refuses a token Google does not answer as that login's account. It calls the
-// userinfo endpoint (gcpUserinfo) only here, not in newGCPBackend: a read never needs the email,
-// and a machine identity's token commonly lacks the userinfo scope that call needs.
+// Application Default Credentials of type "authorized_user", the person's gcloud login, or a
+// person's lent CLOUDSDK_AUTH_ACCESS_TOKEN. Where the Application Default Credentials are anything
+// else - a service account key file, a workload identity federation credential (a dev box's own
+// identity), a workforce identity federation sign-in, or a GCE/GKE metadata-server identity - it
+// signs the backend in with the person's gcloud login (gcloudLogin), leaving those credentials as
+// they are, unless GOOGLE_APPLICATION_CREDENTIALS chose them, a choice it refuses rather than
+// overrides. When no gcloud login is available, a lent token is the fallback. Under the gcloud
+// login it refuses a token Google does not answer as that login's account. It calls the userinfo
+// endpoint (gcpUserinfo) only here, not in newGCPBackend: a read never needs the email, and a
+// machine identity's token commonly lacks the userinfo scope that call needs.
 func (b *gcpBackend) requireWriteSignIn(ctx context.Context) (string, error) {
-	if b.login.email == "" && b.credsKind != google.AuthorizedUser {
+	if b.login.email == "" && b.credsKind != google.AuthorizedUser && !b.lentToken {
 		found := gcpCredsFound(b.creds, b.credsKind)
 		if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
 			return "", fmt.Errorf("a secret is written under your own Google sign-in, never a machine's, and GOOGLE_APPLICATION_CREDENTIALS names %s: run this command without GOOGLE_APPLICATION_CREDENTIALS to sign in as yourself", found)
 		}
 		creds, account, err := gcloudLogin(ctx)
 		if err != nil {
-			return "", fmt.Errorf("a secret is written under your own Google sign-in, never this machine's (its Application Default Credentials are %s), so a write uses your gcloud login, but %w", found, err)
+			if creds = lentGCPAccessToken(); creds == nil {
+				return "", fmt.Errorf("a secret is written under your own Google sign-in, never this machine's (its Application Default Credentials are %s), so a write uses your gcloud login, but %w", found, err)
+			}
+			b.lentToken = true
+			fmt.Fprintf(os.Stderr, "agent-secrets: gcloud login was unavailable (%v); using CLOUDSDK_AUTH_ACCESS_TOKEN\n", err)
+		} else {
+			b.login = account
 		}
 		if err := b.signIn(ctx, creds); err != nil {
 			return "", err
 		}
-		b.login = account
 	}
 	email, err := gcpUserinfo(ctx, b.creds)
 	if err != nil {
@@ -402,10 +430,17 @@ func (b *gcpBackend) requireWriteSignIn(ctx context.Context) (string, error) {
 	if email == "" {
 		return "", errors.New("your Google sign-in names no email")
 	}
+	if b.lentToken && !personAccount(email) {
+		return "", fmt.Errorf("the lent Google access token was refused: Google userinfo names %s, not a person's account", email)
+	}
 	if b.login.email != "" && !strings.EqualFold(email, b.login.email) {
 		return "", fmt.Errorf("the token gcloud lent for %s is %s's, as Google answers it, and a secret is written only under the login this command chose: nothing was written", b.login.email, email)
 	}
-	return strings.ToLower(email), nil
+	email = strings.ToLower(email)
+	if b.lentToken {
+		b.lentTokenOwner = email
+	}
+	return email, nil
 }
 
 // gcpCredsFound names Application Default Credentials that are not a person's own sign-in by what
@@ -531,6 +566,14 @@ func (b *gcpBackend) show(ctx context.Context, slug string) (secretView, error) 
 }
 
 func (b *gcpBackend) create(ctx context.Context, slug string, tags map[string]string, value string) error {
+	if b.lentToken {
+		if b.lentTokenOwner == "" {
+			return errors.New("a lent Google access token cannot write until its person is verified: nothing was written")
+		}
+		if owner := tags[policy.TagOwner]; !strings.EqualFold(owner, b.lentTokenOwner) {
+			return fmt.Errorf("a secret is created only under its owner's Google sign-in: the requested owner is %s, but the lent token is %s's, so nothing was written", owner, b.lentTokenOwner)
+		}
+	}
 	secret, err := b.client.CreateSecret(ctx, &secretmanagerpb.CreateSecretRequest{
 		Parent:   b.parent(),
 		SecretId: b.secretID(slug),
@@ -550,22 +593,46 @@ func (b *gcpBackend) create(ctx context.Context, slug string, tags map[string]st
 	if err != nil {
 		return err
 	}
-	_, err = b.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
-		Parent:  secret.GetName(),
-		Payload: &secretmanagerpb.SecretPayload{Data: []byte(value)},
-	})
-	return err
+	return b.addVersion(ctx, secret.GetName(), value)
 }
 
 func (b *gcpBackend) set(ctx context.Context, slug, value string) error {
-	_, err := b.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
-		Parent:  b.id(slug),
+	if err := b.refuseLentExistingWrite(slug); err != nil {
+		return err
+	}
+	return b.addVersion(ctx, b.id(slug), value)
+}
+
+func (b *gcpBackend) addVersion(ctx context.Context, parent, value string) error {
+	version, err := b.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
+		Parent:  parent,
 		Payload: &secretmanagerpb.SecretPayload{Data: []byte(value)},
 	})
-	return err
+	if err != nil || !b.lentToken {
+		return err
+	}
+	secret, readErr := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: parent})
+	switch {
+	case readErr != nil:
+		return b.undoLentVersion(ctx, version.GetName(), "could not re-read the secret owner")
+	case strings.EqualFold(secret.GetAnnotations()[policy.TagOwner], b.lentTokenOwner):
+		return nil
+	default:
+		return b.undoLentVersion(ctx, version.GetName(), "the secret owner changed")
+	}
+}
+
+func (b *gcpBackend) undoLentVersion(ctx context.Context, version, reason string) error {
+	if _, err := b.client.DestroySecretVersion(ctx, &secretmanagerpb.DestroySecretVersionRequest{Name: version}); err != nil {
+		return fmt.Errorf("%s after adding version %s; the version was left behind: %w", reason, version, err)
+	}
+	return fmt.Errorf("%s after adding version %s; the write was undone", reason, version)
 }
 
 func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, error) {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
+		return heldTags{}, err
+	}
 	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: b.id(slug)})
 	if err != nil {
 		return heldTags{}, err
@@ -596,6 +663,13 @@ func (b *gcpBackend) valueReadPermission() string {
 	return "secretmanager.versions.access on the secret"
 }
 
+func (b *gcpBackend) refuseLentExistingWrite(slug string) error {
+	if !b.lentToken {
+		return nil
+	}
+	return fmt.Errorf("a lent Google access token may only create a new secret it owns, so it cannot write the existing secret %s", b.id(slug))
+}
+
 // setTags writes tags into the annotations held holds, and removeTags deletes keys from them, each
 // in one UpdateSecret that keeps every annotation it does not name. An UpdateSecret whose mask names
 // "annotations" replaces the whole map, so each sends held's annotations, changed, with held's
@@ -603,10 +677,16 @@ func (b *gcpBackend) valueReadPermission() string {
 // since held was read refuses it with FAILED_PRECONDITION (errTagsChanged), naming the change,
 // rather than being merged into annotations no one checked.
 func (b *gcpBackend) setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
+		return err
+	}
 	return b.updateAnnotations(ctx, slug, held, func(annotations map[string]string) { maps.Copy(annotations, tags) })
 }
 
 func (b *gcpBackend) removeTags(ctx context.Context, slug string, held heldTags, keys []string) error {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
+		return err
+	}
 	return b.updateAnnotations(ctx, slug, held, func(annotations map[string]string) {
 		for _, key := range keys {
 			delete(annotations, key)
@@ -636,6 +716,9 @@ func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held he
 }
 
 func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error) {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
+		return nil, err
+	}
 	expire := time.Now().UTC().Add(time.Duration(recoveryWindowDays) * 24 * time.Hour)
 	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
 		Secret: &secretmanagerpb.Secret{
@@ -653,6 +736,9 @@ func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error
 // restore clears expire_time: the field mask names it with no value in the body, which Secret
 // Manager reads as unsetting it.
 func (b *gcpBackend) restore(ctx context.Context, slug string) error {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
+		return err
+	}
 	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
 		Secret:     &secretmanagerpb.Secret{Name: b.id(slug)},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},

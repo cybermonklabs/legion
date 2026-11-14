@@ -161,6 +161,9 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
+	if err := s.refuseLentExistingWrite(slug); err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
 	held, err := s.backend.currentTags(s.ctx, slug)
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)

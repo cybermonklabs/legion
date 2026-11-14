@@ -52,10 +52,13 @@ type SpawnResult struct {
 
 // ProbeResult is one scripted answer to Probe: a verdict about the locator probed, or the
 // runtime failing to answer at all. The fake fills the observation's locator and time in.
+// OutOfMemory is the verdict's own (runtime.Observation.OutOfMemory), for a Gone whose pod ran
+// out of memory.
 type ProbeResult struct {
-	Kind   runtime.ObservationKind
-	Detail string
-	Err    error
+	Kind        runtime.ObservationKind
+	Detail      string
+	OutOfMemory bool
+	Err         error
 }
 
 // Runtime is the fake. The zero value is not usable; call NewRuntime.
@@ -77,20 +80,21 @@ type Runtime struct {
 	// and nothing is started.
 	OnResume func(ctx context.Context) error
 
-	mu          sync.Mutex
-	pending     *sync.Cond
-	calls       []Call
-	spawns      []SpawnResult
-	resumes     []SpawnResult
-	probes      []ProbeResult
-	failures    map[string]error
-	drift       map[claim.Token][]string
-	gone        map[claim.Token]bool
-	holdReplace func()
-	holdResume  func()
-	rescuer     func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error)
-	queue       []runtime.Observation
-	minted      int
+	mu           sync.Mutex
+	pending      *sync.Cond
+	calls        []Call
+	spawns       []SpawnResult
+	resumes      []SpawnResult
+	probes       []ProbeResult
+	failures     map[string]error
+	drift        map[claim.Token][]string
+	gone         map[claim.Token]bool
+	holdReplace  func()
+	replaceNoPod bool
+	holdResume   func()
+	rescuer      func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error)
+	queue        []runtime.Observation
+	minted       int
 }
 
 // NewRuntime is a fake ready to record: no script, controller launched by the daemon, real time.
@@ -208,6 +212,17 @@ func (r *Runtime) HoldReplacePod(hold func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.holdReplace = hold
+}
+
+// FindNoPodToReplace makes every later ReplacePod answer nil without asking due and without
+// replacing anything, as the Sandbox runtime answers a Sandbox that is absent or suspended, or
+// whose pod is no longer the one the locator records: there is no pod of the round to end. The
+// call is recorded as ReplacePodNoPod, so no ReplacePod call stands for a replacement. false
+// clears it.
+func (r *Runtime) FindNoPodToReplace(none bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.replaceNoPod = none
 }
 
 // HoldResume makes every later Resume run hold before it answers, which is where the Sandbox
@@ -343,16 +358,16 @@ func (r *Runtime) Probe(_ context.Context, loc runtime.Locator) (runtime.Observa
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "Probe", Locator: loc})
-	kind, detail := runtime.Alive, ""
+	kind, detail, outOfMemory := runtime.Alive, "", false
 	if len(r.probes) > 0 {
 		next := r.probes[0]
 		r.probes = r.probes[1:]
 		if next.Err != nil {
 			return runtime.Observation{}, next.Err
 		}
-		kind, detail = next.Kind, next.Detail
+		kind, detail, outOfMemory = next.Kind, next.Detail, next.OutOfMemory
 	}
-	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail}, nil
+	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail, OutOfMemory: outOfMemory}, nil
 }
 
 // Observe is the sweep. Every observation emitted, before or after this call, reaches the
@@ -474,12 +489,13 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 }
 
 // ReplacePod plays the Sandbox runtime's own order: it waits where that runtime waits for the
-// pod's launch turn (HoldReplacePod), asks due whether the replacement is still due, and only
-// then replaces anything. A due that refuses records a ReplacePodNotDue call and changes nothing
-// — no replacement was made, so no ReplacePod call stands for one — and its error is returned as
-// the runtime hands it back. Otherwise the call is recorded, the claim's drift forgotten — the
-// place it named is gone, and the one built in its stead is built from the configuration the
-// runtime has now — and what FailReplacePod set is answered, nil by default.
+// pod's launch turn (HoldReplacePod), answers nil there for a pod it finds no longer there
+// (FindNoPodToReplace), asks due whether the replacement is still due, and only then replaces
+// anything. A due that refuses records a ReplacePodNotDue call and changes nothing — no
+// replacement was made, so no ReplacePod call stands for one — and its error is returned as the
+// runtime hands it back. Otherwise the call is recorded, the claim's drift forgotten — the place
+// it named is gone, and the one built in its stead is built from the configuration the runtime
+// has now — and what FailReplacePod set is answered, nil by default.
 func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(context.Context) error) error {
 	r.mu.Lock()
 	hold := r.holdReplace
@@ -487,6 +503,13 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	if hold != nil {
 		hold()
 	}
+	r.mu.Lock()
+	if r.replaceNoPod {
+		r.calls = append(r.calls, Call{Method: "ReplacePodNoPod", Pod: copyKnown(k)})
+		r.mu.Unlock()
+		return nil
+	}
+	r.mu.Unlock()
 	if err := due(ctx); err != nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()

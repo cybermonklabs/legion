@@ -525,16 +525,20 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 	}
 }
 
-// dispatch://INFRA-332's four role-prompt rules and dispatch://INFRA-924's fifth, each pinned by
-// the sentence that carries it. A pin fails when a later edit deletes the rule; it does not show
-// that an agent follows it, which each issue's session runs measure. Each of the first four
-// sentences sits in the core its role composes, so the rule reaches that role and no other: the
-// simplify pass and the class search are the implementer's, the procedure and can-fail rules the
-// tester's, the open-decision rule the planner's, and the planner's WAITING line is phase
-// mechanics, so it lives in its residue rather than its core. R5 is the exception: Compose names
-// core/oracle.md for no role, and it is pinned beside core/common.md to keep one wording of that
-// rule in the prompt tree, which a later core would copy from.
+// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth and
+// dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
+// when a later edit deletes the rule; it does not show that an agent follows it, which each
+// issue's session runs measure. Each of the first four sentences sits in the core its role
+// composes, so the rule reaches that role and no other: the simplify pass and the class search are
+// the implementer's, the procedure and can-fail rules the tester's, the open-decision rule the
+// planner's, and the planner's WAITING line is phase mechanics, so it lives in its residue rather
+// than its core. R5 is the exception: Compose names core/oracle.md for no role, and it is pinned
+// beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
+// would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
+	// The phrase every text of dispatch://INFRA-3204's rule carries once, the skills included
+	// (packages/pi-legion/src/skills-guard.test.ts).
+	const ciCheckRule = "check carrying `ci_check` is CI's"
 	for _, pin := range []struct{ file, rule string }{
 		// R1: the simplify pass covers every file of the diff and reports what it sees.
 		{"core/implementer.md", "Your behaviour-preserving simplify pass covers every file of the change"},
@@ -558,6 +562,27 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/common.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "Findings cite the file and the symbol, or text quoted from it."},
+		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
+		// role runs it or records its result, and `dispatch results` derives that result
+		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or
+		// judged, or lists a check's attributes, carries the exception. The tester's and the
+		// implementer's role parts point at the worker skill's page, which a core part may not name.
+		{"core/tester.md", ciCheckRule},
+		{"core/implementer.md", ciCheckRule},
+		{"core/reviewer.md", ciCheckRule},
+		{"tester.md", ciCheckRule},
+		{"implementer.md", ciCheckRule},
+		{"architect.md", ciCheckRule},
+		{"architect-root.md", ciCheckRule},
+		{"tester.md", "`skill://legion-worker/references/ci-checks.md`"},
+		{"implementer.md", "`skill://legion-worker/references/ci-checks.md`"},
+		{"architect.md", "takes no `run`"},
+		{"architect-root.md", "takes no `run`"},
+		// The reviewer's gate takes R5's three cases for a check CI proves: a run still going or
+		// unread is waited for, and a name no run answers goes to the architect, rather than sending
+		// the work back to an implementer who cannot cure it. The final gate points at that rule.
+		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
+		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)

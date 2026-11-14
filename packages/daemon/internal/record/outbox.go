@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ const (
 	OutboxKindRoleMessage      OutboxKind = "role_message"
 	OutboxKindPhaseEnded       OutboxKind = "phase_ended"
 	OutboxKindHookPrompt       OutboxKind = "hook_prompt"
+	OutboxKindUpdateAsk        OutboxKind = "update_ask"
 	OutboxKindIssueBundle      OutboxKind = "issue_bundle"
 	OutboxKindIssueRelease     OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
@@ -58,12 +60,15 @@ const (
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
-// none of them back. The role-message lane runs the two kinds the daemon addresses to a role of
-// the issue that is not its architect (phase_ended, hook_prompt), on a lane of its own because
-// the board lane's architect notices are ordered among themselves and one of them waits
+// none of them back. The role-message lane runs the three kinds the daemon addresses to one role of
+// the issue on that role's own topic: the end of a phase and a hook's words, which go to a phase
+// worker (phase_ended, hook_prompt), and an update round's ask, which goes to any role whose
+// process runs in the issue's pod, its architect included (update_ask). It is a lane of its own
+// because the board lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
-// phase ended, or given the words a hook fired on a move back, must hear it while that is news,
-// not after whatever its tree's architect is owed.
+// phase ended, given the words a hook fired on a move back, or asked to get ready for the
+// replacement of its pod must hear it while that is news, not after whatever its tree's architect
+// is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -82,7 +87,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt},
+	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk},
 	LaneClaim:       {OutboxKindClaimRelease},
 }
 
@@ -155,10 +160,29 @@ type ClaimRelease struct{}
 func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 
 // MessagePost is a Dispatch message body. The runner posts it as Posted: the body, then its outbox
-// marker.
+// marker. Artifact, when set, is a document the body links (dispatch://<issue>/artifact/<name>):
+// the runner puts it on the issue before it posts the body, so the link never comes before its
+// document.
 type MessagePost struct {
-	Body string `json:"body"`
+	Body     string           `json:"body"`
+	Artifact *MessageArtifact `json:"artifact,omitempty"`
 }
+
+// MessageArtifact is the markdown document a message links. Name is the slug Dispatch files it
+// under, so the message can link it before it exists: a name that is no slug is refused, since
+// Dispatch would file it under another (its artifactSlug). Content is the markdown, at most
+// MaxMessageArtifactBytes.
+type MessageArtifact struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+// MaxMessageArtifactBytes is the most bytes a message's artifact may hold: Dispatch's own bound on
+// one markdown document (pmdoc.MaxDocumentBytes), past which it refuses the upload.
+const MaxMessageArtifactBytes = 1 << 20
+
+// artifactSlug is the grammar of a Dispatch slug, which every reader of a dispatch:// link spells.
+var artifactSlug = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 func (MessagePost) OutboxKind() OutboxKind { return OutboxKindDispatchMessage }
 
@@ -388,20 +412,19 @@ type FailureBudget struct {
 }
 
 // UpdateStalled is what an update-stalled controller notice carries: the update round the daemon
-// opened over an issue's pod, and why it has not replaced that pod. Round is the round's identity
-// (supervise.Claim.UpdateRound), Pod the pod it was opened over, and Reasons the drift the round
-// was opened for, as the task states it. Waiting is every claim the round is blocked on, so the
-// controller can retry one claim or ask the operator to act on a failed or suspended one rather
-// than read the whole claims list to find out which worker the round waits on; what each entry
-// says, and what the controller does with it, is UpdateWaiting's. The notice's issue is the
-// outbox row's own.
+// opened over an issue's pod, and why something holds it past its bound. Round is the round's
+// identity (supervise.Claim.UpdateRound), Pod the pod it was opened over, and Reasons the drift
+// the round was opened for, as the ask states it. Waiting is every claim the round asked, each
+// marked with whether it answered, so the controller can ask the operator to act on a suspended
+// claim rather than read the whole claims list to find out who the round asked; what
+// each entry says is UpdateWaiting's. The notice's issue is the outbox row's own.
 //
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved
 // address reads `<where> <held>, now <handed>`, a pod-shape drift `image <was>, now <now>`, and a
 // plugin round's reason, which only an earlier daemon's round carries, names both contracts — so
 // a list built by splitting what the claim
 // records (supervise.Claim.UpdateReasons, one string) would cut each reason into pieces that read
-// as reasons of their own. It is the drift exactly as the round's task states it to the worker.
+// as reasons of their own. It is the drift exactly as the round's ask states it to each role.
 type UpdateStalled struct {
 	Round   string          `json:"round"`
 	Pod     string          `json:"pod,omitempty"`
@@ -409,21 +432,19 @@ type UpdateStalled struct {
 	Waiting []UpdateWaiting `json:"waiting"`
 }
 
-// UpdateWaiting is one claim an update round is blocked on: its token, the role it holds, the
-// state it is in (supervise.ClaimState — an operator-suspended claim waits for the operator; a
-// pod round lists no `failed` claim, since it does not wait for one), and Answered for a claim
-// that has already answered this round.
+// UpdateWaiting is one claim an update round asked: its token, the role it holds, the state it
+// is in (supervise.ClaimState — an operator-suspended claim waits for the operator; a pod round
+// lists no `failed` claim, since it asks none), and Answered for a claim that has already
+// answered this round.
 //
-// The contract the claim's plugin records is not here. A plugin with no ready_for_update op
-// answers by ending the turn its update task started (supervise's askForUpdate and turnEnded),
-// so such a claim is one the round is waiting on like any other, and the controller has nothing
-// of its own to do about it.
+// The contract the claim's plugin records is not here. A plugin with no ready_for_update op is
+// asked like any other, on its role's own topic (UpdateAsk), and the round ends at its bound
+// whether or not it answers, so such a claim is one the round is waiting on like any other, and
+// the controller has nothing of its own to do about it.
 //
-// Answered is what tells the controller which claims are its to prompt. Its playbook publishes
-// the update task to a claim that has not answered, and that publish starts a turn, which takes
-// the claim's answer back (supervise's takeBackSignal): told to do that for a claim that has
-// answered, it would undo the answers of exactly the round the daemon is stuck carrying
-// (skill://legion-controller/references/escalation.md).
+// Answered tells the controller what each role said. It is no list of roles to prompt: the round
+// ends at its bound whether or not a role answers, and the notice is told only for what holds the
+// round past that bound.
 type UpdateWaiting struct {
 	Claim    string     `json:"claim"`
 	Role     claim.Role `json:"role,omitempty"`
@@ -583,18 +604,30 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // keeps the slot it holds while it waits (workflow's enterAwaiting). The controller takes no issue for any of
 // the three (skill://legion-controller, "Free slots"). A tick is the daemon's periodic wake, whose
 // issue is the project key. An unslotted notice names a root admission found in the workflow with
-// neither a slot nor a place in the waiting line, which it took out of the workflow; its reason
-// names the status the root stood at. An update-stalled notice names an issue whose pod the
-// daemon opened an update round over and cannot replace: a worker has not answered within
-// `pod_update_notice_hours`, a turn that will not end holds the replacement, or the replacement
-// itself keeps failing (the daemon's reconcilePodUpdates). A provider-errors notice names an
-// issue whose role has ended six turns in a row in a provider error: its Role is that role, and
-// its Reason the model and the HTTP status the provider answered, where it answered one, in
-// words built from structured fields alone (supervise's tellControllerOfProviderErrors). It is
-// told once, and not again until a turn with no error puts that run back to zero; nothing is
-// held and nothing is bounded, because a chain's bottom refusing deterministically costs one
-// request every ten minutes. When admission sends each is its rule (admit.Admission.wakeController and its
-// callers, admit's releaseUnslotted, admit.Admission.TellController).
+// neither a slot nor a place in the waiting line, which it then put in phase.Done; its reason
+// names the status the root stood at. An update-stalled notice names an issue whose update round
+// has passed its bound (`pod_update_grace_minutes` after it opened) while something still holds
+// it: an operator's suspension of a role the round asks, a failed push check, a ReplacePod the
+// runtime refused, no claim recording a process in the round's pod (or in any pod), or claims
+// recording two pods. It is told once per round (the daemon's reconcilePodUpdates). A
+// provider-errors notice names an issue whose role has ended six turns in a row in a provider
+// error: its Role is that role, and its Reason the model and the HTTP status the provider
+// answered, where it answered one, in words built from structured fields alone (supervise's
+// tellControllerOfProviderErrors). It is told once, and not again until a turn with no error puts
+// that run back to zero; nothing is held and nothing is bounded, because a chain's bottom
+// refusing deterministically costs one request every ten minutes. A tree-stalled notice names a
+// root of the daemon's own whose tree has stopped: nothing of the tree has moved for longer than
+// `stalled_tree_notice_hours`, no claim of it is at work, and either at least one issue of it
+// waits by no rule of the daemon's own or the project's line can no longer move — a tree every
+// quiet issue of which waits by one of those rules is told to nobody while some issue of the
+// project holds a slot and waits by none of them, or some claim of the project is at work
+// (admit's tellStalledTrees, lineCanMove). Its issue is that root, and its Reason names the
+// tree's quiet hours, each issue the workflow still runs with its phase, the role whose turn it
+// is and the state of its pull request, and what the controller is to decide. It is told once
+// for each stall: the daemon marks the root with the movement the notice was told for, and tells
+// again only once the tree moves past that mark. When admission sends each is its rule
+// (admit.Admission.wakeController and its callers, admit's releaseUnslotted,
+// admit.Admission.TellController).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
@@ -614,22 +647,34 @@ const (
 	ParkedDecisionNotice NoticeKind = "parked-decision"
 	UpdateStalledNotice  NoticeKind = "update-stalled"
 	ProviderErrorsNotice NoticeKind = "provider-errors"
+	TreeStalledNotice    NoticeKind = "tree-stalled"
 )
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
 // issue and the role that names it — rather than one per project
 // (admit.Admission.wakeController reads it before it queues a wake).
 //
-// A provider-errors notice is the one such kind: it names the claim whose turns keep ending in a
+// Two kinds answer true. A provider-errors notice names the claim whose turns keep ending in a
 // provider error, and in an outage every claim of the project has a notice of its own to send.
 // It is told at exactly the sixth turn in a row and never again until a turn with no error puts
-// that run back to zero, so a second claim's notice dropped behind the first claim's would never
-// be sent at all. Two claims of one issue are two such claims — an issue's architect and its
-// worker fail their turns in the same outage — so the issue alone is not the key; the role is
-// the rest of it. Every other kind says something about the project — a free slot, a todo issue,
-// the day's tick — which one wake carries however many facts find it pending.
+// that run back to zero, so a second claim's notice dropped behind the first claim's would
+// never be sent at all. Two claims of one issue are two such claims — an issue's architect and
+// its worker fail their turns in the same outage — so the issue alone is not the key; the role
+// is the rest of it.
+//
+// A tree-stalled notice names one root whose tree has stopped, and carries no role: the stall
+// is the whole tree's and not one agent's. So its key is the issue alone, which is what an
+// empty role gives it — the role is a term the pending read leaves out when the caller names
+// none (Store.ControllerNoticePending) — and the issue is the tree's root. It is keyed that way
+// because a project can have two trees stopped at once, which is the very shape its controller
+// most needs to read: keyed per project, the second tree's notice would be dropped for as long
+// as the first tree's waited in the outbox, and no pass could tell the controller of it until
+// that first notice was published.
+//
+// Every other kind says something about the project — a free slot, a todo issue, the day's tick
+// — which one wake carries however many facts find it pending.
 func NoticePerClaim(kind NoticeKind) bool {
-	return kind == ProviderErrorsNotice
+	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
 }
 
 // SuperviseOp identifies a worker-session operation: "start" starts, resumes, or retries the role's
@@ -701,15 +746,19 @@ type SuperviseRequest struct {
 	// budget, the runner finishes this row rather than retrying it as RequestRetry with fresh
 	// budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
-	// NeedsSlot marks a phase worker's start as one that waits for its issue's admission slot.
-	// The cap counts the issues the daemon has started, so what it must bound is the start that
-	// puts a worker to work; everything else the transition writes — the phase, the Dispatch
-	// status, the entry and its task on the role's phases row, the notices — is written in the
-	// transition's own transaction and waits for nothing. The hold is on this row's claimability
-	// alone (store.go's outboxInOrder): a row that is merely unclaimable takes no lease, so none
-	// of its issue's later rows is held behind it. The row carries the worker's task whether or
-	// not it is marked, since a start is one row either way (workflow.StartOrOwe); what the mark
-	// decides is when the worker comes back with it.
+	// NeedsSlot marks a start whose phase holds one of the cap's slots (PhaseKeepsSlot) as one
+	// that waits for its issue's admission slot. The cap counts the issues the daemon has
+	// started whose change is still to write, so what it must bound is the start of a phase that
+	// holds a row; everything else the transition writes — the phase, the Dispatch status, the
+	// entry and its task on the role's phases row, the notices — is written in the transition's
+	// own transaction and waits for nothing. A start into accepting, retro or merging carries no
+	// mark, since an issue past its review holds no row for such a start to wait for, and it is
+	// claimable the moment it commits. workflow.StartOrOwe is the
+	// one writer of the mark, which it reads from the start's own phase, so no caller decides
+	// it. The hold is on this row's claimability alone (store.go's outboxInOrder): a row that is
+	// merely unclaimable takes no lease, so none of its issue's later rows is held behind it.
+	// The row carries the worker's task whether or not it is marked, since a start is one row
+	// either way; what the mark decides is when the worker comes back with it.
 	NeedsSlot bool `json:"needsSlot,omitempty"`
 	// Relaunch is written by nothing. It marked the task-less half of the two rows a phase
 	// worker's start used to be, before a start became one row that carries its task
@@ -1062,6 +1111,35 @@ func (p HookPrompt) Message(issue string) string {
 		p.Hook, issue, p.From, p.To, p.Prompt, p.Count, counts, pull)
 }
 
+// UpdateAsk is an update round's ask to one role of the issue, on that role's own Envoy topic:
+// the daemon opened Round over Pod and will replace that pod, and Text is the whole ask, as the
+// sweep built it with supervise.UpdateTask from the round's recorded reasons and its recorded
+// opening. Role is the recipient: a phase worker or the issue's architect, since every role whose
+// process runs in the pod loses that process at the replacement. Pod is the pod the round was
+// opened over: the sweep asks only a round whose claims record one.
+//
+// The row carries the finished text rather than the facts to build it from, for two reasons.
+// record does not import supervise, which owns the words. And the round's terms are fixed when
+// it opens, so a text built from what a later tick read would name drift the round was not
+// opened for.
+//
+// The ask is best effort: the round ends at its bound whether or not the role reads it. So a
+// row whose role no live session holds finishes undelivered, and a row whose round the claim no
+// longer records finishes without a publish (the daemon's updateAsk).
+type UpdateAsk struct {
+	Role  claim.Role `json:"role"`
+	Round string     `json:"round"`
+	Pod   string     `json:"pod,omitempty"`
+	Text  string     `json:"text"`
+}
+
+func (UpdateAsk) OutboxKind() OutboxKind { return OutboxKindUpdateAsk }
+
+// Message is what the runner publishes for issue: the text the sweep built, unchanged. Nothing is
+// put in front of it, since the text names the round and the topic it goes to is the role's own
+// claim on issue.
+func (p UpdateAsk) Message(string) string { return p.Text }
+
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if err := validateOutboxPayload(payload); err != nil {
@@ -1214,6 +1292,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindUpdateAsk:
+		value := UpdateAsk{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindClaimRelease:
 		value := ClaimRelease{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1258,7 +1342,21 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Reason != "" && value.Status != "done" {
 			return fmt.Errorf("a status write to %s carries a reason; only a done write does", value.Status)
 		}
-	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
+	case MessagePost:
+		// Each is a refusal Dispatch would make of the upload on every run, or a link that would
+		// name no document, so the row is refused before it is queued.
+		if artifact := value.Artifact; artifact != nil {
+			if !artifactSlug.MatchString(artifact.Name) {
+				return fmt.Errorf("a message's artifact is named %q, which is no Dispatch slug: runs of lowercase ASCII letters and digits, each two joined by one dash", artifact.Name)
+			}
+			if strings.TrimSpace(artifact.Content) == "" {
+				return fmt.Errorf("a message's artifact %s holds no content", artifact.Name)
+			}
+			if len(artifact.Content) > MaxMessageArtifactBytes {
+				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
+			}
+		}
+	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
@@ -1440,6 +1538,16 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Prompt == "" {
 			return fmt.Errorf("a hook prompt carries the hook's own words, which the daemon puts in front of the role")
 		}
+	case UpdateAsk:
+		if !claim.IsRole(value.Role) {
+			return fmt.Errorf("an update ask goes to a role whose process runs in the issue's pod, the architect among them; %q is no role", value.Role)
+		}
+		if value.Round == "" {
+			return fmt.Errorf("an update ask names the round it asks for")
+		}
+		if value.Text == "" {
+			return fmt.Errorf("an update ask carries the text the sweep built for its round")
+		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
 	}
@@ -1539,7 +1647,8 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice, UpdateStalledNotice, ProviderErrorsNotice:
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice:
 		return true
 	default:
 		return false

@@ -29,52 +29,67 @@
 # Only `--no-verify` is removed. `-n` is `--dry-run` for a push, not `--no-verify` (`git push -h`
 # on git 2.47.3: `-n, --[no-]dry-run  dry run` beside `--no-verify  bypass pre-push hook`), and
 # removing it would turn a caller's dry run into a real push.
+#
+# A push is a command whose subcommand word is `push` or `send-pack`. A git alias that expands to
+# one (`git p` with alias.p=push) is neither: git expands it after this wrapper has read the word,
+# so it runs under the runtime's core.hooksPath=/dev/null with no pre-push hook and no leak check,
+# as it always has.
 set -u
 
 real=/usr/bin/git
 hooks=/opt/legion/githooks
 
-# One pass over the arguments: each is taken from the front and the kept ones are put back at the
-# end, which is how a POSIX shell edits its own positional parameters, so what is left when the
-# loop ends is the list to run, in order. A push's `-c core.hooksPath=<dir>` is put back just
-# before the subcommand is, which is after everything the caller wrote in front of it.
-#
-# The subcommand is the first word that is no global option. The global options whose value is the
-# next argument are git's own (`git --help`, and handle_options in git.c for the two the usage
-# line leaves out): a wrapper that read one of those values as the subcommand would miss a push —
-# jj's own `--git-dir <dir> push` is exactly that shape — or rewrite a command that is none. The
+# One pass finds the subcommand: the first word that is no global option. The global options
+# whose value is the next argument are git's own (`git --help`, and handle_options in git.c for
+# `--attr-source` and `--shallow-file`, which the usage line leaves out): a wrapper that read one
+# of those values as the subcommand would miss a push — jj's own `--git-dir <dir> push` is
+# exactly that shape — or rewrite a command that is none. Measured on git 2.47.3,
+# `git --shallow-file X version` runs `version`, so `--shallow-file` is one of them. The
 # `--opt=value` spellings need nothing: they are one word, and this skips over them as it does
-# over any other option. Only what follows the subcommand is read for `--no-verify`, so a
-# `--no-verify` that is some option's value stays that value.
+# over any other option. ahead counts the words in front of the subcommand.
 push=0
-after=0
 value=0
+ahead=0
+for arg; do
+  if [ "$value" -eq 1 ]; then
+    value=0
+  else
+    case "$arg" in
+      -C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --shallow-file) value=1 ;;
+      -*) ;;
+      push | send-pack) push=1; break ;;
+      *) break ;;
+    esac
+  fi
+  ahead=$((ahead + 1))
+done
+
+# Only a push has its list rebuilt; every other command gets "$@" as it came. A POSIX shell edits
+# its own positional parameters by taking each from the front and putting the kept ones back at
+# the end with `set -- "$@" "$arg"`, and dash copies the whole list each time, so a rebuild costs
+# time that grows with the square of the argument count: a rescue push's leak check spent 62 s of
+# its 78 s in this wrapper, rebuilding a `git rev-list` of about 4,970 `^<sha>` arguments
+# (dispatch://INFRA-3456).
+if [ "$push" -eq 0 ]; then
+  exec "$real" "$@"
+fi
+
+# A push's rebuild, in order: the ahead words in front of the subcommand as they came, then
+# `-c core.hooksPath=<dir>`, which is after everything the caller wrote in front of the
+# subcommand, then the subcommand and what follows it with `--no-verify` left out. Only what
+# follows the subcommand is read for `--no-verify`, so a `--no-verify` that is some global
+# option's value stays that value.
 left=$#
 while [ "$left" -gt 0 ]; do
   arg=$1
   shift
   left=$((left - 1))
-  if [ "$after" -eq 0 ]; then
-    if [ "$value" -eq 1 ]; then
-      value=0
-    else
-      case "$arg" in
-        -C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source)
-          value=1
-          ;;
-        -*) ;;
-        *)
-          after=1
-          case "$arg" in
-            push | send-pack)
-              push=1
-              set -- "$@" -c "core.hooksPath=$hooks"
-              ;;
-          esac
-          ;;
-      esac
-    fi
-  elif [ "$push" -eq 1 ] && [ "$arg" = --no-verify ]; then
+  if [ "$ahead" -gt 0 ]; then
+    ahead=$((ahead - 1))
+  elif [ "$ahead" -eq 0 ]; then
+    ahead=-1
+    set -- "$@" -c "core.hooksPath=$hooks"
+  elif [ "$arg" = --no-verify ]; then
     continue
   fi
   set -- "$@" "$arg"
