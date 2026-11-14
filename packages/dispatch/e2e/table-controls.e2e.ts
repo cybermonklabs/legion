@@ -10,7 +10,6 @@ import type { Locator, Route } from "@playwright/test";
 import { CONTROL } from "../web/src/components/control-names";
 import { plannerSession, reviewerSession, seedAgents, setLiveSessions } from "./agents";
 import {
-  createAgentMessage,
   createAsk,
   createComment,
   createIssue,
@@ -20,7 +19,6 @@ import {
   patchIssue,
   putArchitectureSource,
   putRepoProject,
-  replyToMessageDelivery,
 } from "./api";
 import {
   PIPELINE_AT,
@@ -37,8 +35,8 @@ import { seedFakeGithub } from "./fake-github-helpers";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { drawer, peekTrigger } from "./inbox-drawer";
 import { openFilterFields } from "./inbox-filter";
-import { askControls, inboxRow, selectRow } from "./inbox-pane";
-import { replyRowId, seedCommentThread } from "./inbox-threads";
+import { askControls, hasReadingPane, inboxRow, selectRow } from "./inbox-pane";
+import { replyRowId, seedAgentThread, seedCommentThread } from "./inbox-threads";
 import {
   bandHeadings,
   bandLabel,
@@ -49,6 +47,7 @@ import {
   sortedIds,
   valuesOf,
 } from "./inbox-view";
+import { searchPath } from "./keyboard-palette";
 import { sessionIds } from "./session-ids";
 import {
   closeControlPanel,
@@ -56,6 +55,7 @@ import {
   heightOf,
   isPhoneProject,
   openDisplay,
+  openIssuesTab,
   openSurface,
   pickInboxField,
   REAL_STACK_SURFACES,
@@ -2553,7 +2553,9 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
 
 // SLOW(>=2s): seven pages at two widths, one press of each page's own controls that disables,
 // takes away or draws again the control it was made on.
-test("no page-own press drops the keyboard focus onto the page, on any page of R2, at 1440 and 390", async ({
+// `@firefox` and `@webkit`: a focused control taken away fires no `focusout` in these engines,
+// so the rescue sees that loss only by watching the page (`playwright.config.ts`).
+test("no page-own press drops the keyboard focus onto the page, on any page of R2, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
   // Seven pages at two widths take about 40 s on one worker. Each of the 24 presses that loses
@@ -2594,14 +2596,6 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     );
     return { askId: ask.id, issueKey: owner.key };
   };
-  /** Opens the project's Issues tab in `view`: the tab opens in the view it was last left in. */
-  const openIssues = async (view: "List" | "Board") => {
-    await page.goto("/projects/CORE/issues");
-    const button = page.getByRole("button", { exact: true, name: view });
-    await expect(button).toBeVisible();
-    if ((await button.getAttribute("aria-pressed")) !== "true") await button.click();
-    await expect(button).toHaveAttribute("aria-pressed", "true");
-  };
 
   for (const [step, size] of [
     { height: 900, width: 1440 },
@@ -2639,9 +2633,11 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
 
     // Assign to me: it holds the focus while its write is out, then goes once the issue is the
     // reader's. Every project names a default assignee, so no seed makes a question nobody
-    // holds; the first read of the Inbox is answered as if this one were, and every read after
-    // it is the server's.
+    // holds; every read of the Inbox is answered as if this one were until the press is made,
+    // so no refetch before it takes the button away, and the server's own reads after it.
+    let pressed = false;
     const unassign = async (route: Route) => {
+      if (pressed) return route.fallback();
       const response = await route.fetch();
       const rows = (await response.json()) as { id: string }[];
       await route.fulfill({
@@ -2657,10 +2653,11 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
       name: `Assign ${assigned.issueKey} to me`,
     });
     await expect(assign, `${where}: the question draws no Assign to me`).toBeVisible();
-    await page.unroute("**/api/v1/inbox", unassign);
     await assign.focus();
+    pressed = true;
     await page.keyboard.press("Enter");
     await expect(assign, `${where}: Assign to me stayed once it landed`).toHaveCount(0);
+    await page.unroute("**/api/v1/inbox", unassign);
     await after(where, "Enter on Assign to me");
 
     // A Snooze pick: the row moves into Later, which starts folded, and leaves the list once
@@ -2676,15 +2673,15 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
 
     // An Answer on a card row: the answered row leaves the list. The Inbox page draws its
     // questions as cards below the reading column's width; above it, the drawer does.
-    if (size.width >= 1280) {
+    if (hasReadingPane(page)) {
       where = `Inbox drawer at ${at}`;
-      await openIssues("List");
+      await openIssuesTab(page, "CORE", "List");
       await expect(page.locator("[data-issue-row]").first()).toBeVisible();
       await peekTrigger(page).click();
     } else {
       await page.goto("/");
     }
-    const card = (size.width >= 1280 ? drawer(page) : main).getByTestId(`ask-${answered.askId}`);
+    const card = (hasReadingPane(page) ? drawer(page) : main).getByTestId(`ask-${answered.askId}`);
     await card.getByRole("radio", { name: "Yes" }).check();
     await card.getByRole("button", { exact: true, name: "Answer" }).focus();
     await page.keyboard.press("Enter");
@@ -2703,7 +2700,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
       });
     };
     await page.route("**/api/v1/issues", keyCommitted);
-    await openIssues("List");
+    await openIssuesTab(page, "CORE", "List");
     await main.getByRole("checkbox", { exact: true, name: `Select ${listFirst.key}` }).check();
     await main.getByRole("checkbox", { exact: true, name: `Select ${listSecond.key}` }).check();
     await page.getByRole("button", { exact: true, name: "New epic from these" }).click();
@@ -2723,7 +2720,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     // The project Board in swimlanes: a priority pick moves the card into another lane, where it
     // is drawn again under a new parent.
     where = `project Board at ${at}`;
-    await openIssues("Board");
+    await openIssuesTab(page, "CORE", "Board");
     const showLanes = page.getByRole("button", { name: "Show lanes" });
     if ((await showLanes.count()) > 0) await showLanes.click();
     await expect(page.getByRole("button", { name: "Hide lanes" })).toBeVisible();
@@ -2740,15 +2737,12 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     // The Agents page: the Unread replies pill goes once its press opens the row and reads them,
     // and a recipient's ✕ chip goes with that recipient. A reply of the width's own keeps a pill.
     where = `Agents page at ${at}`;
-    const asked = await createAgentMessage(plannerSession.session_id, {
+    await seedAgentThread({
       body: `How far along at ${at}?`,
       delivery: "aside",
+      replies: ["Halfway."],
+      session: plannerSession,
     });
-    await replyToMessageDelivery(
-      asked.id,
-      { attempt: 1, body: "Halfway." },
-      { id: plannerSession.session_id, kind: "session" }
-    );
     await page.goto("/agents");
     const pill = main.getByRole("button", { name: /^New repl.* from Planner$/ });
     await pill.focus();
@@ -2779,13 +2773,11 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     // The bar asks twice more before it says a search failed, so the search fails until then.
     where = `search bar at ${at}`;
     let failing = true;
-    const isSearch = (url: URL) =>
-      url.pathname === "/api/v1/search" || url.pathname === "/api/v1/search/results";
     const failSearch = (route: Route) =>
       failing
         ? route.fulfill({ json: { code: "INTERNAL", error: "search is down" }, status: 500 })
         : route.fallback();
-    await page.route(isSearch, failSearch);
+    await page.route(searchPath, failSearch);
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
     const palette = page.getByRole("dialog", { name: "Search" });
@@ -2800,7 +2792,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     if (!(await palette.evaluate((node) => node.contains(document.activeElement)))) {
       lost.push(`${where}: after Enter on Retry the focus is outside the search bar`);
     }
-    await page.unroute(isSearch, failSearch);
+    await page.unroute(searchPath, failSearch);
 
     // The Artifacts tab: a staged file's Upload holds the focus while the upload is out, and
     // then goes with the staged row.
