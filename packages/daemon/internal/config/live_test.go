@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -1159,5 +1160,76 @@ func TestEveryRowRendersTwoDifferentValuesDifferently(t *testing.T) {
 		if !named[typ] {
 			t.Errorf("distinctByType holds %s, which no settings row is read into: drop the pair", typ)
 		}
+	}
+}
+
+// A project's memory mode and its memory instructions are fixed for the process (whyMemory):
+// admission and the API server are handed the mode once, at boot (internal/daemon's
+// openWorkflow, UseMemory), and the launch specs read the instructions once, at boot, so a
+// change of either reaches no tree until the next boot. The route refuses the path by name. The
+// change can also arrive inside the `projects` block, which is one rebuild-class value compared
+// whole: through the file arm, or through a route call that sets the block whole. Taken there,
+// it is answered rebuilt, and the snapshot and `legion state` show a mode or instructions file
+// that no tree is drawn or launched under. So either way it is refused by that path, with that
+// reason, and the snapshot keeps the boot's value.
+func TestAMemoryChangeInsideTheProjectsBlockIsRefusedByName(t *testing.T) {
+	instructions := filepath.Join(t.TempDir(), "memory.md")
+	if err := os.WriteFile(instructions, []byte("remember\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const boot = `{memory: {mode: "off"}}`
+	for _, tc := range []struct {
+		name, path, block string
+		blockOverlay      map[string]any
+		moved             func(Memory) bool
+	}{
+		{
+			name: "mode", path: "projects.DEMO.memory.mode",
+			block:        `{memory: {mode: "on", config_files: [/etc/legion/memory.json]}}`,
+			blockOverlay: map[string]any{"mode": "on", "config_files": []any{"/etc/legion/memory.json"}},
+			moved:        func(m Memory) bool { return m.Word() != MemoryOff },
+		},
+		{
+			name: "instructions", path: "projects.DEMO.memory.instructions",
+			block:        `{memory: {mode: "off", instructions: "` + instructions + `"}}`,
+			blockOverlay: map[string]any{"mode": "off", "instructions": instructions},
+			moved:        func(m Memory) bool { return m.InstructionsPath != "" },
+		},
+	} {
+		file := func(block string) string {
+			return strings.Replace(minimalFile, "  DEMO: {}\n", "  DEMO: "+block+"\n", 1)
+		}
+		refusedByName := func(t *testing.T, live *Live, applied []Change, refused []Refusal, err error) {
+			t.Helper()
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			named := slices.ContainsFunc(refused, func(r Refusal) bool { return r.Path == tc.path && r.Reason == whyMemory })
+			if !named {
+				t.Errorf("refused %+v, want %s refused with its own reason; applied %+v", refused, tc.path, applied)
+			}
+			if memory := live.Snapshot().Projects["DEMO"].Memory; tc.moved(memory) {
+				t.Errorf("the settled memory block is %+v, want the boot's: admission draws every tree under the boot's mode and the launch specs carry the boot's instructions, so the snapshot now names what nothing runs under", memory)
+			}
+		}
+		t.Run(tc.name+" through the file arm", func(t *testing.T) {
+			live, path := newLive(t, file(boot), nil)
+			rewrite(t, path, file(tc.block))
+			applied, refused, err := live.Apply(SourceFile, "", map[string]any{})
+			refusedByName(t, live, applied, refused, err)
+		})
+		t.Run(tc.name+" through the projects block on the route", func(t *testing.T) {
+			live, _ := newLive(t, file(boot), nil)
+			applied, refused, err := live.Apply(SourceRoute, "sami@theorem.dev", map[string]any{
+				"projects": map[string]any{"DEMO": map[string]any{"memory": tc.blockOverlay}},
+			})
+			refusedByName(t, live, applied, refused, err)
+		})
+		t.Run(tc.name+" at its own path on the route", func(t *testing.T) {
+			live, _ := newLive(t, file(boot), nil)
+			value := tc.blockOverlay[strings.TrimPrefix(tc.path, "projects.DEMO.memory.")]
+			applied, refused, err := live.Apply(SourceRoute, "sami@theorem.dev", map[string]any{tc.path: value})
+			refusedByName(t, live, applied, refused, err)
+		})
 	}
 }
