@@ -1863,9 +1863,21 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// no phase, so it is never one of these: each look's task is delivered, its row id its
 		// delivery's, and a delivery with no phase is held by nothing (supervise's phaseHolds), so
 		// the task reaches the role the check records whatever the issue's phase.
+		//
+		// A start whose task hands the claim no new work delivers nothing either while the claim's
+		// wait stands (startWaits): the phase's resume task, or a task of an entry the claim had
+		// taken when it declared. Bringing the claim back, which the state switch above has done,
+		// is all such a start gives a worker that waits.
 		held, gave := machine.Claim(), false
 		ranNothing := state == supervise.StateFailed || state == supervise.StateRetired
-		if (payload.ResumeTask || ranNothing) && keepsStartTask(held, payload) {
+		keeps := (payload.ResumeTask || ranNothing) && keepsStartTask(held, payload)
+		waits := false
+		if !keeps && payload.Task != "" {
+			if waits, err = r.startWaits(ctx, row, payload, issue.Key, token); err != nil {
+				return err
+			}
+		}
+		if keeps {
 			r.log.Info("outbox start of a claim that holds its phase's task; not delivered again", "row", row.ID, "issue", issue.Key,
 				"role", payload.Role, "phase", payload.Phase, "held", held.Pending.ID)
 			// Which entry the claim is recorded as given here is the entry of the task it is
@@ -1903,7 +1915,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 					return fmt.Errorf("record entry %d as given to claim %s: %w", payload.Entry, token, err)
 				}
 			}
-		} else if payload.Task != "" {
+		} else if payload.Task != "" && !waits {
 			// The row's phase, already held to the issue's above, travels with the delivery: it is
 			// what says the task is still the work to do once the delivery has outlived its id. The
 			// row's entry travels with it too, the number the start's own transaction raised on the
@@ -2089,6 +2101,38 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool {
 	pending := held.Pending
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)
+}
+
+// startWaits says whether this start's task hands the claim token no new work while the claim's
+// wait stands, so the start, which has already brought the claim back, delivers nothing (D4 of
+// dispatch://INFRA-2040's plan, R3). Such a task is the phase's resume task at entry 0 — the boot's,
+// the catch-up's and the silence repair's — or one of a nonzero entry no higher than the entry the
+// claim had taken when it declared (workflow.HandsNoNewWork). Any other start is new work and is
+// delivered: the promotion's start raises its entry above the taken one, and its fact ended the
+// wait already, since the role's phases row stands on another entry than the wait's
+// (workflow.WaitStands, the wait reconciler), and the send of any task this lets through decides
+// it again (supervise's waitHolds). The resume of a cancelled idle release carries no task, so it
+// never comes here.
+//
+// The wait is read in a transaction of its own (workflow.WaitStandsNow), just before the delivery
+// it decides, as every fence of a row is read, and a start that delivers nothing is logged with
+// the wait it found.
+func (r *outbox) startWaits(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue string, token claim.Token) (bool, error) {
+	var standing record.ClaimWait
+	var stands bool
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		standing, stands, err = workflow.WaitStandsNow(ctx, tx, r.records, r.gatedSteps, token)
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read the wait of %s: %w", token, err)
+	}
+	if !stands || !workflow.HandsNoNewWork(standing, payload.Entry, payload.ResumeTask, false) {
+		return false, nil
+	}
+	r.log.Info("outbox start delivered nothing: the claim's wait stands", "row", row.ID, "claim", token, "issue", issue,
+		"role", payload.Role, "wait", standing.ID, "entry", payload.Entry, "taken", standing.TakenEntry)
+	return true, nil
 }
 
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still

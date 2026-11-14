@@ -429,14 +429,15 @@ func (c Claim) openRoundHoldsTask() bool {
 
 // sendPending sends the pending delivery if everything a send needs is true now: the claim is
 // ready or idle, the delivery is neither confirmed nor already on its way, the issue is still in
-// the phase the task was queued for, the root of a root architect's task of a run has an architect
-// to hear it, the claim's connection is registered, and — for a task that adopts the working
-// copy the issue's roles share (adopts) — no other claim of the issue is in a turn or has a
-// prompt on its way to one. A missing connection is not a failure — the shim's next hello sends
-// it. A delivery an earlier daemon may have sent is sent again only after the agent says it is
-// not already in a turn; if it is, that turn is taken as the delivery's — except for a root
-// architect's task of a run, which no turn of the agent's own is ever taken for, since it may be
-// a task nobody has sent at all (asksRoot).
+// the phase the task was queued for, no standing wait of a phase worker holds a task it had taken
+// (waitHolds), the root of a root architect's task of a run has an architect to hear it, the
+// claim's connection is registered, and — for a task that adopts the working copy the issue's
+// roles share (adopts) — no other claim of the issue is in a turn or has a prompt on its way to
+// one. A missing connection is not a failure — the shim's next hello sends it. A delivery an
+// earlier daemon may have sent is sent again only after the agent says it is not already in a
+// turn; if it is, that turn is taken as the delivery's — except for a root architect's task of a
+// run, which no turn of the agent's own is ever taken for, since it may be a task nobody has sent
+// at all (asksRoot).
 //
 // Four states hand the claim nothing and hold the task instead of dropping it: a claim holding a
 // suspension (holdSuspension), a claim that has answered its open update round
@@ -566,6 +567,26 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return err
 		}
 		return m.answerAskFirstAfterDrop(ctx)
+	}
+	// A phase worker whose wait stands is sent no task it had taken when it declared (waitHolds,
+	// dispatch://INFRA-2040 R3): the task stays pending and unconfirmed, as a task held for an
+	// answered update round does, and goes at the first send after the wait ends — the sweep's next
+	// observation of the live process, the end of the worker's next turn, a hello, a ready, or a
+	// start that reaches the claim. A task that is new work has ended the wait by the time the
+	// answer is "", and goes on below.
+	//
+	// No send of this daemon carries such a task while the wait stands, so the question a restart
+	// left is false of it, as it is of the task an answered round holds (openRoundHoldsTask), and
+	// it is put down here. Left armed, the first turn of the worker's own — news, which is what a
+	// worker waits on — would be taken for this task's turn (turnStarted), and that turn's end
+	// would retire the task unsent.
+	wait, err := m.waitHolds(ctx, *p)
+	if err != nil {
+		return err
+	}
+	if wait != "" {
+		m.askFirst = false
+		return nil
 	}
 	// A root architect's task of a run (asksRoot) is the one delivery the question a restart left
 	// never answers: such a task may be one nobody has ever sent — it is held on the claim while
@@ -789,6 +810,30 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	}
 	return holds, nil
 }
+
+// waitHolds asks whether the wait a phase worker declared holds d back now (Deps.WaitHolds), and
+// names that wait when it does, "" when nothing holds d. An architect's and the controller's
+// claims declare no wait and are never put to the answer, nor is any claim of a daemon with no
+// workflow, which supplies none. The line that says a held task waits is written once for each
+// delivery and wait (waitHeld): every sweep, hello and ready asks again while the wait stands.
+func (m *Machine) waitHolds(ctx context.Context, d Delivery) (string, error) {
+	if m.deps.WaitHolds == nil || m.claim.Role == claim.RoleArchitect || m.claim.Role == claim.RoleController {
+		return "", nil
+	}
+	wait, err := m.deps.WaitHolds(ctx, m.claim, d)
+	if err != nil {
+		return "", fmt.Errorf("read whether the wait of %s holds its task: %w", m.claim.Token, err)
+	}
+	if held := (heldByWait{delivery: d.ID, wait: wait}); wait != "" && held != m.waitHeld {
+		m.waitHeld = held
+		m.log.Info("supervise: a task the claim had taken waits: the claim's wait stands",
+			"issue", m.claim.Issue, "role", m.claim.Role, "delivery", d.ID, "wait", wait)
+	}
+	return wait, nil
+}
+
+// heldByWait is a delivery and the wait that held it back (Machine.waitHeld).
+type heldByWait struct{ delivery, wait string }
 
 // retirePending drops the pending delivery, and is the one place a delivery ends: settle calls
 // it for a delivery whose life is over, sendPending for a task the issue's phase has left

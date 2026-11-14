@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // MinWaitAhead and MaxWaitAhead are the bounds a declared wait's time must fall within, measured
@@ -63,6 +64,11 @@ const WaitEndNews = "news reached the session"
 // wake and its detail as the woken role's task names them (WakeTask): a CI settlement's head and
 // what it came to, the role topic a message was published to, or the session one was sent to.
 func WaitEndWoken(kind, detail string) string { return "woken: " + kind + " " + detail }
+
+// WaitEndNewWork is the cause of a wait the daemon's send of new work to its claim ended
+// (Engine.WaitHoldsSend), naming the delivery sent: R3's third end, a task the claim had not taken
+// when it declared.
+func WaitEndNewWork(delivery string) string { return "new work: delivery " + delivery }
 
 // WaitStands is whether the claim's wait stands now, and that wait when it does (the zero wait
 // when it does not). It is the one rule every reader of a wait asks, so that what a wait does
@@ -143,6 +149,64 @@ func unendedWait(run record.RoleRun) *record.ClaimWait {
 		return nil
 	}
 	return run.Claim.Wait
+}
+
+// HandsNoNewWork is whether a task hands the claim whose wait is wait work it had already taken
+// when it declared, which brings the claim back and is delivered nothing while the wait stands (D4
+// of dispatch://INFRA-2040's plan). entry is the phase entry the task is of, 0 for none;
+// resumeTask marks the phase's resume task (record.SuperviseRequest.ResumeTask), and interrupted a
+// task a death in its turn took back (supervise.Delivery.Interrupted). It is true of three tasks:
+//   - the phase's resume task at entry 0, which the boot, the catch-up and the silence repair send
+//     a claim level with its entry: it says to carry on the work the claim is already on;
+//   - a task a death in its turn took back, which the claim's own send gives again;
+//   - a task of a nonzero entry no higher than the entry the claim had taken
+//     (record.ClaimWait.TakenEntry).
+//
+// Every other task is new work: a task of an entry above the taken one — the entry a claim behind
+// its phases row was never given, a task queued during the declaring turn and not yet taken, the
+// promotion's start, whose entry it raises — and a task of no entry, an operator's or a pod wake's.
+// A start that carries no task, as the resume of a cancelled idle release does, hands nothing and
+// is no question here.
+func HandsNoNewWork(wait record.ClaimWait, entry int64, resumeTask, interrupted bool) bool {
+	return (resumeTask && entry == 0) || interrupted || (entry != 0 && entry <= wait.TakenEntry)
+}
+
+// WaitStandsNow is WaitStands asked of the record in tx for the claim token: its wait row that has
+// no end, and whether that wait stands, read as every reader of a wait reads it — the wait's issue,
+// the issue's tree root, the wait's role's phases row, the claim, and the tree's design gate under
+// steps, the steps the deployment gates. The wait row is read first, so a claim that has none
+// costs that one indexed read (record.Store.StandingWait), which is the answer for every claim but
+// a waiting one. A wait whose issue or root the record does not hold does not stand.
+func WaitStandsNow(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, token claim.Token) (record.ClaimWait, bool, error) {
+	unended, err := store.StandingWait(ctx, tx, token)
+	if err != nil || unended == nil {
+		return record.ClaimWait{}, false, err
+	}
+	issue, err := store.Issue(ctx, tx, unended.Issue)
+	if err != nil || issue == nil {
+		return record.ClaimWait{}, false, err
+	}
+	root := issue
+	if issue.Tree != issue.Key {
+		if root, err = store.Issue(ctx, tx, issue.Tree); err != nil || root == nil {
+			return record.ClaimWait{}, false, err
+		}
+	}
+	rows, err := store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return record.ClaimWait{}, false, err
+	}
+	gates, err := store.GatesOf(ctx, tx, issue.Tree)
+	if err != nil {
+		return record.ClaimWait{}, false, err
+	}
+	claims, err := store.RoleClaims(ctx, tx, []claim.Token{token})
+	if err != nil {
+		return record.ClaimWait{}, false, err
+	}
+	wait, stands := WaitStands(*issue, *root, record.PhaseRowOf(rows, unended.Role), record.RoleRun{Claim: claims[token]},
+		record.TreeGate{Steps: steps, Rows: gates})
+	return wait, stands, nil
 }
 
 // waitDeclared applies one intake.WaitDeclared, a phase worker's declaration of a wait, deciding
@@ -522,6 +586,37 @@ func (e *Engine) endWokenWait(ctx context.Context, tx pgx.Tx, issue, root record
 	}
 	_, err = e.endWait(ctx, tx, wait, WaitEndWoken(kind, detail), factEndedBy(ctx))
 	return err
+}
+
+// WaitHoldsSend answers, in tx, whether the wait the worker of the claim token declared holds the
+// send of d back now, naming that wait when it does: the wait stands (WaitStandsNow) and d hands no
+// new work (HandsNoNewWork) — a task a death in its turn took back, or one of a nonzero entry no
+// higher than the entry the claim had taken. It is supervise.Deps.WaitHolds, which the daemon
+// answers through it.
+//
+// Any other task is new work, and its send is R3's third end: the wait ends here, with the cause
+// WaitEndNewWork names and ended by the send of d, and the answer is "", so the send goes on. A
+// delivery carries no resume mark, and needs none: while a wait stands the outbox queues no task
+// that hands no new work, so a task of no entry the claim holds is new work — an operator's, a pod
+// wake's, or one queued before the declaration and never taken. The end is a compare-and-set on
+// the wait's id (record.Store.EndWait), so a fact that ended or replaced the wait meanwhile keeps
+// its own end.
+//
+// tx is a transaction of the caller's own, and takes no fact lock: the machine asks this holding
+// its own lock, and the lock is not needed, because a claim's send and its declaration never run
+// at once — sendPending sends only to a ready or idle claim, and a wait is declared only in a
+// turn. `wait: ended` is logged once tx commits, so ctx carries the commit hooks
+// (intake.WithCommitHooks).
+func (e *Engine) WaitHoldsSend(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) (string, error) {
+	wait, stands, err := WaitStandsNow(ctx, tx, e.store, e.cfg.Steps, token)
+	if err != nil || !stands {
+		return "", err
+	}
+	if HandsNoNewWork(wait, d.Entry, false, d.Interrupted) {
+		return wait.ID, nil
+	}
+	_, err = e.endWait(ctx, tx, wait, WaitEndNewWork(d.ID), "supervise/send:"+d.ID)
+	return "", err
 }
 
 // endWait ends wait with cause, ended by endedBy at the engine's now (record.Store.EndWait),

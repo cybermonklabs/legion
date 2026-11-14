@@ -363,10 +363,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// The memory group is read from the daemon's own store (treeMemoryGroup), not from here:
 		// the operator's spawn draws one with no workflow configured, and the launch that follows
 		// it must honour the draw it made.
-		// Only a daemon with the workflow configured has issue records to read a phase or a tree
-		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
-		// tree closes.
+		// Only a daemon with the workflow configured has issue records to read a phase, a wait or a
+		// tree from; Stage 2's supervision runs on claims alone, where every delivery holds, no wait
+		// holds one back, and every tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
+		plan.waitHolds = workflow.waitHolds
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
@@ -677,10 +678,11 @@ type plan struct {
 	// (appauth.GitHubCredential), and, under the Kubernetes runtime, the mapping a provisioning
 	// mint reads the rename rule from (sandboxRuntime, repositories.serving).
 	repositories *repositories
-	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
-	// supervisor's predicates; nil without a workflow, where every delivery is sent as it was
-	// queued and every tree closes.
+	// phaseHolds, waitHolds, rootHears, rootTask and treeClosable are the workflow's answers to
+	// the supervisor's predicates; nil without a workflow, where every delivery is sent as it was
+	// queued, no wait holds one back, and every tree closes.
 	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	waitHolds    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
@@ -1431,6 +1433,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		IssueInTurn:             sup.claimInTurn,
 		Secrets:                 p.secretsEnroller,
 		PhaseHolds:              p.phaseHolds,
+		WaitHolds:               p.waitHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		TreeClosable:            p.treeClosable,

@@ -676,6 +676,32 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 	return issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation), nil
 }
 
+// waitHolds answers supervise's Deps.WaitHolds from the record, through the workflow's one rule
+// (workflow.Engine.WaitHoldsSend): it names the standing wait of c's worker when d is a task the
+// claim had already taken when it declared — one a death in its turn took back, or one of a phase
+// entry no higher than the entry it had taken — and answers "" for any other delivery, ending the
+// wait first when d is new work, so the send goes on (dispatch://INFRA-2040 R3's third end).
+//
+// It reads and ends in one transaction of its own, which takes no lock of the daemon's: the
+// machine asks it holding its own lock, as it asks phaseHolds. The fact lock is not taken either,
+// and not needed: sendPending sends only to a ready or idle claim, and a wait is declared only in
+// a turn, so the declaration and this answer never run at once for one claim, and the end is a
+// compare-and-set on the wait's id that leaves a wait some fact ended meanwhile as that fact ended
+// it. The end's `wait: ended` line is written once the transaction commits.
+func (w *workflowRuntime) waitHolds(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, error) {
+	var wait string
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		var err error
+		wait, err = w.engine.WaitHoldsSend(scoped, tx, c.Token, d)
+		return err
+	}); err != nil {
+		return "", fmt.Errorf("weigh the send of %s against the wait of %s: %w", d.ID, c.Token, err)
+	}
+	committed()
+	return wait, nil
+}
+
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a
 // run names no phase, so no phase ever drops it, and it waits on the claim until that claim next
 // runs — which a park, a hand back to `todo` or a linger can put generations later. The decisions

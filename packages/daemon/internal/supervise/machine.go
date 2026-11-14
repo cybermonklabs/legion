@@ -749,6 +749,16 @@ type Deps struct {
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	// WaitHolds names the wait that holds d back from c's phase worker now, "" when none does
+	// (dispatch://INFRA-2040 R3): the wait the worker declared stands, and d is a task the claim
+	// had already taken when it declared — one a death in its turn took back (Delivery.Interrupted,
+	// interrupted), or one of a phase entry no higher than the entry it had taken. Any other task
+	// is new work: the answer ends the wait, in a write of its own, and answers "", so the send
+	// goes on. It is asked of every delivery sendPending is about to send a phase worker, once the
+	// phase check has kept it, and never of an architect's or the controller's, which declare no
+	// wait. It is asked holding the machine's lock, so it takes no lock of the daemon's. nil holds
+	// no delivery.
+	WaitHolds func(ctx context.Context, c Claim, d Delivery) (string, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
@@ -1056,6 +1066,11 @@ type Machine struct {
 	unansweredAsks int
 	// held is the suspension held for the agent's turn (holdSuspension), nil for none.
 	held *RequestSuspend
+	// waitHeld is the last delivery a phase worker's standing wait held back (waitHolds) and the
+	// wait that held it, so the line that says so is written once for each, rather than at every
+	// sweep, hello and ready that asks again while the wait stands. It is memory only, as askFirst
+	// is: a restarted daemon writes it once more.
+	waitHeld heldByWait
 	// staleRelaunch is the stale-plugin relaunch held for the agent's turn to end, naming the pass
 	// that found the claim ("boot", "sweep"); nil for none. Relaunching a stale claim where it
 	// stands would end a turn whose worker the stale-plugin lane asked nothing of, so the relaunch
@@ -2913,11 +2928,11 @@ func (m *Machine) forgetSend() {
 // are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and
 // take no deadline: what they wait on is an advisory lock another transaction holds, so a
 // deadline there would fail a launch that was only queued behind its predecessor. So do the reads
-// of the record — PhaseHolds, RootHears, RootTask, TreeClosable — which decide what the next
-// write will say rather than hold the row, and whose failure costs the decision and nothing
-// after it. The deadline is what keeps a database that has stopped answering from holding the
-// machine's lock for the length of the outage; a write it cuts short is owed and made again at
-// the claim's next decision (owes, repair).
+// of the record — PhaseHolds, WaitHolds, RootHears, RootTask, TreeClosable — which decide what
+// the next write will say rather than hold the row, and whose failure costs the decision and
+// nothing after it. The deadline is what keeps a database that has stopped answering from
+// holding the machine's lock for the length of the outage; a write it cuts short is owed and made
+// again at the claim's next decision (owes, repair).
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
 	writing, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
 	defer cancel()
