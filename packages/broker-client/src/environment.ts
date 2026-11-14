@@ -23,6 +23,11 @@ export const MACHINE_AUDIENCE_VAR = "AGENT_SECRETS_MACHINE_AUDIENCE";
 /** The session a trade writes under for a caller that acts as no session of its own, which a
  *  daemon, a command and a helper are ({@link tradeSession}). */
 export const SESSION_VAR = "AGENT_SECRETS_SESSION";
+/** The workload identity pool provider an external credential is traded at, the full
+ *  `//iam.googleapis.com/projects/…` resource name (Go's `PoolAudienceVar`). */
+export const POOL_AUDIENCE_VAR = "AGENT_SECRETS_POOL_AUDIENCE";
+/** The managed identity `generateIdToken` is called on (Go's `PoolAccountVar`). */
+export const POOL_ACCOUNT_VAR = "AGENT_SECRETS_POOL_ACCOUNT";
 
 /** A pod's projected service-account token. */
 export const IDENTITY_KUBERNETES = "kubernetes";
@@ -32,13 +37,28 @@ export const IDENTITY_METADATA = "metadata";
  *  one, so a TypeScript caller told to is refused here rather than trading something else. */
 export const IDENTITY_POOL = "pool";
 
-/** The variables this module reads, by name. */
+/**
+ * The variables this package reads, by name: this module's, and those `signins.ts` reads to find
+ * a person's sign-in on this machine and the client that renews it, whose names that module
+ * holds (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`, `SIGNIN_CLIENT_ID_VAR` and
+ * `SIGNIN_CLIENT_SECRET_FILE_VAR`), and `XDG_STATE_HOME` and `HOME`, which its directory is
+ * read from when `SIGNIN_DIR_VAR` names none.
+ */
 interface BrokerVariables {
   readonly AGENT_SECRETS_URL?: string | undefined;
   readonly AGENT_SECRETS_MACHINE_IDENTITY?: string | undefined;
   readonly AGENT_SECRETS_MACHINE_TOKEN_FILE?: string | undefined;
   readonly AGENT_SECRETS_MACHINE_AUDIENCE?: string | undefined;
   readonly AGENT_SECRETS_SESSION?: string | undefined;
+  readonly AGENT_SECRETS_POOL_AUDIENCE?: string | undefined;
+  readonly AGENT_SECRETS_POOL_ACCOUNT?: string | undefined;
+  readonly AGENT_SECRETS_SIGNIN_DIR?: string | undefined;
+  readonly XDG_STATE_HOME?: string | undefined;
+  readonly HOME?: string | undefined;
+  readonly AGENT_SECRETS_PERSON?: string | undefined;
+  readonly AGENT_SECRETS_SIGNIN_ISSUER?: string | undefined;
+  readonly AGENT_SECRETS_SIGNIN_CLIENT_ID?: string | undefined;
+  readonly AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE?: string | undefined;
 }
 
 /** An environment this module reads those variables out of, over whatever else it holds: a

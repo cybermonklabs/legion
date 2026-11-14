@@ -17,9 +17,17 @@
       "types": "./src/metadata-identity.ts",
       "bun": "./src/metadata-identity.ts"
     },
+    "./person-identity": {
+      "types": "./src/person-identity.ts",
+      "bun": "./src/person-identity.ts"
+    },
     "./projected-token": {
       "types": "./src/projected-token.ts",
       "bun": "./src/projected-token.ts"
+    },
+    "./signins": {
+      "types": "./src/signins.ts",
+      "bun": "./src/signins.ts"
     },
     "./source": {
       "types": "./src/source.ts",

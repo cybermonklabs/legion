@@ -1,12 +1,15 @@
 // packages/broker-client/src/dpop.ts
 //
 // The one RFC 9449 proof signer of this package, mirroring the Go signer in
-// `packages/envoy/internal/brokerclient/dpop.go`. Each session makes its own key in its own
-// process, and only its public half ever leaves that process: a proof carries the public JWK in
-// its header, and nothing here can export the private half at all — `jose` makes it a
-// non-extractable `CryptoKey`, so `exportJWK` on it fails rather than writing a `d` member.
+// `packages/envoy/internal/brokerclient/dpop.go`. A key is one of two kinds: one a session makes
+// in its own process (`newDpopKey`), or the box key a person's sign-in on this machine keeps
+// (`importDpopKey`), which the broker bound the sign-in to. Either way only its public half ever
+// leaves the process: a proof carries the public JWK in its header, and nothing here can export
+// the private half at all — `jose` makes it a non-extractable `CryptoKey`, so `exportJWK` on it
+// fails rather than writing a `d` member.
 
-import { exportJWK, generateKeyPair, type JWK, SignJWT } from "jose";
+import { createPrivateKey, createPublicKey } from "node:crypto";
+import { exportJWK, generateKeyPair, importPKCS8, type JWK, SignJWT } from "jose";
 
 /** The signature algorithm every proof carries: ES256 over a P-256 key, the one the broker's
  *  exchange and its resource servers accept. */
@@ -29,7 +32,7 @@ export interface ProofRequest {
   readonly nonce?: string;
 }
 
-/** This process's own DPoP key: the proofs it signs, and the public half the broker records. */
+/** A DPoP key: the proofs it signs, and the public half the broker records. */
 export interface DpopKey {
   /** The public half, as it is embedded in every proof's header. It carries no `d` member: the
    *  private half cannot be exported from the key at all. */
@@ -53,14 +56,13 @@ async function accessTokenHash(accessToken: string): Promise<string> {
 }
 
 /**
- * A key of this process's own and the proofs it signs: `typ: dpop+jwt`, `alg: ES256` and the
- * public JWK in the header, and `jti`, `htm`, `htu` and `iat` in the claims, with `nonce` and
- * `ath` added only where the request has them. The claim set is the whole of what a proof carries,
- * as `testdata/wire.json` names it.
+ * The key that signs with `privateKey` and embeds `publicJwk`, whichever kind it is: `typ:
+ * dpop+jwt`, `alg: ES256` and the public JWK in the header, and `jti`, `htm`, `htu` and `iat` in
+ * the claims, with `nonce` and `ath` added only where the request has them. The claim set is the
+ * whole of what a proof carries, as `testdata/wire.json` names it, and both kinds of key share
+ * this one signer so neither can drift from it.
  */
-export async function newDpopKey(): Promise<DpopKey> {
-  const { privateKey, publicKey } = await generateKeyPair(ALGORITHM, { extractable: false });
-  const publicJwk = await exportJWK(publicKey);
+function dpopKey(privateKey: CryptoKey, publicJwk: JWK): DpopKey {
   return {
     publicJwk,
     async proof(request: ProofRequest): Promise<string> {
@@ -79,4 +81,46 @@ export async function newDpopKey(): Promise<DpopKey> {
         .sign(privateKey);
     },
   };
+}
+
+/** A key of this process's own, made here and held nowhere else. */
+export async function newDpopKey(): Promise<DpopKey> {
+  const { privateKey, publicKey } = await generateKeyPair(ALGORITHM, { extractable: false });
+  return dpopKey(privateKey, await exportJWK(publicKey));
+}
+
+/**
+ * The key `pkcs8Pem` holds, as a DPoP key: a person's box key, which `agent-secrets login`
+ * wrote as PKCS#8 PEM and the broker bound their sign-in to, so every trade of that sign-in
+ * proves this key and no other. `name` says whose key it is, for a refusal to name.
+ *
+ * The private half is imported non-extractable for ES256, as {@link newDpopKey}'s is made. The
+ * public JWK is derived with `node:crypto` and kept to `kty`, `crv`, `x` and `y`, the members
+ * `jose` exports for a key it made, so a proof of either kind carries one header shape. A key
+ * that is not P-256 is refused, since ES256 is the one algorithm the broker accepts.
+ */
+export async function importDpopKey(pkcs8Pem: string, name = "the DPoP key"): Promise<DpopKey> {
+  let exported: JWK;
+  try {
+    exported = createPublicKey(createPrivateKey(pkcs8Pem)).export({ format: "jwk" });
+  } catch (error) {
+    throw new Error(`read ${name}: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
+  }
+  const { kty, crv, x, y } = exported;
+  if (kty !== "EC" || crv !== "P-256" || typeof x !== "string" || typeof y !== "string") {
+    throw new Error(
+      `${name} is not a P-256 key (${kty} ${crv ?? "with no curve"}), and a DPoP proof is signed ${ALGORITHM}`
+    );
+  }
+  let privateKey: CryptoKey;
+  try {
+    privateKey = await importPKCS8(pkcs8Pem, ALGORITHM, { extractable: false });
+  } catch (error) {
+    throw new Error(`read ${name}: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
+  }
+  return dpopKey(privateKey, { kty, crv, x, y });
 }
