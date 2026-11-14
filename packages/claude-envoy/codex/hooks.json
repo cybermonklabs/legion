@@ -1,0 +1,37 @@
+{
+  "description": "Envoy for the Codex CLI: record which session the codex process runs for the Envoy MCP server and tell the model its open Dispatch asks and how to run dispatch, load the dispatch-first skill and what people wrote to the session in the last 72 hours, and put messages that arrive during a turn into it at the next tool call.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${PLUGIN_ROOT}/dist/codex-hook.js\" session-start",
+            "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "bun \"${PLUGIN_ROOT}/dist/session-hook.js\" dispatch-first",
+            "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "bun \"${PLUGIN_ROOT}/dist/session-hook.js\" answers",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${PLUGIN_ROOT}/dist/codex-tool-hook.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
