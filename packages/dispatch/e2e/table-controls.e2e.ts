@@ -5,18 +5,22 @@
  *  are in `table-controls.stub.e2e.ts`.
  */
 
-import type { Locator } from "@playwright/test";
+import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
+import type { Locator, Route } from "@playwright/test";
 import { CONTROL } from "../web/src/components/control-names";
 import { plannerSession, reviewerSession, seedAgents, setLiveSessions } from "./agents";
 import {
+  createAgentMessage,
   createAsk,
   createComment,
   createIssue,
+  createIssueArtifact,
   createProject,
   mintAgentToken,
   patchIssue,
   putArchitectureSource,
   putRepoProject,
+  replyToMessageDelivery,
 } from "./api";
 import {
   PIPELINE_AT,
@@ -33,7 +37,8 @@ import { seedFakeGithub } from "./fake-github-helpers";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { drawer, peekTrigger } from "./inbox-drawer";
 import { openFilterFields } from "./inbox-filter";
-import { seedCommentThread } from "./inbox-threads";
+import { askControls, inboxRow, selectRow } from "./inbox-pane";
+import { replyRowId, seedCommentThread } from "./inbox-threads";
 import {
   bandHeadings,
   bandLabel,
@@ -2544,4 +2549,276 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
   // A press that drops the focus onto the page sends a keyboard reader back to its first link,
   // from which the control they were using is a walk through everything above it.
   expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): seven pages at two widths, one press of each page's own controls that disables,
+// takes away or draws again the control it was made on.
+test("no page-own press drops the keyboard focus onto the page, on any page of R2, at 1440 and 390", async ({
+  page,
+}) => {
+  // Seven pages at two widths take about 40 s on one worker. Each of the 24 presses that loses
+  // the focus waits out its 2 s read, so with every hand-off gone the row spends up to 48 s more,
+  // and it still ends by naming each press it lost rather than at the budget.
+  test.setTimeout(150_000);
+  const issue = await seedAgents();
+  await seedDeliveryFixture();
+  await createIssueArtifact(issue, {
+    content: "# plan.md\n\nThe rollout plan.\n",
+    name: "plan.md",
+  });
+  const listFirst = await createIssue({ project: "CORE", title: "Epic member one" });
+  const listSecond = await createIssue({ project: "CORE", title: "Epic member two" });
+  const boardCard = await createIssue({ project: "CORE", title: "Card that changes lane" });
+  await patchIssue(boardCard.key, { priority: 0, status: "todo" });
+  const main = page.getByTestId("main-content");
+  const lost: string[] = [];
+  /** Reads where the focus went once a press settles, and keeps the ones it lost. */
+  const after = async (where: string, press: string) => {
+    await expect
+      .poll(async () => (await focusOutcome(page)).lost, { timeout: 2_000 })
+      .toBe(false)
+      .catch(() => undefined);
+    const outcome = await focusOutcome(page);
+    if (outcome.lost) lost.push(`${where}: after ${press} the focus is on ${outcome.label}`);
+    else if (!outcome.inView) {
+      lost.push(`${where}: after ${press} the focused "${outcome.label}" is out of view`);
+    }
+  };
+  /** A question waiting on Alice, with two options to answer it by. */
+  const question = async (title: string) => {
+    const owner = await createIssue({ project: "CORE", title });
+    const ask = await createAsk(
+      owner.key,
+      { options: [{ label: "Yes" }, { label: "No" }], question: `${title}?` },
+      SURFACE_SESSION
+    );
+    return { askId: ask.id, issueKey: owner.key };
+  };
+  /** Opens the project's Issues tab in `view`: the tab opens in the view it was last left in. */
+  const openIssues = async (view: "List" | "Board") => {
+    await page.goto("/projects/CORE/issues");
+    const button = page.getByRole("button", { exact: true, name: view });
+    await expect(button).toBeVisible();
+    if ((await button.getAttribute("aria-pressed")) !== "true") await button.click();
+    await expect(button).toHaveAttribute("aria-pressed", "true");
+  };
+
+  for (const [step, size] of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ].entries()) {
+    await page.setViewportSize(size);
+    const at = `${size.width}x${size.height}`;
+
+    // The Inbox. Each press takes its row, or its own control, off the list. A width of its own
+    // seeds each, since the first width's press used it up.
+    let where = `Inbox at ${at}`;
+    const threads = await createIssue({ project: "CORE", title: `Mirror lag at ${at}` });
+    const dismissed = await seedCommentThread(threads.key, `Lagging at ${at}?`, "Caught up.");
+    const keyed = await seedCommentThread(threads.key, `Replayed at ${at}?`, "It did.");
+    const assigned = await question(`Who takes the lease at ${at}`);
+    const snoozed = await question(`Rotate the keys at ${at}`);
+    const answered = await question(`Ship the mirror at ${at}`);
+
+    // A thread's Dismiss, by Enter: it holds the focus while its write is out, then goes with
+    // its row.
+    await page.goto("/");
+    const dismissedRow = inboxRow(page, replyRowId(dismissed));
+    await dismissedRow.locator("[data-inbox-dismiss]").focus();
+    await page.keyboard.press("Enter");
+    await expect(dismissedRow, `${where}: Enter on Dismiss kept its row`).toHaveCount(0);
+    await after(where, "Enter on a thread's Dismiss");
+
+    // `e` on the thread row in hand: the row holding the focus goes.
+    const keyedRow = inboxRow(page, replyRowId(keyed));
+    await selectRow(page, replyRowId(keyed));
+    await keyedRow.focus();
+    await page.keyboard.press("e");
+    await expect(keyedRow, `${where}: e kept its row`).toHaveCount(0);
+    await after(where, "e on a focused thread row");
+
+    // Assign to me: it holds the focus while its write is out, then goes once the issue is the
+    // reader's. Every project names a default assignee, so no seed makes a question nobody
+    // holds; the first read of the Inbox is answered as if this one were, and every read after
+    // it is the server's.
+    const unassign = async (route: Route) => {
+      const response = await route.fetch();
+      const rows = (await response.json()) as { id: string }[];
+      await route.fulfill({
+        json: rows.map((row) =>
+          row.id === assigned.askId ? { ...row, waiting_on_person: null } : row
+        ),
+        response,
+      });
+    };
+    await page.route("**/api/v1/inbox", unassign);
+    await page.goto("/?assignee=everyone");
+    const assign = (await askControls(page, assigned.askId)).getByRole("button", {
+      name: `Assign ${assigned.issueKey} to me`,
+    });
+    await expect(assign, `${where}: the question draws no Assign to me`).toBeVisible();
+    await page.unroute("**/api/v1/inbox", unassign);
+    await assign.focus();
+    await page.keyboard.press("Enter");
+    await expect(assign, `${where}: Assign to me stayed once it landed`).toHaveCount(0);
+    await after(where, "Enter on Assign to me");
+
+    // A Snooze pick: the row moves into Later, which starts folded, and leaves the list once
+    // the snooze lands.
+    await page.goto("/");
+    const snooze = (await askControls(page, snoozed.askId)).getByRole("combobox", {
+      name: /^Snooze /,
+    });
+    await snooze.focus();
+    await snooze.selectOption({ index: 1 });
+    await expect(inboxRow(page, snoozed.askId), `${where}: the snooze kept its row`).toHaveCount(0);
+    await after(where, "a Snooze pick");
+
+    // An Answer on a card row: the answered row leaves the list. The Inbox page draws its
+    // questions as cards below the reading column's width; above it, the drawer does.
+    if (size.width >= 1280) {
+      where = `Inbox drawer at ${at}`;
+      await openIssues("List");
+      await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+      await peekTrigger(page).click();
+    } else {
+      await page.goto("/");
+    }
+    const card = (size.width >= 1280 ? drawer(page) : main).getByTestId(`ask-${answered.askId}`);
+    await card.getByRole("radio", { name: "Yes" }).check();
+    await card.getByRole("button", { exact: true, name: "Answer" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(card, `${where}: Answer kept its card`).toHaveCount(0);
+    await after(where, "Enter on a card row's Answer");
+
+    // The project List's unanswered-epic notice: its Dismiss goes with it. The epic's create is
+    // answered as one Dispatch made and kept no answer for (`409 KEY_COMMITTED`), which is what
+    // draws the notice.
+    where = `project List at ${at}`;
+    const keyCommitted = async (route: Route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      return route.fulfill({
+        json: { code: IDEMPOTENCY_KEY_COMMITTED, error: "the key's write was made" },
+        status: 409,
+      });
+    };
+    await page.route("**/api/v1/issues", keyCommitted);
+    await openIssues("List");
+    await main.getByRole("checkbox", { exact: true, name: `Select ${listFirst.key}` }).check();
+    await main.getByRole("checkbox", { exact: true, name: `Select ${listSecond.key}` }).check();
+    await page.getByRole("button", { exact: true, name: "New epic from these" }).click();
+    await page
+      .getByRole("dialog", { name: "Name the new epic" })
+      .getByRole("textbox", { name: "Name" })
+      .fill(`The unanswered epic at ${at}`);
+    await page.getByRole("button", { exact: true, name: "Create epic" }).click();
+    const epicNotice = main.getByText(/The selected issues have not been moved/);
+    await expect(epicNotice, `${where}: no unanswered-epic notice`).toBeVisible();
+    await epicNotice.getByRole("button", { exact: true, name: "Dismiss" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(epicNotice).toHaveCount(0);
+    await after(where, "Enter on the unanswered epic's Dismiss");
+    await page.unroute("**/api/v1/issues", keyCommitted);
+
+    // The project Board in swimlanes: a priority pick moves the card into another lane, where it
+    // is drawn again under a new parent.
+    where = `project Board at ${at}`;
+    await openIssues("Board");
+    const showLanes = page.getByRole("button", { name: "Show lanes" });
+    if ((await showLanes.count()) > 0) await showLanes.click();
+    await expect(page.getByRole("button", { name: "Hide lanes" })).toBeVisible();
+    const lane = `P${step + 1}`;
+    const priority = page.getByLabel(`Priority of ${boardCard.key}`);
+    await priority.focus();
+    await priority.selectOption(String(step + 1));
+    await expect(
+      page.getByRole("region", { name: `${lane} lane` }).getByLabel(`Priority of ${boardCard.key}`),
+      `${where}: the pick left ${boardCard.key} outside the ${lane} lane`
+    ).toHaveCount(1);
+    await after(where, `a pick of ${lane} on ${boardCard.key}`);
+
+    // The Agents page: the Unread replies pill goes once its press opens the row and reads them,
+    // and a recipient's ✕ chip goes with that recipient. A reply of the width's own keeps a pill.
+    where = `Agents page at ${at}`;
+    const asked = await createAgentMessage(plannerSession.session_id, {
+      body: `How far along at ${at}?`,
+      delivery: "aside",
+    });
+    await replyToMessageDelivery(
+      asked.id,
+      { attempt: 1, body: "Halfway." },
+      { id: plannerSession.session_id, kind: "session" }
+    );
+    await page.goto("/agents");
+    const pill = main.getByRole("button", { name: /^New repl.* from Planner$/ });
+    await pill.focus();
+    await page.keyboard.press("Enter");
+    await expect(pill, `${where}: the replies stayed unread`).toHaveCount(0);
+    await after(where, "Enter on the Unread replies pill");
+
+    const selectBoxes = main.getByRole("checkbox", { name: /^Select .* for broadcast$/ });
+    await selectBoxes.nth(0).check();
+    await selectBoxes.nth(1).check();
+    const chips = main.getByRole("list", { name: "Selected agents" }).getByRole("button");
+    await expect(chips).toHaveCount(2);
+    await chips.first().focus();
+    await page.keyboard.press("Enter");
+    await expect(chips).toHaveCount(1);
+    await after(where, "Enter on a recipient's ✕ chip");
+
+    // The Delivery page's Window: Apply on a custom range sets a new window.
+    where = `Delivery page at ${at}`;
+    await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+    await main.getByLabel("To", { exact: true }).fill(`2024-06-0${step + 3}`);
+    await main.getByRole("button", { exact: true, name: "Apply" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(new RegExp(`to=2024-06-0${step + 4}`));
+    await after(where, "Enter on Apply over a custom range");
+
+    // The search bar: Retry under a search that failed goes once the search it retries lands.
+    // The bar asks twice more before it says a search failed, so the search fails until then.
+    where = `search bar at ${at}`;
+    let failing = true;
+    const isSearch = (url: URL) =>
+      url.pathname === "/api/v1/search" || url.pathname === "/api/v1/search/results";
+    const failSearch = (route: Route) =>
+      failing
+        ? route.fulfill({ json: { code: "INTERNAL", error: "search is down" }, status: 500 })
+        : route.fallback();
+    await page.route(isSearch, failSearch);
+    await page.locator("body").focus();
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog", { name: "Search" });
+    await control(controlRow(palette), CONTROL.searchBox).fill("rollout");
+    const failure = palette.getByRole("alert").filter({ hasText: "Search failed." });
+    await expect(failure, `${where}: the search never failed`).toBeVisible();
+    failing = false;
+    await failure.getByRole("button", { exact: true, name: "Retry" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(failure, `${where}: Retry left the failure up`).toHaveCount(0);
+    await after(where, "Enter on a failed search's Retry");
+    if (!(await palette.evaluate((node) => node.contains(document.activeElement)))) {
+      lost.push(`${where}: after Enter on Retry the focus is outside the search bar`);
+    }
+    await page.unroute(isSearch, failSearch);
+
+    // The Artifacts tab: a staged file's Upload holds the focus while the upload is out, and
+    // then goes with the staged row.
+    where = `Artifacts tab at ${at}`;
+    await page.goto(`/issues/${issue}/artifacts`);
+    await page.getByLabel("Upload artifact").setInputFiles({
+      buffer: Buffer.from(`# Notes at ${at}\n`),
+      mimeType: "text/markdown",
+      name: `notes-${size.width}.md`,
+    });
+    const summary = main.getByRole("textbox", { exact: true, name: "Summary (optional)" });
+    await expect(summary, `${where}: the file was not staged`).toBeVisible();
+    await main.getByRole("button", { exact: true, name: "Upload" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(summary, `${where}: the upload left the file staged`).toHaveCount(0);
+    await after(where, "Enter on a staged file's Upload");
+  }
+  // The architect's ruling ff1a60f5, on every page of R2: a press that disables, takes away or
+  // draws again the control it was made on hands the focus on, and never to the body.
+  expect(lost, lost.join("; ")).toEqual([]);
 });
