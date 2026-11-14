@@ -2113,3 +2113,292 @@ test("every table with no controls draws its rows in the shared markup and offer
   await page.getByRole("button", { name: /Definitions & alternatives/ }).click();
   await readPlainTable("Per day (UTC), newest first");
 });
+
+// SLOW(>=2s): three pages at two widths, a press in each shared control that takes away, hides or
+// holds the control it was made on.
+test("no press in the shared controls drops the keyboard focus onto the page, at every width", async ({
+  page,
+}) => {
+  const scene = await seedSurfaces();
+  // Enough issues for two of the List's pages at 25 a page.
+  for (let index = 0; index < 24; index++) {
+    await createIssue({ project: "CORE", title: `Paged row ${index}` });
+  }
+  // Two issues in Legion's queue: the second's row offers a Start next of its own, which moves it
+  // to the head at the first width, so at the second the other row offers it.
+  for (const title of ["Queued first", "Queued second"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await patchIssue(issue.key, { labels: ["legion"], status: "todo" });
+  }
+  const main = page.getByTestId("main-content");
+  const row = controlRow(main);
+  const wrong: string[] = [];
+  /** Where each target has already been missed: a target missed once at a width is not waited
+   *  for again there, so a row whose every hand-off is gone still ends inside its budget. */
+  const missed = new Set<string>();
+  /** Holds every issue write until `release`, as a slow server would, so a control can be read
+   *  while its write is out; `stop` takes the hold off once the writes have landed. */
+  const holdIssueWrites = async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const pattern = "**/api/v1/issues/*";
+    await page.route(pattern, async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      await promise;
+      return route.fallback();
+    });
+    return { release: resolve, stop: () => page.unroute(pattern) };
+  };
+  /** The focused element's name, or the tag of the body when nothing is focused. */
+  const focusNow = () =>
+    page.evaluate(() => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return focused?.tagName ?? "nothing";
+      }
+      const label =
+        focused.getAttribute("aria-label") ??
+        (focused instanceof HTMLInputElement ? focused.labels?.[0]?.textContent?.trim() : null) ??
+        focused.textContent?.trim() ??
+        "";
+      return `"${label === "" ? focused.tagName : label}"`;
+    });
+  /** Records a focus that has not landed on `wanted` within a second. Each check follows the
+   *  change it is about - the control gone, the page turned, the bar gone - and a hand-off
+   *  lands in that same commit or the frame after it, so a second is ample. */
+  const focusOn = async (where: string, press: string, wanted: Locator, name: string) => {
+    if (missed.has(`${where} ${name}`)) return;
+    const landed = await expect(wanted)
+      .toBeFocused({ timeout: 1_000 })
+      .then(
+        () => true,
+        () => false
+      );
+    if (!landed) {
+      missed.add(`${where} ${name}`);
+      wrong.push(`${where}: after ${press} the focus is on ${await focusNow()}, not on ${name}`);
+    }
+  };
+
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const at = `${size.width}x${size.height}`;
+
+    // The Inbox's Mark all read, a page control in the row, goes once nothing is left unread:
+    // the focus goes to the next control in its slot, Blocked on you, else to the trigger. A
+    // thread of its own at each width, since the press at the first marks the first one read.
+    let where = `Inbox at ${at}`;
+    const thread = await createIssue({ project: "CORE", title: `Nightly mirror at ${at}` });
+    await seedCommentThread(thread.key, "Is the nightly job still at 02:00?", "It moved to 03:00.");
+    await page.goto("/");
+    const markAll = row.getByRole("button", { exact: true, name: "Mark all read" });
+    const blocked = row.getByRole("button", { name: /^Blocked on you/ });
+    const trigger = control(row, CONTROL.panelTrigger);
+    await expect(markAll, `${where}: Mark all read is not drawn`).toBeVisible();
+    const besideMarkAll = (await blocked.count()) > 0;
+    await markAll.focus();
+    await page.keyboard.press("Enter");
+    await expect(markAll, `${where}: Enter on Mark all read left it drawn`).toHaveCount(0);
+    await focusOn(
+      where,
+      "Enter on Mark all read",
+      besideMarkAll ? blocked : trigger,
+      besideMarkAll ? "Blocked on you" : "the filter trigger"
+    );
+
+    // A scroll button of the chips line, pressed by a pointer while a chip holds the focus: the
+    // press takes no focus, and the button that goes at the strip's end takes none with it.
+    await page.goto(NINE_NARROWINGS);
+    const chips = control(row, CONTROL.chip);
+    await expect(chips, `${where}: the nine narrowings draw no nine chips`).toHaveCount(9);
+    const strip = chips.first().locator("..");
+    const chip = chips.first();
+    const chipName = (await chip.getAttribute("aria-label")) ?? "the first chip";
+    await chip.focus();
+    for (const side of ["right", "left"] as const) {
+      const button = row.getByRole("button", { exact: true, name: `Scroll filters ${side}` });
+      await expect(
+        button,
+        `${where}: Scroll filters ${side} is not drawn, so no chip is out of view that way`
+      ).toBeVisible();
+      for (let press = 1; (await button.count()) > 0; press++) {
+        expect(
+          press,
+          `${where}: Scroll filters ${side} never reached the strip's end`
+        ).toBeLessThan(12);
+        const from = await strip.evaluate((node) => node.scrollLeft);
+        await button.click();
+        await expect
+          .poll(() => strip.evaluate((node) => node.scrollLeft), {
+            message: `${where}: press ${press} on Scroll filters ${side} left the strip at ${from}px`,
+          })
+          .not.toBe(from);
+        // Come to rest: unchanged over five frames, since a press scrolls the strip smoothly.
+        await strip.evaluate((node) => {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          let last = node.scrollLeft;
+          let still = 0;
+          const frame = () => {
+            still = node.scrollLeft === last ? still + 1 : 0;
+            last = node.scrollLeft;
+            if (still >= 5) resolve();
+            else requestAnimationFrame(frame);
+          };
+          requestAnimationFrame(frame);
+          return promise;
+        });
+        await focusOn(where, `press ${press} on Scroll filters ${side}`, chip, `"${chipName}"`);
+      }
+    }
+
+    // The List's pager: Next pressed until the last page and Previous until the first, each
+    // refused there rather than disabled, so the focus stays on the button pressed.
+    where = `project List at ${at}`;
+    await openSurface(page, "project List", scene);
+    await page.goto("/projects/CORE/issues?size=25");
+    const pager = control(main, CONTROL.pager);
+    await expect(pager, `${where}: the List draws no first page`).toContainText(/Page 1 of \d/);
+    const pages = Number(/Page 1 of (\d+)/.exec((await pager.textContent()) ?? "")?.[1] ?? "1");
+    expect(pages, `${where}: the seed fills fewer than two pages`).toBeGreaterThan(1);
+    for (const [step, name, last] of [
+      ["Next", "Next ›", pages],
+      ["Previous", "‹ Previous", 1],
+    ] as const) {
+      const button = pager.getByRole("button", { exact: true, name });
+      await button.focus();
+      for (let press = 1; press < pages; press++) {
+        const to = step === "Next" ? press + 1 : pages - press;
+        await page.keyboard.press("Enter");
+        await expect(pager, `${where}: Enter on ${step} did not reach page ${to}`).toContainText(
+          `Page ${to} of ${pages}`
+        );
+        await focusOn(where, `Enter on ${step} to page ${to}`, button, `"${name}"`);
+      }
+      await expect(button, `${where}: ${step} on page ${last} is still pressable`).toBeDisabled();
+    }
+
+    // A bar action: Take out of epic, held busy while its write is out and pressable by nobody
+    // meanwhile. The focus stays on it while it is busy, and once the write lands and the bar
+    // goes with the selection it hands the focus to the row marked.
+    const first = await page.locator("[data-issue-row]").first().getAttribute("data-issue-row");
+    const box = page.getByRole("checkbox", { exact: true, name: `Select ${first}` });
+    await box.focus();
+    await page.keyboard.press("Space");
+    await expect(box, `${where}: Space did not mark ${first}`).toBeChecked();
+    const bar = page.getByRole("toolbar", { name: "Selected issues" });
+    const takeOut = bar.getByRole("button", { exact: true, name: "Take out of epic" });
+    const writes = await holdIssueWrites();
+    await takeOut.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      takeOut,
+      `${where}: Take out of epic is pressable while its write is out`
+    ).toBeDisabled();
+    await focusOn(
+      where,
+      "Enter on Take out of epic, while its write is out",
+      takeOut,
+      `"Take out of epic"`
+    );
+    writes.release();
+    await expect(bar, `${where}: the write landed and left the bar up`).toHaveCount(0);
+    await focusOn(where, "Take out of epic's write landed", box, `"Select ${first}"`);
+    await writes.stop();
+
+    // A row's own Start next: held while its write is out, then gone once its issue starts next,
+    // while the row stays. The focus stays on it while it is busy, then goes to the control now
+    // at its place in the row, else the one before it, else the row itself.
+    const offering = page
+      .locator("[data-issue-row]")
+      .filter({ has: page.getByRole("button", { exact: true, name: "Start next" }) });
+    await expect(
+      offering.first(),
+      `${where}: no row offers a Start next of its own`
+    ).toBeAttached();
+    const queued = await offering.first().getAttribute("data-issue-row");
+    const queuedRow = page.locator(`[data-issue-row="${queued}"]`);
+    const startNext = queuedRow.getByRole("button", { exact: true, name: "Start next" });
+    const rank = await holdIssueWrites();
+    await startNext.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      startNext,
+      `${where}: ${queued}'s Start next is pressable while its write is out`
+    ).toBeDisabled();
+    await focusOn(
+      where,
+      `Enter on ${queued}'s Start next, while its write is out`,
+      startNext,
+      `${queued}'s "Start next"`
+    );
+    rank.release();
+    await expect(startNext, `${where}: Start next did not start ${queued} next`).toHaveCount(0);
+    const inRow = await expect
+      .poll(() => queuedRow.evaluate((node) => node.contains(document.activeElement)), {
+        timeout: 1_000,
+      })
+      .toBe(true)
+      .then(
+        () => true,
+        () => false
+      );
+    if (!inRow) {
+      wrong.push(
+        `${where}: after Start next started ${queued} next the focus is on ${await focusNow()}, not on that row or a control in it`
+      );
+    }
+    await rank.stop();
+
+    // The search bar's Filter panel: a pick from its Project menu and from its Status menu, and
+    // an author taken, each take their own control away; the focus goes to the next control in
+    // the panel.
+    where = `search bar at ${at}`;
+    await page.locator("body").focus();
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog", { name: "Search" });
+    await expect(palette, `${where}: Control+K opened no search bar`).toBeVisible();
+    await control(controlRow(palette), CONTROL.panelTrigger).focus();
+    await page.keyboard.press("Enter");
+    const filters = page.getByRole("dialog", { name: "Filter" });
+    await expect(filters, `${where}: Enter on Filter opened no panel`).toBeVisible();
+    const author = filters.getByRole("searchbox", { name: "Author" });
+    const panelSteps = [
+      {
+        menu: "Project",
+        option: scene.project,
+        next: filters.getByRole("button", { exact: true, name: "Status" }),
+        nextName: "the Status menu",
+      },
+      { menu: "Status", option: "Todo", next: author, nextName: "the Author box" },
+    ] as const;
+    for (const { menu, option, next, nextName } of panelSteps) {
+      const opener = filters.getByRole("button", { exact: true, name: menu });
+      await opener.focus();
+      await page.keyboard.press("Enter");
+      const pick = page
+        .getByRole("dialog", { name: menu })
+        .getByRole("button", { exact: true, name: option });
+      await pick.focus();
+      await page.keyboard.press("Enter");
+      await expect(
+        opener,
+        `${where}: Enter on the ${menu} menu's ${option} left the ${menu} menu drawn`
+      ).toHaveCount(0);
+      await focusOn(where, `Enter on the ${menu} menu's ${option}`, next, nextName);
+    }
+    await author.fill("alice");
+    await page.keyboard.press("Enter");
+    await expect(author, `${where}: Enter on the Author box left it drawn`).toHaveCount(0);
+    await focusOn(
+      where,
+      "Enter on the Author box",
+      filters.getByLabel("Updated since"),
+      "the Updated since box"
+    );
+  }
+  // A press that drops the focus onto the page sends a keyboard reader back to its first link,
+  // from which the control they were using is a walk through everything above it.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
