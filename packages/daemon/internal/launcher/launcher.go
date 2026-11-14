@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -136,6 +137,12 @@ func Run(ctx context.Context, cfg Config) error {
 		m.gitLocks = sweep
 	}
 	locks := sweep.serve(ctx)
+	// The pod's one memory guard, before the test database and any role start, so it watches
+	// both from their first process; only a launcher that is the container's first process runs
+	// one, as only that one runs the reaper above, and any other logs a line instead
+	// (serveMemoryGuard). Its loop is waited on with the roles below, as the test database's
+	// ticker is.
+	memory := serveMemoryGuard(ctx, cfg, managers, guard)
 	// The pod's own test database, before any role starts: a role that starts at once finds the
 	// server serving its DSN (serveTestPG). Its ticker is waited on with the roles below, so Run
 	// returns with nothing of the launcher's still running.
@@ -155,6 +162,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if testPG != nil {
 		<-testPG
 	}
+	<-memory
 	<-locks
 	return ctx.Err()
 }
@@ -234,7 +242,9 @@ func (m *manager) logf(format string, args ...any) {
 // state, then start, stop, bundle and leak-check commands until the connection ends. The hello
 // names the launcher's leak-check pin and whether this process has installed it, so the daemon
 // pushes the check only to a launcher that still needs it. The acknowledgement is logged as one
-// line, so a launcher the daemon accepted reads apart from one still dialing.
+// line, so a launcher the daemon accepted reads apart from one still dialing; the memory guard
+// settings it carries, or their absence, go to the pod's guard, and decide whether the guard's
+// reports of this role's processes go on this connection (openMemoryReports).
 func (m *manager) serve(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -256,11 +266,19 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	if err != nil {
 		return fmt.Errorf("hello acknowledgement: %w", err)
 	}
-	if _, ok := frame.(shimwire.LauncherHelloAck); !ok {
+	ack, ok := frame.(shimwire.LauncherHelloAck)
+	if !ok {
 		return fmt.Errorf("hello acknowledgement: got %T, want launcher_hello_ack", frame)
 	}
 	m.logf("launcher: connected to the daemon at %s as launcher %s (sandbox %s, role %s, pod %s)",
 		address, m.launcherID, m.cfg.Sandbox, m.role, m.cfg.PodUID)
+	// The guard runs by the newest acknowledgement of any role, and an acknowledgement that
+	// carries no settings turns it off: that is how a daemon built before the guard answers, and
+	// how a deployment that turned the guard off does. A connection that merely drops keeps the
+	// settings in force.
+	if m.memoryGuard != nil {
+		m.memoryGuard.Apply(ack.MemoryGuard)
+	}
 	m.mu.Lock()
 	m.writer = writer
 	m.mu.Unlock()
@@ -268,6 +286,9 @@ func (m *manager) serve(ctx context.Context, address string) error {
 		m.mu.Lock()
 		if m.writer == writer {
 			m.writer = nil
+		}
+		if m.reportWriter == writer {
+			m.reportWriter, m.reportsCarried = nil, false
 		}
 		m.mu.Unlock()
 	}()
@@ -277,6 +298,9 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	// A restore whose outcome no connection has carried yet goes over this one: until the daemon
 	// has it, the saved work stays in its database (bundleRestore.owed).
 	m.reportRestore()
+	// The guard's reports of this role's processes go on this connection from here, after its
+	// state, or are dropped when its acknowledgement carried no settings.
+	m.openMemoryReports(writer, ack.MemoryGuard != nil)
 	for {
 		frame, err := readFrame(reader)
 		if err != nil {
@@ -455,6 +479,23 @@ type manager struct {
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
+	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
+	// container shares: each connection's acknowledgement hands it the daemon's settings
+	// (serve). It is nil in the controller's pod, which runs none (serveMemoryGuard).
+	memoryGuard *memoryguard.Guard
+	// memoryKills are the guard's reports of this role's processes it ended that no connection
+	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter
+	// is the connection they go on, this role's current one from its state frame on, nil while
+	// none is up; reportsCarried is whether that connection's acknowledgement carried guard
+	// settings, without which the daemon behind it may not know the report (openMemoryReports).
+	// All three are guarded by mu.
+	memoryKills    []shimwire.LauncherMemoryKill
+	reportWriter   *shimwire.Writer
+	reportsCarried bool
+	// memoryWake tells this role's report sender a report is waiting (sendMemoryKillsUntil), and
+	// memorySend holds one send of the waiting reports at a time (sendMemoryKills).
+	memoryWake chan struct{}
+	memorySend sync.Mutex
 }
 
 // state reports the actual child to the current daemon connection, if one is up. A state change
