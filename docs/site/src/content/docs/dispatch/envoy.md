@@ -353,14 +353,20 @@ answers in `removed` the topics that actually left the record, which is not alwa
 request named. The second process is granted
 the role once the first stops answering for the claim and the live window passes, and only while
 the listener can tell that the first process stopped, and not that the listener itself failed to
-renew the claim: the claim reads the same either way. So that one grant answers `503` with
-`Retry-After: 1` and claims nothing, rather than hand a live holder's role away, while the listener
-cannot read its own view of the role claims (a listener that has just restarted is still filling
-it), while that view's last full read of the role claims is more than 2 minutes old (see
+renew the claim: the claim reads the same either way. So the listener refuses that one grant and
+claims nothing, rather than hand a live holder's role away, while it cannot read its own view of
+the role claims (a listener that has just restarted is still filling it), while that view's
+last full read of the role claims is more than 2 minutes old (see
 [Health and readiness](#health-and-readiness)), and while the listener's own renewal of that role
-for its holder failed inside the live window. In the first case it is the bus-unavailable `503`;
-in the other two NATS did answer, and the body opens with
-`envoy: the role grant guard refused the claim` and names which of the two it is. A claim from the
+for its holder failed inside the live window. In the first case the answer is the bus-unavailable
+`503` with `Retry-After: 1`. In the other two NATS did answer, and the answer is the `409` the
+second process gets while the first still answers for the claim: it names the claimant's own
+session as the holder, carries no `Retry-After`, and its error opens with
+`envoy: the role grant guard refused the claim` and names which of the two cases it is. Both
+Oh My Pi and Claude Code wait out that `409`, where a `503` stops a relaunched Legion pane after
+two attempts. Claude Code waits for at most the live window and 10 seconds. A refusal for a
+failed renewal ends at most one live window after the last failure, so it ends inside that wait
+unless the listener's calls to NATS keep failing. A claim from the
 process the standing claim already names is granted in all three cases, since it takes the role
 from nobody. `GET /v1/roles/<role>` answers the holding process's `client_instance_id` beside the
 holder's session id where the claim names a process, and leaves
@@ -628,7 +634,7 @@ puts back a claim the copy lost and takes out one NATS no longer holds:
 
 That `degraded` answer is never a `503`, so a readiness probe keeps the listener in service.
 Meanwhile `GET /v1/sessions` still answers `200` from the copy, and a claim of a role held under
-the claimant's own session id answers `503` with `Retry-After: 1` rather than take it (see
+the claimant's own session id is refused with a `409` naming that session rather than granted (see
 [Live, unresponsive, gone](#live-unresponsive-gone)). `/metrics` reports the same read as
 `envoy_role_claim_repair_completed_timestamp_seconds`, `envoy_role_claim_repair_put_back` and
 `envoy_role_claim_repair_took_out`, with no sample before the first read completes, so an alert can
@@ -654,8 +660,8 @@ deploy the new listener therefore serves `/v1` while the old one still holds the
 and takes the consumer within two seconds of the old one exiting.
 
 The two list reads, `GET /v1/sessions` and `GET /v1/interests/`, answer `503` with
-`Retry-After: 5` and the code `refilling` whenever the listener cannot stand behind its copy of a
-bucket: before `/v1` opens, before the copy's first complete read, and once the copy has not
+`Retry-After: 5` and the code `refilling` whenever the listener cannot stand behind its session or
+interest copy: before `/v1` opens, before the copy's first complete read, and once the copy has not
 followed its bucket for longer than 2 minutes (half the bucket's `MaxAge` when that is shorter),
 such as through a NATS outage. That answer is "try again", never an empty list: a session missing
 from it is not a session that ended, and neither is one whose row reads `unresponsive`. A read of
