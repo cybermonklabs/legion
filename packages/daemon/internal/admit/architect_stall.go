@@ -213,31 +213,32 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 		task.Entry, root.Key, task.QueuedAt.UTC().Format(time.RFC3339), root.Phase), nil
 }
 
-// architectClaimUnreachable is the second arm: the root is in the workflow and either its
-// architect's claim is failed or retired with no start of the root's run queued to relaunch it,
-// or the root holds no architect claim at all while the work of its entry has stood more than
-// workflow.StrandedReleaseWake. It answers what the record says, and "" for a root it does not
-// read.
+// architectClaimUnreachable is the second arm: the root is in the workflow, and either its
+// architect's claim is failed or retired or the root holds no architect claim at all while the
+// work of its entry has stood more than workflow.StrandedReleaseWake, and no start is queued that
+// is the daemon's next move for it (workflow.RelaunchQueued). It answers what the record says,
+// and "" for a root it does not read.
 //
-// A failed or a retired claim is read only where no start will reach it: no start of the root's
-// generation waits in the queue (workflow.StartFor, the reading workflow.Stranded makes of a tree
-// architect's claim, over run's queued rows, which RoleRuns reads at the root's generation), and
-// the pass did not write one itself (sent). The outbox's start of a failed or a retired claim
-// relaunches it on the session it kept, so a claim such a start will reach is the daemon's own
-// next move rather than a stall: a controller woken for it would take `fresh_session`, which
-// discards the session that start resumes, and the mark the wake writes would leave a real failure
-// later in the run waking nobody. Every re-admission of a closed tree makes that shape, since the
-// linger's end retires the architect's claim and the promotion queues its start in the same pass
-// that reads this arm. A root waiting on a person is read the same way, as workflow.Stranded reads
-// it: the person's answer resumes its architect with a start of its own (ResumeAwaitedRoot), so
-// a failed or a retired claim of such a root is relaunched by the daemon's next move too.
+// A start is the daemon's next move while it has not yet run against the claim and was queued
+// less than workflow.StrandedReleaseWake ago, and the pass's own start (sent) is one. The outbox's
+// start of a failed or a retired claim relaunches it on the session it kept, so a claim such a
+// start will reach is no stall: a controller woken for it would take `fresh_session`, which
+// discards the session that start resumes, and the mark the wake writes would leave a real
+// failure later in the run waking nobody. Every re-admission of a closed tree makes that shape,
+// since the linger's end retires the architect's claim and the promotion queues its start in the
+// same pass that reads this arm. A start that has run against the claim and left it failed is no
+// next move, though the outbox runs it again on its backoff for as long as its launches fail:
+// that claim is the failure no further send cures, which R7's second arm names, and so is a
+// start that has stood owed past the bound without running (the architect's reading of R7 at
+// dispatch://INFRA-2614, measured by its tester on the whole daemon). A root waiting on a person
+// is read as workflow.Stranded reads it: the person's answer resumes its architect with a start
+// of its own (ResumeAwaitedRoot), so a failed or a retired claim of such a root is relaunched by
+// the daemon's next move too.
 //
-// A root with no claim is read unless a start of one already waited in the outbox when the pass
-// began (workflow.ArchitectStartPending, the sweep's own reading), since a queued start is the
-// daemon's own next move and the claim is created by running it. run is the reading the pass made
-// before its sends, so where the pass itself wrote the start again (sent) the wake still stands —
-// a root with no claim that long is stalled whatever this pass writes — and its reason says the
-// start was written, rather than that none waits.
+// run is the reading the pass made before its sends, so where the pass itself wrote the start of
+// a root with no claim (sent) the wake still stands — a root with no claim that long is stalled
+// whatever this pass writes — and its reason says the start was written, rather than that none
+// waits.
 func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run record.RoleRun, sent bool, now time.Time) string {
 	if !record.InWorkflow(root) {
 		return ""
@@ -246,19 +247,19 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 		if held.State != supervise.StateFailed && held.State != supervise.StateRetired {
 			return ""
 		}
-		if sent || root.AwaitingPerson() || !workflow.StartFor(run, root, root.Generation, "") {
+		if sent || root.AwaitingPerson() || workflow.RelaunchQueued(run, root, "", now) {
 			return ""
 		}
-		return fmt.Sprintf("the architect claim of %s is %s, no start of its run waits in the queue to relaunch it, and the root stands at %s in the workflow.",
-			root.Key, held.State, root.Phase)
+		return fmt.Sprintf("the architect claim of %s is %s, no start of its run queued in the last %s waits to relaunch it, and the root stands at %s in the workflow.",
+			root.Key, held.State, workflow.StrandedReleaseWake, root.Phase)
 	}
-	if _, pending := workflow.ArchitectStartPending(run); pending {
+	if workflow.RelaunchQueued(run, root, "", now) {
 		return ""
 	}
 	if row.Entry == 0 || row.RaisedAt.IsZero() || now.Sub(row.RaisedAt) <= workflow.StrandedReleaseWake {
 		return ""
 	}
-	queue := "no start of one waits in the queue"
+	queue := "no start of one queued in the last " + workflow.StrandedReleaseWake.String() + " waits to create it"
 	if sent {
 		queue = "the daemon wrote the start of its architect again in the same transaction as this wake"
 	}

@@ -249,7 +249,7 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 			},
 			why:   "the work of its entry has stood past the bound and no claim was ever created for it, and the first pass wrote the start of its architect again",
 			says:  "the daemon wrote the start of its architect again in the same transaction as this wake",
-			never: "no start of one waits in the queue",
+			never: "no start of one queued in the last",
 		},
 		{
 			name: "the root is slow before its gate", arm: record.ArchitectSlowBeforeGate,
@@ -397,7 +397,8 @@ func TestNoArchitectWakeIsRaisedForARootThatIsMovingAlong(t *testing.T) {
 }
 
 // The second arm wakes the controller for a failed or a retired architect claim only while no
-// start of the root's run waits in the queue to relaunch it. A queued start is the daemon's own
+// start of the root's run that has not yet run against the claim was queued in the last ten
+// minutes (workflow.RelaunchQueued). A queued start is the daemon's own
 // next move: the outbox's start of a failed or a retired claim relaunches it on its kept session,
 // and a controller woken now would take `fresh_session`, which discards that session. Every
 // re-admission of a closed tree makes this shape: the linger's end retires the architect's claim,
@@ -494,6 +495,67 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunche
 			}
 			applySweep(t, pool, admission, "unreachable-2")
 			assertArchitectWakes(t, pool, root, []record.ArchitectStallArm{record.ArchitectClaimUnreachable}, tc.why)
+		})
+	}
+}
+
+// A queued start that has not run is the daemon's next move only for the bound the second arm
+// reads (workflow.StrandedReleaseWake): a start of the run that has stood owed longer than that
+// without running against the claim is no next move, and the arm names the failed claim, once
+// (the architect's reading of R7 at dispatch://INFRA-2614). The control is the same start queued
+// inside the bound, which the arm waits for. The moment is the outbox row's created_at, which
+// the outbox keeps when it runs a row again in place, so a start that keeps failing reads its
+// first queueing too; the start that already ran against the claim is
+// TestTheUnreachableClaimArchitectWakeIsRaisedForAClaimItsOwnStartKeepsFailingToLaunch's case.
+func TestTheUnreachableClaimArchitectWakeIsRaisedForAStartQueuedPastTheBoundThatNeverRan(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		queuedAt time.Time
+		woken    bool
+	}{
+		{name: "queued past the bound", queuedAt: fixedNow.Add(-workflow.StrandedReleaseWake - time.Minute), woken: true},
+		{name: "queued inside the bound", queuedAt: fixedNow.Add(-workflow.StrandedReleaseWake + time.Minute)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := migratedPool(t)
+			registerController(t, pool)
+			admission := quiet(t, 1)
+			const root = "LEGION-827"
+			fixture := architectWakeRoot(root)
+			fixture.state, fixture.task = supervise.StateFailed, false
+			seedArchitectWakeRoot(t, pool, fixture)
+			inTx(t, pool, func(tx pgx.Tx) {
+				row, err := record.NewOutboxRow(root, record.SuperviseRequest{Op: "start", Tree: root, Role: claim.RoleArchitect,
+					Generation: architectWakeGeneration, Task: seededArchitectTask(root), Entry: seededEntry}, fixedNow)
+				if err != nil {
+					t.Fatalf("build the architect start of %s: %v", root, err)
+				}
+				if err := record.NewStore().Enqueue(ctx, tx, row); err != nil {
+					t.Fatalf("queue the architect start of %s: %v", root, err)
+				}
+				if _, err := tx.Exec(ctx, `update outbox set created_at = $1 where issue = $2 and kind = 'supervise'`, tc.queuedAt, root); err != nil {
+					t.Fatalf("date the architect start of %s at %s: %v", root, tc.queuedAt, err)
+				}
+			})
+
+			var want []record.ArchitectStallArm
+			if tc.woken {
+				want = []record.ArchitectStallArm{record.ArchitectClaimUnreachable}
+			}
+			if arms := architectStallArmsOf(t, pool, admission, root); !slices.Equal(arms, want) {
+				t.Fatalf("the state's reading of %s names the arms %v with its start %s, want %v", root, arms, tc.name, want)
+			}
+			applySweep(t, pool, admission, "owed-1")
+			applySweep(t, pool, admission, "owed-2")
+			if !tc.woken {
+				if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
+					t.Fatalf("the architect wakes of %s = %q, want none while a start queued inside the bound has still to run", root, reasons)
+				}
+				return
+			}
+			assertArchitectWakes(t, pool, root, want,
+				"a start that has stood owed past the bound without running is no next move, so the failed claim is the arm's case")
 		})
 	}
 }

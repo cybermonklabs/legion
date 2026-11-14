@@ -55,7 +55,7 @@
 -- upgrade, re-armed by the same block, marks it again for every root whose run has started then:
 -- the first and the third arm, so the marks of the second arm are the ones the drop loses, and a
 -- root whose claim is still failed or retired at the roll-forward, with no start of its run
--- queued, wakes the controller once more.
+-- queued in the last ten minutes that has not yet run against it, wakes the controller once more.
 create table architect_stalled_notices (
     issue text not null references issues (key) on delete cascade,
     tree text not null,

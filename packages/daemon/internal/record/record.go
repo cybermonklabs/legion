@@ -1877,10 +1877,13 @@ type RoleRun struct {
 }
 
 // QueuedSupervise is one queued supervise row: its id, which orders it against the others and
-// against the newest start run on the claim, and its request.
+// against the newest start run on the claim, its request, and when it was queued (the outbox
+// row's created_at, which a row the outbox runs again in place keeps, where next_at moves with
+// every backoff).
 type QueuedSupervise struct {
-	ID      int64
-	Request SuperviseRequest
+	ID       int64
+	Request  SuperviseRequest
+	QueuedAt time.Time
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it

@@ -2894,7 +2894,7 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 			return nil, fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
 		}
 		run := runs[token]
-		run.Queued = append(run.Queued, QueuedSupervise{ID: row.ID, Request: request})
+		run.Queued = append(run.Queued, QueuedSupervise{ID: row.ID, Request: request, QueuedAt: row.CreatedAt})
 		runs[token] = run
 	}
 	if err := rows.Err(); err != nil {

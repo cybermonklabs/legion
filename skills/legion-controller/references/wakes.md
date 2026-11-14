@@ -163,8 +163,9 @@ A root whose own architect is not taking the work the daemon states it is owed.
 - "the architect took nothing": the task of the architect's phase entry was queued to its claim more than ten minutes ago and no turn of that claim confirmed it.
   The daemon writes no second start while that task stands, so this wake is the one thing left.
 
-- "the architect's claim cannot be reached": the claim is failed or retired and no start of the root's run waits in the queue to relaunch it, or the root has no architect claim at all and the work of its entry has stood that same bound.
-  While a queued start will relaunch a failed or retired claim, the daemon raises no such wake, because that start resumes the session the claim kept.
+- "the architect's claim cannot be reached": the claim is failed or retired and no start of the root's run that has not yet run against it was queued in the last ten minutes, or the root has no architect claim at all, no start of one was queued in the last ten minutes, and the work of its entry has stood that same bound.
+  While a start queued in the last ten minutes will relaunch a failed or retired claim, the daemon raises no such wake, because that start resumes the session the claim kept.
+  A start that has run and left the claim failed, which the daemon retries while every launch fails, does not hold the wake back, and neither does one that has stood owed for longer than ten minutes.
   A root waiting on a person raises none either: the person's answer resumes its architect with a start of its own.
   For a root with no claim, the reason also says whether the daemon wrote the start of its architect again in the same transaction as the wake.
 
