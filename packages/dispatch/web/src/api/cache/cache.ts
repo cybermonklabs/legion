@@ -10,11 +10,11 @@ import type {
   QueryFilters,
   QueryFunctionContext,
   QueryKey,
-  Updater,
 } from "@tanstack/react-query";
 import { useIsMutating, useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useRef, useSyncExternalStore } from "react";
 
+import type { Answered } from "./answered";
 import { bindClient } from "./client-handle";
 import { isLiveQuery } from "./query-refresh";
 import { libraryOptions, type ReadContext, type ReadOptions } from "./read-options";
@@ -34,9 +34,10 @@ import { type Write, Writes } from "./write-store";
  *
  * Everything else here moves a cache without reading its data - invalidate, cancel, prefetch,
  * remove, reset, whether a read is held or fetching - or writes Dispatch's answer into one
- * (`setDispatched`, the one way a feature writes a cache), or counts the mutations a write holds
- * open. One `Cache` lives beside each TanStack client (`cacheOf`); a component reaches the
- * page's through `useCache`, and code outside React is handed it.
+ * (`setDispatched`, the one way a feature writes a cache, which takes nothing but an `Answered`
+ * value), or counts the mutations a write holds open. One `Cache` lives beside each TanStack
+ * client (`cacheOf`); a component reaches the page's through `useCache`, and code outside React
+ * is handed it.
  */
 export interface Cache {
   /** Every write the page makes (`write-store.ts`). */
@@ -70,22 +71,30 @@ export interface Cache {
     TQueryKey extends QueryKey = QueryKey,
   >(options: ReadOptions<TQueryFnData, TError, TData, TQueryKey>): Promise<TData>;
 
-  /** Writes into the cache at `key` what Dispatch answered (`updater`, or what it makes of the
-   *  answer the cache holds): a mutation's own answer, a live frame, an event the log prepends.
-   *  Every write a module outside this layer makes into a cache is this one, and the live
-   *  changes are composed over it as over any answer. Typed by the key as TanStack's
-   *  `setQueryData` is. */
+  /** Writes into the cache at `key` what Dispatch answered: `answer` itself, the cache's whole
+   *  data, typed by the key as TanStack's `setQueryData` is - a live snapshot, a mark's own
+   *  state. Every write a module outside this layer makes into a cache is this one, and the live
+   *  changes are composed over it as over any answer. `answer` is `Answered`, which only
+   *  Dispatch's answer to a write and a decoded live frame are (`answered.ts`), so nothing the
+   *  screen built can be written. */
+  setDispatched<TTaggedQueryKey extends QueryKey>(
+    key: TTaggedQueryKey,
+    answer: Answered<InferDataFromTag<unknown, TTaggedQueryKey>>
+  ): void;
+  /** Writes into the cache at `key` what `merge` makes of Dispatch's `answer` and the data the
+   *  cache holds (`dispatched`: Dispatch's own, with no live change over it, never the shown
+   *  value): a mutation's answer folded into the list or the record it belongs to, a live delta,
+   *  an event the log prepends. `undefined` writes nothing. `T` is the key's tagged data, or what
+   *  `merge` names. */
   setDispatched<
-    TQueryFnData = unknown,
-    TTaggedQueryKey extends QueryKey = QueryKey,
-    TInferredQueryFnData = InferDataFromTag<TQueryFnData, TTaggedQueryKey>,
+    TTaggedQueryKey extends QueryKey,
+    A,
+    T = InferDataFromTag<unknown, TTaggedQueryKey>,
   >(
     key: TTaggedQueryKey,
-    updater: Updater<
-      NoInfer<TInferredQueryFnData> | undefined,
-      NoInfer<TInferredQueryFnData> | undefined
-    >
-  ): NoInfer<TInferredQueryFnData> | undefined;
+    answer: Answered<A>,
+    merge: (dispatched: T | undefined, answer: A) => T | undefined
+  ): void;
 
   /** Whether the cache holds a read under `key` at all, answered or not. */
   holds(key: QueryKey): boolean;
@@ -232,8 +241,16 @@ class ClientCache implements Cache {
     return this.#client.fetchQuery(libraryOptions(options) as never);
   }
 
-  readonly setDispatched: Cache["setDispatched"] = (key, updater) =>
-    this.#client.setQueryData(key, updater as never) as never;
+  setDispatched(
+    key: QueryKey,
+    answer: unknown,
+    merge?: (dispatched: unknown, answer: unknown) => unknown
+  ): void {
+    this.#client.setQueryData(
+      key,
+      merge === undefined ? answer : (dispatched: unknown) => merge(dispatched, answer)
+    );
+  }
 
   holds(key: QueryKey): boolean {
     return this.#client.getQueryState(key) !== undefined;

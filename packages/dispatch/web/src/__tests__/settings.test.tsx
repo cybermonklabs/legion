@@ -5,7 +5,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { cacheOf, QueryClient, QueryClientProvider } from "../api/cache/test-client";
+import {
+  answeredByDispatch,
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+} from "../api/cache/test-client";
 
 import { ApiError, api, repoProjectRequest } from "../api/client";
 import type { CreatedProject, Project, ProjectDefaultAssignee, RepoProject } from "../api/types";
@@ -739,15 +744,12 @@ function defaultAssigneeServer(initial: ProjectDefaultAssignee[]) {
       };
     },
     list: async (): Promise<ProjectDefaultAssignee[]> => rows.map((row) => ({ ...row })),
-    put: async (
-      project: string,
-      { assignee }: { assignee: string }
-    ): Promise<ProjectDefaultAssignee> => {
+    put: async (project: string, { assignee }: { assignee: string }) => {
       sent.push(assignee);
       await gate;
       rows = rows.filter((row) => row.project !== project);
       rows.push({ assignee, project });
-      return { assignee, project };
+      return answeredByDispatch<ProjectDefaultAssignee>({ assignee, project });
     },
     rows: () => rows,
     sent,
@@ -958,7 +960,7 @@ test("a default assignee save refused while Settings is unmounted shows its reas
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockImplementation(server.list);
   const refusal = Promise.withResolvers<ProjectDefaultAssignee>();
   const putDefault = spyOn(api, "putProjectDefaultAssignee")
-    .mockReturnValueOnce(refusal.promise)
+    .mockReturnValueOnce(refusal.promise.then(answeredByDispatch))
     .mockImplementation(server.put);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice@example.com" },

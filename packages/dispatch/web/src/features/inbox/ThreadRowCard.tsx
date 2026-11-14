@@ -3,10 +3,10 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { useCache } from "../../api/cache/cache";
-
+import { storeAgentState } from "../../api/cache/viewer-state";
 import { agentStateRequest, threadReadRequest } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
-import type { MyReplyRow, UserAgentState } from "../../api/types";
+import type { MyReplyRow } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -15,7 +15,6 @@ import {
   linkText,
   textMutedOnCanvas,
 } from "../../theme/classes";
-import { storeAgentState } from "../agents/unread";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { ThreadOwnerLine } from "./AskOwnerLink";
@@ -41,7 +40,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const cache = useCache();
   const read = inboxThreadRow(thread);
   const session = read.kind === "agent" ? read.session.id : undefined;
-  const markRead = useKeyedWrite<UserAgentState | undefined>({
+  const markRead = useKeyedWrite({
     label: () => "Thread marked read",
     // An Agent row is read by id, as every read of one is: its session's own read mark covers
     // replies in the live conversation and in its other threads, which this press has not

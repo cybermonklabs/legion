@@ -196,15 +196,17 @@ export function useAskAnswerForm({
       setJustAnswered(updatedAsk);
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
-          const changedAnswer = updatedAsk.answer;
-          cache.setDispatched<AskRead>(["ask-thread", ask.id], (current) =>
-            current === undefined
-              ? undefined
-              : {
-                  ...current,
-                  answers: [...(current.answers ?? []), changedAnswer],
-                  ask: updatedAsk,
-                }
+          cache.setDispatched(
+            ["ask-thread", ask.id],
+            updatedAsk,
+            (current: AskRead | undefined, record) =>
+              current === undefined || record.answer == null
+                ? undefined
+                : {
+                    ...current,
+                    answers: [...(current.answers ?? []), record.answer],
+                    ask: record,
+                  }
           );
         }
         void cache.invalidate({ queryKey: ["ask-thread", ask.id] });

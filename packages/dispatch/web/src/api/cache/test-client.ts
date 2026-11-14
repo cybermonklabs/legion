@@ -7,6 +7,7 @@ import {
   useQuery as useLibraryQuery,
 } from "@tanstack/react-query";
 
+import { type Answered, answered } from "./answered";
 import { libraryOptions, type ReadOptions } from "./read-options";
 
 /**
@@ -15,7 +16,9 @@ import { libraryOptions, type ReadOptions } from "./read-options";
  * a read's fetches - and the managers that stand for the browser's focus and connection. Only the
  * layer imports TanStack (`biome.json`), and lint refuses this module to every shipped module, so
  * a feature still holds a `Cache` and never a client. `cacheOf` hands a rig's client to code that
- * is handed the page's `Cache` (a write store, a kind's callback, the live socket).
+ * is handed the page's `Cache` (a write store, a kind's callback, the live socket). A rig seeds a
+ * cache through the client it holds (`QueryClient.setQueryData`), and hands code that takes
+ * Dispatch's answer a fixture as one (`answeredByDispatch`).
  */
 export type {
   InfiniteData,
@@ -34,6 +37,13 @@ export {
   QueryClientProvider,
 } from "@tanstack/react-query";
 export { cacheOf } from "./cache";
+
+/** `body` as Dispatch's answer, for a rig that plays Dispatch's part to code taking one - a
+ *  merge helper, the event log, `Cache.setDispatched`. The one mint outside the places Dispatch's
+ *  data enters the page (`answered.ts`), and only a test reaches it. */
+export function answeredByDispatch<T>(body: T): Answered<T> {
+  return answered(body);
+}
 
 /** TanStack's `QueryObserver` over a read's options as a feature builds them (`ReadOptions`):
  *  a rig's stand-in for a surface that renders the read, which sees Dispatch's data raw. */

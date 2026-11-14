@@ -35,7 +35,11 @@ test("Settings exposes a new personal token once, copies it, and revokes an exis
     name: "reviewer",
     token: "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG",
   });
-  const revokeAgentToken = answerAgentTokenRevokes().mockResolvedValue(undefined);
+  // Dispatch answers a revoke with nothing; the list read after it names the token revoked.
+  const revokeAgentToken = answerAgentTokenRevokes().mockImplementation(async () => {
+    listAgentTokens.mockResolvedValue([{ ...token, revoked_at: "2026-09-13T00:00:00Z" }]);
+    return undefined;
+  });
   const originalConfirm = window.confirm;
   const originalClipboard = navigator.clipboard;
   const writeText = spyOn({ writeText: async () => undefined }, "writeText");

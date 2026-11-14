@@ -1,9 +1,9 @@
 import { type ReactNode, useMemo } from "react";
 import { useCache } from "../../api/cache/cache";
+import { type EventPages, mergeEventPages } from "../../api/cache/event-log";
 import { replaceEqualDeep } from "../../api/cache/keys";
 import { useShownInfiniteQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
-import { type EventPages, mergeEventPages } from "../../api/event-feed";
 import type { UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import {

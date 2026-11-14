@@ -9,7 +9,7 @@ import {
   usersQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { CreateProjectInput, ProjectDefaultAssignee } from "../../api/types";
+import type { CreateProjectInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -360,10 +360,7 @@ function useDefaultAssigneeWrite(project: string): {
   const cache = useCache();
   const defaultsKey = projectDefaultAssigneesQuery().queryKey;
   const mutationKey = ["project-default-assignee", project];
-  const mutation = useKeyedWrite<
-    ProjectDefaultAssignee | DefaultAssigneeSuperseded,
-    DefaultAssigneePick
-  >({
+  const mutation = useKeyedWrite({
     mutationKey,
     scope: { id: `project-default-assignee:${project}` },
     // A refused save stays in the cache, with no row observing it, until a newer save of the
@@ -371,9 +368,9 @@ function useDefaultAssigneeWrite(project: string): {
     gcTime: Number.POSITIVE_INFINITY,
     // The row shows its newest save's refusal itself, beside the control it was refused over.
     inline: true,
-    label: (pick) => `${project}'s default assignee ${pick.assignee}`,
+    label: (pick: DefaultAssigneePick) => `${project}'s default assignee ${pick.assignee}`,
     unlined: "one project's picks are ordered by the newest press, not by a line (`scope`)",
-    write: async (pick, bounds): Promise<ProjectDefaultAssignee | DefaultAssigneeSuperseded> => {
+    write: async (pick: DefaultAssigneePick, bounds) => {
       // The page lists mutations in the order they were made, so the last pending one is the
       // newest pick. Any other is waiting behind this save, and only it need reach the server.
       const waiting = cache.mutations<DefaultAssigneePick>({
@@ -382,7 +379,8 @@ function useDefaultAssigneeWrite(project: string): {
         status: "pending",
       });
       if (waiting.at(-1)?.variables !== pick) {
-        return { superseded: true };
+        const superseded: DefaultAssigneeSuperseded = { superseded: true };
+        return superseded;
       }
       return api.putProjectDefaultAssignee(project, { assignee: pick.assignee }, bounds);
     },
@@ -393,13 +391,11 @@ function useDefaultAssigneeWrite(project: string): {
       if (saved === null || "superseded" in saved) {
         return;
       }
-      cache.setDispatched<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
-        if (rows === undefined) {
-          return rows;
-        }
-        const others = rows.filter((row) => row.project !== saved.project);
-        return [...others, saved];
-      });
+      cache.setDispatched(
+        defaultsKey,
+        saved,
+        (rows, answer) => rows && [...rows.filter((row) => row.project !== answer.project), answer]
+      );
     },
     onSettled: (saved) => {
       // With gcTime Infinity nothing else clears this project's saves. A save settles in pick

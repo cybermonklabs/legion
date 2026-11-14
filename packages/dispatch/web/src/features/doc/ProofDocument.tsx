@@ -400,16 +400,22 @@ export function ProofDocument({
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      cache.setDispatched<Artifact>(["artifact", artifact.id], (current) => {
-        const source = current ?? artifact;
-        return {
-          ...source,
-          versions: [
-            ...(source.versions ?? []).filter(({ number }) => number !== created.number),
-            created,
-          ],
-        };
-      });
+      // Folded into the document the cache holds, Dispatch's own; a document not read yet is
+      // filled by its own read, never by the one this surface was handed.
+      cache.setDispatched(
+        ["artifact", artifact.id],
+        created,
+        (current: Artifact | undefined, version) =>
+          current === undefined
+            ? undefined
+            : {
+                ...current,
+                versions: [
+                  ...(current.versions ?? []).filter(({ number }) => number !== version.number),
+                  version,
+                ],
+              }
+      );
       onVersionChange(created.number);
     },
   });

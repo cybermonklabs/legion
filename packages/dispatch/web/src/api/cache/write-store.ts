@@ -106,10 +106,11 @@ export type Attempt<T> = (bounds: WriteBounds) => Promise<T>;
 
 /**
  * A kind of write: what its record is (`D`) and how it is kept (`K`), checked as a reload reads it
- * (`kept`), and what the store does for it beyond making it. Every kind is defined once
- * (`defineWriteKind`), so a reload finds any kept write's kind by its `name`.
+ * (`kept`), what its attempts answer (`A`, which its `landed` is handed), and what the store does
+ * for it beyond making it. Every kind is defined once (`defineWriteKind`), so a reload finds any
+ * kept write's kind by its `name`.
  */
-export interface WriteKind<D, K = D> {
+export interface WriteKind<D, K = D, A = unknown> {
   readonly name: string;
   readonly kept: Shape<K>;
   /** The record as it is kept; left out, the record itself. */
@@ -119,12 +120,14 @@ export interface WriteKind<D, K = D> {
   /** One attempt of a write of this kind a reload took up, from its record and the request it
    *  last went out as; left out, that request verbatim. `undefined` has nothing to make, and the
    *  write is let go. */
-  readonly resume?: (detail: D, request: WriteRequest | null) => Attempt<unknown> | undefined;
+  readonly resume?: (detail: D, request: WriteRequest | null) => Attempt<A> | undefined;
   /** What a write of this kind that landed refreshes, whether or not a surface awaits it:
-   *  `answer` is Dispatch's, `null` for a landing it had no answer to give for, and `awaited`
-   *  says whether the surface that made it is still waiting for it. Left out, every query is read
-   *  again for a write no surface awaits and for a landing without an answer. */
-  readonly landed?: (cache: Cache, write: Write<D>, answer: unknown, awaited: boolean) => void;
+   *  `answer` is Dispatch's, as the kind's attempts answer it (`A`: `Answered` where they are a
+   *  client method's, so the kind can write it into a cache), `null` for a landing it had no
+   *  answer to give for, and `awaited` says whether the surface that made it is still waiting for
+   *  it. Left out, every query is read again for a write no surface awaits and for a landing
+   *  without an answer. */
+  readonly landed?: (cache: Cache, write: Write<D>, answer: A | null, awaited: boolean) => void;
   /** What a write of this kind undoes once it is refused, discarded or dropped. */
   readonly undone?: (cache: Cache, write: Write<D>) => void;
   /** What a kind lets go of once whoever is signed in changes, or the person signs out: what it
@@ -144,19 +147,21 @@ export interface WriteKind<D, K = D> {
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: each write's record is read only by its own kind.
-type AnyKind = WriteKind<any, any>;
+type AnyKind = WriteKind<any, any, any>;
 
 const kinds = new Map<string, AnyKind>();
 
 /** Defines a kind of write, once, so a reload finds it by name. */
-export function defineWriteKind<D, K = D>(kind: WriteKind<D, K>): WriteKind<D, K> {
+export function defineWriteKind<D, K = D, A = unknown>(
+  kind: WriteKind<D, K, A>
+): WriteKind<D, K, A> {
   kinds.set(kind.name, kind);
   return kind;
 }
 
 /** `write` as a write of `kind`, with its record typed, or `undefined` for another kind's. A
  *  write's record is only ever made by its own kind (`run`, `resume`). */
-export function ofKind<D, K>(write: Write, kind: WriteKind<D, K>): Write<D> | undefined {
+export function ofKind<D, K, A>(write: Write, kind: WriteKind<D, K, A>): Write<D> | undefined {
   return write.kind === kind.name ? (write as Write<D>) : undefined;
 }
 
@@ -225,7 +230,7 @@ export type WriteChange = (shown: Shown) => void;
 /** One write to make: its kind and record, what the indicator names it, where it shows, the line
  *  it is ordered on, and how it is made - from its request alone, or by an attempt of its
  *  own. */
-export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
+export type WriteSpec<T, D, K, A = unknown> = WriteSpecBase<D, K, A> &
   WriteLine &
   (
     | {
@@ -246,8 +251,8 @@ export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
       }
   );
 
-interface WriteSpecBase<D, K> {
-  readonly kind: WriteKind<D, K>;
+interface WriteSpecBase<D, K, A> {
+  readonly kind: WriteKind<D, K, A>;
   readonly detail: D;
   readonly label: string;
   readonly presentation: Presentation;
@@ -832,7 +837,7 @@ export class Writes {
    *  (`endsWithSession`) holds every other write of its person until Dispatch answers it, as
    *  another tab's does (`holdFor`): refused, they go on; landed, they wait for the page to let
    *  them go (`clear`). */
-  run<T, D, K>(spec: WriteSpec<T, D, K>): Promise<T | null> {
+  run<T extends A, D, K, A = unknown>(spec: WriteSpec<T, D, K, A>): Promise<T | null> {
     const { label, request } = spec;
     if (spec.target === undefined && spec.unlined === undefined) {
       return Promise.reject(
@@ -1043,7 +1048,7 @@ export class Writes {
 
   /** Writes `change` over the record of the refused write `id`, a write of `kind`: what the
    *  reader wrote over a refusal, which its Retry sends and a reload restores. */
-  amend<D, K>(id: number, kind: WriteKind<D, K>, change: (detail: D) => D): void {
+  amend<D, K, A>(id: number, kind: WriteKind<D, K, A>, change: (detail: D) => D): void {
     const entry = this.#entries.get(id);
     const write = entry === undefined ? undefined : ofKind(entry.write, kind);
     if (entry === undefined || write?.status !== "refused") return;

@@ -4,6 +4,7 @@ import { useCache } from "../../api/cache/cache";
 import type { MutationKey } from "../../api/cache/keys";
 import { queryOptions } from "../../api/cache/read-options";
 import { useShownQuery } from "../../api/cache/shown-query";
+import { storeIssueState } from "../../api/cache/viewer-state";
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
 import type {
@@ -39,7 +40,7 @@ import {
 } from "../../theme/classes";
 import { deliveryAttempts } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
-import { storeIssueState, writePin } from "../issue/pin-write";
+import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
 import { ThreadCard } from "../margin/ThreadCard";
 import { type CommentActionFailure, useCommentActionQueue } from "../margin/useCommentActionQueue";

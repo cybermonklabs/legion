@@ -1,15 +1,18 @@
 import { expect, spyOn, test } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { mergeEventPages, prependEventToLog } from "../api/cache/event-log";
 import { refreshQueries } from "../api/cache/query-refresh";
-import { cacheOf, QueryClient, QueryClientProvider, type QueryKey } from "../api/cache/test-client";
+import {
+  answeredByDispatch,
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+  type QueryKey,
+} from "../api/cache/test-client";
 
 import { api } from "../api/client";
-import {
-  markAskThreadsSeededByAnInFlightInbox,
-  mergeEventPages,
-  prependEventToLog,
-} from "../api/event-feed";
+import { markAskThreadsSeededByAnInFlightInbox } from "../api/event-feed";
 import { askThreadsIssue, eventRefreshTargets } from "../api/event-refresh";
 import {
   architectureSourcesQuery,
@@ -1635,7 +1638,10 @@ test("a feed event prepends a newer event to the loaded log page", () => {
     pageParams: [null],
     pages: [[event("message.created", {}, { id: 7, seq: 7 })]],
   });
-  prependEventToLog(cacheOf(client), event("message.created", {}, { id: 8, seq: 8 }));
+  prependEventToLog(
+    cacheOf(client),
+    answeredByDispatch(event("message.created", {}, { id: 8, seq: 8 }))
+  );
   expect(client.getQueryData<{ pages: DispatchEvent[][] }>(["events", "CORE-1"])?.pages[0]).toEqual(
     [
       event("message.created", {}, { id: 8, seq: 8 }),

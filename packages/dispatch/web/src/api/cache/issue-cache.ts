@@ -1,4 +1,5 @@
 import type { Artifact, DocumentRole, Issue, IssueDetails } from "../types";
+import type { Answered } from "./answered";
 import type { Cache } from "./cache";
 
 /** The issue's primary document (its spec), or undefined until the details have loaded. */
@@ -43,15 +44,15 @@ export function roleDocument(
  * is merged into Dispatch's issue and that pick stays over it; a response older than the issue
  * held is kept out by the issue read's own rule (`issueQuery`).
  */
-export function mergeIssue(cache: Cache, next: Issue): void {
-  cache.setDispatched<IssueDetails>(["issue", next.key], (current) => {
+export function mergeIssue(cache: Cache, next: Answered<Issue>): void {
+  cache.setDispatched(["issue", next.key], next, (current: IssueDetails | undefined, issue) => {
     if (current === undefined) {
       return undefined;
     }
     const reach =
-      current.route === next.route
+      current.route === issue.route
         ? {}
         : { route_status: null, route_holder: null, route_status_reason: null };
-    return { ...current, ...next, ...reach };
+    return { ...current, ...issue, ...reach };
   });
 }

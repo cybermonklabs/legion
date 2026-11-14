@@ -1,5 +1,5 @@
 import type { Cache } from "../../api/cache/cache";
-
+import { storeIssueState } from "../../api/cache/viewer-state";
 import { defineWriteKind, liveWrite, ofKind, type Writes } from "../../api/cache/write-store";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { UserIssueState, UserState } from "../../api/types";
@@ -44,10 +44,11 @@ function staleState(error: unknown): UserIssueState | undefined {
  * One attempt of a pin: the viewer's state of the issue - as the last pin's answer left it, or
  * read afresh - with the item pinned or unpinned, put back under the next sequence. Dispatch
  * answers a write another tab or device got in first with `STATE_STALE` and its current row,
- * which the pin is put on once more.
+ * which the pin is put on once more. It answers with Dispatch's answer to the write, which the
+ * kind writes into the viewer's state once the issue's last pin lands.
  */
 function pinAttempt({ issueKey, operation }: PinWrite) {
-  return async (bounds: WriteBounds): Promise<UserIssueState> => {
+  return async (bounds: WriteBounds) => {
     let base = authoritative.get(issueKey) ?? stateForIssue(await api.getMyState(), issueKey);
     for (let stale = 0; ; stale += 1) {
       try {
@@ -77,17 +78,6 @@ function pinsOut(writes: Writes, issueKey: string): boolean {
   });
 }
 
-/** Puts the viewer's state of `issueKey` Dispatch answered with - a pin's, a header pin's, a read
- *  mark's - into the viewer's state (`["user-state"]`), so every surface reads it at once. The
- *  cache holds only Dispatch's answers, so a pin of any issue still out stays composed over it
- *  and none is carried into Dispatch's state. */
-export function storeIssueState(cache: Cache, issueKey: string, next: UserIssueState): void {
-  cache.setDispatched<UserState>(["user-state"], (current) => ({
-    ...current,
-    [issueKey]: next,
-  }));
-}
-
 /**
  * A pin or an unpin, one write of the store each, ordered on its issue (`pin:<issue>`), shown in
  * the shell's indicator and kept across a reload. The write shows its change on `["user-state"]`
@@ -100,7 +90,7 @@ export function storeIssueState(cache: Cache, issueKey: string, next: UserIssueS
  * state afresh. The states pins' answers left go with the person signed in (`reset`), so another
  * person's next pin never writes over them.
  */
-const pinWrite = defineWriteKind<PinWrite>({
+const pinWrite = defineWriteKind({
   kept: keptPin,
   landed: (cache, write, answer) => {
     const { issueKey } = write.detail;
@@ -110,11 +100,11 @@ const pinWrite = defineWriteKind<PinWrite>({
       void cache.invalidate({ queryKey: ["user-state"] });
       return;
     }
-    storeIssueState(cache, issueKey, answer as UserIssueState);
+    storeIssueState(cache, issueKey, answer);
   },
   name: "pin",
   reset: () => authoritative.clear(),
-  resume: (detail) => pinAttempt(detail),
+  resume: (detail: PinWrite) => pinAttempt(detail),
   undone: (_cache, write) => {
     authoritative.delete(write.detail.issueKey);
   },

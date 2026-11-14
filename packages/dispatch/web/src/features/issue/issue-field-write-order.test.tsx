@@ -8,6 +8,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { mergeIssue } from "../../api/cache/issue-cache";
 import { useShownQuery } from "../../api/cache/shown-query";
 import {
+  answeredByDispatch,
   cacheOf,
   QueryClient,
   QueryClientProvider,
@@ -504,7 +505,10 @@ test("an issue answer merged while a pick is out stays once the pick is refused 
     expect(shown()?.priority).toBe(3);
 
     // The assignee's save lands meanwhile, and its answer is merged into the issue.
-    mergeIssue(cacheOf(client), { ...issue, assignee: "bob", updated_at: "2026-09-09T00:01:00Z" });
+    mergeIssue(
+      cacheOf(client),
+      answeredByDispatch({ ...issue, assignee: "bob", updated_at: "2026-09-09T00:01:00Z" })
+    );
     expect(shown()).toMatchObject({ assignee: "bob", priority: 3 });
 
     refused.reject(new ApiError(422, { code: "INVALID_PRIORITY", error: "not a priority" }));
@@ -608,7 +612,10 @@ test("an older issue answer merged while a pick is out leaves the issue Dispatch
     expect(shown()?.priority).toBe(0);
 
     // Another field's save, answered with the issue as it stood earlier.
-    mergeIssue(cacheOf(client), { ...issue, priority: 1, updated_at: "2026-09-09T00:02:00Z" });
+    mergeIssue(
+      cacheOf(client),
+      answeredByDispatch({ ...issue, priority: 1, updated_at: "2026-09-09T00:02:00Z" })
+    );
     expect(shown()).toMatchObject({ priority: 0, updated_at: later });
 
     online = false;

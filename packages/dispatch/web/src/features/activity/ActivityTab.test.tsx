@@ -3,10 +3,15 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import { prependEventToLog } from "../../api/cache/event-log";
+import {
+  answeredByDispatch,
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+} from "../../api/cache/test-client";
 
 import { ApiError, api } from "../../api/client";
-import { prependEventToLog } from "../../api/event-feed";
 import type { Query } from "../../api/paths";
 import type { Agent, DispatchEvent, UserIssueState, UserState } from "../../api/types";
 import { ActivityTab } from "./ActivityTab";
@@ -217,7 +222,7 @@ test("a pin the server refuses shows refused in the store, and Retry re-sends it
       if (refuse) {
         throw new ApiError(409, { code: "PIN_REFUSED", error: "refused" });
       }
-      return { ...issueState(9), dismissed, seq: input.seq ?? 1 };
+      return answeredByDispatch({ ...issueState(9), dismissed, seq: input.seq ?? 1 });
     };
     unmount = renderTab({ "CORE-1": issueState(9) }, queryClient).unmount;
     await user.click(await screen.findByRole("button", { name: "Pin" }));
@@ -313,7 +318,7 @@ test("an event arriving while the reader is in the history leaves their row wher
     const before = reading?.getBoundingClientRect().top;
 
     act(() => {
-      prependEventToLog(cacheOf(queryClient), message(13));
+      prependEventToLog(cacheOf(queryClient), answeredByDispatch(message(13)));
     });
     await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(13));
 

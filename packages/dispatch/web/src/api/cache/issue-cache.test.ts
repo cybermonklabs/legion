@@ -6,7 +6,7 @@ import { api } from "../client";
 import { issueQuery } from "../queries";
 import type { IssueDetails } from "../types";
 import { mergeIssue } from "./issue-cache";
-import { cacheOf, QueryObserver } from "./test-client";
+import { answeredByDispatch, cacheOf, QueryObserver } from "./test-client";
 
 function cachedAfterPatch(before: IssueDetails, patch: Partial<IssueDetails>): IssueDetails {
   const queryClient = new QueryClient();
@@ -18,7 +18,7 @@ function cachedAfterPatch(before: IssueDetails, patch: Partial<IssueDetails>): I
     route_status_reason: _reason,
     ...response
   } = { ...before, ...patch };
-  mergeIssue(cacheOf(queryClient), response);
+  mergeIssue(cacheOf(queryClient), answeredByDispatch(response));
   const cached = queryClient.getQueryData<IssueDetails>(["issue", before.key]);
   if (cached === undefined) throw new Error("the merge dropped the cached issue");
   return cached;
@@ -78,11 +78,14 @@ test("a slow GET answered after a PATCH leaves the PATCH's answer in place", asy
 
     const refetch = observer.refetch();
     const { artifacts: _artifacts, children: _children, open_asks: _asks, ...issue } = read;
-    mergeIssue(cacheOf(queryClient), {
-      ...issue,
-      status: "done",
-      updated_at: "2026-10-01T00:00:00.123456Z",
-    });
+    mergeIssue(
+      cacheOf(queryClient),
+      answeredByDispatch({
+        ...issue,
+        status: "done",
+        updated_at: "2026-10-01T00:00:00.123456Z",
+      })
+    );
     slow.resolve(read);
     await refetch;
     expect(cached()).toMatchObject({ status: "done", updated_at: "2026-10-01T00:00:00.123456Z" });

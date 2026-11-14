@@ -171,8 +171,11 @@ export function DeclineControl({
       setOpen(false);
       // The card reads its ask from the thread, so the record it swaps to is this decline.
       if (declined !== null) {
-        cache.setDispatched<AskRead>(["ask-thread", ask.id], (current) =>
-          current === undefined ? undefined : { ...current, ask: declined }
+        cache.setDispatched(
+          ["ask-thread", ask.id],
+          declined,
+          (current: AskRead | undefined, record) =>
+            current === undefined ? undefined : { ...current, ask: record }
         );
       }
       void cache.invalidate({ queryKey: ["ask-thread", ask.id] });

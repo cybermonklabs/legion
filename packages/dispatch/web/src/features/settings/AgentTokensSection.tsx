@@ -212,11 +212,13 @@ export function AgentTokensSection(): ReactNode {
           .then(() => setRereadAt(Date.now()));
         return;
       }
-      const { token, ...safeToken } = created;
-      cache.setDispatched<AgentToken[]>(agentTokensQueryKey, (current = []) => [
-        safeToken,
-        ...current,
-      ]);
+      // The list holds the token as Dispatch made it, without the value it shows once.
+      cache.setDispatched(
+        agentTokensQueryKey,
+        created,
+        (current: AgentToken[] | undefined, { token, ...madeToken }) =>
+          current === undefined ? undefined : [madeToken, ...current]
+      );
       setShownToken(created);
       resetCopyStatus();
     },
@@ -225,13 +227,9 @@ export function AgentTokensSection(): ReactNode {
     label: (id: string) => `Agent token ${id} revoked`,
     request: (id: string) => agentTokenRevokeRequest(id),
     target: (id) => `agent-token:${id}`,
-    onSuccess: (_result, id) => {
-      cache.setDispatched<AgentToken[]>(agentTokensQueryKey, (current = []) =>
-        current.map((token) =>
-          token.id === id ? { ...token, revoked_at: new Date().toISOString() } : token
-        )
-      );
-    },
+    // Dispatch answers a revoke with nothing, so the list is read again for the token as it now
+    // stands, revoked when Dispatch says it was.
+    onSuccess: () => cache.invalidate({ queryKey: agentTokensQueryKey }),
   });
   /** One row's two boxes, written as the whole set the token is to hold. The row reads the set
    *  back from the list, so the boxes follow the write rather than the press. */
@@ -241,11 +239,14 @@ export function AgentTokensSection(): ReactNode {
     request: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
       agentTokenScopesRequest(input.id, input.scopes),
     target: (input) => `agent-token:${input.id}`,
-    onSuccess: (updated, input) => {
-      cache.setDispatched<AgentToken[]>(agentTokensQueryKey, (current = []) =>
-        current.map((token) =>
-          token.id === input.id ? (updated ?? { ...token, scopes: input.scopes }) : token
-        )
+    // Updated with no answer to give: the store reads every query again.
+    onSuccess: (updated) => {
+      if (updated === null) return;
+      cache.setDispatched(
+        agentTokensQueryKey,
+        updated,
+        (current: AgentToken[] | undefined, answer) =>
+          current?.map((token) => (token.id === answer.id ? answer : token))
       );
     },
   });

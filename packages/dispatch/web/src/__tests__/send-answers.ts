@@ -251,11 +251,17 @@ export const answerIssueStates = () =>
     (key: string, input: Partial<UserIssueState>, bounds: WriteBounds) => Promise<UserIssueState>
   >("PUT", "/api/v1/me/issues/*/state");
 
+/** How a test answers `PUT /api/v1/me/agents/{session}/state`: the session, the change, the
+ *  bounds. */
+export type AgentStateAnswer = (
+  session: string,
+  input: UserAgentStateInput,
+  bounds: WriteBounds
+) => Promise<UserAgentState>;
+
 /** `PUT /api/v1/me/agents/{session}/state` (`agentStateRequest`). */
 export const answerAgentStates = () =>
-  answerRoute<
-    (session: string, input: UserAgentStateInput, bounds: WriteBounds) => Promise<UserAgentState>
-  >("PUT", "/api/v1/me/agents/*/state");
+  answerRoute<AgentStateAnswer>("PUT", "/api/v1/me/agents/*/state");
 
 /** `PUT /api/v1/me/threads/{id}/read` (`threadReadRequest`). */
 export const answerThreadReads = () =>

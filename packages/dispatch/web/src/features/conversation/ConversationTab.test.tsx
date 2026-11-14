@@ -14,6 +14,7 @@ import {
   type Placement,
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { seedUnread } from "../../__tests__/replies-seed";
 import {
   answerCommentActions,
   answerIssueStates,
@@ -21,6 +22,7 @@ import {
 } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
 import {
+  answeredByDispatch,
   cacheOf,
   QueryClient,
   QueryClientProvider,
@@ -52,7 +54,6 @@ import { pinnedItemMarker } from "../issue/pins";
 import { stubMatchMedia } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { seedUnread } from "../threads/replies-fixture";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
 
@@ -507,7 +508,7 @@ test("each refused pin is retried on its own, over the state Dispatch holds", as
         throw new ApiError(409, { code: "PIN_REFUSED", error: "refused" });
       }
       saved = input.dismissed ?? [];
-      return issueState(saved);
+      return answeredByDispatch(issueState(saved));
     };
 
     unmount = render(tab({ "CORE-1": issueState() }, true, queryClient)).unmount;

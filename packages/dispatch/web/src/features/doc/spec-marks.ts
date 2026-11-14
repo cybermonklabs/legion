@@ -175,7 +175,7 @@ export function useSpecMarks({
         ? { key: `${artifact.id}@${shownVersion}`, value: shownVersion }
         : undefined,
     onSuccess: (result) => cache.setDispatched(readKey, result),
-    request: (version) => documentReadRequest(artifact.id, version),
+    request: (version: number) => documentReadRequest(artifact.id, version),
     shouldSend: true,
     target: `read:document:${artifact.id}`,
   });

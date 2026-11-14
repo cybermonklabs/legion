@@ -10,7 +10,7 @@ import {
   type FakeLiveSockets,
   installFakeLiveSockets,
 } from "../../__tests__/live-socket-harness";
-import { answerAgentStates } from "../../__tests__/send-answers";
+import { type AgentStateAnswer, answerAgentStates } from "../../__tests__/send-answers";
 import { liveSocketFor } from "../../api/cache/live-socket";
 import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
@@ -132,7 +132,7 @@ afterEach(() => {
 });
 
 /** Dispatch's reads, signed in as sami, and the one write these rows make: the read mark. */
-function mockDispatch(agentState: UserAgentStates = {}): Mock<typeof api.putAgentState> {
+function mockDispatch(agentState: UserAgentStates = {}): Mock<AgentStateAnswer> {
   const putAgentState = answerAgentStates().mockImplementation(async (_session, input) => ({
     cleared_before: input.cleared_before ?? undefined,
     read_through: input.read_through ?? undefined,
@@ -247,9 +247,7 @@ function replay(socket: FakeLiveSocket, session: string, frames: readonly AgentS
 }
 
 /** Every read mark the page sent, as the session it was for and how far it read. */
-function readMarks(
-  putAgentState: Mock<typeof api.putAgentState>
-): [string, string | null | undefined][] {
+function readMarks(putAgentState: Mock<AgentStateAnswer>): [string, string | null | undefined][] {
   return putAgentState.mock.calls.map(([session, input]) => [session, input.read_through]);
 }
 

@@ -12,6 +12,7 @@ import {
   type InboxThreadKind,
 } from "@legion/contracts";
 
+import type { Answered } from "./cache/answered";
 import {
   type Answer,
   type Body,
@@ -200,6 +201,12 @@ export interface WriteRequest<T = unknown> {
   readonly body?: unknown;
   readonly [answeredWith]?: T;
 }
+
+/** What Dispatch answers operation `O` with, as a write's answer is typed: `Answered`, so a
+ *  surface can write it into a cache (`Cache.setDispatched`), or `undefined` for a route that
+ *  answers nothing. This module mints the brand for every write answer (`send`), and only this
+ *  module and the cache layer name it (`biome.json`). */
+type WriteAnswer<O> = [Answer<O>] extends [undefined] ? undefined : Answered<Answer<O>>;
 
 /** One attempt of a write, as the one write path (`Writes.run`) hands it over from the press it
  *  belongs to: the key that names the person's action - minted when the person acts, the same on
@@ -416,23 +423,30 @@ export type DeclineAskInput = Body<"/api/v1/asks/{id}/decline", "post">;
  *  it uppercases to, which is `WRITE_METHODS`' member of the same name. */
 type WriteVerb = Lowercase<WriteMethod>;
 
+/** A write's request to `path`, whose answer the builder that returns it names (the request
+ *  carries none, so it is every `WriteRequest<T>`). */
+function requestTo(verb: WriteVerb, path: string, body: unknown): WriteRequest<never> {
+  return {
+    ...(body === undefined ? {} : { body }),
+    method: verb.toUpperCase() as WriteMethod,
+    path,
+  };
+}
+
 /**
  * One write as it goes to Dispatch, named by the route pattern the document holds it under: the
  * URL built from `params` (`routeUrl`, which throws for a parameter the pattern does not hold or
  * has no value for), the body the document gives that route, and - for the type checker alone -
- * the body the document says it is answered with. Nothing here restates a wire shape.
+ * the body the document says it is answered with, as Dispatch's answer (`WriteAnswer`). Nothing
+ * here restates a wire shape.
  */
 export function writeRequest<M extends WriteVerb, P extends PathsOf<M>>(
   verb: M,
   pattern: P,
   params: PathParams<Op<P, M>>,
   body?: RequestBody<Op<P, M>> | FormBody<Op<P, M>>
-): WriteRequest<Answer<Op<P, M>>> {
-  return {
-    ...(body === undefined ? {} : { body }),
-    method: verb.toUpperCase() as WriteMethod,
-    path: routeUrl(pattern, params),
-  };
+): WriteRequest<WriteAnswer<Op<P, M>>> {
+  return requestTo(verb, routeUrl(pattern, params), body);
 }
 
 /** The same-origin URL of one GET route, for a reader that makes no request of its own (an
@@ -999,10 +1013,11 @@ export class DispatchApiClient {
    * the person acts (`Writes.run`), never here; so is `bounds.login` (`Dispatch-Login`), the
    * person who pressed it. A JSON body goes as JSON and a multipart form as itself, through the
    * upload transport; `bounds.sent` is told the request as it goes out. Answers what Dispatch
-   * answered (nothing for an empty body), as the request's builder names it (`WriteRequest`), or
-   * rejects with its refusal; a 2xx whose body is not JSON rejects with `UnreadableAnswerError`, a
-   * 2xx whose body stops part way with `NetworkError`, and a replay of an answer Dispatch did not
-   * keep with `AnswerNotKeptError`.
+   * answered (nothing for an empty body), as the request's builder names it (`WriteRequest`):
+   * `Answered` for every builder of this module (`WriteAnswer`), the mint of a write's answer, so
+   * a surface can write it into a cache. Or rejects with its refusal; a 2xx whose body is not JSON
+   * rejects with `UnreadableAnswerError`, a 2xx whose body stops part way with `NetworkError`, and
+   * a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
    */
   send<T>(
     request: WriteRequest<T>,
@@ -1050,6 +1065,7 @@ export class DispatchApiClient {
           typeof reason === "string" ? reason : "Dispatch did not keep this write's answer"
         );
       }
+      // Dispatch's body, as the request names it: for this module's builders, the brand's mint.
       return answer as T;
     };
     return this.exchange(path, init, deadlineMs, read, progress);
@@ -1073,22 +1089,24 @@ export class DispatchApiClient {
     return this.json<Json200<Op<P, "get">>>(routeUrl(pattern, params, query), init, deadlineMs);
   }
 
+  /** `request`'s answer as its plain body, for a method whose answer no surface writes into a
+   *  cache. A method whose answer one does answers `Answered` (`send` with its builder's
+   *  request): `putIssueState`, `putAgentState`, `putProjectDefaultAssignee` and
+   *  `createArtifactVersion`, beside every write made from its request alone. */
+  private sendBody<T>(request: WriteRequest<Answered<T>>, bounds: WriteBounds): Promise<T> {
+    return this.send<T>(request, bounds);
+  }
+
   private async post<P extends PathsOf<"post">>(
     pattern: P,
     params: PathParams<Op<P, "post">>,
     body: RequestBody<Op<P, "post">> | FormBody<Op<P, "post">>,
     bounds: WriteBounds
   ): Promise<Answer<Op<P, "post">>> {
-    return this.send<Answer<Op<P, "post">>>(writeRequest("post", pattern, params, body), bounds);
-  }
-
-  private async put<P extends PathsOf<"put">>(
-    pattern: P,
-    params: PathParams<Op<P, "put">>,
-    body: RequestBody<Op<P, "put">>,
-    bounds: WriteBounds
-  ): Promise<Answer<Op<P, "put">>> {
-    return this.send<Answer<Op<P, "put">>>(writeRequest("put", pattern, params, body), bounds);
+    return this.send<Answer<Op<P, "post">>>(
+      requestTo("post", routeUrl(pattern, params), body),
+      bounds
+    );
   }
 
   private async patch<P extends PathsOf<"patch">>(
@@ -1097,7 +1115,10 @@ export class DispatchApiClient {
     body: RequestBody<Op<P, "patch">>,
     bounds: WriteBounds
   ): Promise<Answer<Op<P, "patch">>> {
-    return this.send<Answer<Op<P, "patch">>>(writeRequest("patch", pattern, params, body), bounds);
+    return this.send<Answer<Op<P, "patch">>>(
+      requestTo("patch", routeUrl(pattern, params), body),
+      bounds
+    );
   }
 
   private async remove<P extends PathsOf<"delete">>(
@@ -1105,7 +1126,10 @@ export class DispatchApiClient {
     params: PathParams<Op<P, "delete">>,
     bounds: WriteBounds
   ): Promise<Answer<Op<P, "delete">>> {
-    return this.send<Answer<Op<P, "delete">>>(writeRequest("delete", pattern, params), bounds);
+    return this.send<Answer<Op<P, "delete">>>(
+      requestTo("delete", routeUrl(pattern, params), undefined),
+      bounds
+    );
   }
 
   /** The block schema. The route answers pre-rendered JSON bytes (`pmdoc.SchemaJSON`), so the
@@ -1145,7 +1169,10 @@ export class DispatchApiClient {
     input: Body<"/api/v1/projects/{key}/default-assignee", "put">,
     bounds: WriteBounds
   ) {
-    return this.put("/api/v1/projects/{key}/default-assignee", { key: project }, input, bounds);
+    return this.send(
+      writeRequest("put", "/api/v1/projects/{key}/default-assignee", { key: project }, input),
+      bounds
+    );
   }
 
   /** Every project's architecture sources, by project and then in the order each was added. */
@@ -1338,7 +1365,7 @@ export class DispatchApiClient {
     input: Body<"/api/v1/issues/{key}/comments", "post">,
     bounds: WriteBounds
   ) {
-    return this.send(issueCommentRequest(key, input), bounds);
+    return this.sendBody(issueCommentRequest(key, input), bounds);
   }
 
   getComment(id: string) {
@@ -1383,7 +1410,7 @@ export class DispatchApiClient {
     input: Body<"/api/v1/agents/{session_id}/messages", "post">,
     bounds: WriteBounds
   ) {
-    return this.send(agentMessageRequest(sessionID, input), bounds);
+    return this.sendBody(agentMessageRequest(sessionID, input), bounds);
   }
 
   listAgentMessages(sessionID: string) {
@@ -1524,7 +1551,10 @@ export class DispatchApiClient {
     input: Body<"/api/v1/artifacts/{id}/versions", "post">,
     bounds: WriteBounds
   ) {
-    return this.post("/api/v1/artifacts/{id}/versions", { id }, input, bounds);
+    return this.send(
+      writeRequest("post", "/api/v1/artifacts/{id}/versions", { id }, input),
+      bounds
+    );
   }
 
   listArtifactReviews(id: string) {
@@ -1556,7 +1586,7 @@ export class DispatchApiClient {
     input: Body<"/api/v1/artifacts/{id}/comments", "post">,
     bounds: WriteBounds
   ) {
-    return this.send(artifactCommentRequest(id, input), bounds);
+    return this.sendBody(artifactCommentRequest(id, input), bounds);
   }
 
   getArtifactSubscribers(id: string) {

@@ -4,16 +4,17 @@ import { createElement, type ReactNode } from "react";
 
 import { answerAgentStates } from "../../__tests__/send-answers";
 import {
+  answeredByDispatch,
   cacheOf,
   QueryClient,
   QueryClientProvider,
   QueryObserver,
 } from "../../api/cache/test-client";
+import { storeAgentState } from "../../api/cache/viewer-state";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
 import { legacyPinnedIds, pinnedAgentSessions, useAgentPinWrite } from "./pins";
-import { storeAgentState } from "./unread";
 
 // The rail lists the person's pins oldest first (INFRA-812, R1), so the agent they pinned first
 // keeps the top row however their agent state is keyed, and a session they have only read or
@@ -198,7 +199,11 @@ test("an agent state answer merged while a pin is out stays once the pin is refu
 
     // The tester's conversation is read on another surface while the pin is out.
     act(() => {
-      storeAgentState(cacheOf(queryClient), "tester-session", { unread_replies: 0 });
+      storeAgentState(
+        cacheOf(queryClient),
+        "tester-session",
+        answeredByDispatch({ unread_replies: 0 })
+      );
     });
     expect(pinnedAgentSessions(states())).toEqual(["planner-session"]);
 

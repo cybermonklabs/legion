@@ -11,6 +11,7 @@ import { Link } from "react-router-dom";
 import { useCache } from "../../api/cache/cache";
 import { mergeIssue } from "../../api/cache/issue-cache";
 import { useShownQuery } from "../../api/cache/shown-query";
+import { storeIssueState } from "../../api/cache/viewer-state";
 import {
   AGENT_LIST_REFILLING,
   api,
@@ -72,7 +73,6 @@ import { IssueLabels } from "./IssueLabels";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
-import { storeIssueState } from "./pin-write";
 import { withPinned } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {

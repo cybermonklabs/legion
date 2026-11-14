@@ -12,13 +12,13 @@
 import { useCallback, useMemo } from "react";
 import { useCache } from "../../api/cache/cache";
 import { useShownQuery } from "../../api/cache/shown-query";
+import { storeAgentState } from "../../api/cache/viewer-state";
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { useAgentText } from "../refs/AgentName";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { storeAgentState } from "./unread";
 
 /** One press of a pin control: the session, and what the press makes of it. */
 interface PinPress {
@@ -99,8 +99,8 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
   // state as it stands (`shows`), so the store composes it over each answer or event that lands
   // on that state while the pin is live, and every other session's state that answer carries
   // arrives whole (R7 of dispatch://INFRA-299).
-  const { mutateAsync } = useKeyedWrite<UserAgentState, PinPress>({
-    label: ({ pinned, sessionId }) =>
+  const { mutateAsync } = useKeyedWrite({
+    label: ({ pinned, sessionId }: PinPress) =>
       `${pinned ? "Pin" : "Unpin"} ${text.sessionText(sessionId, undefined)}`,
     shows: ({ pinned, sessionId }) => {
       const at = new Date().toISOString();
@@ -119,7 +119,7 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
       if (next === null) reread();
       else storeAgentState(cache, sessionId, next);
     },
-    request: ({ pinned, sessionId }) => agentStateRequest(sessionId, { pinned }),
+    request: ({ pinned, sessionId }: PinPress) => agentStateRequest(sessionId, { pinned }),
     target: ({ sessionId }) => `pin:agent:${sessionId}`,
   });
   return useCallback(

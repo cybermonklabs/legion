@@ -1,15 +1,10 @@
 import { useState } from "react";
-import { type Cache, useCache } from "../../api/cache/cache";
+import { useCache } from "../../api/cache/cache";
 import { useShownQuery } from "../../api/cache/shown-query";
+import { storeAgentState } from "../../api/cache/viewer-state";
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
-import type {
-  Message,
-  MessageRead,
-  UserAgentState,
-  UserAgentStateInput,
-  UserAgentStates,
-} from "../../api/types";
+import type { Message, MessageRead, UserAgentStateInput, UserAgentStates } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
@@ -77,16 +72,6 @@ export function useUnreadAtOpen(
   }
   if (next !== frozen) setFrozen(next);
   return next.unread;
-}
-
-/** Puts the session's state a PUT answered with into the viewer's shared agent-state query, so
- *  every badge and row reads it at once. The cache holds only Dispatch's answers, so a pin of
- *  another session still out is composed over this one as it is read. */
-export function storeAgentState(cache: Cache, sessionId: string, next: UserAgentState): void {
-  cache.setDispatched<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
-    ...current,
-    [sessionId]: next,
-  }));
 }
 
 /**

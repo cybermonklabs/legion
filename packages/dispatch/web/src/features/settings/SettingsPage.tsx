@@ -79,8 +79,8 @@ export function SettingsPage(): ReactNode {
   // row's line (`repo-mapping:<owner/repo>`), so a save and a removal of one mapping go out in
   // press order. A refused one stops being composed: the list as Dispatch last gave it, every
   // other live mapping write over it (R10 of dispatch://INFRA-299).
-  const putMapping = useKeyedWrite<RepoProject, MappingInput>({
-    request: ({ repo, ...input }) => repoProjectRequest(repo, input),
+  const putMapping = useKeyedWrite({
+    request: ({ repo, ...input }: MappingInput) => repoProjectRequest(repo, input),
     target: ({ repo }) => `repo-mapping:${repo}`,
     inline: true,
     label: ({ repo, project: mapped }) => `${repo} mapped to ${mapped}`,
@@ -116,11 +116,13 @@ export function SettingsPage(): ReactNode {
     },
     // A landing with no answer keeps the optimistic row; `onSettled` reads them all again. The
     // cache holds only Dispatch's answers, so another mapping write still out stays composed over
-    // the merged list.
+    // the merged list, and a list not read yet is filled by its own read.
     onSuccess: (mapping, variables) => {
       if (mapping !== null) {
-        cache.setDispatched<RepoProject[]>(["repo-projects"], (current = []) =>
-          withMapping(current, mapping)
+        cache.setDispatched(
+          repoProjectsQuery().queryKey,
+          mapping,
+          (current, answer) => current && withMapping(current, answer)
         );
       }
       setFailedAction(undefined);

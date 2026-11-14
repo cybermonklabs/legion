@@ -1,7 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
 import { settle } from "../../__tests__/fake-clock";
 
-import { cacheOf, QueryClient, QueryObserver } from "../../api/cache/test-client";
+import {
+  answeredByDispatch,
+  cacheOf,
+  QueryClient,
+  QueryObserver,
+} from "../../api/cache/test-client";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { userStateQuery } from "../../api/queries";
 import type { UserIssueState, UserState } from "../../api/types";
@@ -28,7 +33,7 @@ async function nextPinAfter(end: (client: QueryClient) => void) {
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({ "CORE-1": fresh });
   const alicesAnswer: UserIssueState = { ...fresh, dismissed: [pinnedItemMarker("ask:a")], seq: 1 };
   const put = spyOn(api, "putIssueState")
-    .mockResolvedValueOnce(alicesAnswer)
+    .mockResolvedValueOnce(answeredByDispatch(alicesAnswer))
     .mockRejectedValueOnce(new NetworkError("/api/v1/me/issues/CORE-1/state", new TypeError()));
   try {
     writePin(cacheOf(client), "CORE-1", { id: "ask:a", op: "pin" });
@@ -37,7 +42,7 @@ async function nextPinAfter(end: (client: QueryClient) => void) {
     expect(put).toHaveBeenCalledTimes(2);
     end(client);
     client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
-    put.mockResolvedValue({ ...fresh, seq: 1 });
+    put.mockResolvedValue(answeredByDispatch({ ...fresh, seq: 1 }));
     writePin(cacheOf(client), "CORE-1", { id: "ask:c", op: "pin" });
     await settle();
     return put.mock.calls.at(-1)?.[1];
@@ -91,7 +96,9 @@ test("a pin Dispatch refuses as stale is written again over the row it answered 
         state: current,
       })
     )
-    .mockImplementation(async (_key, body) => ({ ...fresh, ...body }) as UserIssueState);
+    .mockImplementation(async (_key, body) =>
+      answeredByDispatch({ ...fresh, ...body } as UserIssueState)
+    );
   try {
     writePin(cacheOf(client), "CORE-1", { id: "ask:a", op: "pin" });
     await settle();
@@ -117,8 +124,8 @@ test("a pin shows its change again over an answer to the viewer's state", async 
     "CORE-2": fresh,
   });
   // A pin the server never answers, so it stays live for the read below.
-  const put = spyOn(api, "putIssueState").mockImplementation(
-    () => Promise.withResolvers<UserIssueState>().promise
+  const put = spyOn(api, "putIssueState").mockImplementation(() =>
+    Promise.withResolvers<UserIssueState>().promise.then(answeredByDispatch)
   );
   const dismissedOf = (issueKey: string) =>
     cacheOf(client).shown<UserState>(["user-state"])?.[issueKey]?.dismissed;
@@ -198,7 +205,9 @@ test("a refused pin does not leave another issue's pin answer carrying it while 
   const refusal = Promise.withResolvers<UserIssueState>();
   const core2Answer: UserIssueState = { ...fresh, dismissed: [pinnedItemMarker("ask:b")], seq: 1 };
   const put = spyOn(api, "putIssueState").mockImplementation((key) =>
-    key === "CORE-1" ? refusal.promise : Promise.resolve(core2Answer)
+    key === "CORE-1"
+      ? refusal.promise.then(answeredByDispatch)
+      : Promise.resolve(answeredByDispatch(core2Answer))
   );
   // A surface drawing the viewer's state, so the read again goes out.
   const unsubscribe = new QueryObserver(client, userStateQuery()).subscribe(() => {});

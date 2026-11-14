@@ -8,12 +8,12 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { seedUnread } from "../../__tests__/replies-seed";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import type { Comment } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { seedUnread } from "../threads/replies-fixture";
 import { ThreadCard } from "./ThreadCard";
 import type { Thread } from "./useMarginItems";
 

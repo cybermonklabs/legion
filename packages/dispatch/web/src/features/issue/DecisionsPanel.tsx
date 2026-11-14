@@ -400,21 +400,24 @@ function WaitingDecision({
         void cache.invalidate({ exact: true, queryKey: ["decisions", issueKey] });
         return;
       }
-      cache.setDispatched<IssueDecisions>(["decisions", issueKey], (view) =>
-        view === undefined
-          ? view
-          : {
-              ...view,
-              // The Keep is of the text this card showed, which the server took, so it applies
-              // to the row that still holds that text. A decision's changed version is the
-              // greatest of the blocks it holds now and does not move when a block leaves it, so
-              // a row whose text changed since can carry the version the Keep was taken at.
-              decisions: (view.decisions ?? []).map((row) =>
-                row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
-                  ? { ...row, kept, waiting_review: false }
-                  : row
-              ),
-            }
+      cache.setDispatched(
+        ["decisions", issueKey],
+        kept,
+        (view: IssueDecisions | undefined, keep) =>
+          view === undefined
+            ? view
+            : {
+                ...view,
+                // The Keep is of the text this card showed, which the server took, so it applies
+                // to the row that still holds that text. A decision's changed version is the
+                // greatest of the blocks it holds now and does not move when a block leaves it,
+                // so a row whose text changed since can carry the version the Keep was taken at.
+                decisions: (view.decisions ?? []).map((row) =>
+                  row.block_id === keep.block_id && row.text_sha256 === decision.text_sha256
+                    ? { ...row, kept: keep, waiting_review: false }
+                    : row
+                ),
+              }
       );
     },
   });

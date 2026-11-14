@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
-import { answerAgentStates } from "../../__tests__/send-answers";
+import { type AgentStateAnswer, answerAgentStates } from "../../__tests__/send-answers";
 import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
@@ -69,7 +69,7 @@ function renderRail({
   agentState?: UserAgentStates;
   entries?: string[];
   listed?: Agent[];
-} = {}): { putAgentState: Mock<typeof api.putAgentState>; queryClient: QueryClient } {
+} = {}): { putAgentState: Mock<AgentStateAnswer>; queryClient: QueryClient } {
   spies.push(
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getInbox").mockResolvedValue([]),

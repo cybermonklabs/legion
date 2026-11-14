@@ -14,6 +14,7 @@ import {
 import { Link } from "react-router-dom";
 import { useCache } from "../../api/cache/cache";
 import { useShownQuery } from "../../api/cache/shown-query";
+import { storeAgentState } from "../../api/cache/viewer-state";
 import { api } from "../../api/client";
 import {
   agentMessagesQuery,
@@ -101,7 +102,7 @@ import { agentReplyTo } from "./exchange-delivery";
 import { AGENT_ROW_SELECTOR, foldToggleOf, leaveAgentComposer, useAgentsKeymap } from "./keyboard";
 import { useAgentPinWrite, usePinnedAgents } from "./pins";
 import { groupCountLabel, matchingSelection, selectionSummary, toggleMatching } from "./selection";
-import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpen } from "./unread";
+import { unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpen } from "./unread";
 
 /** The composer's one notice slot: the recipient limit, the exclusions, or the mode the selection
  *  sends in, one at a time. In the compact grid it is one line that scrolls sideways like the

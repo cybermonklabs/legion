@@ -2,7 +2,8 @@
 // live subscription of the page runs. The Delivery and Pipeline pages' live-owned queries
 // (`meta.live`, `api/queries.ts`'s three delivery reads) subscribe to their views (LEGION-690):
 // Dispatch answers each with a snapshot, the matching GET route's body, and from then on sends only
-// what changed, and this client writes both into the query cache with `setQueryData`, so the page
+// what changed, and this client writes both into the query cache (`Cache.setDispatched`, each
+// frame's body minted as Dispatch's answer as it is decoded, `answered.ts`), so the page
 // renders them as any read. The event feed (`subscribeEvents`) and each agent live view
 // (`subscribeAgent`) ride the same socket with handlers of their own. Nothing here reads on a
 // timer: a lost socket reconnects and resumes every subscription, a delivery view from the last
@@ -30,6 +31,7 @@ import type {
   LiveServerFrame,
   LiveSubscribe,
 } from "../types";
+import { answered } from "./answered";
 import { type Cache, useCache } from "./cache";
 import { clientOf } from "./client-handle";
 
@@ -332,7 +334,7 @@ export function createLiveSocket(page: Cache): LiveSocket {
     if (sub === undefined) return;
     sub.seq = frame.seq;
     sub.revs = frame.revs;
-    page.setDispatched(sub.queryKey, frame.body);
+    page.setDispatched(sub.queryKey, answered(frame.body));
     sub.pending?.resolve(frame.body);
     sub.pending = null;
     noteChange(frame.seq, frame.changed_at);
@@ -345,8 +347,11 @@ export function createLiveSocket(page: Cache): LiveSocket {
       console.error("live socket: a delta arrived before its subscription's snapshot", frame);
       return;
     }
-    page.setDispatched<DeliveryLiveBody>(sub.queryKey, (data: DeliveryLiveBody | undefined) =>
-      data === undefined ? data : applyDelta(data, frame)
+    page.setDispatched(
+      sub.queryKey,
+      answered(frame),
+      (data: DeliveryLiveBody | undefined, delta) =>
+        data === undefined ? data : applyDelta(data, delta)
     );
     sub.seq = frame.seq;
     sub.revs = applyRevs(sub.revs, frame.revs);

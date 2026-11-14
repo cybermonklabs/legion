@@ -27,7 +27,11 @@ import {
   type FakeLiveSockets,
   installFakeLiveSockets,
 } from "../../__tests__/live-socket-harness";
-import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-answers";
+import {
+  type AgentStateAnswer,
+  answerAgentMessages,
+  answerAgentStates,
+} from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { liveSocketFor } from "../../api/cache/live-socket";
 import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
@@ -143,7 +147,7 @@ function mockDispatch({
   /** The live sessions, or an Error the agent registry read rejects with. */
   agents: Agent[] | Error;
   messages: () => MessageRead[];
-  putAgentState: Mock<typeof api.putAgentState>;
+  putAgentState: Mock<AgentStateAnswer>;
 }): void {
   const listAgents = spyOn(api, "listAgents");
   if (agents instanceof Error) {
@@ -247,7 +251,7 @@ function renderLiveView({
   capabilities?: string[];
   messages: MessageRead[];
   other?: { replay?: AgentStreamFrame[] };
-  putAgentState: Mock<typeof api.putAgentState>;
+  putAgentState: Mock<AgentStateAnswer>;
   replay?: AgentStreamFrame[];
   responding?: boolean;
 }): QueryClient & LiveView {
@@ -445,7 +449,7 @@ test("the live view's header names the agent with its running state and no link"
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: spyOn(api, "putAgentState").mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
 
   const heading = await screen.findByRole("heading", { level: 1 });
@@ -1138,7 +1142,7 @@ test("the live view says a session advertising no delivery mode takes no message
 // Only a current agent list says a session is gone. One that is refilling says that instead, and
 // one Dispatch could not read says that; neither narrows the delivery modes to none.
 test("the live view says the session may have ended only from a current agent list", async () => {
-  const putAgentState = () => spyOn(api, "putAgentState").mockResolvedValue({ unread_replies: 0 });
+  const putAgentState = () => answerAgentStates().mockResolvedValue({ unread_replies: 0 });
   const modes = async () =>
     [
       ...((await screen.findByRole("combobox", { name: "Delivery mode" })) as HTMLSelectElement)
@@ -2464,7 +2468,7 @@ test("a session advertising no delivery mode still takes a mid-turn send as an a
 
 /** Dispatch's answer to a pin write: the session's whole state, with the time it took the pin
  *  and none once the viewer unpinned it. */
-function answerPinWrites(): Mock<typeof api.putAgentState> {
+function answerPinWrites(): Mock<AgentStateAnswer> {
   return answerAgentStates().mockImplementation(async (_session, input) =>
     input.pinned === true
       ? { pinned_at: "2026-09-27T22:00:00Z", unread_replies: 0 }
