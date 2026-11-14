@@ -541,10 +541,11 @@ func underSearchPath(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPa
 // Each row asserts that the census still sized a table above the limit for the migration, so a
 // pass means the exemption kept the refusal away, not a table the census did not find. A row of
 // two migrations shows that a first migration of statements that keep the catalog reads on
-// (keepsReadsOn: a CREATE TABLE, a replace of a function no cast calls, a column rename and the
-// rest; catalogReadsOff: a SET LOCAL, which ends with its own migration) leaves the catalog reads
-// of the second one on. The census is read-only and its catalog state lives inside one call, so
-// the rows share one database and no row reaches the next.
+// (keepsReadsOn: a CREATE TABLE, a replace of a function whose name neither pg_catalog nor a
+// cast's function has, a column rename and the rest; catalogReadsOff: a SET LOCAL, which ends with
+// its own migration) leaves the catalog reads of the second one on. The census is read-only and
+// its catalog state lives inside one call, so the rows share one database and no row reaches the
+// next.
 func TestCensusAdmitsEveryCatalogOnlyForm(t *testing.T) {
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)
