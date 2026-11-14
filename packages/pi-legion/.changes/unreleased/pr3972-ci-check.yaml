@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  A `before_merge` check carrying `ci_check` is CI's: no role runs it or records its result, and
+  `dispatch results` derives its result from the named CI run and prints its `A pass stands:`
+  line. A check with no pass standing follows three cases: a derived fail, or a run that concluded
+  `skipped`, `neutral` or `cancelled`, goes back to the implementer; a run still going, or GitHub
+  unread, is waited for; a name no run answers is the architect's to correct. The new worker reference `ci-checks.md` holds the rule, the worker, retro and
+  architect skills say the same in every passage that judges or records a check, and the
+  architect's design-gate reference says when and how to write one.

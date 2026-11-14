@@ -38,7 +38,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../theme/classes";
-import { ColumnFilter, type FilterCountNoun } from "./ColumnFilter";
+import { ColumnFilter } from "./ColumnFilter";
 import { CONTROL } from "./control-names";
 import { useFocusPlace } from "./focus-place";
 import { Pager, type PagerOptions } from "./Pager";
@@ -74,10 +74,10 @@ export interface DataTableState {
 
 /**
  * The caller's own words for what its table holds, which the core reads but never invents: the
- * attributes its rows, groups and links carry, how its keys are named in the palette, and what
- * a count of its rows is called. One object, and it is given to `useDataTable` rather than to
- * `DataTable`, because the keys are registered where the rows are modelled while the attributes
- * are written where they are drawn, and the two must say the same words.
+ * attributes its rows, groups and links carry, and how its keys are named in the palette. One
+ * object, and it is given to `useDataTable` rather than to `DataTable`, because the keys are
+ * registered where the rows are modelled while the attributes are written where they are drawn,
+ * and the two must say the same words. What a row is called is `DataTable`'s own `noun`.
  */
 export interface DataTableNames {
   /** The attribute each drawn row carries, holding the row's id: `data-issue-row`. */
@@ -87,8 +87,6 @@ export interface DataTableNames {
   /** The attribute on the link inside a row that opening the row follows. */
   readonly linkAttribute: string;
   readonly keymap: RowKeymap;
-  /** What a header filter calls a count of rows: `3 issues`. */
-  readonly filterCountNoun: FilterCountNoun;
 }
 
 export interface DataTableOptions<Row> {
@@ -325,13 +323,32 @@ export interface LineProps {
  * What draws the filter in a column's header cell. The caller's, never the cell's own choice:
  * one page's filter reads a registry of facets with a count against each value, another reads
  * the column's own values, and a third narrows by two ends of a range. A caller that gives none
- * gets the shared `ColumnFilter`, counting with `filterCounts` and `DataTableNames`' noun.
+ * gets the shared `ColumnFilter`, counting with `filterCounts` in the table's `noun`.
  */
 export type ColumnFilterRenderer<Row> = (props: {
   readonly column: Column<Row, unknown>;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
 }) => ReactNode;
+
+/** One word a table counts in, singular and plural. Both are spelled out because no rule turns
+ *  one into the other: "priority" is "priorities", never "prioritys". */
+export interface Noun {
+  readonly one: string;
+  readonly many: string;
+}
+
+/** What one row of a table is called, which its header filters and its pager count in, with
+ *  the two other words the pager counts in. Every caller says its own, because only the caller
+ *  knows what its rows are: the project List counts issues, in groups, over rows, and the
+ *  priorities table priorities. */
+export interface RowNoun extends Noun {
+  /** What a grouping of the rows makes: `in 4 groups`. */
+  readonly group: Noun;
+  /** What the lines a page holds are called: `Rows 1–25 of 40`, `All 40 rows`, `Rows per
+   *  page`. */
+  readonly line: Noun;
+}
 
 export interface DataTableProps<Row> {
   readonly model: DataTableModel<Row>;
@@ -356,6 +373,8 @@ export interface DataTableProps<Row> {
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
   /** Draws one group's heading, with `data-index` and `ref={measure}`. */
   readonly renderGroup: (props: LineProps & { readonly entry: DisplayRow<Row> }) => ReactNode;
+  /** What one row of this table is, which the shared header filter and the pager count in. */
+  readonly noun: RowNoun;
   /** The pager drawn under the box, in the caller's own words. A table given none draws none:
    *  a listing that fits one page, or one paged elsewhere, has no line to show. */
   readonly pager?: PagerOptions;
@@ -486,6 +505,7 @@ export function DataTable<Row>({
   filterUnloaded,
   label,
   model,
+  noun,
   onOpenFilterChange,
   openFilter,
   pager,
@@ -509,14 +529,14 @@ export function DataTable<Row>({
   const first = virtualRows[0];
   const last = virtualRows.at(-1);
   // The shared filter, for a caller that asked for no other: it counts with what the table was
-  // handed and reads what a count is called out of the caller's own `names`.
+  // handed, in what the caller calls its rows.
   const drawFilter: ColumnFilterRenderer<Row> =
     renderFilter ??
     (({ column, onOpenChange, open }) => (
       <ColumnFilter
         column={column}
-        countNoun={names.filterCountNoun}
         counts={column.id === openFilter ? filterCounts : EMPTY_COUNTS}
+        noun={noun}
         onOpenChange={onOpenChange}
         open={open}
         unloaded={filterUnloaded?.get(column.id) ?? NONE_UNLOADED}
@@ -599,7 +619,9 @@ export function DataTable<Row>({
         ) : null}
       </div>
 
-      {pager === undefined ? null : <Pager {...pager} pagerRef={layout.pagerRef} table={table} />}
+      {pager === undefined ? null : (
+        <Pager {...pager} noun={noun} pagerRef={layout.pagerRef} table={table} />
+      )}
     </>
   );
 }

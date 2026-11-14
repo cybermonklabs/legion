@@ -99,6 +99,8 @@ const issue = {
   parent: null,
   external_links: [],
   artifacts: [],
+  advances: [],
+  advances_revision: 0,
 };
 
 /** DSP-2's spec, whose blocks `dispatch doc-read --blocks` lists. "é" is two bytes in UTF-8, so
@@ -237,8 +239,8 @@ const codeIssue = {
   ],
 };
 
-/** DSP-3 as a Dispatch server from before the repository fields answers it: no repo or
- *  resolved_repo at all. */
+/** DSP-3 as a Dispatch server from before the repository fields and before priorities answers
+ *  it: no repo, resolved_repo, advances or advances_revision at all. */
 const olderServerIssue = {
   key: "DSP-3",
   title: "Read from an older server",
@@ -745,6 +747,76 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
+  // `--run -` would send the one character "-" where the caller meant stdin, so a text flag's bare
+  // `-` is a usage error before any request, dry run included. When nothing else is wrong, the
+  // refusal names the `-file` twin of each such flag and lists no flags.
+  test("a bare - given to text flags is refused, one line per flag, listing no flags", async () => {
+    const argv = [
+      "result",
+      "--issue",
+      "DSP-1",
+      "--check",
+      "k1",
+      "--role",
+      "implementer",
+      "--verdict",
+      "pass",
+      "--commit",
+      "1111111111111111111111111111111111111111",
+      "--run",
+      "-",
+      "--observed",
+      "-",
+      "--negative-control",
+      "-",
+    ];
+    const refusal = [
+      "dispatch result was not called: 3 problems",
+      '- --run - sends the one character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --observed - sends the one character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --negative-control - sends the one character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.',
+      "- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111",
+      "",
+    ].join("\n");
+    for (const call of [argv, [...argv, "--dry-run"]]) {
+      expect(await run(call, omp), call.join(" ")).toEqual({
+        code: 2,
+        stdout: refusal,
+        stderr: "",
+      });
+    }
+    expect(requests).toEqual([]);
+
+    expect(await run(["issue", "--project", "DSP", "--title", "-"], omp)).toEqual({
+      code: 2,
+      stdout: [
+        "dispatch issue was not called: 1 problem",
+        '- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
+        "- Example: dispatch issue --project DSP --title 'Native workspace'",
+        "",
+      ].join("\n"),
+      stderr: "",
+    });
+    expect(requests).toEqual([]);
+  });
+
+  test("a bare - beside an unknown flag is refused with both, listing the flags", async () => {
+    const { code, stdout } = await run(
+      ["issue", "--project", "DSP", "--title", "-", "--titel", "x"],
+      omp
+    );
+    expect(code).toBe(2);
+    const lines = stdout.split("\n");
+    expect(lines.slice(0, 3)).toEqual([
+      "dispatch issue was not called: 2 problems",
+      '- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
+      "- unknown flag --titel",
+    ]);
+    expect(lines[3]).toStartWith("- Allowed flags: --project, ");
+    expect(lines[4]).toStartWith("- Example: dispatch issue ");
+    expect(requests).toEqual([]);
+  });
+
   // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
   // because an argument is missing exits 2: a script reading the code alone tells it from a write
   // Dispatch refused (a near copy, an AskGate block), which exits 1.
@@ -1051,9 +1123,56 @@ describe("the dispatch CLI", () => {
     expect(stdout).toContain(
       "Repository: unknown (this Dispatch server predates repository fields; upgrade it)\n"
     );
-    expect(stderr).toBe(
+    expect(stderr).toContain(
       "dispatch: warning: Dispatch issue is missing resolved_repo: this Dispatch server predates repository fields, so DSP-3's repository is unknown; upgrade the server\n"
     );
+  });
+
+  // The plugin and the server ship separately, so a plugin that reads priorities meets a server
+  // that answers none: its issue read prints the issue with its priorities unknown, never none,
+  // and warns, as it does for the repository fields.
+  test("a read from a Dispatch server older than priorities answers, warning on stderr", async () => {
+    const { code, stdout, stderr } = await run(["read", "--issue", "DSP-3"], omp);
+    expect(code, stderr).toBe(0);
+    expect(stdout).toContain("Title: Read from an older server\nKey: DSP-3\n");
+    expect(stdout).toContain(
+      "Advances: unknown (this Dispatch server predates priorities; upgrade it)\n"
+    );
+    expect(stderr).toBe(
+      [
+        "dispatch: warning: Dispatch issue is missing resolved_repo: this Dispatch server predates repository fields, so DSP-3's repository is unknown; upgrade the server",
+        "dispatch: warning: Dispatch issue is missing advances: this Dispatch server predates priorities, so the priorities DSP-3 advances are unknown; upgrade the server",
+        "",
+      ].join("\n")
+    );
+  });
+
+  // A server from before priorities refuses a write naming `advances`, so the update says so from
+  // its read and sends nothing: not the set, not the rest of the update, not the closing reason.
+  test("an advances write to a Dispatch server older than priorities sends nothing", async () => {
+    for (const named of [[], ["--advances-revision", "7"]]) {
+      requests.length = 0;
+      const argv = [
+        "issue-update",
+        "--issue",
+        "DSP-3",
+        "--advance",
+        "ship-the-daemon",
+        "--status",
+        "done",
+        "--reason",
+        "Shipped.",
+        ...named,
+      ];
+      const { code, stdout } = await run(argv, omp);
+      expect(code, stdout).toBe(1);
+      expect(stdout).toContain(
+        "Dispatch read DSP-3 without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server"
+      );
+      expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+        "GET /api/v1/issues/DSP-3",
+      ]);
+    }
   });
 
   // An issue read lists the issue's last 10 events unless it is asked for more: --events N lists

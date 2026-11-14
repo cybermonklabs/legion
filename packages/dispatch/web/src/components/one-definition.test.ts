@@ -51,10 +51,18 @@ const SHARED_MARKS: readonly Mark[] = [
 
 /** The feature directories whose whole address is `lib/page-address.ts`'s: the pages this change
  *  moved onto it. A feature outside this list still owns its own route reading. */
-const ADDRESS_FEATURES = ["agents", "artifacts", "delivery", "inbox", "project", "search"];
+const ADDRESS_FEATURES = [
+  "agents",
+  "artifacts",
+  "delivery",
+  "inbox",
+  "priorities",
+  "project",
+  "search",
+];
 
-/** The marks only those six carry: a direct read or write of the page address, by the names the
- *  pages used before one module owned it, and the hooks and the redirect the router offers. */
+/** The marks only those seven carry: a direct read or write of the page address, by the names
+ *  the pages used before one module owned it, and the hooks and the redirect the router offers. */
 const ADDRESS_MARKS: readonly Mark[] = [
   {
     what: "reads the address directly (`useSearchParams`) — read it through `lib/page-address.ts`",
@@ -180,7 +188,7 @@ describe("no page builds a control or an address of its own", () => {
     expect(FEATURE_FILES.length).toBeGreaterThan(200);
   });
 
-  test("a page of the six that redirects with `<Navigate>` is sent to `AddressRedirect`", () => {
+  test("a page of the seven that redirects with `<Navigate>` is sent to `AddressRedirect`", () => {
     const source = [
       'import { Navigate } from "react-router-dom";',
       "",
@@ -189,7 +197,7 @@ describe("no page builds a control or an address of its own", () => {
     expect(refusals("features/project/Gone.tsx", source)).toEqual([
       "features/project/Gone.tsx:3 redirects with the router's own `<Navigate>` — `lib/page-address.ts`'s `AddressRedirect`",
     ]);
-    // The redirect the six draw instead, and a feature outside them, are both left alone.
+    // The redirect the seven draw instead, and a feature outside them, are both left alone.
     expect(refusals("features/project/Gone.tsx", '<AddressRedirect to="/x" />')).toEqual([]);
     expect(refusals("features/architecture/Gone.tsx", source)).toEqual([]);
   });

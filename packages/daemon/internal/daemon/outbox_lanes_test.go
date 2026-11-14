@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -22,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -143,6 +143,7 @@ func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, pay
 // postingDispatch is Dispatch as a message post meets it: the bodies posted, by issue, and no
 // message read back, so each row posts once. It is read while a lane posts.
 type postingDispatch struct {
+	noArtifacts
 	mu     sync.Mutex
 	posted map[string][]string
 }
@@ -210,6 +211,7 @@ func (d *postingDispatch) postsTo(issue string) int {
 // writes, applies each after, and keeps the statuses that landed in order. It is read while the
 // lane writes, which boardDispatch is not made for.
 type laneBoard struct {
+	noArtifacts
 	mu       sync.Mutex
 	status   string
 	failures int
@@ -291,7 +293,7 @@ func (h enqueuing) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (intake.
 
 // commitRows writes rows through records in one fact's transaction (intake.ApplyFact), under
 // eventID, which must be new to the database.
-func commitRows(t *testing.T, pool *pgxpool.Pool, records record.Store, eventID string, rows ...record.OutboxRow) {
+func commitRows(t *testing.T, pool *store.Pool, records record.Store, eventID string, rows ...record.OutboxRow) {
 	t.Helper()
 	if _, err := intake.ApplyFact(context.Background(), pool, "lanes-test", eventID, intake.DaemonBooted{Boot: 1}, enqueuing{records: records, rows: rows}); err != nil {
 		t.Fatalf("commit %s: %v", eventID, err)
@@ -311,7 +313,7 @@ func microClock() *heldClock {
 }
 
 // outboxIDs is every row's id, in id order.
-func outboxIDs(t *testing.T, pool *pgxpool.Pool) []int64 {
+func outboxIDs(t *testing.T, pool *store.Pool) []int64 {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), "select id from outbox order by id")
 	if err != nil {
@@ -330,7 +332,7 @@ func outboxIDs(t *testing.T, pool *pgxpool.Pool) []int64 {
 }
 
 // outboxRowsOf is how many rows issue has left.
-func outboxRowsOf(t *testing.T, pool *pgxpool.Pool, issue string) int {
+func outboxRowsOf(t *testing.T, pool *store.Pool, issue string) int {
 	t.Helper()
 	var rows int
 	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1", issue).Scan(&rows); err != nil {
@@ -347,7 +349,7 @@ type rowState struct {
 	nextAt     time.Time
 }
 
-func rowStateOf(t *testing.T, pool *pgxpool.Pool, id int64) rowState {
+func rowStateOf(t *testing.T, pool *store.Pool, id int64) rowState {
 	t.Helper()
 	var state rowState
 	if err := pool.QueryRow(context.Background(), "select lease_token, lease_until, attempts, next_at from outbox where id = $1", id).
@@ -373,7 +375,7 @@ func spawnedRoles(rt *fake.Runtime) []claim.Role {
 // client its board rows write and the publisher its notices reach, and how many workspaces its
 // starts provisioned.
 type laneTree struct {
-	pool       *pgxpool.Pool
+	pool       *store.Pool
 	root       record.Issue
 	runner     *outbox
 	records    record.Store

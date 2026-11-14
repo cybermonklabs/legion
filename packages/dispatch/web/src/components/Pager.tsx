@@ -2,28 +2,12 @@ import type { Table } from "@tanstack/react-table";
 import type { ReactNode, RefObject } from "react";
 import { borderDefault, surfaceBg, textSecondaryOnCanvas } from "../theme/classes";
 import { CONTROL } from "./control-names";
+import type { RowNoun } from "./DataTable";
 import { StepButton } from "./StepButton";
 
-/** Singular and plural of one of the things a pager counts. */
-export interface PagerNoun {
-  readonly one: string;
-  readonly many: string;
-}
-
-/** What the pager calls what it counts, in the caller's own words: the project List lists
- *  issues, in groups, over rows. */
-export interface PagerNouns {
-  /** What the table's rows are: `3 of 40 issues`. */
-  readonly item: PagerNoun;
-  /** What a page holds: `Rows 1–25 of 40`, `All 40 rows`, `Rows per page`. */
-  readonly row: PagerNoun;
-  /** What a grouping makes: `in 4 groups`. */
-  readonly group: PagerNoun;
-}
-
-/** Everything a pager takes from the page it belongs to, which a table hands on unread. */
+/** What a pager takes from the page it belongs to beyond what its rows are called, which a
+ *  table hands on unread. */
 export interface PagerOptions {
-  readonly nouns: PagerNouns;
   /** The page sizes the reader may choose, in the order they are offered. */
   readonly pageSizes: readonly number[];
   /** The page size that means every row, which reads as `All rows` rather than a count per
@@ -33,6 +17,9 @@ export interface PagerOptions {
 }
 
 export interface PagerProps<TData> extends PagerOptions {
+  /** What the table's rows are called, and the words its groups and its lines are counted in:
+   *  `3 of 40 issues in 4 groups`, `Rows 1–25 of 40`. The table's own `noun`. */
+  readonly noun: RowNoun;
   readonly table: Table<TData>;
   /** Measured by `useTableLayout`, which gives the box the room left under this line. */
   readonly pagerRef?: RefObject<HTMLDivElement | null>;
@@ -49,7 +36,7 @@ const sentence = (word: string) => `${word.charAt(0).toLocaleUpperCase()}${word.
  */
 export function Pager<TData>({
   allRows = Number.MAX_SAFE_INTEGER,
-  nouns,
+  noun,
   pageSizes,
   pagerRef,
   table,
@@ -61,7 +48,7 @@ export function Pager<TData>({
   const leafCount = table.getFilteredRowModel().rows.length;
   const groupCount = table.getGroupedRowModel().rows.length;
   const total = table.options.data.length;
-  const { group, item, row } = nouns;
+  const { group, line } = noun;
   return (
     <div
       ref={pagerRef}
@@ -70,15 +57,15 @@ export function Pager<TData>({
       className={`flex shrink-0 flex-wrap items-center gap-3 text-sm ${textSecondaryOnCanvas}`}
     >
       <span>
-        {leafCount} of {total} {total === 1 ? item.one : item.many}
+        {leafCount} of {total} {total === 1 ? noun.one : noun.many}
         {grouping.length > 0
           ? ` in ${groupCount} ${groupCount === 1 ? group.one : group.many}`
           : ""}
       </span>
       <span className="ml-auto">
         {pageSize >= allRows
-          ? `All ${rowsOnPages} ${rowsOnPages === 1 ? row.one : row.many}`
-          : `${sentence(row.many)} ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
+          ? `All ${rowsOnPages} ${rowsOnPages === 1 ? line.one : line.many}`
+          : `${sentence(line.many)} ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
       </span>
       <StepButton ariaDisabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
         ‹ Previous
@@ -90,14 +77,14 @@ export function Pager<TData>({
         Next ›
       </StepButton>
       <select
-        aria-label={`${sentence(row.many)} per page`}
+        aria-label={`${sentence(line.many)} per page`}
         className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
         onChange={(event) => table.setPageSize(Number(event.target.value))}
         value={pageSize}
       >
         {pageSizes.map((size) => (
           <option key={size} value={size}>
-            {size >= allRows ? `All ${row.many}` : `${size} per page`}
+            {size >= allRows ? `All ${line.many}` : `${size} per page`}
           </option>
         ))}
       </select>

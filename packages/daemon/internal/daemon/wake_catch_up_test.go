@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -21,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -59,7 +59,7 @@ func wakeEngine(records record.Store, limiter *wakepace.Limiter, now func() time
 // runningArchitect records a root of its own tree, in_progress at generation 1, with an architect
 // claim already working: the state an outbox start row finds when a re-admission reaches a tree
 // whose session lived on.
-func runningArchitect(t *testing.T, pool *pgxpool.Pool, records record.Store, sup *supervisor, key string) {
+func runningArchitect(t *testing.T, pool *store.Pool, records record.Store, sup *supervisor, key string) {
 	t.Helper()
 	putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: key, Title: "Root " + key, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -92,7 +92,7 @@ func (r noticeRow) paced() bool { return !r.pacedAt.IsZero() }
 
 // noticeRows is every notice row of the project, oldest first, with the reserved moment its
 // payload carries and the two moments the pacing is read from.
-func noticeRows(t *testing.T, pool *pgxpool.Pool) []noticeRow {
+func noticeRows(t *testing.T, pool *store.Pool) []noticeRow {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select id, (payload->>'paced_at')::timestamptz, created_at, next_at
 		from outbox where kind = $1 order by id`, string(record.OutboxKindNotice))
@@ -124,7 +124,7 @@ func noticeRows(t *testing.T, pool *pgxpool.Pool) []noticeRow {
 // stamps the row as the engine's transaction would: composed at now, due at at. The stamp is the
 // test's, because the database writes created_at from its own clock while these tests hold theirs
 // still; everything else is workflow.QueueCatchUp's own work.
-func pacedCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root string, launch uint64, now, at time.Time) int64 {
+func pacedCatchUp(t *testing.T, pool *store.Pool, records record.Store, root string, launch uint64, now, at time.Time) int64 {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -149,7 +149,7 @@ func pacedCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root s
 // moment away from the reservation's, because the two are different clocks read at different
 // points of one transaction (record.Notice.PacedFrom, workflow's claimReady), and a line that
 // read the wait from created_at would report the distance between them.
-func stampCreated(t *testing.T, pool *pgxpool.Pool, id int64, at time.Time) {
+func stampCreated(t *testing.T, pool *store.Pool, id int64, at time.Time) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), "update outbox set created_at = $2 where id = $1", id, at); err != nil {
 		t.Fatalf("stamp row %d as written at %s: %v", id, at, err)
@@ -399,7 +399,7 @@ func TestAnOrdinaryCatchUpAndAHandOversAreNotDelayed(t *testing.T) {
 
 // assertDueAtOnce is every notice row in the outbox being unpaced and due at now, which is what
 // "not delayed" means for a catch-up the pacing must not hold.
-func assertDueAtOnce(t *testing.T, pool *pgxpool.Pool, now time.Time, what string) {
+func assertDueAtOnce(t *testing.T, pool *store.Pool, now time.Time, what string) {
 	t.Helper()
 	rows := noticeRows(t, pool)
 	if len(rows) == 0 {

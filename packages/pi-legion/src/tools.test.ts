@@ -139,15 +139,18 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by " +
   "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. " +
   "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
+  "or a role's first completion of the phase it left, which it records and which moves nothing, " +
   "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
   "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
   "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
   "yet). A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
-  "calling. This call reads the phase's newest record from Dispatch and reports it; the implementer's round also reports the commit " +
-  "`legion/<issue>@origin` names, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
-  "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, or an implementer's `@-` not yet on " +
-  "`legion/<issue>@origin`, each naming the remedy. A production check report " +
+  "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
+  "and reports it with `commit`, the head that record's body names " +
+  "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
+  "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
+  "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
+  "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
   "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
   "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
   "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
@@ -163,9 +166,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "pull request on `legion/<issue>` and none recorded " +
   "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
   "nothing, so fix what it names and complete again. " +
-  "ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the " +
+  "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
   "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
-  "first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The " +
+  "first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every " +
+  "role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The " +
   "daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`): " +
   "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which " +
@@ -195,24 +199,35 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
   "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
   "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
-  "The answer is empty when the claim came back and nothing else is to be said, and names why nothing restarted the " +
-  "phase (phaseNotRestarted) when the claim came back owing no task and the workflow refused that restart: the claim is " +
-  "running, and no work was handed to it. " +
-  "The daemon refuses it for a claim it records as working, which may be in a turn " +
-  "(CLAIM_IN_A_TURN), for a claim left working over a process the daemon's last report " +
-  "of it found gone, where no turn is running (CLAIM_IN_A_TURN as well), for a claim a " +
+  "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
+  "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
+  "claim is running, and no work was handed to it. It says what was refused, where this request stopped the claim " +
+  "and a step that would have started it again was refused, and the state that left the claim in: read that state " +
+  "in read_state, and ask for a fresh session again only where the claim is suspended. " +
+  "It reaches a claim stored working that no process stands behind: the daemon reads that claim's process when the " +
+  "request arrives, suspends the claim where it stands, and starts it again with the task its dead turn held. " +
+  "The daemon refuses it for a claim whose process that read finds running " +
+  "(CLAIM_IN_A_TURN), for a claim whose session is being compacted, which is not read at " +
+  "all (CLAIM_IN_A_TURN), for a claim whose process the runtime would not answer for, for " +
+  "one that records no process to read, and for one that moved under the request and that a second read " +
+  "finds no longer working or gone once more, each left exactly as the request found it " +
+  "(CLAIM_UNSETTLED; a claim that moved is otherwise answered as that second read finds it), for a claim a " +
   "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
   "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
   "one queued, one whose launch is in flight, and one left working under a relaunch the " +
   "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
   "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
   "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
-  "whatever task it owes again. Try compact before fresh_session for a claim that stays stuck. The answer says " +
-  "whether the session was compacted and, when it was not, why; the claim is back either way. The daemon refuses " +
-  "it for a claim that is suspended, failed or retired (CLAIM_NOT_RUNNING: fresh_session " +
-  "reaches that one), for a claim it records as working, which may be in a turn " +
-  "(CLAIM_IN_A_TURN), for a claim left working over a process the daemon's last report " +
-  "of it found gone, where no turn is running (CLAIM_IN_A_TURN), for a claim a " +
+  "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
+  "fresh_session for a claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
+  "says whether the session was compacted and, when it was not, why; the claim is back either way. The daemon " +
+  "refuses it for a claim that is suspended, failed or retired, and for one stored working " +
+  "that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for a " +
+  "claim whose process the daemon reads as running (CLAIM_IN_A_TURN), for a claim whose " +
+  "session is being compacted already (CLAIM_IN_A_TURN), for a claim whose process the " +
+  "runtime would not answer for, for one that records no process to read, and for one " +
+  "that moved out of working while the request was made " +
+  "(CLAIM_UNSETTLED), for a claim a " +
   "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
   "where it is not), for a claim between states — one queued, one whose launch is in " +
   "flight, one whose agent has registered and is not ready yet, which fresh_session " +
@@ -898,15 +913,23 @@ test("register_gate takes the document reference the Dispatch tools take, and re
 const paneEnv = { LEGION_WORKSPACE: "/workspaces/LEGION-208", LEGION_ISSUE: "LEGION-208" };
 const TIP = "210d53a9d1b109df97fbb5dd5041d659dbab1323";
 const STANDING = "c0de0000000000000000000000000000000000ff";
-/** The newest handoff record the pane's Dispatch holds for the phase. */
-const RECORD = { id: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13", version: 2 };
+/** The newest handoff record the pane's Dispatch holds for the phase: its body names the head the
+ * phase's work was done against, which the completion reports, and the implementer's is the tip
+ * it pushed. */
+const RECORD = {
+  id: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
+  version: 2,
+  body: JSON.stringify({ schemaVersion: 1, issue: "LEGION-208", head: TIP }),
+};
 
-/** A jj whose `@-` is on `legion/LEGION-208@origin`, whose tip is `TIP`, unless `pushed` is false. */
-function paneJj(pushed = true): JjRunner {
+/** A jj whose workspace stands on `standing` and whose `legion/LEGION-208@origin`, whose tip is
+ * `TIP`, carries that commit, unless `pushed` is false. An implementer pane that pushed its round
+ * stands on `TIP`, the head its record names. */
+function paneJj(standing = STANDING, pushed = true): JjRunner {
   return async (args) => {
     const revision = args[2] ?? "";
-    if (revision === "@-") return STANDING;
-    if (revision.startsWith("remote_bookmarks(") && revision.endsWith(` & ${STANDING}::`)) {
+    if (revision === "@-") return standing;
+    if (revision.startsWith("remote_bookmarks(") && revision.endsWith(` & ${standing}::`)) {
       return pushed ? TIP : "";
     }
     throw new Error(`unexpected jj ${args.join(" ")}`);
@@ -916,7 +939,7 @@ function paneJj(pushed = true): JjRunner {
 /** A Dispatch answering `answer` for every phase's newest record, recording each read in `reads`. */
 function paneDispatch(
   reads: string[] = [],
-  answer: () => Promise<{ id: string; version: number }> = async () => RECORD
+  answer: () => Promise<typeof RECORD> = async () => RECORD
 ): LatestHandoff {
   return async (issue, word) => {
     reads.push(`${issue} ${word}`);
@@ -956,10 +979,11 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     }).execute("", parameters, undefined, undefined, context());
 
   // The implementer at implementing: the issue's phase is read from the daemon's state, the newest
-  // implement record is read from the pane's Dispatch and the pushed tip from its jj, and the
-  // request carries both with the wire's zero value for the verdict.
+  // implement record from the pane's Dispatch, and the head that record names — which the pane's
+  // jj holds to the commit the workspace stands on, pushed — travels as `commit`, with the wire's
+  // zero value for the verdict.
   await expect(
-    run(claimSession("implementer"), { op: "handoff_complete", summary: "Done." })
+    run(claimSession("implementer"), { op: "handoff_complete", summary: "Done." }, paneJj(TIP))
   ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
   expect(calls).toEqual([
     ["state", undefined],
@@ -982,13 +1006,21 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(reads).toEqual(["LEGION-208 implement"]);
   expect(completed).toEqual(["ses_208"]);
 
-  // A role that does not work the issue's phase reports the commit the workspace stands on and no
-  // record, and the daemon refuses it naming whose phase it is: the tester at implementing, the
-  // merger, and a sub-architect, each posting @-. The verdict travels as given.
+  // A role that does not work the issue's phase reports its own newest record of the phase it
+  // left: the tester at implementing its test record and the head it names, with the verdict as
+  // given. A role whose left phase writes no record reports the commit the workspace stands on and
+  // no record: the merger, and a sub-architect, which leaves no phase, each posting @-.
   await run(claimSession("tester"), { op: "handoff_complete", summary: "Red.", verdict: "fail" });
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
-    { grantId: "grant-208", summary: "Red.", verdict: "fail", commit: STANDING },
+    {
+      grantId: "grant-208",
+      summary: "Red.",
+      verdict: "fail",
+      commit: TIP,
+      handoffId: RECORD.id,
+      handoffVersion: RECORD.version,
+    },
   ]);
   await run(claimSession("merger"), { op: "handoff_complete", summary: "Merged." });
   expect(calls.at(-1)).toEqual([
@@ -1009,7 +1041,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     },
   ]);
   expect(completed).toEqual(["ses_208", "ses_208", "ses_208", "ses_208"]);
-  expect(reads).toEqual(["LEGION-208 implement"]);
+  expect(reads).toEqual(["LEGION-208 implement", "LEGION-208 test"]);
 
   // Refused before any daemon call: a root architect, which runs no phase; a missing summary; a
   // verdict of the wrong shape; and a phase, which the daemon knows from the grant.
@@ -1066,10 +1098,23 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       }),
       "handoff_complete could not read LEGION-208's newest implement handoff from Dispatch: 503 UNAVAILABLE: database is starting; complete again once Dispatch answers",
     ],
+    // A round that forgot its push: the record names the branch's tip at origin, and the commit
+    // the workspace stands on is not pushed.
     [
-      paneJj(false),
+      paneJj(STANDING, false),
       paneDispatch(),
-      `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r @- && jj git push --bookmark legion/LEGION-208\`, then complete again`,
+      `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r @- && jj git push --bookmark legion/LEGION-208\`; the handoff's \`head\` must name that pushed commit, and the newest implement handoff of LEGION-208 (version 2) names ${TIP}, so when that is another commit, write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`); then complete again`,
+    ],
+    // A pushed `@-` the record does not name: it names the branch's tip at origin instead.
+    [
+      paneJj(),
+      paneDispatch(),
+      `the newest implement handoff of LEGION-208 (version 2) names ${TIP} as its head, not the commit this workspace stands on, ${STANDING}, which legion/LEGION-208@origin carries: write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`), then complete again`,
+    ],
+    [
+      paneJj(),
+      paneDispatch([], async () => ({ ...RECORD, body: '{"schemaVersion":1}' })),
+      'the newest implement handoff of LEGION-208 (version 2) names no head: write the handoff again with `head` set to the 40-character lower-case commit you pushed as `@-`, as `jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id` prints it once the push succeeded (`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>`), then complete again',
     ],
   ] as const;
   for (const [jj, latestHandoff, message] of reportRefusals) {
@@ -1086,7 +1131,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(completed).toHaveLength(4);
 });
 
-test("the planner, the tester and the reviewer post their phase's handoff record and no commit", async () => {
+test("the planner, the tester and the reviewer post their phase's handoff record and the head it names", async () => {
   for (const [phase, role, word] of [
     ["planning", "planner", "plan"],
     ["testing", "tester", "test"],
@@ -1132,11 +1177,174 @@ test("the planner, the tester and the reviewer post their phase's handoff record
         grantId: "grant-208",
         summary: "Done.",
         verdict: role === "tester" ? "pass" : "",
+        commit: TIP,
         handoffId: RECORD.id,
         handoffVersion: RECORD.version,
       },
     ]);
   }
+});
+
+test("a completion once the issue moved on posts the role's own newest record of the phase it left, and @- where that phase writes none", async () => {
+  const recorded = { commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version };
+  for (const [phase, role, issue, read, report] of [
+    // A review ends its round on its own: a request for changes moves the issue to implementing at
+    // once, an approval to accepting once the pull request is mergeable, and the reviewer
+    // completes after it.
+    ["implementing", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
+    ["accepting", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
+    ["reviewing", "tester", "LEGION-208", ["LEGION-208 test"], recorded],
+    // At merging the implementer left retro, which writes no record; a sub-architect leaves no
+    // phase, so it posts @- in another role's file-backed phase as well.
+    ["merging", "implementer", "LEGION-208", [], { commit: STANDING }],
+    ["implementing", "architect", "LEGION-209", [], { commit: STANDING }],
+  ] as const) {
+    const reads: string[] = [];
+    const { calls, daemon } = recordingDaemon({
+      state: { issues: { [issue]: { key: issue, phase } } },
+    });
+    const result = await createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: (issuePhase, claimRole) =>
+        findHandoffReport({
+          phase: issuePhase,
+          role: claimRole,
+          env: paneEnv,
+          jj: paneJj(),
+          latestHandoff: paneDispatch(reads),
+        }),
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => claimSession(role, issue),
+    }).execute(
+      "",
+      {
+        op: "handoff_complete",
+        summary: "Done.",
+        ...(role === "tester" ? { verdict: "pass" } : {}),
+      },
+      undefined,
+      undefined,
+      context()
+    );
+    expect(result.isError).toBeUndefined();
+    expect(reads).toEqual([...read]);
+    expect(calls.at(-1)).toEqual([
+      "handoffComplete",
+      {
+        grantId: "grant-208",
+        summary: "Done.",
+        verdict: role === "tester" ? "pass" : "",
+        ...report,
+      },
+    ]);
+  }
+});
+
+// The issue's workspace is one checkout every role of the issue shares, so once the issue has
+// moved on, the commit it stands on is often a sibling role's: here the tester's, which the
+// branch at origin does not carry. The implementer's late completion is of implementing, the phase
+// it left, and posts its implement record and the head it names, reading nothing of the workspace,
+// for the daemon to answer.
+test("an implementer whose issue is in testing posts its implement record, though @- is the tester's unpushed commit", async () => {
+  const completed: string[] = [];
+  const reads: string[] = [];
+  const asked: string[] = [];
+  const workspace = paneJj(STANDING, false);
+  const { calls, daemon } = recordingDaemon({ state: stateAt("testing") });
+  const result = await createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
+    onUpdateAnswered: () => undefined,
+    handoffReport: (phase, role) =>
+      findHandoffReport({
+        phase,
+        role,
+        env: paneEnv,
+        jj: (args, cwd) => {
+          asked.push(args.join(" "));
+          return workspace(args, cwd);
+        },
+        latestHandoff: paneDispatch(reads),
+      }),
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("implementer"),
+  }).execute("", { op: "handoff_complete", summary: "Done." }, undefined, undefined, context());
+  expect(result.isError).toBeUndefined();
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    {
+      grantId: "grant-208",
+      summary: "Done.",
+      verdict: "",
+      commit: TIP,
+      handoffId: RECORD.id,
+      handoffVersion: RECORD.version,
+    },
+  ]);
+  expect(reads).toEqual(["LEGION-208 implement"]);
+  expect(asked).toEqual([]);
+  expect(completed).toEqual(["ses_208"]);
+});
+
+// A tester whose issue was held before it wrote its test record completes testing, the phase it
+// left, with no record to name: the tool posts the commit the workspace stands on rather than
+// tell it to write a record, and the daemon's answer, refusing a completion while no role works
+// the issue's phase, reaches the agent.
+test("a tester with no record on a held issue posts @-, and the daemon's answer reaches the agent", async () => {
+  const reads: string[] = [];
+  const refusal = Object.assign(
+    new Error(
+      "POST /legion/v1/handoff/complete failed with 409 HANDOFF_NOT_CURRENT_PHASE: the tester does not run phase held of LEGION-208; this completion changed nothing"
+    ),
+    { code: "HANDOFF_NOT_CURRENT_PHASE" }
+  );
+  const { calls, daemon } = recordingDaemon({
+    state: stateAt("held"),
+    answers: { handoffComplete: refusal },
+  });
+  const result = await createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: (phase, role) =>
+      findHandoffReport({
+        phase,
+        role,
+        env: paneEnv,
+        jj: paneJj(),
+        latestHandoff: paneDispatch(reads, async () => {
+          throw new DispatchServiceError("HANDOFF_NOT_FOUND", 404, "no test handoff");
+        }),
+      }),
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("tester"),
+  }).execute(
+    "",
+    { op: "handoff_complete", summary: "Tests pass.", verdict: "pass" },
+    undefined,
+    undefined,
+    context()
+  );
+  expect(reads).toEqual(["LEGION-208 test"]);
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    { grantId: "grant-208", summary: "Tests pass.", verdict: "pass", commit: STANDING },
+  ]);
+  expect(result).toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: expect.stringContaining("409 HANDOFF_NOT_CURRENT_PHASE") }],
+  });
 });
 
 /** LEGION-208 closed by its merge, with its production check open on its second look: `role` is
@@ -1321,7 +1529,7 @@ test("a refused completion surfaces the daemon's code and leaves the phase open"
         phase,
         role,
         env: paneEnv,
-        jj: paneJj(),
+        jj: paneJj(TIP),
         latestHandoff: paneDispatch(),
       }),
     branchHead: noBranchHead,
@@ -1477,7 +1685,7 @@ function controllerTool(daemon: () => LegionDaemonClient, minted: string[]): Reg
       throw new Error("a controller completes no phase");
     },
     onUpdateAnswered: () => {
-      throw new Error("a controller answers no update task");
+      throw new Error("a controller answers no update message");
     },
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -91,7 +90,7 @@ const idleRigTick = 250 * time.Millisecond
 type idleWakeRig struct {
 	t        *testing.T
 	cfg      config.Config
-	pool     *pgxpool.Pool
+	pool     *store.Pool
 	natsURL  string
 	js       jetstream.JetStream
 	board    *liveDispatch
@@ -279,12 +278,12 @@ func (r *idleWakeRig) launchAll() {
 
 // idleRigDatabase and idleRigUser are the rig's own database and login, which its launchers'
 // session proxies carry the generation's session lookup to.
-func idleRigDatabase(t *testing.T, pool *pgxpool.Pool) string {
+func idleRigDatabase(t *testing.T, pool *store.Pool) string {
 	t.Helper()
 	return pool.Config().ConnConfig.Database
 }
 
-func idleRigUser(t *testing.T, pool *pgxpool.Pool) string {
+func idleRigUser(t *testing.T, pool *store.Pool) string {
 	t.Helper()
 	return pool.Config().ConnConfig.User
 }
@@ -301,14 +300,14 @@ func idleRigUser(t *testing.T, pool *pgxpool.Pool) string {
 // trust-authenticated server, which this repository's own pod serves, names no password, and an
 // empty PGPASSWORD is no setting at all (pgx's parseEnvSettings keeps only what is non-empty),
 // so the rig runs the same against either.
-func idleRigSessionPassword(t *testing.T, pool *pgxpool.Pool) {
+func idleRigSessionPassword(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	t.Setenv("PGPASSWORD", pool.Config().ConnConfig.Password)
 }
 
 // idleRigHostPort is the rig's Postgres as a dialable address, which the session proxy's upstream
 // dialer connects to.
-func idleRigHostPort(t *testing.T, pool *pgxpool.Pool) string {
+func idleRigHostPort(t *testing.T, pool *store.Pool) string {
 	t.Helper()
 	conn := pool.Config().ConnConfig
 	return conn.Host + ":" + strconv.Itoa(int(conn.Port))

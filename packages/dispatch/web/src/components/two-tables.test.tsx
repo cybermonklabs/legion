@@ -11,7 +11,13 @@ import {
   useTableAddress,
 } from "../lib/page-address";
 import { ColumnsMenu } from "./ColumnsMenu";
-import { DataTable, DataTableCells, type DataTableNames, useDataTable } from "./DataTable";
+import {
+  DataTable,
+  DataTableCells,
+  type DataTableNames,
+  type RowNoun,
+  useDataTable,
+} from "./DataTable";
 import type { PagerOptions } from "./Pager";
 import { type LayoutColumns, useTableLayout } from "./table-layout";
 
@@ -64,7 +70,6 @@ const RELEASE_LAYOUT: LayoutColumns = {
 };
 
 const DEPLOY_NAMES: DataTableNames = {
-  filterCountNoun: { one: "deploy", many: "deploys" },
   groupAttribute: "data-deploy-group",
   keymap: {
     next: { id: "deploys-next", keys: "j", label: "Next deploy" },
@@ -79,7 +84,6 @@ const DEPLOY_NAMES: DataTableNames = {
 };
 
 const RELEASE_NAMES: DataTableNames = {
-  filterCountNoun: { one: "release", many: "releases" },
   groupAttribute: "data-release-group",
   keymap: {
     next: { id: "releases-next", keys: "ArrowDown", label: "Next release" },
@@ -130,6 +134,7 @@ function PrefixedTable({
   layoutColumns,
   layoutKey,
   names,
+  noun,
   pager,
   rows,
 }: {
@@ -139,6 +144,7 @@ function PrefixedTable({
   layoutColumns: LayoutColumns;
   layoutKey: string;
   names: DataTableNames;
+  noun: RowNoun;
   pager: PagerOptions;
   rows: Line[];
 }): ReactNode {
@@ -174,6 +180,7 @@ function PrefixedTable({
         filterCounts={NO_COUNTS}
         label={label}
         model={model}
+        noun={noun}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
         pager={pager}
@@ -202,15 +209,13 @@ function TwoTables(): ReactNode {
         layoutColumns={DEPLOY_LAYOUT}
         layoutKey="two.deploys"
         names={DEPLOY_NAMES}
-        pager={{
-          nouns: {
-            group: { one: "region", many: "regions" },
-            item: { one: "deploy", many: "deploys" },
-            row: { one: "row", many: "rows" },
-          },
-          pageSizes: [10, 25],
-          testId: "deploys-pager",
+        noun={{
+          group: { one: "region", many: "regions" },
+          line: { one: "row", many: "rows" },
+          many: "deploys",
+          one: "deploy",
         }}
+        pager={{ pageSizes: [10, 25], testId: "deploys-pager" }}
         rows={DEPLOYS}
       />
       <PrefixedTable
@@ -220,15 +225,13 @@ function TwoTables(): ReactNode {
         layoutColumns={RELEASE_LAYOUT}
         layoutKey="two.releases"
         names={RELEASE_NAMES}
-        pager={{
-          nouns: {
-            group: { one: "channel", many: "channels" },
-            item: { one: "release", many: "releases" },
-            row: { one: "row", many: "rows" },
-          },
-          pageSizes: [10, 25],
-          testId: "releases-pager",
+        noun={{
+          group: { one: "channel", many: "channels" },
+          line: { one: "row", many: "rows" },
+          many: "releases",
+          one: "release",
         }}
+        pager={{ pageSizes: [10, 25], testId: "releases-pager" }}
         rows={RELEASES}
       />
     </>

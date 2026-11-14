@@ -68,7 +68,7 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // the ServiceAccount it runs as, the role's overlays, the secrets broker's enrollment, the session
 // store or the GitHub owners its gh volume projects a directory for (PodDrift) — is kept,
 // and this role is started in it.
-// Such a pod is replaced by an update round, which first tasks every worker in it to push its work
+// Such a pod is replaced by an update round, which first asks every role in it to push its work
 // and answer, and then ends the pod (ReplacePod): replacing it at a launch would end every role's
 // turn in it and delete the issue's disk with everything unpushed on it (INFRA-484). A launch into
 // a drifted pod is therefore an ordinary launch, the install of a stale-plugin pair (spec.Plugins,

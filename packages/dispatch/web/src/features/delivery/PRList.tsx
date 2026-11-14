@@ -15,6 +15,7 @@ import {
   DataTable,
   type DataTableNames,
   flexRender,
+  type RowNoun,
   useDataTable,
 } from "../../components/DataTable";
 import { type LayoutColumns, useTableLayout } from "../../components/table-layout";
@@ -116,7 +117,6 @@ const PR_LAYOUT_COLUMNS: LayoutColumns = {
  *  draw it, and Enter only while a row itself has focus. Home and End are the caller's, below:
  *  the core's keymap names a next, a previous, an open and a select, and has no slot for them. */
 const PR_TABLE_NAMES: DataTableNames = {
-  filterCountNoun: { one: "PR", many: "PRs" },
   groupAttribute: "data-pr-group",
   keymap: {
     next: { id: "delivery-next", keys: "ArrowDown", label: "Next pull request" },
@@ -132,6 +132,16 @@ const PR_TABLE_NAMES: DataTableNames = {
   },
   linkAttribute: PR_OPEN_ATTRIBUTE,
   rowAttribute: PR_ROW_ATTRIBUTE,
+};
+
+/** What this list's rows are, which a header filter counts in. The list groups nothing and
+ *  pages nothing, so its group and line words are never drawn; they are given because every
+ *  table names all of its own words. */
+const PR_NOUN: RowNoun = {
+  group: { one: "group", many: "groups" },
+  line: { one: "row", many: "rows" },
+  many: "PRs",
+  one: "PR",
 };
 
 /** This table groups nothing and pages nothing: every row of the window is on one page, and the
@@ -537,6 +547,7 @@ export function PRList({
       filterCounts={counts}
       label="Merged pull requests"
       model={model}
+      noun={PR_NOUN}
       onOpenFilterChange={setOpenFilter}
       openFilter={openFilter}
       renderGroup={() => null}

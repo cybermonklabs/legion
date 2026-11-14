@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -14,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -30,7 +30,7 @@ type sweptStart struct {
 }
 
 // sweptStarts is every supervise start row of issue, oldest first.
-func sweptStarts(t *testing.T, pool *pgxpool.Pool, issue string) []sweptStart {
+func sweptStarts(t *testing.T, pool *store.Pool, issue string) []sweptStart {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select id, coalesce(payload->>'role', ''), coalesce(payload->>'task', ''),
 		coalesce((payload->>'entry')::bigint, 0) from outbox
@@ -127,9 +127,17 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 		return n
 	}
 
+	// The sweep loop runs on one hold mark, as workflowRuntime.run starts it
+	// (store.ForConcurrentWorker(running)), and every sweep the loop applies reuses that mark, one
+	// after another on the loop's goroutine, so the pool's guard sees each sweep as it does in
+	// production: on an unmarked context the guard refuses nothing, so a sweep that asked the pool
+	// for a second connection while it held one would pass this test and be refused in production
+	// (INFRA-3169). The sweeps driven by hand below take a fresh mark each, which the guard reads
+	// the same way: a sweep gives back every connection it took before it returns, so the loop's one
+	// mark is clear whenever its next sweep begins.
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
-	go func() { w.tickEntrySweep(sweeping); close(done) }()
+	go func() { w.tickEntrySweep(store.ForConcurrentWorker(sweeping)); close(done) }()
 	testwait.Eventually(t, "the sweep to send the entry's work", func() bool { return len(sweptStarts(t, pool, member.Key)) == 1 })
 	first := sweptStarts(t, pool, member.Key)[0]
 	stop()
@@ -139,7 +147,7 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 	// from these three calls rather than from a period that now applies nothing.
 	applied := swept()
 	for i := range 3 {
-		w.applyEntrySweep(ctx, time.Now().Add(time.Duration(i+1)*time.Second))
+		w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Duration(i+1)*time.Second))
 	}
 
 	want := sweptStart{id: first.id, role: claim.RoleTester, task: task, entry: entry}
@@ -252,8 +260,9 @@ func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
 		return n
 	}
 
+	// On a hold mark of its own, as the sweep runs in production (the first test of this file).
 	for i := range 3 {
-		w.applyEntrySweep(ctx, time.Now().Add(time.Duration(i)*time.Second))
+		w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Duration(i)*time.Second))
 	}
 
 	if n := swept(); n != 0 {
@@ -264,7 +273,7 @@ func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
 	}
 
 	phaseRow(entry + 1)
-	w.applyEntrySweep(ctx, time.Now().Add(4*time.Second))
+	w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(4*time.Second))
 
 	if n := swept(); n != 1 {
 		t.Fatalf("the sweep over a role behind its entry applied %d facts, want the one that closes the difference", n)
@@ -373,8 +382,9 @@ func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testi
 		return n
 	}
 
+	// On a hold mark of its own, as the sweep runs in production (the first test of this file).
 	for i := range 3 {
-		w.applyEntrySweep(ctx, time.Now().Add(time.Duration(i)*time.Second))
+		w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Duration(i)*time.Second))
 	}
 
 	if n := swept(); n != 0 {
@@ -385,7 +395,7 @@ func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testi
 	}
 
 	testerRow(entry + 1)
-	w.applyEntrySweep(ctx, time.Now().Add(4*time.Second))
+	w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(4*time.Second))
 
 	if n := swept(); n != 1 {
 		t.Fatalf("the sweep over the role of the issue's own phase behind its entry applied %d facts, want the one that closes the difference", n)

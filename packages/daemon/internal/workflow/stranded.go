@@ -25,7 +25,7 @@ const StrandedReleaseWake = 10 * time.Minute
 
 // ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the pod and
 // the role the wake was for, when the wake reached the daemon, and whether a stuck pass has
-// already said so. The daemon reads them from its own records (store.Store.UnfinishedPodResumes,
+// already said so. The daemon reads them from its own records (store.Store.UnfinishedPodResumesTx,
 // which selects the resumes whose woken role has taken no first turn) and hands them in, so this
 // rule stays what every other rule here is: a judgement over values.
 type ReleasedWake struct {

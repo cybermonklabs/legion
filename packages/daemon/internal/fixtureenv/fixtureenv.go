@@ -171,9 +171,9 @@ func RequireGuarded(t testing.TB) {
 // as the home, an empty user configuration and an identity of the test's. It keeps no test input
 // either, so a fixture that needs one appends it after. It drops:
 //
-//   - LEGION_*: LEGION_WORKSPACE names the workspace a shim adopts and checks for unpushed work
-//     (shim.rescue, shim.runAdoption); a test that leaves it out to see a refusal would otherwise
-//     run on the pod's own.
+//   - LEGION_*: LEGION_WORKSPACE names the workspace a shim adopts and bundles
+//     (shim.runAdoption, shim.runBundle); a test that leaves it out to see a refusal would
+//     otherwise run on the pod's own.
 //   - GIT_*, JJ_*, HOME, XDG_CONFIG_HOME: GIT_DIR and GIT_WORK_TREE name another repository
 //     whatever directory a command runs in, a pod hands every process a GIT_CONFIG_* block of its
 //     own, and a home carries configuration and an identity.

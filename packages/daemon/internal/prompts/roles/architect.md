@@ -53,7 +53,8 @@ release under an open root gate, so its planner may already be reading it. Mark 
 of that spec as a `requirement` block, and write the child's Verification document
 (`verification.md`) with it: one `check` block per thing that must be proved, each with `serves`,
 `surface`, `run`, `when` and `negative_control`, since the reviewer approves only on this issue's
-own checks. A child issue's spec is
+own checks. A check carrying `ci_check` is CI's and takes no `run`
+(`skill://legion-architect/references/design-gate.md`). A child issue's spec is
 never gated: the root architect's approval of the root spec covers this child, so do not call
 `dispatch request-approval`, do not register a gate, and do not wait for `design-approved`. During a
 live session, react only to delivered wakes; after revival, start from your issue record, the

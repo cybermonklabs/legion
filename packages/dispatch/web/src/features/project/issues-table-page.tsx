@@ -27,6 +27,7 @@ import {
   type Item,
   readUrl,
   runningIssueStatuses,
+  UNCLAIMED_FACET,
   writeUrl,
 } from "./issues-table-model";
 
@@ -108,18 +109,25 @@ type ToolbarPanel = "flags" | "view";
 
 /**
  * The one row the List's controls sit in: the search box, the trigger over the three flags that
- * narrow no column of the table, the chips of the flags that are on, **Clear filters** (which
- * the row draws), the columns menu, and the display menu carrying the grouping (INFRA-3135, R1
- * and R3). Every narrowing that is a column's own stays on that column's header, where
- * `ColumnFilter` draws it.
+ * narrow no column of the table, the chips of the flags that are on and of the issues a link
+ * names (`only=`), **Clear filters** (which the row draws), the columns menu, and the display
+ * menu carrying the grouping (INFRA-3135, R1 and R3). Every narrowing that is a column's own
+ * stays on that column's header, where `ColumnFilter` draws it.
  */
 export function IssueTableToolbar({
   searchRef,
+  selectionChip,
+  stateKey,
   table,
   unclaimedUnchecked,
 }: {
   /** The search box, which the selection bar hands the focus to when no row is left for it. */
   searchRef: RefObject<HTMLInputElement | null>;
+  /** The chip of the issues a link names, which the row draws first among its chips. */
+  selectionChip?: ReactNode;
+  /** The prefix this table's view is written under (`useTableView`), which **Clear filters**
+   *  rewrites; unset is the bare one the project page publishes. */
+  stateKey?: string;
   table: Table<Item>;
   /** Why the Claimed by filter cannot tell which claims have lapsed, while it is asked to. */
   unclaimedUnchecked: "refilling" | "unreachable" | undefined;
@@ -131,21 +139,33 @@ export function IssueTableToolbar({
   const setSearch = table.setGlobalFilter;
   const setGrouping = table.setGrouping;
   const setExpanded = table.setExpanded;
+  // Unclaimed is the Claimed by column's "Nobody or lapsed", which this table writes as
+  // `?unclaimed=1` under its own prefix (`issues-table-model.ts`) - the parameter the Board's
+  // strip writes too - so the flag is read from and written to that column, and a table drawn
+  // under a prefix narrows itself rather than the page's bare address.
+  const claim = table.getColumn("claim");
+  const claimPicks = (claim?.getFilterValue() as string[] | undefined) ?? [];
+  const unclaimed = claimPicks.includes(UNCLAIMED_FACET);
+  const setUnclaimed = (on: boolean) => {
+    const rest = claimPicks.filter((value) => value !== UNCLAIMED_FACET);
+    const next = on ? [...rest, UNCLAIMED_FACET] : rest;
+    claim?.setFilterValue(next.length === 0 ? undefined : next);
+  };
   // The three narrowings that are no column of this table, and so the ones the row's own
-  // trigger holds. Unclaimed is the Claimed by column's "Nobody or lapsed" as `?unclaimed=1`
-  // spells it (`issues-table-model.ts`), which is the parameter the Board's strip writes too.
+  // trigger holds.
   const flagged = [
     { label: "Needs you", off: () => flags.setNeedsYou(false), on: flags.needsYou },
     { label: "Unread", off: () => flags.setUnread(false), on: flags.unread },
-    { label: "Unclaimed", off: () => flags.setUnclaimed(false), on: flags.unclaimed },
+    { label: "Unclaimed", off: () => setUnclaimed(false), on: unclaimed },
   ].filter(({ on }) => on);
   // Exactly the scope it has always had: the table's own filters and search, and the two flags
   // the write below takes out of the address.
   const narrowed = filters.length > 0 || search !== "" || flags.needsYou || flags.unread;
   const chips =
-    flagged.length === 0
-      ? undefined
-      : flagged.map(({ label, off }) => (
+    flagged.length === 0 && selectionChip === undefined ? undefined : (
+      <>
+        {selectionChip}
+        {flagged.map(({ label, off }) => (
           <Chip
             aria-label={`Remove ${label} filter`}
             key={label}
@@ -157,17 +177,23 @@ export function IssueTableToolbar({
           >
             {label}
           </Chip>
-        ));
+        ))}
+      </>
+    );
   const clearFilters = () =>
     update((current) => {
-      const next = writeUrl(current, {
-        ...readUrl(current),
-        // Back to the view the table opens with, not to no filter at all: an empty status pick
-        // asks the server for every closed issue in the project.
-        filters: defaultView.filters,
-        search: "",
-        page: 0,
-      });
+      const next = writeUrl(
+        current,
+        {
+          ...readUrl(current, stateKey),
+          // Back to the view the table opens with, not to no filter at all: an empty status pick
+          // asks the server for every closed issue in the project.
+          filters: defaultView.filters,
+          search: "",
+          page: 0,
+        },
+        stateKey
+      );
       for (const flag of ["needs-you", "unread"]) next.delete(flag);
       return next;
     });
@@ -229,10 +255,7 @@ export function IssueTableToolbar({
             {() => (
               <>
                 <IssueFlagChips />
-                <Chip
-                  onClick={() => flags.setUnclaimed(!flags.unclaimed)}
-                  selected={flags.unclaimed}
-                >
+                <Chip onClick={() => setUnclaimed(!unclaimed)} selected={unclaimed}>
                   Unclaimed
                 </Chip>
               </>
@@ -265,7 +288,9 @@ export function IssueTableSelection({
   unansweredEpic: string | undefined;
   startNext: (keys: readonly string[], confirmFirst?: boolean) => void;
   moveTo: (keys: readonly string[], epic: string | null) => void;
-  newEpic: (keys: readonly string[]) => void;
+  /** How an epic is made of the selected issues; absent on a table that stands on no project,
+   *  since an epic is created in one and a cross-project selection names none. */
+  newEpic?: (keys: readonly string[]) => void;
 }): ReactNode {
   const selectedKeys = table.getSelectedRowModel().flatRows.map((row) => row.original.issue.key);
   const leafCount = table.getFilteredRowModel().rows.length;
@@ -323,12 +348,14 @@ export function IssueTableSelection({
       <StepButton ariaDisabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
         Take out of epic
       </StepButton>
-      <StepButton
-        ariaDisabled={busy || unansweredEpic !== undefined}
-        onClick={() => void newEpic(selectedKeys)}
-      >
-        New epic from these
-      </StepButton>
+      {newEpic === undefined ? null : (
+        <StepButton
+          ariaDisabled={busy || unansweredEpic !== undefined}
+          onClick={() => void newEpic(selectedKeys)}
+        >
+          New epic from these
+        </StepButton>
+      )}
       <StepButton ariaDisabled={busy} onClick={() => setSelection({})}>
         Clear selection
       </StepButton>

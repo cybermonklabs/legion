@@ -8,15 +8,9 @@ import {
   textMutedOnCanvas,
 } from "../theme/classes";
 import { CONTROL } from "./control-names";
+import type { RowNoun } from "./DataTable";
 import { MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
-
-/** What a count of rows is called where a filter option says how many it would list: the
- *  project List counts issues, another table counts its own rows. */
-export interface FilterCountNoun {
-  readonly one: string;
-  readonly many: string;
-}
 
 function FunnelIcon(): ReactNode {
   return (
@@ -33,8 +27,9 @@ const filterTrigger = (active: boolean) =>
 export interface ColumnFilterProps<TData> {
   readonly column: Column<TData, unknown>;
   readonly counts: ReadonlyMap<string, number>;
-  /** What a count of rows is read as: `3 issues` on the project List. */
-  readonly countNoun: FilterCountNoun;
+  /** What one row of the table is, which a count of rows is read in: `3 issues` on the project
+   *  List, `3 priorities` on the priorities table. */
+  readonly noun: RowNoun;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   /** The values whose rows are not loaded yet: each says `load` rather than count them as
@@ -51,7 +46,7 @@ export interface ColumnFilterProps<TData> {
 export function ColumnFilter<TData>({
   column,
   counts,
-  countNoun,
+  noun,
   open,
   onOpenChange,
   unloaded,
@@ -106,7 +101,7 @@ export function ColumnFilter<TData>({
       optionDetailLabel={(value) =>
         unloaded.includes(value)
           ? "not loaded"
-          : `${counts.get(value) ?? 0} ${(counts.get(value) ?? 0) === 1 ? countNoun.one : countNoun.many}`
+          : `${counts.get(value) ?? 0} ${(counts.get(value) ?? 0) === 1 ? noun.one : noun.many}`
       }
       optionLabel={show}
       options={options}

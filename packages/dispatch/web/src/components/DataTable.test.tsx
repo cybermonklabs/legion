@@ -18,6 +18,7 @@ import {
   DataTableCells,
   DataTableGroupRow,
   type DataTableNames,
+  type RowNoun,
   useDataTable,
 } from "./DataTable";
 import type { PagerOptions } from "./Pager";
@@ -61,7 +62,6 @@ const LAYOUT_COLUMNS: LayoutColumns = {
 /** The caller's own words for its deploys, which the core reads: a scope of its own, the keys
  *  of the page that draws it, and the attributes its rows and links carry. */
 const DEPLOY_NAMES: DataTableNames = {
-  filterCountNoun: { one: "deploy", many: "deploys" },
   groupAttribute: "data-deploy-group",
   keymap: {
     next: { id: "deploys-next", keys: "j", label: "Next deploy" },
@@ -75,13 +75,16 @@ const DEPLOY_NAMES: DataTableNames = {
   rowAttribute: "data-deploy-row",
 };
 
-/** The line under the deploys table, counting what the caller counts. */
+/** What the deploys table calls its rows, which its filters and its pager count in. */
+const DEPLOY_NOUN: RowNoun = {
+  group: { one: "group", many: "groups" },
+  line: { one: "row", many: "rows" },
+  many: "deploys",
+  one: "deploy",
+};
+
+/** The line under the deploys table, with the page sizes the caller offers. */
 const DEPLOY_PAGER: PagerOptions = {
-  nouns: {
-    group: { one: "group", many: "groups" },
-    item: { one: "deploy", many: "deploys" },
-    row: { one: "row", many: "rows" },
-  },
   pageSizes: [10, 25, 50],
   testId: "deploys-pager",
 };
@@ -137,6 +140,7 @@ function Deploys({
   highlighted,
   layoutColumns = LAYOUT_COLUMNS,
   layoutKey = "deploys",
+  noun = DEPLOY_NOUN,
   pageSize = 25,
   pager = DEPLOY_PAGER,
   renderFilter,
@@ -145,8 +149,7 @@ function Deploys({
   trailingWidth,
 }: {
   columns?: ColumnDef<Deploy>[];
-  /** What this caller draws beside a group's heading; with it the headings are the core's
-   *  `DataTableGroupRow` rather than a line of this test's own. */
+  /** What this caller draws beside a group's heading, in place of the count of its deploys. */
   groupSlot?: ReactNode;
   grouping?: GroupingState;
   groupOrder?: (columnId: string, a: string, b: string) => number;
@@ -154,6 +157,8 @@ function Deploys({
   highlighted?: string;
   layoutColumns?: LayoutColumns;
   layoutKey?: string;
+  /** What this caller calls its rows, which its filters and its pager count in. */
+  noun?: RowNoun;
   pageSize?: number;
   /** The line under the table; `null` draws a table with no pager at all. */
   pager?: PagerOptions | null;
@@ -201,29 +206,24 @@ function Deploys({
         filterCounts={NO_COUNTS}
         label={`Deploys ${layoutKey}`}
         model={model}
+        noun={noun}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
         pager={pager ?? undefined}
         renderFilter={renderFilter}
-        renderGroup={({ entry, index, measure }) =>
-          groupSlot === undefined ? (
-            <tr data-group={String(entry.row.groupingValue)} data-index={index} ref={measure}>
-              <td>{String(entry.row.groupingValue)}</td>
-            </tr>
-          ) : (
-            <DataTableGroupRow
-              columns={model.table.getVisibleLeafColumns().length}
-              expanded={entry.row.getIsExpanded()}
-              heading={<em>{String(entry.row.groupingValue)}</em>}
-              index={index}
-              label={`${entry.row.getIsExpanded() ? "Collapse" : "Expand"} ${String(entry.row.groupingValue)}`}
-              measure={measure}
-              onToggle={entry.row.getToggleExpandedHandler()}
-              slot={groupSlot}
-              width={400}
-            />
-          )
-        }
+        renderGroup={({ entry: { row }, index, measure }) => (
+          <DataTableGroupRow
+            columns={model.table.getVisibleLeafColumns().length}
+            expanded={row.getIsExpanded()}
+            heading={<em>{String(row.groupingValue)}</em>}
+            index={index}
+            label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${String(row.groupingValue)}`}
+            measure={measure}
+            onToggle={row.getToggleExpandedHandler()}
+            slot={groupSlot ?? <span>{row.getLeafRows().length} deploys</span>}
+            width={300}
+          />
+        )}
         renderRow={({ row, index, measure }) => (
           <tr data-deploy-row={row.id} data-index={index} ref={measure} tabIndex={-1}>
             <DataTableCells
@@ -399,9 +399,28 @@ test("groups its rows with the headings in the caller's order", async () => {
 
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
   expect(
-    [...table.querySelectorAll("[data-group]")].map((row) => row.getAttribute("data-group"))
-  ).toEqual(["us", "eu"]);
+    within(table)
+      .getAllByRole("button", { name: /^(Collapse|Expand) / })
+      .map((toggle) => toggle.getAttribute("aria-label"))
+  ).toEqual(["Collapse us", "Collapse eu"]);
   expect(listed(table)).toEqual(["d2", "d1", "d3"]);
+});
+
+test("a group's heading row folds its rows away and opens them again, with the caller's slot beside it", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys groupOrder={(_column, a, b) => a.localeCompare(b)} grouping={["region"]} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const eu = within(table).getByRole("button", { name: "Collapse eu" });
+  expect(eu).toHaveAttribute("aria-expanded", "true");
+  expect(eu.closest("td")).toHaveAttribute("colspan", "5");
+  expect(within(table).getByText("2 deploys")).toBeInTheDocument();
+  await user.click(eu);
+  expect(listed(table)).toEqual(["d2"]);
+  const folded = within(table).getByRole("button", { name: "Expand eu" });
+  expect(folded).toHaveAttribute("aria-expanded", "false");
+  await user.click(folded);
+  expect(listed(table)).toEqual(["d1", "d3", "d2"]);
 });
 
 test("says the caller's own words when no row is listed", async () => {
@@ -668,15 +687,13 @@ test("a group's heading is the caller's node, with the caller's slot beside it",
 test("the pager counts in the caller's nouns and offers the caller's page sizes", async () => {
   draw(
     <Deploys
-      pager={{
-        nouns: {
-          group: { one: "region", many: "regions" },
-          item: { one: "deploy", many: "deploys" },
-          row: { one: "line", many: "lines" },
-        },
-        pageSizes: [5, 20],
-        testId: "deploys-pager",
+      noun={{
+        group: { one: "region", many: "regions" },
+        line: { one: "line", many: "lines" },
+        many: "deploys",
+        one: "deploy",
       }}
+      pager={{ pageSizes: [5, 20], testId: "deploys-pager" }}
     />
   );
 
@@ -731,7 +748,6 @@ const PRIORITY_LAYOUT: LayoutColumns = {
 
 /** That page's own words: its rows, its groups, its links and the keys that walk them. */
 const PRIORITY_NAMES: DataTableNames = {
-  filterCountNoun: { one: "issue", many: "issues" },
   groupAttribute: "data-priority-group",
   keymap: {
     next: { id: "priorities-next", keys: "j", label: "Next priority" },
@@ -784,6 +800,12 @@ function Priorities({ layoutKey = "priorities" }: { layoutKey?: string }): React
         filterCounts={NO_COUNTS}
         label={`Priorities ${layoutKey}`}
         model={model}
+        noun={{
+          group: { one: "group", many: "groups" },
+          line: { one: "row", many: "rows" },
+          many: "priorities",
+          one: "priority",
+        }}
         onOpenFilterChange={() => undefined}
         openFilter={undefined}
         renderGroup={() => null}

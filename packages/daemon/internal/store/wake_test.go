@@ -366,7 +366,7 @@ func TestClosingAResumeWritesNoFirstTurnAndFreesTheRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the stuck resumes: %v", err)
 	}
-	stranded, err := store.UnfinishedPodResumes(ctx, "legion", at.Add(2*time.Hour))
+	stranded, err := unfinishedResumes(ctx, store, "legion", at.Add(2*time.Hour))
 	if err != nil {
 		t.Fatalf("read the unfinished resumes: %v", err)
 	}

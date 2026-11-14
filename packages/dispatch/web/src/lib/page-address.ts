@@ -25,12 +25,12 @@ import {
  * The one module that reads and writes the page address.
  *
  * Every page keeps its own parameter names - the Inbox's `?assignee=`, the project's `?label=`,
- * the Agents page's `?machine=`, the Delivery page's facets - but the pages this module serves
- * do not reach for the address themselves. In the six features
- * `components/one-definition.test.ts` names in `ADDRESS_FEATURES` - `agents`, `artifacts`,
- * `delivery`, `inbox`, `project` and `search` - that test refuses `useSearchParams`,
- * `useLocation`, React Router's own `<Navigate>` (a page there redirects through
- * `AddressRedirect`), a hand-built `URLSearchParams`, `window.location` and
+ * the Agents page's `?machine=`, the Delivery page's facets, the priorities page's `?p.sort=` -
+ * but the pages this module serves do not reach for the address themselves. In the seven
+ * features `components/one-definition.test.ts` names in `ADDRESS_FEATURES` - `agents`,
+ * `artifacts`, `delivery`, `inbox`, `priorities`, `project` and `search` - that test refuses
+ * `useSearchParams`, `useLocation`, React Router's own `<Navigate>` (a page there redirects
+ * through `AddressRedirect`), a hand-built `URLSearchParams`, `window.location` and
  * `history.pushState` or `history.replaceState`, so for those pages the address is read and
  * written here alone and there is one rule for how a parameter is read, how it is written, and
  * what happens to the browser's history when it changes. `features/architecture/` is outside
@@ -560,10 +560,12 @@ export interface TableAddressView {
 }
 
 /** How one table's view is spelled in the address. A page with two tables gives each its own
- *  grammar, under its own prefix, so neither reads the other's parameters. */
-export interface TableAddressGrammar {
-  read(params: URLSearchParams): TableAddressView;
-  write(params: URLSearchParams, view: TableAddressView): URLSearchParams;
+ *  grammar, under its own prefix, so neither reads the other's parameters. A table whose view
+ *  holds more than the shared fields - the project's issue table, with the issues a link names
+ *  - reads and writes its own `V`, which every setter below carries through untouched. */
+export interface TableAddressGrammar<V extends TableAddressView = TableAddressView> {
+  read(params: URLSearchParams): V;
+  write(params: URLSearchParams, view: V): URLSearchParams;
 }
 
 /** How the default grammar spells one table's parameters. */
@@ -590,7 +592,9 @@ const TABLE_FILTER = repeatedParam();
  * A page whose table has a vocabulary of its own writes its own grammar and hands it to
  * `useTableAddress` instead: the project's issue table does, because its `?status=`,
  * `?unclaimed=` and `?nofilter=` are the project's own words and its open statuses are a
- * default a link leaves out (`features/project/issues-table-model.ts`).
+ * default a link leaves out (`features/project/issues-table-model.ts`), and so does the
+ * priorities table, which opens in its one order and leaves that sort out of a link
+ * (`features/priorities/priority-table-view.ts`).
  */
 export function tableAddressGrammar(names: TableAddressNames = {}): TableAddressGrammar {
   const prefix = names.prefix === undefined || names.prefix === "" ? "" : `${names.prefix}.`;
@@ -646,11 +650,11 @@ export function tableAddressGrammar(names: TableAddressNames = {}): TableAddress
 
 /** A table's view in the address, in the shape `useDataTable` takes it: the state it renders
  *  and the `on…Change` handlers it calls. */
-export interface TableAddress {
+export interface TableAddress<V extends TableAddressView = TableAddressView> {
   /** The whole address, which the table takes as its view key: a view it has to rebuild from
    *  scratch is exactly one whose address changed. */
   params: URLSearchParams;
-  view: TableAddressView;
+  view: V;
   setSorting: (update: SortingState | ((current: SortingState) => SortingState)) => void;
   setGrouping: (update: GroupingState | ((current: GroupingState) => GroupingState)) => void;
   setFilters: (
@@ -672,11 +676,13 @@ export interface TableAddress {
  * The table core (`components/DataTable.tsx`) reads no address at all: this hook is the page's,
  * and what it returns is handed to `useDataTable` as plain state and setters.
  */
-export function useTableAddress(grammar: TableAddressGrammar): TableAddress {
+export function useTableAddress<V extends TableAddressView>(
+  grammar: TableAddressGrammar<V>
+): TableAddress<V> {
   const params = useAddressParams();
   const update = useAddressUpdate();
   const view = useMemo(() => grammar.read(params), [grammar, params]);
-  const updateView = (next: (current: TableAddressView) => TableAddressView) =>
+  const updateView = (next: (current: V) => V) =>
     update((current) => grammar.write(current, next(grammar.read(current))));
   return {
     params,

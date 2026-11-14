@@ -84,8 +84,8 @@ until this round, where its head must meet it.
 Then, in one turn:
 
 1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
-   test round of every check of the issue, not the forward-merge re-check." The backward move's
-   reason reaches only the implementer.
+   test round of every check of the issue with no `ci_check`, not the forward-merge re-check." The
+   backward move's reason reaches only the implementer.
 2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
    branch your addressing line names into the branch, push, end your forward-merge comment with
    `parent's last round: full test round`, and complete." Never use a hard-coded `main`. The move
@@ -102,8 +102,9 @@ A criterion proven on a deployed system is proven after that child's deploy, as 
 deploy skill says.
 
 If the pull request merged before its last round, it can carry no new head, so move nothing back.
-Once they have closed, have a fresh `task` subagent run each check on the default branch,
-record each result, post them in the acceptance comment, then `sign_off`.
+Once they have closed, have a fresh `task` subagent run each check with no `ci_check` on the
+default branch and record each result. Read each `ci_check` check's derived result in
+`dispatch results`, which no role records. Post them in the acceptance comment, then `sign_off`.
 
 ## The order after your acceptance
 
@@ -243,7 +244,7 @@ If you are that child's architect:
 
 This is for a root of your own standing at `admitted`, the only phase from which a root waits on a person.
 A registration that leaves the approval request with the person moves your root to `awaiting_person`, and what brings the root back is the answer, not the registration.
-Your root keeps its admission slot throughout: it holds the slot the daemon gave it at its start until it is done or leaves the workflow.
+Your root keeps its admission slot throughout: an issue holds one of the cap's slots from the moment the daemon starts it until its work is past its review — `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out of the workflow.
 So your resume takes no slot and comes however full the cap is, whether or not the gate has ever opened in this generation.
 The first phase that resume starts needs no slot of its own either, since the root holds one: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
 A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so it holds the tree's work until a new approval.
