@@ -74,12 +74,8 @@ var pluginRequests = map[string]reflect.Type{
 // never of two contracts.
 const sameBuild = "the `legion` command sends this body, and it is built from the daemon's own commit, so no older build sends it"
 
-// readsNoBody is why a route that decodes no body needs no record. The census of the bodies this
-// run decoded holds such a route to it (requestDecodedProblems).
-const readsNoBody = "the route reads no body"
-
 // routesWithNoPluginBody is every POST route the server registers that pluginRequests holds no
-// row for, with why no plugin's body reaches it.
+// row for and that decodes a body, with why no plugin's body reaches it.
 var routesWithNoPluginBody = map[string]string{
 	"POST /legion/v1/controller/secret":                      sameBuild + " (`legion controller start`)",
 	"POST /legion/v1/controller/github-credential":           sameBuild + " (`legion controller start`)",
@@ -87,11 +83,17 @@ var routesWithNoPluginBody = map[string]string{
 	"POST /legion/v1/operator/claims/{token}/deliver":        sameBuild + " (`legion claims deliver`)",
 	"POST /legion/v1/operator/claims/{token}/retry":          sameBuild + " (`legion claims retry`)",
 	"POST /legion/v1/operator/claims/{token}/forget-session": sameBuild + " (`legion claims forget-session`)",
-	"POST /legion/v1/operator/claims/{token}/suspend":        readsNoBody,
-	"POST /legion/v1/operator/claims/{token}/resume":         readsNoBody,
-	"POST /legion/v1/operator/claims/{token}/stop":           readsNoBody,
-	"POST /legion/v1/operator/claims/{token}/compact":        readsNoBody,
-	"POST /legion/v1/operator/claims/{token}/close":          readsNoBody,
+}
+
+// routesReadingNoBody is every POST route the server registers that decodes no body at all, so
+// no body needs a record. The census of the bodies this run decoded holds each such route to it
+// (requestDecodedProblems): a route of this set that decodes a body is a problem.
+var routesReadingNoBody = map[string]bool{
+	"POST /legion/v1/operator/claims/{token}/suspend": true,
+	"POST /legion/v1/operator/claims/{token}/resume":  true,
+	"POST /legion/v1/operator/claims/{token}/stop":    true,
+	"POST /legion/v1/operator/claims/{token}/compact": true,
+	"POST /legion/v1/operator/claims/{token}/close":   true,
 }
 
 // requestFieldPaths is every field path typ declares, read from its json tags as an answer's key
@@ -436,9 +438,9 @@ func TestTheRequestGateCatchesAReadFieldItsRecordDoesNotHold(t *testing.T) {
 	})
 }
 
-// Every POST route the server registers is a row of pluginRequests or says why no plugin's body
-// reaches it, and every route either table names is a registered route. A route added tomorrow
-// that reads a plugin's body is red here until its type is recorded.
+// Every POST route the server registers is a row of pluginRequests, says why no plugin's body
+// reaches it, or reads no body, and every route the three tables name is a registered route. A
+// route added tomorrow that reads a plugin's body is red here until its type is recorded.
 func TestEveryPostRouteIsARequestRowOrSaysWhyNot(t *testing.T) {
 	registered := map[string]bool{}
 	for _, pattern := range registeredPatterns {
@@ -446,13 +448,22 @@ func TestEveryPostRouteIsARequestRowOrSaysWhyNot(t *testing.T) {
 		if !strings.HasPrefix(pattern, "POST ") {
 			continue
 		}
-		_, plugin := pluginRequests[pattern]
-		_, other := routesWithNoPluginBody[pattern]
-		if plugin == other {
-			t.Errorf("%s is in %s of pluginRequests and routesWithNoPluginBody, want exactly one", pattern, map[bool]string{true: "both", false: "neither"}[plugin])
+		var in []string
+		if _, plugin := pluginRequests[pattern]; plugin {
+			in = append(in, "pluginRequests")
+		}
+		if _, other := routesWithNoPluginBody[pattern]; other {
+			in = append(in, "routesWithNoPluginBody")
+		}
+		if routesReadingNoBody[pattern] {
+			in = append(in, "routesReadingNoBody")
+		}
+		if len(in) != 1 {
+			t.Errorf("%s is in %v of pluginRequests, routesWithNoPluginBody and routesReadingNoBody, want exactly one", pattern, in)
 		}
 	}
-	for _, route := range slices.Concat(slices.Collect(maps.Keys(pluginRequests)), slices.Collect(maps.Keys(routesWithNoPluginBody))) {
+	for _, route := range slices.Concat(slices.Collect(maps.Keys(pluginRequests)), slices.Collect(maps.Keys(routesWithNoPluginBody)),
+		slices.Collect(maps.Keys(routesReadingNoBody))) {
 		if !registered[route] {
 			t.Errorf("%s is no route NewServer registers", route)
 		}
@@ -481,9 +492,9 @@ func init() {
 }
 
 // requestDecodedProblems is every body this run decoded into a type its route's row of
-// pluginRequests does not name, every body decoded on a route whose row of routesWithNoPluginBody
-// says it reads no body, and every body decoded on a route neither table names. A decode with no
-// pattern is a handler a test called directly, which names no route to hold.
+// pluginRequests does not name, every body decoded on a route of routesReadingNoBody, and every
+// body decoded on a route no table names. A decode with no pattern is a handler a test called
+// directly, which names no route to hold.
 func requestDecodedProblems() []string {
 	requestsDecoded.mu.Lock()
 	defer requestsDecoded.mu.Unlock()
@@ -492,17 +503,18 @@ func requestDecodedProblems() []string {
 		if pair.pattern == "" {
 			continue
 		}
-		want, plugin := pluginRequests[pair.pattern]
-		if why, other := routesWithNoPluginBody[pair.pattern]; other {
-			if why == readsNoBody {
-				problems = append(problems, fmt.Sprintf(
-					"%s decoded a body into %s, and routesWithNoPluginBody says %s: correct the reason, or the route", pair.pattern, pair.into, readsNoBody))
-			}
+		if routesReadingNoBody[pair.pattern] {
+			problems = append(problems, fmt.Sprintf(
+				"%s decoded a body into %s, and routesReadingNoBody says the route reads no body: correct the table, or the route", pair.pattern, pair.into))
 			continue
 		}
+		if _, other := routesWithNoPluginBody[pair.pattern]; other {
+			continue
+		}
+		want, plugin := pluginRequests[pair.pattern]
 		if !plugin {
 			problems = append(problems, fmt.Sprintf(
-				"%s decoded a body into %s, and neither pluginRequests nor routesWithNoPluginBody names the route", pair.pattern, pair.into))
+				"%s decoded a body into %s, and none of pluginRequests, routesWithNoPluginBody and routesReadingNoBody names the route", pair.pattern, pair.into))
 			continue
 		}
 		if pair.into != want {

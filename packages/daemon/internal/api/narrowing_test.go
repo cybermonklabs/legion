@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -306,6 +308,76 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				value.PluginContract, value.Follows, ServingFloor, followsTheLowest)
 		}
 	})
+}
+
+// A band logs a drop only of a key the body carried on the wire. narrowingsExpected reads a
+// fully populated state, where every band has a key to take, so this case reads the other end:
+// a state with one issue that carries no optional field, served to a caller below every band.
+// The issue holds an empty `gatedSteps`, which a root of a deployment that gates no step carries
+// (GatedStepViewsOf), and an empty `ancestry`. `omitempty` keeps each empty list off the wire as
+// it keeps a nil list. The issue has no worker and no check, so no `pass` and no `role` is on the
+// wire either, and no band of an issue may log a drop.
+//
+// What each band takes from the wire is measured here and not listed: the band's halves are
+// applied to the body the bands start from, and the two bodies are marshalled and compared. A
+// band that changes no byte has taken no key, and the log must say nothing of it. Today the
+// bands of the body's own keys do change the bytes, because every state carries
+// `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the mark, `admission.held`,
+// `lowestPluginContract` for these claims and `settings.pod_update_grace_minutes`.
+func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
+	const below = supervise.PodUpdateContract - 1
+	claims := podClaims(below)
+	state := State{Issues: map[string]Issue{"LEGION-300": {
+		Key:        "LEGION-300",
+		Workers:    map[claim.Role]PhaseView{},
+		GatedSteps: []GatedStepView{},
+		Ancestry:   []string{},
+	}}}
+	_, narrowings := stateNarrowed(t, state, statePodAddr+":41000", claims)
+
+	// The body the bands start from: the state as the route answers it, with the fleet's lowest
+	// contract it writes (projectState) and the mark shapeState writes before any band runs.
+	served := state
+	served.LowestPluginContract = lowestPluginContract(claims)
+	served.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: stripContract(below)}
+	marshalled := func(body State) []byte {
+		t.Helper()
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal the state: %v", err)
+		}
+		return encoded
+	}
+	before := marshalled(served)
+	var want []string
+	for _, narrowing := range stateNarrowings {
+		narrowed := served
+		if narrowing.state != nil {
+			narrowed, _ = narrowing.state(narrowed)
+		}
+		if narrowing.issue != nil {
+			issues := make(map[string]Issue, len(narrowed.Issues))
+			for key, issue := range narrowed.Issues {
+				issues[key], _ = narrowing.issue(issue)
+			}
+			narrowed.Issues = issues
+		}
+		if !bytes.Equal(before, marshalled(narrowed)) {
+			want = append(want, narrowing.dropped)
+		}
+	}
+	got := make([]string, 0, len(narrowings))
+	for _, line := range narrowings {
+		got = append(got, line.Dropped)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the daemon logged the drops %q for the empty state, want only the bands that changed the wire, %q", got, want)
+	}
+	for _, narrowing := range stateNarrowings {
+		if narrowing.state == nil && slices.Contains(got, narrowing.dropped) {
+			t.Errorf("the daemon logged %q for an issue that carries none of those keys", narrowing.dropped)
+		}
+	}
 }
 
 // recordFieldsContract is never above this daemon's declared contract. A caller is served the

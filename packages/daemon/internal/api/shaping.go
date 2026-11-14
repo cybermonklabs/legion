@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -355,10 +356,9 @@ func shapeState(state State, restore, strip int, took *tookOff) State {
 	// tolerates it and a later reader may require it, so an added key follows the highest, while
 	// a reader whose enumeration does not admit a value refuses the whole body for it and no
 	// reader requires a value at all, so a value follows the lowest. This is the first of the
-	// two; shapeIssue carries the other.
-	if restore < retiredStrandedContract && carriesRetiredStranded(state) {
-		state = withoutRetiredStranded(state)
-		took.retiredStranded = true
+	// two; shapeIssue carries the other. Each strip reports whether it took anything.
+	if restore < retiredStrandedContract {
+		state, took.retiredStranded = withoutRetiredStranded(state)
 	}
 	// Every row of shapeIssue is below this daemon's own contract, so a caller at it takes none
 	// of them and is served the issue map the source answered, with no copy made of it.
@@ -420,10 +420,13 @@ const narrowedTheState = "api: narrowed the state to the caller's plugin contrac
 //
 // Each half returns the body it narrowed and whether it took anything off that body. That second
 // value decides the band's log line (applyBand, recordShaping). A half reads it from the fields
-// it clears, before it clears them: a field that holds a value, or a claim view that the strip
-// changes. A half that sets a flag to leave a key off reports a move on every body it sets the
-// flag on. A band that finds nothing to take reports nothing, and no two whole bodies are
-// compared.
+// it clears, before it clears them: a field that holds a value the wire carries, or a claim view
+// that the strip changes. A slice or a map is asked its length and never whether it is nil,
+// because `omitempty` keeps an empty one off the wire as it keeps a nil one, and a band that
+// reported it would log a key the body never carried. A half that sets a flag to leave a key off
+// reports a move on every body it sets the flag on, and each such key is one the body carries
+// whatever it holds (MarshalJSON writes it on every body but the one the flag is set on). A band
+// that finds nothing to take reports nothing, and no two whole bodies are compared.
 type stateNarrowing struct {
 	contract int
 	state    func(State) (State, bool)
@@ -537,7 +540,9 @@ func (s *server) recordValueStrip(r *http.Request, at placement, dropped string)
 }
 
 // followsTheLowest is the clause each value strip's line carries and no band's line does: it
-// says which of the pod's two contracts the number beside it is.
+// says which of the pod's two contracts the number beside it is. The line of a fresh session
+// served the failure contract 103 gave carries it too, since that decision follows the lowest
+// contract as a value strip does (refusedAfterTheStop).
 const followsTheLowest = "the pod's lowest contract, which a value follows where a key follows its highest"
 
 // droppedRetiredStranded and droppedWaitAnswer are what the two value strips name as dropped.
@@ -760,9 +765,12 @@ const shapedAnswersContract = 118
 const podUpdateGraceContract = shapedAnswersContract
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
-// state; nothing else of that contract is on the route.
+// state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
+// deployment that gates no step carries an empty list of it (GatedStepViewsOf), which the wire
+// leaves off as it leaves off a nil one, so the band reports a move only for a list that holds a
+// step.
 func withoutGatedSteps(issue Issue) (Issue, bool) {
-	moved := issue.GatedSteps != nil
+	moved := len(issue.GatedSteps) > 0
 	issue.GatedSteps = nil
 	return issue, moved
 }
@@ -781,14 +789,6 @@ func withoutQuietTime(issue Issue) (Issue, bool) {
 	moved := issue.TreeMovedAt != nil || issue.QuietHours != nil
 	issue.TreeMovedAt, issue.QuietHours = nil, nil
 	return issue, moved
-}
-
-// carriesRetiredStranded is whether any claim of state's report of claims nothing will wake is
-// retired, the state retiredStrandedContract added.
-func carriesRetiredStranded(state State) bool {
-	return slices.ContainsFunc(state.StrandedClaims, func(c StrandedClaim) bool {
-		return c.State == string(supervise.StateRetired)
-	})
 }
 
 // withoutWaitingLine is the issue with no `waitingLine`, the field waitingLineContract added to
@@ -897,27 +897,37 @@ func lowestPluginContract(claims []supervise.Claim) *int {
 }
 
 // withEachClaimView is the issue with change applied to every claim view it carries: the
-// architect's and each worker's, and whether change altered any of them. The architect's view
-// and the worker map are copied, so the state the source answered is left as it was. The map it
-// returns is a new one whenever the issue carries one, so a caller may write it further. A view
-// is compared with what change made of it by the compiler's own `!=`, as issueCarriesRecordFields
-// compares it.
+// architect's and each worker's, and whether change altered any of them. A view is compared with
+// what change made of it by the compiler's own `!=`: every field of ClaimView is a string, a
+// number, a bool or a pointer, so the type is comparable, and a build that puts a slice or a map
+// on it fails here.
+//
+// Nothing is copied for a view that change leaves as it was. The architect's view is copied only
+// when change alters it, and the worker map only at the first worker whose view change alters,
+// so an issue that carries none of the keys a band takes off is returned as the source answered
+// it, and the state the source answered is left as it was either way. The map returned is the
+// source's own where no worker's view moved, so a caller must not write into it.
 func withEachClaimView(issue Issue, change func(ClaimView) ClaimView) (Issue, bool) {
 	moved := false
 	if issue.Architect != nil {
-		architect := change(*issue.Architect)
-		moved = architect != *issue.Architect
-		issue.Architect = &architect
-	}
-	if issue.Workers != nil {
-		workers := make(map[claim.Role]PhaseView, len(issue.Workers))
-		for role, worker := range issue.Workers {
-			changed := change(worker.Claim)
-			moved = moved || changed != worker.Claim
-			worker.Claim = changed
-			workers[role] = worker
+		if architect := change(*issue.Architect); architect != *issue.Architect {
+			issue.Architect, moved = &architect, true
 		}
-		issue.Workers = workers
+	}
+	var workers map[claim.Role]PhaseView
+	for role, worker := range issue.Workers {
+		changed := change(worker.Claim)
+		if changed == worker.Claim {
+			continue
+		}
+		if workers == nil {
+			workers = maps.Clone(issue.Workers)
+		}
+		worker.Claim = changed
+		workers[role] = worker
+	}
+	if workers != nil {
+		issue.Workers, moved = workers, true
 	}
 	return issue, moved
 }
@@ -1006,19 +1016,25 @@ func withoutClaimsToRefresh(state State) (State, bool) {
 // the one state retiredStrandedContract added; nothing else of that contract is on this route, the
 // operator claim view's three delivery fields being served where no plugin reads. The entry is
 // dropped rather than rewritten, since its state is the claim's own and no older value stands for
-// it, and a reader before the contract refuses the whole body for one of them. The slice is
-// copied, so the state the source answered is left as it was, and it stays non-nil when every
-// entry goes: `strandedClaims` is never null on the wire (state.go's normalisation).
-func withoutRetiredStranded(state State) State {
+// it, and a reader before the contract refuses the whole body for one of them. It reports whether
+// it took an entry, which is what the log line of this strip is written from (tookOff), as
+// withoutUnadmittedWaitAnswer reports the pair it takes. A report that names no retired claim is
+// returned as it is, with no copy made. Otherwise the slice is copied, so the state the source
+// answered is left as it was, and it stays non-nil when every entry goes: `strandedClaims` is
+// never null on the wire (state.go's normalisation).
+func withoutRetiredStranded(state State) (State, bool) {
+	retired := func(c StrandedClaim) bool { return c.State == string(supervise.StateRetired) }
+	if !slices.ContainsFunc(state.StrandedClaims, retired) {
+		return state, false
+	}
 	stranded := make([]StrandedClaim, 0, len(state.StrandedClaims))
 	for _, c := range state.StrandedClaims {
-		if c.State == string(supervise.StateRetired) {
-			continue
+		if !retired(c) {
+			stranded = append(stranded, c)
 		}
-		stranded = append(stranded, c)
 	}
 	state.StrandedClaims = stranded
-	return state
+	return state, true
 }
 
 // withoutUnadmittedWaitAnswer is the issue whose wait carries no `answeredAt` and no
@@ -1121,10 +1137,9 @@ func withoutContractMark(state State) (State, bool) {
 
 // stripRecordFields is view with none of the keys recordFieldsContract added to a claim view:
 // `servingGeneration`, `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and
-// `pendingCause`. It stands on its own because two callers must agree on that list to the key —
-// withoutRecordFields, which takes them off the views of a caller under the contract, and
-// issueCarriesRecordFields, which asks whether a view carries any of them and asks it by this
-// function — so a key added here is answered by both and cannot be added to one alone.
+// `pendingCause`. It is the one list of those keys, and withoutRecordFields applies it through
+// withEachClaimView, which also reads from it whether a view carried any of them: a view this
+// strip changes is a view that carried one, since each key it clears is `omitempty`.
 func stripRecordFields(view ClaimView) ClaimView {
 	view.ServingGeneration = 0
 	view.UpdateReasons = ""
@@ -1135,45 +1150,22 @@ func stripRecordFields(view ClaimView) ClaimView {
 	return view
 }
 
-// issueCarriesRecordFields is whether a claim view of this one issue carries any key the record
-// added to a claim view. It is what the serving-down below reads to decide whether to build an
-// issue's views again, and it asks stripRecordFields itself rather than list its keys a second
-// time: a view that strip would change is a view carrying one of them, so the question and the
-// strip cannot part company over what carrying means — a key added to stripRecordFields is
-// answered here by the same line — as issueCarriesBackwardMoves holds that for the counts. The
-// comparison is the compiler's: every field of ClaimView is a string, a number, a bool or a
-// pointer, so the type is comparable and a build that puts a slice or a map on it fails here.
-func issueCarriesRecordFields(issue Issue) bool {
-	carries := func(v ClaimView) bool { return stripRecordFields(v) != v }
-	if issue.Architect != nil && carries(*issue.Architect) {
-		return true
-	}
-	for _, worker := range issue.Workers {
-		if carries(worker.Claim) {
-			return true
-		}
-	}
-	return false
-}
-
 // withoutRecordFields is the issue with no claim view carrying any of the keys
 // stripRecordFields takes off and no `heldFrom`, `lingerUntil` or `ancestry`, which is every key
 // recordFieldsContract added to an issue; the `contract` mark, the one key it added to the body
 // itself, is withoutContractMark's. The issue's own three are cleared on the value this
-// function was handed; its architect and its worker map are built again only where a claim view
-// of that issue carries one of the strip's keys, as withoutBackwardMoves rebuilds only the
-// worker maps that carry the counts, because this runs on every state read of every pod below
-// the contract.
+// function was handed. Its architect and its worker map are copied only where a claim view of
+// that issue carries one of the strip's keys (withEachClaimView), as withoutBackwardMoves copies
+// only the worker maps that carry the counts, because this runs on every state read of every pod
+// below the contract. `ancestry` is asked its length: it is `omitempty`, so an empty list is no
+// key on the wire.
 func withoutRecordFields(issue Issue) (Issue, bool) {
-	moved := issue.HeldFrom != "" || issue.LingerUntil != nil || issue.Ancestry != nil
+	moved := issue.HeldFrom != "" || issue.LingerUntil != nil || len(issue.Ancestry) > 0
 	issue.HeldFrom = ""
 	issue.LingerUntil = nil
 	issue.Ancestry = nil
-	if !issueCarriesRecordFields(issue) {
-		return issue, moved
-	}
-	issue, _ = withEachClaimView(issue, stripRecordFields)
-	return issue, true
+	issue, viewsMoved := withEachClaimView(issue, stripRecordFields)
+	return issue, moved || viewsMoved
 }
 
 // lineFieldsCarried is whether one member's view carries a field of whyAndLineFieldsContract's
@@ -1326,10 +1318,13 @@ func withoutPodUpdateGrace(state State) (State, bool) {
 //
 // `pass` is the one of the seven that is no `omitempty` field, so it is left off by a flag on the
 // view the marshaller reads (PhaseView.passHidden) rather than by zeroing it, which would write
-// `"pass": 0` to a reader that knows no such key. The pull request view is copied, and the
-// worker map withEachClaimView returns is a new one, so the flag is written into that map and
-// the state the source answered is left as it was. The flag leaves the key off every worker it
-// is set on, so the band reports a move on every issue that has a worker.
+// `"pass": 0` to a reader that knows no such key. The flag leaves the key off every worker it is
+// set on, so the band reports a move on every issue that has a worker, and every worker of such
+// an issue is written again. This function therefore builds its own worker map and strips each
+// worker's view in the same pass, rather than through withEachClaimView, whose map is the
+// source's own where no view moved and so must not be written into. The architect's view and the
+// pull request view are copied where they are written, so the state the source answered is left
+// as it was.
 func withoutStateMachineFields(issue Issue) (Issue, bool) {
 	moved := len(issue.Workers) > 0
 	if issue.PullRequest != nil {
@@ -1338,12 +1333,21 @@ func withoutStateMachineFields(issue Issue) (Issue, bool) {
 		pullRequest.MergeState = ""
 		issue.PullRequest = &pullRequest
 	}
-	issue, viewsMoved := withEachClaimView(issue, stripTurnRecord)
-	for role, worker := range issue.Workers {
-		worker.passHidden = true
-		issue.Workers[role] = worker
+	if issue.Architect != nil {
+		if architect := stripTurnRecord(*issue.Architect); architect != *issue.Architect {
+			issue.Architect, moved = &architect, true
+		}
 	}
-	return issue, moved || viewsMoved
+	if len(issue.Workers) > 0 {
+		workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+		for role, worker := range issue.Workers {
+			worker.Claim = stripTurnRecord(worker.Claim)
+			worker.passHidden = true
+			workers[role] = worker
+		}
+		issue.Workers = workers
+	}
+	return issue, moved
 }
 
 // stripTurnRecord is view with none of the keys stateMachineContract added to a claim view:

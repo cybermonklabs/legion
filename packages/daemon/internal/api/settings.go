@@ -135,11 +135,11 @@ type Settings struct {
 	Hooks []HookSettings `json:"hooks"`
 	// maxFixAttemptsShown is set on the copy the state route serves a caller below the contract
 	// that removed `max_fix_attempts` from this block (api's withMaxFixAttempts, below
-	// shaping.go's fixAttemptsContract). Such a reader parses the settings loosely, so the key
-	// is a stand-in it never misses the absence of; it is served all the same because the same
-	// contract's other removal is one a strict reader does refuse, and the two are restored
-	// together. It is a flag of the block's own and the stand-in is a constant, as
-	// PullRequestView.fixAttemptsShown is.
+	// shaping.go's fixAttemptsContract). Such a reader parses the settings with `z.looseObject`,
+	// which passes a key it does not name and requires each key it does name. It names
+	// `max_fix_attempts` as a positive integer, so it refuses the whole body without the key,
+	// and the stand-in is what it reads there. It is a flag of the block's own and the stand-in
+	// is a constant, as PullRequestView.fixAttemptsShown is.
 	maxFixAttemptsShown bool
 	// podUpdateHoursShown is set on the copy the state route serves a caller below the contract
 	// that took `pod_update_retask_hours` and `pod_update_notice_hours` out of this block (api's

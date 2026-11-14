@@ -405,13 +405,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	if session := m.Claim().Session; session != "" {
 		switch err := s.forgetRecordedSession(r, m, token, session); {
 		case err != nil && stopped:
-			s.log.Warn("api: a fresh session stopped the claim and the forget of its session was refused",
-				"claim", token, "session", session, "error", err)
-			if s.readsTheStopAsAFailure(r) {
-				s.operatorFailure(w, r, "forget-session", token, err)
-				return 0, "", false, false
-			}
-			return http.StatusOK, notStartedAgain(token, m.Claim().State, "the forget of the session it recorded", err), false, true
+			return s.refusedAfterTheStop(w, r, m, token, forgetAfterTheStop, err, "session", session)
 		case err != nil:
 			s.operatorFailure(w, r, "forget-session", token, err)
 			return 0, "", false, false
@@ -427,13 +421,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	case err != nil && stopped:
 		// The machine's own words for the refusal go in the answer, which is why the resume is
 		// posted rather than run through claimEvent (postClaimEvent, notStartedAgain).
-		s.log.Warn("api: a fresh session stopped the claim and the start that would have brought it back was refused",
-			"claim", token, "state", m.Claim().State, "error", err)
-		if s.readsTheStopAsAFailure(r) {
-			s.operatorFailure(w, r, "resume", token, err)
-			return 0, "", false, false
-		}
-		return http.StatusOK, notStartedAgain(token, m.Claim().State, "the start of it in a new session", err), false, true
+		return s.refusedAfterTheStop(w, r, m, token, resumeAfterTheStop, err, "state", m.Claim().State)
 	case err != nil:
 		s.operatorFailure(w, r, "resume", token, err)
 		return 0, "", false, false
@@ -828,24 +816,95 @@ func notStartedAgain(token claim.Token, state supervise.ClaimState, step string,
 	return fmt.Sprintf("%s. It is %s now; `read_state` (`legion claims list`) shows its state", said, state)
 }
 
-// readsTheStopAsAFailure is whether the caller of r is placed below processReadContract
-// (contractsFor). Such a caller gets the answer that contract 103 gave to a fresh session that
-// stopped the claim and could not start it again: the failure that operatorFailure writes for
-// the refused step, and no 200. The `legion` tool description of a plugin below
-// processReadContract says that a 200 means the claim runs again. A 200 with
+// refusedStep is one step that a fresh session takes after it stopped the claim, and that the
+// machine can refuse: the request that operatorFailure names it by, the words that
+// notStartedAgain names it in, and the Warn line that the daemon writes when the machine refuses
+// it.
+type refusedStep struct {
+	request, step, warning string
+}
+
+// forgetAfterTheStop and resumeAfterTheStop are the two steps that bring a stopped claim back:
+// the forget of the session it recorded, and the start of it in a new session.
+var (
+	forgetAfterTheStop = refusedStep{
+		request: "forget-session",
+		step:    "the forget of the session it recorded",
+		warning: "api: a fresh session stopped the claim and the forget of its session was refused",
+	}
+	resumeAfterTheStop = refusedStep{
+		request: "resume",
+		step:    "the start of it in a new session",
+		warning: "api: a fresh session stopped the claim and the start that would have brought it back was refused",
+	}
+)
+
+// refusedAfterTheStop answers a fresh session that stopped the claim and then met the machine's
+// refusal of step. Both steps are answered here, so the forget and the start cannot answer a
+// caller in two ways:
+//
+//  1. It writes the Warn line of step, with the claim, detail and the machine's error.
+//  2. It reads where the caller is placed (readsTheStopAsAFailure).
+//  3. A caller at processReadContract or above gets the 200 with the refusal in
+//     phaseNotRestarted (notStartedAgain).
+//  4. A caller below it gets the failure that contract 103 gave for the refused step
+//     (operatorFailure), and one Info line (servedTheStopAsAFailure) says that the daemon served
+//     that caller the failure in place of the 200.
+//
+// The Info line names the caller's address, its pod (empty for a caller its header placed), the
+// contract the decision followed, which is restore, and the contract this daemon declares, as a
+// value strip's line of the state does (recordValueStrip). It also names the claim and the step.
+// operatorFailure writes its own line, "api: an operator request failed", for a failure that is
+// no RefusedError, on both doors, and that line does not say that the caller was served down.
+func (s *server) refusedAfterTheStop(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
+	step refusedStep, err error, detail ...any) (status int, notRestarted string, started, ok bool) {
+	s.log.Warn(step.warning, append(append([]any{"claim", token}, detail...), "error", err)...)
+	at, servedDown := s.readsTheStopAsAFailure(r)
+	if !servedDown {
+		return http.StatusOK, notStartedAgain(token, m.Claim().State, step.step, err), false, true
+	}
+	s.operatorFailure(w, r, step.request, token, err)
+	s.log.Info(servedTheStopAsAFailure, "caller", r.RemoteAddr, "pod", at.pod,
+		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion, "follows", followsTheLowest,
+		"claim", token, "request", step.request, "served", servedTheRefusedStep)
+	return 0, "", false, false
+}
+
+// servedTheStopAsAFailure is the message of the line that refusedAfterTheStop writes for a
+// caller below processReadContract, and servedTheRefusedStep is what that line says the caller
+// was served. The test that reads the daemon's log reads the same strings
+// (TestAFreshSessionThatCouldNotStartTheClaimAgainAnswersACallerBelow104AsBefore).
+const (
+	servedTheStopAsAFailure = "api: answered a fresh session to the caller's plugin contract"
+	servedTheRefusedStep    = "the failure of the refused step, which contract 103 answered, in place of the 200 with phaseNotRestarted that contract 104 answers"
+)
+
+// readsTheStopAsAFailure is where the caller of r is placed (contractsFor), and whether that
+// placement is below processReadContract. Such a caller gets the answer that contract 103 gave
+// to a fresh session that stopped the claim and could not start it again: the failure that
+// operatorFailure writes for the refused step, and no 200. The `legion` tool description of a
+// plugin below processReadContract says that a 200 means the claim runs again. A 200 with
 // phaseNotRestarted therefore makes that controller read a stopped claim as a live one, and
 // nothing starts the claim.
 //
 // The decision reads restore, the lowest contract of the caller's pod, and not its highest.
 // What moved at processReadContract is what one answer means, and no key of it, so the
-// decision follows the lowest contract as a value strip does (followsTheLowest). A plugin below
-// shapedAnswersContract sends no pluginContractHeader, so only its pod places it, and the pod
-// is read from the project's claims. If the store does not give the claims, the header alone
-// places the caller, as it places the caller of every answer that writeAnswer writes.
-func (s *server) readsTheStopAsAFailure(r *http.Request) bool {
-	claims, err := s.supervisor.Claims(r.Context())
-	if err != nil {
-		s.logRequestFailure(r, err, "api: read the claims that place the caller of a fresh session")
+// decision follows the lowest contract as a value strip does (followsTheLowest).
+//
+// It reads the header before it reads the store. A caller that states its contract in
+// pluginContractHeader is placed by the header alone, so no claim is read for it. A plugin below
+// shapedAnswersContract sends no header, so only its pod places it, and the pod is read from the
+// project's claims. `legion` sends no header either and runs from no pod, so it is placed at
+// this daemon's own contract and gets the 200. If the store does not give the claims, the
+// caller is placed as one in no pod, as every answer that writeAnswer writes places it.
+func (s *server) readsTheStopAsAFailure(r *http.Request) (placement, bool) {
+	var claims []supervise.Claim
+	if _, stated := statedContract(r); !stated {
+		var err error
+		if claims, err = s.supervisor.Claims(r.Context()); err != nil {
+			s.logRequestFailure(r, err, "api: read the claims that place the caller of a fresh session")
+		}
 	}
-	return s.contractsFor(r, claims).restore < processReadContract
+	at := s.contractsFor(r, claims)
+	return at, at.restore < processReadContract
 }
