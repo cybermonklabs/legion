@@ -3133,11 +3133,13 @@ architect, planner, implementer, tester, reviewer, merger):
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
    As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
    As that PID 1 it also runs the pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+   Only as that PID 1 does it sweep the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
+   A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
    A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
    a role-init that ends any other way without reporting its shim's status (a panic's
    2) is reported with that exit as it is.
 
-5. As well as the roles, the launcher sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
+5. As well as the roles, the launcher, as the container's PID 1 alone (item 4), sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
    The clone it sweeps is derived from the workspace's own path, through the layout provisioning laid that workspace out in (`workspace.WorkspaceOf`), and is never read from the workspace's `.jj/repo` or the repository's `store/git_target`, which every role of the pod can write:
    the container's restart policy is `Always` and its disk outlives it, so a launcher that read those files after a restart would read what the last container's roles left there, and would send its first pass, which removes at any age, wherever they point.
    A workspace that layout does not account for is a line naming that workspace and, where the layout can say it, the directory `Location` would have put it in — no clone was derived, so the line names none.
@@ -4493,8 +4495,14 @@ Where `AnonPages` or the limit cannot be read, where the limit reads as no limit
 
 **What it ends.**
 At or above the mark, `act_percent` of the limit (85 by default), the guard lists every process of the container and finds the ones it may end (below).
-It measures each of those from its `/proc/<pid>/smaps`: the sum of its `Anonymous:` lines, plus the resident size (`Rss:`) of each of its shared maps of memory-backed files, which are `/dev/zero (deleted)` (shared anonymous memory), `/memfd:…`, `/dev/shm/…` and `/SYSV…` (`smapsSize`, `proc.go`).
+The list leaves out a zombie or a dead process, state `Z` or `X` in its `stat`, whose `status` counts one thread or none:
+it holds no memory, and under gVisor its `exe` link answers `EACCES`, which would otherwise count it unread.
+A process in either state whose other threads still run is one whose main thread alone has exited, and the guard reads it as a live process ("What it does not do", below).
+It measures each process it may end from its `/proc/<pid>/smaps`: the sum of its `Anonymous:` lines, plus the resident size (`Rss:`) of each of its shared maps of memory-backed files, which are `/dev/zero (deleted)` (shared anonymous memory), `/memfd:…`, `/dev/shm/…` and `/SYSV…` (`smapsSize`, `proc.go`).
 Shared anonymous memory and a memfd raise `AnonPages` while their pages read 0 in `Anonymous:`, so without the second term a process that grows that way would not be seen.
+It also adds each memfd the process holds open by a file descriptor and has not mapped shared, at the memfd's size as `stat` reads it through that descriptor (`heldMemfdBytes`, `proc.go`):
+ending the process frees those pages too, and no line of its smaps shows them.
+A memfd counts once: one that a process the guard measures maps shared counts through that map's `Rss:` alone, and one that several of them hold by a descriptor counts for the largest of them by its smaps.
 A map of a file on disk adds nothing, which is why a process that maps a database is not ended for its map.
 A region that several processes map counts in each of them, since gVisor gives no `Pss` that would divide it.
 The guard acts only when the processes it may end hold at least `floor_percent` of the limit between them (10 by default): below that, the memory is mostly in processes it may not end, and ending one of the rest frees too little to matter.
@@ -4531,11 +4539,13 @@ In each role it protects:
 
 - every direct child of the shim: the agent, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer, the jj of the working copy's adoption and the CodeGraph warm-up;
 
-- Oh My Pi's helpers, each a direct child of the agent that runs the agent's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of Oh My Pi's JavaScript eval tool, which runs the code the agent writes;
+- Oh My Pi's helpers, each reached from the agent through a chain of helpers:
+  a process that runs the agent's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of Oh My Pi's JavaScript eval tool, which runs the code the agent writes, and whose parent is the agent or another such helper.
+  A helper starts helpers of its own: in an issue pod on 2026-11-14 the agent's `__omp_worker_daemon_broker` was the parent of `__omp_worker_lsp_mux`, which runs `gopls`;
 
 - for a role that runs Claude Code, `claude`, the child of `legion claude-bridge`, and Claude Code's MCP server, the child of `claude` whose first argument ends with `/claude-envoy/dist/envoy-channel.js`.
 
-Every other process may be ended: a command the agent ran and what that command started, a Python kernel, the JavaScript eval kernel, and a shell that `kubectl exec` started with what it runs.
+Every other process may be ended: a command the agent ran and what that command started, a helper's name under such a command, which no chain of helpers reaches, what a helper runs that is no helper (`gopls`), a Python kernel, the JavaScript eval kernel wherever it runs and what it starts, and a shell that `kubectl exec` started with what it runs.
 A process is a role's when that role's `role-init` is its ancestor by the parent chain, and otherwise when it shares that `role-init`'s PID namespace; any other process is no role's, `role=none` in a line.
 The ancestor comes first because a process can make a PID namespace of its own inside a role, as a sandboxed Chromium does.
 
@@ -4586,7 +4596,9 @@ launcher: memory guard: kill failed pid=<pid> reason=<why>
 `started` comes once, with the first reading, and `settings` once for each change of the settings.
 `ended` comes once for each kill: `counter` is the cgroup's counter at the kill and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
 `stopped for this rise` says where the reading's memory is: in the processes the guard may end, in the protected ones and in the ones it could not read, and `unheld` is the reading less those three.
-A positive `unheld` is memory no process holds, such as the pages of a memory filesystem, and a negative one is what the sizes counted more than once, such as the pages a parent shares with the child it forked.
+`endable` counts the processes the guard may end at the sizes it ranks them by, the memfds their descriptors hold included;
+`protected` and `unread` count their processes' smaps alone, since the line reads none of their descriptors.
+A positive `unheld` is memory no process holds, such as the pages of a memory filesystem, or that only a descriptor of a protected or unread process holds, such as a memfd it has not mapped, and a negative one is what the sizes counted more than once, such as the pages a parent shares with the child it forked.
 A stop that repeats
 — the rise given up, the reading below the mark and back above it, the rise given up again —
 writes this line at most once a minute by the guard's clock, and leaves the stops in between out of the log:
@@ -4652,6 +4664,12 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
 - It does not stop a fill faster than its margin.
   Between the mark and the point where the kernel stops the sandbox, measured at 95.6% to 99.3% of the limit, the guard must take a reading at or above the mark and end the process.
   A process that crosses that margin inside one interval and the scan after it is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
+  A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14, the longest gap between two readings was 1082 ms against a usual 108 to 115 ms;
+  the kill still came at 85.23% of the limit, below every point at which the kernel was measured to stop the sandbox (95.6% to 99.3%).
+
+- It does not see the memory of a process whose main thread alone has exited.
+  Such a process reads `Z` in its `stat` while its other threads run on and hold all of its memory, and the guard reads it as a live process ("What it ends", above).
+  On Linux, though, its `exe` and its `smaps`, read through the exited main thread, answer nothing, so the guard counts it as ended or as unread and never ends it.
 
 - It does not run in the controller's pod: a guard there is the work of dispatch://INFRA-3531.
 

@@ -133,11 +133,10 @@ func Run(ctx context.Context, cfg Config) error {
 	// controller's pod, whose working directory is no jj workspace and whose generations carry
 	// no workspace at all. The first pass is this call's, before serveTestPG, which starts a
 	// PostgreSQL: the first pass's rule is that no process of the container holds a lock yet.
-	sweep := newGitLockSweep(managers[0].log.linef)
-	for _, m := range managers {
-		m.gitLocks = sweep
-	}
-	locks := sweep.serve(ctx)
+	// Only a launcher that is the container's first process sweeps, as only that one runs the
+	// memory guard below, since only it sees every process that may hold a lock; any other logs
+	// a line instead (serveGitLockSweep).
+	locks := serveGitLockSweep(ctx, managers)
 	// The pod's one memory guard, before the test database and any role start, so it watches
 	// both from their first process; only a launcher that is the container's first process runs
 	// one, as only that one runs the reaper above, and any other logs a line instead
@@ -475,14 +474,18 @@ type manager struct {
 	restore *bundleRestore
 	// gitLocks is the pod's one sweep of the clone's stale git locks, which every role manager
 	// of the container shares: the first role start that carries a workspace tells it which
-	// clone to sweep, when the container's working directory did not (gitLockSweep.learn).
+	// clone to sweep, when the container's working directory did not (gitLockSweep.learn). It is
+	// nil where the launcher runs no sweep: the controller's pod, and a roles launcher that is
+	// not the container's first process (serveGitLockSweep); learn, its one use, takes a nil
+	// sweep for one with nothing to learn.
 	gitLocks *gitLockSweep
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
 	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
 	// container shares: each connection's acknowledgement hands it the daemon's settings
-	// (serve). It is nil in the controller's pod, which runs none (serveMemoryGuard).
+	// (serve). It is nil in the controller's pod and in a launcher that is not its container's
+	// first process, which run none (serveMemoryGuard).
 	memoryGuard *memoryguard.Guard
 	// memoryKills are the guard's reports of this role's processes it ended that no connection
 	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter
@@ -620,7 +623,8 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	}
 	// The clone's stale git locks: this start names the workspace the sweep works, and a sweep
 	// that had none sweeps it here, before the restore below runs real git and jj against that
-	// clone, where a stale lock would fail it (gitLockSweep.learn).
+	// clone, where a stale lock would fail it (gitLockSweep.learn). A launcher that runs no sweep
+	// holds none here, and its restore runs over the clone as it stands.
 	m.gitLocks.learn(ctx, envValue(env, "LEGION_WORKSPACE"))
 	// The pod's one workspace-bundle restore, if a release saved one: after writeFiles, which
 	// clears the role's private directory, and before any role of the pod runs, so no role works

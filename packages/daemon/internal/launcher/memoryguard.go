@@ -24,8 +24,10 @@ var newMemoryGuard = memoryguard.New
 // classifier holds only there: PID 1 sees every process of the container and owns each one no
 // role-init does, the test database's postmaster is reparented to it, and a process under no
 // role-init is no role's. A launcher run anywhere else (a test of cmd/legion, a launcher run by
-// hand) shares its /proc with processes the classifier knows nothing of, and would end them. It is
-// a package variable so that a test of the guard can stand its test process in for PID 1.
+// hand) shares its /proc with processes the classifier knows nothing of, and would end them. The
+// clone's git lock sweep runs behind the same rule (serveGitLockSweep), since a pass removes a
+// lock no process it sees holds open. It is a package variable so that a test of the guard or of
+// the sweep can stand its test process in for PID 1.
 var containerInit = func() bool { return os.Getpid() == 1 }
 
 // maxWaitingMemoryKills is the most reports of the guard's kills a role keeps while no connection
@@ -124,7 +126,8 @@ const (
 // that is this binary run as `worker-shim` (an orphan the role leaves is adopted by the role-init
 // too); every direct child of the shim, which is the agent before and after its start wrapper
 // execs it, the secrets renewer, the working copy's adoption and the CodeGraph warm-up; Oh My Pi's
-// helpers but its eval kernel; and a Claude Code role's `claude` and its MCP server.
+// helpers but its eval kernel, each reached from the agent through a chain of helpers; and a
+// Claude Code role's `claude` and its MCP server.
 //
 // A process is the role's whose role-init is its ancestor by the parent chain, else the role's
 // whose role-init shares its PID namespace, else no role's. The ancestor comes first because a
@@ -242,21 +245,37 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 
 // protectAgent spares agent, a direct child of a role's shim, and what runs under it that is the
 // agent's own rather than its work: under a Claude Code bridge, `claude` and its MCP server; under
-// Oh My Pi, its helpers but its eval kernel.
+// Oh My Pi, every helper reached from the agent through a chain of helpers, since a helper starts
+// helpers of its own (the daemon broker starts the LSP multiplexer). What a helper runs that is no
+// helper (the multiplexer's gopls), the eval kernel wherever it runs with all it starts, and a
+// helper's name under the agent's command, which no chain of helpers reaches, stay the agent's
+// work.
 func (c *podClassifier) protectAgent(t *memoryguard.Table, agent *memoryguard.Process, protected map[int]bool) {
 	protected[agent.PID] = true
-	bridge := argument(agent, 1) == claudeBridgeArgument
-	for _, p := range t.Children(agent.PID) {
-		switch {
-		case bridge:
+	if argument(agent, 1) == claudeBridgeArgument {
+		for _, p := range t.Children(agent.PID) {
 			protected[p.PID] = true
 			for _, server := range t.Children(p.PID) {
 				if strings.HasSuffix(argument(server, 1), claudeMCPServerSuffix) {
 					protected[server.PID] = true
 				}
 			}
-		case ompHelper(agent, p):
-			protected[p.PID] = true
+		}
+		return
+	}
+	// The walk goes down from the agent through helpers alone and takes each pid once: the scan
+	// reads one process at a time, so a pid reused between two reads can make the parent links a
+	// loop.
+	parents := []int{agent.PID}
+	for seen := map[int]bool{agent.PID: true}; len(parents) > 0; {
+		parent := parents[0]
+		parents = parents[1:]
+		for _, p := range t.Children(parent) {
+			if !seen[p.PID] && ompHelper(agent, p) {
+				seen[p.PID] = true
+				protected[p.PID] = true
+				parents = append(parents, p.PID)
+			}
 		}
 	}
 }
@@ -283,8 +302,9 @@ func (c *podClassifier) shim(t *memoryguard.Table, init *memoryguard.Process) *m
 	return nil
 }
 
-// ompHelper is whether p, a direct child of agent, a direct child of the shim, is one of Oh My
-// Pi's own helpers: the agent's executable run with a helper's first argument.
+// ompHelper is whether p, a child of agent (a direct child of the shim) or of one of agent's
+// helpers, is one of Oh My Pi's own helpers: the agent's executable run with a helper's first
+// argument other than the eval kernel's.
 func ompHelper(agent, p *memoryguard.Process) bool {
 	first := argument(p, 1)
 	return p.Exe != "" && p.Exe == agent.Exe && strings.HasPrefix(first, ompHelperPrefix) && first != ompEvalKernel

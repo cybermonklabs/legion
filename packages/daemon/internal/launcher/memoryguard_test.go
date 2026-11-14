@@ -19,8 +19,9 @@ import (
 
 // useContainerInit has every launcher this test starts take its test process for the container's
 // first process, or not, until the test's end (containerInit). No test of this package runs as
-// PID 1, so every other test's launcher runs no memory guard at all; a test of the guard stands its
-// process in for PID 1, and points the guard at a pod of its own (useGuardPod).
+// PID 1, so every other test's launcher runs no memory guard and no git lock sweep at all; a test
+// of the guard stands its process in for PID 1, and points the guard at a pod of its own
+// (useGuardPod), and a test of the sweep does the same (useSweepingLauncher).
 func useContainerInit(t *testing.T, first bool) {
 	t.Helper()
 	previous := containerInit
@@ -790,6 +791,63 @@ func TestMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
 	for _, m := range managers {
 		if m.memoryGuard != nil || m.memoryWake != nil {
 			t.Fatalf("the %s's manager holds the guard %v and the wake %v, want neither", m.role, m.memoryGuard, m.memoryWake)
+		}
+	}
+}
+
+// A launcher that is not its container's first process runs neither the memory guard nor the
+// clone's git lock sweep. Both decide by what the container's /proc shows, and such a launcher
+// (one run by hand inside a role) sees only part of it: its guard would end processes it knows
+// nothing of, and a pass of its sweep would remove a lock a process of another role holds open.
+// Run's roles branch logs one off line for each and starts neither: it builds no guard, and the
+// stale lock of the clone its working directory is, which a sweeping launcher's first pass
+// removes before it serves any role (TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory),
+// stays where it is. Its managers hold no sweep, so a role start learns nothing.
+func TestMemoryGuardAndTheGitLockSweepRunOnlyInTheContainersFirstProcess(t *testing.T) {
+	useContainerInit(t, false)
+	previous := newMemoryGuard
+	newMemoryGuard = func(memoryguard.Config) *memoryguard.Guard {
+		panic("a launcher that is not the container's first process built a memory guard")
+	}
+	t.Cleanup(func() { newMemoryGuard = previous })
+	c := newLockClone(t)
+	stale := c.lock("index.lock", "stale", time.Hour)
+	t.Chdir(c.dir)
+	f := newFleet(t, 2*time.Second, "tester", "reviewer")
+	guardOff := fmt.Sprintf("launcher: memory guard: off reason=the launcher is pid %d, not the container's first process, so it neither sees nor owns every process of the container",
+		os.Getpid())
+	if got := guardLines(f.stderr, ""); !slices.Equal(got, []string{guardOff}) {
+		t.Fatalf("the launcher's memory guard lines are %q, want %q alone", got, guardOff)
+	}
+	sweepOff := fmt.Sprintf("launcher: git lock sweep: off reason=the launcher is pid %d, not the container's first process, so it cannot see every process that may hold a lock",
+		os.Getpid())
+	// Every line of the sweep names a git lock: its off line, the workspace it works and each
+	// lock it removes or keeps.
+	var sweepLines []string
+	for _, line := range strings.Split(f.stderr.String(), "\n") {
+		if strings.Contains(line, "git lock") {
+			sweepLines = append(sweepLines, line)
+		}
+	}
+	if !slices.Equal(sweepLines, []string{sweepOff}) {
+		t.Fatalf("the launcher's git lock sweep lines are %q, want %q alone", sweepLines, sweepOff)
+	}
+	if swept(stale) {
+		t.Fatalf("a launcher that is not the container's first process removed %s; its log:\n%s", stale, f.stderr.String())
+	}
+
+	log := &roleLog{stderr: &lockedBuffer{}}
+	managers := []*manager{{role: "tester", log: log}, {role: "reviewer", log: log}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	select {
+	case <-serveGitLockSweep(ctx, managers):
+	default:
+		t.Fatal("serveGitLockSweep left something running in a launcher that runs no sweep")
+	}
+	for _, m := range managers {
+		if m.gitLocks != nil {
+			t.Fatalf("the %s's manager holds the sweep %v, want none", m.role, m.gitLocks)
 		}
 	}
 }
