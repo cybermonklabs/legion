@@ -787,7 +787,7 @@ test("a read-only surface shows an open decision's options with nothing to answe
     expect(card.footer.queryByRole("button")).not.toBeInTheDocument();
     expect(card.recordRows().map(([selected]) => selected)).toEqual(["false", "false"]);
     expect(card.section.querySelector("[data-dispatch-ask-asked]")?.textContent).toBe(
-      "·asked by Architect for CORE-1 (for sjawhar)·3 minutes ago"
+      "Asked by Architect for CORE-1 (for sjawhar)·3 minutes ago"
     );
     expect(getAsk).not.toHaveBeenCalled();
   } finally {
@@ -803,7 +803,7 @@ test("a read-only block whose ask has no recorded author still says when it was 
   });
   try {
     expect(card.section.querySelector("[data-dispatch-ask-asked]")?.textContent).toBe(
-      "·asked3 minutes ago"
+      "Asked3 minutes ago"
     );
   } finally {
     card.unmount();

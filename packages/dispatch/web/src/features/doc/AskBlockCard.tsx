@@ -95,8 +95,12 @@ export function AskBlockCard({
             trailing={
               <>
                 {!carded && answered ? (
-                  <span className="inline-flex items-center gap-x-2" data-dispatch-ask-answered="">
-                    <span aria-hidden="true">·</span>
+                  // A row of its own, under who asked and when, at every width: sharing the
+                  // first row, the state label's width decided whether it fitted there.
+                  <span
+                    className="order-2 flex basis-full items-center gap-x-2"
+                    data-dispatch-ask-answered=""
+                  >
                     <span>Answered by {facts.answeredBy}</span>
                     {facts.answeredAt === undefined ? null : (
                       <>

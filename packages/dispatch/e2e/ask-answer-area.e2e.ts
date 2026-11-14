@@ -1,7 +1,15 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
-import { answerAsk, createAsk, createComment, createIssue, createProject, resolveAsk } from "./api";
+import {
+  answerAsk,
+  createAsk,
+  createComment,
+  createIssue,
+  createProject,
+  patchIssue,
+  resolveAsk,
+} from "./api";
 import { recordClipboard } from "./clipboard";
 import { documentEditor, indexedBlockAsk } from "./editor";
 import { askCard, inboxRow } from "./inbox-pane";
@@ -89,7 +97,8 @@ function conversationTurn(page: Page, askId: string): Locator {
  *  attributes say. A decision block draws two headers - the block's own urgency and state, and
  *  the hosted card's, which adds the provenance, the reference and the label - so the fields are
  *  collected across them. A field two headers of one place disagree about is reported as both
- *  values, which fails the row with the disagreement in it. */
+ *  values, which fails the row with the disagreement in it. The labels are not deduplicated: a
+ *  place draws one, so two read `Open + Open` and fail a row that expects `Open`. */
 async function headerFacts(place: Locator): Promise<Record<string, string | undefined>> {
   return place.evaluate((node) => {
     const names = ["urgency", "asker", "at", "copy", "state"];
@@ -106,14 +115,11 @@ async function headerFacts(place: Locator): Promise<Record<string, string | unde
           .filter((value) => value !== undefined)
       );
     }
-    held.label = joined(
-      headers
-        .flatMap((header) => [...header.querySelectorAll<HTMLElement>("[data-ask-state-label]")])
-        .filter((label) =>
-          label.checkVisibility({ opacityProperty: true, visibilityProperty: true })
-        )
-        .map((label) => label.innerText.trim())
-    );
+    const labels = headers
+      .flatMap((header) => [...header.querySelectorAll<HTMLElement>("[data-ask-state-label]")])
+      .filter((label) => label.checkVisibility({ opacityProperty: true, visibilityProperty: true }))
+      .map((label) => label.innerText.trim());
+    held.label = labels.length === 0 ? undefined : labels.join(" + ");
     const quote = node.querySelector("blockquote");
     held.anchor = quote?.textContent ?? undefined;
     return held;
@@ -222,10 +228,12 @@ test("a decision block draws the same header fields as the ask's other places, w
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
-    spec: 'Intro.\n\n:::ask{#decide urgency="high" multiple="false" state="open"}\nWhich way?\n\n- Left\n- Right\n:::\n',
+    spec: 'Intro.\n\n:::ask{#decide urgency="high" multiple="false" state="open"}\nWhich way?\n\n- Left\n- Right\n:::\n\n:::ask{#settle urgency="med" multiple="false" state="open"}\nShip it?\n\n- Ship\n- Hold\n:::\n',
     title: "Block header",
   });
   const blockAsk = await indexedBlockAsk(issue.key, "decide");
+  const settled = await indexedBlockAsk(issue.key, "settle");
+  await resolveAsk(settled.id, { kind: "resolved", reason: "Settled elsewhere." }, { as: "agent" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -241,15 +249,97 @@ test("a decision block draws the same header fields as the ask's other places, w
     });
 
     // The block is its own anchor, so the block draws no quote; every other field is the same,
-    // and the block's two headers hold each field once between them.
+    // and the block's two headers hold each field once between them - its label too, for an
+    // open ask and a resolved one alike. Each block is its own reported check (`expect.soft`),
+    // so a run where both draw a second label says so of both.
     await page.goto(`/issues/${issue.key}`);
     const block = documentEditor(page).locator('[data-dispatch-ask-block="decide"]');
     await expect(block.locator("article[data-testid^=ask-]")).toBeVisible();
-    const blockFacts = await headerFacts(block);
-    expect(blockFacts, "the decision block's headers").toEqual({
+    expect.soft(await headerFacts(block), "the open decision block's headers").toEqual({
       ...inboxFacts,
       anchor: undefined,
     });
+    const settledBlock = documentEditor(page).locator('[data-dispatch-ask-block="settle"]');
+    await expect(settledBlock.locator("article[data-testid^=ask-]")).toBeVisible();
+    expect.soft(await headerFacts(settledBlock), "the resolved decision block's headers").toEqual({
+      anchor: undefined,
+      asker: "alice",
+      at: settled.created_at,
+      copy: `dispatch://${issue.key}/ask/${settled.id}`,
+      label: "Resolved",
+      state: "resolved",
+      urgency: "med",
+    });
+  } finally {
+    await alice.close();
+  }
+});
+
+test("a read-only decision block keeps its copy control at its first row's right end, whatever its asker's name @phone", async ({
+  browser,
+}) => {
+  // A closed issue's answered block draws its own header: no card under it carries the
+  // provenance. Its blocks are the long-titled session's, whose name is what pushed the copy
+  // control off the first row.
+  const title = "Release planner for the ledger mirror";
+  await setLiveSessions([{ ...planner, title }]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue(
+    {
+      project: "CORE",
+      spec: 'Intro.\n\n:::ask{#decide urgency="blocking" multiple="false" state="open"}\nWhich way?\n\n- Left\n- Right\n:::\n',
+      title: "Closed block header",
+    },
+    asker
+  );
+  const blockAsk = await indexedBlockAsk(issue.key, "decide");
+  await answerAsk(blockAsk.id, { expected_edited_at: null, selected: ["Left"], text: "Left." });
+  await patchIssue(issue.key, { status: "done" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}`);
+    const header = documentEditor(page).locator(
+      '[data-dispatch-ask-block="decide"] header[data-ask-header]'
+    );
+    await expect(header.locator("[data-dispatch-ask-answered]")).toBeVisible();
+    // The first row is the urgency, `Decision`, the label and the copy control at its right end;
+    // who asked and when is the row under it, inside the header however long the name, and who
+    // answered the row under that.
+    const layout = await header.evaluate((node) => {
+      const box = (selector: string) => {
+        const found = node.querySelector(selector);
+        if (found === null) throw new Error(`the block header draws no ${selector}`);
+        return found.getBoundingClientRect();
+      };
+      const head = node.getBoundingClientRect();
+      const decision = box("strong");
+      const label = box("[data-ask-state-label]");
+      const copy = box("[data-copy-ref] button");
+      const asked = box("[data-dispatch-ask-asked]");
+      const answered = box("[data-dispatch-ask-answered]");
+      return {
+        answeredUnderAsked: answered.top >= asked.bottom - 1,
+        askedInsideHeader: asked.right <= head.right + 1,
+        askedUnderFirstRow: asked.top >= Math.max(copy.bottom, label.bottom) - 1,
+        copyAtRightEnd: Math.abs(head.right - copy.right) <= 1,
+        copyBesideLabel: copy.left >= label.right,
+        copyOnFirstRow: copy.top < decision.bottom && copy.bottom > decision.top,
+      };
+    });
+    expect(layout, "the read-only block header's rows").toEqual({
+      answeredUnderAsked: true,
+      askedInsideHeader: true,
+      askedUnderFirstRow: true,
+      copyAtRightEnd: true,
+      copyBesideLabel: true,
+      copyOnFirstRow: true,
+    });
+    // A name the row cuts is still there whole, in the tooltip of the part that truncates.
+    await expect(header.locator("[data-dispatch-ask-asked] > [title]")).toHaveAttribute(
+      "title",
+      new RegExp(`^${title} · `)
+    );
   } finally {
     await alice.close();
   }

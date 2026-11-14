@@ -103,9 +103,9 @@ interface AskHeaderAsker {
  * Each place keeps its own layout. The anchor belongs above the host's question and the
  * provenance line below it (chrome never sits between a reader and the primary content), so the
  * host passes what it draws between them as `children`; a block has no content of its own, and
- * its header is the one line it draws. The parts that are one place's alone - `AskCard`'s
- * session handles, the records' own sentences, the block's `Decision` and `Copied from` - come
- * in through `leading` and `trailing`.
+ * its header is all it draws. The parts that are one place's alone - `AskCard`'s session
+ * handles, the records' own sentences, the block's `Decision`, "Answered by" and `Copied from` -
+ * come in through `leading` and `trailing`.
  *
  * The state label is drawn at every place, as text, and its words are one function of where the
  * ask stands (`askStateLabel`): `Open`, `Answered`, and for a resolved ask the word naming how it
@@ -188,7 +188,7 @@ interface AskHeaderFacts {
 }
 
 function askHeaderFacts(
-  { ask, block, carded = false, inBlock = false, owner, place }: AskHeaderProps,
+  { ask, block, carded = false, inBlock = false, owner }: AskHeaderProps,
   asker: AskHeaderAsker | undefined
 ): AskHeaderFacts {
   const reference = ask === undefined ? undefined : itemRoute("ask", ask, owner);
@@ -232,7 +232,7 @@ function askHeaderFacts(
   const stateLabel =
     state === undefined || carded || block?.malformed === true ? null : (
       <span
-        className={`${place === "answered" || place === "resolved" ? "mr-1.5 " : ""}inline-block rounded-full px-2.5 py-1 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
+        className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
         data-ask-state-label=""
         // The handle the rows that read how an ask ended have always found its badge by.
         data-testid={
@@ -255,25 +255,33 @@ function askHeaderFacts(
 }
 
 /** The row every place draws, in the order every place draws it; what differs is the provenance
- *  each writes and the box it stands in. */
+ *  each writes and the box it stands in. `line` is a place's class for one box around all of it
+ *  but `trailing`, for a place whose row must not wrap before its copy control. */
 function AskHeaderRow({
   facts,
   leading,
+  line,
   provenance,
   trailing,
 }: {
   facts: AskHeaderFacts;
   leading: ReactNode;
+  line?: string;
   provenance: ReactNode;
   trailing: ReactNode;
 }): ReactNode {
-  return (
+  const head = (
     <>
       {facts.urgencyPill}
       {leading}
       {facts.stateLabel}
       {provenance}
       {facts.copy}
+    </>
+  );
+  return (
+    <>
+      {line === undefined ? head : <span className={line}>{head}</span>}
       {trailing}
     </>
   );
@@ -295,13 +303,18 @@ function DrawnAskHeader(props: AskHeaderProps & { asker: AskHeaderAsker | undefi
   return <RecordAskHeader {...props} facts={facts} />;
 }
 
-/** A decision block's own portalled header: one line, and nothing of its own between the anchor
- *  and the provenance - the editor holds the question. */
+/** A decision block's own portalled header, with nothing of its own between the anchor and the
+ *  provenance - the editor holds the question. Its first row is the urgency, the block's
+ *  `Decision`, the state label and, at that row's right end, the copy control; who asked and
+ *  when takes the next row (`order-1`), the asker's name truncating with the whole name in its
+ *  tooltip, and the host's "Answered by" the row after it (`AskBlockCard`). Beside the label and
+ *  a phone's 44 px copy control a first row has no room for the provenance as well: sharing it,
+ *  a long name, or a phone, wrapped the copy control onto a row of its own. */
 function BlockAskHeader({ ask, asker, facts, leading, trailing }: PlaceProps): ReactNode {
   const author = ask?.author;
   return (
     <header
-      className={`mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurfaceMuted}`}
+      className={`mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm [&>[data-copy-ref]>button]:ml-auto ${textMutedOnSurfaceMuted}`}
       {...facts.attributes}
     >
       <AskHeaderRow
@@ -309,19 +322,23 @@ function BlockAskHeader({ ask, asker, facts, leading, trailing }: PlaceProps): R
         leading={leading}
         provenance={
           !facts.provenance || author === undefined ? null : (
-            <span className="inline-flex items-center gap-x-2" data-dispatch-ask-asked="">
-              <span aria-hidden="true">·</span>
-              <span>
-                {asker === undefined ? (
-                  "asked"
-                ) : (
-                  <>
-                    asked by <AgentName actor={author} inline />
-                  </>
-                )}
-              </span>
-              {asker === undefined ? null : <span aria-hidden="true">·</span>}
-              {facts.askedAt}
+            <span
+              className="order-1 flex min-w-0 basis-full items-center gap-x-2 whitespace-nowrap"
+              data-dispatch-ask-asked=""
+            >
+              {asker === undefined ? (
+                <span className="shrink-0">Asked</span>
+              ) : (
+                <>
+                  <TruncatedText className="min-w-0" title={asker.title}>
+                    Asked by <AgentName actor={author} inline />
+                  </TruncatedText>
+                  <span className="shrink-0" aria-hidden="true">
+                    ·
+                  </span>
+                </>
+              )}
+              <span className="shrink-0">{facts.askedAt}</span>
             </span>
           )
         }
@@ -360,6 +377,11 @@ function CardAskHeader({
         <AskHeaderRow
           facts={facts}
           leading={leading}
+          // The label, the provenance group and the copy control are one line that never wraps:
+          // the group is what gives up width - its names truncate, and below 24rem it breaks
+          // itself in two - so the copy control stays at the first line's right end at every
+          // width the card is drawn at. A wrapping row put it on a line of its own in a margin.
+          line="flex min-w-0 items-center gap-x-1.5"
           provenance={
             !facts.provenance || ask === undefined || author === undefined ? null : (
               // Turn, author and time are one group whose names truncate: a separator that
@@ -448,7 +470,7 @@ function RecordAskHeader({
       )}
       {children}
       <div
-        className={`mt-2 text-xs ${answered ? calloutSuccessTimestampText : textMutedOnSurface}`}
+        className={`mt-2 text-xs [&>[data-ask-state-label]]:mr-1.5 ${answered ? calloutSuccessTimestampText : textMutedOnSurface}`}
       >
         <AskHeaderRow
           facts={facts}
