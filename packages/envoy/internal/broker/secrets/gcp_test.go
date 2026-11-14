@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"maps"
 	"math/big"
 	"net"
 	"strings"
@@ -52,6 +53,9 @@ type fakeSecret struct {
 	// an unusable CMEK key might.
 	keyUnusable bool
 	value       []byte
+	// number is the latest version's number, the last segment of the name GetSecretVersion
+	// answers for versions/latest; "" is 1.
+	number string
 }
 
 // fakeSecretManager is the four Secret Manager calls the store makes, over gRPC with TLS, as the
@@ -171,7 +175,11 @@ func (f *fakeSecretManager) GetSecretVersion(_ context.Context, req *secretmanag
 	if s.denyVersion {
 		return nil, status.Errorf(codes.PermissionDenied, "Permission denied on %s", req.GetName())
 	}
-	v := &secretmanagerpb.SecretVersion{Name: secret + "/versions/1", State: s.state}
+	number := s.number
+	if number == "" {
+		number = "1"
+	}
+	v := &secretmanagerpb.SecretVersion{Name: secret + "/versions/" + number, State: s.state}
 	auto := &secretmanagerpb.ReplicationStatus_AutomaticStatus{}
 	if s.versionKey != "" {
 		auto.CustomerManagedEncryption = &secretmanagerpb.CustomerManagedEncryptionStatus{KmsKeyVersionName: s.versionKey + "/cryptoKeyVersions/3"}
@@ -348,6 +356,42 @@ func TestGCPDescribeAndRead(t *testing.T) {
 		if err == nil || errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "non-empty UTF-8") || strings.Contains(err.Error(), "\xff") {
 			t.Fatalf("Read(%s) = %v; want a refusal naming the rule and never the bytes", name, err)
 		}
+	}
+}
+
+// TestGCPListingNamesTheLatestVersionsNumber: List and Describe answer, as each Listing's
+// Version, the number of the version versions/latest resolves to, read from the GetSecretVersion
+// each already makes, so the policy learns of a new value with no call of its own; a secret whose
+// latest version holds no value (disabled) or that has no version answers "".
+func TestGCPListingNamesTheLatestVersionsNumber(t *testing.T) {
+	seventh := servedSecret("v7")
+	seventh.number = "7"
+	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
+		fakePrefix + "seventh":    seventh,
+		fakePrefix + "disabled":   {annotations: map[string]string{}, replicationKey: fakeKey, versionKey: fakeKey, state: secretmanagerpb.SecretVersion_DISABLED, value: []byte("v"), number: "3"},
+		fakePrefix + "no-version": {annotations: map[string]string{}, replicationKey: fakeKey, noVersion: true},
+	}}
+	store := NewGCP(startFake(t, f), fakeKey)
+	ctx := context.Background()
+	listings, err := store.List(ctx, fakePrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := map[string]string{}
+	for _, ls := range listings {
+		versions[strings.TrimPrefix(ls.ID, fakePrefix)] = ls.Version
+	}
+	if want := map[string]string{"seventh": "7", "disabled": "", "no-version": ""}; !maps.Equal(versions, want) {
+		t.Fatalf("List's versions = %v, want %v", versions, want)
+	}
+	f.mu.Lock()
+	versionCalls := f.calls["GetSecretVersion"]
+	f.mu.Unlock()
+	if versionCalls != 3 {
+		t.Fatalf("List made %d GetSecretVersion calls for three secrets; want one each, no more", versionCalls)
+	}
+	if ls, err := store.Describe(ctx, fakePrefix+"seventh"); err != nil || ls.Version != "7" {
+		t.Fatalf("Describe(seventh) = %+v, %v; want version 7", ls, err)
 	}
 }
 

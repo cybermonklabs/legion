@@ -48,6 +48,46 @@ func TestHasCurrentVersionIsTheRuleListServesBy(t *testing.T) {
 	}
 }
 
+// stagedSecrets answers ListSecrets and DescribeSecret with one secret, dev/key, whose versions
+// carry stages; its other calls are an empty Local's.
+type stagedSecrets struct {
+	*Local
+	stages map[string][]string
+}
+
+func (s stagedSecrets) ListSecrets(context.Context, *secretsmanager.ListSecretsInput, ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
+	return &secretsmanager.ListSecretsOutput{SecretList: []types.SecretListEntry{{Name: aws.String("dev/key"), ARN: aws.String(LocalARN("dev/key")), SecretVersionsToStages: s.stages}}}, nil
+}
+
+func (s stagedSecrets) DescribeSecret(context.Context, *secretsmanager.DescribeSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+	return &secretsmanager.DescribeSecretOutput{Name: aws.String("dev/key"), ARN: aws.String(LocalARN("dev/key")), VersionIdsToStages: s.stages}, nil
+}
+
+// TestAWSListingNamesTheVersionGetSecretValueReads: List and Describe answer, as a Listing's
+// Version, the id of the version labelled AWSCURRENT in the stages each call already carries
+// (ListSecrets' SecretVersionsToStages, DescribeSecret's VersionIdsToStages), and "" for a secret
+// no version of which carries it.
+func TestAWSListingNamesTheVersionGetSecretValueReads(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		stages map[string][]string
+		want   string
+	}{
+		{map[string][]string{"v-old": {"AWSPREVIOUS"}, "v-new": {"AWSPENDING", "AWSCURRENT"}}, "v-new"},
+		{map[string][]string{"v-pending": {"AWSPENDING"}}, ""},
+		{nil, ""},
+	} {
+		store := AWS{Client: stagedSecrets{Local: NewLocal(), stages: tc.stages}}
+		listed, err := store.List(ctx, "dev/")
+		if err != nil || len(listed) != 1 || listed[0].Version != tc.want {
+			t.Fatalf("List over stages %v = %+v, %v; want one listing of version %q", tc.stages, listed, err, tc.want)
+		}
+		if described, err := store.Describe(ctx, "dev/key"); err != nil || described.Version != tc.want {
+			t.Fatalf("Describe over stages %v = %+v, %v; want version %q", tc.stages, described, err, tc.want)
+		}
+	}
+}
+
 func TestAWSReadReturnsErrNotFoundOnResourceNotFoundException(t *testing.T) {
 	r := AWS{Client: stubSMAPI{err: &types.ResourceNotFoundException{}}}
 	_, err := r.Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:missing")

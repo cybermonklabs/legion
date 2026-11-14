@@ -970,7 +970,7 @@ func TestCreateRequestWithUnknownSecretNameIs400UnknownSecret(t *testing.T) {
 
 func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 	ts := newTestServer(t)
-	limited := policytest.KindSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.KindGoogleLogin, "value")
+	limited := policytest.KindSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
 	limited.Tags[policy.TagMaxGrant] = "1h"
 	ts.Secrets.Put(limited)
 	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LIMITED_KEY/reread", nil, nil); status != http.StatusOK {
@@ -1002,7 +1002,8 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 			},
 		}
 	})
-	ts.Secrets.Put(policytest.KindSecret("LAPSED_LOGIN", testApprover, policy.TierAgent, policy.KindGoogleLogin, "stored-login"))
+	stored := policytest.KindValue(policy.KindGoogleLogin)
+	ts.Secrets.Put(policytest.KindSecret("LAPSED_LOGIN", testApprover, policy.TierAgent, policy.KindGoogleLogin, stored))
 	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LAPSED_LOGIN/reread", nil, nil); status != http.StatusOK {
 		t.Fatalf("reread LAPSED_LOGIN = %d %s", status, body)
 	}
@@ -1015,7 +1016,7 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 	}
 	status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
 	reply := decode[wireError](t, body)
-	if status != http.StatusBadGateway || reply.Code != "MINT_FAILED" || !strings.Contains(reply.Error, "invalid_rapt") || strings.Contains(reply.Error, "stored-login") {
+	if status != http.StatusBadGateway || reply.Code != "MINT_FAILED" || !strings.Contains(reply.Error, "invalid_rapt") || strings.Contains(reply.Error, stored) {
 		t.Fatalf("POST values = %d %+v, want 502 MINT_FAILED naming invalid_rapt and not the stored value", status, reply)
 	}
 	line := ""
@@ -1029,7 +1030,7 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 			t.Fatalf("mint failure log line %q does not hold %q (log: %q)", line, want, logged.String())
 		}
 	}
-	if strings.Contains(logged.String(), "stored-login") {
+	if strings.Contains(logged.String(), stored) {
 		t.Fatalf("the broker's log holds the stored value: %q", logged.String())
 	}
 }

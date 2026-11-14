@@ -113,13 +113,17 @@ type Rig struct {
 	ListenerToken string
 	Store         *store.Store
 	// Secrets is the secrets.Local standing in for Secrets Manager, which a test writes to as a
-	// person would, before asking the broker to reread a secret.
+	// person would, before asking the broker to reread a secret: the one WithSecrets handed in,
+	// or one of the rig's own.
 	Secrets *secrets.Local
 	// Registry holds the policy's two metrics as cmd/broker/main.go builds them on its own
 	// registry: broker_policy_store_reads_total, counted from the first load on, and
 	// broker_unservable_secrets, registered once that load answered. A test reads them through
 	// Registry.Handler(), the scrape main serves.
 	Registry *metrics.Registry
+	// Policy is the broker's live policy, for a test that reloads it as the broker's five-minute
+	// reload does (Refresh): the rig's own reload runs once an hour, so never within a test.
+	Policy *policy.Current
 	// podIssuer and podKey back every token this Rig mints — a pod's enrolment token, a service
 	// account's login token, and a subject token for the exchange: a local OIDC issuer this Rig's
 	// own verifier (wired into its enroll.Service and its api.Deps by NewRig) trusts, and the
@@ -137,6 +141,7 @@ type rigConfig struct {
 	lease    time.Duration
 	maxConns int
 	minters  map[string]requests.Minter
+	secrets  *secrets.Local
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -158,9 +163,18 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
+// WithSecrets makes local the broker's secret store in place of one of the rig's own: NewRig puts
+// its fixture secrets in it, and the broker lists, describes and reads through it with its own
+// access, so a test that writes local some other way - agent-secrets' own secret forms over it,
+// say, with reads its sign-in is refused - sees the broker read each write.
+func WithSecrets(local *secrets.Local) Option {
+	return func(c *rigConfig) { c.secrets = local }
+}
+
 // NewRig holds two secrets the person ada@example.com owns: TEST_SECRET, human-tier, which a
 // request from any session makes an approval request to her, and TEST_AUTO_SECRET, agent-tier,
-// which her own sessions get at once. It wires a real pod verifier (a local OIDC issuer trusted by
+// which her own sessions get at once, in a secrets.Local of its own or the one WithSecrets names.
+// It wires a real pod verifier (a local OIDC issuer trusted by
 // an enroll.K8sPodVerifier, mirroring cmd/broker/main.go's own wiring), which is also what
 // authenticates the listed caller of the routes Dispatch's server calls, and mounts api.Register
 // on an httptest.Server — wired exactly as cmd/broker/main.go and api_test.go's newTestServer
@@ -181,7 +195,13 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		policytest.Secret("TEST_SECRET", operator, policy.TierHuman, "test-secret-v1"),
 		policytest.Secret("TEST_AUTO_SECRET", operator, policy.TierAgent, "test-auto-secret-v1"),
 	}
-	local := secrets.NewLocal(fixtures...)
+	local := config.secrets
+	if local == nil {
+		local = secrets.NewLocal()
+	}
+	for _, fixture := range fixtures {
+		local.Put(fixture)
+	}
 	// The policy's metrics as main wires them: the store-read counter before the first load,
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
 	registry := metrics.New()
@@ -255,6 +275,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Store:     st,
 		Secrets:   local,
 		Registry:  registry,
+		Policy:    cur,
 		podIssuer: issuer, podKey: podKey,
 		serviceLogins: serviceLogins,
 	}

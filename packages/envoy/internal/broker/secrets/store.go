@@ -68,4 +68,12 @@ type Listing struct {
 	// HasCurrentValue is whether a read would answer a value: a version labelled AWSCURRENT, or a
 	// Secret Manager versions/latest that is ENABLED.
 	HasCurrentValue bool
+	// Version is the id of the version a Read answers now: the Secrets Manager version labelled
+	// AWSCURRENT, or the Secret Manager version versions/latest resolves to; "" when
+	// HasCurrentValue is false. It comes from the call that answers HasCurrentValue, so it costs
+	// no call of its own, and it is the store's own id, never a digest of the value. The policy
+	// decodes a kind secret's value once for each version, kind and shape it lists
+	// (policy.Current), so a write of a new value is decoded at the next load and an unchanged one
+	// is read at no load.
+	Version string
 }

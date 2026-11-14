@@ -385,8 +385,13 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // An Azure login also requires this name's grant decision to be approval, never automatic.
 // Only the github-app minter reads narrowing. A minter's refusal of the narrowing itself
 // (secrets.ErrMintNarrowingRefused) is returned as it is,
-// for Values to log as a refused narrowing, and is no mint failure. A deleted secret stops
-// releasing once the policy drops it: `agent-secrets secret delete` rereads the name at once.
+// for Values to log as a refused narrowing, and is no mint failure. A minter that refuses the
+// stored value itself (secrets.ErrMintStoredValue, its secrets.ParseValue) also has the policy
+// refuse the secret as value-malformed (policy.Current.RefuseValue), at the version the live
+// policy listed when this release read the value, so the grants of it pause until a new value
+// is stored; the failure line and this release's answer are every other mint failure's. A
+// deleted secret stops releasing once the policy drops it: `agent-secrets secret delete` rereads
+// the name at once.
 func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret, narrowing *secrets.GitHubNarrowing) (secrets.Minted, error) {
 	kind, source, minted, err := policy.ParseKindSource(g.source)
 	if err != nil {
@@ -406,6 +411,9 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if mint == nil {
 		return secrets.Minted{}, fmt.Errorf("secret %s is a minted kind %q, but this broker has no token minter for it", g.name, kind)
 	}
+	// The version the policy lists for the value this release reads, which a refusal of that
+	// value below is keyed on: a load that lists a newer one meanwhile decodes that one itself.
+	version := m.Policy.Get().ValueVersion(g.name)
 	value, err := m.Secrets.Read(ctx, source)
 	if err != nil {
 		return secrets.Minted{}, err
@@ -422,6 +430,9 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		// The minter's error names its class and why, never the stored value or a token, so the
 		// line is safe to log; the session sees the same words as MINT_FAILED.
 		slog.Error(MintFailedMessage, "name", g.name, "kind", kind, "class", secrets.MintErrorClass(err), "error", err)
+		if errors.Is(err, secrets.ErrMintStoredValue) {
+			m.Policy.RefuseValue(ctx, g.name, version)
+		}
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
 	return token, nil

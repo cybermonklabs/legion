@@ -4,8 +4,14 @@ package policytest
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -62,6 +68,44 @@ func KindSecret(name, owner, tier, kind, value string) secrets.LocalSecret {
 	}
 	return secret
 }
+
+// KindValue is a value of kind that secrets.ParseValue decodes, so the policy serves a KindSecret
+// holding it: the policy reads and decodes each kind secret's value (policy.Current), and refuses
+// one it cannot decode (policy.ReasonValueMalformed). A github-app value names App 123456 and a
+// private key made once for the test binary (fixtureAppKey), built at run time rather than written
+// here. No field holds a credential. It panics for a kind ParseValue reads no value of, which is a
+// test bug.
+func KindValue(kind string) string {
+	fields := map[string]string{}
+	switch kind {
+	case policy.KindGitHubApp:
+		fields["app_id"] = "123456"
+		fields["private_key"] = string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(fixtureAppKey())}))
+	case policy.KindGoogleLogin:
+		fields["type"], fields["client_id"], fields["client_secret"], fields["refresh_token"] = "authorized_user", "client", "secret", "refresh"
+	case policy.KindGoogleServiceAccount:
+		fields["service_account"] = "robot-1@acme-agent-infra.iam.gserviceaccount.com"
+	case policy.KindAzureLogin:
+		fields["tenant_id"], fields["client_id"] = "tenant", "client"
+	default:
+		panic(fmt.Sprintf("policytest.KindValue: no value of kind %q", kind))
+	}
+	value, err := json.Marshal(fields)
+	if err != nil {
+		panic(err)
+	}
+	return string(value)
+}
+
+// fixtureAppKey is the GitHub App key KindValue's github-app value holds: one for the test binary,
+// since making a 2048-bit key costs more than most tests that store one.
+var fixtureAppKey = sync.OnceValue(func() *rsa.PrivateKey {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+	return key
+})
 
 // ListedSecret is Secret with a requesters tag naming requesters, beside a max-grant of
 // FixtureMaxGrant: the shape of a secret whose list says who may ask for it, with a cap short

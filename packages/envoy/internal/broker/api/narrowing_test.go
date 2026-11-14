@@ -52,7 +52,7 @@ func newNarrowingServer(t *testing.T) *narrowingServer {
 			},
 		}
 	})
-	s.Secrets.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, "stored-app-key"))
+	s.Secrets.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
 	s.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "plain-v1"))
 	for _, name := range []string{"APP_KEY", "PLAIN_KEY"} {
 		if status, body := s.req(t, http.MethodPost, "/v1/secrets/"+name+"/reread", nil, nil); status != http.StatusOK {

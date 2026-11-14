@@ -248,7 +248,9 @@ func (g GCP) Describe(ctx context.Context, id string) (Listing, error) {
 	return g.listing(ctx, secret)
 }
 
-// listing is the Listing of one Secret the API answered, with its latest version read.
+// listing is the Listing of one Secret the API answered, with its latest version read: its state
+// and key, and, when it is ENABLED, its number (the last segment of the version's resource name,
+// which GetSecretVersion answers for the latest one), the Listing's Version.
 func (g GCP) listing(ctx context.Context, secret *secretmanagerpb.Secret) (Listing, error) {
 	name := secret.GetName()
 	ls := Listing{ID: name, Source: name, Tags: secret.GetAnnotations()}
@@ -261,6 +263,10 @@ func (g GCP) listing(ctx context.Context, secret *secretmanagerpb.Secret) (Listi
 	switch status.Code(err) {
 	case codes.OK:
 		ls.HasCurrentValue = version.GetState() == secretmanagerpb.SecretVersion_ENABLED
+		if ls.HasCurrentValue {
+			versionName := version.GetName()
+			ls.Version = versionName[strings.LastIndex(versionName, "/")+1:]
+		}
 		// The version's own key is what encrypts the value; a version made before the secret's
 		// replication policy was changed stays on the key it was made with.
 		onKey = g.onKey(version.GetReplicationStatus().GetAutomatic().GetCustomerManagedEncryption().GetKmsKeyVersionName())

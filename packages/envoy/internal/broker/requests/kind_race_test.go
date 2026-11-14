@@ -41,7 +41,11 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 			if route == "approved" {
 				tier = policy.TierHuman
 			}
-			retag(t, machine, policytest.Secret("RACED_LOGIN", fixtureOperator, tier, "ordinary-value"))
+			// The stored value is one the google-login decoder reads, so the retag below is
+			// served as that kind at once: the policy refuses a kind secret whose value it cannot
+			// decode (policy.ReasonValueMalformed), and the race needs it served.
+			ordinary := policytest.KindValue(policy.KindGoogleLogin)
+			retag(t, machine, policytest.Secret("RACED_LOGIN", fixtureOperator, tier, ordinary))
 			minted := 0
 			machine.Minters = map[string]Minter{
 				policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
@@ -79,7 +83,7 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 			store := fixtureStore(machine)
 			var duringErr error
 			machine.Secrets = retagDuringRead{Reader: machine.Secrets, once: &sync.Once{}, err: &duringErr, during: func(ctx context.Context) error {
-				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, "ordinary-value"))
+				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, ordinary))
 				if err := machine.Policy.Refresh(ctx); err != nil {
 					return err
 				}

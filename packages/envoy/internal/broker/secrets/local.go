@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,11 +24,18 @@ import (
 // Manager's ListSecrets, DescribeSecret and GetSecretValue, which the broker reads with, its
 // CreateSecret, PutSecretValue, TagResource, UntagResource, DeleteSecret and RestoreSecret, which
 // the CLI writes with, and KMS's ListAliases. BROKER_FAKE_SECRETS_FILE loads one for local
-// development (LocalFromFile), and tests build one with NewLocal.
+// development (LocalFromFile), and tests build one with NewLocal. A secret holding a value has one
+// version, whose id changes each time the value's bytes do, however they were written (number).
 type Local struct {
 	mu      sync.Mutex
 	secrets map[string]LocalSecret
 	aliases map[string][]string
+	// version numbers each held secret's value, by name: serial as it stood when the value was
+	// last written with other bytes than the secret held, so the version id a listing answers
+	// (versionID) changes whenever the value's bytes change and at no other write. It is a count,
+	// never a digest of the value.
+	version map[string]uint64
+	serial  uint64
 	// path is the file a LocalFromFile Local follows, and file the bytes its secrets were last
 	// read from; empty for a NewLocal one.
 	path string
@@ -47,7 +55,7 @@ type LocalSecret struct {
 	Tags map[string]string `json:"tags"`
 	// Value is its current value. Empty is a secret created without a value: as in Secrets
 	// Manager, it is listed with no version and reading it answers ResourceNotFoundException; one
-	// holding a value is listed with a version labelled AWSCURRENT.
+	// holding a value is listed with a version labelled AWSCURRENT, whose id Local numbers itself.
 	Value string `json:"value"`
 	// DeletedAt, when set, is when the secret was deleted with a recovery window: as in Secrets
 	// Manager, it is then scheduled for deletion, ListSecrets lists it only when asked for planned
@@ -71,10 +79,11 @@ func NewLocal(secrets ...LocalSecret) *Local {
 	l := &Local{
 		secrets: map[string]LocalSecret{},
 		aliases: map[string][]string{},
+		version: map[string]uint64{},
 		now:     func() time.Time { return time.Now().UTC() },
 	}
 	for _, s := range secrets {
-		l.secrets[s.Name] = s
+		l.hold(s)
 	}
 	return l
 }
@@ -128,8 +137,9 @@ func parseLocalFile(path string, data []byte) ([]LocalSecret, error) {
 }
 
 // follow reads a LocalFromFile Local's file again and, when its bytes have changed since they were
-// last read, takes its secrets from it. A file it cannot read or parse fails the call. The caller
-// holds l.mu.
+// last read, takes its secrets from it, each value numbered against the one its name held before
+// (number), so a value the edit changed gets a new version id and one it left alone keeps its id.
+// A file it cannot read or parse fails the call. The caller holds l.mu.
 func (l *Local) follow() error {
 	if l.path == "" {
 		return nil
@@ -145,19 +155,51 @@ func (l *Local) follow() error {
 	if err != nil {
 		return err
 	}
+	previous := l.secrets
 	l.secrets = make(map[string]LocalSecret, len(secrets))
 	for _, s := range secrets {
+		l.number(previous[s.Name], s)
 		l.secrets[s.Name] = s
+	}
+	for name := range l.version {
+		if _, held := l.secrets[name]; !held {
+			delete(l.version, name)
+		}
 	}
 	l.file = data
 	return nil
 }
 
-// Put adds secret, or replaces the one of its name.
+// hold makes s the secret of its name, numbering its value against the one that name held
+// (number). The caller holds l.mu, or is building l.
+func (l *Local) hold(s LocalSecret) {
+	l.number(l.secrets[s.Name], s)
+	l.secrets[s.Name] = s
+}
+
+// number numbers the value of next, which is to be held under its name in place of held (the zero
+// LocalSecret for a name not held): a value of other bytes than held's takes the next serial as
+// its version, and the same bytes keep the version they had. PutSecretValue, Put, CreateSecret and
+// an edit of the followed file all number a value this way, so a version id changes when, and
+// only when, the value's bytes do. The caller holds l.mu, or is building l.
+func (l *Local) number(held, next LocalSecret) {
+	if _, numbered := l.version[next.Name]; !numbered || held.Value != next.Value {
+		l.serial++
+		l.version[next.Name] = l.serial
+	}
+}
+
+// versionID is the id of the one version the secret named name holds its value in.
+func (l *Local) versionID(name string) string {
+	return "local-" + strconv.FormatUint(l.version[name], 10)
+}
+
+// Put adds secret, or replaces the one of its name; a value of other bytes than the one it
+// replaces gets a new version id.
 func (l *Local) Put(secret LocalSecret) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.secrets[secret.Name] = secret
+	l.hold(secret)
 }
 
 // Delete removes the secret named name.
@@ -165,6 +207,7 @@ func (l *Local) Delete(name string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.secrets, name)
+	delete(l.version, name)
 }
 
 // Alias points the KMS alias alias ("alias/<name>") at the key whose ARN is keyARN.
@@ -176,9 +219,9 @@ func (l *Local) Alias(keyARN, alias string) {
 
 // ListSecrets answers every secret in one page, filtered as Secrets Manager filters by name: each
 // name filter value matches a name it prefixes, case-sensitively. A secret holding a value is
-// listed with one version labelled AWSCURRENT, and one with no value with none. A secret scheduled
-// for deletion is left out unless IncludePlannedDeletion asks for it, and then listed with its
-// DeletedDate, as in Secrets Manager.
+// listed with one version labelled AWSCURRENT (versionID), and one with no value with none. A
+// secret scheduled for deletion is left out unless IncludePlannedDeletion asks for it, and then
+// listed with its DeletedDate, as in Secrets Manager.
 func (l *Local) ListSecrets(_ context.Context, in *secretsmanager.ListSecretsInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -192,7 +235,7 @@ func (l *Local) ListSecrets(_ context.Context, in *secretsmanager.ListSecretsInp
 		}
 		out.SecretList = append(out.SecretList, types.SecretListEntry{
 			Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), KmsKeyId: s.kmsKeyID(),
-			Tags: s.awsTags(), SecretVersionsToStages: s.versionsToStages(), DeletedDate: s.DeletedAt,
+			Tags: s.awsTags(), SecretVersionsToStages: l.versionsToStages(s), DeletedDate: s.DeletedAt,
 		})
 	}
 	return out, nil
@@ -210,7 +253,7 @@ func (l *Local) DescribeSecret(_ context.Context, in *secretsmanager.DescribeSec
 	}
 	return &secretsmanager.DescribeSecretOutput{
 		Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), KmsKeyId: s.kmsKeyID(),
-		Tags: s.awsTags(), VersionIdsToStages: s.versionsToStages(), DeletedDate: s.DeletedAt,
+		Tags: s.awsTags(), VersionIdsToStages: l.versionsToStages(s), DeletedDate: s.DeletedAt,
 	}, nil
 }
 
@@ -250,15 +293,13 @@ func (s LocalSecret) kmsKeyID() *string {
 
 func (s LocalSecret) awsTags() []types.Tag { return TagList(s.Tags) }
 
-// localVersion is the version id of the one version a secret holding a value has.
-const localVersion = "local-current"
-
-// versionsToStages is one version labelled AWSCURRENT for a secret holding a value, none otherwise.
-func (s LocalSecret) versionsToStages() map[string][]string {
+// versionsToStages is one version labelled AWSCURRENT, versionID, for a secret holding a value,
+// none otherwise. The caller holds l.mu.
+func (l *Local) versionsToStages(s LocalSecret) map[string][]string {
 	if s.Value == "" {
 		return nil
 	}
-	return map[string][]string{localVersion: {"AWSCURRENT"}}
+	return map[string][]string{l.versionID(s.Name): {"AWSCURRENT"}}
 }
 
 func matchesNameFilters(name string, filters []types.Filter) bool {
@@ -322,10 +363,10 @@ func (l *Local) CreateSecret(_ context.Context, in *secretsmanager.CreateSecretI
 		return nil, &types.ResourceExistsException{Message: aws.String("The operation failed because the secret " + name + " already exists.")}
 	}
 	s := LocalSecret{Name: name, KmsKeyID: aws.ToString(in.KmsKeyId), Tags: withTags(nil, in.Tags), Value: aws.ToString(in.SecretString)}
-	l.secrets[name] = s
+	l.hold(s)
 	out := &secretsmanager.CreateSecretOutput{Name: aws.String(name), ARN: aws.String(LocalARN(name))}
 	if s.Value != "" {
-		out.VersionId = aws.String(localVersion)
+		out.VersionId = aws.String(l.versionID(name))
 	}
 	return out, nil
 }
@@ -333,8 +374,9 @@ func (l *Local) CreateSecret(_ context.Context, in *secretsmanager.CreateSecretI
 // PutSecretValue makes SecretString the AWSCURRENT value of the secret SecretId names, by name or
 // by LocalARN; ResourceNotFoundException for one Local does not hold and InvalidRequestException
 // for one scheduled for deletion, as in Secrets Manager. Local holds one string value, labelled
-// AWSCURRENT, in one version it names itself: an empty or binary value, a client request token, a
-// rotation token or another version stage is refused.
+// AWSCURRENT, in one version it names itself, which gets a new id when the value's bytes change
+// (number): an empty or binary value, a client request token, a rotation token or another version
+// stage is refused.
 func (l *Local) PutSecretValue(_ context.Context, in *secretsmanager.PutSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error) {
 	if aws.ToString(in.SecretString) == "" || in.SecretBinary != nil || in.ClientRequestToken != nil || in.RotationToken != nil {
 		return nil, refuse("PutSecretValue takes a non-empty SecretString only, into one version Local names itself")
@@ -351,9 +393,9 @@ func (l *Local) PutSecretValue(_ context.Context, in *secretsmanager.PutSecretVa
 		return nil, err
 	}
 	s.Value = *in.SecretString
-	l.secrets[s.Name] = s
+	l.hold(s)
 	return &secretsmanager.PutSecretValueOutput{
-		Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), VersionId: aws.String(localVersion), VersionStages: []string{"AWSCURRENT"},
+		Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), VersionId: aws.String(l.versionID(s.Name)), VersionStages: []string{"AWSCURRENT"},
 	}, nil
 }
 

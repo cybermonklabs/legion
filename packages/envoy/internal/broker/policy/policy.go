@@ -831,7 +831,18 @@ type Set struct {
 	// it with the set before to write the state-change lines, and broker_unservable_secrets
 	// (NewUnservableSecrets) reads it at each scrape.
 	Refused map[string]Refusal
+	// versions is the version of each served kind secret's value as the load or reread that read
+	// it listed it (secrets.Listing.Version), keyed by Name. It is in neither Secret nor Version,
+	// so a write of a new value moves no Version and ends no grant: Current decodes the value of
+	// each version, kind and shape it has not decoded, and refuses the secret only when the
+	// decoder does (ReasonValueMalformed).
+	versions map[string]string
 }
+
+// ValueVersion is the version of the kind secret name's value as s lists it, and "" for a name s
+// lists no kind secret's value for: what a mint the decoder refuses hands Current.RefuseValue, so
+// the refusal is keyed on the version the policy listed when the value was read.
+func (s *Set) ValueVersion(name string) string { return s.versions[name] }
 
 // Refusal is why the policy refuses to serve one secret under the prefix, as a load found it.
 type Refusal struct {
@@ -842,10 +853,10 @@ type Refusal struct {
 	Owner string
 }
 
-// setOf is NewSet(secrets) carrying refused, which NewSet's Version leaves out.
-func setOf(secrets map[string]Secret, refused map[string]Refusal) *Set {
+// setOf is NewSet(secrets) carrying refused and versions, which NewSet's Version leaves out.
+func setOf(secrets map[string]Secret, refused map[string]Refusal, versions map[string]string) *Set {
 	set := NewSet(secrets)
-	set.Refused = refused
+	set.Refused, set.versions = refused, versions
 	return set
 }
 

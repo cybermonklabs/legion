@@ -302,7 +302,7 @@ func TestARereadThatConfirmsTheLiveAnswerCostsNoReload(t *testing.T) {
 // tag: a Secret compares equal to itself by value, so a reread that finds it unchanged anchors
 // nothing and the next reload describes nothing.
 func TestARereadThatConfirmsAMaxGrantSecretCostsNoReload(t *testing.T) {
-	limited := policytest.KindSecret("LIMITED_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, "v1")
+	limited := policytest.KindSecret("LIMITED_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
 	limited.Tags[policy.TagMaxGrant] = "1h"
 	store := secrets.NewLocal(limited)
 	count := &policytest.CountingDescriber{SecretsManagerAPI: store}

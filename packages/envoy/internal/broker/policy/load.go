@@ -39,6 +39,21 @@ const LoadFailedMessage = "agent secret policy load failed; previous policy kept
 // that succeeds after a run of failed reloads that wrote LoadFailedMessage.
 const LoadRecoveredMessage = "agent secret policy load succeeded again"
 
+// ValueReadFailedMessage is the line Current writes, at WARN, when it reads a kind secret's stored
+// value to decode it (ReasonValueMalformed) and the read fails while that secret's reads had not
+// been failing: name (the secret's whole name in the store), version (the version of the value it
+// read, secrets.Listing.Version) and error (the store's error, which names the call and the class
+// of the failure, such as AccessDeniedException, PermissionDenied or a deadline, and never a byte
+// of the value). A failed read marks nothing and keeps the state the secret had; each load after
+// it reads the value again and writes nothing more until a read succeeds
+// (ValueReadRecoveredMessage), so a failure of any length is two lines.
+const ValueReadFailedMessage = "agent secret value read failed; its state kept"
+
+// ValueReadRecoveredMessage is the line Current writes, at INFO, when a read of a kind secret's
+// value succeeds after a run of failed reads that wrote ValueReadFailedMessage: name and version,
+// as that line names them.
+const ValueReadRecoveredMessage = "agent secret value read succeeded again"
+
 // Why a secret under the prefix is refused, as its Refusal's Reason and its RefusedMessage line's
 // reason.
 const (
@@ -114,6 +129,14 @@ const (
 	// (TagRules). The tag says what the stored value is, so a word the broker does not know
 	// leaves it unable to say what a release of the secret would hand over.
 	ReasonShapeMalformed = "shape-malformed"
+	// ReasonValueMalformed: a kind secret's stored value is one secrets.ParseValue refuses under
+	// its kind and shape, so no release could mint from it. It is no tag's: a load sets it from the
+	// value Current reads and decodes once for each version, kind and shape it lists, and a mint
+	// sets it from its own decode (Current.RefuseValue). It is keyed on the secret and the version
+	// refused: later loads keep it while they list that version, a new version is decoded afresh
+	// and keeps it only when that value is refused too, and a value that decodes or a secret that
+	// leaves the listing ends it.
+	ReasonValueMalformed = "value-malformed"
 )
 
 // slugPattern is a secret's name under the prefix: the lowercase form of an environment-variable
@@ -157,25 +180,28 @@ type Loader struct {
 	// do not name. In production: the loaded rules' Rules.Digest. A nil field is "" for every
 	// secret, which is a deployment with no rules file.
 	AirlockDigest func(name string) string
-	// StoreReads counts each call this loader makes to the store's metadata, in
-	// broker_policy_store_reads_total (NewStoreReads): read=list for the List a Load takes,
-	// read=describe for the Describe a LoadOne takes. Each is counted as it is made, so a call
-	// the store fails is counted too: it was asked of the store all the same. In production:
-	// NewStoreReads on the registry the metrics port serves. A nil counter counts nothing, which
-	// is every Loader a test builds that is not about the count.
+	// StoreReads counts each call to the store this loader makes, and Current makes through it,
+	// in broker_policy_store_reads_total (NewStoreReads): read=list for the List a Load takes,
+	// read=describe for the Describe a LoadOne takes, and read=value for each Read of a kind
+	// secret's value Current decodes, one for each version, kind and shape it lists. Each is
+	// counted as it is made, so a call the store fails is counted too: it was asked of the store
+	// all the same. In production: NewStoreReads on the registry the metrics port serves. A nil
+	// counter counts nothing, which is every Loader a test builds that is not about the count.
 	StoreReads *metrics.Counter
 }
 
 // Load reads the namespace into a Set: each secret it serves, and each it refuses with why
-// (Set.Refused, refusalOf). It writes no line: Current, which keeps the set before, writes the
-// lines a change of state calls for. A failed store call fails the whole load.
+// (Set.Refused, refusalOf), and the version of each served kind secret's value as the listing
+// names it, which Current decodes. It writes no line and reads no value: Current, which keeps the
+// set before, writes the lines a change of state calls for, and reads the values. A failed store
+// call fails the whole load.
 func (l Loader) Load(ctx context.Context) (*Set, error) {
 	l.StoreReads.Inc(readList)
 	listings, err := l.Store.List(ctx, l.Prefix)
 	if err != nil {
 		return nil, err
 	}
-	served, refused := map[string]Secret{}, map[string]Refusal{}
+	served, refused, versions := map[string]Secret{}, map[string]Refusal{}, map[string]string{}
 	for _, ls := range listings {
 		// The namespace is the prefix as written: a name outside it is skipped, whatever the
 		// lister answered.
@@ -192,8 +218,11 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 			continue
 		}
 		served[secret.Name] = secret
+		if secret.Kind() != "" {
+			versions[secret.Name] = ls.Version
+		}
 	}
-	return setOf(served, refused), nil
+	return setOf(served, refused, versions), nil
 }
 
 // refusalOf is the Refusal of the secret ls lists for reason: its owner tag as the store holds
@@ -212,6 +241,9 @@ type Lookup struct {
 	Served bool
 	Reason string
 	Owner  string
+	// version is a served kind secret's value's version, as Set's versions holds it, and "" for
+	// every other answer.
+	version string
 }
 
 // refusal is the Refusal lk answers, and the zero Refusal for a secret served or absent.
@@ -263,7 +295,11 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 		refusal := refusalOf(ls, reason)
 		return Lookup{Reason: refusal.Reason, Owner: refusal.Owner}, nil
 	}
-	return Lookup{Secret: secret, Served: true}, nil
+	lk := Lookup{Secret: secret, Served: true}
+	if secret.Kind() != "" {
+		lk.version = ls.Version
+	}
+	return lk, nil
 }
 
 // secret reads one secret under the prefix, answering the reason it is refused when it is. It asks

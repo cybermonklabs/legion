@@ -139,7 +139,7 @@ func TestARereadNamesTheKindItServes(t *testing.T) {
 		t.Fatalf("reread of a stored secret = %s, want served with no kind", body)
 	}
 	for _, kind := range policy.Kinds {
-		ts.Secrets.Put(policytest.KindSecret("PLAIN_KEY", testApprover, policy.TierAgent, kind, "v1"))
+		ts.Secrets.Put(policytest.KindSecret("PLAIN_KEY", testApprover, policy.TierAgent, kind, policytest.KindValue(kind)))
 		_, body = ts.req(t, http.MethodPost, "/v1/secrets/PLAIN_KEY/reread", nil, nil)
 		if r := decode[wireReread](t, body); !r.Served || r.Kind != kind {
 			t.Fatalf("reread once the kind is %s = %s, want served as %s", kind, body, kind)

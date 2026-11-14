@@ -514,7 +514,7 @@ func TestServiceRequesterAwaitsOwner(t *testing.T) {
 func TestUncappedListedLoginAwaitsOwner(t *testing.T) {
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
-	login := policytest.KindSecret("UNCAPPED_LOGIN_KEY", fixtureOperator, policy.TierHuman, policy.KindGoogleLogin, "refresh-v1")
+	login := policytest.KindSecret("UNCAPPED_LOGIN_KEY", fixtureOperator, policy.TierHuman, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
 	login.Tags[policy.TagRequesters] = fixtureOperator
 	retag(t, m, login)
 	if cap := m.Policy.Get().Secrets["UNCAPPED_LOGIN_KEY"].MaxGrant; cap != 0 {

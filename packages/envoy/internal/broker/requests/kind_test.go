@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -14,8 +15,10 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
+// requestKindSecret is a kind secret of the fixture's operator holding a value its kind's decoder
+// reads (policytest.KindValue), which the policy serves.
 func requestKindSecret(name, kind, tier, maxGrant string) secrets.LocalSecret {
-	secret := policytest.KindSecret(name, fixtureOperator, tier, kind, "stored-value")
+	secret := policytest.KindSecret(name, fixtureOperator, tier, kind, policytest.KindValue(kind))
 	if maxGrant != "" {
 		secret.Tags[policy.TagMaxGrant] = maxGrant
 	}
@@ -153,7 +156,9 @@ func TestMaxGrantAcceptsALifetimeAtTheTag(t *testing.T) {
 
 func TestPlainToKindRetagEndsTheGrant(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	plain := policytest.Secret("PLAIN_TO_KIND", fixtureOperator, policy.TierAgent, "stored-value")
+	// A stored value the github-app decoder reads, so the retag below is served as that kind and
+	// moves the grant's source, rather than refused for its value (policy.ReasonValueMalformed).
+	plain := policytest.Secret("PLAIN_TO_KIND", fixtureOperator, policy.TierAgent, policytest.KindValue(policy.KindGitHubApp))
 	retag(t, machine, plain)
 	calls := 0
 	machine.Minters = map[string]Minter{
@@ -210,6 +215,9 @@ func TestKindRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
 		"changed": func(secret secrets.LocalSecret) secrets.LocalSecret {
 			secret.Tags = maps.Clone(secret.Tags)
 			secret.Tags[policy.TagKind] = policy.KindGoogleLogin
+			// The value the new kind's decoder reads, so the policy serves the secret as that
+			// kind rather than refusing it for its value (policy.ReasonValueMalformed).
+			secret.Value = policytest.KindValue(policy.KindGoogleLogin)
 			return secret
 		},
 	} {
@@ -338,6 +346,7 @@ func TestAKindChangedAwayAndBackLeavesTheGrantEnded(t *testing.T) {
 				delete(moved.Tags, policy.TagKind)
 			} else {
 				moved.Tags[policy.TagKind] = away
+				moved.Value = policytest.KindValue(away)
 			}
 			retag(t, machine, moved)
 			if _, err := machine.Values(t.Context(), *first.GrantID, enrollmentID, nil); !errors.Is(err, ErrGrantNotLive) {
@@ -418,7 +427,53 @@ func TestAFailedMintIsNamedAndReleasesNothing(t *testing.T) {
 	if !errors.Is(err, ErrMintFailed) || !strings.Contains(err.Error(), "invalid_rapt") || release.Values != nil {
 		t.Fatalf("Values = %v, %v; want ErrMintFailed naming invalid_rapt", release.Values, err)
 	}
-	if strings.Contains(err.Error(), "stored-value") {
-		t.Fatalf("Values error leaked the stored value: %q", err)
+	if strings.Contains(err.Error(), policytest.KindValue(policy.KindGoogleLogin)) {
+		t.Fatal("Values error leaked the stored value")
+	}
+}
+
+// TestAMintThatRefusesTheStoredValueRefusesTheSecret: a minter that refuses the stored value itself
+// (secrets.ErrMintStoredValue, which its decoder answers) fails that release as every mint failure
+// does, ErrMintFailed, and has the policy refuse the secret as value-malformed at the version it
+// lists, with one RefusedMessage line, so the grant's next release answers ErrGrantNotLive and runs
+// no minter, as every unservable secret's does. A new value stored and decoded serves it again,
+// and the same grant mints, since a value's version moves no policy Version.
+func TestAMintThatRefusesTheStoredValueRefusesTheSecret(t *testing.T) {
+	machine, enrollmentID, key, _ := newFixture(t)
+	secret := requestKindSecret("REFUSED_APP_KEY", policy.KindGitHubApp, policy.TierAgent, "")
+	retag(t, machine, secret)
+	calls, refuse := 0, true
+	machine.Minters = map[string]Minter{policy.KindGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		calls++
+		if refuse {
+			return secrets.Minted{}, fmt.Errorf("%w: GitHub App secret needs an app_id and private_key", secrets.ErrMintStoredValue)
+		}
+		return secrets.Minted{Value: "minted"}, nil
+	}}
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "REFUSED_APP_KEY"), "")
+	if err != nil || request.GrantID == nil {
+		t.Fatalf("Create = %+v, %v; want an automatic grant", request, err)
+	}
+	logged := policytest.CaptureLog(t)
+	if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil); !errors.Is(err, ErrMintFailed) || !errors.Is(err, secrets.ErrMintStoredValue) || release.Values != nil {
+		t.Fatalf("Values = %v, %v; want ErrMintFailed for the stored value", release.Values, err)
+	}
+	id := policytest.ID("REFUSED_APP_KEY")
+	if refusal := machine.Policy.Get().Refused[id]; refusal.Reason != policy.ReasonValueMalformed || refusal.Owner != fixtureOperator {
+		t.Fatalf("after the mint's refusal the policy refuses %s as %+v; want %s", id, refusal, policy.ReasonValueMalformed)
+	}
+	if n := strings.Count(logged.String(), policy.RefusedMessage+" name="+id+" reason="+policy.ReasonValueMalformed); n != 1 {
+		t.Fatalf("the mint's refusal logged %d %q lines for %s; want 1:\n%s", n, policy.RefusedMessage, id, logged)
+	}
+	if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil); !errors.Is(err, ErrGrantNotLive) || release.Values != nil || calls != 1 {
+		t.Fatalf("the next Values = %v, %v after %d mints; want ErrGrantNotLive and no second mint", release.Values, err, calls)
+	}
+
+	refuse = false
+	stored := secret
+	stored.Value += "\n"
+	retag(t, machine, stored)
+	if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil); err != nil || release.Values["REFUSED_APP_KEY"] != "minted" {
+		t.Fatalf("Values once a new value is stored = %v, %v; want the grant to mint again", release.Values, err)
 	}
 }
