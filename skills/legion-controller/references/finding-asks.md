@@ -1,7 +1,8 @@
 # Finding asks
 
 Read this when a clear defect or a finding ask's reference reaches you on the controller topic,
-when one you follow is answered, when you file an issue a person asked for, and at every start.
+and when one you follow is answered. Read it also when you file or link an issue, when a session
+tells you of an issue under a root on the backlog, and at every start.
 What a finding ask is and where it goes is `skill://legion-worker/references/findings.md`; what
 you may file is the skill's "Findings, and the issues you file" section.
 
@@ -43,13 +44,18 @@ The work goes to whoever already owns that code. You file an issue only when nob
 1. Check that it is clear: the fix needs no choice a person must make, and it belongs in a
    repository your addressing line lists. Otherwise open an ask for it, as `findings.md` says.
 2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence
-   there, reply `Filed dispatch://<that KEY>` under the evidence, and file nothing.
+   there, reply `Filed dispatch://<that KEY>` under the evidence, and file nothing. When that issue
+   belongs to an approved root and has no `child_of` link to it, link it as
+   [Link an issue to its approved root](#link-an-issue-to-its-approved-root) says.
 3. Find the running tree whose code it is: a root in `admission.trees`, the live trees, whose
    repository and component match, read from `read_state` and `dispatch read`. Read it there
    rather than in `admission.active`, which holds the issues the daemon has started: an issue
    holds one of the cap's slots from the moment the daemon starts it until its work is past its
    review, until it is done, or until Dispatch takes it out of the workflow, and a tree runs
-   whether or not any issue of it holds one. When one matches, hand it over.
+   whether or not any issue of it holds one. A running tree also owns a fix that its root's
+   approved class or unfinished work holds
+   ([Link an issue to its approved root](#link-an-issue-to-its-approved-root)). When one matches,
+   hand it over.
    `envoy_publish` the defect, its evidence reference and the fix to that tree's architect topic,
    `notifications.role.<issues.<KEY>.architect.locator.claim>`. The architect decides whether it
    is a child of the tree or part of an open issue's work. Reply `Handed dispatch://<that KEY>`
@@ -60,7 +66,9 @@ The work goes to whoever already owns that code. You file an issue only when nob
    no running tree owns the code, and step 4 files it. File nothing while a tree owns it: a
    second issue splits the work.
 4. No running tree owns that code: file it on the repository where the fix belongs, in the
-   project that repository maps to:
+   project that repository maps to. Where
+   [Link an issue to its approved root](#link-an-issue-to-its-approved-root) puts it under a root,
+   write `--parent <ROOT>` in place of `--label legion`. Otherwise file it as a root of its own:
 
    ```text
    dispatch issue --project <KEY> --repo <owner/name> --title '<the defect, as a title>' --label legion --spec-file -
@@ -69,12 +77,94 @@ The work goes to whoever already owns that code. You file an issue only when nob
    Without `--repo`, Dispatch records the project's default repository, and the daemon admits the
    issue there. The spec states the defect, where the fix belongs and the fix, and ends with the
    `Filed for Legion from` line: the sending role's token (or `controller`), the `dispatch://<KEY>`
-   it came from, and the evidence comment's or the ask's reference. It opens in `triage` with the
-   label, and triage admits it (`skill://legion-controller/references/triage.md`).
+   it came from, and the evidence comment's or the ask's reference. A root of its own opens in
+   `triage` with the label, and triage admits it (`skill://legion-controller/references/triage.md`).
+   A member under a root opens with no label and waits with that root.
 5. Reply under the evidence comment (`--reply-to '<comment id>'`) or the ask
    (`--reply-to-ask '<ask id>'`, on the ask's issue), its first line exactly
    `Filed dispatch://<NEW KEY>` or `Handed dispatch://<KEY>`. A later session reads that reply at
    triage and at every start.
+
+## Link an issue to its approved root
+
+A class root is an issue whose spec states a class of work, so that each issue of that class is
+its child. dispatch://INFRA-3118 is one: each fix of the daemon's task delivery, holds and pod
+updates is its child. Before you file an issue, or give one to a tree, find the root it belongs
+to. That is a class root whose class holds it, or the root of a running tree whose unfinished work
+holds it. Such a root counts only when a person approved its spec. A mention of the class in prose
+is not a link. Only a Dispatch `child_of` link is one.
+
+- **The root's tree runs** (the root is in `admission.trees`): give the issue to that tree, as
+  step 3 of [Hand over a clear defect](#hand-over-a-clear-defect) says. Its architect makes it a
+  child of the tree or part of an open issue's work. A child of a running tree needs no gate of
+  its own.
+- **The root is a Legion root, and its tree does not run:** file the issue under it, with
+  `--parent <ROOT>` and no `legion` label. It waits with the root, and it runs as a child once the
+  root runs. A labelled child outside a live tree is admitted as a root of its own
+  (`skill://legion-controller/references/triage.md#label-an-issue-for-a-person`). For a root on
+  the backlog, also read [A member under a root on the backlog](#a-member-under-a-root-on-the-backlog).
+- **The issue fixes what a `done` issue delivered:** it is new work. File it with no parent, and
+  not under the `done` issue for that issue's approval: `register_gate` refuses a `done` or
+  accepted ancestor. The new issue asks for its own approval
+  (`skill://legion-architect/references/design-gate.md#when-the-root-asks-for-its-own-approval`).
+- **It belongs under any other unfinished issue:** file it as a root of its own with no parent,
+  and it asks for its own approval. Your deployment's intake takes no issue under an ancestor that
+  is not `done`, so a child of such an issue never runs.
+
+A class root that must take new members is a Legion root with no code of its own
+(`skill://legion-architect/references/decomposition.md#a-root-with-no-code-of-its-own`), as
+dispatch://INFRA-3118 and dispatch://INFRA-3418 are, and not an issue that holds only a design.
+Your deployment's intake takes no issue under an ancestor that is not `done`, so a member under an
+issue that holds only a design never runs. So file such a class root with `--label legion`, and
+write in its spec that it has no code of its own. Do this also when a request or a proposal asks
+for an issue that holds only a design, and say why in its spec and in your reply. A request for a
+class root whose members Legion runs asks Legion to run that root.
+
+An issue already filed that belongs to an approved root, with no `child_of` link to it, goes where
+a new issue goes, by the list above. Where it runs as a root of its own (`issues.<KEY>.tree` is
+`<KEY>` in `read_state`) and the list puts it under that root or in its tree, set the link
+yourself:
+
+```text
+dispatch issue-update --issue <KEY> --parent <ROOT>
+```
+
+It stays a tree of its own. Then tell its architect, with `envoy_publish` to
+`notifications.role.<issues.<KEY>.architect.locator.claim>`, the root's key and that the rule of a
+view applies to it:
+
+```text
+<KEY>: Dispatch now shows it child_of <ROOT>. skill://legion-architect/references/design-gate.md, "A root that is a view on an approved ancestor", now applies to it.
+```
+
+A link has a cost. An open child under a parent holds the parent's first phase. It also holds
+every later phase start of the parent, and it stops a phase of the parent under way at the next
+admission pass. A class root with no code of its own loses nothing by it. Where you report the
+link (your reply under the evidence, or your summary), name that cost for the root you link under.
+
+### A member under a root on the backlog
+
+A member under a Legion root on the backlog does not move that root. You file such a member
+yourself, or the session that filed it tells you on the controller topic. A root's architect also
+tells you when its root rests on an ancestor on the backlog
+(`skill://legion-architect/references/design-gate.md#a-requirement-the-ancestor-does-not-state`).
+Decide whether that root runs again under [Free slots](skill://legion-controller/SKILL.md#free-slots):
+it leaves the backlog only on a request or a plan directive that names it. Where none names it,
+do as your deployment's instructions say. Where they give you no rule for this move, ask a person:
+
+1. Open a `dispatch ask` on the report issue that names the root and the member, with the options
+   `Run it now` and `Leave it parked` and your recommendation. Follow it
+   (`dispatch follow --ask '<ref>' --action follow`). While an open ask on the report issue already
+   asks this for the same root (`dispatch open-asks --project <PROJECT>` lists them), open no
+   second one. Add the new member under that ask instead.
+2. On `Run it now`, set the root to `todo` (`set_status`), and cite the answer in a comment on the
+   root: the answer is a person's request that names it. On `Leave it parked`, move nothing.
+3. Reply under the ask, its first line exactly `Started dispatch://<ROOT>` or
+   `Left parked dispatch://<ROOT>`.
+
+Until the root runs, the member waits with it. A fix that must run now does not wait. File it with
+no parent, and it asks for its own approval. Its spec names the class root and says why the fix is
+not linked to it.
 
 ## Follow it
 
@@ -89,11 +179,13 @@ When `dispatch read --ref` shows it answered already, act on its answer now.
 
 ## Act on its answer
 
-A park ask (`Park it`, `Leave it admitted`) and a deferral ask (`Defer it`, `Let it run`) take
-none of the four finding actions below. Act on the answer to a park ask as
-`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4 says, and on
-the answer to a deferral ask as
-`skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 says.
+A park ask (`Park it`, `Leave it admitted`), a deferral ask (`Defer it`, `Let it run`) and a run
+ask (`Run it now`, `Leave it parked`) take none of the four finding actions below. Act on the
+answer to a park ask as `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`
+step 4 says, on the answer to a deferral ask as
+`skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 says,
+and on the answer to a run ask as
+[A member under a root on the backlog](#a-member-under-a-root-on-the-backlog) says.
 
 Once it is answered (an ask you follow brings its answer to you), read it with
 `dispatch read --ref 'dispatch://<KEY>/ask/<id>'` and act on the newest answer. When its typed
@@ -112,6 +204,10 @@ question and file nothing:
   dispatch://<REPORT KEY>/ask/<id>` (above). No `legion` label.
 - `File it for Legion`: the same, with `--label legion`. It opens in `triage` with the label, so
   its triage wake brings it back to you (`skill://legion-controller/references/triage.md`).
+
+Each issue you file follows
+[Link an issue to its approved root](#link-an-issue-to-its-approved-root). One that goes under its
+approved root takes `--parent <ROOT>` and no `legion` label, also on `File it for Legion`.
 
 An ask that re-files an escalated child also takes the steps of
 `skill://legion-controller/references/escalation.md`.
@@ -154,7 +250,7 @@ finding asks roles opened on their own issues while no controller ran:
 
    ```text
    asks=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1") || { echo "Dispatch read failed" >&2; exit 1; }
-   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
+   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run" or .label == "Run it now" or .label == "Leave it parked")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://|Started dispatch://|Left parked dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
    Read it for the report issue, then for each issue in `needs_review`, whose architect holds its

@@ -107,9 +107,10 @@ The daemon works only issues carrying the Dispatch label `legion` (any case). Wo
 by a person's decision: they set the label from the issue header, or ask you to (a direct
 message, a Slack request that asks Legion to do the work, their answer to a finding ask, or a
 directive the weekly plan records with its link). The one exception is a clear defect a role hands
-you whose code no running tree owns: you file it with the label, because its fix is how to do work
-a person already wants, and humans decide what, agents decide how (the operator's answer on one
-such case: a clear defect is fixed, not asked about). A defect whose code a running
+you whose code no running tree owns: you file it with the label, or with no label as a member
+under its approved root, because its fix is how to do work a person already wants, and humans
+decide what, agents decide how (the operator's answer on one such case: a clear defect is fixed,
+not asked about). A defect whose code a running
 tree owns is that tree's, and you file nothing for it. Label an issue only then, because
 a labelled root in `todo` is admitted, so an unasked label starts unasked work. Never take a
 person's label off, because it is their decision. Label an issue before you `set_status` it to
@@ -209,8 +210,9 @@ itself, so a row ends when a person acts or when the tree that owns the work mov
 
 File an issue only when a person asks you to (a direct message, a Slack request, or their answer
 to a finding ask), for a clear defect no running tree owns, and the report issue. A clear defect,
-yours or a role's, goes first to the tree that owns its code, and becomes a Legion root only when
-no tree does: `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect`.
+yours or a role's, goes first to the tree that owns its code, and is filed only when no tree does,
+under its approved root where it has one:
+`skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect`.
 Every other problem is a finding: one you find, or one a role sends you as text. Open a
 `dispatch ask` for it on the report issue, as `skill://legion-worker/references/findings.md` says,
 and file nothing until a person answers, because a person decides whether it needs an issue and

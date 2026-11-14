@@ -19,7 +19,8 @@ three steps that fits:
    you fixed beside the issue's own work. A fix deferred to another issue is a fix nobody makes.
 2. **Hand it over.** Any other clear defect goes to the controller with its evidence, as [Send a
    finding to the controller](#send-a-finding-to-the-controller) says. The controller gives it to
-   the running tree whose code it is. Only when no tree owns that code does it file a Legion root.
+   the running tree whose code it is. Only when no tree owns that code does it file an issue: under
+   the approved root the fix belongs to, else a Legion root of its own.
 3. **Ask.** A finding that needs a person's authority, taste or risk appetite is a `dispatch ask`
    with one recommendation, as [Where it goes](#where-it-goes) says: whether the work is wanted at
    all, which of several designs, who owns it, or a change of scope, cost or risk.
@@ -37,12 +38,16 @@ A fix you are not sure of is not step 1: hand it over, or ask when a person must
   the evidence on that issue and send or ask nothing. When an open ask on the report issue already
   asks about it (`dispatch open-asks --project <PROJECT>` lists them), add your evidence under that
   ask (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`, the
-  evidence on stdin) and open no second one.
+  evidence on stdin) and open no second one. Only a missing link still goes to the controller. That
+  is an open issue inside an approved root's class or unfinished work whose `Links:` show no
+  `child_of` link to that root. Send it as a clear defect, and the controller sets the link
+  (`skill://legion-controller/references/finding-asks.md#link-an-issue-to-its-approved-root`).
 
 These issues are filed:
 
 - an architect's children of its own tree (`dispatch issue --parent`, `skill://legion-architect`)
-- a Legion root the controller files for a clear defect no running tree owns
+- an issue the controller files for a clear defect no running tree owns: a member under the
+  approved root the fix belongs to, else a Legion root of its own
 - an issue a person asked the controller to file, in a direct message, in a Slack request, or in
   their answer to an ask
 - the report issue itself, which the controller creates once when the project has none
@@ -62,11 +67,16 @@ says which), its first line exactly `Clear defect from <your role token>`. It pr
 - the defect: what went wrong, where and to whom, with the numbers, and the issue it came from
   (`dispatch://<KEY>`)
 - where the fix belongs: the repository and the component
+- the approved root the fix belongs to, when you know one: a class root whose class holds the fix,
+  or a running tree whose unfinished work holds it. A mention of the class in prose is no link, so
+  name the root by its key. The controller files or links the issue under that root
+  (`skill://legion-controller/references/finding-asks.md#link-an-issue-to-its-approved-root`).
 - the fix
 - the evidence comment, `dispatch://<REPORT KEY>/comment/<id>`
 
-The controller hands it to the running tree whose code it is, and files a Legion root only when no
-tree owns that code. Either way it replies under your evidence comment with where the work went.
+The controller gives it to the running tree whose code it is, and files an issue only when no tree
+owns that code, under the approved root the fix belongs to where one is. Either way it replies
+under your evidence comment with where the work went.
 You file nothing, and you wait for nothing. When the report issue is missing or closed, put the
 evidence in the message itself. A production check's recorded result then names the defect as
 sent to the controller, and the `fail` that records it closes the check, so that look names no
