@@ -502,6 +502,46 @@ func TestTheAppsLimitMetByOneProcessHoldsTheOthersAppCalls(t *testing.T) {
 	}
 }
 
+// endingLimits is the shared ledger of a caller whose time ends while GitHub's limit is being
+// recorded: Record first ends the caller's context, as a CI reconcile pass's bound falls just
+// after GitHub answers, and then records through the real ledger.
+type endingLimits struct {
+	Limits
+	end context.CancelFunc
+}
+
+func (l endingLimits) Record(ctx context.Context, scope string, wait time.Duration) error {
+	l.end()
+	return l.Limits.Record(ctx, scope, wait)
+}
+
+// A limit GitHub answers reaches the ledger every process shares even when its caller's time
+// ends while it is recorded. The answer is a fact about the App's budget, not about the caller,
+// and a limit left out of the ledger lets every other process ask GitHub inside it.
+func TestALimitGitHubAnsweredIsRecordedWhenTheCallersTimeEnds(t *testing.T) {
+	fake := startLimitGitHub(t)
+	database := storetest.Open(t)
+	ctx, end := context.WithCancel(context.Background())
+	defer end()
+	a := fake.newClient(t, WithLimits(endingLimits{Limits: ratelimit.New(database.Pool), end: end}))
+	b := fake.newClient(t, WithLimits(ratelimit.New(storetest.SecondProcess(t, database).Pool)))
+
+	fake.limit("/app/installations/9/access_tokens")
+	_, err := a.Token(ctx, 9)
+	if limited, ok := AsRateLimit(err); !ok || limited.Held || limited.Status != http.StatusForbidden {
+		t.Fatalf("A's limited mint: err = %v, want GitHub's own 403 as a *RateLimitError", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("A's context did not end while the limit was recorded, so this test proves nothing")
+	}
+	requests := fake.count()
+	_, err = b.Token(context.Background(), 9)
+	requireHeld(t, err, "B's token mint after A's time ended as A recorded the limit")
+	if got := fake.count(); got != requests {
+		t.Fatalf("GitHub got %d more requests inside the limit A met, want none", got-requests)
+	}
+}
+
 // The webhook redelivery sweep's own backoff doubles to an hour under its own scope; the App's
 // token mints obey only GitHub's own wait, so a strike against redelivery never holds them.
 func TestARedeliveryStrikeDoesNotHoldATokenMint(t *testing.T) {
