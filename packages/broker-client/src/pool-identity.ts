@@ -5,6 +5,7 @@
 // (`packages/envoy/internal/brokerclient/pool.go`), and asks the two services Go asks with the
 // bodies Go sends, so a deployment that names a pool gets one identity from either client.
 
+import { messageOf } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   GRANT_TYPE_TOKEN_EXCHANGE,
@@ -58,8 +59,6 @@ export interface PoolIdentityOptions {
   readonly securityTokenServiceUrl?: string | undefined;
   /** {@link DEFAULT_IAM_CREDENTIALS_URL} unless a dev stack or a test names a stand-in. */
   readonly iamCredentialsUrl?: string | undefined;
-  /** The fetch both calls go through; the global one by default. Only a test replaces it. */
-  readonly fetch?: typeof fetch | undefined;
 }
 
 /**
@@ -80,11 +79,6 @@ function pathEscape(segment: string): string {
   return encodeURIComponent(segment)
     .replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
     .replace(/%(?:24|26|2B|3A|3D|40)/g, decodeURIComponent);
-}
-
-/** `error`'s message, for a refusal that wraps it. */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** The first {@link MAX_ANSWER_BYTES} of `answer`'s body, as text. */
@@ -121,7 +115,6 @@ async function answerText(answer: Response): Promise<string> {
  * token.
  */
 export function poolIdentity(options: PoolIdentityOptions): TokenSource {
-  const send = options.fetch ?? fetch;
   const securityTokenService =
     options.securityTokenServiceUrl ?? DEFAULT_SECURITY_TOKEN_SERVICE_URL;
   const iamCredentials = (options.iamCredentialsUrl ?? DEFAULT_IAM_CREDENTIALS_URL).replace(
@@ -148,7 +141,7 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
     const signals = [AbortSignal.timeout(POOL_TIMEOUT_MS), signal].filter(
       (one) => one !== undefined
     );
-    const answer = await send(endpoint, {
+    const answer = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

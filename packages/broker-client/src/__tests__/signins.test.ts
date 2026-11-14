@@ -8,6 +8,7 @@ import { expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { signedIn, signInPath, writeSignIn } from "../../test/sign-ins";
 import {
   chooseSignIn,
   DEFAULT_SIGNIN_ISSUER,
@@ -23,17 +24,9 @@ import {
   signInFlow,
   signInSessionName,
 } from "../signins";
-import { signedIn, signInPath, writeSignIn } from "./signin-records";
+import { refusalOf } from "./stub";
 
 const makeDirectory = temporaryDirectories("broker-signins");
-
-/** The error `run` rejects with, or null where it resolves. */
-async function refusalOf(run: () => Promise<unknown>): Promise<Error | null> {
-  return await run().then(
-    () => null,
-    (error: unknown) => error as Error
-  );
-}
 
 test("the directory is the variable's, else the XDG state directory's, else HOME's", () => {
   const everything = {

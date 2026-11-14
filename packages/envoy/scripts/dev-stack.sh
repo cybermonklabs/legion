@@ -433,7 +433,7 @@ DISPLAY_SERVER="$(printf '%s' "$POSTGRES_SERVER" | sed -E 's#^(postgres(ql)?://[
 # of each of the seven checked above instead, into the directory the build writes, so nothing
 # below can tell the two apart. ---
 if [ -n "$BINARIES_OPTION" ]; then
-  echo "dev-stack: copying broker, dev-oidc-issuer, dispatch, listener, natsd, agent-secrets and agent-secrets-helper from $BINARIES_OPTION..." >&2
+  echo "dev-stack: copying ${STACK_BINARIES[*]} from $BINARIES_OPTION..." >&2
   for binary in "${STACK_BINARIES[@]}"; do
     cp "$BINARIES_OPTION/$binary" "$BIN_DIR/$binary"
   done

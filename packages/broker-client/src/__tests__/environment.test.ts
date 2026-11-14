@@ -65,7 +65,7 @@ test("an identity named with its variables missing is refused naming them", () =
 });
 
 test("a client is built for the broker, the identity and the session the variables name", async () => {
-  const client = await brokerTokenClient({
+  const made = await brokerTokenClient({
     [BROKER_URL_VAR]: "http://broker.test/",
     [IDENTITY_VAR]: "kubernetes",
     [MACHINE_TOKEN_FILE_VAR]: "/var/run/secrets/exchange/token",
@@ -74,6 +74,7 @@ test("a client is built for the broker, the identity and the session the variabl
     // the client a sign-in makes).
     AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
   });
+  const client = made?.client;
   expect(client?.describe()).toBe(
     "the projected service-account token /var/run/secrets/exchange/token"
   );
@@ -104,14 +105,14 @@ test("a machine's client this factory builds asks the broker for no launcher cre
   try {
     const file = join(makeDirectory(), "token");
     await writeFile(file, "projected.service.account.token\n");
-    const client = await brokerTokenClient({
+    const made = await brokerTokenClient({
       [BROKER_URL_VAR]: `http://127.0.0.1:${broker.port}`,
       [IDENTITY_VAR]: "kubernetes",
       [MACHINE_TOKEN_FILE_VAR]: file,
       AGENT_SECRETS_SESSION: "example-worker-session",
       AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
     });
-    const token = await client?.token();
+    const token = await made?.client.token();
     expect(token?.credentialId).toBe("");
     expect(forms).toHaveLength(1);
     expect(forms[0]?.get(FORM_LAUNCHER_CREDENTIAL)).toBe(FORM_LAUNCHER_CREDENTIAL_DECLINED);

@@ -20,6 +20,7 @@ import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { messageOf } from "./error-text";
 
 /** Names the directory a machine keeps its sign-ins in, for a deployment that places it itself
  *  (Go's `SignInDirVar`). Unset, {@link signInDirectory} answers the XDG state directory. */
@@ -105,11 +106,6 @@ export interface SignInFlow {
   /** The client's secret, read from its file and trimmed. Google registers a limited-input
    *  device client as confidential, so the secret is sent; it is no secret of the person's. */
   readonly clientSecret: string;
-}
-
-/** What `error` says, for a refusal that wraps it. */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**

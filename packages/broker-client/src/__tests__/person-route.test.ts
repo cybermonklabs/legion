@@ -3,8 +3,8 @@
 // The client the factory builds on a machine where a person ran `agent-secrets login`: it trades
 // that person, with this machine as the actor and the sign-in's box key as the proof's key, under
 // the caller's own session or the sign-in's name and never the machine's. With no sign-in it is
-// the machine's own client, field for field as before. Anything that stops the person's route is
-// an error, never the machine's client in its place.
+// the machine's own client, with every field the factory always gave it. Anything that stops the
+// person's route is an error, never the machine's client in its place.
 
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
@@ -12,6 +12,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, type JWK } from "jose";
+import { signedIn, stubIssuer, writeSignIn } from "../../test/sign-ins";
 import {
   BROKER_URL_VAR,
   type BrokerEnvironment,
@@ -40,8 +41,7 @@ import {
   SUBJECT_TOKEN_TYPE_GOOGLE,
   SUBJECT_TOKEN_TYPE_PERSON,
 } from "../wire";
-import { signedIn, writeSignIn } from "./signin-records";
-import { accepted, stubBroker, stubIssuer } from "./stub";
+import { accepted, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
@@ -118,9 +118,9 @@ async function box(
 
 /** The client the factory answers, which these tests expect it to answer. */
 async function clientOf(env: BrokerEnvironment, own?: string): Promise<BrokerTokenClient> {
-  const client = await brokerTokenClient(env, own);
-  if (client === undefined) throw new Error("the factory answered no client");
-  return client;
+  const made = await brokerTokenClient(env, own);
+  if (made === undefined) throw new Error("the factory answered no client");
+  return made.client;
 }
 
 /** The error the factory rejects with, or null where it answers a client. */
@@ -177,7 +177,7 @@ test("the person's proof carries the box key's public JWK, the key the broker bo
   expect(await calculateJwkThumbprint(jwk as JWK)).toBe(record.thumbprint);
 });
 
-test("with no sign-in, the client is the machine's own as before: launcher_credential=false, tradeSession and a fresh key", async () => {
+test("with no sign-in, the client is the machine's own: launcher_credential=false, tradeSession and a fresh key", async () => {
   const { broker, issuer } = await stubs();
   const env = await box(broker.url, issuer.url, []);
   const first = await clientOf(env);

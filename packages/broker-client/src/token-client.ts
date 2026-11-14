@@ -32,6 +32,7 @@ import {
   type TokenEndpointResponse,
 } from "openid-client";
 import type { DpopKey } from "./dpop";
+import { messageOf } from "./error-text";
 import { SIGNIN_COMMAND } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
 import {
@@ -226,6 +227,29 @@ export function statusOf(error: unknown): number {
   return 0;
 }
 
+/**
+ * The request `openid-client` asked for in `options`, sent with `headers`: its method, its body,
+ * its redirect rule, and its own signal beside the caller's `signal`, either of which aborts it.
+ * The broker's exchange and the person's identity source (`person-identity.ts`) both send what
+ * the library asks through it.
+ */
+export function requestInit(
+  options: CustomFetchOptions,
+  signal: AbortSignal | undefined,
+  headers: Headers | Record<string, string>
+): RequestInit {
+  const signals = [options.signal, signal].filter((one) => one !== undefined);
+  return {
+    method: options.method,
+    headers,
+    // openid-client's own body union is wider than one `fetch` typing or another admits; the
+    // bytes are the form it encoded, and every runtime this package runs on sends them.
+    body: options.body as RequestInit["body"],
+    redirect: options.redirect,
+    ...(signals.length === 0 ? {} : { signal: AbortSignal.any(signals) }),
+  };
+}
+
 /** Trades this client's identity for the broker's access tokens and keeps one live. */
 export class BrokerTokenClient {
   readonly #brokerUrl: string;
@@ -344,8 +368,9 @@ export class BrokerTokenClient {
       try {
         actor = await this.#actor.read(signal);
       } catch (error) {
-        const said = error instanceof Error ? error.message : String(error);
-        throw new Error(`read the machine this person signed in on: ${said}`, { cause: error });
+        throw new Error(`read the machine this person signed in on: ${messageOf(error)}`, {
+          cause: error,
+        });
       }
       form["actor_token"] = actor.token;
       // The same token under the type that says what it proves here: not who is asking, but which
@@ -416,17 +441,7 @@ export class BrokerTokenClient {
         "DPoP",
         await this.#key.proof({ method: options.method, url, nonce: this.#nonce })
       );
-      const signals = [options.signal, signal].filter((one) => one !== undefined);
-      // openid-client's own body union is wider than one `fetch` typing or another admits; the
-      // bytes are the form it encoded, and every runtime this package runs on sends them.
-      const body = options.body as RequestInit["body"];
-      return await this.#fetch(url, {
-        method: options.method,
-        headers,
-        body,
-        redirect: options.redirect,
-        ...(signals.length === 0 ? {} : { signal: AbortSignal.any(signals) }),
-      });
+      return await this.#fetch(url, requestInit(options, signal, headers));
     };
     let answer = await send();
     const given = answer.headers.get("DPoP-Nonce") ?? "";

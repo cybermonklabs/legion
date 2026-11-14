@@ -10,6 +10,7 @@
 
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import { exportJWK, generateKeyPair, importPKCS8, type JWK, SignJWT } from "jose";
+import { messageOf } from "./error-text";
 
 /** The signature algorithm every proof carries: ES256 over a P-256 key, the one the broker's
  *  exchange and its resource servers accept. */
@@ -99,14 +100,15 @@ export async function newDpopKey(): Promise<DpopKey> {
  * `jose` exports for a key it made, so a proof of either kind carries one header shape. A key
  * that is not P-256 is refused, since ES256 is the one algorithm the broker accepts.
  */
-export async function importDpopKey(pkcs8Pem: string, name = "the DPoP key"): Promise<DpopKey> {
+export async function importDpopKey(pkcs8Pem: string, name: string): Promise<DpopKey> {
+  /** The refusal of a key that could not be read, naming whose it is. */
+  const unreadable = (error: unknown): Error =>
+    new Error(`read ${name}: ${messageOf(error)}`, { cause: error });
   let exported: JWK;
   try {
     exported = createPublicKey(createPrivateKey(pkcs8Pem)).export({ format: "jwk" });
   } catch (error) {
-    throw new Error(`read ${name}: ${error instanceof Error ? error.message : String(error)}`, {
-      cause: error,
-    });
+    throw unreadable(error);
   }
   const { kty, crv, x, y } = exported;
   if (kty !== "EC" || crv !== "P-256" || typeof x !== "string" || typeof y !== "string") {
@@ -118,9 +120,7 @@ export async function importDpopKey(pkcs8Pem: string, name = "the DPoP key"): Pr
   try {
     privateKey = await importPKCS8(pkcs8Pem, ALGORITHM, { extractable: false });
   } catch (error) {
-    throw new Error(`read ${name}: ${error instanceof Error ? error.message : String(error)}`, {
-      cause: error,
-    });
+    throw unreadable(error);
   }
   return dpopKey(privateKey, { kty, crv, x, y });
 }

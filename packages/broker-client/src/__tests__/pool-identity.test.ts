@@ -13,6 +13,7 @@ import { afterEach, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { importDpopKey } from "../dpop";
 import {
   IDENTITY_VAR,
@@ -31,8 +32,7 @@ import {
   SUBJECT_TOKEN_TYPE_GOOGLE,
   SUBJECT_TOKEN_TYPE_PERSON,
 } from "../wire";
-import { signedIn } from "./signin-records";
-import { accepted, stubBroker, stubIssuer } from "./stub";
+import { accepted, refusalOf, stubBroker } from "./stub";
 
 const EXTERNAL_TOKEN = "the.credential.this.machine.holds";
 const FEDERATED_TOKEN = "federated-access-token";
@@ -121,14 +121,6 @@ async function poolAt(sts: string, iam: string) {
     securityTokenServiceUrl: `${sts}/v1/token`,
     iamCredentialsUrl: iam,
   });
-}
-
-/** The error `run` rejects with, or null where it resolves. */
-async function refusalOf(run: () => Promise<unknown>): Promise<Error | null> {
-  return await run().then(
-    () => null,
-    (error: unknown) => error as Error
-  );
 }
 
 test("the pool posts Go's JSON body to the security token service, the projected token as a jwt", async () => {

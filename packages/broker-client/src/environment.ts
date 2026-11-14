@@ -11,8 +11,11 @@ import { poolIdentity } from "./pool-identity";
 import { projectedToken } from "./projected-token";
 import {
   chooseSignIn,
+  PERSON_VAR,
   SIGNIN_CLIENT_ID_VAR,
   SIGNIN_CLIENT_SECRET_FILE_VAR,
+  SIGNIN_DIR_VAR,
+  SIGNIN_ISSUER_VAR,
   type SignInRecord,
   signInFlow,
   signInSessionName,
@@ -54,24 +57,31 @@ export const IDENTITY_POOL = "pool";
  * a person's sign-in on this machine and the client that renews it, whose names that module
  * holds (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`, `SIGNIN_CLIENT_ID_VAR` and
  * `SIGNIN_CLIENT_SECRET_FILE_VAR`), and `XDG_STATE_HOME` and `HOME`, which its directory is
- * read from when `SIGNIN_DIR_VAR` names none.
+ * read from when `SIGNIN_DIR_VAR` names none. A caller that keeps what this package made by the
+ * environment that made it reads the names here, so a variable added to the package reaches its
+ * key.
  */
-interface BrokerVariables {
-  readonly AGENT_SECRETS_URL?: string | undefined;
-  readonly AGENT_SECRETS_MACHINE_IDENTITY?: string | undefined;
-  readonly AGENT_SECRETS_MACHINE_TOKEN_FILE?: string | undefined;
-  readonly AGENT_SECRETS_MACHINE_AUDIENCE?: string | undefined;
-  readonly AGENT_SECRETS_SESSION?: string | undefined;
-  readonly AGENT_SECRETS_POOL_AUDIENCE?: string | undefined;
-  readonly AGENT_SECRETS_POOL_ACCOUNT?: string | undefined;
-  readonly AGENT_SECRETS_SIGNIN_DIR?: string | undefined;
-  readonly XDG_STATE_HOME?: string | undefined;
-  readonly HOME?: string | undefined;
-  readonly AGENT_SECRETS_PERSON?: string | undefined;
-  readonly AGENT_SECRETS_SIGNIN_ISSUER?: string | undefined;
-  readonly AGENT_SECRETS_SIGNIN_CLIENT_ID?: string | undefined;
-  readonly AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE?: string | undefined;
-}
+export const BROKER_VARIABLES = [
+  BROKER_URL_VAR,
+  IDENTITY_VAR,
+  MACHINE_TOKEN_FILE_VAR,
+  MACHINE_AUDIENCE_VAR,
+  SESSION_VAR,
+  POOL_AUDIENCE_VAR,
+  POOL_ACCOUNT_VAR,
+  SIGNIN_DIR_VAR,
+  "XDG_STATE_HOME",
+  "HOME",
+  PERSON_VAR,
+  SIGNIN_ISSUER_VAR,
+  SIGNIN_CLIENT_ID_VAR,
+  SIGNIN_CLIENT_SECRET_FILE_VAR,
+] as const;
+
+/** {@link BROKER_VARIABLES}, each an optional string. */
+type BrokerVariables = {
+  readonly [Name in (typeof BROKER_VARIABLES)[number]]?: string | undefined;
+};
 
 /** An environment this module reads those variables out of, over whatever else it holds: a
  *  process's own, or a caller's record of one. */
@@ -144,10 +154,24 @@ export function tradeSession(env: BrokerEnvironment, own = ""): string {
   return acting !== "" ? acting : value(env, SESSION_VAR);
 }
 
+/** A client {@link brokerTokenClient} made, and the sign-in it trades. */
+export interface MadeBrokerClient {
+  readonly client: BrokerTokenClient;
+  /**
+   * The sign-in the client trades, as its person and its box key's thumbprint, where it trades a
+   * person's; undefined where it trades this machine's own identity. The pair names a sign-in as
+   * the broker records one (the person and the thumbprint of the key the proof is signed with),
+   * so a caller that remembers a sign-in refused for good keys the refusal by it, as Go's
+   * `SignInAuthority.refused` does (`packages/envoy/internal/brokerclient/signinauthority.go`):
+   * only a new `agent-secrets login`, which makes a box key of its own, cures that refusal.
+   */
+  readonly signIn: Pick<SignInRecord, "person" | "thumbprint"> | undefined;
+}
+
 /**
- * The client this environment describes for a caller acting as the session `own`, or undefined
- * where it names no broker or no identity — a machine that trades nothing, which every
- * deployment that has not turned the exchange on is.
+ * The client this environment describes for a caller acting as the session `own`, with the
+ * sign-in it trades, or undefined where it names no broker or no identity — a machine that trades
+ * nothing, which every deployment that has not turned the exchange on is.
  *
  * Where a person has signed in on this machine ({@link chooseSignIn}), the client trades that
  * person: their Google identity token, renewed at their issuer through the sign-in client the
@@ -164,8 +188,8 @@ export function tradeSession(env: BrokerEnvironment, own = ""): string {
  * (`personDeclinesNothing`, `packages/envoy/internal/broker/oauth/exchange.go`). Every error
  * while it chooses the sign-in, reads it or builds this client is thrown: nothing here answers
  * the machine's own client while a sign-in record is on the machine, so a session never writes
- * as the machine where a person signed in to act. Which sign-in the client trades is
- * {@link signInTradedBy}'s answer.
+ * as the machine where a person signed in to act. The answer names the sign-in the client trades
+ * ({@link MadeBrokerClient}'s `signIn`).
  *
  * With no sign-in, it is the machine's own client. The key is this process's own and is made
  * here, once per client, so only its public half ever leaves the process, and the session is
@@ -181,19 +205,20 @@ export function tradeSession(env: BrokerEnvironment, own = ""): string {
 export async function brokerTokenClient(
   env: BrokerEnvironment,
   own = ""
-): Promise<BrokerTokenClient | undefined> {
+): Promise<MadeBrokerClient | undefined> {
   const brokerUrl = value(env, BROKER_URL_VAR);
   const machine = machineIdentity(env);
   if (brokerUrl === "" || machine === undefined) return undefined;
   const record = await chooseSignIn(env);
   if (record === undefined) {
-    return new BrokerTokenClient({
+    const client = new BrokerTokenClient({
       brokerUrl,
       key: await newDpopKey(),
       subject: machine,
       session: tradeSession(env, own),
       launcherCredential: false,
     });
+    return { client, signIn: undefined };
   }
   const flow = await signInFlow(env);
   if (flow === undefined) {
@@ -208,24 +233,5 @@ export async function brokerTokenClient(
     actor: machine,
     session: own.trim() || signInSessionName(record),
   });
-  SIGN_INS.set(client, { person: record.person, thumbprint: record.thumbprint });
-  return client;
-}
-
-/** The sign-in each person's client {@link brokerTokenClient} made trades, by client. */
-const SIGN_INS = new WeakMap<BrokerTokenClient, Pick<SignInRecord, "person" | "thumbprint">>();
-
-/**
- * The sign-in `client` trades, as its person and its box key's thumbprint, where
- * {@link brokerTokenClient} made it to trade a person's; undefined for this machine's own client
- * and any client made elsewhere. The pair names a sign-in as the broker records one (the person
- * and the thumbprint of the key the proof is signed with), so a caller that remembers a sign-in
- * refused for good keys the refusal by it, as Go's `SignInAuthority.refused` does
- * (`packages/envoy/internal/brokerclient/signinauthority.go`): only a new `agent-secrets login`,
- * which makes a box key of its own, cures that refusal.
- */
-export function signInTradedBy(
-  client: BrokerTokenClient
-): Pick<SignInRecord, "person" | "thumbprint"> | undefined {
-  return SIGN_INS.get(client);
+  return { client, signIn: { person: record.person, thumbprint: record.thumbprint } };
 }

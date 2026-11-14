@@ -6,6 +6,7 @@
 // that has been ended, and trades afresh when a caller is told the token in hand is dead.
 
 import { expect, test } from "bun:test";
+import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
 import { SIGNIN_COMMAND } from "../signins";
@@ -17,8 +18,7 @@ import {
   SignInEndedError,
 } from "../token-client";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
-import { signedIn } from "./signin-records";
-import { accepted, stubBroker, stubIssuer } from "./stub";
+import { accepted, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";

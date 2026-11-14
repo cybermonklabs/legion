@@ -19,7 +19,7 @@ import {
 } from "openid-client";
 import { SIGNIN_COMMAND, type SignInFlow, type SignInRecord } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
-import { SignInEndedError, statusOf } from "./token-client";
+import { requestInit, SignInEndedError, statusOf } from "./token-client";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "./wire";
 
 /** Bounds each call to the issuer, as the Go client's `HTTPClient` bounds each of its calls
@@ -90,18 +90,8 @@ export function personIdentity(
   /** The fetch `openid-client` calls, bounded by its own timeout and by the caller's signal. */
   const through =
     (signal: AbortSignal | undefined): CustomFetch =>
-    (url, init) => {
-      const signals = [init.signal, signal].filter((one) => one !== undefined);
-      return send(url, {
-        method: init.method,
-        headers: init.headers,
-        // openid-client's own body union is wider than one `fetch` typing or another admits; the
-        // bytes are the form it encoded, and every runtime this package runs on sends them.
-        body: init.body as RequestInit["body"],
-        redirect: init.redirect,
-        ...(signals.length === 0 ? {} : { signal: AbortSignal.any(signals) }),
-      });
-    };
+    (url, init) =>
+      send(url, requestInit(init, signal, init.headers));
 
   /** The issuer's metadata, as one discovery request reads it. */
   const discover = async (signal: AbortSignal | undefined): Promise<ServerMetadata> => {

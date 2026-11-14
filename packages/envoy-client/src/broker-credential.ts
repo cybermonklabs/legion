@@ -20,26 +20,15 @@
 
 import {
   BROKER_URL_VAR,
+  BROKER_VARIABLES,
   type BrokerEnvironment,
   brokerTokenClient,
   IDENTITY_VAR,
-  MACHINE_AUDIENCE_VAR,
-  MACHINE_TOKEN_FILE_VAR,
   machineIdentity,
-  POOL_ACCOUNT_VAR,
-  POOL_AUDIENCE_VAR,
-  signInTradedBy,
+  SESSION_VAR,
   tradeSession,
 } from "@legion/broker-client/environment";
-import {
-  chooseSignIn,
-  PERSON_VAR,
-  SIGNIN_CLIENT_ID_VAR,
-  SIGNIN_CLIENT_SECRET_FILE_VAR,
-  SIGNIN_DIR_VAR,
-  SIGNIN_ISSUER_VAR,
-  type SignInRecord,
-} from "@legion/broker-client/signins";
+import { chooseSignIn, type SignInRecord } from "@legion/broker-client/signins";
 import {
   type BrokerToken,
   type BrokerTokenClient,
@@ -89,27 +78,14 @@ export function brokerRouteConfigured(env: BrokerEnvironment): BrokerRoute {
 }
 
 /**
- * The variables that describe a client beside the session it trades under: the broker, this
- * machine's identity and what each kind of identity reads, and where a person's sign-in is kept,
- * which person a session acts for and the sign-in client that renews theirs (`chooseSignIn`,
+ * The variables that describe a client beside the session it trades under: every variable the
+ * factory reads (`BROKER_VARIABLES`) but `AGENT_SECRETS_SESSION` — the broker, this machine's
+ * identity and what each kind of identity reads, and where a person's sign-in is kept, which
+ * person a session acts for and the sign-in client that renews theirs (`chooseSignIn`,
  * `signInFlow`). Two environments that differ in any of them are two clients, so neither is
  * answered the client the other described.
  */
-const CLIENT_VARIABLES = [
-  BROKER_URL_VAR,
-  IDENTITY_VAR,
-  MACHINE_TOKEN_FILE_VAR,
-  MACHINE_AUDIENCE_VAR,
-  POOL_AUDIENCE_VAR,
-  POOL_ACCOUNT_VAR,
-  SIGNIN_DIR_VAR,
-  "XDG_STATE_HOME",
-  "HOME",
-  PERSON_VAR,
-  SIGNIN_ISSUER_VAR,
-  SIGNIN_CLIENT_ID_VAR,
-  SIGNIN_CLIENT_SECRET_FILE_VAR,
-] as const;
+const CLIENT_VARIABLES = BROKER_VARIABLES.filter((name) => name !== SESSION_VAR);
 
 /** A client the factory made, and the sign-in it trades as {@link signInName} names one, or ""
  *  where it trades this machine's own identity. */
@@ -201,9 +177,9 @@ function entryFor(env: BrokerEnvironment, own: string): Held {
 
 /** The factory's client for `own`, and the sign-in it trades. */
 async function make(env: BrokerEnvironment, own: string): Promise<Made> {
-  const client = await brokerTokenClient(env, own);
-  const signIn = client === undefined ? undefined : signInTradedBy(client);
-  return { client, signIn: signIn === undefined ? "" : signInName(signIn) };
+  const made = await brokerTokenClient(env, own);
+  const signIn = made?.signIn;
+  return { client: made?.client, signIn: signIn === undefined ? "" : signInName(signIn) };
 }
 
 /**

@@ -5,12 +5,12 @@
 // honours it.
 
 import { afterEach, expect, test } from "bun:test";
+import { type IssuerAnswer, signedIn, stubIssuer } from "../../test/sign-ins";
 import { personIdentity } from "../person-identity";
 import { SIGNIN_COMMAND, type SignInFlow } from "../signins";
 import { isFinalRefusal, SignInEndedError } from "../token-client";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "../wire";
-import { signedIn } from "./signin-records";
-import { type IssuerAnswer, stubIssuer } from "./stub";
+import { refusalOf } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
@@ -31,14 +31,6 @@ async function issuerFor(answer?: (count: number) => IssuerAnswer | undefined) {
 /** The sign-in client the deployment configures, at `issuer`. */
 function flowAt(issuer: string): SignInFlow {
   return { issuer, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET };
-}
-
-/** The error `run` rejects with, or null where it resolves. */
-async function refusalOf(run: () => Promise<unknown>): Promise<Error | null> {
-  return await run().then(
-    () => null,
-    (error: unknown) => error as Error
-  );
 }
 
 test("each read refreshes once, with the client in the form, and answers the person's ID token", async () => {

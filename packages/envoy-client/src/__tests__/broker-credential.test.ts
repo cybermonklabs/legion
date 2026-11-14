@@ -11,6 +11,14 @@ import { writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import * as path from "node:path";
 import { type SignInRecord, signInSessionName } from "@legion/broker-client/signins";
+import {
+  type IssuerAnswer,
+  signedIn,
+  signInPath,
+  stubIssuer,
+  thumbprintOf,
+  writeSignIn,
+} from "@legion/broker-client/test/sign-ins";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "@legion/broker-client/wire";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { consumerDelivery } from "../../test/subscribe-answer";
@@ -20,7 +28,6 @@ import { DispatchClient } from "../dispatch-http";
 import { readEnvoyConfig } from "../envoy-config";
 import { envoySettings } from "../envoy-settings";
 import { createEnvoyClient } from "../transport";
-import { signedIn, signInPath, stubIssuer, thumbprintOf, writeSignIn } from "./sign-ins";
 
 afterEach(forgetBrokerClients);
 
@@ -553,7 +560,7 @@ function signInBroker(): { url: string; trades: ProvedTrade[]; revoked: Set<stri
     fetch: async (request) => {
       const header = (request.headers.get("DPoP") ?? "").split(".")[0] ?? "";
       const { jwk } = JSON.parse(Buffer.from(header, "base64url").toString("utf8"));
-      const thumbprint = thumbprintOf(jwk);
+      const thumbprint = await thumbprintOf(jwk);
       trades.push({ form: new URLSearchParams(await request.text()), thumbprint });
       if (revoked.has(thumbprint)) {
         return Response.json(
@@ -575,8 +582,8 @@ function signInBroker(): { url: string; trades: ProvedTrade[]; revoked: Set<stri
 
 /** The issuer {@link PERSON}'s sign-in is renewed at, stopped after the test; `answer` replaces
  *  a refresh's answer where it gives one. */
-function issuerFor(answer?: (count: number) => Response | undefined) {
-  const issuer = stubIssuer({
+async function issuerFor(answer?: (count: number) => IssuerAnswer | undefined) {
+  const issuer = await stubIssuer({
     clientId: CLIENT_ID,
     person: PERSON,
     ...(answer === undefined ? {} : { answer }),
@@ -636,8 +643,8 @@ test("a person's trade asks under the caller's own session, else the sign-in's n
   // so the person asking under it would be refused.
   const broker = signInBroker();
   const dispatch = stubDispatch();
-  const issuer = issuerFor();
-  const record = signedIn(PERSON, { client_id: CLIENT_ID });
+  const issuer = await issuerFor();
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
 
   await dispatchOf(env).listAllIssues({});
@@ -662,9 +669,9 @@ test("a person's trade asks under the caller's own session, else the sign-in's n
 test("a client the factory failed to make is not kept: a store the person corrected is read with no restart", async () => {
   const broker = signInBroker();
   const dispatch = stubDispatch();
-  const issuer = issuerFor();
-  const ada = signedIn(PERSON, { client_id: CLIENT_ID });
-  const grace = signedIn("grace@example.com", { client_id: CLIENT_ID });
+  const issuer = await issuerFor();
+  const ada = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const grace = await signedIn("grace@example.com", { client_id: CLIENT_ID });
   const { env, signins } = await signedInPod(broker.url, dispatch.url, issuer.url, [ada, grace]);
   const client = dispatchOf(env, "ses_01a9");
 
@@ -682,8 +689,8 @@ test("a client the factory failed to make is not kept: a store the person correc
 test("a sign-in the broker refused for good fails every later call in its words, asking nothing and never trading the machine", async () => {
   const broker = signInBroker();
   const dispatch = stubDispatch();
-  const issuer = issuerFor();
-  const record = signedIn(PERSON, { client_id: CLIENT_ID });
+  const issuer = await issuerFor();
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
   broker.revoked.add(record.thumbprint);
 
@@ -714,15 +721,15 @@ test("a sign-in the broker refused for good fails every later call in its words,
 test("after a refusal, a new sign-in with a new box key gets a client of its own, which trades with that key", async () => {
   const broker = signInBroker();
   const dispatch = stubDispatch();
-  const issuer = issuerFor();
-  const record = signedIn(PERSON, { client_id: CLIENT_ID });
+  const issuer = await issuerFor();
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env, signins } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
   broker.revoked.add(record.thumbprint);
   const client = dispatchOf(env, "ses_01a9");
   expect(await refusalOf(client.listAllIssues({}))).toContain("agent-secrets login");
 
   // `agent-secrets login` again: a new box key, written over the person's record.
-  const renewed = signedIn(PERSON, { client_id: CLIENT_ID });
+  const renewed = await signedIn(PERSON, { client_id: CLIENT_ID });
   await writeSignIn(signins, renewed);
   await client.listAllIssues({});
 
@@ -736,13 +743,11 @@ test("after a refusal, a new sign-in with a new box key gets a client of its own
 test("a sign-in the issuer has ended is remembered too: no trade at the broker, and no second refresh", async () => {
   const broker = signInBroker();
   const dispatch = stubDispatch();
-  const issuer = issuerFor(() =>
-    Response.json(
-      { error: "invalid_grant", error_description: "Token has been expired or revoked." },
-      { status: 400 }
-    )
-  );
-  const record = signedIn(PERSON, { client_id: CLIENT_ID });
+  const issuer = await issuerFor(() => ({
+    status: 400,
+    body: { error: "invalid_grant", error_description: "Token has been expired or revoked." },
+  }));
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
 
   const ended = await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}));

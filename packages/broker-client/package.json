@@ -37,6 +37,10 @@
       "types": "./src/source.ts",
       "bun": "./src/source.ts"
     },
+    "./test/sign-ins": {
+      "types": "./test/sign-ins.ts",
+      "bun": "./test/sign-ins.ts"
+    },
     "./token-client": {
       "types": "./src/token-client.ts",
       "bun": "./src/token-client.ts"
@@ -49,7 +53,7 @@
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
-    "lint": "bunx biome check src/"
+    "lint": "bunx biome check src/ test/"
   },
   "dependencies": {
     "@legion/contracts": "workspace:*",

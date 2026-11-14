@@ -23,6 +23,7 @@ import type {
   CommentWriteResponse,
   CreateAgentMessageInput,
   CreateArtifactInput,
+  CreateArtifactReviewInput,
   CreateAskInput,
   CreateCommentInput,
   CreatedProject,
@@ -1303,7 +1304,10 @@ export class DispatchClient {
    */
   async reviewArtifact(
     artifactID: string,
-    input: { state: "approved" | "changes_requested"; reason?: string; version: number }
+    input: CreateArtifactReviewInput & {
+      state: "approved" | "changes_requested";
+      version: number;
+    }
   ): Promise<ArtifactReview> {
     return this.#json("POST", ["api", "v1", "artifacts", artifactID, "reviews"], input);
   }
@@ -1837,15 +1841,7 @@ export class DispatchClient {
     const key =
       method === "POST" || method === "PATCH" ? (callerKey ?? crypto.randomUUID()) : undefined;
     const send = async (): Promise<Response> =>
-      this.#sendPresenting(
-        await this.#credential.headers(method, url),
-        method,
-        url,
-        body,
-        accept,
-        signal,
-        key
-      );
+      this.#sendPresenting(method, url, body, accept, signal, key);
     const answer = await send();
     if (this.#credential.stale === undefined || !(await tokenNotLive(answer))) return answer;
     this.#credential.stale();
@@ -1853,17 +1849,17 @@ export class DispatchClient {
   }
 
   /**
-   * One request presenting `first`, the credential's presentation for it. A read, a PUT or a
-   * DELETE (no `key`) goes once, and `signal` aborts it beside the client's own signal. A write
-   * (POST or PATCH) carries `key` as its `Idempotency-Key`: the caller's own, where it has one
-   * intent across calls and processes, else one minted for this call alone (`#send`), so all its
-   * attempts are one intent to Dispatch, which runs it once and answers a
-   * repeat with the answer it stored, while two calls are two writes. Each attempt sends the same
-   * encoded body. While an attempt gets no definitive answer (`writeAnswer`, a transport failure,
-   * or `writeRetry.silenceMs` without progress, `#attempt`) the write asks again under its key,
-   * paced by `writeRetry`, and the first definitive answer is the call's: a 2xx, a replay of one
-   * included, or a refusal. The call's deadline and its caller's cancellation end the attempts at
-   * once, whether a fetch or a pause is under way (`#ended`).
+   * One request, presenting the credential for it. A read, a PUT or a DELETE (no `key`) goes
+   * once, and `signal` aborts it beside the client's own signal. A write (POST or PATCH) carries
+   * `key` as its `Idempotency-Key`: the caller's own, where it has one intent across calls and
+   * processes, else one minted for this call alone (`#send`), so all its attempts are one intent
+   * to Dispatch, which runs it once and answers a repeat with the answer it stored, while two
+   * calls are two writes. Each attempt sends the same encoded body. While an attempt gets no
+   * definitive answer (`writeAnswer`, a transport failure, or `writeRetry.silenceMs` without
+   * progress, `#attempt`) the write asks again under its key, paced by `writeRetry`, and the first
+   * definitive answer is the call's: a 2xx, a replay of one included, or a refusal. The call's
+   * deadline and its caller's cancellation end the attempts at once, whether a fetch or a pause
+   * is under way (`#ended`).
    *
    * It asks again only against a Dispatch this process has lately seen run the keyed layer: a
    * Dispatch without the layer would run a repeat as a second write, so its 5xx — which can come
@@ -1876,7 +1872,6 @@ export class DispatchClient {
    * `KEYED_LAYER_MEMORY_MS`, and ask `/healthz` when nothing did (`#runsKeyedLayer`).
    */
   async #sendPresenting(
-    first: Readonly<Record<string, string>>,
     method: string,
     url: string,
     body: EncodedBody | undefined,
@@ -1884,13 +1879,13 @@ export class DispatchClient {
     signal: AbortSignal | undefined,
     key: string | undefined
   ): Promise<Response> {
-    // The credential is presented once by the caller, and again for each attempt the write loop
-    // makes below: a key-bound scheme signs one proof per request, so one presentation is one
-    // proof sent, never a second minted and discarded. The first is asked before the loop so a
-    // credential that cannot answer throws out of the loop's reach, rather than being taken for
-    // a failed attempt.
+    // The credential is presented once here, and again for each attempt the write loop makes
+    // below: a key-bound scheme signs one proof per request, so one presentation is one proof
+    // sent, never a second minted and discarded. It is asked before the loop so a credential
+    // that cannot answer throws here, out of the loop's reach, rather than being taken for a
+    // failed attempt.
     const headers: Record<string, string> = { Accept: accept };
-    let presented = first;
+    let presented = await this.#credential.headers(method, url);
     if (body !== undefined) headers["Content-Type"] = body.type;
     if (key === undefined) {
       return this.fetchImpl(url, {

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/brokerclient"
 	"golang.org/x/term"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -83,9 +84,7 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // is missing or blank, an Oh My Pi invocation that does not resolve, and a sign-in directory of
 // the controller's own (`<state_dir>/controller-signins`, its AGENT_SECRETS_SIGNIN_DIR) that
 // holds any entry, which is otherwise made, or kept, 0700 and empty before anything runs under
-// the controller's environment (controllerSignIns: the controller keeps the operator's HOME, so
-// without it a credential its session trades at the secrets broker would trade the operator's
-// `agent-secrets login` sign-in);
+// the controller's environment (controllerSignIns says why);
 // then probe that Oh My Pi as the controller will run it — the launch prefix, the invocation, the
 // controller's whole environment, in
 // `<state_dir>/controller`, created for it, at the operator's terminal — and refuse a
@@ -209,14 +208,9 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// DISPATCH_TOKEN_BROKER, the session's word that its Dispatch credential is traded at the
 	// secrets broker and nothing else, under which the client reads no bearer from any source and
 	// turns Dispatch off saying so when it can trade none (dispatch-config.ts, dispatchTarget).
-	// That route trades a person's sign-in where the machine holds one, and the operator's HOME
-	// and XDG_STATE_HOME are the controller's too, so the store `agent-secrets login` keeps there
-	// (brokerclient.SignIns in packages/envoy, signins.ts in packages/broker-client) would be the
-	// controller's: every credential its session trades at the broker, for Dispatch or for Envoy,
-	// would trade the operator's sign-in and act for that person. So the set also carries
-	// AGENT_SECRETS_SIGNIN_DIR, under every configuration (`dispatch_token_broker` or
-	// `dispatch_token_file`), naming a directory of the controller's own that controllerSignIns
-	// keeps empty, and both credentials trade this machine's identity. The one difference between
+	// That route trades a person's sign-in where the machine holds one, so the set also carries
+	// AGENT_SECRETS_SIGNIN_DIR under every configuration, naming the empty directory of the
+	// controller's own that controllerSignIns keeps and says why. The one difference between
 	// the probed and the launched environment is GH_CONFIG_DIR, which names the default owner's
 	// directory only once the credential fetch after the mint has named that owner.
 	env := processEnvironment()
@@ -354,13 +348,9 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 // what this setting exists to stop. Set, no bearer of any source is read, and a machine that can
 // trade nothing turns Dispatch off saying so rather than falling back to a person's token.
 // AGENT_SECRETS_SIGNIN_DIR names `<state_dir>/controller-signins` (controllerSignInDir) under
-// every configuration, `dispatch_token_broker` or `dispatch_token_file`: the broker route trades
-// a person's sign-in where the sign-in store holds one, and the controller keeps the operator's
-// HOME and XDG_STATE_HOME, where `agent-secrets login` keeps the operator's own record, so
-// without it the controller's Dispatch credential under DISPATCH_TOKEN_BROKER, and its Envoy
-// credential wherever no bearer names one, would trade the operator's sign-in and act for that
-// person. controllerStart keeps that directory 0700 and empty (controllerSignIns), so both trade
-// this machine's identity. Later pairs replace any inherited value of the same name.
+// every configuration, a sign-in directory of the controller's own that controllerStart keeps
+// empty, for the reason controllerSignIns gives. Later pairs replace any inherited value of the
+// same name.
 func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh string) [][2]string {
 	bin := workerbin.LauncherDir(stateDir)
 	env := [][2]string{
@@ -382,7 +372,7 @@ func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh
 		{"LEGION_GH_OWNERS_DIR", controllerGHDir(stateDir)},
 		{"LEGION_GH_PATH", gh},
 		{"LEGION_CONTROLLER_START_MESSAGE", daemon.ControllerStartMessage},
-		{"AGENT_SECRETS_SIGNIN_DIR", controllerSignInDir(stateDir)},
+		{brokerclient.SignInDirVar, controllerSignInDir(stateDir)},
 	}
 	if cfg.DispatchURL != "" {
 		env = append(env, [2]string{"DISPATCH_URL", cfg.DispatchURL})

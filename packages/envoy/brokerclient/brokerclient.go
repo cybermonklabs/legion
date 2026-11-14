@@ -26,8 +26,9 @@ type (
 	RefusedError = internal.RefusedError
 )
 
-// The variables a program reads to build this machine's identity; internal/brokerclient's
-// environment.go documents each.
+// The variables a program reads to build this machine's identity, and the one that names where
+// its sign-ins are kept; internal/brokerclient's environment.go and signinauthority.go document
+// each.
 const (
 	BrokerURLVar        = internal.BrokerURLVar
 	IdentityVar         = internal.IdentityVar
@@ -36,6 +37,7 @@ const (
 	PoolAudienceVar     = internal.PoolAudienceVar
 	PoolAccountVar      = internal.PoolAccountVar
 	SessionVar          = internal.SessionVar
+	SignInDirVar        = internal.SignInDirVar
 	IdentityKubernetes  = internal.IdentityKubernetes
 	IdentityMetadata    = internal.IdentityMetadata
 	IdentityPool        = internal.IdentityPool
