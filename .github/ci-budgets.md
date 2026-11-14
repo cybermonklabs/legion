@@ -37,9 +37,10 @@ docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
 ## Caches
 
-Caches: no job of this workflow saves an Actions cache entry.
-setup-go caches nothing here (`cache: false` on every step).
-The jobs that cache Go restore one of six Go families with actions/cache/restore:
+Caches: no step of this workflow saves an Actions cache entry itself;
+two actions its jobs call can, setup-bun on a push to main alone and architecture-check in a dispatched run alone (both at this section's end).
+setup-go caches nothing here (`cache: false` on every step, the architecture-check action's included).
+The jobs that cache Go restore, in steps of their own, one of six Go families with actions/cache/restore:
 go-daemon (typecheck, test and pi-legion), go-docs (docs, and the build job of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which build the same listener and natsd, listener-server-change and envoy-go-checks, which build the listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which builds the test binary of every package of the envoy module, and the binaries, multiprocess and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real broker's commands out of that same set), go-envoy-infra (envoy-infra-go) and go-notices (lint's notices step).
 Every family but go-docs is filled by .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 go-docs stays with docs-pages.yaml, which saves it on that same push.
@@ -47,18 +48,22 @@ Each Go family keeps one entry, keyed on the Go version its job's setup-go insta
 A go.sum change downloads only the changed modules, and Go's build cache is content-addressed, so a stale entry costs a run only what changed;
 a key on the go.sum files left a whole entry, up to a gigabyte, per change for seven days.
 The fallback by prefix, when the exact key misses, now applies on every run, a dispatched one on main included:
-it was held off main so that the entry a run saved after a Go bump held nothing the older Go built, and no run here saves any more.
+it was held off main so that the entry a run saved after a Go bump held nothing the older Go built, and no step of this workflow saves a family any more (the architecture-check action below falls back only to an entry of its own Go version, so an entry it saves holds nothing an older Go built).
 There is no browser cache beside the Go families any more:
 dispatch-browser.yaml's shard and alone jobs run in the image this repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a ~/.cache/ms-playwright restore would carry nothing they do not already have, and ci-caches.yaml's browsers job, the only writer of that entry, is gone with the restores (dispatch://INFRA-1443).
 A seventh family, bun, holds ~/.bun/bin:
 .github/actions/setup-bun restores it on every ref, keyed on the version .bun-version pins and with no restore-keys (a Bun binary of another version is one setup-bun rejects after paying for the restore, where a near-miss Go entry is still most of a module cache), and passes no-cache:
 true on every ref, so setup-bun takes the restored binary as an existing installation and downloads the 51,794,595-byte release asset on a miss alone.
-The action saves that family itself, on a push to main alone, which is no event of this workflow, and no job here writes any entry at all.
+The action saves that family itself, on a push to main alone, which is no event of this workflow, and no job here writes a bun entry at all.
 The browsers job called that action on every one of those pushes until it went, so what writes the entry now is the three workflows left that run on a push to main and call it
 — docs-pages.yaml through docs-site.yaml, release.yaml and release-envoy-listener.yaml
 — each on a push its own `paths:` selects, where the browsers job took every push to main.
 The restore is made in every job but tool-fallback and tool-fallback-arm:
 that action reads the id of the job that called it and holds its restore back for those two on every ref, so a restored Bun cannot stand in for the install each of their cases is a reading of.
+An eighth family, architecture-check-<os>-<arch>-go<version>-<hash>, is the composite action .github/actions/architecture-check's own, which envoy-go-checks runs:
+the action restores it and saves it itself, from $RUNNER_TEMP/architecture-check and not from the Go caches above, keyed on the Go version its own setup-go installed and on the SHA-256 of packages/envoy/go.sum (a miss restores the newest entry of that Go version), and ci-caches.yaml's architecture-check job fills it on main.
+The action saves only in a push, schedule or workflow_dispatch run, so within this workflow, which runs on no push and no schedule, only a dispatched run can save it (the bypass check dispatches one at main), only on a miss of the exact key, and into the scope of the ref it was dispatched on.
+check-ci-filters.sh's cache-family rule reads a workflow's own actions/cache steps and not a composite action's, so this section is the one record of the action's restore and save.
 
 ## The Retries note
 

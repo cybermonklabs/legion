@@ -1822,6 +1822,23 @@ run_check "$root"
 check "reading the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/fat.yml::")"
 
+# For .github/scripts/check-ci-filters.test.sh, beside "every workflow file stays under the size
+# GitHub starts a run from". The tester drove it at 3abd0ef6f3f8 (dispatch://INFRA-1545, round 33):
+# it passes there, it fails when escape_property returns its value unchanged, and the branch's old
+# plain-string append fails it with AttributeError in print_annotation.
+echo "case: a workflow over the size limit whose file name holds % : , and ##[ is escaped"
+root=$(fixture workflow-size-unsafe-name)
+unsafe='fat%25:x,y##[warning]z.yaml'
+{
+  printf 'name: Fat\non: [pull_request]\njobs:\n  fat:\n    runs-on: ubuntu-24.04\n    steps:\n'
+  printf '      - run: echo %s\n' "$(head -c 500000 /dev/zero | tr '\0' 'x')"
+} > "$root/.github/workflows/$unsafe"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+size=$(wc -c < "$root/.github/workflows/$unsafe")
+expected="::error file=.github/workflows/fat%2525%3Ax%2Cy%23%23%5Bwarning]z.yaml::.github/workflows/fat%2525:x,y%23%23%5Bwarning]z.yaml is $size bytes, over the 500000"
+check "the size refusal carries the escaped file property and message" "$(contains "$out" "$expected")"
+
 # ci_job_reads.py builds envoy-go's plain step - the tests a race build cannot run at all or at
 # full size - by reading packages/envoy's own source rather than from a list a table could hold,
 # so the cases below run that walk itself, over a tree of this test's making and a lane of its
