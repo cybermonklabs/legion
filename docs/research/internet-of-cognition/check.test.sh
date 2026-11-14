@@ -178,9 +178,14 @@ case_result "uv tool run <package> with no version is refused" install-pinned "$
 
 # 12. A pinned uvx with an option before its package is no fault. install-pinned reads the
 # word after uvx as the package, so `uvx --python 3.12 pyshacl==0.40.2` was refused at
-# 77b8e9234f as `uvx --python`, which would stop a pinned command from being recorded.
+# 77b8e9234f as `uvx --python`, which would stop a pinned command from being recorded. The
+# form reads the hashed lock with -c, since an install from an index reads a lock (case 62).
 dir="$(fresh uvx-option-pinned)"
-sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uvx --python 3.12 pyshacl==0.40.2 --version; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uvx --python 3.12 -c \$IOC_EVID\/ioc-venv.lock pyshacl==0.40.2 --version; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+grep -qF 'uvx --python 3.12 -c $IOC_EVID/ioc-venv.lock pyshacl==0.40.2' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+    printf 'FAIL the form uvx --python 3.12 -c $IOC_EVID/ioc-venv.lock could not be planted\n'
+    exit 1
+}
 out="$(fixture_run "$dir" --replay)"
 if printf '%s\n' "$out" | grep -q '^FAIL install-pinned'; then
     CASES_FAILED=$((CASES_FAILED + 1))
@@ -870,6 +875,20 @@ plant_install run-source "uv run --no-project --with ./local python -c 1"
 case_result "a uv run --with of a local source path is refused" install-pinned "$(fixture_run "$dir" --replay)"
 plant_install run-wheel "uv run --no-project --with ./local/pkg-0.1.0-py3-none-any.whl python -c 1"
 honest_result "a uv run --with of a built wheel passes install-pinned" install-pinned "$(fixture_run "$dir" --replay)"
+
+# 62. A version is not enough: an install that resolves a package from an index reads a
+# committed hashed lock. At cb6bb33c25 a pinned registry package passed install-pinned on
+# its version alone, though the index may serve another file under that version and the
+# package's own dependencies float. A pinned install that names no lock, or names a file
+# under $IOC_EVID whose requirements carry no hash, is refused; the same install reading
+# evidence/ioc-venv.lock, which the fixture carries, passes.
+plant_install no-lock "uv pip install --python x rdflib==7.6.0"
+case_result "a pinned registry install that reads no lock is refused" install-pinned "$(fixture_run "$dir" --replay)"
+plant_install unhashed-lock "uv pip install --python x -r \$IOC_EVID/ioc-venv.in"
+printf 'rdflib==7.6.0\n' >"$dir/repo/docs/research/internet-of-cognition/evidence/ioc-venv.in"
+case_result "a registry install whose requirements file under evidence/ carries no hash is refused" install-pinned "$(fixture_run "$dir" --replay)"
+plant_install hashed-lock "uv pip install --python x -c \$IOC_EVID/ioc-venv.lock rdflib==7.6.0"
+honest_result "a pinned registry install that reads the hashed lock passes install-pinned" install-pinned "$(fixture_run "$dir" --replay)"
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then

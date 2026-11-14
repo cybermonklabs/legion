@@ -32,6 +32,12 @@
       "read": "2026-11-12"
     }
   ],
+  "python_environment": {
+    "exclude_newer": "2026-11-12T07:55:56Z",
+    "requirements": "evidence/ioc-venv.in",
+    "lock": "evidence/ioc-venv.lock",
+    "comment": "The instant every package index read is held to: uv resolved the lock, the mas-lab constraints and the build constraints as the index stood then. It is the time of commit 17a8ca1d, which recorded the outputs of the model rows; env.sh installs IOC_VENV from the hashed lock with uv pip sync --require-hashes."
+  },
   "our_repository": {
     "name": "legion",
     "url": "https://github.com/cybermonklabs/legion",

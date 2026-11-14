@@ -30,7 +30,7 @@
 #   IOC_DESIGN      the design under check, dispatch://INFRA-3134/artifact/ioc-design-2026-11-12-md
 #   IOC_COMMENT     the reconciliation under check, dispatch://INFRA-3134/comment/326a044a-…
 #   IOC_VENV        the virtual environment uv builds for the similarity and scope rows
-#   IOC_PY          that environment's python: sentence-transformers, torch and rdflib
+#   IOC_PY          that environment's python: sentence-transformers, torch, rdflib and pyshacl
 #   IOC_MODEL_DIR   the pinned all-MiniLM-L6-v2 snapshot, its model.safetensors checksummed
 #   IOC_MASLAB_VENV       mas-lab runtime, ctl and library-standard installed from the clone
 #   IOC_MASLAB_WHEEL_VENV the second, empty environment the two schema rows install into
@@ -55,16 +55,18 @@
 #   ACCORD_SRC      the cognition-protocols clone, which similarity.py imports from
 #   UV_CACHE_DIR PIP_CACHE_DIR HF_HOME XDG_CACHE_HOME   every cache, under IOC_CACHE
 #
-# A build backend is an install. Every local package the replay builds, mas-lab's
+# Every package env.sh installs comes from a committed, hashed file, resolved as the
+# package index stood at 2026-11-12T07:55:56Z, the instant sources.json records:
+# IOC_VENV is synced exactly to evidence/ioc-venv.lock, the 71 packages of its four
+# requirements in evidence/ioc-venv.in, pyshacl among them, so the scope rows run pyshacl
+# and the shapes generator on one rdflib; every third-party package of the mas-lab
+# environments is held to evidence/tm-constraints.txt; and uv checks each hash. A build
+# backend is an install as well. Every local package the replay builds, mas-lab's
 # workspace members and ioc-concord, declares build-system requires = ["hatchling"] with
 # no version, so each uv pip install and uv build of a local source here passes
-# evidence/build-constraints.txt as -b, and uv installs hatchling, editables and their
-# dependencies at the versions it pins. ioc-concord is built once into IOC_CONCORD_WHEEL,
-# because uv run takes no build constraint and a wheel needs no build. What is pinned at
-# its top level alone: IOC_ENV_PY_PINS pins three packages of IOC_VENV, whose other
-# dependencies (63 of its 66 packages) uv resolves to the newest release; the uvx rows pin
-# pyshacl alone, not its dependencies; evidence/tm-constraints.txt pins every third-party
-# package of IOC_MASLAB_VENV, and ioc-concord has none.
+# evidence/build-constraints.txt, hashed too, as -b. ioc-concord is built once into
+# IOC_CONCORD_WHEEL, because uv run takes no build constraint and a wheel needs no build,
+# and it depends on no package.
 #
 # It needs uv, git, jq, gh, python3 and dispatch, and it needs the three clones, which it
 # clones at the commits sources.json pins when they are missing. It refuses, with a line
@@ -117,6 +119,9 @@ ioc_env_caches() {
     export PIP_CACHE_DIR="$IOC_CACHE/cache/pip"
     export HF_HOME="$IOC_CACHE/cache/hf"
     export XDG_CACHE_HOME="$IOC_CACHE/cache/xdg"
+    # uv checks every hash a lock, a constraints file or a build constraints file carries,
+    # unless this is set; no run of the replay sets it.
+    unset UV_NO_VERIFY_HASHES
     mkdir -p "$UV_CACHE_DIR" "$PIP_CACHE_DIR" "$HF_HOME" "$XDG_CACHE_HOME" ||
         ioc_env_refuse "the caches" "mkdir under $IOC_CACHE failed"
 }
@@ -169,35 +174,36 @@ ioc_env_records() {
     export IOC_COMMENT="$IOC_CACHE/comment-326a.md"
 }
 
-# The interpreter the similarity table and the scope rows run on. similarity/table.md
-# records how it was built; this builds the same environment, at the versions the recorded
-# runs used, and adds rdflib, which the shapes generator and the turtle rows need.
-IOC_ENV_PY_PINS="sentence-transformers==6.3.0 torch==2.15.0 rdflib==7.6.0"
-
+# The interpreter the similarity table and the scope rows run on, synced at every run to
+# exactly the hashed lock, so a cache an earlier run left cannot carry another set:
+# evidence/ioc-venv.in names its four requirements, sentence-transformers, torch and
+# rdflib at the versions similarity/table.md records and pyshacl, which the scope rows
+# run beside rdflib, and evidence/ioc-venv.lock pins all 71 packages with their hashes.
 ioc_env_python_pinned() {
-    "$IOC_PY" -c '
+    "$IOC_PY" - "$IOC_EVID/ioc-venv.in" <<'PY' >/dev/null 2>&1
 import sys
 from importlib.metadata import version
-import sentence_transformers, torch, rdflib
-for pin in sys.argv[1:]:
-    name, want = pin.split("==")
-    if version(name) != want:
-        sys.exit(1)
-' $IOC_ENV_PY_PINS >/dev/null 2>&1
+import sentence_transformers, torch, rdflib, pyshacl
+for line in open(sys.argv[1]):
+    line = line.split("#", 1)[0].strip()
+    if line:
+        name, want = line.split("==")
+        if version(name) != want:
+            sys.exit(1)
+PY
 }
 
 ioc_env_python() {
     export IOC_VENV="$IOC_CACHE/venv"
     export IOC_PY="$IOC_VENV/bin/python"
-    if ! ioc_env_python_pinned; then
-        uv venv --allow-existing --python 3.12 "$IOC_VENV" >&2 ||
-            ioc_env_refuse "IOC_PY" "uv venv --python 3.12 $IOC_VENV failed" || return 1
-        # shellcheck disable=SC2086
-        uv pip install --python "$IOC_PY" $IOC_ENV_PY_PINS >&2 ||
-            ioc_env_refuse "IOC_PY" "uv pip install $IOC_ENV_PY_PINS failed" || return 1
-    fi
+    local lock="$IOC_EVID/ioc-venv.lock"
+    [ -s "$lock" ] || ioc_env_refuse "IOC_PY" "$lock, the hashed lock of IOC_VENV, is missing" || return 1
+    uv venv --allow-existing --python 3.12 "$IOC_VENV" >&2 ||
+        ioc_env_refuse "IOC_PY" "uv venv --python 3.12 $IOC_VENV failed" || return 1
+    uv pip sync --python "$IOC_PY" --require-hashes "$lock" >&2 ||
+        ioc_env_refuse "IOC_PY" "uv pip sync --require-hashes $lock failed" || return 1
     ioc_env_python_pinned ||
-        ioc_env_refuse "IOC_PY" "$IOC_PY does not import $IOC_ENV_PY_PINS at those versions"
+        ioc_env_refuse "IOC_PY" "$IOC_PY does not import the four requirements of evidence/ioc-venv.in at those versions"
 }
 
 # The weights, pinned by revision and by the checksum the row s-model-checksum carries.

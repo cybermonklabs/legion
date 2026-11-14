@@ -115,7 +115,7 @@ assertion_table() {
 claim-form|replay|every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
 claim-mark|replay|every claim carries one of the marks its requirement fixes|a claim with no mark
 predicate-form|replay|every row that carries a command carries exactly one predicate over its output, and every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
-install-pinned|replay|every package a recorded command installs or runs names its version, or a constraints file, a pinned list or a local path built under a build constraint, and so does every build backend|a recorded command that runs a package with no version
+install-pinned|replay|every package a recorded command installs or runs names its version and is read from a committed hashed lock, or is a local path built under a build constraint, and so does every build backend|a recorded command that runs a package with no version
 replay-command|replay|every recorded command runs again, no read inside it failed unless its predicate is an exit status, and its output meets the predicate the row carries|a recorded output changed by one character
 absence-still-empty|replay|every absence search reads its corpus and still finds nothing, and a read that failed before the search is no empty search|an absence search that now finds something
 quotation-marked|replay|every quotation of a project's prose is marked a claim of the project and not of its code|a quotation marked as evidence of the code
@@ -519,10 +519,9 @@ prepare_env() {
 #   program tr                         5  wrapped in a function that records its status
 #   program uniq                       7  wrapped in a function that records its status
 #   program uv                         8  wrapped in a function that records its status
-#   program uvx                        6  wrapped in a function that records its status
 #   program wc                        74  wrapped in a function that records its status
 #   program xargs                      4  wrapped in a function that records its status
-#   variable $IOC_PY                  26  a program variable, whose shim records its status
+#   variable $IOC_PY                  32  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_PY            4  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_CTL           4  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_WHEEL_CTL     2  a program variable, whose shim records its status
@@ -536,7 +535,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               6  a command whose status is no read
-#   $NAME or ${NAME}                 362  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 363  a parameter, its name in braces or not
 #   $?                                 6  the status of the last command
 #   $( )                              13  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
@@ -856,11 +855,24 @@ github_budget() {
 #     Go pseudo-version, or a commit hash.
 # A wildcard, a partial version, a tag such as latest or next, a comparison (>=, ~=, ^, ~)
 # or any other spelling is no version. A local path, a variable of this deliverable that
-# names one (IOC_...), a constraints or requirements file, and env.sh's pinned list
-# IOC_ENV_PY_PINS are pinned. A constraints or requirements file pins what it lists and
-# nothing more: every other package of the same pip install is held to its own version or
-# is a local path. An option of a runner the reader does not know, a package written as
-# any other variable, and a command it cannot open are refused.
+# names one (IOC_...), and a constraints or requirements file are pinned. A constraints
+# or requirements file pins what it lists and nothing more: every other package of the
+# same pip install is held to its own version or is a local path. An option of a runner
+# the reader does not know, a package written as any other variable, and a command it
+# cannot open are refused.
+#
+# A version is not enough: an install that resolves a package from an index reads a lock.
+# The command names, as $IOC_EVID/<file>, a committed file of evidence/ every requirement
+# of which carries a hash, with -c or -r for pip install and uv pip install, with -c or
+# --constraints for uvx and uv tool, and as the file uv pip sync installs; any other such
+# install is refused as "an install that reads no lock", and so is a requirements file
+# that is no hashed lock. uv run, pipx run, npx, bunx and npm exec take no lock, so a
+# package they would resolve from an index is refused; go run and go install are left to
+# go, which checks each module against go.sum or the checksum database. The locks are
+# evidence/ioc-venv.lock, all 71 packages of IOC_VENV, evidence/tm-constraints.txt, the 24
+# third-party packages of the mas-lab environments, and evidence/build-constraints.txt,
+# each resolved as the index stood at 2026-11-12T07:55:56Z, the instant sources.json
+# records, and each hash is checked by uv.
 #
 # A build backend is an install. A local path that is no wheel is built, and its build
 # backend and that backend's dependencies are fetched like any package: every local
@@ -868,14 +880,12 @@ github_budget() {
 # So a pip install or uv pip install of a local source path is pinned only when the same
 # command names a build constraint, -b or --build-constraints, which here is always
 # evidence/build-constraints.txt, the seven packages of hatchling's build environment
-# each at ==version; and since uv run takes no build constraint, a uv run --with of a
-# local source path is refused. A wheel, a path ending in .whl or a variable env.sh sets
-# to one (WHEEL_VARIABLES, IOC_CONCORD_WHEEL), needs no build and is pinned as a local
-# path is. What the rule still does not cover is a package pinned at its top level alone,
-# whose own dependencies resolve to the newest release when they are installed: env.sh's
-# IOC_ENV_PY_PINS pins three of IOC_VENV's 66 packages, and uvx pyshacl==0.40.2 pins
-# pyshacl and not the seven packages it brings; evidence/tm-constraints.txt pins every
-# third-party package of the mas-lab environments, and ioc-concord depends on none.
+# each at ==version and hashed; and since uv run takes no build constraint, a uv run
+# --with of a local source path is refused. A wheel, a path ending in .whl or a variable
+# env.sh sets to one (WHEEL_VARIABLES, IOC_CONCORD_WHEEL), needs no build and is pinned
+# as a local path is. What the reader cannot see of a local package is the dependencies
+# it resolves from an index: the mas-lab installs read them from the hashed
+# tm-constraints.txt, and ioc-concord has none.
 #
 # Every word in command position is read, and one this reader cannot resolve fails the
 # row and is named. Command position is the first word of a command after its assignments
@@ -933,7 +943,7 @@ reader_py() {
     done
     printf ')\n'
     cat <<'PYREADER'
-import json, re, shlex, sys
+import json, os, re, shlex, sys
 
 PY_PIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]+\])?==[0-9]+(\.[0-9]+)*$")
 NPM_PIN = re.compile(r"^(@[A-Za-z0-9._-]+/)?[A-Za-z0-9][A-Za-z0-9._-]*@[0-9]+\.[0-9]+\.[0-9]+$")
@@ -954,6 +964,35 @@ def wheel(arg):
     m = re.fullmatch(r"\$(?:\{([A-Z_]+)\}|([A-Z_]+))", arg)
     return arg.endswith(".whl") or (m is not None and (m.group(1) or m.group(2)) in WHEEL_VARIABLES)
 
+# An install that resolves a package from an index reads a committed lock: a file under
+# evidence/, named on the command as $IOC_EVID/<file>, every requirement of which carries
+# a hash. The install reader reads the file from the directory IOC_LOCKS names, which
+# unpinned_installs sets to this tree's evidence/; with none set, no file is a lock.
+NO_LOCK = " (an install that reads no lock: name a hashed lock under $IOC_EVID)"
+LOCKS = {}
+
+def hashed_lock(path):
+    m = re.fullmatch(r"\$\{?IOC_EVID\}?/([A-Za-z0-9_][A-Za-z0-9._-]*)", path or "")
+    root = os.environ.get("IOC_LOCKS", "")
+    if m is None or not root:
+        return False
+    name = m.group(1)
+    if name not in LOCKS:
+        entries, hashed = 0, 0
+        try:
+            current = False
+            for line in open(os.path.join(root, name)):
+                if re.match(r"^[A-Za-z0-9]", line):
+                    entries += 1
+                    current = False
+                if "--hash=sha256:" in line and not current and entries:
+                    hashed += 1
+                    current = True
+        except OSError:
+            entries = 0
+        LOCKS[name] = entries > 0 and hashed == entries
+    return LOCKS[name]
+
 def py_ok(arg):
     return local(arg) or PY_PIN.match(arg) is not None
 
@@ -973,7 +1012,7 @@ class Refused(Exception):
 # name with no entry is refused by name, whatever the shell would run.
 PROGRAMS = ("awk", "cat", "cd", "cmp", "cp", "curl", "cut", "dispatch", "echo", "env", "gh",
             "git", "go", "grep", "jq", "mkdir", "mktemp", "printf", "python3", "rm", "sed",
-            "sh", "sha256sum", "sort", "stat", "tail", "tr", "uniq", "uv", "uvx", "wc", "xargs")
+            "sh", "sha256sum", "sort", "stat", "tail", "tr", "uniq", "uv", "wc", "xargs")
 
 # The names the rows assign, alone, before a command or as a for loop's variable. Each is
 # an entry "assigns <name>" of ADMITTED, and an assignment or a loop to any other name is
@@ -1466,7 +1505,10 @@ GO_FLAG = {"-v", "-x", "-race", "-a", "-n", "-trimpath", "-buildvcs=false"}
 def option_value(word):
     return word.split("=", 1)[1] if "=" in word else None
 
-def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=()):
+def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=(), lock_by=()):
+    # lock_by names the options whose value may be a hashed lock, which a package this
+    # runner resolves from an index must read; None exempts a runner, go alone, whose
+    # modules go itself checks against go.sum or the checksum database.
     problems, pins, i = [], {}, 0
     while i < len(rest):
         word = rest[i]
@@ -1486,6 +1528,10 @@ def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=()):
         for value in pins.get(key, []):
             if not py_ok(value):
                 problems.append(name + " " + key + " " + value)
+    locked = lock_by is None or any(hashed_lock(v) for k in lock_by for v in pins.get(k, []))
+    for value in pins.get("--with", []):
+        if py_ok(value) and not local(value) and not locked:
+            problems.append(name + " --with " + value + NO_LOCK)
     package = rest[i] if i < len(rest) else ""
     source = None
     for key in pinned_by:
@@ -1498,6 +1544,8 @@ def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=()):
         problems.append(name + " " + target + " (a package this reader cannot read)")
     elif not ok(target):
         problems.append(name + " " + target)
+    elif not local(target) and not locked:
+        problems.append(name + " " + target + NO_LOCK)
     return problems
 
 def read_command(command, depth=0):
@@ -1550,9 +1598,9 @@ def read_command(command, depth=0):
                 if PROCESS.search(w[i + 2]):
                     found.append(base + " -c (python code that starts a process, which this reader cannot open)")
             elif name == "uvx":
-                found += read_runner("uvx", after, UV_TOOL_VALUE, UV_TOOL_FLAG, py_ok, ("--from",))
+                found += read_runner("uvx", after, UV_TOOL_VALUE, UV_TOOL_FLAG, py_ok, ("--from",), ("-c", "--constraints"))
             elif name == "uv" and nxt == "tool" and i + 2 < len(w) and w[i + 2] in ("run", "install"):
-                found += read_runner("uv tool " + w[i + 2], w[i + 3:], UV_TOOL_VALUE, UV_TOOL_FLAG, py_ok, ("--from",))
+                found += read_runner("uv tool " + w[i + 2], w[i + 3:], UV_TOOL_VALUE, UV_TOOL_FLAG, py_ok, ("--from",), ("-c", "--constraints"))
             elif name == "uv" and nxt == "tool":
                 found.append("uv tool " + (w[i + 2] if i + 2 < len(w) else "") + " (a uv tool form this reader does not read)")
             elif name == "uv" and nxt == "run":
@@ -1561,7 +1609,8 @@ def read_command(command, depth=0):
                 # value is no program, and an option the table does not hold is refused.
                 # uv run takes no build constraint, so a --with that is a local source
                 # path, which uv run would build with whatever build backend is newest, is
-                # refused; a built wheel needs no build.
+                # refused; a built wheel needs no build. It takes no lock either, so a
+                # --with uv run resolves from an index is refused too.
                 try:
                     options, _ = uv_run_program(w[i + 2:])
                 except Refused as why:
@@ -1574,6 +1623,8 @@ def read_command(command, depth=0):
                         found.append("uv run " + key + " " + value)
                     elif local(value) and not wheel(value):
                         found.append("uv run " + key + " " + value + " (a local source path uv run builds with no build constraint; run a wheel built under one)")
+                    elif not local(value):
+                        found.append("uv run " + key + " " + value + NO_LOCK)
             elif name == "uv" and nxt == "add":
                 found.append("uv add (a form that installs and that this reader does not read)")
             elif name == "pipx" and nxt == "run":
@@ -1586,37 +1637,61 @@ def read_command(command, depth=0):
             elif name in ("npm", "bun", "yarn", "pnpm") and nxt in ("install", "i", "add", "dlx", "x"):
                 found.append(name + " " + nxt + " (a form that installs and that this reader does not read)")
             elif name == "go" and nxt in ("run", "install"):
-                found += read_runner("go " + nxt, w[i + 2:], GO_VALUE, GO_FLAG, go_ok)
+                found += read_runner("go " + nxt, w[i + 2:], GO_VALUE, GO_FLAG, go_ok, (), None)
+            elif name == "pip" and nxt == "sync":
+                # A sync installs exactly the files it names, so each must be a hashed lock;
+                # the value of --python or -p names an interpreter and no file.
+                rest, j = w[i + 2:], 0
+                while j < len(rest):
+                    a = rest[j]
+                    if a in ("--python", "-p"):
+                        j += 1
+                    elif not a.startswith("-") and not hashed_lock(a):
+                        found.append("pip sync " + a + NO_LOCK)
+                    j += 1
             elif name == "pip" and nxt == "install":
                 # Every argument is read. A constraints or requirements file pins what it
-                # lists and nothing else, so only the file it names is exempt, and env.sh's
-                # pinned list stands for its own packages; every other package is held to
-                # its own version or is a local path. A local path that is no wheel is
-                # built, and its build backend is fetched like any package, so the command
-                # must name a build constraint with -b.
+                # lists and nothing else, so only the file it names is exempt; every other
+                # package is held to its own version or is a local path. A package resolved
+                # from an index is read from a hashed lock: the command names one under
+                # $IOC_EVID with -c or -r, and a requirements file that is no hashed lock is
+                # refused. A local path that is no wheel is built, and its build backend is
+                # fetched like any package, so the command must name a build constraint
+                # with -b.
                 rest, j, sources, build_pinned = w[i + 2:], 0, [], False
+                registry, locked, unlocked = [], False, []
                 while j < len(rest):
                     a = rest[j]
                     key = a.split("=", 1)[0]
                     if a[:1] in (">", "<") or re.match(r"[0-9]*[<>]", a):
                         break
+                    value = option_value(a)
+                    if value is None and key in ("-b", "--build-constraint", "--build-constraints", "-c",
+                                                 "--constraint", "-r", "--requirement", "--python", "-p",
+                                                 "--target", "--prefix", "--index-url", "--extra-index-url"):
+                        value = rest[j + 1] if j + 1 < len(rest) else ""
+                        j += 1
                     if key in ("-b", "--build-constraint", "--build-constraints"):
                         build_pinned = True
-                        if option_value(a) is None:
-                            j += 1
-                    elif key in ("-c", "--constraint", "-r", "--requirement", "--python", "-p",
-                                 "--target", "--prefix", "--index-url", "--extra-index-url"):
-                        if option_value(a) is None:
-                            j += 1
-                    elif a.startswith("-") or a in ("$IOC_ENV_PY_PINS", "${IOC_ENV_PY_PINS}"):
+                    elif key in ("-c", "--constraint", "-r", "--requirement"):
+                        if hashed_lock(value):
+                            locked = True
+                        elif key in ("-r", "--requirement"):
+                            unlocked.append(value)
+                    elif a.startswith("-"):
                         pass
                     elif not py_ok(a):
                         found.append("pip install " + a)
                     elif local(a) and not wheel(a):
                         sources.append(a)
+                    elif not local(a):
+                        registry.append(a)
                     j += 1
                 if sources and not build_pinned:
                     found.append("pip install " + sources[0] + " (a local source path built with no build constraint; pass one with -b)")
+                if not locked:
+                    for a in registry[:1] + ["-r " + v for v in unlocked]:
+                        found.append("pip install " + a + NO_LOCK)
     return found
 
 
@@ -2066,7 +2141,8 @@ PYREADER
 }
 
 unpinned_installs() {
-    claims | python3 -c "$(reader_py)" installs
+    # The install reader reads each lock a command names from this tree's evidence/.
+    claims | IOC_LOCKS="$EVIDENCE/evidence" python3 -c "$(reader_py)" installs
 }
 
 # ---------------------------------------------------------------- --admitted
@@ -2260,9 +2336,9 @@ mode_replay() {
     unpinned="$(unpinned_installs)"
     while IFS=$'\t' read -r unpinned_id unpinned_what; do
         [ -n "$unpinned_id" ] || continue
-        fail install-pinned "$unpinned_id runs '$unpinned_what': a package with no version reads whatever release is newest, and a form this reader cannot read is refused rather than passed"
+        fail install-pinned "$unpinned_id runs '$unpinned_what': a package with no version, or read from no hashed lock, installs whatever release or file the index holds now, and a form this reader cannot read is refused rather than passed"
     done <<<"$unpinned"
-    [ -z "$unpinned" ] && pass install-pinned "every package a recorded command installs or runs names its version, or is pinned by a constraints file, a pinned list or a local path built under a build constraint, and so does every build backend"
+    [ -z "$unpinned" ] && pass install-pinned "every package a recorded command installs or runs names its version and is read from a committed hashed lock, or is a local path built under a build constraint, and so does every build backend"
 
     [ "$bad_form" -eq 0 ] && pass claim-form "every claim of $(claims | wc -l) carries one of the five forms"
     [ "$bad_mark" -eq 0 ] && pass claim-mark "every claim carries a mark its requirement fixes"
@@ -3276,13 +3352,15 @@ mode_published() {
 fixture_build() {
     local dir="$1"
     local evidence="$dir/repo/docs/research/internet-of-cognition"
-    mkdir -p "$evidence"/{mas-lab,triage,interview,tests,coordination,similarity,published}
+    mkdir -p "$evidence"/{mas-lab,triage,interview,tests,coordination,similarity,published,evidence}
     mkdir -p "$dir/repo/skills/legion-worker/references"
     mkdir -p "$dir/repo/packages/daemon/internal/api"
     cp "$EVIDENCE/citations.py" "$evidence/citations.py"
     cp "$EVIDENCE/check.sh" "$evidence/check.sh"
     # env.sh is read for its functions alone: --citations clones a repository by its rule.
     cp "$EVIDENCE/env.sh" "$evidence/env.sh"
+    # The hashed lock of IOC_VENV, which a planted install may read.
+    cp "$EVIDENCE/evidence/ioc-venv.lock" "$evidence/evidence/ioc-venv.lock"
 
     cat >"$dir/repo/packages/daemon/internal/api/handoff.go" <<'GO'
 package api

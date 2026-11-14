@@ -1,0 +1,6 @@
+# The four packages the replay installs into IOC_VENV, by name and version. evidence/ioc-venv.lock
+# is their resolution, hashed; env.sh installs IOC_VENV from the lock alone.
+sentence-transformers==6.3.0
+torch==2.15.0
+rdflib==7.6.0
+pyshacl==0.40.2
