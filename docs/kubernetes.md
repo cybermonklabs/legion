@@ -4562,7 +4562,7 @@ When the pod's anonymous memory reaches a share of the limit, the guard ends wit
 The rest of the pod goes on: the guard never ends a role's agent, its shim or its `role-init`, so no role's turn ends for the kill, and the command that was ended fails in the turn that ran it.
 The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
 
-Measured on 2026-11-14 in gVisor test pods with memory limits of 4, 8 and 19 GiB (dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md):
+Measured on 2026-11-14 in gVisor test pods with memory limits of 4, 8 and 19 GiB, over every run of the Jobs in dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md, whose numbers are recorded in that issue's `wc-gvisor` results:
 with the guard off, the kernel stopped the sandbox when `AnonPages` was 95.4% to 99.4% of the limit;
 with the guard on at the defaults, each growing process — 64 MiB every 0.25 s, 256 MiB every 0.25 s, and shared anonymous memory — was ended when the reading was 85.0% to 89.2% of the limit, 6.7 to 36.9 ms after the guard's first reading at the mark, and the pod went on.
 
