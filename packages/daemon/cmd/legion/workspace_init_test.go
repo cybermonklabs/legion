@@ -482,9 +482,10 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 }
 
 // A fresh issue volume, provisioned from the feed `fetch` filled: the issue's clone, its origin
-// still GitHub's, and the issue's jj workspace on its bookmark, the clone's credential helper the
-// one named, no gh shim and no tmux pane's `legion` launcher on the volume (a pod's PATH names the
-// image's gh and legion, and its credential is the gh files its role Secret projects), one log
+// still GitHub's and marked as gh's default repository (`remote.origin.gh-resolved base`), and the
+// issue's jj workspace on its bookmark, the clone's credential helper the one named, no gh shim
+// and no tmux pane's `legion` launcher on the volume (a pod's PATH names the image's gh and
+// legion, and its credential is the gh files its role Secret projects), one log
 // line naming the workspace, and no sessions directory: no container of the pod mounts one, every
 // session being a row in the database the deployment names (INFRA-80). The permanent
 // guard on the pod path: a recording `codegraph` stub is first on PATH throughout, and this
@@ -510,6 +511,9 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 	}
 	if origin := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "remote", "get-url", "origin"); origin != "https://github.com/acme/widgets" {
 		t.Fatalf("the clone's origin is %q, want GitHub's", origin)
+	}
+	if markers := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "config", "--get-regexp", `^remote\..*\.gh-resolved$`); markers != "remote.origin.gh-resolved base" {
+		t.Fatalf("the clone's gh-resolved lines are %q, want the one marking origin as gh's default repository, remote.origin.gh-resolved base", markers)
 	}
 	// -z, because v.git trims its output and the first of the clone's two values is the empty
 	// reset: with newline separators that value is a leading newline, which the trim takes away.

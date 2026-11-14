@@ -104,9 +104,12 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	if err := configureRepositoryCredential(ctx, run, workspace.Clone, request.CredentialHelper); err != nil {
 		return Workspace{}, err
 	}
-	// Every provision writes it, so a clone made before this setting existed takes it at its next
+	// Every provision runs these, so a clone made before a setting existed takes it at its next
 	// provision.
 	if err := configureCloneReads(ctx, run, workspace.Clone); err != nil {
+		return Workspace{}, err
+	}
+	if err := configureCloneDefaultRepository(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}
 	if err := removeRepositoryIdentity(ctx, run, workspace.Clone); err != nil {

@@ -902,6 +902,41 @@ func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error
 	return err
 }
 
+// configureCloneDefaultRepository marks origin as gh's default repository in the shared clone's
+// own configuration, `remote.origin.gh-resolved base`, the line `gh repo set-default` writes for
+// it, which every workspace of the clone reads too (each jj workspace of the clone is a git
+// worktree, and a git worktree reads its clone's config). gh 2.98.0 resolves the repository a
+// command of the groups that read the marker acts on (cli/cli pkg/cmd/root/root.go,
+// SmartBaseRepoFunc) to the first remote marked `base` (context/context.go,
+// ResolvedRemotes.BaseRepo), and, where none is and gh cannot prompt, to the first of its sorted
+// remotes, in which an `upstream` comes before origin. So with the marker, a worker who adds an
+// `upstream` remote leaves gh on origin, the issue's repository, and `legion gh` counts origin
+// alone there too (cmd/legion's markedOrigin).
+//
+// A clone whose own configuration holds any gh-resolved line gets nothing written: a marker a
+// person set stays as they set it, and so does one that moved with a renamed remote (`gh repo
+// fork --remote` renames origin to upstream, and git renames the remote's keys with it, so gh
+// stays on the repository the fork was made from). The read names the clone's own file alone
+// (--local), so a line of the global or system configuration cannot stop the write; git exits 1,
+// printing nothing, where no key matches, and any other answer fails the provision. The feed does
+// not take the line, for the reason configureCloneReads gives.
+func configureCloneDefaultRepository(ctx context.Context, run Runner, cloneDir string) error {
+	gitDir := "--git-dir=" + cloneDir + "/.git"
+	read := []string{"git", gitDir, "config", "--local", "--get-regexp", `^remote\..*\.gh-resolved$`}
+	markers, err := runCommand(ctx, run, read, nil, cloneDir)
+	if err != nil {
+		return fmt.Errorf("run %s: %w", strings.Join(read, " "), err)
+	}
+	if markers.TimedOut || (markers.ExitCode != 0 && markers.ExitCode != 1) {
+		return commandFailure(read, markers)
+	}
+	if markers.ExitCode == 0 {
+		return nil
+	}
+	_, err = RunChecked(ctx, run, []string{"git", gitDir, "config", "--local", "remote.origin.gh-resolved", "base"}, nil, cloneDir)
+	return err
+}
+
 // removeRepositoryIdentity ports workspace.ts's removeRepoScopedIdentity. A per-repository
 // identity would be shared by every issue workspace, while pane identity is deliberately provided
 // through the pane's env.
