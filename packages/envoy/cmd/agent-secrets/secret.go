@@ -349,9 +349,19 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 // error, as readSecretValue's refusals of a value are.
 func checkValueFor(kind, shape, value string) error {
 	if err := policy.DecodeValue(kind, shape, value); err != nil {
-		return usageErr{fmt.Errorf("the broker refuses this value as a %s secret's, so nothing is written: %w", kind, err)}
+		return usageErr{fmt.Errorf("the broker refuses this value as %s secret's, so nothing is written: %w", withArticle(kind), err)}
 	}
 	return nil
+}
+
+// withArticle is kind, a kind tag's value, after the article it takes, by its first letter: "a
+// github-app", "an azure-login". A message that names a kind it holds in a variable writes it
+// through this, since the kinds do not all take "a".
+func withArticle(kind string) string {
+	if kind != "" && strings.ContainsRune("aeiou", rune(kind[0])) {
+		return "an " + kind
+	}
+	return "a " + kind
 }
 
 // minRecoveryWindowDays is the shortest recovery window Secrets Manager allows a deletion, 7 days.

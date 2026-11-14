@@ -1070,8 +1070,9 @@ func (s gcpKindStore) readPermissions() []string { return []string{"secretmanage
 // the four kinds, create, set and retag refuse each value that kind's minter refuses before
 // anything is written: create writes no secret, set no version, retag no tag, and the broker is
 // asked to reread nothing. Each exits 2 naming what is wrong in the minter's own words, read back
-// from the minter driven with the same value, so the one decoder decides both, and none prints
-// the value. Set checks the value under the kind tag the secret holds, since it names none.
+// from the minter driven with the same value, so the one decoder decides both, names the kind
+// after the article it takes ("an azure-login secret's"), and none prints the value. Set checks
+// the value under the kind tag the secret holds, since it names none.
 func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store kindStore, broker *secretBroker) {
 		for _, row := range refusedKindValues(t) {
@@ -1080,6 +1081,12 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 				store.put(t, "HELD_KEY", policytest.KindSecret("HELD_KEY", "ada@example.com", policy.TierAgent, row.kind, "").Tags, policytest.KindValue(row.kind))
 				plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "").Tags
 				store.put(t, "PLAIN_KEY", plain, row.value)
+				// The refusal names the kind after the article it takes, written out here rather
+				// than derived by the rule that writes it: "an azure-login", never "a azure-login".
+				named := "the broker refuses this value as a " + row.kind + " secret's"
+				if row.kind == policy.KindAzureLogin {
+					named = "the broker refuses this value as an " + row.kind + " secret's"
+				}
 				for _, form := range []struct {
 					args []string
 					// wrote reports whether the form wrote anything: create a secret, set a
@@ -1095,6 +1102,9 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 					stdout, stderr, code := runSecret(form.args...)
 					if code != exitUsageError || !strings.Contains(stderr, says) {
 						t.Errorf("%s of a %s value with %s: exit %d stderr %q; want %d naming the minter's own refusal %q", form.args[0], row.kind, row.name, code, stderr, exitUsageError, says)
+					}
+					if !strings.Contains(stderr, named) || strings.Contains(stderr, " a "+policy.KindAzureLogin) {
+						t.Errorf("%s of a %s value with %s: stderr %q; want it to say %q", form.args[0], row.kind, row.name, stderr, named)
 					}
 					if strings.Contains(stdout+stderr, leak) || strings.Contains(stdout+stderr, "PRIVATE KEY") {
 						t.Errorf("%s of a %s value with %s printed the value: stdout %q stderr %q", form.args[0], row.kind, row.name, stdout, stderr)

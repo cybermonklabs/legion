@@ -259,9 +259,9 @@ func checkRetagValue(s *secretSession, name, slug string, held heldTags, after m
 	case err == nil:
 		return "", checkValueFor(kind, shape, value)
 	case s.backend.isAccessDenied(err):
-		return fmt.Sprintf("the tags are written, but %s's value was not checked as a %s secret's: the store refused this sign-in the read, which needs %s. The broker refuses a value its decoder refuses, and reports %s unservable with the decoder's reason", name, kind, s.backend.valueReadPermission(), name), nil
+		return fmt.Sprintf("the tags are written, but %s's value was not checked as %s secret's: the store refused this sign-in the read, which needs %s. The broker refuses a value its decoder refuses, and reports %s unservable with the decoder's reason", name, withArticle(kind), s.backend.valueReadPermission(), name), nil
 	default:
-		return "", fmt.Errorf("read %s's value to check it as a %s secret's, so nothing is written: %w", name, kind, err)
+		return "", fmt.Errorf("read %s's value to check it as %s secret's, so nothing is written: %w", name, withArticle(kind), err)
 	}
 }
 

@@ -376,9 +376,13 @@ func (c *Current) listOne(name string) (valueRead, bool) {
 // read=value) and decodes it under its kind and shape (DecodeValue), dropping the value at once;
 // the reads are made without the writer lock. A read that fails once ctx has ended stops them,
 // and records nothing for it or for the reads after it, which the next load or reread makes
-// again. It then takes the writer lock, waiting on whichever writer holds it rather than on ctx,
-// so the reads made are recorded however ctx ends, and records each outcome whose key is still
-// the one listed (a load or reread since that lists another reads that itself):
+// again. It then takes the writer lock for as long as ctx lives (lock), as the load or reread
+// before it did and as RefuseValue does, so a reread whose caller has gone does not wait out a
+// reload stuck on a store that does not answer: once ctx ends while it waits, it returns at once
+// and records nothing, each secret keeps the state it had, and the version it read, still not
+// decoded, is read again at the next load or reread. Holding the lock, it records each outcome
+// whose key is still the one listed (a load or reread since that lists another reads that
+// itself):
 //
 //   - the decoder refuses the value, or the store answers a value that is not text
 //     (secrets.ErrValueNotText), which no mint could use either: the secret's value is refused at
@@ -418,7 +422,9 @@ func (c *Current) readValues(ctx context.Context, reads []valueRead, first bool)
 	if len(outcomes) == 0 {
 		return
 	}
-	c.mu <- struct{}{}
+	if c.lock(ctx) != nil {
+		return
+	}
 	defer c.unlock()
 	changed := false
 	for _, o := range outcomes {
