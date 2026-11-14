@@ -394,9 +394,9 @@ func requireIndexRead(t *testing.T, plan []byte, text, relation, index string) {
 
 // TestTheUnownedP0CountAndTheClosedFactsReadTheirIndexes: on an analyzed store holding enough rows
 // that the planner prices a scan of the whole table above an index read (6,000 issues, 20,000
-// stored facts), the count of a project's P0 issues with no owner reads issues_unowned_p0, the
-// read of a project's issues closed in a window reads issue_facts_closed, and neither scans its
-// table.
+// stored facts), the count of a project's P0 issues with no owner and the live hub's read of every
+// open P0 issue's key (delivery.OpenP0Keys) read issues_open_p0, the read of a project's issues
+// closed in a window reads issue_facts_closed, and none scans its table.
 func TestTheUnownedP0CountAndTheClosedFactsReadTheirIndexes(t *testing.T) {
 	ctx := context.Background()
 	store := migratedEvalStore(t)
@@ -446,7 +446,11 @@ func TestTheUnownedP0CountAndTheClosedFactsReadTheirIndexes(t *testing.T) {
 
 	plan, text := explainedPlan(t, store, p0Count, "PZERO")
 	t.Logf("the unowned P0 count of one project plans as:\n%s", text)
-	requireIndexRead(t, plan, text, "issues", "issues_unowned_p0")
+	requireIndexRead(t, plan, text, "issues", "issues_open_p0")
+	const openP0Keys = `select key from issues where priority = 0 and status <> 'done'`
+	plan, text = explainedPlan(t, store, openP0Keys)
+	t.Logf("every open P0 issue's key plans as:\n%s", text)
+	requireIndexRead(t, plan, text, "issues", "issues_open_p0")
 
 	const closedWindow = `select issue_key, closed_at, work_hours from issue_facts where project_key = $1 and closed_at >= $2 and closed_at < $3`
 	from, to := now.AddDate(0, 0, -28), now

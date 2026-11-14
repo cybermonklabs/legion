@@ -759,7 +759,7 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 }
 
 // WriteUnownedP0Day writes project's unowned-p0 row of the UTC day day is on: the count of its
-// open P0 issues with no owner now (delivery.ListUnownedP0, by the issues_unowned_p0 index) as the
+// open P0 issues with no owner now (delivery.ListUnownedP0, by the issues_open_p0 index) as the
 // row's one value and its last_value, last_at the moment the count last moved, so the day's row is
 // the count at its last refresh and the `last` fold of a window reads its newest day's. A write
 // that counts what the row holds keeps the row's time, so it rewrites nothing (built_by aside) and

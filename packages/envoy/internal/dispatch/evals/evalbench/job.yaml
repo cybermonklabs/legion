@@ -1,0 +1,90 @@
+# The eval registry's measurement Job (dispatch://INFRA-2916, T15: k2, k8, k13, k16) on the build
+# farm: it clones the pushed commit, and evalbench/job.sh starts a Postgres 18 of its own with
+# pg_stat_statements preloaded and its data on the Job's volume, builds the generator, the
+# instrument and envoy-dispatch, loads the fixture at INFRA's stated rate and measures the first
+# paint. MODE is head (this commit's first paint, k2, k13, k16) or base (the base head 02a7b3c6's
+# first paint, k8's and k13's negative controls). The log is the evidence: judge it by its RESULT
+# and FAIL lines, never by the Job's phase. Fill the six ${…} variables (and only those, so the
+# script's own $HOME and $COMMIT are left for the shell), then:
+#   export COMMIT=<pushed sha> MODE=head SCALE=1 TEN_TIMES=0 OMP_SESSION=<id> OMP_SESSION_TITLE=<title>
+#   python3 -c 'import os, re, sys; sys.stdout.write(re.sub(r"\$\{(COMMIT|MODE|SCALE|TEN_TIMES|OMP_SESSION|OMP_SESSION_TITLE)\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
+#     < job.yaml > "$TMPDIR/job.yaml"
+#   kubectl -n builds create --dry-run=server -f "$TMPDIR/job.yaml" && kubectl -n builds create -f "$TMPDIR/job.yaml"
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: infra2916-evalbench-
+  namespace: builds
+  labels:
+    owner: legion-infra-2916-implementer
+    theorem.dev/omp-session: &omp-session "${OMP_SESSION}"
+  annotations:
+    theorem.dev/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
+    # About an hour on a dozen CPUs of a Spot build machine.
+    theorem.dev/cost-usd: "2.00"
+    theorem.dev/branch: "legion/INFRA-2916"
+    theorem.dev/head: "${COMMIT}"
+spec:
+  # A lost machine runs the measurement again from the start: it keeps nothing between pods.
+  backoffLimit: 2
+  podReplacementPolicy: Failed
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels:
+        theorem.dev/kind: legion-evalbench
+        theorem.dev/omp-session: *omp-session
+      annotations:
+        theorem.dev/omp-session-title: *omp-session-title
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      runtimeClassName: gvisor
+      activeDeadlineSeconds: 7200
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        cloud.google.com/compute-class: build
+      volumes:
+      # Everything the run writes: the clone (and the base worktree), the Go caches, the builds,
+      # the Postgres data with its WAL (the fixture is about 4 GB of tables and indexes at the
+      # stated rate, more at ten times the run rate) and the logs.
+      - name: scratch
+        emptyDir: {sizeLimit: 46Gi}
+      containers:
+      - name: evalbench
+        # The worker image of main at 12ba4e6afa71 (release 20.8.0), the multi-architecture index digest.
+        image: ghcr.io/cybermonklabs/legion-worker@sha256:edba670bc12c2e22fc510a4f50446b670899cb967d3e25c80fd1cc18bf1c825e
+        env:
+        - {name: HOME, value: /scratch/home}
+        - {name: TMPDIR, value: /scratch/tmp}
+        - {name: GOCACHE, value: /scratch/gocache}
+        - {name: GOMODCACHE, value: /scratch/gomod}
+        - {name: COMMIT, value: "${COMMIT}"}
+        - {name: MODE, value: "${MODE}"}
+        - {name: BASE, value: "02a7b3c67eefaa5c3e7d724c794423cc6b89da64"}
+        - {name: EVALBENCH_SCALE, value: "${SCALE}"}
+        - {name: EVALBENCH_TEN_TIMES, value: "${TEN_TIMES}"}
+        volumeMounts:
+        - {name: scratch, mountPath: /scratch}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -euo pipefail
+          mkdir -p "$HOME" "$TMPDIR" "$GOCACHE" "$GOMODCACHE"
+          echo "MARK start $(date -u +%FT%TZ) commit=$COMMIT mode=$MODE scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES"
+          git clone --filter=blob:none --no-checkout https://github.com/cybermonklabs/legion /scratch/src
+          cd /scratch/src
+          git fetch --depth 1 origin "$COMMIT"
+          git checkout --detach "$COMMIT"
+          if [ "$MODE" = base ]; then git fetch --depth 1 origin "$BASE"; fi
+          echo "MARK checkout $(git rev-parse HEAD)"
+          rc=0
+          EVALBENCH_WORK=/scratch/work EVALBENCH_SOURCE=/scratch/src EVALBENCH_COMMIT="$COMMIT" EVALBENCH_BASE="$BASE" \
+            bash packages/envoy/internal/dispatch/evals/evalbench/job.sh "$MODE" 2>&1 | tee /scratch/out.txt || rc=${PIPESTATUS[0]}
+          echo "MARK failures:"; grep '^FAIL' /scratch/out.txt || echo "MARK none"
+          echo "MARK end $(date -u +%FT%TZ) rc=$rc"
+          exit "$rc"
+        resources:
+          requests: {cpu: "8", memory: 24Gi, ephemeral-storage: 48Gi}
+          limits: {cpu: "12", memory: 24Gi, ephemeral-storage: 48Gi}

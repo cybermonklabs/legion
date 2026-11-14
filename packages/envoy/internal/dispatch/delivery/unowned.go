@@ -12,13 +12,14 @@ type UnownedIssue struct {
 	Title string `json:"title"`
 }
 
-// The two reads of ListUnownedP0. Each carries the rule as issues_unowned_p0's predicate spells
-// it (migration 20261113082158), so the planner proves the index from the statement's own
-// clauses and reads that index, which holds the unowned P0 issues alone, and no other row of
-// issues: one project's issues are one range of its key, every project's the whole of a small
-// index. One statement for each case, rather than one whose condition holds for an empty $1 or
-// a matching project_key: under a generic plan, which knows no value of $1, that condition keys
-// nothing, and the project read would walk every project's entries.
+// The two reads of ListUnownedP0. Each carries issues_open_p0's predicate as the migration spells
+// it (20261113082158, `priority = 0 and status <> 'done'`), so the planner proves the index from
+// the statement's own clauses and reads that index, which holds the open P0 issues alone, and no
+// other row of issues, with the rest of the rule (no claim, no route) a filter over what it reads:
+// one project's issues are one range of its key, every project's the whole of a small index. One
+// statement for each case, rather than one whose condition holds for an empty $1 or a matching
+// project_key: under a generic plan, which knows no value of $1, that condition keys nothing, and
+// the project read would walk every project's entries.
 const (
 	unownedP0Query = `
 		select key, title from issues
