@@ -12,7 +12,7 @@ import {
   useQueries,
   useQuery,
 } from "@tanstack/react-query";
-import { useRef, useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import { type Cache, useCache } from "./cache";
 import { clientOf } from "./client-handle";
@@ -104,7 +104,7 @@ interface Read {
 }
 
 /** Each of TanStack's refetches a read has rendered, by TanStack's function, which is one for as
- *  long as its observer is: the read it last rendered for, and the refetch the read hands out in
+ *  long as its observer is: the read it last committed for, and the refetch the read hands out in
  *  its place (`shownRefetch`). */
 const refetches = new WeakMap<Refetch, { read: Read; readonly shown: Refetch }>();
 
@@ -112,13 +112,11 @@ const refetches = new WeakMap<Refetch, { read: Read; readonly shown: Refetch }>(
  *  for as long as TanStack's is, so a reader naming it in an effect's dependencies runs nothing
  *  again, that answers with TanStack's result as the read shows it once it answers - Dispatch's
  *  data then, with the store's overlay for the key then over it and the read's `select` over
- *  that, sharing what it can with the value the read last rendered (`shownOf`). */
+ *  that, sharing what it can with the value the read last committed (`shownOf`). A refetch already
+ *  handed out keeps the read it answers by until the render commits (`useCommittedReads`). */
 function shownRefetch(refetch: Refetch, read: Read): Refetch {
   const held = refetches.get(refetch);
-  if (held !== undefined) {
-    held.read = read;
-    return held.shown;
-  }
+  if (held !== undefined) return held.shown;
   const entry = {
     read,
     shown: ((...args) =>
@@ -154,6 +152,24 @@ function shownResult<R extends object>(result: R, read: Read): R {
     if (typeof refetch === "function") shownRefetch(refetch as Refetch, read);
   }
   return withData(result, read.shown.value);
+}
+
+/** Moves each refetch of `results` onto the read it rendered for once React commits that render.
+ *  The effect runs after TanStack's own, which moves its observer to the render's key, so a
+ *  refetch answering between a key change's render and its commit is composed for the key the
+ *  observer answered for, never for the key the reader is only rendering. A render React throws
+ *  away moves nothing. */
+function useCommittedReads(results: readonly object[], reads: readonly Read[]): void {
+  useEffect(() => {
+    results.forEach((result, at) => {
+      for (const member of REFETCHES) {
+        const refetch: unknown = Reflect.get(result, member);
+        if (typeof refetch !== "function") continue;
+        const held = refetches.get(refetch as Refetch);
+        if (held !== undefined) held.read = reads[at] as Read;
+      }
+    });
+  });
 }
 
 /** The store's overlay for the cache at `key`, read through `useSyncExternalStore`: the store
@@ -203,7 +219,9 @@ function useComposedQuery({ select, ...options }: Composed) {
   const overlay = useOverlay(writes, options.queryKey);
   const result = useQuery(libraryOptions(options) as Parameters<typeof useQuery>[0]);
   const shown = useShownData(options.queryKey, result.data, overlay, select as Select | undefined);
-  return shownResult(result, { key: options.queryKey, shown, writes });
+  const read = { key: options.queryKey, shown, writes };
+  useCommittedReads([result], [read]);
+  return shownResult(result, read);
 }
 
 function useComposedInfiniteQuery({ select, ...options }: Composed) {
@@ -213,7 +231,9 @@ function useComposedInfiniteQuery({ select, ...options }: Composed) {
     libraryOptions(options) as Parameters<typeof useInfiniteQuery>[0]
   );
   const shown = useShownData(options.queryKey, result.data, overlay, select as Select | undefined);
-  return shownResult(result, { key: options.queryKey, shown, writes });
+  const read = { key: options.queryKey, shown, writes };
+  useCommittedReads([result], [read]);
+  return shownResult(result, read);
 }
 
 /** What a `useShownQueries` read last showed: each query's value by its key's hash, and what its
@@ -242,7 +262,7 @@ function useComposedQueries({
   } as Parameters<typeof useQueries>[0]) as readonly { readonly data: unknown }[];
   const last = useRef<ShownQueries>(NOTHING_SHOWN);
   const byHash = new Map<string, Shown>();
-  const shown = results.map((result, at) => {
+  const reads = results.map((result, at): Read => {
     const query = queries[at] as Composed;
     const hash = hashKey(query.queryKey);
     const one = shownOf(
@@ -253,8 +273,10 @@ function useComposedQueries({
       query.select as Select | undefined
     );
     byHash.set(hash, one);
-    return shownResult(result, { key: query.queryKey, shown: one, writes });
+    return { key: query.queryKey, shown: one, writes };
   });
+  useCommittedReads(results, reads);
+  const shown = results.map((result, at) => shownResult(result, reads[at] as Read));
   const combined =
     combine === undefined
       ? shown
