@@ -146,3 +146,54 @@ test("an address whose target does not exist reads as its writer's words with no
     await alice.close();
   }
 });
+
+// SLOW(>=2s): two page loads, each waiting for the present reference to draw its title before
+// the row reads the three others.
+test("a document its issue does not hold, a component of a project with no architecture and a session Dispatch does not know read as their words with no link", async ({
+  browser,
+}) => {
+  // Each soft read waits its full 15 s while the defect stands, so the row reads both surfaces.
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const host = await createIssue({ project: "CORE", title: "Reference host" });
+  const target = await createIssue({ project: "CORE", title: "Warm the cache" });
+  // Each read answers 404: the document by slug (`ARTIFACT_NOT_FOUND`), the architecture of a
+  // project with no source (`SOURCE_NOT_FOUND`). The session id is one no agent ever held.
+  const missing = [
+    `dispatch://${target.key}/artifact/no-such-doc-md`,
+    "dispatch://CORE/component/nope",
+    "dispatch://agent/00000000-0000-4000-8000-000000000000",
+  ];
+  const body = `${missing.map((address, index) => `Line ${index + 1} names ${address} here.`).join("\n\n")}\n\nAnd dispatch://${target.key} is real.\n`;
+  await editArtifact(
+    host.primary_artifact_id,
+    { ops: [{ after: "end", markdown: body, op: "insert" }] },
+    referenceAgent
+  );
+  const comment = await createComment(host.key, { body }, referenceAgent);
+  const named = `${target.key} ${target.title}`;
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+
+    // R8: each reads as the words its writer wrote, with no link, and the document is not drawn
+    // under its issue's title, which would name a node the reference does not name.
+    const expectWordsWithNoLink = async (scope: Locator) => {
+      await expect(scope.getByRole("link", { exact: true, name: named })).toHaveCount(1);
+      for (const address of missing) {
+        await expect.soft(scope).toContainText(address);
+        await expect.soft(scope.getByRole("link", { exact: true, name: address })).toHaveCount(0);
+      }
+      await expect.soft(scope.getByRole("link", { exact: true, name: target.title })).toHaveCount(0);
+    };
+
+    await page.goto(`/issues/${host.key}/conversation`);
+    await expectWordsWithNoLink(await expandedComment(page, comment.id));
+
+    await page.goto(`/issues/${host.key}/spec`);
+    await expectWordsWithNoLink(documentEditor(page));
+  } finally {
+    await alice.close();
+  }
+});
