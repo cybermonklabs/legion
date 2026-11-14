@@ -347,6 +347,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/artifacts/{id}/changes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What changed between two stored versions of one document, ?from=<n>&to=<m>: {artifact_id, from, to, decision_only, sections, blocks}, both versions read from their stored markdown with every ask block cut out, so the block index's deferred pass is never waited for. decision_only is true when the two stored texts differ and cut to the same text; sections and blocks are empty then. sections is each `##` section whose text differs or that moved, by heading and occurrence (0 for the first section of that heading); the text outside every `##` section (the title, what stands above the first `##`, and what follows a later `#` up to the next `##`), joined in document order, is one section of its own with heading "" and occurrence 0, so a `##` heading with no words counts from occurrence 1. blocks is each typed block but an ask whose text or any attribute differs, by id and type. Each section and block is marked changed, added or removed, and a section whose text is the same is marked moved when its place among the sections both versions hold is another: it stands outside one longest common subsequence of the two versions' orders of those sections, the text outside every section left out, and of several that long the one kept holds the later version's earliest sections, so of two sections that swapped places the later version's second is moved. A block is never marked moved. Each is listed in the later version's order, a moved section where the later version holds it, then what only the earlier holds. from and to must be positive, at most 2147483647 (the largest version number the store holds), and from below to (400 INVALID_VERSION); a version the document does not have is 404 NOT_FOUND, and a file or an image 400 NOT_DOCUMENT. */
+    get: operations["getApiV1ArtifactsByIdChanges"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/artifacts/{id}/comments": {
     parameters: {
       query?: never;
@@ -1558,7 +1575,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id, holds}, step one of decisions, criteria and spec, artifact_id the document that step's gate recorded, and holds whether the deployment's gate holds the issue's tree on that step, or [] for an issue whose gates record none. An entry without holds, or with holds null, is stored as null, which the superseded_approval advice answers by the project's gated_steps. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyDesignGates"];
     post?: never;
     delete?: never;
@@ -1972,7 +1989,7 @@ export interface paths {
     };
     /** @description The caller's last read version of a document {artifact_id, version, read_at}; version and read_at are null when they have read none. */
     get: operations["getApiV1MeDocumentsByIdRead"];
-    /** @description Record the caller's last read version of a document {version}: the Spec tab marks each block that changed since it. Answers the stored read; a version that is missing or negative is 400 INVALID_STATE. */
+    /** @description Record the caller's last read version of a document {version}: the Spec tab marks each block that changed since it. Answers the stored read; a version that is missing, negative or above 2147483647 (the largest version number the store holds) is 400 INVALID_STATE. */
     put: operations["putApiV1MeDocumentsByIdRead"];
     post?: never;
     delete?: never;
@@ -3234,6 +3251,20 @@ export interface components {
       token: string;
       type: string;
     };
+    ArtifactBlockChange: {
+      /** @enum {string} */
+      change: "changed" | "added" | "removed";
+      id: string;
+      type: string;
+    };
+    ArtifactChanges: {
+      artifact_id: string;
+      blocks: components["schemas"]["ArtifactBlockChange"][] | null;
+      decision_only: boolean;
+      from: number;
+      sections: components["schemas"]["ArtifactSectionChange"][] | null;
+      to: number;
+    };
     ArtifactRebuildReport: {
       /** Format: int64 */
       head: number;
@@ -3283,6 +3314,12 @@ export interface components {
       };
       state: string;
       version: number;
+    };
+    ArtifactSectionChange: {
+      /** @enum {string} */
+      change: "changed" | "added" | "removed" | "moved";
+      heading: string;
+      occurrence: number;
     };
     ArtifactText: {
       blocks?: components["schemas"]["ArtifactBlock"][];
@@ -5000,6 +5037,7 @@ export interface components {
     };
     IssueDesignGate: {
       artifact_id: string;
+      holds: null | boolean;
       /** @enum {string} */
       step: "decisions" | "criteria" | "spec";
     };
@@ -7088,6 +7126,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DecisionKeep"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ArtifactsByIdChanges: {
+    parameters: {
+      query?: {
+        from?: number;
+        to?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ArtifactChanges"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13539,10 +13613,13 @@ export type Artifact = components["schemas"]["Artifact"];
 export type ArtifactApproval = components["schemas"]["ArtifactApproval"];
 export type ArtifactApprovalWithTrees = components["schemas"]["ArtifactApprovalWithTrees"];
 export type ArtifactBlock = components["schemas"]["ArtifactBlock"];
+export type ArtifactBlockChange = components["schemas"]["ArtifactBlockChange"];
+export type ArtifactChanges = components["schemas"]["ArtifactChanges"];
 export type ArtifactRebuildReport = components["schemas"]["ArtifactRebuildReport"];
 export type ArtifactReferences = components["schemas"]["ArtifactReferences"];
 export type ArtifactReview = components["schemas"]["ArtifactReview"];
 export type ArtifactReviewRead = components["schemas"]["ArtifactReviewRead"];
+export type ArtifactSectionChange = components["schemas"]["ArtifactSectionChange"];
 export type ArtifactText = components["schemas"]["ArtifactText"];
 export type ArtifactUploadResponse = components["schemas"]["ArtifactUploadResponse"];
 export type ArtifactVersionText = components["schemas"]["ArtifactVersionText"];

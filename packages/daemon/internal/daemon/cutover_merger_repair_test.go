@@ -197,8 +197,11 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     takes the mark the slot rule gives `merging` and no mark of the repair's own (decision D9
 //     of dispatch://INFRA-3274's plan), which is no mark, since `merging` holds no slot
 //     (record.KeepsSlot), so it is claimable at once, as any start of `merging` is.
-//   - E's merger is not started while its gate is closed, and gets exactly one task once the test
-//     opens the gate.
+//   - E's merger is not started while its gate is closed, and gets exactly one merging task once
+//     the test opens the gate. The opening approves version 2 of the spec over the version 1 the
+//     upgrade recorded the merger's phase as having taken (20261114082752_design_news), so the
+//     merger also gets the news of that version once (dispatch://INFRA-175), and its start waits
+//     until what changed is recorded (mergerWaitsForTheDesignGate).
 //   - A's merger is relaunched and gets exactly one task, the merging task; G's merger claim is
 //     resumed and gets exactly one task, the same merging task. That is the architect's case,
 //     decision D8 of the plan: no start the boot makes gives either a second merging task. The
@@ -299,7 +302,8 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 		}
 	}
 
-	// E: the gate holds the start the repair owed, and the start goes on once the gate opens.
+	// E: the gate holds the start the repair owed, and the start goes on once the gate opens and
+	// what changed in the version it approved is recorded.
 	rig.await(t, "E's merger start held by its tree's closed design gate", func() bool {
 		return strings.Contains(rig.startWaits(t, rig.e.key), "design gate")
 	})
@@ -316,7 +320,7 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	}
 	rig.connect(t, rig.e)
 	rig.settled(t, rig.e)
-	rig.toldOnce(t, rig.e)
+	rig.toldOnceWithNews(t, rig.e, 2)
 
 	// D's merger, every role of G and E but the merger, and T's tester: nothing starts them.
 	rig.notStarted(t, rig.d.merger, "D's merger has nothing to do: its pull request merged")
@@ -338,10 +342,11 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.releaseAgain(t, rig.g)
 	rig.matchesTheSelection(t, rig.g)
 	// The whole first boot gave each merger one task: the release that stopped G's merger, and
-	// everything this daemon did after the counts above, gave none.
+	// everything this daemon did after the counts above, gave none. E's merger was told the news
+	// of the version its opening approved besides, once.
 	rig.toldOnce(t, rig.a)
 	rig.toldOnce(t, rig.g)
-	rig.toldOnce(t, rig.e)
+	rig.toldOnceWithNews(t, rig.e, 2)
 	rig.toldTheQueuedTask(t, rig.s)
 	rig.keptItsReady(t, rig.s, "S's merger: the start the old record queued for it already covers it (StartFor)")
 	rig.daemon.stop()
@@ -887,6 +892,36 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	want := workflow.ResumePhaseTask(*stands)
 	if told := r.prompts(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was prompted %q, want once with its merging task %q", issue.key, told, want)
+	}
+}
+
+// toldOnceWithNews holds that issue's merger was given exactly two prompts over its whole life in
+// this test, in either order: its merging task once, as toldOnce reads it, and once the news of
+// the approved design its phase is owed, which names the command that reads version of the
+// issue's spec. The start the repair owed hands the merger work it was already on, so it carries
+// no news (record.SuperviseRequest.Entry); the reconcile's news-only start
+// (record.SuperviseRequest.News) is what tells it, and the two run in whichever order the
+// outbox's backoff gives them.
+func (r *cutoverRig) toldOnceWithNews(t *testing.T, issue cutoverIssue, version int) {
+	t.Helper()
+	stands := readIssue(t, r.pool, issue.key)
+	if stands == nil {
+		t.Fatalf("read %s: the record does not hold it", issue.key)
+	}
+	task := workflow.ResumePhaseTask(*stands)
+	read := fmt.Sprintf("dispatch doc-read --issue %s --artifact spec-%s --version %d", issue.key, issue.key, version)
+	told := r.prompts(issue.merger)
+	tasks, news := 0, 0
+	for _, prompt := range told {
+		switch {
+		case prompt == task:
+			tasks++
+		case strings.Contains(prompt, read):
+			news++
+		}
+	}
+	if len(told) != 2 || tasks != 1 || news != 1 {
+		t.Fatalf("%s's merger was prompted %q, want its merging task %q once and once the news that names %q", issue.key, told, task, read)
 	}
 }
 

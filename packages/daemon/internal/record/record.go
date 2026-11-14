@@ -987,7 +987,9 @@ const (
 // DesignStep names one document of the root issue, and a deployment's design gate is the list of
 // steps it holds the tree's work on. DesignStepDecisions names the issue's decisions document,
 // DesignStepCriteria its Verification document, and DesignStepSpec its primary document. The
-// record keeps one DesignGate for each step a deployment gates, keyed by the issue and the step.
+// record keeps one DesignGate for each step a root registers, keyed by the issue and the step:
+// each step the deployment gates, and criteria where its architect registers the Verification
+// document beside a deployment that gates spec alone of the two (TreeSteps).
 //
 // The type lives in this package rather than beside the `gates.design` list that declares it,
 // because internal/classify answers the questions the steps raise and may import no package of
@@ -1084,16 +1086,19 @@ type DesignGate struct {
 	ToldChangesVersion *int
 	ToldChangesReason  string
 	ToldChangesMark    EventMark
-	// EverOpened records that a human approved the gate's document version at some point in this
-	// generation of the issue, whether or not the gate stands open now. Nothing else remembers it:
-	// classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion as both
-	// stand, and a changes request clears ApprovedVersion, so a gate that opened and was sent back
-	// reads exactly like one that never opened. Under the children-first rule a root stays at
-	// admitted while its children run, which is the state the later rule must tell from a root
-	// still waiting for its first approval. It lives on the gate row rather than on the issue
-	// because ClearTreeGeneration deletes the gate when a root is re-admitted, and a re-admitted
-	// root's architect writes its spec again: the mark belongs to the generation whose approval it
-	// records.
+	// EverOpened records that the step has not held the tree's first release in this generation
+	// of the issue: a human approved the gate's document version at some point, whether or not
+	// the gate stands open now, or the step joined the tree after that release — a Verification
+	// document its architect registered as criteria once the spec had opened the tree
+	// (workflow's gateRegistered), which that release never waited on. Nothing else remembers
+	// it: classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion
+	// as both stand, and a changes request clears ApprovedVersion, so a gate that opened and was
+	// sent back reads exactly like one that never opened. Under the children-first rule a root
+	// stays at admitted while its children run, which is the state the later rule must tell from
+	// a root still waiting for its first approval. It lives on the gate row rather than on the
+	// issue because ClearTreeGeneration deletes the gate when a root is re-admitted, and a
+	// re-admitted root's architect writes its spec again: the mark belongs to the generation
+	// whose release it records.
 	EverOpened bool
 }
 
@@ -1540,8 +1545,9 @@ type Store interface {
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
-	// same branch and pull request), its design gate, and each role's handoff, review rounds,
-	// verdict and summary. Each role keeps its claim and its last handoff, so a
+	// same branch and pull request), its design gate with what its holders took of it
+	// (DesignTold), and each role's handoff, review rounds, verdict and summary. Each role keeps
+	// its claim and its last handoff, so a
 	// commit an earlier generation reported is never new again. An issue whose gate rows it
 	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
 	// Dispatch holds for that issue is the one those rows recorded.
@@ -1566,6 +1572,39 @@ type Store interface {
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate).
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
+	// TreeTold is every told row of the issues of tree (DesignTold), by issue and then audience.
+	TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error)
+	// BaselineTold writes issue's audience row at the approved versions root's gate rows hold in
+	// this transaction, when issue holds no such row: the version work starts from
+	// (Postgres.BaselineTold).
+	BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) error
+	// RaiseTold raises each step of versions on issue's audience row to the greater of what the
+	// row holds and the version given, writing the row when there is none; a step versions does
+	// not name keeps what the row holds.
+	RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
+	// SetOpeningOwed sets or clears whether the gate's opening is owed to issue's audience.
+	SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error
+	// FillTold writes each step of versions on issue's audience row where the row knows no
+	// version of that step, and leaves every step it knows as it stands (Postgres.FillTold).
+	FillTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
+	// DesignNewsPending says whether a reconcile of tree's news (DesignNewsReconcile) is queued and
+	// has not begun to run at now (Postgres.DesignNewsPending).
+	DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
+	// DesignChangesOf is the recorded change set of each of pairs that has one, by pair.
+	DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []VersionPair) (map[VersionPair]DesignChanges, error)
+	// PutDesignChanges records the change set of one pair; a pair already recorded read keeps
+	// its row (Postgres.PutDesignChanges).
+	PutDesignChanges(ctx context.Context, tx pgx.Tx, changes DesignChanges) error
+	// DesignHistoryUnreadOf is the recorded unread review history of each of questions that has
+	// one, by question, as the rows stand; a row counts only while no reconcile of the tree that
+	// asks it is pending, which its caller weighs (DesignHistoryUnread).
+	DesignHistoryUnreadOf(ctx context.Context, tx pgx.Tx, questions []DesignHistoryQuestion) (map[DesignHistoryQuestion]DesignHistoryUnread, error)
+	// PutDesignHistoryUnread records that the review history could not answer one question,
+	// replacing the reason and time an earlier reconcile recorded of it.
+	PutDesignHistoryUnread(ctx context.Context, tx pgx.Tx, unread DesignHistoryUnread) error
+	// ClearDesignHistoryUnread deletes what the record holds of question's unread review history,
+	// once the history has answered it.
+	ClearDesignHistoryUnread(ctx context.Context, tx pgx.Tx, question DesignHistoryQuestion) error
 	// RootAsk is the mirror row of ask on issue, nil when it has none.
 	RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*RootAsk, error)
 	// PutRootAsk writes ask's mirror row, unless any of the stored row's fences (Seq, WaitingOnSeq,

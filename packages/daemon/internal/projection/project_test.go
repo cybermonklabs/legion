@@ -720,6 +720,57 @@ func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 	}
 }
 
+// Under `root-issues` a root that registered its Verification document as criteria is held on it
+// as on the spec (record.TreeSteps), so it answers two gated steps, the spec's first, and the
+// criteria row is waiting on a person; a root that registered none answers the spec alone. The
+// list is what a reader of the state or of `read_record` sees of the gate, so a criteria row that
+// held work and was in no entry would hold the tree where no reader could see why.
+func TestProjectAnswersARootsRegisteredCriteriaRowUnderRootIssues(t *testing.T) {
+	approved, approvedBelow := 3, 1
+	spec := func(root string) record.DesignGate {
+		return record.DesignGate{Issue: root, Step: record.DesignStepSpec, ArtifactID: "spec-" + root, LatestVersion: 3, ApprovedVersion: &approved}
+	}
+	store := projectionStore{
+		issues: []record.Issue{
+			{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
+				Phase: phase.Implementing, Status: "in_progress", Rank: "A", HandedOver: true},
+			{Key: "LEGION-300", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-300",
+				Phase: phase.Implementing, Status: "in_progress", Rank: "B", HandedOver: true},
+		},
+		gates: map[string]map[record.DesignStep]record.DesignGate{
+			"LEGION-208": {
+				record.DesignStepSpec: spec("LEGION-208"),
+				record.DesignStepCriteria: {Issue: "LEGION-208", Step: record.DesignStepCriteria, ArtifactID: "verification-LEGION-208",
+					LatestVersion: 2, ApprovedVersion: &approvedBelow},
+			},
+			"LEGION-300": {record.DesignStepSpec: spec("LEGION-300")},
+		},
+	}
+
+	// The one step spec, the list `gates.design: root-issues` resolves to.
+	got, err := Project(context.Background(), nil, store, "LEGION", []record.DesignStep{record.DesignStepSpec}, nil, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	specView := func(root string) api.GatedStepView {
+		return api.GatedStepView{Step: record.DesignStepSpec, ArtifactID: "spec-" + root, CurrentVersion: 3, ApprovedVersion: &approved,
+			Status: api.GatedStepApproved}
+	}
+	for _, tc := range []struct {
+		root string
+		want []api.GatedStepView
+	}{
+		{root: "LEGION-208", want: []api.GatedStepView{specView("LEGION-208"),
+			{Step: record.DesignStepCriteria, ArtifactID: "verification-LEGION-208", CurrentVersion: 2, ApprovedVersion: &approvedBelow,
+				Status: api.GatedStepWaiting}}},
+		{root: "LEGION-300", want: []api.GatedStepView{specView("LEGION-300")}},
+	} {
+		if view := got.Issues[tc.root]; !reflect.DeepEqual(view.GatedSteps, tc.want) {
+			t.Errorf("%s's gatedSteps = %+v, want %+v", tc.root, view.GatedSteps, tc.want)
+		}
+	}
+}
+
 // Every issue `admission.waiting` names carries its own place in the line and the length of that
 // list (contract 58): the places run 1 to the length in the order the list is published in, and
 // no two issues stand at the same one. Nothing is filtered out of it — a member a Dispatch link

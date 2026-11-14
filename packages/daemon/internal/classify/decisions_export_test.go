@@ -258,3 +258,33 @@ func TestStaleReviewIsAReviewTheGateAlreadyFollowedWithAnother(t *testing.T) {
 		t.Fatalf("ReviewAfter of the review at sequence 12 = wrong, want it after a read at 10 and not after one at 12")
 	}
 }
+
+// The approval a news item names stands while the gate's approved version is the item's: through a
+// new version that closes the gate, which keeps that approval as the one below the latest, and no
+// longer once the person approves a later version or requests changes, which clears it. An item
+// of a version the gate never approved names no approval at all.
+func TestDesignApprovalStandsWhileTheGateStillRecordsItsVersionApproved(t *testing.T) {
+	gate := record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "artifact", LatestVersion: 4}
+	approved := ApplyDesignGateEvent(gate, DesignGateApproved, 4, record.EventMark{Seq: 10})
+	closed := ApplyDesignGateEvent(approved, DesignGateVersion, 5, record.EventMark{})
+	for _, tc := range []struct {
+		name   string
+		gate   record.DesignGate
+		to     int
+		stands bool
+	}{
+		{name: "the approval of the version the item names", gate: approved, to: 4, stands: true},
+		{name: "a new version closed the gate since", gate: closed, to: 4, stands: true},
+		{name: "the person approved the new version", gate: ApplyDesignGateEvent(closed, DesignGateApproved, 5, record.EventMark{Seq: 12}), to: 4},
+		{name: "the item of that later approval", gate: ApplyDesignGateEvent(closed, DesignGateApproved, 5, record.EventMark{Seq: 12}), to: 5, stands: true},
+		{name: "the person requested changes on the new version", gate: ApplyDesignGateEvent(closed, DesignGateChangesRequested, 5, record.EventMark{Seq: 12}), to: 4},
+		{name: "an item of a version the gate never approved", gate: approved, to: 5},
+		{name: "a gate that records no approval", gate: gate, to: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DesignApprovalStands(tc.gate, tc.to); got != tc.stands {
+				t.Fatalf("DesignApprovalStands(%#v, %d) = %v, want %v", tc.gate, tc.to, got, tc.stands)
+			}
+		})
+	}
+}

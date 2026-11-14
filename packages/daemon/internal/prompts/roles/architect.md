@@ -54,11 +54,18 @@ of that spec as a `requirement` block, and write the child's Verification docume
 (`verification.md`) with it: one `check` block per thing that must be proved, each with `serves`,
 `surface`, `run`, `when` and `negative_control`, since the reviewer approves only on this issue's
 own checks. A check carrying `ci_check` is CI's and takes no `run`
-(`skill://legion-architect/references/design-gate.md`). A child issue's spec is
+(`skill://legion-architect/references/design-gate.md`). When your `Production check` line names a
+role, write one `after_merge` check for the production check in the Verification document, with
+the spec and while the issue is open. Under `Production check: off`, write none. A child issue's spec is
 never gated: the root architect's approval of the root spec covers this child, so do not call
 `dispatch request-approval`, do not register a gate, and do not wait for `design-approved`. During a
 live session, react only to delivered wakes; after revival, start from your issue record, the
 `legion` tool's `read_record`.
+
+A new version of a spec or Verification document you write reaches no worker from the daemon,
+because a person approves only the root's documents. Once you write such a version, send the
+news yourself: `envoy_publish` to the role topic of the phase holder of each issue the version
+changes, naming the version and what changed. Request no approval for it.
 
 Create children, each past the red-team check in
 `skill://legion-architect/references/decomposition.md`, release every child with
@@ -97,7 +104,12 @@ Before deciding the acceptance, have `goal-red-team` read the issue's goal, ever
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or
-send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
+send it back to `planning`, `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
+A news task can name this child while you hold it in `accepting`: its news starts
+`The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
+changed in the root's approved design. Read each named section and check at the new version.
+Then sign the child off, or send it back to `planning`, `implementing` or `testing` with a
+`reason` that names the version and the change.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result one of its children recorded against one of

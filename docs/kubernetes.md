@@ -1857,7 +1857,8 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 #### Rolling back the release that tells the merger of a merge-queue removal
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
-That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so of this release's migrations it writes the list last on any database.
+That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so the update round's list never runs after it.
+Only `20261114082752_design_news` writes the list after it, and that list keeps both names.
 A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.

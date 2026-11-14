@@ -110,8 +110,11 @@ type localRuntime struct {
 	// (role_config_files) in production; this proof routes each claim to a stand-in of its own, and
 	// two claims of the proof share a role, so the choice is per claim here.
 	overlays func(claim.Token) []string
-	conns    runtime.Conns
-	stream   string
+	// environment is what a proof gives its panes beyond what a pane is told: the model key of a
+	// proof whose panes call a real model, which reaches the pane's process and nothing else.
+	environment []string
+	conns       runtime.Conns
+	stream      string
 	// paneLogs is the directory each worker's stdout and stderr is written under, one file per
 	// launch, kept for the run's evidence.
 	paneLogs string
@@ -406,10 +409,10 @@ func (r *localRuntime) workDir(issue string) string {
 // paneEnvironment is the child's whole environment: the variables a pane is told, the PATH a pane
 // is told (the daemon's launcher directory first, as workerbin.Path puts it), the HOME and
 // OMP_PROFILE that select the run's own Oh My Pi profile — which under tmux reach a pane from the
-// daemon's own environment through the tmux server — and TMPDIR. Nothing of the test process's own
-// environment rides through: this test runs inside a Legion pod, whose environment names that
-// pod's workspace, daemon and credentials, and a pane that inherited them would register with the
-// wrong daemon.
+// daemon's own environment through the tmux server — TMPDIR, and what the proof gives its panes
+// itself (environment). Nothing of the test process's own environment rides through: this test
+// runs inside a Legion pod, whose environment names that pod's workspace, daemon and credentials,
+// and a pane that inherited them would register with the wrong daemon.
 func (r *localRuntime) paneEnvironment(variables []string, workDir string) []string {
 	env := []string{
 		"PATH=" + workerbin.Path(os.Getenv("PATH"), r.stateDir),
@@ -419,7 +422,7 @@ func (r *localRuntime) paneEnvironment(variables []string, workDir string) []str
 		"LANG=C.UTF-8",
 	}
 	_ = os.MkdirAll(filepath.Join(workDir, "tmp"), 0o700)
-	return append(env, variables...)
+	return append(append(env, r.environment...), variables...)
 }
 
 // promptArgument is the value of the one `--append-system-prompt` word, as a pane's shell produces

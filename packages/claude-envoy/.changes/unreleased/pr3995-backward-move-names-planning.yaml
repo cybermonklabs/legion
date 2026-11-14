@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  The `legion` tool's `request_backward_move` description says that the tree's architect moves an
+  issue in `accepting` back to planning, implementing or testing. Before, it named implementing
+  and testing alone.

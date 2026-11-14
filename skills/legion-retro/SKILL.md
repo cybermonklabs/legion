@@ -28,6 +28,15 @@ Work on the existing issue branch: never rebase it onto another base, never make
 bookmark, and push nothing, because the merger merges this branch's head and a push of yours
 would put a commit above the head the reviewer approved.
 
+## A news task during retro
+
+A news task can reach you during retro: it names a person's approval of a new version of the
+tree's design and what changed for your issue. Answer it as the implementer does, by the rule in
+your role prompt. When the reviewed head is stale, call `request_backward_move` with `to`, the
+phase that must do the work again, and a `reason` that names the version and the change. Retro
+has nothing to push first, since it commits nothing. When the head is still current, write a
+`dispatch comment` on the issue that names the version and why, and go on with retro.
+
 ## When retro stops
 
 When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do

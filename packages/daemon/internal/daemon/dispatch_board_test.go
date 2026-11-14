@@ -139,6 +139,14 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		b.record(write, w)
 	case req.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/handoffs/"):
 		b.showHandoff(strings.TrimPrefix(path, "/api/v1/handoffs/"), w)
+	// The reconcile of a tree's news of its approved design reads what changed between two
+	// approved versions of a gated document (dispatch.Client's ArtifactChanges). This board keeps
+	// no document, so it answers as Dispatch answers for a document it does not hold, which the
+	// reconcile records unreadable at once (dispatch.ErrDocumentNotFound): the news then names the
+	// two versions and says why it lists no change.
+	case req.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/artifacts/") && strings.HasSuffix(path, "/changes"):
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"artifact not found"}`)
 	default:
 		b.t.Errorf("Dispatch request = %s %s", req.Method, path)
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)

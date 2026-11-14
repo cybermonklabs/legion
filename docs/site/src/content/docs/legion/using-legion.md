@@ -90,7 +90,8 @@ options and a recommendation, and it reaches your Inbox.
 
 No code is written until you approve. The approval is for that version of the spec: if the spec
 changes afterwards, you are asked again. (`gates.design` says which documents of the root issue a
-person approves: by default the spec alone, and a deployment can add the issue's decisions
+person approves: by default the spec, and also the issue's Verification document when the
+architect asks you to approve both in one request, and a deployment can add the issue's decisions
 document or its Verification document, each approved the same way. A deployment that sets
 `gates.design: []` turns the design gate off; then the work starts as soon as the spec is written,
 and nobody is asked.)

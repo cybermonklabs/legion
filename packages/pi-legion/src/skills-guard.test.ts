@@ -548,13 +548,27 @@ test("the worker skill tells a role to read the pull request's head after its ow
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
     onlyInTheWorkerPrompt
   );
-  countedOncePerFile("Three waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
+  countedOncePerFile("Four waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
   countedOncePerFile("the empty commit that carries it there", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
   expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
     "When the last read still is not your commit, carry the pull request with a commit of its own, an empty one when your work is complete and an empty one just as much when `@` holds work of yours, since a push of a commit the branch already holds moves no ref; the push section of your role prompt gives the one `jj` recipe, which leaves `@` and everything in it where it is."
   );
+});
+
+// dispatch://INFRA-175: an architect sends an issue in `accepting` back to planning as well as to
+// implementing or testing, and the acceptance reference says so where it names that move. The
+// wording it replaced left planning out, so a reader that followed it would never send a stale
+// plan back to the planner. A folded read, since the sentence wraps across two lines.
+test("the acceptance reference names planning among the moves back from accepting", () => {
+  const acceptance = collapsed(
+    path.join(staged, "legion-architect", "references", "acceptance.md")
+  );
+  expect(acceptance).toContain(
+    "from `accepting` you send an issue back only to `planning`, `implementing` or `testing`"
+  );
+  expect(acceptance).not.toContain("only to `implementing` or `testing`");
 });
 
 // dispatch://INFRA-3204: a check carrying `ci_check` is proved by the CI run it names, so no role
@@ -737,12 +751,12 @@ test("the architect shows a person the surface before it asks them to approve th
     "The picture is the cheapest thing that answers the question. A labelled sketch is enough where it answers it. Where the real surface, built read-only, costs no more than the mock-up, build that and show that."
   );
   // The six ordering lines, each whole: they are what keeps the rule from closing an open gate or
-  // writing a spec version of its own, so a dropped one costs a tree its phase in flight.
+  // writing a spec version of its own, so a dropped one holds a tree's merge on a new version.
   expect(gate).toContain(
     "A spec written before the picture is fine. What may not happen is reaching the gate with no picture."
   );
   expect(gate).toContain(
-    'A tree whose gate is already open starts no round for the work in flight and writes no spec version for a picture: a new version closes the gate and stops the phase under it ("After approval").'
+    'A tree whose gate is already open starts no round for the work in flight and writes no spec version for a picture: a new version closes the gate and holds the merge until a person approves it ("After approval").'
   );
   expect(gate).toContain(
     "The round writes no spec version of its own. The agreed pictures go into the version you first submit for approval."

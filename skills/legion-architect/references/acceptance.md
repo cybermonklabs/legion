@@ -48,7 +48,16 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   rule comes after its children's. One issue beneath never holds it: one the daemon itself holds
   at `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
 - `request_backward_move` names the issue, because your grant serves the tree; the daemon starts
-  that phase's role with your reason in its task.
+  that phase's role with your reason in its task. From `accepting` it moves the issue to
+  `planning`, `implementing` or `testing`.
+- A news task names a person's approval of a new version of the tree's design. For an issue you
+  hold in `accepting` it names what changed for that issue: read each named section and check at
+  the new version, then `sign_off`, or `request_backward_move` to `planning`, `implementing` or
+  `testing` with a `reason` that names the version and the change.
+- The root architect's news task also names each issue of the tree with what it is told. An issue
+  whose pull request has merged never moves back, so work the new version asks of it goes to an
+  issue of the tree whose pull request is still open; where none is, `dispatch ask` the person on
+  the root.
 - `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head
   in `accepting` returns the issue to `implementing` by the daemon's table.
 - No `after_merge` result is asked here: the production check records it after the close, where
@@ -134,8 +143,8 @@ The daemon keeps this order from its fixed table; you start none of its steps:
 A person's request after your sign-off is a requirement of this issue, filed nowhere else: in
 `retro` or `merging` the role holding the phase makes the `request_backward_move`.
 A merge the merger cannot make arrives while the merger holds `merging`, so the merger makes the
-move and you tell it which; from `accepting` you send an issue back only to `implementing` or
-`testing`.
+move and you tell it which; from `accepting` you send an issue back only to `planning`,
+`implementing` or `testing`.
 
 - A failed verification the merger reports: handle it as the `pr-blocked` row of
   `skill://legion-architect/references/wake-routing.md` says, telling the merger to move the

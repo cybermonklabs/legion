@@ -143,6 +143,12 @@ func (d *mappingDispatch) WebhookAppInstalled(_ context.Context, repo string) (b
 	d.webhookAsked = append(d.webhookAsked, repo)
 	return !d.webhookMissing[strings.ToLower(repo)], nil
 }
+func (d *mappingDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *mappingDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 
 // webhookChecks is every repository Dispatch was asked the webhook App check for, sorted.
 func (d *mappingDispatch) webhookChecks() []string {

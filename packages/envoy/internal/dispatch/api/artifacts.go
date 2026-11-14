@@ -11,11 +11,13 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"path"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -989,13 +991,44 @@ type artifactVersionText struct {
 	model.Version
 }
 
+// maxVersionNumber is the largest version number a document can have. artifact_versions.number,
+// and every column that names one of a document's versions (user_document_reads.version among
+// them), is an integer, so a larger number is no version at all, and pgx refuses to encode it
+// against such a column, which a route would answer 500 as its own fault.
+const maxVersionNumber = math.MaxInt32
+
+// versionNumberInRange reports whether a version number the caller named is no greater than
+// maxVersionNumber. Three handlers hold the number they take to this bound before any query is
+// made with it, each with its own lower bound and its own refusal: the two of this file that read
+// it from a path or a query (parseVersionNumber), and the read mark's body (putDocumentRead). The
+// plan review's body needs no check of its own, since it refuses every version above the plan's
+// latest, which is within the bound (createArtifactPlanReview). A reference's `@v<n>` pin is held
+// to the same bound by its own checks in refs (BlockTextAt, blockPrefixCandidates), which answer
+// a version past it as one the document does not have.
+func versionNumberInRange(number int) bool {
+	return number <= maxVersionNumber
+}
+
+// parseVersionNumber reads a version number the caller named in a path or a query: a positive
+// integer within versionNumberInRange, and false for anything else, which is the caller's input
+// refused, 400 INVALID_VERSION, with no query made with it. Both routes that read a version
+// number from a path or a query read it here: GET …/versions/{number} and the change set
+// (getArtifactChanges), each answering the refusal in its own words.
+func parseVersionNumber(text string) (int, bool) {
+	number, err := strconv.Atoi(text)
+	if err != nil || number < 1 || !versionNumberInRange(number) {
+		return 0, false
+	}
+	return number, true
+}
+
 func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	number, err := strconv.Atoi(r.PathValue("number"))
-	if err != nil || number < 1 {
-		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "version number must be positive")
+	number, valid := parseVersionNumber(r.PathValue("number"))
+	if !valid {
+		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("version number must be from 1 to %d", maxVersionNumber))
 		return
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
@@ -1039,6 +1072,425 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveFileVersion(w, r, artifact.ID, number, content, contentType, sha, size)
+}
+
+// The ways a section or a typed block of a document stands between two of its versions
+// (artifactSectionChange, artifactBlockChange): the later version holds it otherwise than the
+// earlier, holds it and the earlier does not, or the earlier holds it and the later does not. A
+// section has a fourth, moved: both versions hold it with the same text, and its place among the
+// sections both hold is another (movedSections). A block has no fourth: a block that moves changes
+// the text of the sections it moves within or between, and those are named.
+const (
+	changeChanged = "changed"
+	changeAdded   = "added"
+	changeRemoved = "removed"
+	changeMoved   = "moved"
+)
+
+// artifactChanges is the body of GET /api/v1/artifacts/{id}/changes: what changed in a document
+// between two of its stored versions, read off their markdown. It names what it compared - the
+// document and the two versions - so a caller that keeps it can check what it holds.
+//
+// Both versions are compared with their decision blocks cut out (docs.WithoutAskBlocks), so an
+// answer a person gave, or an ask added, reworded or moved, changes no section and no block.
+// DecisionOnly says that the cut is the whole change: the two stored texts differ, and they cut
+// to the same text. Sections and Blocks are empty then, as they are for two versions whose stored
+// texts are the same. A version that only puts its sections in another order is no decision-only
+// change: it names the sections it moved.
+type artifactChanges struct {
+	ArtifactID   string `json:"artifact_id"`
+	From         int    `json:"from"`
+	To           int    `json:"to"`
+	DecisionOnly bool   `json:"decision_only"`
+	// Sections are the document's `##` sections whose text differs or that moved, in the later
+	// version's order, and then the sections only the earlier version holds, in its order
+	// (cutSections). A moved section stands where the later version holds it, among the changed
+	// and added ones. The text outside every `##` section - the title, what stands above the
+	// first `##`, and what follows a later `#` heading up to the next `##` - is one section of
+	// its own, first, under the heading "" and occurrence 0, so a change there is named too; it
+	// is never moved.
+	Sections []artifactSectionChange `json:"sections"`
+	// Blocks are the typed blocks whose text or any attribute differs, in the same order
+	// (cutTypedBlocks), each named by an id its own stored version carries. No ask block is one
+	// of them.
+	Blocks []artifactBlockChange `json:"blocks"`
+}
+
+// artifactSectionChange is one `##` section that changed, named as decisionSums names a
+// decision: by its heading's text, and by how many sections before it carry that heading, 0 for
+// the first. The heading "" with occurrence 0 is the text outside every `##` section, all of it
+// joined in document order; a `##` heading with no words is counted from occurrence 1. Change is
+// changed, added, removed or moved (changeChanged and the three beside it).
+type artifactSectionChange struct {
+	Heading    string `json:"heading"`
+	Occurrence int    `json:"occurrence"`
+	Change     string `json:"change" enum:"changed,added,removed,moved"`
+}
+
+// artifactBlockChange is one typed block that changed: its `#id`, its type in the later version
+// (in the earlier one for a removed block), and how it changed.
+type artifactBlockChange struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	Change string `json:"change" enum:"changed,added,removed"`
+}
+
+// getArtifactChanges answers what changed between versions from and to of one document
+// (artifactChanges). It reads the document as GET …/versions/{number} reads it: an authenticated
+// caller, and the artifact's own row by its id (loadArtifactRowByID), the row that route's read
+// finds and the 404 it answers, without the versions and the approval that read goes on to carry,
+// which this one uses neither of and which say nothing of who may read the document. So a caller
+// reads here exactly what it may read there. An id that names no artifact is that route's 404
+// ARTIFACT_NOT_FOUND, and a version the document does not have is its 404 NOT_FOUND. The artifact
+// is read before the query is, so an id that names nothing answers that 404 whatever the query
+// holds, as idRoutes says it does. Both numbers must be version numbers a document can have
+// (parseVersionNumber) and from below to (400 INVALID_VERSION).
+//
+// It reads the two versions' stored markdown and parses it, never the block index, so it answers
+// for a large document as soon as both versions are stored, without waiting for the index's
+// deferred pass over its blocks (deferBlockIndexBlocks).
+func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	artifact, err := loadArtifactRowByID(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if artifact.Kind != "doc" {
+		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		return
+	}
+	query := r.URL.Query()
+	from, fromValid := parseVersionNumber(query.Get("from"))
+	to, toValid := parseVersionNumber(query.Get("to"))
+	if !fromValid || !toValid {
+		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("from and to must be version numbers from 1 to %d", maxVersionNumber))
+		return
+	}
+	if from >= to {
+		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("from (%d) must be below to (%d)", from, to))
+		return
+	}
+	before, after, err := s.twoVersionsMarkdown(r.Context(), artifact.ID, from, to)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	changes, err := compareVersions(before, after)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	changes.ArtifactID, changes.From, changes.To = artifact.ID, from, to
+	WriteJSON(w, http.StatusOK, changes)
+}
+
+// twoVersionsMarkdown is the stored markdown of versions from and to of one document, in one
+// read (versionsMarkdown). A version the document does not have is the 404 NOT_FOUND GET
+// …/versions/{number} answers for it, naming the version.
+func (s *server) twoVersionsMarkdown(ctx context.Context, artifactID string, from, to int) (string, string, error) {
+	markdown, err := s.versionsMarkdown(ctx, artifactID, []int{from, to})
+	if err != nil {
+		return "", "", err
+	}
+	for _, number := range []int{from, to} {
+		if _, held := markdown[number]; !held {
+			return "", "", errorf(http.StatusNotFound, "NOT_FOUND", "the document has no version %d", number)
+		}
+	}
+	return markdown[from], markdown[to], nil
+}
+
+// versionsMarkdown is the stored markdown of each of numbers that the document has, by number, in
+// one read; a number the document has no version of has no entry. Both readers of named versions'
+// own text read it here: the change set (twoVersionsMarkdown) and the decisions of each named
+// version (decisionSumsAt).
+func (s *server) versionsMarkdown(ctx context.Context, artifactID string, numbers []int) (map[int]string, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select number, coalesce(markdown, '') from artifact_versions
+		where artifact_id = $1::uuid and number = any($2::int[])
+	`, artifactID, numbers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	markdown := make(map[int]string, len(numbers))
+	for rows.Next() {
+		var number int
+		var text string
+		if err := rows.Scan(&number, &text); err != nil {
+			return nil, err
+		}
+		markdown[number] = text
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return markdown, nil
+}
+
+// cutVersion is one stored version as a change set compares it: the text it cuts to once its
+// decision blocks are left out, and that cut text's `##` sections and typed blocks.
+type cutVersion struct {
+	text     string
+	sections []cutSection
+	blocks   []cutBlock
+}
+
+// cutSection is one `##` section of a cut version: its key and its text.
+type cutSection struct {
+	key  sectionKey
+	text string
+}
+
+// cutBlock is one typed block of a cut version, by its block id.
+type cutBlock struct {
+	id   string
+	node *pmdoc.Node
+}
+
+// compareVersions is the change set from the stored markdown before to the stored markdown after
+// (artifactChanges), its document and version numbers left for the caller to fill in.
+func compareVersions(before, after string) (artifactChanges, error) {
+	changes := artifactChanges{Sections: []artifactSectionChange{}, Blocks: []artifactBlockChange{}}
+	if before == after {
+		return changes, nil
+	}
+	earlier, err := readCutVersion(before)
+	if err != nil {
+		return artifactChanges{}, err
+	}
+	later, err := readCutVersion(after)
+	if err != nil {
+		return artifactChanges{}, err
+	}
+	if earlier.text == later.text {
+		changes.DecisionOnly = true
+		return changes, nil
+	}
+	changesByKey(earlier.sections, later.sections,
+		func(section cutSection) sectionKey { return section.key },
+		func(a, b cutSection) bool { return a.text == b.text },
+		movedSections(earlier.sections, later.sections),
+		func(section cutSection, change string) {
+			changes.Sections = append(changes.Sections, artifactSectionChange{
+				Heading: section.key.heading, Occurrence: section.key.occurrence, Change: change,
+			})
+		})
+	changesByKey(earlier.blocks, later.blocks,
+		func(block cutBlock) string { return block.id },
+		func(a, b cutBlock) bool { return a.node.Equal(b.node) },
+		nil,
+		func(block cutBlock, change string) {
+			changes.Blocks = append(changes.Blocks, artifactBlockChange{ID: block.id, Type: block.node.Type, Change: change})
+		})
+	return changes, nil
+}
+
+// readCutVersion parses one stored version with the parser every read of a stored text uses
+// (pmdoc.ParseRendering, as typedBlocksIn and docs.CutDecisionBlocks parse), cuts its decision
+// blocks out of the tree and renders what is left once, which is the text docs.CutDecisionBlocks
+// answers for it, with the offset of every block in that text.
+func readCutVersion(markdown string) (cutVersion, error) {
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		return cutVersion{}, err
+	}
+	cut := docs.WithoutAskBlocks(tree)
+	text, offsets, err := pmdoc.RenderWithBlockOffsets(cut)
+	if err != nil {
+		return cutVersion{}, err
+	}
+	return cutVersion{text: text, sections: cutSections(cut, text, offsets), blocks: cutTypedBlocks(cut, markdown)}, nil
+}
+
+// cutSections cuts a version's cut text into its `##` sections by the rule decisionSums cuts a
+// decision by and names one by: a top-level `##` heading opens a section, the next top-level
+// heading of its level or higher closes it - `#` included, which opens none - and a deeper
+// heading is text of the section it stands in. A section is keyed by its heading and by how many
+// sections before it carry that heading, and its text runs from its heading to where it closes,
+// with the blank lines at its end removed. Only a top-level heading cuts, since one inside a
+// quote, a list or a callout is text of the block that holds it. decisionSums' `## Replaced` rule
+// is no part of this one: that is how a decisions document files a decision, while a section here
+// is any document's own `##` heading.
+//
+// The text no `##` section holds, before the first one and from a `#` heading to the next `##`,
+// is one section more, first in the list, keyed by the heading "" and occurrence 0: each of its
+// runs with the blank lines at its end removed, joined in document order. So a change to the
+// document's title or to the text above its first `##` is named like a change to any section. A
+// document that holds no such text has no such section. A `##` heading with no words is keyed from
+// occurrence 1, so it never takes that key.
+func cutSections(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cutSection {
+	headings := map[string]struct{}{}
+	for _, child := range doc.Children {
+		if child.Type == "heading" {
+			id, _ := child.Attrs[pmdoc.BlockIDAttr].(string)
+			headings[id] = struct{}{}
+		}
+	}
+	var sections []cutSection
+	var outside []string
+	seen := map[string]int{"": 1}
+	var key sectionKey
+	// start is where the open section starts, -1 while none is open, and free where the text
+	// outside every section that runs up to the next section starts.
+	start, free := -1, 0
+	keepOutside := func(end int) {
+		if run := strings.TrimRight(text[free:end], "\n"); run != "" {
+			outside = append(outside, run)
+		}
+	}
+	closeAt := func(end int) {
+		if start >= 0 {
+			sections = append(sections, cutSection{key: key, text: strings.TrimRight(text[start:end], "\n")})
+			start, free = -1, end
+		}
+	}
+	for _, offset := range offsets {
+		if _, top := headings[offset.ID]; !top {
+			continue
+		}
+		level, heading := markdownHeading(strings.TrimRight(sliceMarkdown(text, offset.From, offset.To), "\n"))
+		if level == 0 || level > 2 {
+			continue
+		}
+		closeAt(offset.From)
+		if level == 2 {
+			keepOutside(offset.From)
+			key = sectionKey{heading: heading, occurrence: seen[heading]}
+			seen[heading]++
+			start = offset.From
+		}
+	}
+	closeAt(len(text))
+	keepOutside(len(text))
+	if len(outside) == 0 {
+		return sections
+	}
+	return append([]cutSection{{key: sectionKey{}, text: strings.Join(outside, "\n\n")}}, sections...)
+}
+
+// cutTypedBlocks is every typed block of a cut tree whose id its stored version carries (stored,
+// that version's markdown), in document order: the cut left no ask block in it, so these are its
+// requirements, checks, plan tasks and callouts, and whatever other type the block schema
+// declares.
+//
+// The parse gives every block an id of its own (pmdoc.EnsureBlockIDs): it keeps an id the stored
+// text names for the first block that names it, and mints a fresh one for each later block that
+// names the same id, an ask block among them, since the ask is cut only after the ids are
+// stamped. A minted id is in no stored version, so a change named under it would be an addition
+// and a removal of blocks neither document holds, which the daemon keeps for good. Such a block
+// is left out. The check is made on the stored text itself: a stored version is a rendering, so
+// it names each id the way the renderer writes a typed block's id (pmdoc.TypedBlockIDAttribute),
+// and an id the parse minted, a fresh random one, is in no stored text.
+func cutTypedBlocks(doc *pmdoc.Node, stored string) []cutBlock {
+	var blocks []cutBlock
+	pmdoc.Walk(doc, func(node *pmdoc.Node) bool {
+		if !pmdoc.IsTypedBlock(node.Type) {
+			return true
+		}
+		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); strings.Contains(stored, pmdoc.TypedBlockIDAttribute(id)) {
+			blocks = append(blocks, cutBlock{id: id, node: node})
+		}
+		return true
+	})
+	return blocks
+}
+
+// movedSections is the keys of the sections both versions hold whose place among those sections
+// is another in later than in earlier. The two orders are the sections both versions hold, each in
+// its own version's order, with the text outside every section (the key "" and 0) left out, since
+// it always stands first. A section is in its place when it is in one longest common subsequence
+// of the two orders, and moved when it is outside it, so the sections named moved are the fewest
+// that put earlier's order into later's. Both orders hold the same sections, each once, so that
+// subsequence is a longest run of later's sections whose places in earlier rise.
+//
+// Where several runs are that long, the one taken keeps the later version's earliest sections:
+// its first section stands as early in later as the first of any run that long can, then its
+// second, and so on. So of two sections that swapped places, the one later holds second is moved,
+// and a section lifted from last to first is the one moved, its neighbours' run being the only
+// longest one.
+//
+// The keys are of a section's place alone: changesByKey names changed a section whose text
+// differs, wherever it stands, and moved only a section whose text is the same.
+func movedSections(earlier, later []cutSection) map[sectionKey]struct{} {
+	place := make(map[sectionKey]int, len(earlier))
+	for index, section := range earlier {
+		if section.key != (sectionKey{}) {
+			place[section.key] = index
+		}
+	}
+	// keys are the sections both versions hold in later's order, and places each one's index in
+	// earlier.
+	var keys []sectionKey
+	var places []int
+	for _, section := range later {
+		if at, holds := place[section.key]; holds {
+			keys = append(keys, section.key)
+			places = append(places, at)
+		}
+	}
+	// longest[i] is the length of the longest rising run that starts at places[i], read from the
+	// right: starts[n] is the highest place a run of n+1 starts at among the places read so far,
+	// so starts falls as n grows, and a run starting at places[i] extends one of each length whose
+	// start is above it.
+	longest := make([]int, len(places))
+	var starts []int
+	for i := len(places) - 1; i >= 0; i-- {
+		n := sort.Search(len(starts), func(n int) bool { return starts[n] < places[i] })
+		longest[i] = n + 1
+		if n == len(starts) {
+			starts = append(starts, places[i])
+		} else {
+			starts[n] = places[i]
+		}
+	}
+	// The run is taken from the left: each section is the run's next when a run as long as the
+	// rest of it starts there above the run's last place, and every other section is moved.
+	moved := map[sectionKey]struct{}{}
+	need, last := len(starts), -1
+	for i, at := range places {
+		if longest[i] == need && at > last {
+			need, last = need-1, at
+			continue
+		}
+		moved[keys[i]] = struct{}{}
+	}
+	return moved
+}
+
+// changesByKey compares one kind of item of two versions by key, and hands report each item that
+// changed with how it changed: first each item of later that earlier does not hold (added), holds
+// otherwise, as same judges (changed), or holds as it is at another place, as moved names (moved),
+// in later's order, and then each item of earlier that later does not hold (removed), in earlier's
+// order. moved is nil for a kind of item whose place is never named.
+func changesByKey[T any, K comparable](earlier, later []T, key func(T) K, same func(a, b T) bool, moved map[K]struct{}, report func(item T, change string)) {
+	held := make(map[K]T, len(earlier))
+	for _, item := range earlier {
+		held[key(item)] = item
+	}
+	kept := make(map[K]struct{}, len(later))
+	for _, item := range later {
+		name := key(item)
+		kept[name] = struct{}{}
+		before, holds := held[name]
+		_, elsewhere := moved[name]
+		switch {
+		case !holds:
+			report(item, changeAdded)
+		case !same(before, item):
+			report(item, changeChanged)
+		case elsewhere:
+			report(item, changeMoved)
+		}
+	}
+	for _, item := range earlier {
+		if _, holds := kept[key(item)]; !holds {
+			report(item, changeRemoved)
+		}
+	}
 }
 
 // deref is the string a nullable column holds, or "".

@@ -93,11 +93,15 @@ const dequeueRetry = 20 * time.Millisecond
 // owedEntryRoles, workflow.OwedEntry), and no case of this test writes a phase row, so every role
 // here stands at entry 0 and was given nothing, which is owed nothing. The boot's cutover repair
 // does start a released merger in merging once, but only one whose phase row holds a READY head
-// (workflow's cutoverMergerRepair), so the repair passes over every merger here too. The only
-// resume of a released merger is therefore the delivery's own (wakeForDelivery), which the
-// record keeps as one pods.WakeDelivery row of pod_resumes. The idle release of
-// idle_rig_test.go's rig is not used: it needs the Agent Sandbox runtime over a Kubernetes
-// stand-in and a real listener, and the rows under test read only the claim's state.
+// (workflow's cutoverMergerRepair), so the repair passes over every merger here too. The entry
+// sweep's tick also queues the reconcile of each tree's news of its approved design
+// (queueOwedDesignNews), whose news-only start resumes a released merger owed news; the rig sets
+// that tick to an hour, so it never runs here, and a case that needs what changed recorded
+// records it itself, as the reconcile would. The only resume of a released merger is therefore the
+// delivery's own (wakeForDelivery), which the record keeps as one pods.WakeDelivery row of
+// pod_resumes. The idle release of idle_rig_test.go's rig is not used: it needs the Agent Sandbox
+// runtime over a Kubernetes stand-in and a real listener, and the rows under test read only the
+// claim's state.
 //
 // The reads of GitHub are counted from the moment the event is published. The daemon's per-issue
 // read asks the same path once for every issue with an open pull request as the runtime starts
@@ -108,7 +112,7 @@ const dequeueRetry = 20 * time.Millisecond
 // any of them. Each case then holds the count to the read executor's own lines (one per read), so
 // a read anything else made would fail it.
 //
-// Each case has an issue of its own, each issue its own tree root, so the nine share one daemon:
+// Each case has an issue of its own, each issue its own tree root, so the ten share one daemon:
 //
 //  1. The removal R1 is about: the issue in merging, the event at the head the record holds,
 //     GitHub answering open, the merger's pod released. GitHub is read once; the merger's claim is
@@ -142,7 +146,13 @@ const dequeueRetry = 20 * time.Millisecond
 //  9. The design gate closed and the merger's pod released: a merger the gate holds may not know
 //     the gate closed, and woken by the message it could enqueue the pull request again against
 //     the gate. The row neither wakes it nor publishes while the gate is closed, and once the test
-//     opens the gate, the merger is woken and told once.
+//     opens the gate, with what changed in the version it approves recorded, the merger is woken
+//     and told once.
+//  10. The gate open at a version the merger's phase has not taken, and the merger's pod released:
+//     a merger woken before what changed is recorded could enqueue the pull request again before
+//     it reads that change, so the row waits as the merger's start waits
+//     (mergerWaitsForTheDesignGate): it neither wakes the merger nor publishes while the change set
+//     is not recorded, and once the test records it, the merger is woken and told once.
 func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	rig := newDequeueRig(t)
 	woken := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
@@ -154,6 +164,8 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	retired := rig.seed(t, phase.Merging, supervise.StateRetired, false)
 	failed := rig.seed(t, phase.Merging, supervise.StateFailed, true)
 	gated := rig.seed(t, phase.Merging, supervise.StateSuspended, true)
+	owed := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
+	rig.oweNews(t, owed)
 	rig.boot(t)
 
 	t.Run("a released merger is woken and told once its session holds the role", func(t *testing.T) {
@@ -295,10 +307,37 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			t.Fatalf("while the gate is closed %d resumes are recorded and the runtime resumed the merger %d times, want neither", resumed, resumes)
 		}
 		rig.nothingPublished(t, issue)
+		rig.recordChanges(t, issue)
 		approved := 2
 		putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: issue.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + issue.key,
 			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
 		rig.await(t, "the merger woken for the message once the gate opened", func() bool {
+			return rig.wakes(t, issue.key) >= 1
+		})
+		rig.listener.holds(issue.topic)
+		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
+			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+		})
+		rig.told(t, issue)
+		rig.readsWere(t, issue, reads, 1)
+		rig.wokenOnce(t, issue)
+	})
+
+	t.Run("a released merger owed news of the approved design is woken only once what changed is recorded", func(t *testing.T) {
+		issue := owed
+		reads := rig.publish(t, issue, issue.head)
+		rig.await(t, "the message's row held over two tries", func() bool {
+			return rig.attempts(t, issue.key, record.OutboxKindMergeQueueRemoval) >= 2
+		})
+		if held := rig.lastError(t, issue.key, record.OutboxKindMergeQueueRemoval); !strings.Contains(held, "to be recorded") {
+			t.Fatalf("the message's row waits on %q, want what changed in the approved design to be recorded", held)
+		}
+		if resumed, resumes := rig.podResumes(t, issue.key), len(resumesOf(rig.rt, issue.merger)); resumed != 0 || resumes != 0 {
+			t.Fatalf("while what changed is not recorded %d resumes are recorded and the runtime resumed the merger %d times, want neither", resumed, resumes)
+		}
+		rig.nothingPublished(t, issue)
+		rig.recordChanges(t, issue)
+		rig.await(t, "the merger woken for the message once what changed is recorded", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
 		rig.listener.holds(issue.topic)
@@ -366,6 +405,9 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 	rig.o.workflowTokens = &workflowTokenRecorder{}
 	rig.o.githubAPI = rig.github.url
 	rig.o.mergeStateRetry = dequeueRetry
+	// An hour: the entry sweep's tick would queue the reconcile of a tree's news, whose news-only
+	// start resumes a released merger beside the delivery's own wake (see the test's comment).
+	rig.o.entrySweep = time.Hour
 	return rig
 }
 
@@ -378,7 +420,8 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 // implementing has its implementer released too. No phase row is written, so no role of the
 // issue is behind its entry and the slot repair starts no worker of it (workflow.OwedEntry).
 // gateClosed records the root's design gate closed by a newer version of its spec than the one
-// approved.
+// approved, and the merger's phase as having taken that approved version, as the upgrade's seed
+// or the phase's entry records it (design_news_told).
 func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.ClaimState, gateClosed bool) dequeueIssue {
 	t.Helper()
 	index := len(r.issues) + 1
@@ -402,8 +445,11 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 			return nil
 		}
 		approved := 1
-		return r.records.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "spec-" + key,
-			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
+		if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "spec-" + key,
+			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true}); err != nil {
+			return err
+		}
+		return r.records.RaiseTold(ctx, tx, key, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: approved}, time.Now().UTC())
 	}); err != nil {
 		t.Fatalf("record the pull request of %s: %v", key, err)
 	}
@@ -411,6 +457,38 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 	r.listener.unheld(issue.topic)
 	r.issues = append(r.issues, issue)
 	return issue
+}
+
+// oweNews records issue's design gate open at version 2 of its spec over the version 1 its
+// merger's phase took (design_news_told), with no change set of that pair recorded: the merger is
+// owed news of version 2 that no start can carry yet (the outbox's mergerNewsUnrecorded), as it is
+// between a person's approval and the reconcile's read of what changed.
+func (r *dequeueRig) oweNews(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+		ctx := context.Background()
+		approved := 2
+		if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: issue.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + issue.key,
+			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true}); err != nil {
+			return err
+		}
+		return r.records.RaiseTold(ctx, tx, issue.key, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 1}, time.Now().UTC())
+	}); err != nil {
+		t.Fatalf("record the news %s's merger is owed: %v", issue.key, err)
+	}
+}
+
+// recordChanges records what changed in issue's spec from version 1 to version 2, as the
+// reconcile records a change set it read from Dispatch (the outbox's designChanges).
+func (r *dequeueRig) recordChanges(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+		return r.records.PutDesignChanges(context.Background(), tx, record.DesignChanges{
+			VersionPair: record.VersionPair{ArtifactID: "spec-" + issue.key, From: 1, To: 2}, State: record.DesignChangesRead,
+			Sections: []record.SectionChange{{Heading: "Scope", Change: "changed"}}, ReadAt: time.Now().UTC()})
+	}); err != nil {
+		t.Fatalf("record what changed in the spec of %s: %v", issue.key, err)
+	}
 }
 
 // claim is role's claim on key standing in state, which for a suspended claim is the idle

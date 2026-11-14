@@ -95,6 +95,10 @@
   ],
   "elsewhere": [
     {
+      "script": "approved-version-news.sh",
+      "needs": "the pinned Oh My Pi every pane of its part two runs (LEGION_OMP_PATH, an executable, which a GitHub-hosted runner has none of), the model gateway ANTHROPIC_BASE_URL names and its key file (APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default /var/run/model-gateway-key/key), a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, tar, awk, python3 and bun with this repository's node_modules, and about fifty minutes of wall clock for both parts, part one about two of them and part two's eighteen runs of real sessions about forty-five"
+    },
+    {
       "script": "burstable-kind.sh",
       "needs": "a throwaway kind cluster with gVisor on an amd64 Linux host, with docker, go, kubectl, curl, zstd, a tar that supports --zstd and kind, and a worker image by digest (LEGION_E2E_IMAGE)"
     },

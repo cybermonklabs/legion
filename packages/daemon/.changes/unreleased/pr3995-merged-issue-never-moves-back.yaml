@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  `request_backward_move` on an issue whose pull request has merged is refused in every phase,
+  with `BACKWARD_REFUSED` and the reason "its pull request has merged; a merged change never moves
+  back". Before, the daemon took the move. Such an issue also gets no task for an approved new
+  version of its tree's design.

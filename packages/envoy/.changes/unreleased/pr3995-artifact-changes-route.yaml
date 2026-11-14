@@ -1,0 +1,14 @@
+kind: Added
+custom:
+  Issue: pr3995
+body: |-
+  Dispatch's `GET /api/v1/artifacts/{id}/changes?from=<n>&to=<m>` answers what changed between two
+  stored versions of one document: `decision_only`, true when the two versions differ only in ask
+  blocks; `sections`, each `##` section whose text differs or that moved, by heading and
+  occurrence; and `blocks`, each typed block other than an ask block that differs, by its `#id`
+  and type. Each section and block is marked `changed`, `added` or `removed`. A section that keeps
+  its text and changes its place among the sections both versions hold is marked `moved`, so a
+  version that only reorders sections names them. The route reads both versions from their
+  stored markdown, so it does not wait for the block index. It answers `400 INVALID_VERSION` when
+  `from` is not below `to` or a number is not a positive version number of at most 2147483647,
+  and `404 NOT_FOUND` for a version the document does not have.

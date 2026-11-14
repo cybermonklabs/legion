@@ -227,7 +227,7 @@ export const PHASE_OP_SENTENCES = {
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; " +
-    "the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. ",
+    "the tree's architect moves an issue in accepting, named by `issue`, back to planning, implementing or testing, which counts a review round. ",
 } as const;
 
 /**

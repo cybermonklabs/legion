@@ -688,7 +688,8 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 	// `$(cat …)` drops each file's trailing newlines, as a shell does. The start message travels
 	// as LEGION_CONTROLLER_START_MESSAGE; argv ends with the command that sends it.
 	wantArgv := []string{"--append-system-prompt",
-		strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. The project's repositories are acme/widgets.\n\n" +
+		strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. A root that registers its Verification document as `criteria` " +
+			"is held on that step too. The project's repositories are acme/widgets.\n\n" +
 			strings.TrimRight(string(instructions), "\n"),
 		"/legion-controller-start"}
 	if got := c.argv(); !slices.Equal(got, wantArgv) {
@@ -782,7 +783,8 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 		line  string
 	}{
 		{"two steps", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`."},
-		{"root-issues", config.DesignGateRootIssues.Steps(), "Design gate steps: `spec`."},
+		{"root-issues", config.DesignGateRootIssues.Steps(),
+			"Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
 		{"off", config.DesignGateOff.Steps(), "Design gate steps: none."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

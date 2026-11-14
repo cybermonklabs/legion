@@ -1,0 +1,192 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// designNewsVersion is the version of the migration this file tests, so the test can migrate
+// through everything before it whatever lands beside it.
+const designNewsVersion = 20261114082752
+
+// 20261114082752 records what each holder of a tree's work took of its approved design
+// (design_news_told), the change sets between two approved versions (design_changes), the
+// questions of a document's review history the reconcile could not answer
+// (design_history_unread), the news a delivery carries (pending_task_deliveries.design_news) and
+// the outbox kind that reconciles them (design_changes), and seeds the told rows from the gates the
+// release before it left, so the upgrade owes nobody news of what the record already shows as
+// taken.
+//
+// The seed is read on five trees that release can leave: a tree whose spec gate stands open at
+// version 4, with a member at work, a member held from implementing, a member held from admitted, a
+// member the gate released that has not started, and a member done; a tree whose gate a changes
+// request closed, which cleared its approved version (classify.ApplyDesignGateEvent), so what its
+// holders took is unknown; a tree whose gate a new version closed, which keeps the approval of
+// version 4 it closed; a tree whose gate opened at version 2 and none of whose members has started;
+// and a tree whose gate never opened, waiting for its first approval. Each member in the workflow
+// whose phase has work, the member held from implementing among them, gets a holder row at its
+// root's approved version. A member or a root at admitted, or held from it, gets none, so its first
+// working entry takes the version approved then as its baseline. Each root of a member at work, and
+// each root holding an approved version, gets an architect row: the architect of the tree that
+// opened at version 2 took that version though no member has started. The tree a changes request
+// closed gets the same rows, each knowing no version, so the member's next phase entry takes no
+// baseline over the news it is owed. The tree that never opened gets none: nothing of it has
+// started, so its first opening and each member's first phase take their own. The done member gets
+// none.
+//
+// The negative control is the schema before the migration, the merge-queue kinds' list of
+// 20261114031356 included, which holds neither the told rows table nor the unread history table
+// and refuses a design_changes outbox row; after it, every kind the constraint already named is
+// still taken, the merge-queue kinds among them, since this migration writes the list last on any
+// database, and an unread history is taken only with its reason and a version above 0.
+func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261114082752(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	migrateThrough(t, store, designNewsVersion-1)
+
+	issue := func(key, tree, phase, status string) string {
+		return `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+			values ('` + key + `', '` + tree + `', 'LEGION', '` + key + `', '` + phase + `', 1, '` + status + `', '` + key + `', 1)`
+	}
+	held := func(key, tree, from string) string {
+		return `insert into issues (key, tree, project, title, phase, held_from, generation, status, rank, last_dispatch_seq)
+			values ('` + key + `', '` + tree + `', 'LEGION', '` + key + `', 'held', '` + from + `', 1, 'in_progress', '` + key + `', 1)`
+	}
+	for _, seed := range []string{
+		// The tree whose spec gate stands open at version 4, with a member at work, a member held
+		// from implementing, a member held from admitted, which an earlier release could write and
+		// issues_held_from_check still takes, a member the gate released that waits admitted for its
+		// turn, and a member done.
+		issue("LEGION-100", "LEGION-100", "admitted", "in_progress"),
+		issue("LEGION-101", "LEGION-100", "implementing", "in_progress"),
+		issue("LEGION-102", "LEGION-100", "done", "done"),
+		issue("LEGION-103", "LEGION-100", "admitted", "todo"),
+		held("LEGION-104", "LEGION-100", "implementing"),
+		held("LEGION-105", "LEGION-100", "admitted"),
+		`insert into design_gates (issue, step, artifact_id, latest_version, approved_version, ever_opened)
+			values ('LEGION-100', 'spec', 'doc-100', 4, 4, true)`,
+		// The tree a changes request closed: the review cleared the approval and was told.
+		issue("LEGION-200", "LEGION-200", "admitted", "in_progress"),
+		issue("LEGION-201", "LEGION-200", "implementing", "in_progress"),
+		`insert into design_gates (issue, step, artifact_id, latest_version, approved_version, ever_opened,
+			told_changes_version, told_changes_reason)
+			values ('LEGION-200', 'spec', 'doc-200', 4, null, true, 4, 'Name the rollback.')`,
+		// The tree a new version closed: version 5 stands unapproved above the approval of 4.
+		issue("LEGION-300", "LEGION-300", "admitted", "in_progress"),
+		issue("LEGION-301", "LEGION-300", "reviewing", "needs_review"),
+		`insert into design_gates (issue, step, artifact_id, latest_version, approved_version, ever_opened)
+			values ('LEGION-300', 'spec', 'doc-300', 5, 4, true)`,
+		// The tree whose gate opened at version 2 and none of whose members has started: its root
+		// stands admitted while its child waits admitted for its turn.
+		issue("LEGION-500", "LEGION-500", "admitted", "in_progress"),
+		issue("LEGION-501", "LEGION-500", "admitted", "todo"),
+		`insert into design_gates (issue, step, artifact_id, latest_version, approved_version, ever_opened)
+			values ('LEGION-500', 'spec', 'doc-500', 2, 2, true)`,
+		// The tree whose gate never opened: its architect registered the spec, and no person has
+		// approved it yet, so its member waits admitted.
+		issue("LEGION-400", "LEGION-400", "admitted", "in_progress"),
+		issue("LEGION-401", "LEGION-400", "admitted", "todo"),
+		`insert into design_gates (issue, step, artifact_id, latest_version, approved_version, ever_opened)
+			values ('LEGION-400', 'spec', 'doc-400', 1, null, false)`,
+	} {
+		if _, err := store.Pool().Exec(ctx, seed); err != nil {
+			t.Fatalf("record before the migration: %v", err)
+		}
+	}
+	queue := func(kind string) error {
+		_, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ($1, 'LEGION-100', '{}', 0, now(), '')`, kind)
+		return err
+	}
+	if _, err := store.Pool().Exec(ctx, "select 1 from design_news_told"); err == nil || !strings.Contains(err.Error(), "design_news_told") {
+		t.Fatalf("reading the told rows before the migration = %v, want the table to be unknown", err)
+	}
+	if _, err := store.Pool().Exec(ctx, "select 1 from design_history_unread"); err == nil || !strings.Contains(err.Error(), "design_history_unread") {
+		t.Fatalf("reading the unread histories before the migration = %v, want the table to be unknown", err)
+	}
+	if err := queue("design_changes"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
+		t.Fatalf("queueing a design_changes row before the migration = %v, want the kind constraint to refuse it", err)
+	}
+
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through the design news: %v", err)
+	}
+
+	rows, err := store.Pool().Query(ctx, `select issue, audience, versions, opening_owed, told_at is not null
+		from design_news_told order by issue, audience`)
+	if err != nil {
+		t.Fatalf("read the seeded told rows: %v", err)
+	}
+	defer rows.Close()
+	got := map[string]map[string]int{}
+	for rows.Next() {
+		var issue, audience string
+		var versions []byte
+		var owed, told bool
+		if err := rows.Scan(&issue, &audience, &versions, &owed, &told); err != nil {
+			t.Fatalf("scan a seeded told row: %v", err)
+		}
+		if owed || !told {
+			t.Fatalf("%s's %s row owes the opening %t and was told %t, want no opening owed and a time it was taken", issue, audience, owed, told)
+		}
+		var steps map[string]int
+		if err := json.Unmarshal(versions, &steps); err != nil {
+			t.Fatalf("decode %s's %s versions %s: %v", issue, audience, versions, err)
+		}
+		got[issue+"/"+audience] = steps
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the seeded told rows: %v", err)
+	}
+	at4, at2, unknown := map[string]int{"spec": 4}, map[string]int{"spec": 2}, map[string]int{}
+	want := map[string]map[string]int{
+		"LEGION-100/architect": at4, "LEGION-101/holder": at4, "LEGION-104/holder": at4,
+		"LEGION-200/architect": unknown, "LEGION-201/holder": unknown,
+		"LEGION-300/architect": at4, "LEGION-301/holder": at4,
+		"LEGION-500/architect": at2,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the seeded told rows = %v, want %v: a holder row at version 4 for each member at work or held from a phase with work under an approval and an architect row for its root, none for a member or root at admitted or held from it, rows that know no version for the tree a changes request closed, an architect row alone for the tree that opened with no member started, none for the tree that never opened, and none for the done member", got, want)
+	}
+
+	if _, err := store.Pool().Exec(ctx, `insert into design_changes (artifact_id, from_version, to_version, state, reason, read_at)
+		values ('doc-100', 4, 5, 'unavailable', 'dispatch has no changes route', now())`); err != nil {
+		t.Fatalf("record an unreadable change set after the migration: %v", err)
+	}
+	if _, err := store.Pool().Exec(ctx, `insert into design_changes (artifact_id, from_version, to_version, state, reason, read_at)
+		values ('doc-100', 5, 6, 'unavailable', '', now())`); err == nil {
+		t.Fatal("recording an unreadable change set with no reason was taken, want it refused")
+	}
+	if _, err := store.Pool().Exec(ctx, `insert into design_history_unread (artifact_id, to_version, reason, read_at)
+		values ('doc-100', 5, 'Dispatch failed 3 reads of it, the last with: 502 BAD_GATEWAY', now())`); err != nil {
+		t.Fatalf("record an unread review history after the migration: %v", err)
+	}
+	for _, refused := range []string{
+		`insert into design_history_unread (artifact_id, to_version, reason, read_at) values ('doc-100', 6, '', now())`,
+		`insert into design_history_unread (artifact_id, to_version, reason, read_at) values ('doc-100', 0, 'a failed read', now())`,
+	} {
+		if _, err := store.Pool().Exec(ctx, refused); err == nil {
+			t.Fatalf("%s was taken, want an unread history with no reason, or of no version, refused", refused)
+		}
+	}
+	if _, err := store.Pool().Exec(ctx, "select design_news from pending_task_deliveries"); err != nil {
+		t.Fatalf("read the news a delivery carries after the migration: %v", err)
+	}
+	for _, kind := range []string{
+		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
+		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
+		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
+		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
+		"merge_queue_read", "merge_queue_removal", "design_changes",
+	} {
+		if err := queue(kind); err != nil {
+			t.Fatalf("queue a %s row after the migration: %v", kind, err)
+		}
+	}
+	if err := queue("quiesce"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
+		t.Fatalf("queueing a row of a kind that is none = %v, want the constraint to refuse it", err)
+	}
+}

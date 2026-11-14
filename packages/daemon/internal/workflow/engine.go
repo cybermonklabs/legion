@@ -1163,6 +1163,10 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
 // names which of the guard's three readings failed. served is whether the table holds a backward
 // row of the issue's phase for the move's target.
+//
+// It is a function of the issue and the fact alone and reads no pull request, so the rule that a
+// merged change never moves back is none of its readings: backward, which holds the transaction,
+// reads the issue's pull request after this answers "" and refuses that move itself.
 func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) string {
 	switch {
 	case fact.To == "":
@@ -1190,6 +1194,13 @@ func (e *Engine) phaseNow(ctx context.Context, tx pgx.Tx, issue record.Issue) (p
 	return moved.Phase, nil
 }
 
+// backward applies a backward move (request_backward_move): the role running the issue's phase
+// sends it back to an earlier phase, with its reason. It is refused BACKWARD_REFUSED, changing
+// nothing, where the table's guard refuses it (backwardRefusal), and where the issue's pull
+// request has merged, in whichever phase the issue stands: a merged change never moves back.
+// GitHub reopens no merged pull request and its change is already on the base branch, so an
+// earlier phase has no pull request left to carry new work; that work goes to an issue whose pull
+// request is still open, which the architect decides.
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1208,6 +1219,17 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if why := backwardRefusal(*issue, fact, served); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
+	// A merged pull request refuses the move in every phase: in merging, where a root's close can
+	// wait on the rest of its tree (closeMerged), and in an earlier phase whose pull request merged
+	// early, which the architect is told of (merged).
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if pr != nil && pr.State == record.PullRequestMerged {
+		return refused("BACKWARD_REFUSED", fmt.Sprintf("the %s's move of %s to %s changed nothing: its pull request has merged; a merged change never moves back",
+			fact.Requester, issue.Key, fact.To)), nil
+	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
 		return intake.Result{}, err
@@ -1216,10 +1238,6 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 		return refusedLingering(*issue, fmt.Sprintf("the %s's backward move to %s", fact.Requester, fact.To)), nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, fact.Requester)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -1371,6 +1389,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
+	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
+		return err
+	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
 		return err
 	}
@@ -1382,6 +1403,27 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if row.To == phase.Done {
 		return e.leave(ctx, tx, issue, "done")
+	}
+	return nil
+}
+
+// queueMovedNews queues the reconcile of issue's tree's news of its approved design
+// (record.QueueDesignNews) when the move just written leaves the holder of issue's phase owed news
+// (record.OwedNews over the record as the move leaves it). A phase worker's start carries what its
+// holder is owed (the daemon's start executor), but no start carries news into accepting, since
+// the engine starts no architect (start): the reconcile is what sends an owed member in accepting
+// its news, as a task to the architect that owns it, beside the phase-finished notice. A move into
+// any other phase queues it too, so news whose change set no start could carry yet is sent once
+// the reconcile has recorded it.
+func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	facts, err := record.TreeNewsFacts(ctx, e.store, tx, e.cfg.Steps, issue.Tree)
+	if err != nil {
+		return err
+	}
+	for _, member := range record.OwedNews(facts).Members {
+		if member.Issue == issue.Key {
+			return record.QueueDesignNews(ctx, e.store, tx, issue.Tree, e.now())
+		}
 	}
 	return nil
 }
