@@ -153,27 +153,50 @@ func TestARereadNamesTheKindItServes(t *testing.T) {
 }
 
 // TestARereadWhoseRequestEndedLogsNoError pins that a reread whose request ended before it
-// finished - its caller went away, or its deadline passed - is answered without the ERROR line
-// "broker: reread secret failed" that an operator's alert counts, as the miss path logs nothing for
-// one, while a reread Secrets Manager itself fails for a caller still waiting is still that 500 and
-// that line.
+// finished - its caller went away, or its deadline passed - is answered 503 REQUEST_ENDED without
+// the ERROR line "broker: reread secret failed" that an operator's alert counts, as the miss path
+// logs nothing for one, while a reread Secrets Manager itself fails for a caller still waiting is
+// still that 500 and that line. A request that ends during the value read of a kind secret's
+// version the pod has not decoded, once the metadata read has served the secret, ended before the
+// reread finished too: it is that 503, not a 200 answering for a value nobody checked.
 func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
+	// route is the reread route over a policy of local whose Secrets Manager calls client makes.
+	route := func(local *secrets.Local, client secrets.SecretsManagerAPI) *http.ServeMux {
+		loader := policytest.Loader(local)
+		loader.Store = policytest.StoreThrough(local, client)
+		cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux := http.NewServeMux()
+		api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
+		return mux
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	local := secrets.NewLocal()
-	loader := policytest.Loader(local)
-	loader.Store = policytest.StoreThrough(local, abandoningDescriber{SecretsManagerAPI: local, cancel: cancel})
-	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
+	mux := route(local, abandoningDescriber{SecretsManagerAPI: local, cancel: cancel})
+	valueCtx, cancelValue := context.WithCancel(context.Background())
+	defer cancelValue()
+	valueLocal := secrets.NewLocal()
+	valueMux := route(valueLocal, abandoningReader{SecretsManagerAPI: valueLocal, cancel: cancelValue})
+	valueLocal.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
 	logged := policytest.CaptureLog(t)
 
-	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
-	if strings.Contains(logged.String(), "reread secret failed") {
-		t.Fatalf("a reread whose caller went away logged:\n%s", logged.String())
+	for _, ended := range []struct {
+		during string
+		mux    *http.ServeMux
+		ctx    context.Context
+		name   string
+	}{
+		{"its metadata read", mux, ctx, "NEW_KEY"},
+		{"its value read", valueMux, valueCtx, "APP_KEY"},
+	} {
+		answer := httptest.NewRecorder()
+		ended.mux.ServeHTTP(answer, httptest.NewRequestWithContext(ended.ctx, http.MethodPost, "/v1/secrets/"+ended.name+"/reread", nil))
+		if answer.Code != http.StatusServiceUnavailable || decode[wireError](t, answer.Body.Bytes()).Code != "REQUEST_ENDED" || strings.Contains(logged.String(), "reread secret failed") {
+			t.Fatalf("a reread whose caller went away during %s: %d %s, logged %q; want 503 REQUEST_ENDED and no line", ended.during, answer.Code, strings.TrimSpace(answer.Body.String()), logged.String())
+		}
 	}
 
 	failed := httptest.NewRecorder()
@@ -197,6 +220,19 @@ func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanag
 		return nil, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", err)
 	}
 	return nil, errors.New("operation error Secrets Manager: DescribeSecret, ThrottlingException")
+}
+
+// abandoningReader is a caller that goes away while the reread's value read is in flight, its
+// DescribeSecret answered: it ends that caller's context and fails as the AWS SDK does once a
+// context has ended.
+type abandoningReader struct {
+	secrets.SecretsManagerAPI
+	cancel context.CancelFunc
+}
+
+func (r abandoningReader) GetSecretValue(ctx context.Context, _ *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	r.cancel()
+	return nil, fmt.Errorf("operation error Secrets Manager: GetSecretValue, %w", ctx.Err())
 }
 
 // postReread sends one reread of name with headers, answering the status, headers and body: the

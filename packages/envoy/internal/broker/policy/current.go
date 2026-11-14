@@ -166,13 +166,14 @@ func (c *Current) unlock() { <-c.mu }
 // one an earlier reload's own re-describe caught a change to. Any failed metadata read fails the
 // refresh. Then it reads the value of each kind secret the load lists at a version, kind or shape
 // this pod has not decoded (readValues), on ctx, and makes live what those decodes leave; a value
-// read that fails fails no refresh.
+// read that fails fails no refresh, nor do value reads ctx ended before they were recorded, which
+// the next load reads again.
 func (c *Current) Refresh(ctx context.Context) error {
 	reads, first, err := c.reload(ctx)
 	if err != nil {
 		return err
 	}
-	c.readValues(ctx, reads, first)
+	_ = c.readValues(ctx, reads, first)
 	return nil
 }
 
@@ -240,7 +241,12 @@ func (c *Current) reload(ctx context.Context) (reads []valueRead, first bool, er
 //
 // A kind secret whose value this pod has not decoded at the version, kind and shape the reread
 // lists is then read and decoded (readValues), on ctx, and the answer is the policy's after that:
-// a served secret whose value is refused answers ReasonValueMalformed.
+// a served secret whose value is refused answers ReasonValueMalformed. When ctx ends before that
+// read is recorded - its Store.Read cut short, or its wait for the writer lock - the reread did
+// not finish, and RefreshOne answers ctx's error rather than a Lookup the value read never
+// checked: the reread route answers it 503 REQUEST_ENDED, and the miss path takes it as the
+// request's own failure. What the reread merged stays live, and the value is read at the next
+// load or reread.
 func (c *Current) RefreshOne(ctx context.Context, name string) (Lookup, error) {
 	if err := c.CheckName(name); err != nil {
 		return Lookup{}, err
@@ -249,7 +255,9 @@ func (c *Current) RefreshOne(ctx context.Context, name string) (Lookup, error) {
 	if err != nil {
 		return Lookup{}, err
 	}
-	c.readValues(ctx, reads, false)
+	if err := c.readValues(ctx, reads, false); err != nil {
+		return Lookup{}, err
+	}
 	if lk.Served {
 		if refusal := c.Get().Refused[c.storeID(name)]; refusal.Reason == ReasonValueMalformed {
 			return Lookup{Reason: refusal.Reason, Owner: refusal.Owner}, nil
@@ -374,13 +382,13 @@ func (c *Current) listOne(name string) (valueRead, bool) {
 
 // readValues reads each value reads names through the loader's store (Store.Read, counted as
 // read=value) and decodes it under its kind and shape (DecodeValue), dropping the value at once;
-// the reads are made without the writer lock. A read that fails once ctx has ended stops them,
-// and records nothing for it or for the reads after it, which the next load or reread makes
-// again. It then takes the writer lock for as long as ctx lives (lock), as the load or reread
-// before it did and as RefuseValue does, so a reread whose caller has gone does not wait out a
-// reload stuck on a store that does not answer: once ctx ends while it waits, it returns at once
-// and records nothing, each secret keeps the state it had, and the version it read, still not
-// decoded, is read again at the next load or reread. Holding the lock, it records each outcome
+// the reads are made without the writer lock. It then takes the writer lock for as long as ctx
+// lives (lock), as the load or reread before it did and as RefuseValue does, so a reread whose
+// caller has gone does not wait out a reload stuck on a store that does not answer. When ctx ends
+// before the reads are recorded - a read that fails once ctx has ended, or ctx ending while it
+// waits for the lock - it stops at once and answers ctx's error, recording nothing: each secret
+// keeps the state it had, and each version it read, still not decoded, is read again at the next
+// load or reread. Otherwise it answers nil once, holding the lock, it has recorded each outcome
 // whose key is still the one listed (a load or reread since that lists another reads that
 // itself):
 //
@@ -397,16 +405,16 @@ func (c *Current) listOne(name string) (valueRead, bool) {
 //     failure recorded after a read of the same key succeeded - a reload and a reread that read
 //     it at once - is stale and records nothing: that key is decoded, so no later read would come
 //     to end the failure it would start.
-func (c *Current) readValues(ctx context.Context, reads []valueRead, first bool) {
+func (c *Current) readValues(ctx context.Context, reads []valueRead, first bool) error {
 	if len(reads) == 0 {
-		return
+		return nil
 	}
 	outcomes := make([]valueOutcome, 0, len(reads))
 	for _, read := range reads {
 		c.loader.StoreReads.Inc(readValue)
 		value, err := c.loader.Store.Read(ctx, read.source)
 		if err != nil && ctx.Err() != nil {
-			break
+			return ctx.Err()
 		}
 		outcome := valueOutcome{valueRead: read}
 		switch {
@@ -419,11 +427,8 @@ func (c *Current) readValues(ctx context.Context, reads []valueRead, first bool)
 		}
 		outcomes = append(outcomes, outcome)
 	}
-	if len(outcomes) == 0 {
-		return
-	}
-	if c.lock(ctx) != nil {
-		return
+	if err := c.lock(ctx); err != nil {
+		return err
 	}
 	defer c.unlock()
 	changed := false
@@ -456,6 +461,7 @@ func (c *Current) readValues(ctx context.Context, reads []valueRead, first bool)
 	if changed {
 		c.publish(c.withhold(), first)
 	}
+	return nil
 }
 
 // RefuseValue refuses the value of the kind secret name at version, read as kind under shape, as

@@ -400,6 +400,129 @@ func TestARereadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
 	}
 }
 
+// abandonedRead is a secrets.Local whose GetSecretValue, while held is set, waits for its caller's
+// context to end and answers that context's error, as the SDK does: a value read its caller's
+// deadline cuts short.
+type abandonedRead struct {
+	*secrets.Local
+	held atomic.Bool
+}
+
+func (s *abandonedRead) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	if s.held.Load() {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.Local.GetSecretValue(ctx, in, opts...)
+}
+
+// TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError: a reread that lists a
+// version of a kind secret this pod has not decoded, and whose context ends before it records that
+// version's value read - while the read is out, or while it waits for the writer lock a reload
+// stuck on its listing holds - has not finished. It answers its context's error, not the Lookup of
+// a reread that did, so the reread route answers 503 REQUEST_ENDED rather than a 200 for a value
+// nobody checked. It records nothing: it writes no line, the secret is still served, and the next
+// load reads that version again and refuses it.
+//
+// The named revert: RefreshOne drops readValues' answer (c.readValues(ctx, reads, false), then
+// return lk, nil); each reread then answers a nil error and this test fails.
+func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *testing.T) {
+	const deadline = 300 * time.Millisecond
+	// endedUnrecorded checks what a reread of APP_KEY whose deadline passed left: its error is
+	// that deadline's, nothing was written and APP_KEY is still served; and, once load has run,
+	// the version was read again - the boot's read, the reread's and the load's - and refused.
+	endedUnrecorded := func(t *testing.T, cur *policy.Current, registry *metrics.Registry, gained func() string, err error, load func()) {
+		t.Helper()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("RefreshOne(APP_KEY) whose deadline passed before it recorded its value read = %v, want context.DeadlineExceeded", err)
+		}
+		if got := gained(); got != "" {
+			t.Fatalf("a reread whose deadline passed before it recorded its value read logged:\n%s", got)
+		}
+		if _, served := cur.Get().Secrets["APP_KEY"]; !served {
+			t.Fatal("a reread that recorded nothing refused APP_KEY")
+		}
+		load()
+		if n := valueReads(t, registry); n != 3 {
+			t.Fatalf("the policy has read %d values; want 3, the boot's, the reread's and the next load's read of the same version again", n)
+		}
+		refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
+		if got, want := gained(), refusedLine(policytest.ID("APP_KEY"), policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+			t.Fatalf("the load that read the version again logged:\n%s\nwant:\n%s", got, want)
+		}
+	}
+
+	t.Run("while its value read is out", func(t *testing.T) {
+		local := secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+		store := &abandonedRead{Local: local}
+		cur, registry, logged := bootThrough(t, local, store)
+		gained := logChecker(logged)
+		if got := gained(); got != "" {
+			t.Fatalf("the first load logged:\n%s", got)
+		}
+		local.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))
+		store.held.Store(true)
+		ctx, cancel := context.WithTimeout(context.Background(), deadline)
+		defer cancel()
+		_, err := cur.RefreshOne(ctx, "APP_KEY")
+		store.held.Store(false)
+		endedUnrecorded(t, cur, registry, gained, err, func() { refresh(t, cur) })
+	})
+
+	t.Run("while it waits for the writer lock", func(t *testing.T) {
+		local := secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+		store := &lockedOutRead{Local: local}
+		cur, registry, logged := bootThrough(t, local, store)
+		gained := logChecker(logged)
+		if got := gained(); got != "" {
+			t.Fatalf("the first load logged:\n%s", got)
+		}
+		local.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))
+		readEntered, readRelease := store.armRead()
+		ctx, cancel := context.WithTimeout(context.Background(), deadline)
+		defer cancel()
+		rereadDone := make(chan struct{})
+		var rereadErr error
+		go func() {
+			defer close(rereadDone)
+			_, rereadErr = cur.RefreshOne(ctx, "APP_KEY")
+		}()
+		<-readEntered
+
+		// A reload whose listing hangs takes the writer lock while the reread's value read is out.
+		listEntered, listRelease := store.holdList()
+		reloadDone := make(chan struct{})
+		var reloadErr error
+		go func() {
+			defer close(reloadDone)
+			reloadErr = cur.Refresh(context.Background())
+		}()
+		<-listEntered
+		released := false
+		letGo := func() {
+			if !released {
+				released = true
+				close(listRelease)
+			}
+		}
+		t.Cleanup(func() { letGo(); <-reloadDone; <-rereadDone })
+
+		close(readRelease)
+		select {
+		case <-rereadDone:
+		case <-time.After(deadline + 1500*time.Millisecond):
+			t.Fatalf("RefreshOne(APP_KEY) with a %s deadline still waits on the writer lock a reload holds", deadline)
+		}
+		endedUnrecorded(t, cur, registry, gained, rereadErr, func() {
+			letGo()
+			<-reloadDone
+			if reloadErr != nil {
+				t.Fatalf("Refresh: %v", reloadErr)
+			}
+		})
+	})
+}
+
 // hangingLister answers page until hang; from then on it holds each call until unhang releases
 // every held call with page, or until the call's context ends and it answers that context's error,
 // as the SDK does: a Secrets Manager that stops answering, then answers again. heldCalls counts the
