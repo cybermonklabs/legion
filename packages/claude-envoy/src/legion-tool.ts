@@ -40,9 +40,13 @@ export interface LegionToolRuntime {
   readonly daemon: LegionDaemonClient
   /** The pane's registered claim, or undefined while its boot is still registering. */
   readonly claim: () => ClaimCapability | undefined
-  /** What a completion of `phase` by `role` reports beside its summary (`findHandoffReport` with
-   * the pane's environment and Dispatch): throws naming the remedy when the phase has no handoff
-   * record, Dispatch does not answer, or the implementer's work is not pushed. */
+  /** What a completion by `role` reports beside its summary while the issue stands at `phase`
+   * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
+   * phase the role works or, once the issue has moved on, of the phase it left, or `@-` alone where
+   * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
+   * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
+   * implementer's record names no head, the commit its workspace stands on is not pushed, or its
+   * record's head is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>
   /** The head of `legion/<issue>@origin` a `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. */

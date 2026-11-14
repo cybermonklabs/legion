@@ -8,10 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -23,11 +20,11 @@ import (
 // role of the issue is asked, on its own Envoy topic, to push its work and answer (openPodUpdate,
 // record.UpdateAsk, api's claims/ready-for-update) — and replaces the pod once each has answered,
 // or at the round's bound (pod_update_grace_minutes after the round opened, roundBound) whatever
-// the roles said, and in both cases only after the daemon's own push check has carried the
-// issue's own line and the workspace's files off the disk, and nothing else of it (replacementDue,
-// checkUnpushed). An answer from every role ends the round early; no answer holds it past the
-// bound. An operator's suspension of a claim is the one wait that outlasts the bound, and only
-// over a pod that is there: a gone pod ends its round whatever the hold (readReplacement).
+// the roles said (replacementDue). A role's own push is what keeps its work: what it has not
+// pushed when the pod goes is lost with the pod. An answer from every role ends the round early;
+// no answer holds it past the bound. An operator's suspension of a claim is the one wait that
+// outlasts the bound, and only over a pod that is there: a gone pod ends its round whatever the
+// hold (readReplacement).
 //
 // The round is the issue's, not the locator's: a suspended claim's locator is nil (supervise's
 // letGo), and before the bound no pod disk may be deleted before every worker in it, suspended
@@ -55,10 +52,9 @@ import (
 //
 // The sweep walks the issues in key order, decides each of them, and only then makes the pod
 // replacements those decisions left it, also in key order. A replacement waits its pod out — a
-// sweep interval and the push check's own bound at worst (replacePodForRound) — so one made
-// where it is decided holds every issue after it in the walk for minutes, and the project's two
-// limits (podupdate_limits.go) would open one round per slow sweep rather than the rounds a
-// minute the project asks for.
+// sweep interval at worst (replacePodForRound) — so one made where it is decided holds every
+// issue after it in the walk for minutes, and the project's two limits (podupdate_limits.go)
+// would open one round per slow sweep rather than the rounds a minute the project asks for.
 //
 // Those two limits are what keeps one pod template change from waking every worker of the fleet
 // in one minute: `pod_update_max_open_rounds` caps how many issues may hold an open round at
@@ -526,9 +522,7 @@ type podReplacement struct {
 // and waits it out, so a round complete at this read is still a round a worker can start a turn
 // in, or an operator can suspend a claim of, while the call waits. The runtime asks that last
 // word one statement before the write that ends every process in the pod, and a replacement no
-// longer due is refused there, ends nothing and leaves the round open for the next sweep. The
-// push check of the pod's disk runs there too, last (checkUnpushed): a check that fails refuses
-// the replacement the same way, and is told to the operator's side once the bound has come.
+// longer due is refused there, ends nothing and leaves the round open for the next sweep.
 //
 // The last word is asked only of a pod that is there. The Sandbox runtime asks it after it has
 // found the pod the locator records still the Sandbox's own, and answers a pod that is gone by
@@ -537,10 +531,9 @@ type podReplacement struct {
 //
 // ReplacePod is called once, with the process of a claim that records this round's own pod. A
 // failed ReplacePod is logged and retried at the next sweep: nothing is ended, so the round
-// still holds every answered worker's next task. A push check that keeps failing and a ReplacePod
-// that keeps failing each hold the round past its bound, which only a person can end, so each is
-// told to the operator's side once the bound has come (tellLateRound) and names what holds the
-// round. One round is told once.
+// still holds every answered worker's next task. A ReplacePod that keeps failing holds the round
+// past its bound, which only a person can end, so it is told to the operator's side once the
+// bound has come (tellLateRound) and names what holds the round. One round is told once.
 //
 // A replacement made is logged on one line that holds for a round that ended either way, by its
 // answers or by its bound. One that the bound made — a claim had not answered, or a turn ran,
@@ -551,15 +544,12 @@ type podReplacement struct {
 // replace and returned nil without asking the last word replaced nothing, so the bound
 // replaced nothing either.
 //
-// The call is bounded to one sweep interval and the push check's own bound (rescueTimeout, and
-// the margin its answer crosses the stream in). That bound costs the round nothing. The
+// The call is bounded to one sweep interval. The bound costs the round nothing. The
 // suspension that displaces the pod has already landed when it hits, so the next sweep reads the
 // Sandbox suspended and naming that very pod as the one it displaced, which is this round's own
 // replacement in flight: PodDrift answers for it as it does for a pod that is there and has not
 // drifted, and the round is finished at that sweep, where only the pod's end is left to wait
-// for. Once the pod itself is gone, that sweep reads it gone and the round ends there instead,
-// over a pod whose disk the push check has already read, so nothing is deleted earlier than it
-// would have been.
+// for. Once the pod itself is gone, that sweep reads it gone and the round ends there instead.
 func (s *supervision) replacePodForRound(ctx context.Context, replace podReplacement) {
 	issue, round, pod, reasons := replace.issue, replace.round, replace.pod, replace.reasons
 	claims, err := s.supervisor.Claims(ctx)
@@ -606,29 +596,18 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 			"issue", issue, "round", round, "pod", pod, "reading", int(reading.wait))
 		return
 	}
-	// The limit is a sweep interval plus the push check's own bound (rescueTimeout, and the margin
-	// its answer crosses the stream in), which runs under the pod's launch turn just before the
-	// write that ends the pod (replacementDue).
-	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep+rescueTimeout+rescueAnswerMargin)
+	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
 	defer done()
-	var checked pushCheck
 	// ended is what the last word read of the round's end under the launch turn, which is the
 	// read the replacement is made on. It stays the zero roundEnd, which no bound made, where the
 	// runtime returns nil without asking the last word: the Sandbox runtime does that for a
 	// Sandbox that is absent or suspended, or whose pod is no longer the locator's, and replaces
 	// nothing there.
 	var ended roundEnd
-	if err := s.runtime.ReplacePod(limited, reading.process, s.replacementDue(issue, round, pod, &checked, &ended)); err != nil {
+	if err := s.runtime.ReplacePod(limited, reading.process, s.replacementDue(issue, round, &ended)); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
 			s.log.Info("supervise: this update round's replacement was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
 				"issue", issue, "round", round, "pod", pod, "reason", err)
-			return
-		}
-		if errors.Is(err, errPushCheckFailed) {
-			s.log.Error("supervise: the push check before this update round's replacement failed; nothing was replaced and the round stays open",
-				"issue", issue, "round", round, "pod", pod, "rescued", checked.rescued(), "error", err)
-			s.tellLateRound(ctx, issue, live, round, pod, reasons, now,
-				fmt.Sprintf(boundPastReason+"The check for unpushed work before the replacement failed, so the daemon did not replace the pod: %v", err))
 			return
 		}
 		if ctx.Err() == nil {
@@ -639,23 +618,16 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		}
 		return
 	}
-	// A failed claim was not waited for (askedClaims): the push check is what carried whatever it
-	// left unpushed on the disk off the pod, and the line names it beside what the check pushed.
+	// A failed claim was not waited for (askedClaims), and whatever it left unpushed on the disk
+	// went with the pod; the line names it.
 	failed := slices.DeleteFunc(blockingClaims(live), func(c supervise.Claim) bool { return c.State != supervise.StateFailed })
 	bounded := ended.bounded()
 	s.log.Info("supervise: the pod of this update round is replaced and the round is over",
-		"issue", issue, "round", round, "pod", pod, "atTheBound", bounded, "failedNotWaitedFor", namesOf(failed),
-		"rescued", checked.rescued(), "unchecked", checked.unchecked)
+		"issue", issue, "round", round, "pod", pod, "atTheBound", bounded, "failedNotWaitedFor", namesOf(failed))
 	if bounded {
 		s.log.Info("supervise pod update replaced at the bound",
 			"issue", issue, "round", round, "pod", pod,
 			"answered", namesOf(ended.answered), "unanswered", namesOf(ended.unanswered), "working", ended.working)
-	}
-	if post := rescueMessage(issue, round, checked); post.Body != "" {
-		if err := s.writeOnIssue(ctx, issue, post); err != nil && ctx.Err() == nil {
-			s.log.Error("supervise: write on the issue what the push check before its pod's replacement found",
-				"issue", issue, "round", round, "rescued", checked.rescued(), "unchecked", checked.unchecked, "error", err)
-		}
 	}
 	s.endPodUpdates(live)
 }
@@ -764,11 +736,9 @@ var errReplacementNotDue = errors.New("the pod replacement is no longer due")
 // (roundEnd.holding). It does not call readReplacement: it takes the three of that predicate's
 // readings that are about the claims, through the same helpers, because the runtime asks it only
 // of a pod it found there. What it read of the round's end is left in ended, which the
-// replacement's log lines name. Then it runs the push check of the pod's disk (checkUnpushed),
-// which checked records, and refuses the replacement when that check fails. The bound steps over
-// none of that check (dispatch://INFRA-2981 R3). The Sandbox runtime asks this only of a pod that
-// is there (replacePodForRound), so the operator's hold it reads first is a hold over a pod there
-// is to replace.
+// replacement's log lines name. The Sandbox runtime asks this only of a pod that is there
+// (replacePodForRound), so the operator's hold it reads first is a hold over a pod there is to
+// replace.
 //
 // Which claims exist is read from the store, not from the group this sweep carries: a claim
 // created after the sweep's snapshot is a claim the group never held, and the next phase's role,
@@ -782,14 +752,7 @@ var errReplacementNotDue = errors.New("the pod replacement is no longer due")
 // store for a claim a machine holds — it is what the latest decision left, or what the decision
 // in flight last tried to write — and the store's row stands for a claim no machine of this
 // daemon holds.
-//
-// The push check is here, after every reading and under the pod's launch turn, because nothing
-// else guards what is on the disk at the moment it is deleted. A worker's answer says it pushed
-// when it answered, and the answer stands for the round through any turn after it; a failed
-// claim is asked nothing; and at the bound a worker may not have answered at all. Checked any
-// earlier, a turn of any of these could leave work behind after the check. A pod whose shim
-// cannot run the check at all is replaced unchecked, and the issue is told so (checkUnpushed).
-func (s *supervision) replacementDue(issue, round, pod string, checked *pushCheck, ended *roundEnd) func(context.Context) error {
+func (s *supervision) replacementDue(issue, round string, ended *roundEnd) func(context.Context) error {
 	return func(ctx context.Context) error {
 		claims, err := s.supervisor.Claims(ctx)
 		if err != nil {
@@ -807,145 +770,8 @@ func (s *supervision) replacementDue(issue, round, pod string, checked *pushChec
 		if len(working) > 0 {
 			return fmt.Errorf("%w: the turn of %s runs now", errReplacementNotDue, strings.Join(working, ", "))
 		}
-		return s.checkUnpushed(ctx, issue, round, pod, group, checked)
-	}
-}
-
-// The push check's bounds: one workspace's check and push, and the whole check of a pod's disk.
-// Both are internal/rescue's own, derived there from the reserve the guard leaves the push
-// (rescue.GuardReserve, which holds the second run of the shared check a pod's pre-push hook
-// makes) — so a reserve that grows moves them, which a literal here would not. The whole bound
-// is what replacePodForRound adds to the replacement's own, since the check runs inside it.
-// rescueAnswerMargin is what the shim's bound leaves of the time the replacement has left, for
-// the answer to cross the stream: a check bounded at the whole of that time would be read as a
-// failure the moment it finished, and would run on in the pod beside the next one.
-const (
-	rescueWorkspaceTimeout = rescue.WorkspaceTimeout
-	rescueTimeout          = rescue.Timeout
-	rescueAnswerMargin     = 30 * time.Second
-)
-
-// errPushCheckFailed is a push check that could not show every workspace of the pod safe: a
-// workspace whose check or push failed, or no process in the pod that could run the check. The
-// runtime hands it back from inside ReplacePod having written nothing, and replacePodForRound
-// holds the round on it and tells the operator's side through the late-round notice.
-var errPushCheckFailed = errors.New("the push check of the pod's workspaces failed")
-
-// pushCheck is what the push check before a replacement found: the role it ran as, each
-// workspace's result, and, for a pod whose shim predates the check, why nothing was checked.
-type pushCheck struct {
-	role       claim.Role
-	workspaces []runtime.WorkspaceRescue
-	unchecked  string
-}
-
-// rescued is every rescue branch the check reports, as `<branch>@<commit> in <owner>/<repo>`, each
-// once for each repository (branches).
-func (p pushCheck) rescued() []string {
-	var named []string
-	for _, b := range p.branches() {
-		named = append(named, b.Name+"@"+b.Commit+" in "+b.repository)
-	}
-	return named
-}
-
-// rescueBranch is the prefix of every rescue branch of a pod's replacement:
-// `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which a shim that predates the issue's one
-// rescue branch (rescue.Target) numbers from 1. It is no issue's branch (claim.BranchIssue), so
-// nothing the daemon keeps follows it. The request names the issue's one branch in a field of its
-// own, beside this prefix rather than in its place: an older shim reports every remote branch that
-// starts with `<branch>-` as its own, so the one branch's name there would have it report every
-// earlier pod's rescue branches (shimwire.RescueUnpushed).
-func rescueBranch(issue, pod string) string {
-	return rescue.Target(issue) + "-" + pod[:min(8, len(pod))]
-}
-
-// checkUnpushed runs the push check of the round's pod (runtime.Runtime.RescueUnpushed) through a
-// process of group that runs in it, and logs one line per workspace: clean, rescued with each
-// branch and commit, or the error. It prefers a role that acts as the implement App, which holds
-// the push rights on the issue's repository, and asks the next process when one cannot be asked
-// at all. Any workspace whose check failed, and a pod no process of which could be asked, is
-// errPushCheckFailed naming each claim, workspace and error.
-//
-// It runs before every replacement of a round's pod (replacementDue). The round asks each role,
-// and replaces the pod once every asked role has answered and no turn runs, or at the round's
-// bound (pod_update_grace_minutes) whatever the roles answered, an operator's suspension
-// excepted. So the check, and not any answer, is what guards the disk (dispatch://INFRA-2981 R3).
-//
-// A pod whose shim predates the check (runtime.ErrRescueUnsupported) holds nothing: every pod
-// started from an image before this check has such a shim, and refusing them all would hold
-// every such pod until its tree ends. The pod is replaced unchecked, and the line and the issue's
-// message say so (checked's unchecked).
-func (s *supervision) checkUnpushed(ctx context.Context, issue, round, pod string, group []supervise.Claim, checked *pushCheck) error {
-	timeout := rescueTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		timeout = min(timeout, time.Until(deadline)-rescueAnswerMargin)
-	}
-	if timeout <= 0 {
-		return fmt.Errorf("%w: the replacement has no time left to run it in", errPushCheckFailed)
-	}
-	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), Target: rescue.Target(issue),
-		WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
-	var refused []string
-	for _, c := range rescuers(group, round) {
-		report, err := s.runtime.RescueUnpushed(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator}, request)
-		if errors.Is(err, runtime.ErrRescueUnsupported) {
-			*checked = pushCheck{role: c.Role, unchecked: "the pod's shim predates the push check"}
-			s.log.Warn("supervise: the pod's shim predates the push check; its workspaces are not checked before the replacement",
-				"issue", issue, "round", round, "pod", pod, "claim", c.Token, "error", err)
-			return nil
-		}
-		if err != nil {
-			refused = append(refused, fmt.Sprintf("claim %s (%s): %v", c.Token, c.Role, err))
-			continue
-		}
-		*checked = pushCheck{role: c.Role, workspaces: report}
-		var failures []string
-		for _, w := range report {
-			switch w.Status {
-			case runtime.RescueClean:
-				s.log.Info("supervise: push check of a workspace before its pod is replaced: clean",
-					"issue", issue, "round", round, "pod", pod, "claim", c.Token, "workspace", w.Dir)
-			case runtime.RescueRescued:
-				s.log.Info("supervise: push check of a workspace before its pod is replaced: rescued",
-					"issue", issue, "round", round, "pod", pod, "claim", c.Token, "workspace", w.Dir,
-					"rescued", pushCheck{workspaces: []runtime.WorkspaceRescue{w}}.rescued())
-			default:
-				s.log.Error("supervise: push check of a workspace before its pod is replaced: error",
-					"issue", issue, "round", round, "pod", pod, "claim", c.Token, "workspace", w.Dir, "error", w.Error)
-				failures = append(failures, fmt.Sprintf("claim %s (%s), workspace %s: %s", c.Token, c.Role, w.Dir, w.Error))
-			}
-		}
-		if len(failures) > 0 {
-			if rescued := checked.rescued(); len(rescued) > 0 {
-				failures = append(failures, "rescued before the failure: "+strings.Join(rescued, ", "))
-			}
-			return fmt.Errorf("%w: %s", errPushCheckFailed, strings.Join(failures, "; "))
-		}
 		return nil
 	}
-	if len(refused) == 0 {
-		return fmt.Errorf("%w: no claim of %s runs a process in pod %s to run the check through", errPushCheckFailed, issue, pod)
-	}
-	return fmt.Errorf("%w: %s", errPushCheckFailed, strings.Join(refused, "; "))
-}
-
-// rescuers is every claim of group with a process in the round's own pod, in the order the push
-// check asks them: the roles that act as the implement App first, then the others, each in the
-// group's order.
-func rescuers(group []supervise.Claim, round string) []supervise.Claim {
-	var implement, review []supervise.Claim
-	for _, c := range group {
-		if c.Locator == nil || supervise.PodRound(podOf(c.Locator)) != round {
-			continue
-		}
-		if appauth.AppRoleFor(c.Role) == appauth.Implement {
-			implement = append(implement, c)
-		} else {
-			review = append(review, c)
-		}
-	}
-	return append(implement, review...)
 }
 
 // viewedGroup is every claim of the issue a round weighs, as the store names them and as each
@@ -983,7 +809,7 @@ func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
 // are all built from, so no two of them can disagree about what a claim holds. The round asks
 // each role, and replaces the pod once every asked role has answered and no turn runs, or at the
 // round's bound (pod_update_grace_minutes) whatever the roles answered, an operator's suspension
-// excepted; the push check runs before every replacement (checkUnpushed).
+// excepted.
 //
 // What it reads is each machine's published view (Machine.View), never Machine.Claim: Claim
 // waits out the decision in flight, and that decision can be a Sandbox relaunch that holds the
@@ -1021,11 +847,10 @@ func (s *supervision) roundGroup(group []supervise.Claim, mask bool) []supervise
 // and still has not replaced its pod. It is the one writer of the late-round notice, and it tells
 // nothing before the bound: a round waiting on its roles is no stall, because the bound ends that
 // wait by itself. Its callers are the readings that hold a round past its bound — an operator's
-// suspension, no process in the round's pod, two pods at once — and the two acts of the
-// replacement itself that hold it, a push check that failed and a replacement the runtime
-// refused. why is the reason the controller reads, naming that reading. The issue is written
-// nothing: there is no instruction for its roles here, and the operator reads the round through
-// the controller's notice.
+// suspension, no process in the round's pod, two pods at once — and the act of the replacement
+// itself that holds it, a replacement the runtime refused. why is the reason the controller
+// reads, naming that reading. The issue is written nothing: there is no instruction for its roles
+// here, and the operator reads the round through the controller's notice.
 //
 // The bound runs from the round's opening and from nothing else, so one round is told at one
 // moment whatever its roles did before it: an answer moves the round's end earlier and never its
@@ -1281,10 +1106,9 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 //
 // The text is the round's own terms, as its claims recorded them: the reasons the round opened
 // with (roundReasons), never the drift this tick read, and the moment the round ends at the
-// latest, its recorded opening plus pod_update_grace_minutes (supervise.UpdateTask). It names
-// the issue's one rescue branch as well (rescue.Target), which is the branch the push check is
-// told to push to (checkUnpushed). So every role of one round reads one text, and the record an
-// operator reads names the same reasons (dispatch://INFRA-2981 R9).
+// latest, its recorded opening plus pod_update_grace_minutes (supervise.UpdateTask). So every
+// role of one round reads one text, and the record an operator reads names the same reasons
+// (dispatch://INFRA-2981 R9).
 //
 // Every row of the round goes in one enqueue, so the round's asks land together or not at all
 // (workflowRuntime.enqueueOutbox), and each claim is marked afterwards (supervise's
@@ -1344,7 +1168,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 			"issue", issue, "round", round, "roles", namesOf(asking))
 		return
 	}
-	text := supervise.UpdateTask(round, roundReasons(group, round), *bound, rescue.Target(issue))
+	text := supervise.UpdateTask(round, roundReasons(group, round), *bound)
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: text}
@@ -1636,9 +1460,8 @@ func waitingClaims(group []supervise.Claim, round string) []supervise.Claim {
 // answer it can never give: on the first contract-46 roll a planner that had failed at contract 41
 // recorded no round at all, and held its issue's round open behind the three workers that had
 // answered. A retry starts it again and it is asked like any other claim from the next tick. Work
-// it left on the pod's disk and did not push is carried off it by the push check before the
-// replacement (checkUnpushed), which reads the disk itself rather than any claim's answer; the
-// replacement's log line names each failed claim it did not wait for.
+// it left on the pod's disk and did not push goes with the pod; the replacement's log line names
+// each failed claim it did not wait for.
 func askedClaims(group []supervise.Claim) []supervise.Claim {
 	var asked []supervise.Claim
 	for _, c := range blockingClaims(group) {

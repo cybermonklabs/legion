@@ -23,7 +23,7 @@ import (
 )
 
 // pluginContractHeader is the request header a caller states the contract its own plugin speaks
-// in (version.go's 118). A caller that states one is placed by what it states and by nothing
+// in (version.go's 127). A caller that states one is placed by what it states and by nothing
 // else, whatever address the request came from, which is how a caller the daemon can place in no
 // pod — a pane, an operator's command, a process of a pod whose claims record nothing — reaches
 // the body its own reader parses.
@@ -481,9 +481,9 @@ var stateNarrowings = []stateNarrowing{
 	{contract: phaseEntriesContract, issue: withoutPhaseEntries, dropped: "the issues' phaseEntry and givenEntry"},
 	{contract: heldContract, state: withoutHeld, dropped: "admission.held"},
 	{contract: quietTimeContract, issue: withoutQuietTime, dropped: "the issues' treeMovedAt and quietHours"},
+	{contract: podUpdateGraceContract, state: withoutPodUpdateGrace, dropped: "settings.pod_update_grace_minutes"},
 	{contract: shapedAnswersContract, state: withoutLowestPluginContract, issue: withoutClaimRoundReport,
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
-	{contract: podUpdateGraceContract, state: withoutPodUpdateGrace, dropped: "settings.pod_update_grace_minutes"},
 }
 
 // recordShaping writes the daemon's own record of what it left out of the state it answered: one
@@ -604,7 +604,7 @@ const waitingLineContract = 58
 // checkRoleContract is the daemon contract that added each production check view's `role`, the
 // role the check records as the one that works it (version.go's 54): a plugin before it reads
 // the check view with a strict schema that knows no `role` and refuses the whole body for it.
-// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 118).
+// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 127).
 const checkRoleContract = 54
 
 // fixAttemptsContract is the daemon contract that took the fix-attempt count out of the state
@@ -613,7 +613,7 @@ const checkRoleContract = 54
 // pull request with a strict schema that requires `fixAttempts` and refuses the whole body
 // without it, and every worker's `read_record` parses the state through that reader, so a caller
 // below this contract is served both keys as stand-ins (withFixAttempts, withMaxFixAttempts).
-// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 118).
+// The boot gate alone covered that reader until this daemon shaped its answer (version.go's 127).
 const fixAttemptsContract = 59
 
 // backwardMovesContract is the daemon contract that added each worker's counts of the moves back
@@ -676,7 +676,7 @@ const whyAndLineFieldsContract = 85
 // It removed one key, each pull request's `checksVerdict`. Every reader from ServingFloor to 85
 // declared it `nonEmptyString.optional()`, so none of them requires it, and the records of
 // those contracts leave it out: no caller is served the key, and no stand-in is written back
-// for it, as none is for the `note` 86 took off AnswerHandoffComplete (version.go's 118).
+// for it, as none is for the `note` 86 took off AnswerHandoffComplete (version.go's 127).
 //
 // It took one value out of an enumeration too — `awaiting_merge`, from an issue's `phase` and
 // from the two fields of the decided record that take the workflow's phases (answers.go's
@@ -744,7 +744,7 @@ const processReadContract = 104
 // strip is needed. It changed no request a plugin sends.
 const quietTimeContract = 111
 
-// shapedAnswersContract is the daemon contract this change lands under (version.go's 118), and
+// shapedAnswersContract is the daemon contract this change lands under (version.go's 127), and
 // the contract that added three keys of its own: `lowestPluginContract` on the state, the
 // lowest contract among the claims whose locator names a pod and that record a contract
 // (recordsContract), and each claim view's `updateState` and `wake`. A plugin before it reads
@@ -756,14 +756,19 @@ const quietTimeContract = 111
 // moves that constant, and the contract these keys arrived at stays where it is. It moves only
 // with this change's own number, as the arrival contracts of this change's two new answers do
 // (answers.go's AnswerIssueRecord and AnswerHealth).
-const shapedAnswersContract = 118
+const shapedAnswersContract = 127
 
 // podUpdateGraceContract is the daemon contract whose settings block carries
 // `pod_update_grace_minutes` in place of `pod_update_retask_hours` and `pod_update_notice_hours`
-// (main's #3982, recorded at version.go's 118). A caller below it is served the block without the
-// new key (withoutPodUpdateGrace) and with the two old keys as stand-ins (withPodUpdateHours).
-// It is shapedAnswersContract by name, so a renumber of this change moves one constant.
-const podUpdateGraceContract = shapedAnswersContract
+// (main's #3982). #3982 merged when main declared 111 and took no contract number of its own. An
+// unnumbered change belongs to the first contract number whose daemon carries it, and a daemon at
+// 123 is the first to send `pod_update_grace_minutes` and neither of the two old keys
+// (version.go's 127). A caller below it is served the block without the new key
+// (withoutPodUpdateGrace) and with the two old keys as stand-ins (withPodUpdateHours).
+//
+// It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
+// that constant, and the contract whose daemon first carried the new key stays where it is.
+const podUpdateGraceContract = 123
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -853,7 +858,7 @@ func recordsContract(c supervise.Claim) bool {
 // Every build at shapedAnswersContract or later states its own contract in
 // pluginContractHeader, and contractsFor answers on the header before it reads the pod at all.
 // Counting such a claim would shape the pod-decided body for a reader that does not read it and
-// break the one that does: in the `{46, 118}` pod a roll makes, the highest would be 118, and the
+// break the one that does: in the `{46, 127}` pod a roll makes, the highest would be 127, and the
 // 46 process — the one process this body is written for — would be served `admission.trees` and
 // the memory fields, which its reader refuses the whole body for. So the pod reading answers for
 // the processes that read it and for no others. The fleet's reading counts every claim that
@@ -1288,7 +1293,7 @@ func withMaxFixAttempts(state State) State {
 // whole settings block, and there the two values read as the unconfigured defaults. Those
 // describe no behaviour of this daemon, whose update round asks no worker again and ends at its
 // bound. The stand-ins exist only to keep the records of those contracts fixed (version.go's
-// 118).
+// 127).
 const (
 	podUpdateRetaskHoursStandIn float64 = 1
 	podUpdateNoticeHoursStandIn float64 = 4

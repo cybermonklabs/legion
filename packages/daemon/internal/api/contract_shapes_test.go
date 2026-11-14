@@ -1128,7 +1128,7 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	// The table itself: every row names an answer of Answers, so a row no answer carries is red
 	// rather than a domain nothing records, and every arrival is a contract this daemon serves a
 	// shape for. A value older than the field's own answer is no error — the record answer
-	// arrived at 118 and carries all nine values of `answeredBy` from its first record — since a
+	// arrived at 127 and carries all nine values of `answeredBy` from its first record — since a
 	// domain is every value whose arrival is at or below the contract (domainsOf).
 	for _, field := range EnumeratedFields {
 		if !slices.ContainsFunc(Answers, func(answer Answer) bool { return answer.ID == field.Answer }) {
@@ -1509,7 +1509,7 @@ const deploysNeverFilled = "the daemon holds no deploy since contract 54, so `se
 // nothing (walkDeclaredType names them). What they do to a body is held all the same, by the
 // records: the stand-ins PullRequestView.fixAttemptsShown and Settings.maxFixAttemptsShown put
 // `fixAttempts` and `max_fix_attempts` into the records below 59, Settings.podUpdateHoursShown
-// puts `pod_update_retask_hours` and `pod_update_notice_hours` into the records below 118 and
+// puts `pod_update_retask_hours` and `pod_update_notice_hours` into the records below 123 and
 // Settings.podUpdateGraceHidden takes `pod_update_grace_minutes` out of them,
 // CheckView.roleHidden takes `check.role` out of the records below 54, and PhaseView.passHidden
 // takes each worker's `pass` out of the records below 86.

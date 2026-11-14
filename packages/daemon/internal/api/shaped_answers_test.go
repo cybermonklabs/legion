@@ -230,7 +230,7 @@ func TestAMixedPodIsServedTheHighestsKeysAndTheLowestsStandIns(t *testing.T) {
 }
 
 // The pod a roll makes, holding one build at the floor and one at this daemon's own contract,
-// is served the floor's shape and not the union of the two. The build at 118 states its
+// is served the floor's shape and not the union of the two. The build at 127 states its
 // contract in the header, so contractsFor answers it there and it never reads the body the pod
 // decides; the build at 46 does read it, and it is the only process that does. Counting the
 // newer one would serve that reader `admission.trees`, the memory fields and the rest, which
@@ -259,7 +259,7 @@ func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T
 		t.Errorf("the rolled pod logged %s, want no line: the floor is a shape this daemon describes", logs)
 	}
 
-	// The 118 build of that same pod is served this contract's own body, by its header.
+	// The 127 build of that same pod is served this contract's own body, by its header.
 	wantThisContract(t, stateStating(t, handler, statePodAddr+":41000", DaemonAPIVersion))
 }
 
@@ -374,7 +374,7 @@ func mixedPodClaims(low, high int) []supervise.Claim {
 	return append(claims, claimInPod("legion-legion-legion-208-tester", statePodUID, 0))
 }
 
-// keysAddedAfterTheFloor is the thirteen keys the servings-down of the seven bands between the
+// keysAddedAfterTheFloor is the keys the servings-down of the bands between the
 // floor and claimsToRefreshContract remove, as the wire names them: a caller served all of them
 // is served everything this daemon writes above the floor and below its own contract, but each
 // check's `role`, which shapeOf reads instead because an issue carries a check only while its
@@ -435,7 +435,7 @@ func TestAClaimThatStatesItsOwnContractIsInNoPodsReckoning(t *testing.T) {
 	}
 	mixedLowest, mixedHighest, _ := podContracts(mixedPodClaims(ServingFloor, DaemonAPIVersion), statePodUID)
 	if mixedLowest != ServingFloor || mixedHighest != ServingFloor {
-		t.Errorf("the rolled pod reports %d and %d, want the floor on both sides: its 118 build reads no body this decides",
+		t.Errorf("the rolled pod reports %d and %d, want the floor on both sides: its 127 build reads no body this decides",
 			mixedLowest, mixedHighest)
 	}
 }

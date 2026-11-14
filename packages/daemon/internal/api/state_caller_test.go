@@ -417,28 +417,28 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// declared constant, which is why these rows name the contracts rather than the
 		// declaration. Such a pod stands below whyAndLineFieldsContract, leakCheckCauseContract,
 		// phaseEntriesContract, heldContract, quietTimeContract and shapedAnswersContract, the
-		// six bands above it, so the issues it is served carry no answer, no entry number and no
+		// issue and claim-view bands above it, so the issues it is served carry no answer, no entry number and no
 		// tree quiet time, its claim views no leak check's cause and neither of the two keys
-		// contract 118 added, and its admission block no held list.
+		// contract 127 added, and its admission block no held list.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, contract: recordFieldsContract},
 		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
 		// too, and the leak check's cause, the entry numbers, the held list, the tree quiet time
-		// and the claim views' keys of contract 118 are held back.
+		// and the claim views' keys of contract 127 are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, contract: whyAndLineFieldsContract},
 		// The band at leakCheckCauseContract: the cause is served too, and the entry numbers,
-		// the held list, the tree quiet time and the claim views' keys of contract 118 are the
-		// four bands left above it.
+		// the held list, the tree quiet time and the claim views' keys of contract 127 are the
+		// bands left above it.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, contract: leakCheckCauseContract},
 		// The band from phaseEntriesContract to below heldContract: the entry numbers are
 		// served too, and the held list, the tree quiet time and the claim views' keys of
-		// contract 118 are the three bands left above it.
+		// contract 127 are the bands left above it.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, contract: phaseEntriesContract},
 		// The band from heldContract to below quietTimeContract: the held list is served too,
-		// and the tree quiet time and the claim views' keys of contract 118 are the two bands
+		// and the tree quiet time and the claim views' keys of contract 127 are the two bands
 		// left above it.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, contract: heldContract},
 		// The band from quietTimeContract to below shapedAnswersContract: the tree quiet time is
-		// served too, and the claim views' keys of contract 118 are the one band left above it.
+		// served too, and the claim views' keys of contract 127 are the one band left above it.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: quietTimeContract},
 		// A pod whose claims record shapedAnswersContract, the newest contract the route serves
 		// a body down by. Such a pod is in no pod reading: podContracts leaves out a claim at
@@ -477,12 +477,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// pod at recordFieldsContract is served every claim view key the decided record added
 			// and neither the issues' answers, nor the leak check's cause, nor the entry numbers,
 			// nor the held list, nor the tree quiet time, nor the claim views' keys of contract
-			// 118, the six bands between it and this daemon's own; a pod at
-			// whyAndLineFieldsContract is served the answers and none of the other five; a pod at
-			// leakCheckCauseContract is served the cause and none of the four above it; a pod at
-			// phaseEntriesContract is served the entry numbers and none of the three above it; a
+			// 127, the issue and claim-view bands between it and this daemon's own; a pod at
+			// whyAndLineFieldsContract is served the answers and none of the others; a pod at
+			// leakCheckCauseContract is served the cause and none of those above it; a pod at
+			// phaseEntriesContract is served the entry numbers and none of those above it; a
 			// pod at heldContract is served the held list and neither the measure nor the claim
-			// views' keys of contract 118; and a pod at quietTimeContract is served the measure
+			// views' keys of contract 127; and a pod at quietTimeContract is served the measure
 			// and not those keys.
 			if tc.rounds && tc.stall {
 				want := full
@@ -596,7 +596,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					}
 					// Every row that reaches here is below shapedAnswersContract, below
 					// leakCheckCauseContract and below recordFieldsContract too, so none of its
-					// callers is served the two keys contract 118 added to a claim view, the
+					// callers is served the two keys contract 127 added to a claim view, the
 					// `leakCheckCause` contract 87 added or the six the decided record added.
 					for _, key := range roundReportKeys {
 						delete(view, key)

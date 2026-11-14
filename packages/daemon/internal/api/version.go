@@ -1195,7 +1195,7 @@ package api
 // `mergeState`, `pass`, `lastTurnStart` and `lastTurnEnd` are keys a plugin of an older contract
 // does not name, which one built before sjawhar/legion#2788 refuses the body for and one built
 // after strips, so the boot gate and `legion probe-image` are what refuse the mixed pair.
-// (The entry at 118 below serves this contract's own shape down, so none of the keys above
+// (The entry at 127 below serves this contract's own shape down, so none of the keys above
 // reaches a caller under 86. Three claim-view keys ride with the four this entry names and are
 // served down with them: `lastDeathCause`, `lastStartFailure` and `lastReady`. Two more keys go
 // at 86 beside `checksVerdict`. `checksVerdict` and `HandoffCompleteResponse.note` are written
@@ -1206,7 +1206,7 @@ package api
 // `merge_queue_role` — leave those records for the same reason read a second way:
 // `legionSettings` types two keys and passes the rest loosely, and `projects` is typed by
 // nothing, so no reader names those keys at all. The `ready` this contract takes out of the
-// request is read by name again for the plugins below 86 that still send it, which entry 118
+// request is read by name again for the plugins below 86 that still send it, which entry 127
 // says.)
 // (This branch took 42, then 43 when main landed the consumer-lag state at 43;
 // main landed the background-task contract at 44 and the Dispatch handoff records at 45, and
@@ -1564,7 +1564,47 @@ package api
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
 //
-// 118: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
+// 123: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
+// about, and the completion route judges that head rather than which phase entry the turn began
+// under. Every file-backed handoff record now carries `head`, the commit the work it reports was
+// done against, and the plugin's `handoff_complete` sends that head as the completion's `commit`
+// for the planner, the tester and the reviewer as well as the implementer, read from the record
+// and never from the shared workspace (`packages/pi-shared/src/handoff-record.ts`,
+// findHandoffReport). The route takes a completion of an earlier entry of the same phase when the
+// phase ends with a handoff record this role writes, the completion names a commit and that
+// commit is the head the record holds for the issue's pull request, and refuses it with
+// `HANDOFF_STALE_ENTRY` whatever head it names when the entry the phase stands on was raised by a
+// move back (`record.PhaseRow.EntryMovedBack`, written by the transition that raises the entry,
+// store migration `20261113090512_phase_entry_moved_back.up.sql`, which adds
+// `phases.entry_moved_back` true on every row it finds, so each refuses a behind completion as
+// the daemon before it did until that role's next entry writes what its own move was). The
+// refusal's text names what decided it: the commit given or that none was, the head the record
+// holds, and the move back where there was one. A completion of another entry than its role's
+// phases row names, from a role that does not work the phase the issue stands in, is answered
+// `HANDOFF_NOT_CURRENT_PHASE` in the workflow's words and records nothing, where daemons from 94
+// refused it `HANDOFF_STALE_ENTRY` saying a task of the phase was owed to the claim. No field is
+// added or removed on either side of the wire: `commit` was already optional on
+// `api.HandoffCompleteRequest` and `handoffCommit` on `api.PhaseView`. What moves is what the two
+// sides mean by them, so they move together: a plugin below 123 sends the three roles'
+// completions with no commit, which this daemon refuses behind their entry as every daemon from
+// 94 did, and a plugin at 123 against a daemon below it has a commit recorded for those roles and
+// named in the next role's task (`Handoff commit:`) that the daemon never judges. A plugin at 123
+// also names, on a completion sent after the issue moved on, the role's own record of the phase
+// it left (pi-shared's completedPhase, the mirror of phase.Of), which this daemon reads back
+// against that phase; a plugin below names none there and is answered as every daemon from 94
+// answers it. (Taken at the push that answered the review of 9f1d4789, with main at 922eb1d992a3,
+// whose own number is the 111 above. This entry took 104 at the merge of 8d9d1ff2 (main at 94),
+// 106 at that of 0fde2dcff6e4 (main at 98), 109 at that of 2a6ff6c03269 (main at 98), 111 at that
+// of b601d25b3fa1 (main at 104), 115 at that of 809208573a01 (main at 111), 120 at the push after
+// it and 121 at the merge of 50bfbb0dec73 (main at 111), each declared by another open head before
+// this one landed. The reading behind 123, of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// every open pull request of cybermonklabs/legion at 2026-11-14T06:17Z, made with the
+// `declared_by_open_pull_requests` of `.github/scripts/check-daemon-api-contract.sh`, gives above
+// main's 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118
+// (#3659), 119 (#3712), 120 (#3993), 121 (#3519) and 122 (#2230); 123 is the lowest number above
+// them all.)
+//
+// 127: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
 // own plugin speaks, and reads every request an older plugin still sends, so a roll that replaces
 // one pod at a time leaves the `legion` tool working in every pod it has not replaced yet. A
 // request carries the caller's contract in the
@@ -1603,10 +1643,15 @@ package api
 // Contract 111 is one of them as well: a caller below 111 is served every issue without
 // `treeMovedAt` and `quietHours` (`withoutQuietTime`, the band of `quietTimeContract`).
 // main's #3982 replaced `settings.pod_update_retask_hours` and `settings.pod_update_notice_hours`
-// with `settings.pod_update_grace_minutes`. A caller below 118 is served the settings block
+// with `settings.pod_update_grace_minutes`. #3982 merged when main declared 111 and took no
+// contract number of its own. An unnumbered change belongs to the first contract number whose
+// daemon carries it, and 123 is the first contract whose daemon carries
+// `pod_update_grace_minutes`: a daemon at 123 sends that key and neither of the two old keys. A
+// caller below 123 is served the settings block
 // without `pod_update_grace_minutes` (`withoutPodUpdateGrace`, the band of
 // `podUpdateGraceContract`). It is served the two removed keys as stand-ins, with the defaults an
-// unconfigured daemon sent before #3982: 1 and 4 (`withPodUpdateHours`). The stand-ins describe
+// unconfigured daemon sent before #3982: 1 and 4 (`withPodUpdateHours`). A caller at 123 or above
+// is served the settings block that a daemon at 123 sent. The stand-ins describe
 // no behaviour of this daemon, whose update round asks no worker a second time and ends at its
 // bound. They exist only to keep the records of 46 to 111 fixed. No plugin code reads either key:
 // measured at the commit of each of the 24 contracts from 46 to 111, `legionSettings` is a loose
@@ -1616,6 +1661,10 @@ package api
 // is the other of the two reasons that allow a stand-in: `max_fix_attempts: 3` was allowed
 // because readers below 59 required the key, and these two are allowed because no plugin code
 // reads them.
+// Contract 123 is served down with no code of its own here. It changes no shape on either side
+// of the wire and no answer that a plugin below it receives (measured: a tester or a reviewer
+// below 123 that completes with no commit is answered as before 123, 200 at its entry and 409
+// behind it).
 // Contract 104 is served down too, by what one answer means, because 104 moved no key path. A
 // fresh session that stopped the claim and could not start it again answers a caller below 104
 // as the daemon did before 104: the refusal of the step that failed, 409 with the machine's
@@ -1684,7 +1733,8 @@ package api
 // the merge that brought main in at 94, 99 at the merge that brought main in at 98, 105
 // before the push of that merge, and 115 at the merge that brought main in at 111, where open
 // heads held 111 to 114, and 118 before the push that followed, when #3519, #3793 and #3937 had
-// taken 115. 87 was
+// taken 115, and 127 at the merge that brought main in at 123 (#3793), where open heads held
+// 124, 125 and 126. 87 was
 // free when this head took it and was gone when the
 // head was pushed: the gate holds a head against main alone and sees no other head's number, so
 // a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this
@@ -1711,4 +1761,4 @@ package api
 // answers.go gives the two answers this change adds as their arrival, and it is the last number
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason.)
-const DaemonAPIVersion = 118
+const DaemonAPIVersion = 127

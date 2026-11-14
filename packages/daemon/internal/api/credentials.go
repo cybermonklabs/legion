@@ -40,10 +40,18 @@ type Failure struct {
 	Error string `json:"error"`
 }
 
+// refusalNoter is a writer that asks to be told the code of the refusal written through it: the
+// completion route's completionAnswer, whose log line names it (handoffComplete). writeFailure
+// tells it, since the code is in hand here and the writer would otherwise read the body back.
+type refusalNoter interface{ noteRefusal(code string) }
+
 // writeFailure is the one writer of a refusal in the Failure shape. A refusal is an answer of the
 // table like any other (AnswerRefusal), so it goes through the shaping every answer goes through,
 // and the request is threaded here for that.
 func (s *server) writeFailure(w http.ResponseWriter, r *http.Request, status int, code, message string) {
+	if noter, ok := w.(refusalNoter); ok {
+		noter.noteRefusal(code)
+	}
 	s.writeAnswer(w, r, AnswerRefusal, status, Failure{Code: code, Error: message})
 }
 

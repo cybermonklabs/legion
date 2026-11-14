@@ -299,7 +299,6 @@ func lastCompletion(t *testing.T, facts *factRecorder) intake.HandoffComplete {
 func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.PhaseRow, *record.PullRequest) {
 	t.Helper()
 	var at phase.Phase
-	var implementer *record.PhaseRow
 	var pr *record.PullRequest
 	records := record.NewStore()
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
@@ -308,21 +307,30 @@ func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.P
 			return err
 		}
 		at = issue.Phase
-		rows, err := records.Phases(context.Background(), tx, key)
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			if row.Role == claim.RoleImplementer {
-				implementer = &row
-			}
-		}
 		pr, err = records.PullRequest(context.Background(), tx, key)
 		return err
 	}); err != nil {
 		t.Fatalf("read the records of %s: %v", key, err)
 	}
-	return at, implementer, pr
+	return at, phaseRowOf(t, h, key, claim.RoleImplementer), pr
+}
+
+// phaseRowOf is role's phases row on key, nil while none is recorded.
+func phaseRowOf(t *testing.T, h *harness, key string, role claim.Role) *record.PhaseRow {
+	t.Helper()
+	var found *record.PhaseRow
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		rows, err := record.NewStore().Phases(context.Background(), tx, key)
+		for _, row := range rows {
+			if row.Role == role {
+				found = &row
+			}
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("read the phases of %s: %v", key, err)
+	}
+	return found
 }
 
 // The implementer's completion of an implementing round names the handoff record it wrote on the
@@ -566,7 +574,7 @@ func TestHandoffCompleteOnAMergedPullRequestMovesTheIssueToTesting(t *testing.T)
 // A file-backed phase's completion is held to the handoff record it names, read back from
 // Dispatch: the record must be the issue's, of the phase's word, at the version reported, and
 // written by the claim's own session. Every refusal is made before the fact is applied, so nothing
-// is recorded, and the corrected completion - a planner's here, which reports no commit - is then
+// is recorded, and the corrected completion - a planner's here, which names no commit - is then
 // applied under the same key.
 func TestHandoffCompleteHoldsTheCompletionToTheRecordItNames(t *testing.T) {
 	for _, tc := range []struct {
@@ -682,6 +690,187 @@ func TestHandoffCompleteHoldsTheCompletionToTheRecordItNames(t *testing.T) {
 			if fact := lastCompletion(t, facts); fact.Role != claim.RolePlanner || fact.HandoffRecord != own || fact.HandoffVersion != 1 || fact.Commit != "" {
 				t.Fatalf("the corrected completion = %+v, want the planner's naming %s version 1 with no commit", fact, own)
 			}
+		})
+	}
+}
+
+// A completion that arrives after the issue has left its role's phase - the reviewer's, once its
+// own request for changes moved the issue to implementing - is of the phase the role left, and the
+// engine records it there for the next phase to read (workflow's leftItsPhase). So the route reads
+// its record back against that phase's word and the claim's session, as it reads a current
+// completion's: a record of another issue or of another phase is refused before the fact and
+// nothing is recorded, and the reviewer's own new review record is recorded on its row.
+func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// record is the record the late completion names, written under the reviewer's session.
+		record func(h *harness, reviewer liveClaim) string
+		// code is the refusal, "" for a completion recorded; says is a part of its sentence.
+		code, says string
+	}{
+		{
+			name: "another issue's review record", code: "HANDOFF_RECORD_MISMATCH", says: "version 1 of LEGION-209's review handoff",
+			record: func(h *harness, reviewer liveClaim) string {
+				return h.writeHandoffAs("LEGION-209", "review", 1, reviewer.session)
+			},
+		},
+		{
+			name: "a record of another phase", code: "HANDOFF_RECORD_MISMATCH", says: "LEGION-208's implement handoff",
+			record: func(_ *harness, reviewer liveClaim) string { return reviewer.writeHandoff("implement", 1) },
+		},
+		{
+			name:   "its own new review record",
+			record: func(_ *harness, reviewer liveClaim) string { return reviewer.writeHandoff("review", 1) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+			seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+			reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+			named := tc.record(h, reviewer)
+			recorder := h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "reviewed", HandoffID: named, HandoffVersion: 1})
+			if tc.code == "" {
+				completion(t, recorder)
+				if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row == nil || row.HandoffRecord != named || row.HandoffVersion != 1 {
+					t.Fatalf("the reviewer's row after its late completion = %+v, want it naming %s version 1", row, named)
+				}
+			} else {
+				if message := refused(t, recorder, http.StatusConflict, tc.code); !strings.Contains(message, tc.says) {
+					t.Fatalf("refusal %q does not say %q", message, tc.says)
+				}
+				if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row != nil && row.Completed() {
+					t.Fatalf("the reviewer's row after the refusal = %+v, want nothing recorded", row)
+				}
+			}
+			assertIssuePhase(t, h, phase.Implementing)
+		})
+	}
+}
+
+// The reviewer's own approval moves the issue on as well: the review event takes reviewing to
+// accepting, the architect's sign-off and a phase that ends with no handoff record, before the
+// reviewer's completion lands. That completion is still of reviewing, the phase the reviewer left,
+// so the route reads its own new review record back against reviewing's word rather than refusing
+// a record for accepting, and the engine records it on the reviewer's row and leaves the issue in
+// accepting for the architect.
+func TestHandoffCompleteRecordsALateCompletionOfReviewingWhileTheIssueIsAccepting(t *testing.T) {
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+	seedIssueAt(t, h, "LEGION-208", phase.Accepting)
+	seedApproval(t, h, "LEGION-208", "ccddee")
+	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+	own := reviewer.writeHandoff("review", 1)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "approved", HandoffID: own, HandoffVersion: 1}))
+	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row == nil || row.HandoffRecord != own || row.HandoffVersion != 1 {
+		t.Fatalf("the reviewer's row after its late completion = %+v, want it naming %s version 1", row, own)
+	}
+	assertIssuePhase(t, h, phase.Accepting)
+}
+
+// A completion of a phase its role has left that names no record — its commit alone, as the
+// `legion` tool sent one before it read the record of the phase the role left — is not asked for
+// a record: the engine decides it as every completion of a phase the role no longer works
+// (workflow's leftItsPhase). A tester whose completion of testing was taken, and moved the issue
+// to reviewing, and a tester of an issue held from testing are each answered
+// HANDOFF_NOT_CURRENT_PHASE, and the tester's row and the issue's phase stay as they stood.
+func TestHandoffCompleteAnswersALeftCompletionNamingNoRecordAsNoLongerTheRolesPhase(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// stand moves LEGION-208 from testing, its tester working, to where the late completion
+		// finds it, and answers that phase.
+		stand func(t *testing.T, h *harness, tester liveClaim) phase.Phase
+	}{
+		{
+			name: "its completion of testing taken, the issue in reviewing",
+			stand: func(t *testing.T, h *harness, tester liveClaim) phase.Phase {
+				completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+					Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+				return phase.Reviewing
+			},
+		},
+		{
+			name: "the issue held from testing",
+			stand: func(t *testing.T, h *harness, _ liveClaim) phase.Phase {
+				holdFrom(t, h, "LEGION-208", phase.Testing)
+				return phase.Held
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+			seedIssueAt(t, h, "LEGION-208", phase.Testing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+			at := tc.stand(t, h, tester)
+			assertIssuePhase(t, h, at)
+			before := phaseRowOf(t, h, "LEGION-208", claim.RoleTester)
+
+			refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}),
+				http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+			if after := phaseRowOf(t, h, "LEGION-208", claim.RoleTester); !reflect.DeepEqual(after, before) {
+				t.Fatalf("the tester's row after the refusal = %+v, want it as it stood, %+v", after, before)
+			}
+			assertIssuePhase(t, h, at)
+		})
+	}
+}
+
+// An implementer whose issue has left implementing completes it in the shape the `legion` tool
+// sends for an implement record that names no head, or for none at all: the commit its shared
+// workspace stands on, a sibling role's, and no record (pi-shared's handoff-record.ts, its module
+// doc's left-phase rule). The engine decides it as every completion of a left phase that names no
+// record (workflow's leftItsPhase): an implementer that left implementing before it completed - it
+// moved the issue back to planning - would have its completion recorded, so one naming no record
+// is answered HANDOFF_RECORD_REQUIRED, and one whose completion of implementing was taken is
+// answered HANDOFF_NOT_CURRENT_PHASE. The implementer's row stays as it stood either way, so the
+// sibling's commit is never recorded as the implementer's handoff commit.
+func TestHandoffCompleteRefusesAnImplementersLeftCompletionNamingNoRecord(t *testing.T) {
+	sibling := strings.Repeat("c0de", 10)
+	for _, tc := range []struct {
+		name string
+		// stand moves LEGION-208 from implementing, its implementer working, to where the late
+		// completion finds it, and answers that phase.
+		stand func(t *testing.T, h *harness, implementer liveClaim) phase.Phase
+		code  string
+	}{
+		{
+			name: "it left implementing before it completed, moving the issue back to planning",
+			stand: func(t *testing.T, h *harness, implementer liveClaim) phase.Phase {
+				if moved := h.request(http.MethodPost, "/legion/v1/phase/backward", PhaseBackwardRequest{
+					GrantID: implementer.grant(t), To: phase.Planning, Reason: "the plan misses a case",
+				}, nil); moved.Code != http.StatusOK {
+					t.Fatalf("the implementer's backward move to planning = %d: %s", moved.Code, moved.Body)
+				}
+				return phase.Planning
+			},
+			code: "HANDOFF_RECORD_REQUIRED",
+		},
+		{
+			name: "its completion of implementing taken, the issue in testing",
+			stand: func(t *testing.T, h *harness, implementer liveClaim) phase.Phase {
+				completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented",
+					Commit: headSHA, HandoffID: implementer.writeHandoff("implement", 1), HandoffVersion: 1}))
+				return phase.Testing
+			},
+			code: "HANDOFF_NOT_CURRENT_PHASE",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+			seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+			at := tc.stand(t, h, implementer)
+			assertIssuePhase(t, h, at)
+			before := phaseRowOf(t, h, "LEGION-208", claim.RoleImplementer)
+
+			// The row is read before the answer, so a completion that was recorded shows what it
+			// recorded.
+			recorder := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: sibling})
+			if after := phaseRowOf(t, h, "LEGION-208", claim.RoleImplementer); !reflect.DeepEqual(after, before) {
+				t.Fatalf("the implementer's row after its completion at %s (answered %d) = %+v, want it as it stood, %+v", sibling, recorder.Code, after, before)
+			}
+			refused(t, recorder, http.StatusConflict, tc.code)
+			assertIssuePhase(t, h, at)
 		})
 	}
 }
