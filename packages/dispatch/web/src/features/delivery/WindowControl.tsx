@@ -46,8 +46,7 @@ export function WindowControl({
 }): ReactNode {
   const id = useId();
   const [custom, setCustom] = useState(value.kind === "custom");
-  const [fromDate, setFromDate] = useState(() => draftDates(value).from);
-  const [toDate, setToDate] = useState(() => draftDates(value).to);
+  const [dates, setDates] = useState(() => draftDates(value));
   const [refused, setRefused] = useState<string | null>(null);
   // A new window - the control's own pick, or the address changing under it - starts the draft
   // again from that window. It is set during render (React's pattern for state derived from
@@ -56,16 +55,14 @@ export function WindowControl({
   const key = windowKey(value);
   const [seeded, setSeeded] = useState(key);
   if (key !== seeded) {
-    const dates = draftDates(value);
     setSeeded(key);
     setCustom(value.kind === "custom");
-    setFromDate(dates.from);
-    setToDate(dates.to);
+    setDates(draftDates(value));
     setRefused(null);
   }
 
   const apply = () => {
-    const range = customRange(fromDate, toDate);
+    const range = customRange(dates.from, dates.to);
     if ("refused" in range) {
       setRefused(range.refused);
       return;
@@ -111,9 +108,9 @@ export function WindowControl({
           <input
             className={fieldClass}
             id={`${id}-from`}
-            onChange={(event) => setFromDate(event.target.value)}
+            onChange={(event) => setDates({ ...dates, from: event.target.value })}
             type="date"
-            value={fromDate}
+            value={dates.from}
           />
           <label className="flex items-center gap-1" htmlFor={`${id}-to`}>
             To
@@ -121,9 +118,9 @@ export function WindowControl({
           <input
             className={fieldClass}
             id={`${id}-to`}
-            onChange={(event) => setToDate(event.target.value)}
+            onChange={(event) => setDates({ ...dates, to: event.target.value })}
             type="date"
-            value={toDate}
+            value={dates.to}
           />
           <span className="text-xs">(UTC)</span>
           <button className={secondaryButtonCompact} onClick={apply} type="button">

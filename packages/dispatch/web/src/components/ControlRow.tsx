@@ -8,7 +8,7 @@ import {
   textSecondaryOnCanvas,
 } from "../theme/classes";
 import { restingChip } from "./Chip";
-import { CONTROL, type ControlSize } from "./control-names";
+import { CONTROL, type ControlSize, controlIn } from "./control-names";
 import { useFocusPlace } from "./focus-place";
 import { useScrollEnds } from "./useScrollEnds";
 
@@ -166,10 +166,7 @@ function focusableOf(chip: Element): HTMLElement | null {
 /** Where the focus goes once nothing of its own place is left: the row's filter trigger, or the
  *  search box in a row with no trigger. */
 function triggerOf(root: Element): HTMLElement | null {
-  return (
-    root.querySelector<HTMLElement>(`[data-control="${CONTROL.panelTrigger}"]`) ??
-    root.querySelector<HTMLElement>(`[data-control="${CONTROL.searchBox}"]`)
-  );
+  return controlIn(root, CONTROL.panelTrigger) ?? controlIn(root, CONTROL.searchBox);
 }
 
 export interface ControlRowProps {

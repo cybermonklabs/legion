@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useContext } from "react";
 
 import type { MyReplyRow } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { linkHoverText, linkText } from "../../theme/classes";
 import type { InboxShow } from "../refs/routes";
 import { questionLine } from "./question-line";
@@ -35,10 +36,8 @@ export const RowDismissContext = createContext<RowDismiss | undefined>(undefined
  *
  * On the short row it shows while the pointer is on the row or something in it holds the focus,
  * and always on the row the reading column is showing (`shown`); the column's own head and the
- * card draw it beside their other controls, where there is room for it. While its press is out
- * it is `aria-disabled` rather than `disabled`, and a press on it does nothing: a button that
- * disables itself under the reader's press drops the keyboard focus onto the page, and this one
- * keeps it until its row leaves.
+ * card draw it beside their other controls, where there is room for it. It is held while its
+ * write is out (`heldPress`).
  */
 export function DismissControl({
   shown = false,
@@ -57,15 +56,12 @@ export function DismissControl({
   const live = dismiss.pending.has(named.id);
   return (
     <button
-      aria-disabled={live || undefined}
       aria-label={`${label}: ${questionLine(thread.subject)}`}
       className={`min-h-11 shrink-0 text-sm font-medium md:min-h-8 ${linkText} ${linkHoverText} ${
         shown ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
       }`}
       data-inbox-dismiss={named.id}
-      onClick={() => {
-        if (!live) dismiss.dismiss(named);
-      }}
+      {...heldPress(live, () => dismiss.dismiss(named))}
       type="button"
     >
       {live ? (restoring ? "Moving…" : "Dismissing…") : label}

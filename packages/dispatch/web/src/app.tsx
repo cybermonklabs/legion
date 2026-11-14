@@ -517,10 +517,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
-  // The page's one focus rescue (`focus-place.ts`): after any press, on any page, the keyboard
-  // focus that a disabled, hidden or departed control took with it goes to the control at its
-  // place, never to the body, once every component's own hand-off has had its turn.
-  useFocusRescue();
+  // The page's one focus rescue (`focus-place.ts`): after any loss of the focus to the body - a
+  // press, or an update that takes the focused control away - the focus a disabled, hidden or
+  // departed control took with it goes to the control at its place, never to the body, once
+  // every component's own hand-off has had its turn.
+  useFocusRescue(mainRef);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // The status corner floats over the foot of the screen as the composers it sits above do, so
   // it publishes its own reach the same way: a control floating at that foot - the

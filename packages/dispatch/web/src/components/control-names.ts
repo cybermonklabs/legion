@@ -22,6 +22,11 @@ export const CONTROL = Object.freeze({
 /** What a `data-control` attribute carries: no page invents a twelfth. */
 export type ControlName = (typeof CONTROL)[keyof typeof CONTROL];
 
+/** The control `root` holds under the name `name` writes into its `data-control`, or null. */
+export function controlIn(root: ParentNode, name: ControlName): HTMLElement | null {
+  return root.querySelector<HTMLElement>(`[data-control="${name}"]`);
+}
+
 /** How much room a control takes in its row. `compact` exists for the project List, whose toolbar
  *  holds more controls than a phone's width fits at the comfortable size. */
 export type ControlSize = "comfortable" | "compact";

@@ -1,12 +1,17 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
 
+import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { useFocusRescue } from "./focus-place";
 
-// The page's focus rescue, read in happy-dom with the page built by hand. happy-dom fires no
-// `focusout` when a focused element is taken away, where Chromium fires one while the element is
-// still in the page (measured, INFRA-3135 round 7), so `lose` fires it as Chromium does before the
-// element goes. A `blur()` fires its own.
+// The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken
+// away fires a `focusout` in Chromium while it is still in the page, and none at all in Firefox
+// (measured, INFRA-3135 round 7) nor in happy-dom: `lose` fires it as Chromium does before the
+// element goes, and a bare `remove()` is the Firefox case, which the rescue sees by watching the
+// page. A `blur()` fires its own.
+
+/** The main content the shell hands the rescue, as `app.tsx` hands it its `mainRef`. */
+const mainRef: { current: HTMLElement | null } = { current: null };
 
 /** The page's main content holding one button per label, in the document. */
 function mainOf(...labels: string[]): { main: HTMLElement; buttons: HTMLButtonElement[] } {
@@ -20,6 +25,7 @@ function mainOf(...labels: string[]): { main: HTMLElement; buttons: HTMLButtonEl
     return button;
   });
   document.body.append(main);
+  mainRef.current = main;
   return { buttons, main };
 }
 
@@ -29,13 +35,18 @@ function lose(element: HTMLElement, leave: () => void = () => element.remove()):
   leave();
 }
 
+/** One animation frame. happy-dom runs it on the real clock, under a fake one too. */
+async function frame(): Promise<void> {
+  const done = Promise.withResolvers<void>();
+  requestAnimationFrame(() => done.resolve());
+  await done.promise;
+}
+
 /** Lets the rescue's check run: it runs a frame and then a task after the loss, so a frame and
  *  two tasks here come after it. The tasks are zero-delay turns of the event loop that order this
  *  after the check, not a wait for time to pass. */
 async function settled(): Promise<void> {
-  const frame = Promise.withResolvers<void>();
-  requestAnimationFrame(() => frame.resolve());
-  await frame.promise;
+  await frame();
   for (const _ of [0, 1]) {
     const task = Promise.withResolvers<void>();
     setTimeout(task.resolve, 0);
@@ -45,12 +56,13 @@ async function settled(): Promise<void> {
 
 /** Runs `body` with the rescue mounted, and takes the page and the rescue away after it. */
 async function withRescue(body: () => Promise<void>): Promise<void> {
-  const rescue = renderHook(() => useFocusRescue());
+  const rescue = renderHook(() => useFocusRescue(mainRef));
   try {
     await body();
   } finally {
     rescue.unmount();
-    document.getElementById("main-content")?.remove();
+    mainRef.current?.remove();
+    mainRef.current = null;
     for (const dialog of document.querySelectorAll('[role="dialog"]')) dialog.remove();
     window.history.replaceState(null, "", "/");
   }
@@ -123,6 +135,53 @@ test("a component's own watcher, started after the rescue's wait, hands the focu
   });
 });
 
+// (k) A control the press disabled and enabled again before the check ran is no control the
+// reader moved off: it was taken from them, so it gets the focus back.
+test("a control enabled again before the check runs gets the focus back", async () => {
+  await withRescue(async () => {
+    const [, saving, after] = mainOf("Before", "Save", "After").buttons;
+    const button = saving as HTMLButtonElement;
+    button.focus();
+    button.blur();
+    button.disabled = true;
+    // The `focusout` Chromium fires once the control is disabled, which happy-dom does not.
+    button.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    button.disabled = false;
+    await settled();
+    expect(button).toHaveFocus();
+    expect(after).not.toHaveFocus();
+  });
+});
+
+// (l) The wait outlasts the app's write deadline, so a slow write's control, enabled again after
+// the 10 s the wait used to give it, still gets the focus back rather than losing it elsewhere.
+test("a control disabled for longer than 10 s still gets the focus back when it is enabled", async () => {
+  jest.useFakeTimers();
+  try {
+    await withRescue(async () => {
+      const [, saving, after] = mainOf("Before", "Save", "After").buttons;
+      const button = saving as HTMLButtonElement;
+      button.focus();
+      button.blur();
+      button.disabled = true;
+      await frame();
+      jest.advanceTimersByTime(0);
+      jest.advanceTimersByTime(SEND_DEADLINE_MS - 1_000);
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(document.activeElement).toBe(document.body);
+      expect(after).not.toHaveFocus();
+      button.disabled = false;
+      await frame();
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(button).toHaveFocus();
+    });
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 // (d) A dialog that closes over an opener its own press disabled hands the focus to the
 // opener's place in the main content, the region under the dialog.
 test("a control in a dialog that closes hands the focus to the opener's place under it", async () => {
@@ -145,6 +204,57 @@ test("a control in a dialog that closes hands the focus to the opener's place un
     opener?.focus();
     expect(document.activeElement).toBe(document.body);
     await waitFor(() => expect(after).toHaveFocus());
+  });
+});
+
+// (m) A panel that is no modal - a menu's, drawn outside the main content - closed by a press on
+// the page outside it, hands the focus back to the trigger that opened it, not to the last
+// control of the document.
+test("a panel that is no modal, closed by a press outside the main content, hands the focus to its trigger", async () => {
+  await withRescue(async () => {
+    const [trigger] = mainOf("Filters", "Other", "Last").buttons;
+    const panel = document.createElement("div");
+    panel.setAttribute("role", "dialog");
+    const box = document.createElement("input");
+    panel.append(box);
+    document.body.append(panel);
+    trigger?.focus();
+    box.focus();
+    box.blur();
+    panel.remove();
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+});
+
+// (i) Firefox and WebKit fire no `focusout` for a focused control taken away: the rescue sees it
+// go by watching the page, and hands the focus on all the same.
+test("a control taken away with no focusout, as Firefox does, hands the focus to the control now at its place", async () => {
+  await withRescue(async () => {
+    const [, second, third] = mainOf("First", "Second", "Third").buttons;
+    second?.focus();
+    second?.remove();
+    await waitFor(() => expect(third).toHaveFocus());
+  });
+});
+
+// (j) So for a control whose parent is taken away: its place is where the parent stood.
+test("a control whose parent is taken away with no focusout hands the focus to the control after the parent", async () => {
+  await withRescue(async () => {
+    const { buttons, main } = mainOf("First", "Last");
+    const [first, last] = buttons;
+    const group = document.createElement("div");
+    const inner = ["Inner one", "Inner two"].map((label) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      group.append(button);
+      return button;
+    });
+    main.insertBefore(group, last ?? null);
+    inner[1]?.focus();
+    group.remove();
+    await waitFor(() => expect(last).toHaveFocus());
+    expect(first).not.toHaveFocus();
   });
 });
 
@@ -181,9 +291,23 @@ test("a loss followed by a change of page moves nothing", async () => {
   });
 });
 
-// (g) A component's own hand-off runs first, in the frame after the loss as `useDialog`'s does,
-// moving the focus only while it is still on the page; the rescue then leaves it where it landed.
-// Without a hand-off the same loss is rescued.
+// (n) A navigation writes the new address before the old page goes, so the loss is read against
+// the address the control was focused on: the change comes first here, then the control goes.
+test("a control taken away after the address changed moves nothing", async () => {
+  await withRescue(async () => {
+    const [, second, third] = mainOf("First", "Second", "Third").buttons;
+    second?.focus();
+    window.history.pushState(null, "", "/elsewhere");
+    lose(second as HTMLElement);
+    await settled();
+    expect(document.activeElement).toBe(document.body);
+    expect(third).not.toHaveFocus();
+  });
+});
+
+// (g) A component's own hand-off runs first - here in the frame after the loss, moving the focus
+// only while it is still on the page - and the rescue then leaves it where it landed. Without a
+// hand-off the same loss is rescued.
 test("a component that already moved the focus is left alone", async () => {
   await withRescue(async () => {
     const [first, second, third] = mainOf("First", "Second", "Third").buttons;

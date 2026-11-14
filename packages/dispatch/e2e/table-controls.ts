@@ -374,7 +374,11 @@ async function openInbox(page: Page): Promise<Surface> {
 
 /** Opens the project's Issues tab on the view named, whichever of the two the reader's stored
  *  preference (`project.issue-view`) was left on by an earlier surface. */
-async function openIssuesTab(page: Page, project: string, view: "List" | "Board"): Promise<void> {
+export async function openIssuesTab(
+  page: Page,
+  project: string,
+  view: "List" | "Board"
+): Promise<void> {
   await page.goto(`/projects/${project}/issues`);
   const button = page.getByRole("button", { exact: true, name: view });
   await expect(button).toBeVisible();
