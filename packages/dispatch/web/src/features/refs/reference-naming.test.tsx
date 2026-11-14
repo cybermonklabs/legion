@@ -115,26 +115,34 @@ test("the plain-text projection names a reference by its resolved name", async (
   }
 });
 
-// The projection reads the whole text unless its caller asks for the first block alone, which a
-// closed priority row does: that block is cut from the parsed document, so its soft line break
-// still joins the paragraph's lines, its references are still named, and the blocks after it
-// are not read at all.
-test("the plain-text projection reads the first block alone where it is asked to", async () => {
+// The projection reads the whole text unless its caller asks for the first line alone, which a
+// closed priority row does: the line is cut from the parsed document, so its references are
+// still named, and the lines and blocks after it are not read at all. A heading's line and a
+// list's first line read the same way.
+test("the plain-text projection reads the first line alone where it is asked to", async () => {
   const markdown = "Tied to **dispatch://CORE-1**\nhere.\n\n- A list after it";
   const view = draw(
     <>
-      <PlainText firstBlock markdown={markdown}>
+      <PlainText firstLine markdown={markdown}>
         {(text) => <span data-testid="first">{text ?? ""}</span>}
       </PlainText>
       <PlainText markdown={markdown}>
         {(text) => <span data-testid="whole">{text ?? ""}</span>}
       </PlainText>
+      <PlainText firstLine markdown={"## The plan\n\nIts first step."}>
+        {(text) => <span data-testid="heading">{text ?? ""}</span>}
+      </PlainText>
+      <PlainText firstLine markdown={"\n- First item\n  and its next line\n- Second item"}>
+        {(text) => <span data-testid="list">{text ?? ""}</span>}
+      </PlainText>
     </>
   );
   try {
     await waitFor(() =>
-      expect(view.getByTestId("first").textContent).toBe("Tied to CORE-1 Fix the thing here.")
+      expect(view.getByTestId("first").textContent).toBe("Tied to CORE-1 Fix the thing")
     );
+    await waitFor(() => expect(view.getByTestId("heading").textContent).toBe("The plan"));
+    await waitFor(() => expect(view.getByTestId("list").textContent).toBe("First item"));
     await waitFor(() =>
       expect(view.getByTestId("whole").textContent).toBe(
         "Tied to CORE-1 Fix the thing here. A list after it"

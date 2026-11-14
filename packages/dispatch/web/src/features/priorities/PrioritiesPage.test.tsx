@@ -167,8 +167,7 @@ const FIFTEEN = body({
   priorities: [
     priority("legion-first", {
       title: "Legion works reliably first",
-      description:
-        "The first line.\nThe rest of it, which the row shows when it is open.\n\nA second paragraph, which only the open row reads.",
+      description: "The first line.\nThe rest of it, which the row shows when it is open.",
       owner: "INFRA controller",
       work: {
         by_status: { in_progress: 5, testing: 1, needs_review: 1, retro: 0, todo: 9, triage: 3 },
@@ -391,24 +390,18 @@ test("the first line of a description shows on a closed row and the whole of it 
   const user = userEvent.setup();
   page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("CORE-2")]);
   const row = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  // Closed, the row reads the description's first block in plain words (`PlainText`'s
-  // `firstBlock`), which the engine answers once it has loaded. A soft line break is no new
-  // paragraph, so the opening line and the one after it read as one line of text, and the
-  // blank line ends the block: the second paragraph is not on the closed row at all.
-  expect(
-    await within(row).findByText(
-      "The first line. The rest of it, which the row shows when it is open."
-    )
-  ).toBeDefined();
-  expect(within(row).queryByText(/A second paragraph/)).toBeNull();
+  // Closed, the row reads the description's first line in plain words (`PlainText`'s
+  // `firstLine`), which the engine answers once it has loaded, and none of the line after it.
+  expect(await within(row).findByText("The first line.")).toBeDefined();
+  expect(within(row).queryByText(/The rest of it/)).toBeNull();
   await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
   // Open, the row reads the whole description rendered, and a click on its text opens its source.
   const rendered = await screen.findByRole("group", { name: "Description of P1" });
-  expect(await within(rendered).findByText(/A second paragraph/)).toBeDefined();
+  expect(await within(rendered).findByText(/The rest of it/)).toBeDefined();
   await user.click(within(rendered).getByText(/The rest of it/));
   const whole = await screen.findByRole("textbox", { name: "Description of P1" });
   expect((whole as HTMLTextAreaElement).value).toBe(
-    "The first line.\nThe rest of it, which the row shows when it is open.\n\nA second paragraph, which only the open row reads."
+    "The first line.\nThe rest of it, which the row shows when it is open."
   );
 });
 

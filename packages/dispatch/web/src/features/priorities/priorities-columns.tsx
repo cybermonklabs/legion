@@ -107,13 +107,11 @@ function TitleCell({ actions, item }: { actions: PriorityRowActions; item: Prior
             rows={6}
           />
         ) : (
-          // A closed row shows the opening of the description and no more of it: its first
-          // block in plain words (`PlainText`'s `firstBlock`), read once the engine has
-          // answered, so a soft line break joins the lines of that paragraph and a blank line
-          // ends it. It is markdown, so its markers are not read out, and a reference in it
-          // reads as its target's name, as every other one-line projection of stored text
-          // reads it.
-          <PlainText firstBlock markdown={description}>
+          // A closed row shows the description's first line and no more of it, in plain words
+          // (`PlainText`'s `firstLine`), read once the engine has answered. It is markdown, so
+          // its markers are not read out, and a reference in it reads as its target's name, as
+          // every other one-line projection of stored text reads it.
+          <PlainText firstLine markdown={description}>
             {(summary) =>
               summary === undefined || summary === "" ? null : (
                 <p className={`truncate text-sm ${textSecondaryOnCanvas}`}>{summary}</p>

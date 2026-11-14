@@ -602,11 +602,14 @@ export interface MarkdownHeadline {
  * that leaves it out reads every reference as its short form, which is what a title drawn over
  * one record's text does (`useReferenceTarget`), since a name inside a name resolves nothing.
  *
- * `firstBlock` projects the document's first block alone (its first paragraph, heading or list)
- * rather than the whole of it, for a place that shows the opening of a text and no more of it.
- * Only a closed row of the priorities table asks for it today (`priorities-columns.tsx`); every
- * other caller reads the whole text, which is the default. `cut` still says only whether the
- * projected words were cut to `max`.
+ * `firstLine` projects the text's first line alone: the first block that holds any words (a
+ * paragraph, a heading, a list's first item), cut at its first line break (`firstLineOf`), for a
+ * place that shows the opening line of a text and no more of it. A text read from `markdown` is
+ * parsed with its soft breaks kept as line breaks for this reading, so a paragraph's first line
+ * is the line its author wrote; a tree's soft break is whatever Go's reading made of it, a space,
+ * so only a hard break ends that line. Only a closed row of the priorities table asks for it
+ * today (`priorities-columns.tsx`); every other caller reads the whole text, which is the
+ * default. `cut` still says only whether the projected words were cut to `max`.
  *
  * `undefined` where neither is given, until the engine has answered (one pre-paint commit once
  * it is loaded on the page, and for a parsed body until the worker's answer lands), and for a
@@ -618,7 +621,7 @@ export function useMarkdownHeadline(
   max: number,
   markdown?: string,
   names: ReferenceNames = NO_REFERENCE_NAMES,
-  firstBlock = false
+  firstLine = false
 ): MarkdownHeadline | undefined {
   const [headline, setHeadline] = useState<MarkdownHeadline>();
   useLayoutEffect(() => {
@@ -627,13 +630,9 @@ export function useMarkdownHeadline(
         setHeadline(undefined);
         return;
       }
-      // The first block is cut from the parsed document, never from the markdown, so the
-      // projection reads it as it reads a whole text.
-      const first = firstBlock ? document.firstChild : null;
-      const projected = plainWords(
-        first === null ? document : document.cut(0, first.nodeSize),
-        names
-      );
+      // The line is cut from the parsed document, never from the markdown, so the projection
+      // reads it as it reads a whole text.
+      const projected = plainWords(firstLine ? firstLineOf(document) : document, names);
       const characters = Array.from(projected.words.replace(/\s+/g, " ").trim());
       const cut = characters.length > max;
       setHeadline({
@@ -649,11 +648,47 @@ export function useMarkdownHeadline(
       setHeadline(undefined);
       return;
     }
-    return renderWithEngine(markdown, undefined, "space", ({ parsed, pending }) => {
-      // A long body's headline waits for the worker rather than reading as its own source,
-      // and the headline left in place would be the one a frame before it produced.
-      fit(pending ? undefined : parsed);
-    });
-  }, [firstBlock, markdown, max, names, tree]);
+    return renderWithEngine(
+      markdown,
+      undefined,
+      firstLine ? "line" : "space",
+      ({ parsed, pending }) => {
+        // A long body's headline waits for the worker rather than reading as its own source,
+        // and the headline left in place would be the one a frame before it produced.
+        fit(pending ? undefined : parsed);
+      }
+    );
+  }, [firstLine, markdown, max, names, tree]);
   return headline;
+}
+
+/** `document` up to the end of its first line: the first textblock that holds any words, cut at
+ *  its first hard break, or at its first newline where it is code, whose text keeps its lines. */
+function firstLineOf(document: ProseMirrorNode): ProseMirrorNode {
+  let end: number | undefined;
+  document.descendants((node, position) => {
+    if (end !== undefined) {
+      return false;
+    }
+    if (!node.isTextblock) {
+      return true;
+    }
+    if (node.textContent.trim() === "") {
+      return false;
+    }
+    const contentStart = position + 1;
+    end = contentStart + node.content.size;
+    node.forEach((child, offset) => {
+      if (end !== contentStart + node.content.size) {
+        return;
+      }
+      if (child.type.name === "hardbreak") {
+        end = contentStart + offset;
+      } else if (child.isText && (child.text ?? "").includes("\n")) {
+        end = contentStart + offset + (child.text ?? "").indexOf("\n");
+      }
+    });
+    return false;
+  });
+  return document.cut(0, end ?? 0);
 }

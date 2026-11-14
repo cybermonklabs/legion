@@ -1397,9 +1397,31 @@ jobs:
               - 'packages/dispatch/e2e/search.e2e.ts'
               - 'packages/dispatch/e2e/reference-surfaces.ts'
               - 'packages/dispatch/e2e/search.ts'
-              # The reference framework: the shared field, the picker, the reader and the
-              # renderers all live here.
+              # The reference framework: the picker, the reader and the renderers.
               - 'packages/dispatch/web/src/features/refs/**'
+              # The shared field, and the file of every covered row of the writing list, which
+              # writing-surfaces.e2e.ts walks: a change to one can take a box's picker away.
+              - 'packages/dispatch/web/src/features/conversation/MentionField.tsx'
+              - 'packages/dispatch/web/src/features/conversation/MentionComposer.tsx'
+              - 'packages/dispatch/web/src/features/conversation/ConversationTab.tsx'
+              - 'packages/dispatch/web/src/features/inbox/ThreadBody.tsx'
+              - 'packages/dispatch/web/src/features/inbox/AskCard.tsx'
+              - 'packages/dispatch/web/src/features/inbox/DeclineControl.tsx'
+              - 'packages/dispatch/web/src/features/inbox/AskThread.tsx'
+              - 'packages/dispatch/web/src/features/margin/CommentsTab.tsx'
+              - 'packages/dispatch/web/src/features/margin/ThreadCard.tsx'
+              - 'packages/dispatch/web/src/features/doc/DocumentRefPicker.tsx'
+              - 'packages/dispatch/web/src/features/doc/editor.ts'
+              - 'packages/dispatch/web/src/features/doc/ApprovalChip.tsx'
+              - 'packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx'
+              - 'packages/dispatch/web/src/features/agents/AgentsPage.tsx'
+              - 'packages/dispatch/web/src/features/agent-view/AgentThread.tsx'
+              - 'packages/dispatch/web/src/features/agent-view/ReferenceTriggers.tsx'
+              - 'packages/dispatch/web/src/features/issue/DecisionsPanel.tsx'
+              - 'packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx'
+              - 'packages/dispatch/web/src/features/architecture/AttachmentLists.tsx'
+              - 'packages/dispatch/web/src/features/priorities/PriorityDescription.tsx'
+              - 'packages/dispatch/web/src/features/priorities/useInPlaceDraft.ts'
               # The contracts the reference rows' shapes come from.
               - 'packages/contracts/src/dispatch-text-references*.ts'
               - 'packages/contracts/src/dispatch-writing-boxes.ts'

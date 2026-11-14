@@ -86,9 +86,10 @@ const RICH_SUMMARY = [
 /** The question the held row asks: one line, since that row is about when the block is drawn. */
 const HELD_SUMMARY = "The mirror takes the clock on Thursday.";
 
-/** The question the refused row asks. Its mark sits in the second paragraph on purpose: a short
- *  row shows the question's first line alone (`features/inbox/question-line.ts`), so a count of
- *  the mark over the whole page counts the drawn question body and nothing else. */
+/** The question the refused row asks. Its mark sits in the second paragraph on purpose: the
+ *  short row draws the whole question through the one renderer on one line, so the mark is on
+ *  the page twice, once in that row and once in the drawn question body, and a count of it
+ *  shows the body drawn once. */
 const FALLBACK_MARK = "The fallback note names the window and who signs it off.";
 const FALLBACK_SUMMARY = `The export window moves to Sunday.\n\n${FALLBACK_MARK}`;
 

@@ -1,5 +1,5 @@
 import { dispatchWritingBox } from "@legion/contracts";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   borderDefault,
   focusVisibleRing,
@@ -7,8 +7,9 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { InPlaceField } from "./InPlaceField";
+import { useInPlaceDraft } from "./useInPlaceDraft";
 
 const NONE_WRITTEN = "No description is written.";
 
@@ -54,18 +55,15 @@ export function PriorityDescription({
 
   if (canWrite && editing)
     return (
-      <InPlaceField
-        autoFocus
+      <DescriptionEditor
         label={label}
         onDone={() => setEditing(false)}
         onSave={(next) => {
           setWritten({ text: next, over: description });
           onSave(next);
         }}
-        placeholder="What this priority is, in markdown"
         rows={rows}
         value={shown}
-        writing={dispatchWritingBox("priority-description", "priority-description")}
       />
     );
   const body =
@@ -103,5 +101,51 @@ export function PriorityDescription({
         {body}
       </div>
     </div>
+  );
+}
+
+/** The writing list's row of a priority's description, which makes its editor the shared text
+ *  field: the line under it is the row's hint. */
+const DESCRIPTION_BOX = dispatchWritingBox("priority-description", "priority-description");
+
+/** The editor a click on the description opens: the shared text field with the reference picker
+ *  in it (`DISPATCH_WRITING_BOXES`, `priority-description`), saved as it is written
+ *  (`useInPlaceDraft`) and holding the focus from the moment it opens, with the caret at the end
+ *  of the text. */
+function DescriptionEditor({
+  label,
+  onDone,
+  onSave,
+  rows = 8,
+  value,
+}: {
+  label: string;
+  onDone: () => void;
+  onSave: (next: string) => void;
+  rows?: number;
+  value: string;
+}): ReactNode {
+  const { draft, hold, leave, type } = useInPlaceDraft(value, onSave, onDone);
+  const field = useRef<MentionFieldHandle>(null);
+  useEffect(() => {
+    const node = field.current?.textarea() ?? null;
+    if (node === null) return;
+    node.focus();
+    node.setSelectionRange(node.value.length, node.value.length);
+  }, []);
+  return (
+    <MentionField
+      body={draft}
+      className="font-mono text-sm"
+      fieldRef={field}
+      label={label}
+      labelHidden
+      onBlur={leave}
+      onChange={(change) => type(change.body)}
+      onFocus={hold}
+      placeholder="What this priority is, in markdown"
+      rows={rows}
+      writing={DESCRIPTION_BOX}
+    />
   );
 }

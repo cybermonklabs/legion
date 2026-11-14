@@ -57,6 +57,12 @@ const WRITING_CONSTRUCTS: readonly Construct[] = [
   { name: "a mount of the shared field", pattern: /<MentionField\b|<MentionComposer\b/ },
 ];
 
+/** What a covered box is made of: a box with the picker is the shared field or one of the two
+ *  editors that host it, never a plain textarea. */
+const PICKER_CONSTRUCTS: readonly Construct[] = WRITING_CONSTRUCTS.filter(
+  (construct) => !construct.pattern.test("<textarea")
+);
+
 /** What a reading surface is made of: a mount of the one renderer, as a body or as a line or
  *  two of one, and a mount of a reference card - the cards under a body that is nothing but
  *  references, and the hover card the shell portals once for the whole app. */
@@ -212,6 +218,14 @@ function writesWord(file: string, word: string): boolean {
   return TEXT_BY_FILE.get(file)?.includes(word) === true;
 }
 
+/** Whether `file` names `word` as a string of its code, its comments blanked: how a box picks
+ *  its row (`dispatchWritingBox("<box>", ...)`), which a pointer in a comment cannot stand in
+ *  for. */
+function namesInCode(file: string, word: string): boolean {
+  const code = LINES_BY_FILE.get(file)?.join("\n") ?? "";
+  return code.includes(`"${word}"`) || code.includes(`'${word}'`) || code.includes(`\`${word}\``);
+}
+
 /** One place the walk found a construct. */
 interface Site {
   readonly at: string;
@@ -330,6 +344,19 @@ describe("every row of the writing list is a box the dashboard still draws", () 
     expect(named ? label : `no file of ${label} writes its box id: ${row.files.join(", ")}`).toBe(
       label
     );
+    if (row.covered) {
+      // A covered box takes the picker: a file of it mounts the shared field or an editor that
+      // hosts it, and a file of it picks the row in its code (the document body's editor is
+      // mounted in one file and its picker picks the row in another). A comment naming the
+      // row, beside a box that lost its picker, is neither.
+      const mounted = row.files.some((file) => holdsAny(file, PICKER_CONSTRUCTS));
+      const picked = row.files.some((file) => namesInCode(file, row.box));
+      expect(
+        mounted && picked
+          ? label
+          : `no file of ${label} ${mounted ? "picks its row in code" : "mounts the shared field or an editor"}: ${row.files.join(", ")}`
+      ).toBe(label);
+    }
   });
 
   test.each(

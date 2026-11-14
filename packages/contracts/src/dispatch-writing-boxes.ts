@@ -474,8 +474,8 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     write: "architecture-reason",
   },
   // A priority's description, written where it is read: on the priority's own page and on the
-  // open row of the priorities table, which both open the one editor (`PriorityDescription`
-  // picks this row; `InPlaceField` mounts the shared field). The priority write resolves no
+  // open row of the priorities table, which both open the one editor (`PriorityDescription`,
+  // which mounts the shared field with this row). The priority write resolves no
   // party out of it and indexes nothing from it, so a party picked here is a link for a reader
   // and nobody is told. A priority belongs to no issue, so the picker lists everyone who has
   // signed in.
@@ -483,10 +483,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "priority-description",
     covered: true,
     delivers: false,
-    files: [
-      "packages/dispatch/web/src/features/priorities/InPlaceField.tsx",
-      "packages/dispatch/web/src/features/priorities/PriorityDescription.tsx",
-    ],
+    files: ["packages/dispatch/web/src/features/priorities/PriorityDescription.tsx"],
     hint: DISPATCH_WRITING_HINT_QUIET,
     issueRows: false,
     reach: "Description of P1",
