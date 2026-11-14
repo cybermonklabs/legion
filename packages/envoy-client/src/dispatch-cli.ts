@@ -16,6 +16,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
+import { defined } from "./dispatch-commands/context";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
@@ -253,11 +254,8 @@ export async function runDispatchCli(
           USAGE
         )
       : refuse(
-          new ToolInputError(
-            parsed.tool,
-            parsed.problems,
-            parsed.aboutAFlag === false ? { aboutAFlag: false } : undefined
-          ).message,
+          new ToolInputError(parsed.tool, parsed.problems, defined("aboutAFlag", parsed.aboutAFlag))
+            .message,
           USAGE,
           parsed.tool
         );

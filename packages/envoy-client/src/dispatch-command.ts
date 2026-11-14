@@ -90,7 +90,8 @@ export type ParsedCommand =
       readonly kind: "refused";
       readonly tool?: string;
       readonly problems: string[];
-      /** False when every problem is the value a flag carries, so the refusal lists no flags. */
+      /** False when every problem is a bare `-` given to a text flag, so the refusal lists no
+       *  flags. */
       readonly aboutAFlag?: false;
     };
 

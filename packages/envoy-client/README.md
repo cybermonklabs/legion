@@ -713,11 +713,11 @@ hyphens for underscores (`issue-update`), one flag per field
 singular flag for a list (`--label a --label b`, `--option "Label: what it costs"`, split at the
 first `: `; a label holding `: ` goes in `--options-json`, which the generated command line uses
 for such a list), and `--<field>-json` for any other object. Only one flag of a call may read
-stdin. The command refuses `--<field> -` and `--<field>=-` with exit 2, and its refusal names
-`--<field>-file`. The one exception is `dispatch artifact --path`, whose value names a local
-file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and an example,
-and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the strict
-schema, the cross-field checks and the picture files), refusing the arguments the call would
+stdin. For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
+and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
+names a local file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
+an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
+strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
 them (an issue from LEGION_ISSUE or the ref). It reads neither Dispatch nor this session's state,
 so it runs with Dispatch off too, and a call it passed can still stop on either.

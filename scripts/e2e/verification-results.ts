@@ -380,7 +380,7 @@ interface DispatchRun {
  *  and answers its exit code and what it printed, whatever the code. The command is given a home
  *  of its own and the variables that name its host, its session and the server, so no
  *  envoy.json, token file or session state of the caller's is read. Its standard input holds
- *  `stdin`, or nothing when that is absent, and it runs in `cwd`, or in the driver's own
+ *  `stdin`, or nothing when that is absent, and it runs in `cwd`, or in the driver's working
  *  directory when that is absent. */
 async function runDispatch(
   argv: readonly string[],
@@ -419,6 +419,11 @@ function shellWord(word: string): string {
   return /^[A-Za-z0-9_./:@%+=,-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
 }
 
+/** The command line `dispatch` with `argv`, each word as `shellWord` writes it. */
+function commandText(argv: readonly string[]): string {
+  return `dispatch ${argv.map(shellWord).join(" ")}`;
+}
+
 /** The failure of one step of a case that runs the `dispatch` command: the step's number, its
  *  command line, the exit code it got and the one it wanted, what else went wrong when `why`
  *  names it, then its stdout and its stderr as JSON strings, so every byte of them reads in the
@@ -431,10 +436,28 @@ function stepFailed(
   why?: string
 ): string {
   return [
-    `step ${step}: dispatch ${argv.map(shellWord).join(" ")} exited ${run.code}, want ${wanted}${why === undefined ? "" : `: ${why}`}`,
+    `step ${step}: ${commandText(argv)} exited ${run.code}, want ${wanted}${why === undefined ? "" : `: ${why}`}`,
     `stdout ${JSON.stringify(run.stdout)}`,
     `stderr ${JSON.stringify(run.stderr)}`,
   ].join("\n   ");
+}
+
+/** The argv of `dispatch result` recording an implementer's pass of `check` on `issue` at
+ *  `commit`, which a step extends with the fields it sends. */
+function resultArgv(issue: string, check: string, commit: string): string[] {
+  return [
+    "result",
+    "--issue",
+    issue,
+    "--check",
+    check,
+    "--role",
+    "implementer",
+    "--verdict",
+    "pass",
+    "--commit",
+    commit,
+  ];
 }
 
 /** Runs `dispatch results --issue <key> [--at <commit>]` and answers what it printed. */
@@ -662,6 +685,12 @@ async function seedIssue(
     name: "verification.md",
   });
   return key;
+}
+
+/** One check block for the `checks` of `seedIssue`: the check `id`, saying `what`, which serves
+ *  the requirement every seeded spec marks and names this script as its run. */
+function checkFor(id: string, what: string): string {
+  return `:::check{#${id} serves="dispatch://%KEY%/spec#b-r1" surface="cli" run="bash scripts/e2e/verification-results.sh"}\n${what}\n:::\n`;
 }
 
 // One issue with a plain spec, which every Dispatch serves: the route probe below writes its
@@ -1392,8 +1421,6 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
   // A check's id must be one among the issue and the issues above it: a result naming an id the
   // child and the parent both carry is refused 409 CHECK_AMBIGUOUS, so each issue's check is
   // named for the issue it proves.
-  const checkFor = (id: string, what: string): string =>
-    `:::check{#${id} serves="dispatch://%KEY%/spec#b-r1" surface="cli" run="bash scripts/e2e/verification-results.sh"}\n${what}\n:::\n`;
   const parent = await seedIssue(
     "VRF",
     "The parent whose child carries the work",
@@ -1706,25 +1733,13 @@ await runCase("dash-refused", async () => {
   const issue = await seedIssue(
     "VRF",
     "A bare - given to a text flag is refused",
-    `:::check{#k1 serves="dispatch://%KEY%/spec#b-r1" surface="cli" run="bash scripts/e2e/verification-results.sh"}
-The command refuses a bare - given to a text flag, and records what a file or stdin holds.
-:::
-`
+    checkFor(
+      "k1",
+      "The command refuses a bare - given to a text flag, and records what a file or stdin holds."
+    )
   );
   note(`${issue} holds the before_merge check k1`);
-  const result = [
-    "result",
-    "--issue",
-    issue,
-    "--check",
-    "k1",
-    "--role",
-    "implementer",
-    "--verdict",
-    "pass",
-    "--commit",
-    commits.dashRefused,
-  ];
+  const result = resultArgv(issue, "k1", commits.dashRefused);
   // The here-document the reported call put its evidence in.
   const hereDocument = "bun test packages/envoy-client\n412 pass\n0 fail\n";
 
@@ -1770,9 +1785,7 @@ The command refuses a bare - given to a text flag, and records what a file or st
         `the refusal must list the one problem line for ${flag}, and no Allowed flags line`
       );
     }
-    note(
-      `step ${step}, dispatch ${argv.map(shellWord).join(" ")}: exit 2, the one problem line for ${flag}`
-    );
+    note(`step ${step}, ${commandText(argv)}: exit 2, the one problem line for ${flag}`);
   }
 
   // Step 6, which would create an issue: the project holds as many issues after it as before.
@@ -1859,7 +1872,7 @@ The command refuses a bare - given to a text flag, and records what a file or st
     // packages/envoy/internal/dispatch/api/artifacts.go).
     const bytes = Buffer.from(await artifactBytes(issue, "dash-txt", 1));
     note(
-      `step 8, dispatch ${uploaded.map(shellWord).join(" ")} beside a file named -: exit 0, and dash.txt version 1 holds ${JSON.stringify(bytes.toString())}`
+      `step 8, ${commandText(uploaded)} beside a file named -: exit 0, and dash.txt version 1 holds ${JSON.stringify(bytes.toString())}`
     );
     return bytes.equals(dashBytes)
       ? undefined
@@ -1948,8 +1961,6 @@ await runCase("dash-refused-every-flag", async () => {
 // `--<field>=<value>`, and a `-` that a file or stdin gives. A value that starts with `--` and is
 // a word of its own still reads as a flag, as before.
 await runCase("values-kept", async () => {
-  const checkFor = (id: string, what: string): string =>
-    `:::check{#${id} serves="dispatch://%KEY%/spec#b-r1" surface="cli" run="bash scripts/e2e/verification-results.sh"}\n${what}\n:::\n`;
   const issue = await seedIssue(
     "VRF",
     "Every other value of a text flag is kept",
@@ -1960,19 +1971,6 @@ await runCase("values-kept", async () => {
     ].join("\n")
   );
   note(`${issue} holds the before_merge checks v1, v2 and v3`);
-  const record = (check: string): string[] => [
-    "result",
-    "--issue",
-    issue,
-    "--check",
-    check,
-    "--role",
-    "implementer",
-    "--verdict",
-    "pass",
-    "--commit",
-    commits.valuesKept,
-  ];
   const run =
     "go test ./internal/workflow/ -run 'AppendOnly|Line|StartWrittenOverAnOwedRow' -count=1";
   const lines = "--- PASS: TestAppendOnly (0.00s)\nok\n";
@@ -1986,7 +1984,7 @@ await runCase("values-kept", async () => {
     const steps = [
       {
         argv: [
-          ...record("v1"),
+          ...resultArgv(issue, "v1", commits.valuesKept),
           "--run",
           run,
           "--observed-file",
@@ -1999,12 +1997,17 @@ await runCase("values-kept", async () => {
         want: { negative_control: control, observed: lines, run },
       },
       {
-        argv: [...record("v2"), `--observed=${passLine}`, "--negative-control-file", dashFile],
+        argv: [
+          ...resultArgv(issue, "v2", commits.valuesKept),
+          `--observed=${passLine}`,
+          "--negative-control-file",
+          dashFile,
+        ],
         check: "v2",
         want: { negative_control: "-", observed: passLine, run: "" },
       },
       {
-        argv: [...record("v3"), "--observed-file", "-"],
+        argv: [...resultArgv(issue, "v3", commits.valuesKept), "--observed-file", "-"],
         check: "v3",
         stdin: "-",
         want: { negative_control: "", observed: "-", run: "" },
@@ -2014,12 +2017,12 @@ await runCase("values-kept", async () => {
       const answered = await runDispatch(step.argv, { stdin: step.stdin });
       if (answered.code !== 0) return stepFailed(index + 1, step.argv, answered, 0);
       note(
-        `step ${index + 1}, dispatch ${step.argv.map(shellWord).join(" ")}${step.stdin === undefined ? "" : ` with ${JSON.stringify(step.stdin)} on stdin`}: exit 0`
+        `step ${index + 1}, ${commandText(step.argv)}${step.stdin === undefined ? "" : ` with ${JSON.stringify(step.stdin)} on stdin`}: exit 0`
       );
     }
 
     // Step 4: the value as a word of its own starts with `--`, so it reads as a flag.
-    const split = [...record("v3"), "--observed", passLine];
+    const split = [...resultArgv(issue, "v3", commits.valuesKept), "--observed", passLine];
     const fourth = await runDispatch(split);
     if (fourth.code !== 2 || !fourth.stdout.split("\n").includes("- --observed needs a value")) {
       return stepFailed(
@@ -2030,7 +2033,7 @@ await runCase("values-kept", async () => {
         "the output must hold the line - --observed needs a value"
       );
     }
-    note(`step 4, dispatch ${split.map(shellWord).join(" ")}: exit 2, - --observed needs a value`);
+    note(`step 4, ${commandText(split)}: exit 2, - --observed needs a value`);
 
     // Step 5: each stored field, byte for byte.
     const checks = await checksOf(issue);
