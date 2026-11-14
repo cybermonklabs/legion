@@ -582,7 +582,11 @@ type memoryGuardKills struct {
 
 // errMemoryGuardKillsUnbound is what a holder the boot never filled answers every report with. Its
 // text names the line that fills it, since a log line is then the only place the drop shows: the
-// role whose process was ended is told nothing.
+// role whose process was ended is told nothing. An unbound holder can only be a boot bug, never a
+// daemon that runs no workflow: prepareSandbox makes the holder only under runtime: kubernetes, and
+// configuration load refuses a runtime: kubernetes file that names no dispatch_url (config's
+// checkKubernetesKeys, "the workflow is what launches every pod"), so every daemon with a holder
+// opens the workflow whose boot fills it.
 var errMemoryGuardKillsUnbound = errors.New("the daemon's memory guard kill holder was never bound to the workflow " +
 	"(daemon.go, plan.memoryGuardKills.bind), so this report and every later one is dropped")
 
@@ -608,7 +612,9 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
 	if m.pool == nil || len(m.handlers) == 0 {
 		// Nothing bound the holder to the workflow, so there is no fact path to apply the report
-		// through. That is a boot that skipped plan.memoryGuardKills.bind, and every report of every
+		// through. That is a boot that skipped plan.memoryGuardKills.bind, never a daemon that runs
+		// no workflow: only a runtime: kubernetes daemon has a holder, and configuration load refuses
+		// one whose file names no dispatch_url (errMemoryGuardKillsUnbound). Every report of every
 		// pod meets it, so it is returned rather than swallowed: the launcher session logs it with
 		// the report it dropped (sandbox's memoryKilled), which is what makes the drop findable.
 		return errMemoryGuardKillsUnbound

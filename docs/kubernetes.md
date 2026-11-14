@@ -4557,7 +4557,7 @@ the issue pod's whole 10Gi, shared by its six roles.
 
 An issue pod's six roles share one memory limit, and under gVisor the host kernel sees the pod's sandbox and not the processes in it:
 a container that passes its limit is stopped whole, `OOMKilled`, and every role's turn ends with it ([Liveness rules](#liveness-rules)).
-The memory guard in the pod's launcher acts before that point.
+The memory guard in the pod's launcher, where the deployment runs it (it is on by default), acts before that point.
 When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the largest process that is neither Legion's own nor an agent's own, and the daemon tells that process's role why, on the role's own topic.
 The rest of the pod goes on: the guard never ends a role's agent, its shim or its `role-init`, so no role's turn ends for the kill, and the command that was ended fails in the turn that ran it.
 The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
