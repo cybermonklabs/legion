@@ -47,7 +47,7 @@ func writeIndexedDocument(t *testing.T, database *store.Store, service *Service,
 		`, id, written); err != nil {
 			return err
 		}
-		_, err = service.IndexDocumentReferences(ctx, id, 1, written)
+		_, _, err = service.IndexDocumentReferences(ctx, id, 1, written)
 		return err
 	}); err != nil {
 		t.Fatalf("write document %s: %v", slug, err)
@@ -77,7 +77,7 @@ func editIndexedDocument(t *testing.T, service *Service, artifactID string, ops 
 // the block node nodeID.
 func requireLinksTo(t *testing.T, database *store.Store, stage, nodeID string, want ...string) {
 	t.Helper()
-	edges, err := refs.Edges(context.Background(), database.Pool, refs.Query{Direction: "in", Kind: "block", ID: nodeID})
+	edges, err := refs.Edges(context.Background(), database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "block", ID: nodeID})
 	if err != nil {
 		t.Fatalf("%s: read the links to %s: %v", stage, nodeID, err)
 	}

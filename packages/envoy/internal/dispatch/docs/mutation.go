@@ -894,7 +894,13 @@ func placeList(places []string) string {
 }
 
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node) error {
-	rows, err := s.queryFrom(ctx).Query(ctx, `
+	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), artifactID, target)
+}
+
+// refuseDroppedAskBlocksIn is refuseDroppedAskBlocks reading the document's open asks through q,
+// for a caller that holds a transaction and no Service: the erase's (ReadErasedLiveText).
+func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string, target *pmdoc.Node) error {
+	rows, err := q.Query(ctx, `
 		select block_id from asks
 		where block_artifact_id = $1 and state = 'open' and block_id is not null
 	`, artifactID)
@@ -1333,7 +1339,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	if err := s.recordEditNotice(ctx, tx, artifactID, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
-	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes}, nil
+	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
 }
 
 // prevalidateLiveOperations performs database-backed table-anchor checks
@@ -1796,7 +1802,7 @@ func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, 
 	if err := s.recordEditNotice(ctx, tx, artifactID, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
-	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes}, nil
+	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
 }
 
 // serviceTransact wraps Server.Apply's transact so the room's update observer can tell the
@@ -2124,10 +2130,13 @@ func contentChangedSinceVersion(ctx context.Context, tx pgx.Tx, artifactID strin
 
 // versionWriteResult is a written version together with the counted reference targets its body
 // moved: the caller that appends the version event names them, so a reader holding those
-// nodes' batched backlink counts refreshes exactly their rows.
+// nodes' batched backlink counts refreshes exactly their rows. blocks is what the version's
+// block index stated in the node and tuple store, which that same caller appends under the
+// event it appends (refs.BlockIndexWrite.Caused).
 type versionWriteResult struct {
 	version model.Version
 	changes model.ReferenceChanges
+	blocks  refs.BlockIndexWrite
 }
 
 // renderedTree is a document tree with its canonical markdown and each identified block's byte
@@ -2199,7 +2208,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	// The version's references, its mentions' excerpts and its blocks are indexed from the render
 	// this version's markdown came from, in its own transaction, so GET /api/v1/references serves
 	// them without rendering the document.
-	changes, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered)
+	changes, blocks, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered)
 	if err != nil {
 		return versionWriteResult{}, err
 	}
@@ -2239,7 +2248,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 			ledger.recordVersion(artifactID, version, *write.capture)
 		}
 	}
-	return versionWriteResult{version: version, changes: changes}, nil
+	return versionWriteResult{version: version, changes: changes, blocks: blocks}, nil
 }
 
 func actorKey(actor model.Actor) string {

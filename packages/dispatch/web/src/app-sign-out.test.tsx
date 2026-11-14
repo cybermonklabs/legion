@@ -9,6 +9,7 @@ import { realClock, tick } from "./__tests__/fake-clock";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
+import { wholeText } from "./__tests__/whole-text";
 import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import { AuthGate } from "./app";
@@ -190,7 +191,7 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
   });
   const tab = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -210,7 +211,7 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
     act(() => first.reject(new ApiError(403, { code: "FORBIDDEN", error: "not now" })));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("The sign-out did not go through.");
-    expect(screen.getByText("Signed in as alice")).toBeTruthy();
+    expect(screen.getByText(wholeText("Signed in as alice"))).toBeTruthy();
     expect(
       writesOf(app.queryClient)
         .rows()
@@ -253,7 +254,7 @@ test("a sign-out answered 401 discards what it said it would, and nothing goes o
   });
   const tab = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -270,7 +271,7 @@ test("a sign-out answered 401 discards what it said it would, and nothing goes o
 
     signedIn = true;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const made = attempts.length;
     await tick(2_500);
     expect(attempts).toHaveLength(made);
@@ -299,7 +300,7 @@ test("a session that ends under its sign-out discards, and keeps nothing for the
   });
   const tab = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -318,7 +319,7 @@ test("a session that ends under its sign-out discards, and keeps nothing for the
 
     signedIn = true;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const made = attempts.length;
     await tick(2_500);
     expect(attempts).toHaveLength(made);
@@ -348,7 +349,7 @@ test("a sign-out answered 401 lands while the sign-in check cannot be read", asy
   });
   const tab = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -382,7 +383,7 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
   });
   const tab = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -395,7 +396,7 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("The sign-out did not go through.");
     expect(app.logout).toHaveBeenCalledTimes(2);
-    expect(screen.getByText("Signed in as alice")).toBeTruthy();
+    expect(screen.getByText(wholeText("Signed in as alice"))).toBeTruthy();
     expect(
       writesOf(app.queryClient)
         .rows()
@@ -427,7 +428,7 @@ test("the writes held for a tab that went are discarded once whoami says the sig
   });
   const signer = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() =>
       expect(signer.told).toContainEqual(expect.objectContaining({ here: true }))
     );
@@ -466,7 +467,7 @@ test("the writes held for a tab that went go on once whoami still names the pers
   });
   const signer = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() =>
       expect(signer.told).toContainEqual(expect.objectContaining({ here: true }))
     );
@@ -493,7 +494,7 @@ test("the writes held for a tab that went go on once whoami still names the pers
         .rows()
         .map((row) => row.label)
     ).toEqual(["CORE-1 set to done"]);
-    expect(screen.getByText("Signed in as alice")).toBeTruthy();
+    expect(screen.getByText(wholeText("Signed in as alice"))).toBeTruthy();
   } finally {
     realClock();
     signer.close();
@@ -524,7 +525,7 @@ async function holdingForAnotherTab() {
     },
   });
   const signer = otherTab("tab-2");
-  await screen.findByText("Signed in as alice");
+  await screen.findByText(wholeText("Signed in as alice"));
   await waitFor(() => expect(signer.told).toContainEqual(expect.objectContaining({ here: true })));
   const attempts: string[] = [];
   void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -690,7 +691,7 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
   });
   const second = otherTab("tab-2", [change("CORE-4 set to backlog"), change("Labels of CORE-4")]);
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() =>
       expect(second.told).toContainEqual(expect.objectContaining({ here: true }))
     );
@@ -747,7 +748,7 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
   });
   const tabs: OtherTab[] = [];
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
@@ -809,7 +810,7 @@ test("a tab holding writes for another tab's sign-out resumes them once its leas
   });
   const signer = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() =>
       expect(signer.told).toContainEqual(expect.objectContaining({ here: true }))
     );
@@ -848,7 +849,7 @@ test("a lapsed tab's sign-in page lists the writes it keeps, a refused one with 
     },
   });
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-7 set to todo");
     void aliceWrite(app.queryClient, attempts, "CORE-7 set to backlog", true);
@@ -897,7 +898,7 @@ test("the sign-in link of a lapsed tab raises no leave prompt", async () => {
   const stay = (event: Event) => event.preventDefault();
   window.addEventListener("click", stay);
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-7 set to todo");
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));

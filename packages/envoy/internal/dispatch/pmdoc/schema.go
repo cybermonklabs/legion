@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -23,35 +24,69 @@ var blockSchemaJSON []byte
 // the attribute kinds - is declared in packages/contracts/schemas/block-schema.schema.json and
 // generated into schema_generated.go, which blocks.json above is read into.
 
-var schema BlockSchema
-var schemaTypes map[string]BlockTypeSchema
-var schemaLinkKinds []string
-
-// schemaPointerAttributes maps each typed block declaring a `block[]` attribute to those
-// attributes' names, sorted.
-var schemaPointerAttributes map[string][]string
-
-func init() {
-	if err := json.Unmarshal(blockSchemaJSON, &schema); err != nil {
-		panic(fmt.Sprintf("pmdoc: decode embedded block schema: %v", err))
-	}
-	if err := normalizeSchemaDefaults(&schema); err != nil {
-		panic(fmt.Sprintf("pmdoc: normalize embedded block schema: %v", err))
-	}
-	if err := validateBlockSchema(schema); err != nil {
-		panic(fmt.Sprintf("pmdoc: invalid embedded block schema: %v", err))
-	}
-	installSchema(schema)
+// installedSchema is the whole of what this package knows about the block schema: the value
+// itself, the lookups built from it, and the bytes an editor is served. It is built once, off to
+// the side, and published by storing one pointer, so a reinstall never writes a map another
+// goroutine is reading (the store-driven reinstall, pmdoc/schemanodes). Nothing here is written
+// after the pointer is stored.
+type installedSchema struct {
+	schema    BlockSchema
+	types     map[string]BlockTypeSchema
+	linkKinds []string
+	// pointerAttributes maps each typed block declaring a `block[]` attribute to those
+	// attributes' names, sorted.
+	pointerAttributes map[string][]string
+	// json is the value as GET /api/v1/schema/blocks serves it, encoded at install so a reader
+	// takes the whole schema in one load rather than encoding it again per request.
+	json []byte
 }
 
-// installSchema makes value, a valid schema, the one every reader of this package uses.
-func installSchema(value BlockSchema) {
-	schema = value
-	schemaTypes = make(map[string]BlockTypeSchema, len(value.Types))
-	schemaPointerAttributes = map[string][]string{}
+// installed holds the one installed schema. Every reader loads it once and takes no lock.
+var installed atomic.Pointer[installedSchema]
+
+// builtSchemaVersion is the highest schema version this binary was built for: the version of the
+// embedded file. A store schema above it names types this build cannot address, so it is not
+// installed and the process reports itself not ready (NotReadyReason).
+var builtSchemaVersion int
+
+// schemaAhead holds the store schema version that is above builtSchemaVersion, or 0 while the
+// installed value is this build's own. It is what makes the process not ready.
+var schemaAhead atomic.Int64
+
+func init() {
+	var value BlockSchema
+	if err := json.Unmarshal(blockSchemaJSON, &value); err != nil {
+		panic(fmt.Sprintf("pmdoc: decode embedded block schema: %v", err))
+	}
+	builtSchemaVersion = value.Version
+	if err := installSchema(value); err != nil {
+		panic(fmt.Sprintf("pmdoc: install embedded block schema: %v", err))
+	}
+}
+
+// installSchema makes value the one schema every reader of this package uses. It applies the two
+// checks init applies to the embedded file - normalizeSchemaDefaults, then validateBlockSchema -
+// and installs nothing when either refuses: the caller keeps the schema it has.
+func installSchema(value BlockSchema) error {
+	if err := normalizeSchemaDefaults(&value); err != nil {
+		return fmt.Errorf("normalize block schema: %w", err)
+	}
+	if err := validateBlockSchema(value); err != nil {
+		return fmt.Errorf("invalid block schema: %w", err)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("encode block schema: %w", err)
+	}
+	next := &installedSchema{
+		schema:            value,
+		types:             make(map[string]BlockTypeSchema, len(value.Types)),
+		pointerAttributes: map[string][]string{},
+		json:              encoded,
+	}
 	kinds := map[string]struct{}{}
 	for _, typ := range value.Types {
-		schemaTypes[typ.Name] = typ
+		next.types[typ.Name] = typ
 		var names []string
 		for _, attr := range typ.Attributes {
 			if attr.Kind == BlockAttributeBlockList {
@@ -61,33 +96,72 @@ func installSchema(value BlockSchema) {
 		}
 		if len(names) > 0 {
 			sort.Strings(names)
-			schemaPointerAttributes[typ.Name] = names
+			next.pointerAttributes[typ.Name] = names
 		}
 	}
-	schemaLinkKinds = slices.Sorted(maps.Keys(kinds))
+	next.linkKinds = slices.Sorted(maps.Keys(kinds))
+	installed.Store(next)
+	return nil
+}
+
+// Install makes value, read from the node store, the installed schema. A value whose version is
+// above the one this binary was built for installs nothing and makes the process not ready
+// (NotReadyReason): the build cannot address the types that version declares, and the deployment
+// replaces the process with one that can. A value that fails either check of installSchema
+// installs nothing either, and leaves the process ready on the schema it has.
+func Install(value BlockSchema) error {
+	if value.Version > builtSchemaVersion {
+		schemaAhead.Store(int64(value.Version))
+		return fmt.Errorf("block schema version %d is above the highest version this build was made for (%d)",
+			value.Version, builtSchemaVersion)
+	}
+	if err := installSchema(value); err != nil {
+		return err
+	}
+	schemaAhead.Store(0)
+	return nil
+}
+
+// BuiltSchemaVersion is the highest schema version this binary handles: the version of the file
+// it embeds.
+func BuiltSchemaVersion() int {
+	return builtSchemaVersion
+}
+
+// NotReadyReason is why this process cannot serve, or "" while it can: the one reason is a store
+// schema above the version this build handles. GET /healthz answers 503 with it, and the switch
+// that closes the open document sockets reads the same reason.
+func NotReadyReason() string {
+	ahead := schemaAhead.Load()
+	if ahead == 0 {
+		return ""
+	}
+	return fmt.Sprintf("the store's block schema version %d is above the highest version this build was made for (%d)",
+		ahead, builtSchemaVersion)
 }
 
 // LinkKinds is the edge kinds the schema's `block[]` attributes make, sorted: each such
 // attribute's name, once however many types declare it. None is a structural edge kind
 // (model.GraphEdgeKinds).
 func LinkKinds() []string {
-	return slices.Clone(schemaLinkKinds)
+	return slices.Clone(installed.Load().linkKinds)
 }
 
 // HasLinkKinds reports whether the schema declares any `block[]` attribute (LinkKinds is not
 // empty).
 func HasLinkKinds() bool {
-	return len(schemaLinkKinds) > 0
+	return len(installed.Load().linkKinds) > 0
 }
 
-// SchemaJSON returns a copy of the canonical server-owned block schema JSON.
+// SchemaJSON returns a copy of the installed block schema as JSON: what the store's nodes built,
+// or the embedded file where nothing has been installed over it.
 func SchemaJSON() []byte {
-	return append([]byte(nil), blockSchemaJSON...)
+	return append([]byte(nil), installed.Load().json...)
 }
 
 // SchemaVersion returns the current schema version clients present during document admission.
 func SchemaVersion() int {
-	return schema.Version
+	return installed.Load().schema.Version
 }
 
 // IsTypedBlock reports whether name is a typed block the schema declares.
@@ -97,13 +171,14 @@ func IsTypedBlock(name string) bool {
 }
 
 func typedBlock(name string) (BlockTypeSchema, bool) {
-	typ, ok := schemaTypes[name]
+	typ, ok := installed.Load().types[name]
 	return typ, ok
 }
 
 func typedBlockNames() []string {
-	names := make([]string, 0, len(schema.Types))
-	for _, typ := range schema.Types {
+	types := installed.Load().schema.Types
+	names := make([]string, 0, len(types))
+	for _, typ := range types {
 		names = append(names, typ.Name)
 	}
 	sort.Strings(names)

@@ -2994,8 +2994,9 @@ type ArtifactReferences struct {
 // GraphNode is one end of a reference-graph edge. IssueKey and Project locate it; an artifact an
 // agent's conversation owns has neither and is located by Ref alone
 // (`dispatch://agent/<session id>/artifact/<slug>`). Ref is its dispatch:// address and is empty
-// for session nodes, which have none. The edges into and out of a node are the reads `?to=` and
-// `?from=` of its Ref.
+// for a person, a role, a session and a page, none of which has one (graphstore.KindPerson and
+// the kinds beside it, which that doc names the id of). The edges into and out of a node are the
+// reads `?to=` and `?from=` of its Ref.
 //
 // Every node carries six facts, whatever its kind: MadeBy and MadeAt, who made it and when;
 // ChangedBy and ChangedAt, who last changed its own text or fields and when (its maker while

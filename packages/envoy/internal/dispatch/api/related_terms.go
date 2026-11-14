@@ -333,13 +333,73 @@ func refreshSearchTermStats(ctx context.Context, pool *store.Pool, project strin
 		}
 		return searchTermRefresh{Items: items, Mode: searchTermModeStep, Changes: changes}, tx.Commit(ctx)
 	}
-	if _, err := tx.Exec(ctx, searchTermStatsClear, project); err != nil {
-		return searchTermRefresh{}, err
-	}
-	if err := tx.QueryRow(ctx, searchTermStatsRebuild, project, searchTermItemsTSStat).Scan(&items); err != nil {
+	items, err = rebuildSearchTermStats(ctx, tx, project)
+	if err != nil {
 		return searchTermRefresh{}, err
 	}
 	return searchTermRefresh{Items: items, Mode: searchTermModeFull, Changes: items}, tx.Commit(ctx)
+}
+
+// rebuildSearchTermStats counts every item of project again inside tx, which holds the project's
+// totals row (searchTermTotalsMode), and answers the project's item count: the project's rows go
+// and searchTermStatsRebuild writes them again.
+func rebuildSearchTermStats(ctx context.Context, tx pgx.Tx, project string) (int, error) {
+	if _, err := tx.Exec(ctx, searchTermStatsClear, project); err != nil {
+		return 0, err
+	}
+	var items int
+	if err := tx.QueryRow(ctx, searchTermStatsRebuild, project, searchTermItemsTSStat).Scan(&items); err != nil {
+		return 0, err
+	}
+	return items, nil
+}
+
+// RecountSearchTermStatsTx counts again, inside tx, the term statistics of projects and of every
+// project a search_term_queue row tx itself wrote names, and answers the projects it counted, in
+// key order, and how many of those queue rows it deleted. It is the erase's
+// (`envoy-dispatch erase`, graphcensus.Erase), whose deletes and rewrites of items queue each
+// item's old vector, which holds the erased words, while the statistics may count those words
+// already: projects names the projects whose documents' search rows the erase moved, which a
+// document_search row deleted queues nothing for.
+//
+// Each project is counted as a full pass counts one (rebuildSearchTermStats), under its totals
+// row's lock (searchTermTotalsMode) and reading the items as tx sees them, so the counts are the
+// erase's own result and hold no word the erase removed. The queue rows tx wrote go first: the
+// count already holds what they say, and the drain inside it cannot be relied on for them, since
+// pg_visible_in_snapshot answers for the xid of the transaction taking the snapshot by where that
+// xid falls against the snapshot's xmax.
+func RecountSearchTermStatsTx(ctx context.Context, tx pgx.Tx, projects []string) ([]string, int64, error) {
+	rows, err := tx.Query(ctx, `delete from search_term_queue q where q.xid = pg_current_xact_id()
+returning `+searchTermQueueProjectSQL)
+	if err != nil {
+		return nil, 0, err
+	}
+	named, err := pgx.CollectRows(rows, pgx.RowTo[*string])
+	if err != nil {
+		return nil, 0, err
+	}
+	counted := slices.Clone(projects)
+	for _, project := range named {
+		if project != nil {
+			counted = append(counted, *project)
+		}
+	}
+	slices.Sort(counted)
+	counted = slices.Compact(counted)
+	for _, project := range counted {
+		if _, err := tx.Exec(ctx, searchTermTotalsClaim, project); err != nil {
+			return nil, 0, err
+		}
+		var items int
+		var step bool
+		if err := tx.QueryRow(ctx, searchTermTotalsMode, project).Scan(&items, &step); err != nil {
+			return nil, 0, err
+		}
+		if _, err := rebuildSearchTermStats(ctx, tx, project); err != nil {
+			return nil, 0, err
+		}
+	}
+	return counted, int64(len(named)), nil
 }
 
 // RefreshEverySearchTermStats is one pass of RunSearchTermStatsRefresh: every project, each in its

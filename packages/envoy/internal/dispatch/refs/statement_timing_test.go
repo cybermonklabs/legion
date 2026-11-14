@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // TestStatementTimings measures this package's changed statements on the seeded measurement
@@ -47,14 +48,14 @@ func TestStatementTimings(t *testing.T) {
 		benchtime.Statement{SQL: closureQuery, Args: []any{subjects.Issue}})
 
 	// The issue read's count: one issue's inbound edges, the number its page carries.
-	issueCount, ok := backlinkCountSQL("issue", nil)
+	issueCount, ok := backlinkCountSQL("issue", nil, false)
 	if !ok {
 		t.Fatal("backlinkArms declares no arm for an issue, so the issue read's count has no statement")
 	}
 	issueIDs := []string{subjects.Issue}
 	runner.Pair(t, "refs.BacklinkCounts over an issue",
 		benchtime.Statement{SQL: oracleBacklinkCountSQL("issue", false), Args: []any{"issue", issueIDs, nodeKinds}},
-		benchtime.Statement{SQL: issueCount, Args: []any{issueIDs, nodeKinds}})
+		benchtime.Statement{SQL: issueCount, Args: []any{issueIDs, nodeKinds, VisibilityArg(model.Actor{})}})
 
 	// The ask page's count: every ask of one issue at once, each ask's own clarification thread
 	// and its own parts excluded, which is what the page's cards show. Its subject is the issue
@@ -62,13 +63,13 @@ func TestStatementTimings(t *testing.T) {
 	// heavily linked issue the other readings bind is linked by children and blockers, and
 	// carries no ask.
 	askIDs := askPageSubject(t, runner)
-	askCount, ok := backlinkCountSQL("ask", AskBacklinkExclusions)
+	askCount, ok := backlinkCountSQL("ask", AskBacklinkExclusions, false)
 	if !ok {
 		t.Fatal("backlinkArms declares no arm for an ask, so the ask page's count has no statement")
 	}
 	runner.Pair(t, "refs.BacklinkCounts over an issue's asks",
 		benchtime.Statement{SQL: oracleBacklinkCountSQL("ask", true), Args: []any{"ask", askIDs, nodeKinds, AskBacklinkExclusions}},
-		benchtime.Statement{SQL: askCount, Args: []any{askIDs, nodeKinds, AskBacklinkExclusions}})
+		benchtime.Statement{SQL: askCount, Args: []any{askIDs, nodeKinds, VisibilityArg(model.Actor{}), AskBacklinkExclusions}})
 }
 
 // askPageSubject is every ask of the issue that carries the most, the set the ask page counts

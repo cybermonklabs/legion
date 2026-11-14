@@ -28,6 +28,12 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   component: "Component",
   issue: "Issue",
   message: "Message",
+  // The page of a role, or of a session that claimed none: it reads as whose page it is,
+  // because a reader opens the agent and not the page.
+  page: "Agent page",
+  person: "Person",
+  // A role is the agent Dispatch keeps across a restart, and a session is one run of one.
+  role: "Agent",
   session: "Session",
 };
 

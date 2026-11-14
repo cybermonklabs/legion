@@ -751,6 +751,12 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if err := st.appendEvents(ctx, []model.Event{versionEvent}); err != nil {
 			return settleDone, st.abandon(err)
 		}
+		// What this settlement's block index stated waits for that event: its id is the cause
+		// every node and tuple of the pass carries, and it exists only now
+		// (refs.BlockIndexWrite.Caused). st.published's last entry is the event just appended.
+		if err := result.blocks.Caused(ctx, tx, st.published[len(st.published)-1].ID); err != nil {
+			return settleDone, st.abandon(err)
+		}
 	}
 	if err := st.appendEvents(ctx, st.reconciliation.events); err != nil {
 		return settleDone, st.abandon(err)

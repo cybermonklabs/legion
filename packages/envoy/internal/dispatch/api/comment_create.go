@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -251,6 +253,7 @@ func (s *server) owedCommentMentions(ctx context.Context, commentID string) ([]R
 func (s *server) normalizeCommentThreadTarget(
 	ctx context.Context,
 	tx pgx.Tx,
+	who model.Actor,
 	owner owner,
 	input commentInput,
 ) (commentThreadTarget, error) {
@@ -292,10 +295,10 @@ func (s *server) normalizeCommentThreadTarget(
 		return commentThreadTarget{}, nil
 	}
 	if strings.TrimSpace(*input.AskID) == "" {
-		return commentThreadTarget{}, s.askIDInputForOwner(ctx, tx, owner)
+		return commentThreadTarget{}, s.askIDInputForOwner(ctx, tx, who, owner)
 	}
 	if _, err := uuid.Parse(*input.AskID); err != nil {
-		return commentThreadTarget{}, s.askIDInputForOwner(ctx, tx, owner)
+		return commentThreadTarget{}, s.askIDInputForOwner(ctx, tx, who, owner)
 	}
 	target, err := s.describeAsk(ctx, tx, owner, input.AskID)
 	if err != nil || input.ReplyToBlock == nil {
@@ -684,7 +687,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if !isSuggestion {
 		documentCtx = docs.WithCommentMarks(documentCtx)
 	}
-	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, owner, input)
+	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, actor, owner, input)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -731,8 +734,18 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// (destinations.leftTo); publishFallbackCopies in internal/dispatch/outbox is the one
 	// description.
 	turn := threadTarget.replyTurn(actor, input.Turn)
+	// The row's own id and time, read before the row so the comment's node can be written
+	// first. The time is a clock read rather than the transaction's, because a comment's
+	// created_at defaults to clock_timestamp() (migration 0065) and the row, its node and the
+	// facts it projects have to carry one time: the store's census digests the row's created_at
+	// against its node's made_at, and graph_edges answers a comment's edges from the row before
+	// its kind's cutover and from the tuples after it. The read is after the owner row lock this
+	// write already holds, so it keeps 0065's order: an owner's comments are dated as they
+	// commit. The insert writes this value rather than taking the default, so the two cannot
+	// drift.
 	var rowID string
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text`).Scan(&rowID); err != nil {
+	var createdAt time.Time
+	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, clock_timestamp()`).Scan(&rowID, &createdAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -778,13 +791,24 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return
 		}
 	}
+	// What this comment is in the node and tuple store: its node, written before the row, and
+	// the facts the row is the projection of, which wait for the event that stores it.
+	stored, err := commentStored(r.Context(), tx, rowID, actor, createdAt, anchor, owner.ArtifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := stored.writeNode(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	var comment model.Comment
 	if err := tx.QueryRow(r.Context(), `
-		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		returning created_at
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Body, anchorJSON, input.ReplyTo, input.AskID, turn, suggestionJSON,
-		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers).Scan(&comment.CreatedAt); err != nil {
+		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers, commentNodeKind, rowID, createdAt).Scan(&comment.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -966,7 +990,19 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := refs.Stamp(r.Context(), tx, "comment", comment.ID, event.ID); err != nil {
+	if err := refs.Stamp(r.Context(), tx, commentNodeKind, comment.ID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the comment states, under the event that stored it: its node's cause, its two base
+	// attributes, and the artifacts it is anchored to and owned by.
+	if err := stored.caused(r.Context(), tx, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// Who wrote it, as the node and tuple store holds it: the author's node and the comment's
+	// authored_by tuple, beside the stamp and under the event that caused both.
+	if err := graphstore.Authored(r.Context(), tx, commentNodeKind, comment.ID, actor, comment.CreatedAt, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -976,6 +1012,15 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		advice = s.writeAdvice(
 			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status, false,
 		)
+	}
+	// The test seam: a case holds the write here, with every event it appended and nothing
+	// committed, or ends it in a rollback (server beforeCommentCommit). Nothing but a test sets
+	// it.
+	if s.beforeCommentCommit != nil {
+		if err := s.beforeCommentCommit(r.Context(), events); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
@@ -1001,4 +1046,163 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// after this response, and its comment.delivery receipt says how it ended.
 	comment.Deliveries = attempts
 	WriteJSON(w, http.StatusCreated, withAdvice(commentWriteResponse{shapedComment: newShapedComment(comment, wantsDisplayTrees(r)), AskWaitingOn: waitingOn}, advice))
+}
+
+// commentNodeKind is what the node and tuple store calls a comment, and commentSupertag the
+// supertag every one of them carries (migration 20261109051232). A comment's address there is
+// its row's own id, which is what graph_edges names it by, and what comments.node_kind and
+// comments.node_address hold.
+const (
+	commentNodeKind = "comment"
+	commentSupertag = "comment"
+)
+
+// The two relations a comment holds: the artifact its anchor names, and the artifact it
+// belongs to. Each is the fact graph_edges reads off a comments row, and a comment has either,
+// both or neither.
+const (
+	tupleAnchoredTo = "anchored_to"
+	tupleOwnedBy    = "owned_by"
+)
+
+// The two base attributes every node of the store carries, which graphstore states off the row
+// its own node writer wrote (its nodeArm) and a writer holding its own statement states itself.
+const (
+	tupleVisibility = "visibility"
+	tupleState      = "state"
+)
+
+// commentStoreWrite is what a comment is in the node and tuple store: its node, and the facts
+// its row is the projection of.
+//
+// The node is written by the request itself (writeNode), before the row, because the composite
+// foreign key on (node_kind, node_address) is checked inside the statement that writes the row
+// and there is no node to name otherwise. The facts are not: on the request path no event
+// exists while the row is written, so they wait for the event that caused the write (caused),
+// in the same transaction, where refs.Stamp already runs. The node's two base attributes wait
+// with them: writeNode takes them back from the store rather than letting it append them, so
+// that they carry the event that stored the comment like every other fact of this write. The
+// block index states its own nodes the same way (refs.BlockIndexWrite).
+type commentStoreWrite struct {
+	node   graphstore.Node
+	tuples []graphstore.Tuple
+}
+
+// commentStored is what the comment rowID states: its node, project-visible and live, made by
+// its author at the row's own created_at, whose two base attributes writeNode takes back from
+// graphstore.WriteStating; and the artifact it is anchored to and the artifact that owns it,
+// each stated only where the comment has one. Both relations name the artifact by its address,
+// which is its ref_key, so the two artifacts' addresses are read here, in the caller's
+// transaction, in one statement.
+func commentStored(
+	ctx context.Context,
+	tx pgx.Tx,
+	rowID string,
+	author model.Actor,
+	at time.Time,
+	anchor *model.Anchor,
+	ownerArtifactID *string,
+) (commentStoreWrite, error) {
+	var artifacts []string
+	if anchor != nil {
+		artifacts = append(artifacts, anchor.ArtifactID)
+	}
+	if ownerArtifactID != nil {
+		artifacts = append(artifacts, *ownerArtifactID)
+	}
+	addresses, err := artifactAddresses(ctx, tx, artifacts)
+	if err != nil {
+		return commentStoreWrite{}, err
+	}
+	write := commentStoreWrite{node: graphstore.Node{
+		Kind: commentNodeKind, ID: rowID, Supertag: commentSupertag,
+		Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
+	}}
+	if anchor != nil {
+		write.states(tupleAnchoredTo, "artifact", addresses[anchor.ArtifactID])
+	}
+	if ownerArtifactID != nil {
+		write.states(tupleOwnedBy, "artifact", addresses[*ownerArtifactID])
+	}
+	return write, nil
+}
+
+// states adds one fact about the comment, dated and attributed as its node is. A relation whose
+// far end has no address - an anchor naming an artifact no row answers, which graph_edges'
+// own join drops - is stated by neither.
+func (w *commentStoreWrite) states(kind, toKind, toID string) {
+	if toID == "" {
+		return
+	}
+	w.tuples = append(w.tuples, graphstore.Tuple{
+		FromKind: w.node.Kind, FromID: w.node.ID, Kind: kind,
+		ToKind: toKind, ToID: toID,
+		At: w.node.MadeAt, Who: w.node.MadeBy, SourceEvent: w.node.SourceEvent, Asserted: true,
+	})
+}
+
+// writeNode writes the comment's node, which the row that projects it names, and keeps the two
+// base attributes that write states with the facts this writer already holds. It appends
+// nothing: every fact of this write carries the event that caused it, and on the request path
+// that event is appended after the row, so all of them are appended by caused.
+func (w *commentStoreWrite) writeNode(ctx context.Context, tx pgx.Tx) error {
+	base, err := graphstore.WriteStating(ctx, tx, []graphstore.Node{w.node}, w.tuples)
+	if err != nil {
+		return fmt.Errorf("write the node of comment %s: %w", w.node.ID, err)
+	}
+	w.tuples = append(w.tuples, base...)
+	return nil
+}
+
+// caused appends what the comment states under the event that stored it, its node's two base
+// attributes among them, and moves its node row onto that event: a node row is the projection
+// of its own tuples and may be written again, while a tuple may not be updated. event is
+// graphstore.NoEvent where no event recorded the write, which is what the seed states, and the
+// tuples then carry the sentinel.
+//
+// The node is not written again: graphstore.Caused moves the event onto the row writeNode
+// already wrote, as refs.BlockIndexWrite.Caused does for a version's blocks. A second
+// graphstore.Write would move nothing, since that write's upsert fires only where the
+// supertag, the visibility, the state or the attributes of the row moved and none of them has,
+// and the node would keep the sentinel its first write gave it.
+func (w commentStoreWrite) caused(ctx context.Context, tx pgx.Tx, event int64) error {
+	if err := graphstore.Caused(ctx, tx, []graphstore.Node{w.node}, event); err != nil {
+		return fmt.Errorf("record what stored comment %s: %w", w.node.ID, err)
+	}
+	tuples := make([]graphstore.Tuple, len(w.tuples))
+	for index, tuple := range w.tuples {
+		tuple.SourceEvent = event
+		tuples[index] = tuple
+	}
+	if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+		return fmt.Errorf("state what comment %s is: %w", w.node.ID, err)
+	}
+	return nil
+}
+
+// artifactAddresses are the addresses the graph names the given artifacts by, their ref_keys,
+// read in one statement: a comment anchored to the document it belongs to names one artifact
+// twice, and an id no row answers is absent from the answer.
+func artifactAddresses(ctx context.Context, tx pgx.Tx, ids []string) (map[string]string, error) {
+	addresses := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return addresses, nil
+	}
+	rows, err := tx.Query(ctx, `select id::text, ref_key from artifacts where id = any($1::uuid[])`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the addresses of %d artifact: %w", len(ids), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, refKey string
+		if err := rows.Scan(&id, &refKey); err != nil {
+			return nil, fmt.Errorf("read an artifact's address: %w", err)
+		}
+		addresses[id] = refKey
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the addresses of %d artifact: %w", len(ids), err)
+	}
+	return addresses, nil
 }

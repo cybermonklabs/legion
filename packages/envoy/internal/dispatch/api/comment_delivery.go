@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -447,13 +448,29 @@ func (s *server) completeCommentDelivery(
 	sent.Duplicate, sent.EnvelopeID = duplicate, envelopeID
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
-			return scanCommentDelivery(tx.QueryRow(ctx, `
+			settled, err := scanCommentDelivery(tx.QueryRow(ctx, `
 				update comment_deliveries set envelope_id = $5, state = $6, error = $7, duplicate = $8
 				where comment_id = $1 and target = $2 and attempt = $3
 				  and state = 'pending' and claimed_at = $4
 				returning `+commentDeliveryColumns,
 				comment.ID, sent.Target, claim.attempt, claim.claimedAt, envelopeID, sent.State, sent.Error, duplicate,
 			))
+			if err != nil {
+				return settled, err
+			}
+			// The session this attempt reached, in the transaction that records that it did
+			// (graphstore.Reached): a sent attempt is a delivery and its session is a node from
+			// this moment, a pending or failed one reached nobody and writes nothing. A row
+			// whose resolution named no session carries a null, which records nothing either.
+			// The rest of what the delivery states - its delivered_to tuple, the session's page
+			// and that page's part_of - is the publisher's, recorded under the receipt this
+			// settle appends (outbox.deliveredGraph), so it is stated whether the attempt
+			// settles before its comment's event is published or after.
+			session := ""
+			if settled.SessionID != nil {
+				session = *settled.SessionID
+			}
+			return settled, graphstore.Reached(ctx, tx, settled.State, session, actor, settled.CreatedAt)
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool
@@ -1182,11 +1199,33 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// A callback reply requests no turn, so it hands the turn back the way any session reply
 	// with no `turn` does.
 	turn := thread.replyTurn(actor, nil)
+	// The reply's own id and time, read before the row so its node can be written first. The
+	// time is a clock read, as a comment's created_at defaults to clock_timestamp() (migration
+	// 0065), and the insert writes it rather than taking the default, so the row, its node and
+	// the facts it projects all carry one time (comment_create.go says what reads both).
+	var rowID string
+	var createdAt time.Time
+	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, clock_timestamp()`).Scan(&rowID, &createdAt); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the reply is in the node and tuple store. It carries no anchor - a callback reply
+	// names none - and belongs to whatever the comment it answers belongs to.
+	stored, err := commentStored(r.Context(), tx, rowID, actor, createdAt, nil, comment.ArtifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := stored.writeNode(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	reply, err := scanComment(tx.QueryRow(r.Context(), `
-		insert into comments (issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		returning `+commentColumns+`
-	`, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn, block.nodeID(), thread.Answers))
+	`, rowID, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn,
+		block.nodeID(), thread.Answers, commentNodeKind, rowID, createdAt))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1234,7 +1273,19 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := refs.Stamp(r.Context(), tx, "comment", reply.ID, event.ID); err != nil {
+	if err := refs.Stamp(r.Context(), tx, commentNodeKind, reply.ID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the reply states, under the event that stored it: its node's cause, its two base
+	// attributes, and the artifact it is owned by.
+	if err := stored.caused(r.Context(), tx, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// Who wrote the reply, as the node and tuple store holds it: a session answering a mention
+	// is the first write that records that session, so its node is made here (graphstore.Authored).
+	if err := graphstore.Authored(r.Context(), tx, commentNodeKind, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -20,6 +20,12 @@ function railSheet(page: Page): Locator {
   return page.getByRole("dialog", { name: "Navigation" });
 }
 
+/** The column the rail is from 1280 pixels up: the `aside` the shell draws beside the page
+ *  (`app.tsx`). The sheet below that width is a dialog, so this role names the column alone. */
+function railColumn(page: Page): Locator {
+  return page.getByRole("complementary", { name: "Navigation" });
+}
+
 /** Whatever the Agents heading folds right now: the `ul` of pinned agents, or the `p` saying
  *  where the pin is. */
 export function railAgents(page: Page): Locator {
@@ -76,6 +82,10 @@ export async function expectRailViewState(
  *  at a phone width opens it again. */
 export async function openRail(page: Page): Promise<void> {
   const menu = page.getByRole("button", { name: "Open navigation" });
+  // The shell draws the Menu control or the rail's column, never both, and neither before it has
+  // rendered. So the width is read only once one of them is on the page: straight after a
+  // navigation, a Menu control that is not there yet is a shell still loading, not a wide page.
+  await expect(menu.or(railColumn(page))).toBeVisible();
   if (!(await menu.isVisible())) return;
   const sheet = railSheet(page);
   if (await sheet.isVisible()) return;

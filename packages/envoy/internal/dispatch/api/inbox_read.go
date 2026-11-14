@@ -467,6 +467,39 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // wants, whichever order the writer itself reaches the project in: a block ask's answer appends
 // an anchor refresh, and so takes the project, before its own update moves those rows, and it
 // is ordered all the same.
+//
+// The node and tuple store (internal/dispatch/graphstore) adds five invariants rather than a
+// sequence of its own. Its writers do not all run their steps in one order - one learns its
+// event id before it has a node to write, another writes the node first and moves source_event
+// later - so a numbered step would be false for some of them, while each of these holds for
+// every writer:
+//
+//  1. the owner row comes first, through ownerRowLock (owner.go) or lockArtifactOwner
+//     (docs/service.go), as it does for every other writer above;
+//  2. a node's graph_nodes row is written before any projection row whose foreign key names it
+//     (document_blocks, block_refs and comments, migration 20261109022248), so the write that
+//     makes a node and the write that points at it never meet in the opposite order;
+//  3. the event is appended before the tuples whose cause it is, so a tuple's source_event
+//     names a row the log already holds;
+//  4. a graph_nodes write touching several nodes takes them in ascending (kind, id)
+//     (graphstore.writeNodes), so two such writes cannot each hold what the other waits for;
+//  5. a writer under the revision fence (R23 of dispatch://INFRA-1149: the version write, the
+//     block index reconciliation tick and the backfill) takes the document's owner row, through
+//     lockArtifactOwner or the backfill's copy of it (graphcensus's lockDocumentOwner), then the
+//     document's document_block_versions row `for no key update` (indexOwedDocument,
+//     refs.standsAtVersion, graphcensus's lockBlockDocuments), before it writes a node, a tuple
+//     or a projection row, so two passes over one document queue at the fence and the one that
+//     loses it has written nothing.
+//
+// Appending a tuple locks no row of another table: graph_tuples has no foreign key and nothing
+// updates or deletes a tuple, so where the append falls in a writer's sequence moves no lock,
+// and invariant 3 is about which rows exist, not about which are held. The one exception is the
+// erase (`envoy-dispatch erase`, R1 and R5 of dispatch://INFRA-1149), which deletes a node's
+// tuples and its node row, and takes this same order to do it: every owner row it writes under,
+// then the node row, then the rest (graphcensus's lockInStoreOrder). A writer owning no issue
+// and no document - an operator's own write, a session-addressed event - takes no owner row at
+// all, and invariant 1 says nothing about it. graphstore's TestEveryStoreWriteTakesOneLockOrder
+// reads this list and fails if these five are not in it.
 func (s *server) markInboxReadThreads(
 	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {

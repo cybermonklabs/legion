@@ -115,7 +115,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		delivered:    delivered,
 	}
 	want := newWanted()
-	_, _, _ = eventDestinations(ctx, deps, single, want)
+	_, _ = eventDestinations(ctx, deps, single, want)
 	found, err := loadLookups(ctx, deps.Store.Pool, want)
 	if err != nil {
 		return err
@@ -123,8 +123,8 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	// As a batch does before it reads any destination, and the roles it resolved there are the
 	// ones its own role routes read (resolveDestinations, resolveRoleHolders).
 	resolvedRoles := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
-	list, mentionPending, resolveErr := eventDestinations(ctx, deps, single, found)
-	single.destinationsOf, single.mentionPending = list, mentionPending
+	to, resolveErr := eventDestinations(ctx, deps, single, found)
+	single.destinationsOf, single.mentionPending = to.list, to.mentionPending
 	resolveRoleHolders(ctx, deps, []*batchEvent{single}, resolvedRoles)
 	sender := deps.Publisher.WindowUntil(nil)
 	var failures []error

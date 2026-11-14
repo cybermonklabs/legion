@@ -262,6 +262,11 @@ type Service struct {
 	// that version's own event. Nil outside tests; tests return an error from it to force the
 	// settlement to abandon after its version write, before its commit.
 	afterSettleVersionWrite func(room string) error
+	// afterBlockIndexWrite runs inside the block-index tick's transaction once that tick has
+	// written one document's node, its tuples and its projection rows, and before its commit.
+	// Nil outside tests; tests return an error from it to kill that transaction and find that
+	// none of the three survived it.
+	afterBlockIndexWrite func(artifactID string) error
 	// beforeSettleCommit runs once a settlement's room has taken in the versions the settlement
 	// appended and before the settlement's transaction commits (commitSettlement). Nil outside
 	// tests; tests use it to find the room ahead of the store's head in that window.
@@ -445,6 +450,10 @@ type Service struct {
 	roomSlots     roomSlots
 	residentRooms atomic.Int64
 	connections   atomic.Int64
+	// documentSockets holds the close of every document socket this process is serving, keyed by
+	// the record the socket holds (holdDocumentSocket): the schema switch closes them all
+	// (CloseDocumentSockets), and each socket forgets its own as it ends.
+	documentSockets sync.Map
 	// residentBytes is the encoded bytes the loads ygo holds took, each load's own history and
 	// every update the room it left behind has committed since (residentLoad), for the room
 	// figures: loaded state only. The bytes a commit parks after the load - structs and deletions

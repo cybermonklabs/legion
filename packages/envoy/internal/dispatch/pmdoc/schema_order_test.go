@@ -18,7 +18,8 @@ func TestTypedAttributesRenderInDeclarationOrder(t *testing.T) {
 			Kind: BlockAttributeEnum, Choices: []string{"one", "two"}, Default: "one",
 		}},
 	}
-	useTestBlockSchema(t, BlockSchema{Version: schema.Version, Types: append(slices.Clone(schema.Types),
+	value := installed.Load().schema
+	useTestBlockSchema(t, BlockSchema{Version: value.Version, Types: append(slices.Clone(value.Types),
 		BlockTypeSchema{Name: "ordered", Content: BlockContentParagraphs, Render: "host", Attributes: declared},
 	)})
 

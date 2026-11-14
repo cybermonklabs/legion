@@ -222,6 +222,8 @@ export type {
   NewIssueSettings,
   OpenAskOwner,
   PatchPriorityInput,
+  PersonNode,
+  PersonNodes,
   PersonSignInResp,
   PersonSignInsResponse,
   Priorities,

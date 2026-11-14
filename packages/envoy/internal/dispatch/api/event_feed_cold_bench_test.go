@@ -127,7 +127,7 @@ func BenchmarkTheActivityFeedsColdStages(b *testing.B) {
 	benchmarkFeedProject(b, database, "FEED")
 	key := benchmarkColdFeedIssue(b, handler)
 	ctx := b.Context()
-	events, err := server.readEvents(ctx, issueOwner(key), eventListOptions{descending: true, limit: coldFeedComments})
+	events, err := server.readEvents(ctx, model.Actor{}, issueOwner(key), eventListOptions{descending: true, limit: coldFeedComments})
 	if err != nil {
 		b.Fatalf("read the feed of %s: %v", key, err)
 	}

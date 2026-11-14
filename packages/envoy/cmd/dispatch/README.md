@@ -1144,6 +1144,13 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   a read that fails is tried again 30 s later.
   The release before this one polls the row every 30 s and may run beside it during a roll.
 
+- The block schema is one value per process, built from the store's type nodes (`schemanodes.Installer`), installed at boot beside the migration run and again when a supertag or attribute node changes:
+  the triggers of migration `20261109051232` notify `dispatch_block_schema`.
+  A type is data, so a type added by a migration reaches a running server without a restart;
+  a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value either of `installSchema`'s two checks refuses.
+  Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
+  A store schema above the version this binary was built for installs nothing and makes `/healthz` answer 503 with `not_ready` naming both versions, so the deployment replaces that pod.
+
 The two leased woken loops take their lease with no period.
 A process that finds it held tries again
 — every 2 s for the excerpts, every 5 s for the edit notices, plus up to a tenth again
@@ -2309,6 +2316,162 @@ the advice about an earlier migration creating a missing name is given only for 
 The census writes nothing.
 An argument `envoy-dispatch` does not know is refused with exit 2, never served, so an image that predates a subcommand cannot boot and migrate when a deployment asks it for one.
 
+### The node and tuple store census
+
+`envoy-dispatch census --store` is the other census: the node and tuple store (`store/migrations/20261109013400_graph_store.up.sql`) held against the tables that project it (`20261109022248_graph_projections.up.sql`), rather than the pending migrations held against the database.
+It reads `DATABASE_URL` like every other subcommand, migrates nothing, writes nothing, and keeps the same exit convention: 0 when nothing refuses, 1 when the report refuses, 2 when the census could not be taken.
+It is one `repeatable read, read only` transaction on a connection of its own, so everything it reports is one snapshot.
+
+For each projected kind it counts the live nodes (a node whose `state` is `live`) against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
+a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a live node no row projects.
+The shared fields are digested rather than printed, and for the three projected kinds they include the tuples that answer the row, read as the store reads a current relation (the newest tuple per kind and far end, kept while it asserts), and not the node row alone:
+once a kind's cutover is complete `graph_edges`, `refs.Edges` and `refs.BacklinkCounts` answer its links from the tuples, so a missing or retracted tuple takes a link out of every read while each node row still stands.
+A comment's `created_at`, `author`, the artifact its `anchor` names, the artifact its `artifact_id` names and the author `graphstore.AuthorOf` reads off `author` are held against its node's `made_at` and `made_by` and its current `anchored_to`, `owned_by` and `authored_by` tuples.
+A block's document and the block its `parent_block_id` names, or the document where it names none, are held against its current `in_document` and `part_of` tuples.
+A block that states no parent at all digests differently from one the document holds directly, which is how the census tells a block the index has not reached yet from a block at a document's top level.
+The kinds are:
+
+- `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds `graph_store_cutover` names, whose rows the report prints beside the counts.
+  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is the live block nodes its rows name, and every row of a block is held, as the set of links that block's rows name, against every link its node states now other than its `in_document` and `part_of`, so a link with no tuple and a tuple with no row are both read.
+  A block whose address is past the store's key bound (`refs.MaxBlockNodeBytes`) is no node of the store by design, and both sides leave those rows out.
+
+- `person`, `session`, `role` and a role's page, which no table projects.
+  Their row side is the actors and sessions the projected tables and the delivery records name: the people and sessions `comments.author` names as `graphstore.AuthorOf` reads an actor, the sessions `comment_deliveries` and `message_deliveries` recorded reaching, and the roles `comment_deliveries.target`, `messages.target` and `issues.route` address now, with one page per role.
+  A role's row side also holds every role an event of the log ever addressed: the `route` of every `issue.created`, `issue.updated` and `issue.closed` event, the `target` of every `message.created` and `message.answered` event, and the `target` of each mention a `comment.created` event names.
+  A node is history and never goes, so an issue routed to one role and then re-routed to another still owes the first its node and its page, and the census reads the route history the events hold rather than only the current route.
+  The publisher writes a role's node and its page from those same fields of each event it publishes, whether or not it routed anything to the role: a route an agent's write sets, which wakes nobody, a targeted message's role, which no route reaches, and a role a comment mentions on an issue routed elsewhere.
+  The census reads that row side once a run, in one scan of `events`, and binds the names into every statement that reads the role and page rows; `backfill-graph-store` reads the same definition.
+  A session's own page is no part of this census.
+
+It passes only when it checked more than zero rows and found zero differences in both directions:
+a census over a database whose projections are empty proves nothing, and passing it would read as green on a fresh database or on a read that reached the wrong one.
+
+Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, never tuples.
+
+`envoy-dispatch census --store --sizing` adds the growth pass after that census, each line a driver can look for by its leading fields:
+the write rate by kind over the last 28 days of `events`; the row count and total relation size of every table this branch's migrations touch; the tuples and nodes one write of each kind states, with the rate its rows arrive at; the rows a day that puts in `graph_tuples` and in `graph_nodes`; the bytes a row each is measured at; and where each reaches in a year against `pgmigrate.CensusTableLimit`.
+It last prints the block-index reconciliation's backlog on two `census: sizing backlog ` lines, because a loop that falls behind fails nothing and nobody would otherwise see it:
+`owed_documents=` is how many documents are owed a block index (`document_block_versions.version` null), and `oldest_owed_at=` is when the oldest of those debts was incurred, with `oldest_owed_age_seconds=` beside it and `against=` naming the time that age is measured to.
+No column dates a debt, so a debt is dated by the write that owed it — the `created_at` of the latest markdown version the document holds, or the document's own `created_at` where it holds no version — and the line says so under `dated_by=`.
+The age is measured against the newest write the database recorded (the `created_at` of its highest `events` id) and not against `now()`, so two runs print one age; a database that recorded no event prints `none` and an age of zero.
+It exits non-zero when that projection puts either store table past the limit inside a year, and when a table this branch's migrations alter is already at or above it.
+A backlog refuses nothing: how large a backlog is too large depends on the write rate the lines above it carry, and the driver that watches it decides.
+Every figure comes from a count or from a timestamp the database already holds, so two runs over one unchanged database print the same output.
+A store table holding fewer than ten thousand rows is too small to measure a bytes-a-row from, and the projection uses 783 bytes a row instead, measured for dispatch://INFRA-1149 (1,050,010 tuples at a `pg_total_relation_size` of 822,673,408 bytes on PostgreSQL 18.6, table, seven indexes and TOAST);
+the output says so on the line that uses it.
+`--sizing` without `--store` is a usage error: it is that census's growth pass and not a census of its own.
+
+### Backfilling the node and tuple store
+
+`envoy-dispatch backfill-graph-store` writes the nodes and tuples of the comments, document blocks and block references written before the store existed — every row of the three projected tables that names no node, since migration `20261109022248` added the columns and filled none of them.
+It walks each kind in batches, writing a batch's nodes, its tuples and the projection columns that name them in one transaction, so a row and its node commit together or not at all, exactly as a live write does.
+It appends no event of its own, and a fact whose row's own event cannot be found carries the store's sentinel (`source_event` 0) as its cause:
+a comment's own event is the `comment.created` that stored it, a block's is the event that recorded the version its row was written at, and a block reference's is its `source_seq`, which is that event's id already.
+Each tuple takes its row's own `created_at` as its time and its row's own `source_seq` as its `legacy_source_seq`, so a backfilled edge is dated and sequenced exactly as the `graph_edges` arm it replaces dates and sequences it.
+Once every row of a kind the store can hold names its node, the run sets that kind's row in `graph_store_cutover`.
+
+It then gives every role the census's row side names, in a row now or in an event, and that has no node its node, its page and the page's `part_of` the role, as the publisher writes them for the events it publishes: the publisher writes none for an event it published before it wrote roles, so without this pass every role an older database names is a census difference.
+The input is the census's own role row side, so the roles the pass gives a node are exactly the roles the census holds to one; each role's node is caused by the first event that named it, or by the sentinel for a role only a row names, and a role that already holds both nodes is left alone.
+The report counts them on its `kind=role` line, and `remaining=` is how many roles the census names still lack a node or a page.
+
+A block's parent is the one fact it does not write.
+The parent is the nesting of the rendered version, which no column of `document_blocks` holds, so the run marks each document it touched owed a block index — `document_block_versions.version` to null, the mark `rebuild-refs` sets — and the reconciliation states the `part_of` tuple and writes `parent_block_id`, which is that column's one writer.
+So `census --store` reads a difference on every backfilled block until that reconciliation has drained the mark, at twenty documents a tick;
+`TestTheBlockParentCensusReachesZeroAfterTheBackfill` is that whole route end to end.
+
+It is no repair.
+Its input is each row's own content: it never reads one side of a projection to write the other, so a row whose node is already written is left alone and a kind whose rows disagree with the store is for the census to report.
+It is safe to run again, since a row that already names its node is skipped, so a run interrupted anywhere carries on from where it stopped.
+It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
+
+### Erasing a node
+
+`envoy-dispatch erase --node <kind>:<id>` is the one path in Dispatch that deletes a tuple row or a node row; everything else the store does is an append.
+It is reached by the command and the database credential alone: no HTTP route serves it, no agent bearer and no session reaches it, and it migrates nothing.
+It refuses a type node, a `supertag` or an `attribute`, before it opens a connection: a type is data the block schema seeds, and no route and no command deletes one.
+
+It removes, in one transaction: the tuples out of the node, the tuples whose far end it is, every projection row of it (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, the whole text of every block it projects onto (`document_block_texts`, which references `artifacts` alone, so no foreign key into those tables names it and it is deleted by the block's own `artifact_id` and `block_id`), the `artifact_versions` rows whose markdown holds the erased text, and each `artifact_reviews` row whose `content_sha256` covered those bytes.
+It cannot rewrite such a review: `artifact_review_content_sha256_update` raises on any statement that moves a stored digest, so an approval over erased bytes ends rather than drifting, and the command names every one it ended by its document and its version.
+
+Deleting those rows is not the whole of it, because the erased bytes reach stores no row of the node owns.
+The same transaction rewrites every `document_block_texts.text` and `document_blocks.excerpt` that holds the erased text, replacing it with a marker naming the node and the `graph_erasures` record;
+those rows are rewritten and not deleted because each projects a block node of its own — a paragraph of a document that quoted the erased thing — and a live node no row projects is a difference `census --store` reads.
+An excerpt is cut again from the rewritten text the way the indexer cuts it, and `text_sha256` is left where it is, since it is the digest the indexer compares a later version's block against.
+It redacts `events.payload` in place for the same reason the log is append-only: the row stays with its id, its time and its actor untouched and the marker where the bytes were.
+Each of those is counted on its own `redacted:` line of the report, beside the `rows:` lines of what was deleted.
+
+A document holds the erased bytes in five more stores, and the same transaction takes them out of each.
+
+- **The live editing state** (`doc_updates`, with `doc_checkpoints` and `doc_snapshots`) is the ygo history a document's room loads from.
+  A deleted item keeps its bytes in those rows until a fold collects it, and a text substitution inside an update would leave one no load decodes, so no row is edited.
+  For every document a deleted version belongs to, whose block text holds the erased text, or whose stored rows hold its bytes whole, the erase renders the live text, replaces each erased text in it with the marker, and replaces the whole history with one fresh update of that text, through the statements a rebuild writes (`docs.ReadErasedLiveText`, `PgVersioned.RebuildTx`).
+  The change is announced, so a room any server holds of the document finds its history replaced, closes and reloads.
+  It writes no version: the document reads as its live text, ahead of whatever version the erase left it.
+  A document whose live text no longer holds the text has its history replaced all the same, since the edit that took the text out left it in the items that edit deleted.
+  What that costs is what a rebuild costs: the edits before the erase, the anchor marks of its comments, suggestions and asks and the records of its margin, which a seed parsed from markdown does not carry, and the keystrokes of an editor open on it that were not yet stored, which are refused once the history is replaced while that editor's browser reloads the document.
+  A history that does not load, a tree outside the schema, and a redaction that drops an open ask block refuse the erase, naming the document, which its rebuild or a replacement from markdown repairs first.
+  The match is byte for byte on markdown, here as for a version: a text the live markdown spells otherwise than the erased text is written — an escaped `*` or `_`, for one — is not matched, so no marker replaces it.
+  The erase reads the seed it would store for the erased text's own bytes, and where they are still there it lists the document as **not redacted**, with that reason, and refuses, `--confirm` or not, naming the document (exit 1), rather than report success over bytes it would leave; an edit that takes them out of the document lets it run.
+  A version whose markdown spells the text otherwise is not matched either: it is neither listed nor deleted, and its approval stands.
+  It holds each such document's owner row from before it takes the node's row (below), and takes the document's room lock after it, when it reads the live text, as every writer of a document takes the two; it holds both until its transaction ends, so a write to that issue or that document waits for the erase, and a run with `--node` alone holds them only while it reads.
+
+- **The search vector** (`document_search`) holds each document's latest version with markdown, written by `20261101182454`'s trigger on a version's insert or on an update of its `search`.
+  A delete of the latest version is the one write that lowers it, and no trigger sees a delete, so the row standing on a version that went is deleted and the latest version left is touched where its `search` is, which has that trigger write the row; a document with no version left keeps no row.
+  An issue whose spec lost a version has its own `search` written again too, by the statement `20261105145243`'s trigger runs, since that vector holds its spec's text.
+
+- **The term statistics** (`search_term_stats`, `search_term_totals`) and the queue they are kept from (`search_term_queue`): deleting and rewriting items queues each item's old vector, which holds the erased words, and the statistics may already count them.
+  Every project whose items the erase changed is counted again in full, as the items stand in the erase's transaction (`api.RecountSearchTermStatsTx`), and the queue rows that transaction wrote are deleted, since the count already holds what they say.
+  A project's full count is one `ts_stat` over all of its items, which the erase's transaction then holds open for.
+
+- **The stored display trees** (`text_trees`) are keyed by the SHA-256 of a whole text: the row of every text the erase removes or rewrites goes — the node's own text, each deleted version's markdown, each event-payload string the redaction rewrites and each replaced document's live text — and a reader of a text with no row has its tree made from the markdown.
+  A read that began before the commit stores the trees it read on a goroutine of its own, detached from the request and bounded by `api.StoreTreesTimeout` (30 seconds), so it can store one of those trees back after the commit.
+  The command therefore waits that bound out after the commit, before it prints its report, and deletes the same keys once more in a statement of its own, counting what it found on a `text_trees swept after the commit: <n>` line, so an operator reads whether the window was ever used.
+  The keys are held in the command's memory alone, since each is the digest of an erased text: no row, record or log keeps them, so a sweep that fails or is interrupted cannot be run again, and the command says so and exits 2 after printing the report of the erase that did commit.
+  The bound starts when the read's store does, after the read itself, so a read still building its answer at the commit can store later than 30 seconds after it by as long as that read took.
+
+- **The embedding store** (`embeddings`, with `embedding_window_states`) holds the text each vector was made from in `text_snapshot`, written by the block index tick's window arm (`refs.WriteItemWindows`, `refs.WriteDocumentWindows`) and by the issue trigger of migration `0140`.
+  Before anything is deleted, the erase deletes the node's own rows and its window state, the document windows whose `covers` name a block it deletes or rewrites, and every `issue`, `document` or `document_block` row whose snapshot holds the erased text.
+  It then writes each such issue's row again with the statement that trigger runs, and marks each document whose windows it deleted owed them (`document_block_versions.windows_owed_at`), so the window arm writes them again from the latest version left; a document with no version left is not marked.
+
+Each store is counted on the report as the others are: the rows each history held under `rows: doc_updates` (and `doc_checkpoints`, `doc_snapshots`), the one seed under `redacted: doc_updates`, the search rows under `rows:` or `redacted: document_search`, an issue's vector under `redacted: issues`, the queue rows under `rows: search_term_queue`, the trees under `rows: text_trees`, the embedding rows and window states under `rows: embeddings` and `rows: embedding_window_states`, the issue rows written again under `redacted: embeddings`, with a `term statistics counted again:` line naming the projects.
+Every one of those statements runs in the erase's own transaction, the two that `docs` and `api` own included (`graphcensus.Stores`, which `cmd/dispatch`'s `eraseStores` fills), so a failure in any of them rolls back the whole erase, nodes and all.
+`e2e/acceptance/graph-erase.sh` then searches every column of every table of the database for the erased bytes, with a control row planted in the same search, so a store added later is searched without anyone naming it.
+
+It takes its locks in the store's lock order, written down on `markInboxReadThreads` (`internal/dispatch/api/inbox_read.go`): the owner rows first, then the node's row, then the node's own projection rows `for update` (its `comments`, `document_blocks` and `block_refs` rows, table by table and by key), then everything else.
+Taking those rows before it writes anything is what orders it against the block index tick's window arm, which holds a comment's row `for no key update` and no owner row while it writes that comment's windows: the erase waits at the row before it has deleted a window, rather than deleting the windows first and meeting the arm in a deadlock.
+The owner rows are those of every row it writes that another writer writes under an owner: the node's own — a comment's issue, or the owner of the document it is on; the owner of a block's or a block reference's document — and the owner of every document a deleted version belongs to, whose live state it replaces, whose block texts or excerpts it rewrites, or whose embedding rows it deletes, and of every issue whose embedding row it deletes: the document's issue, or the document's own row when no issue owns it.
+The event payloads it rewrites, the tuples into the node, the term statistics and the display trees are owed none: no other writer of a payload already written, of the statistics or of a tree takes an owner row, and a tuple is appended once and never written again (`graphcensus`'s `Erasure.read` lists each statement and why).
+It takes each once, in the order of their owner keys (`artifact:<id>` before `issue:<key>`), as `events.LockOwners` takes several owners; a person, a session, a role or a page has no owner row, and the run starts at its node.
+Which owners those are is read before they are locked, so it is read again under them, and the run goes on with that second read: it rewrites and deletes the blocks and embedding rows of the documents and issues that read found and no others.
+A write that meanwhile put the erased text, or the node, under an owner the run had not taken makes it roll back and start again rather than take that owner after the node's row;
+after three tries it removes nothing and exits 2, naming each such owner.
+
+It refuses to remove anything until it has listed what it would.
+With `--node` alone it reads all of the above, prints it, rolls back and exits 1; run again with `--confirm` it prints the same list and removes it.
+The list names every document whose live state it would replace, one line each, saying whether its live text is redacted, how many stored updates the one seed replaces, how many anchor marks and margin records go with them, and that an editor open on it reloads and loses what it has not stored; a document whose markdown spells the erased bytes otherwise is listed as not redacted, with the reason, and the erase refuses while one is listed.
+It refuses too — before removing anything — when a row that is not part of the node points at its projection through a nullable reference: a reply whose `reply_to` names an erased comment is somebody else's words, and an ask handed back through it is that ask's own history.
+Run with `--confirm` over a node that holds text, it prints nothing until the sweep of `text_trees` after the commit has waited out its 30 seconds.
+
+What went is recorded in `graph_erasures`: the node, the counts, the versions and reviews the erase ended, the documents whose live state it replaced and what that cost each, and the projects whose term statistics it counted again, with who ran it (the database role, the account and the host) and when.
+That row holds no erased text, nobody addresses it, and no read of the graph answers it, so the closed supertag list stays closed.
+Both sides go in the one transaction, so `census --store` still reads zero differences afterwards.
+A node the store does not hold is exit 2, naming it.
+
+### The view over the store
+
+Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and the cutover test on each of the four arms whose relations the store now writes.
+The new arm takes, for each `(from_kind, from_id, kind, to_kind, to_id)`, the newest tuple, which is an edge only while that newest one asserts, with `to_kind <> 'value'` so no attribute's value is an edge.
+It renders a block's `in_document` as the `part_of` to its document the view has always answered, a block's `mentions` and its pointer kinds, and a comment's `anchored_to` and `owned_by`;
+the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
+No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
+The arm answers no row for a node whose current `state` is `gone`, which is how it stays level with a projection row that is really deleted (a block a version no longer holds), and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row, so both arms lose it together.
+
+The switch is per row and by the tuple's own kind: `in_document` is governed by the `block` row of `graph_store_cutover`, a block's pointer kinds by the `block_ref` row, and a comment's two by the `comment` row, while each of the four old arms carries the opposite test as an uncorrelated scalar the planner reads once.
+So the moment the backfill completes a kind, the store answers that kind's rows and the old arm answers none, and the view answers each row exactly once at every instant.
+`refs.BacklinkCounts` moves the same four arms the same way, each reading its own table behind `not complete` and the tuples behind `complete`, so a count and the list behind it cannot disagree across the cutover.
+A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
+`TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue, and reads the whole view and every backlink count with the cutover rows off and with them on over one seeded database, row for row.
+
 ## Stored-order check
 
 `envoy-dispatch stored-order [--artifact <uuid>]... [--since <RFC 3339 time>]` reads, and never writes, whether each document's stored history replays: folding its `doc_updates` rows in version order must give every row's `content_changed` (measured against the render the rows before it fold to, true when either side does not render) and every version's markdown at its `doc_update_version`, and no row may be stored ahead of one it depends on.
@@ -2345,7 +2508,7 @@ migration `0032_refs_provenance` gives each edge a `kind`, `created_at`, and `so
 The name of a typed block's `block[]` attribute is an edge kind too:
 each block the attribute points at is an edge of that kind from the typed block (migration `20261101144855`, Database migrations above).
 `GET /api/v1/references?to=<ref>` lists everything that points at a node and `?from=<ref>` everything it points to, cross-project.
-A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeLoaders`, `refs/graph.go`, names the kinds it knows).
+A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeRegistry`, `refs/graph.go`, names the kinds it knows).
 The migration refuses to run when an ask or comment anchor carries a non-uuid `artifact_id`.
 
 Each block of a document is a node of the graph too (migration `0121`; `packages/envoy/AGENTS.md`, "References form one graph").

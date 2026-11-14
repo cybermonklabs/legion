@@ -961,11 +961,13 @@ func sizesAbove(n, limit int64) (string, string) {
 	if size, bound := humanBytes(n), humanBytes(limit); size != bound {
 		return size, bound
 	}
-	return thousands(n) + " bytes", thousands(limit) + " bytes"
+	return Thousands(n) + " bytes", Thousands(limit) + " bytes"
 }
 
-// thousands writes n with , separators: the counts a human compares against a row estimate.
-func thousands(n int64) string {
+// Thousands writes n with , separators: the counts a human compares against a row estimate.
+// The store census prints its own counts through it too (dispatch/graphcensus), so the two
+// censuses cannot write one number two ways.
+func Thousands(n int64) string {
 	s := strconv.FormatInt(n, 10)
 	for i := len(s) - 3; i > 0; i -= 3 {
 		s = s[:i] + "," + s[i:]
@@ -1027,7 +1029,7 @@ func (r *Report) Write(w io.Writer) {
 					rows = "row"
 				}
 				fmt.Fprintf(w, "census: %s touches %s: %s %s, %s (limit %s); locks held by other sessions: %s\n",
-					name, touches, thousands(table.Rows), rows, humanBytes(table.Bytes), humanBytes(r.TableLimit), holders)
+					name, touches, Thousands(table.Rows), rows, humanBytes(table.Bytes), humanBytes(r.TableLimit), holders)
 			}
 		}
 		switch {

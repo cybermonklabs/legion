@@ -763,7 +763,7 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 		if !ok {
 			t.Fatalf("%s is no reference", reference)
 		}
-		node, found, err := refs.Node(ctx, f.database.Pool, "block", text.TargetID(ref), true)
+		node, found, err := refs.Node(ctx, f.database.Pool, model.Actor{}, "block", text.TargetID(ref), true)
 		if err != nil || !found || node.BlockID != block.ID {
 			t.Fatalf("%s resolves to %#v, found %v (%v), want block %s", reference, node, found, err, block.ID)
 		}
