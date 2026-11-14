@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { Column, FilterFn, RowSelectionState, VisibilityState } from "@tanstack/react-table";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { apiErrorMessage } from "../../api/client";
 import {
   legionBoardQuery,
   legionSettingsQuery,
@@ -34,7 +35,13 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EpicNameDialog } from "./EpicNameDialog";
 import { IssueBoard } from "./IssueBoard";
-import { type ActiveView, IssueViewTabs, LayoutSwitch, type ViewLayout } from "./IssueViewTabs";
+import {
+  type ActiveView,
+  IssueViewTabs,
+  LayoutSwitch,
+  type SettingsFailure,
+  type ViewLayout,
+} from "./IssueViewTabs";
 import { useIssueFilters } from "./issue-filters";
 import {
   PhaseHoursContext,
@@ -168,11 +175,36 @@ function doneRead(params: URLSearchParams, hasLegion: boolean, nowMs: number): D
 export function IssuesTable({ project }: { project: string }): ReactNode {
   const settings = useQuery(legionSettingsQuery());
   if (settings.isPending) return <LoadingSkeleton label="Loading issues" />;
+  // Until a read of the Legion setting answers, the project is drawn as one with no daemon, and
+  // a failed read says so beside the tabs with its error and a Retry.
   const hasLegion = (settings.data ?? []).some((setting) => setting.project === project);
-  return <ViewsTable hasLegion={hasLegion} key={project} project={project} />;
+  const settingsFailure: SettingsFailure | undefined =
+    settings.isError && settings.data === undefined
+      ? {
+          message: apiErrorMessage(settings.error, "Dispatch did not answer"),
+          retry: () => void settings.refetch(),
+          retrying: settings.isFetching,
+        }
+      : undefined;
+  return (
+    <ViewsTable
+      hasLegion={hasLegion}
+      key={project}
+      project={project}
+      settingsFailure={settingsFailure}
+    />
+  );
 }
 
-function ViewsTable({ hasLegion, project }: { hasLegion: boolean; project: string }): ReactNode {
+function ViewsTable({
+  hasLegion,
+  project,
+  settingsFailure,
+}: {
+  hasLegion: boolean;
+  project: string;
+  settingsFailure: SettingsFailure | undefined;
+}): ReactNode {
   const params = useAddressParams();
   const update = useAddressUpdate();
   const { view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
@@ -742,6 +774,7 @@ function ViewsTable({ hasLegion, project }: { hasLegion: boolean; project: strin
       onSelectSaved={selectSaved}
       saved={saved}
       savedCounts={savedCounts}
+      settingsFailure={settingsFailure}
       views={views}
     />
   );

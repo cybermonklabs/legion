@@ -453,7 +453,7 @@ export function IssueBoard({
     if (target.stage === "queue") {
       // Within the Queue column a drop writes the rank; from anywhere else it is refused.
       if (row.stage !== "queue") {
-        setNotice("Legion puts issues in its queue: a card cannot be dropped there");
+        setNotice("Legion moves cards into Queue itself: a card cannot be dropped there");
         return;
       }
       const column = rows.filter((item) => item.stage === "queue");

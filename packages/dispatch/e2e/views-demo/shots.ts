@@ -313,6 +313,17 @@ const afterShots: Shot[] = [
       check(!page.url().includes("demo="), "the read-failed flag leaves the address");
     },
   },
+  // The read of the Legion setting failed (the stub's demo=settings-failed flag): the alert and
+  // its Retry under the tabs, and the project drawn as one with no daemon.
+  {
+    name: "view-open-settings-failed-1440",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, view("open", "&demo=settings-failed"));
+      await page.locator("[data-legion-settings-error]").waitFor({ timeout: 30_000 });
+      check(!page.url().includes("demo="), "the settings-failed flag leaves the address");
+    },
+  },
 ];
 
 /** The single file, clicked through with the network off. */

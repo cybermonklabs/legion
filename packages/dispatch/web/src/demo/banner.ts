@@ -29,9 +29,9 @@ const STYLE = `
   .views-demo-banner .short { display: block; }
 }`;
 
-/** The banner, of the manifest's words; `readFailed` adds the failed daemon read the tab asked
- *  for (install.ts), which no production read holds either. */
-export function showBanner(manifest: DemoManifest, readFailed: boolean): void {
+/** The banner, of the manifest's words; `failures` adds the failed reads the tab asked for
+ *  (install.ts), which no production read holds either. */
+export function showBanner(manifest: DemoManifest, failures: readonly string[]): void {
   // Each project's issues with the time they were read; the daemon's state is the first one's.
   const projects = [
     `${manifest.project} issues (read ${utc(manifest.issues_read_at)})`,
@@ -39,10 +39,7 @@ export function showBanner(manifest: DemoManifest, readFailed: boolean): void {
       ({ key, read_at }) => `${key} issues (read ${utc(read_at)})`
     ),
   ].join(", ");
-  const invented = [
-    ...manifest.invented_summary,
-    ...(readFailed ? ["the failed daemon read"] : []),
-  ].join(", ");
+  const invented = [...manifest.invented_summary, ...failures].join(", ");
   const style = document.createElement("style");
   style.textContent = STYLE;
   document.head.append(style);

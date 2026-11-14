@@ -92,9 +92,15 @@ in the console (`[views demo] no stub route answers …`) and kept in
 To show a failed read of the daemon, add `demo=read-failed` to the address
 (`/projects/<KEY>/issues?view=open&demo=read-failed`; in the single file, after the `#`). The
 board's newest read is then a failure with an error text the demo makes up, its cards those of
-the read before it, so the alert beside the tabs shows; the banner names the failure among what
+the read before it, so the alert under the tabs shows; the banner names the failure among what
 is invented. The flag leaves the address before the app reads it and holds for the rest of the
 tab's life; `demo=read-ok` turns it off.
+
+To show a failed read of the Legion setting, add `demo=settings-failed` the same way
+(`/projects/<KEY>/issues?view=open&demo=settings-failed`). `GET /api/v1/settings/legion` then
+answers 503 with an error text the demo makes up, so the page draws the project as one with no
+daemon, with the "Legion setting read failed" alert and its Retry under the tabs, and the banner
+names the failure. It holds for the rest of the tab's life; `demo=settings-ok` turns it off.
 
 ## Take the pictures
 
@@ -125,7 +131,8 @@ Without `--before` it takes the design's pictures, each named by what it shows:
   and Time per phase in Hours;
 - All open, In flight and All open on the Board of the project with no Legion daemon
   (`--no-daemon-project`, GTM by default);
-- All open with the daemon's read failed (`demo=read-failed`).
+- All open with the daemon's read failed (`demo=read-failed`), and with the Legion setting's
+  read failed (`demo=settings-failed`).
 
 `--before` takes the page before the design, on a checkout of its base: the List, the Board, the
 Legion view and the phone List. A picture is taken only once its page has drawn its rows (a

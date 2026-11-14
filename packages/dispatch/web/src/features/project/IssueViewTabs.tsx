@@ -178,12 +178,20 @@ function SaveView({
   );
 }
 
+/** A failed read of what tells the page whether the project has a Legion daemon
+ *  (`GET /api/v1/settings/legion`): its error, and the way to read it again. */
+export interface SettingsFailure {
+  readonly message: string;
+  readonly retry: () => void;
+  readonly retrying: boolean;
+}
+
 /**
  * The row above the table: a tab for each view with its count (Slots against the cap), the
- * saved views after the built-in ones, the (i) hint with the daemon's numbers and read state, an
- * alert when the last read of the daemon failed, and, in space the row keeps for them, **Reset
- * view** and **Save view** while the view is changed, so a change of the view moves no table
- * row.
+ * saved views after the built-in ones, the (i) hint with the daemon's numbers and read state,
+ * and, in space the row keeps for them, **Reset view** and **Save view** while the view is
+ * changed, so a change of the view moves no table row. Under the row, a failed read of the
+ * daemon, or of the Legion setting, is an alert with its whole error.
  */
 export function IssueViewTabs({
   active,
@@ -199,6 +207,7 @@ export function IssueViewTabs({
   onSelectSaved,
   saved,
   savedCounts,
+  settingsFailure,
   views,
 }: {
   active: ActiveView;
@@ -215,6 +224,8 @@ export function IssueViewTabs({
   onSelectSaved: (name: string) => void;
   saved: readonly SavedView[];
   savedCounts: ReadonlyMap<string, number | undefined>;
+  /** The Legion setting's read failed; the page draws the project as one with no daemon. */
+  settingsFailure: SettingsFailure | undefined;
   views: readonly BuiltInView[];
 }): ReactNode {
   const [panel, setPanel] = useState<"hint" | "save" | undefined>(undefined);
@@ -246,126 +257,139 @@ export function IssueViewTabs({
     // Reset view and Save view following the last tab in the same flow (the tablist and the
     // group beside it are `contents` there), so no tab is cut at an edge. From `md` up the row
     // is one line whose tabs scroll sideways if they ever outgrow it.
-    <div
-      className="flex flex-wrap items-center gap-x-1 border-b md:flex-nowrap md:gap-x-2"
-      data-view-tabs
-    >
+    <>
       <div
-        aria-label="Views"
-        className={`contents md:relative md:flex md:min-w-0 md:flex-1 md:gap-0 md:overflow-x-auto md:[scrollbar-width:thin] ${borderDefault}`}
-        ref={listRef}
-        role="tablist"
+        className="flex flex-wrap items-center gap-x-1 border-b md:flex-nowrap md:gap-x-2"
+        data-view-tabs
       >
-        {views.map((view) => {
-          const on = active.kind === "built-in" && active.id === view.id;
-          const count = counts.get(view.id);
-          const shown =
-            count === undefined
-              ? undefined
-              : view.id === "slots" && boardHeader?.slot_cap != null
-                ? `${count}/${boardHeader.slot_cap}`
-                : String(count);
-          return (
-            <button
-              aria-label={shown === undefined ? view.name : `${view.name} ${shown}`}
-              aria-selected={on}
-              className={tabClass(on)}
-              data-view-tab={view.id}
-              key={view.id}
-              onClick={() => onSelect(view.id)}
-              role="tab"
-              type="button"
-            >
-              {view.name}
-              {shown === undefined ? null : <span className={countClass}>{shown}</span>}
-              {on && changed ? <ChangedMark /> : null}
-            </button>
-          );
-        })}
-        {saved.map((view) => {
-          const on = active.kind === "saved" && active.name === view.name;
-          const count = savedCounts.get(view.name);
-          return (
-            <span className="inline-flex shrink-0 items-center" key={view.name}>
+        <div
+          aria-label="Views"
+          className={`contents md:relative md:flex md:min-w-0 md:flex-1 md:gap-0 md:overflow-x-auto md:[scrollbar-width:thin] ${borderDefault}`}
+          ref={listRef}
+          role="tablist"
+        >
+          {views.map((view) => {
+            const on = active.kind === "built-in" && active.id === view.id;
+            const count = counts.get(view.id);
+            const shown =
+              count === undefined
+                ? undefined
+                : view.id === "slots" && boardHeader?.slot_cap != null
+                  ? `${count}/${boardHeader.slot_cap}`
+                  : String(count);
+            return (
               <button
-                aria-label={count === undefined ? view.name : `${view.name} ${count}`}
+                aria-label={shown === undefined ? view.name : `${view.name} ${shown}`}
                 aria-selected={on}
                 className={tabClass(on)}
-                data-saved-view-tab={view.name}
-                onClick={() => onSelectSaved(view.name)}
+                data-view-tab={view.id}
+                key={view.id}
+                onClick={() => onSelect(view.id)}
                 role="tab"
                 type="button"
               >
                 {view.name}
-                {count === undefined ? null : <span className={countClass}>{count}</span>}
+                {shown === undefined ? null : <span className={countClass}>{shown}</span>}
                 {on && changed ? <ChangedMark /> : null}
               </button>
-              {on ? (
+            );
+          })}
+          {saved.map((view) => {
+            const on = active.kind === "saved" && active.name === view.name;
+            const count = savedCounts.get(view.name);
+            return (
+              <span className="inline-flex shrink-0 items-center" key={view.name}>
                 <button
-                  aria-label={`Delete saved view ${view.name}`}
-                  className={`min-h-9 rounded px-1 text-xs ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
-                  onClick={() => onDelete(view.name)}
-                  title="Delete this saved view"
+                  aria-label={count === undefined ? view.name : `${view.name} ${count}`}
+                  aria-selected={on}
+                  className={tabClass(on)}
+                  data-saved-view-tab={view.name}
+                  onClick={() => onSelectSaved(view.name)}
+                  role="tab"
                   type="button"
                 >
-                  ✕
+                  {view.name}
+                  {count === undefined ? null : <span className={countClass}>{count}</span>}
+                  {on && changed ? <ChangedMark /> : null}
                 </button>
-              ) : null}
-            </span>
-          );
-        })}
-      </div>
-      <div className="contents md:flex md:shrink-0 md:items-center md:gap-1.5">
-        <PanelTrigger
-          align="left"
-          label="i"
-          onOpenChange={(open) => setPanel(open ? "hint" : undefined)}
-          open={panel === "hint"}
-          panelClassName={PANEL_CLASS}
-          title="About this view"
-          triggerClassName={`inline-flex size-9 shrink-0 items-center justify-center rounded-full border text-xs font-semibold italic md:size-7 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas}`}
-        >
-          {() => (
-            <div className={`flex flex-col gap-2 text-xs ${textSecondaryOnCanvas}`}>
-              <p>
-                {activeView === undefined ? "A view you saved in this browser" : activeView.hint}
-              </p>
-              {hasLegion ? <DaemonHint header={boardHeader} pending={boardPending} /> : null}
-            </div>
-          )}
-        </PanelTrigger>
-        {readFailed ? (
-          // Narrow on desktop, so it never takes the tabs' room: the whole error is in its text
-          // (which the alert reads out), its title and the (i) hint, and the line shows its
-          // start. On a phone it follows the space kept for Reset view and Save view, taking a
-          // line of its own, so that space never wraps onto an empty line.
-          <span
-            className={`order-last max-w-full truncate text-xs md:order-none md:max-w-36 ${dangerText}`}
-            data-legion-read-error
-            role="alert"
-            title={boardHeader?.read_error ?? undefined}
+                {on ? (
+                  <button
+                    aria-label={`Delete saved view ${view.name}`}
+                    className={`min-h-9 rounded px-1 text-xs ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
+                    onClick={() => onDelete(view.name)}
+                    title="Delete this saved view"
+                    type="button"
+                  >
+                    ✕
+                  </button>
+                ) : null}
+              </span>
+            );
+          })}
+        </div>
+        <div className="contents md:flex md:shrink-0 md:items-center md:gap-1.5">
+          <PanelTrigger
+            align="left"
+            label="i"
+            onOpenChange={(open) => setPanel(open ? "hint" : undefined)}
+            open={panel === "hint"}
+            panelClassName={PANEL_CLASS}
+            title="About this view"
+            triggerClassName={`inline-flex size-9 shrink-0 items-center justify-center rounded-full border text-xs font-semibold italic md:size-7 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas}`}
           >
-            Daemon read failed{boardHeader?.read_error ? `: ${boardHeader.read_error}` : ""}
+            {() => (
+              <div className={`flex flex-col gap-2 text-xs ${textSecondaryOnCanvas}`}>
+                <p>
+                  {activeView === undefined ? "A view you saved in this browser" : activeView.hint}
+                </p>
+                {hasLegion ? <DaemonHint header={boardHeader} pending={boardPending} /> : null}
+              </div>
+            )}
+          </PanelTrigger>
+          <span
+            aria-hidden={!changed}
+            className={`flex shrink-0 items-center gap-1 md:gap-1.5 ${changed ? "" : "invisible"}`}
+            data-view-changed={changed || undefined}
+          >
+            <button className={smallButton} disabled={!changed} onClick={onReset} type="button">
+              Reset view
+            </button>
+            <SaveView
+              initial={active.kind === "saved" ? active.name : ""}
+              onOpenChange={(open) => setPanel(open ? "save" : undefined)}
+              onSave={onSave}
+              open={panel === "save"}
+              saved={saved}
+            />
           </span>
-        ) : null}
-        <span
-          aria-hidden={!changed}
-          className={`flex shrink-0 items-center gap-1 md:gap-1.5 ${changed ? "" : "invisible"}`}
-          data-view-changed={changed || undefined}
-        >
-          <button className={smallButton} disabled={!changed} onClick={onReset} type="button">
-            Reset view
-          </button>
-          <SaveView
-            initial={active.kind === "saved" ? active.name : ""}
-            onOpenChange={(open) => setPanel(open ? "save" : undefined)}
-            onSave={onSave}
-            open={panel === "save"}
-            saved={saved}
-          />
-        </span>
+        </div>
       </div>
-    </div>
+      {/* A failed read takes a line of its own under the row, its whole error wrapping as it
+        needs: beside seven tabs at 1440 px there is no room for it, and in that room it cut
+        the last tabs. */}
+      {readFailed || settingsFailure !== undefined ? (
+        <div className={`flex flex-col gap-0.5 text-xs ${dangerText}`}>
+          {settingsFailure === undefined ? null : (
+            <p className="break-words" data-legion-settings-error role="alert">
+              Legion setting read failed: {settingsFailure.message}{" "}
+              <button
+                className="font-semibold underline disabled:opacity-50"
+                disabled={settingsFailure.retrying}
+                onClick={settingsFailure.retry}
+                type="button"
+              >
+                {settingsFailure.retrying ? "Retrying…" : "Retry"}
+              </button>
+            </p>
+          )}
+          {readFailed ? (
+            <p className="break-words" data-legion-read-error role="alert">
+              Daemon read failed{boardHeader?.read_error ? `: ${boardHeader.read_error}` : ""}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </>
   );
 }
 

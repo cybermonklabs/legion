@@ -21,12 +21,15 @@ declare global {
 /** How long each answer takes, so the page meets the order of events a network gives it. */
 const ANSWER_DELAY_MS = 15;
 
-/** The tab's flag for a failed daemon read: `demo=read-failed` in the address turns it on and
- *  `demo=read-ok` off, for the rest of the tab's life. The parameter leaves the address before
- *  the app reads it, so no view counts it as a filter. In the single file the app's address is
- *  the fragment (file-router.ts), so the parameter is looked for there as well. */
+/** The tab's flags for a failed read, each for the rest of the tab's life: `demo=read-failed`
+ *  makes the daemon's newest read a failure and `demo=read-ok` undoes it; `demo=settings-failed`
+ *  makes `GET /api/v1/settings/legion` fail and `demo=settings-ok` undoes it. The parameter
+ *  leaves the address before the app reads it, so no view counts it as a filter. In the single
+ *  file the app's address is the fragment (file-router.ts), so the parameter is looked for there
+ *  as well. */
 const READ_FAILED = "dispatch-demo.read-failed";
-function takeReadFailedFlag(): boolean {
+const SETTINGS_FAILED = "dispatch-demo.settings-failed";
+function takeFailureFlags(): { readFailed: boolean; settingsFailed: boolean } {
   const url = new URL(window.location.href);
   const [path, query = ""] = url.hash.slice(1).split("?");
   const inHash = new URLSearchParams(query);
@@ -39,10 +42,25 @@ function takeReadFailedFlag(): boolean {
     window.history.replaceState(window.history.state, "", url);
     if (flag === "read-failed") sessionStorage.setItem(READ_FAILED, "1");
     if (flag === "read-ok") sessionStorage.removeItem(READ_FAILED);
+    if (flag === "settings-failed") sessionStorage.setItem(SETTINGS_FAILED, "1");
+    if (flag === "settings-ok") sessionStorage.removeItem(SETTINGS_FAILED);
   }
-  return sessionStorage.getItem(READ_FAILED) === "1";
+  return {
+    readFailed: sessionStorage.getItem(READ_FAILED) === "1",
+    settingsFailed: sessionStorage.getItem(SETTINGS_FAILED) === "1",
+  };
 }
-const readFailed = takeReadFailedFlag();
+const { readFailed, settingsFailed } = takeFailureFlags();
+
+/** The answer to `GET /api/v1/settings/legion` while `demo=settings-failed` holds: a failure the
+ *  demo makes up, in the server's error shape. */
+const SETTINGS_FAILURE = {
+  status: 503,
+  body: {
+    code: "DEMO_SETTINGS_UNAVAILABLE",
+    error: "the Legion settings store did not answer in time (the demo's made-up failure)",
+  },
+} as const;
 
 const nativeFetch = window.fetch.bind(window);
 const ready = loadFixtures(nativeFetch).then((fixtures) => {
@@ -68,7 +86,10 @@ async function demoFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   setTimeout(answered.resolve, ANSWER_DELAY_MS);
   await answered.promise;
   if (init?.signal?.aborted === true) throw new DOMException("aborted", "AbortError");
-  const answer = server.handle(method, url, body);
+  const answer =
+    settingsFailed && method === "GET" && url.pathname === "/api/v1/settings/legion"
+      ? SETTINGS_FAILURE
+      : server.handle(method, url, body);
   if (answer === undefined) {
     server.missed(method, url);
     return Response.json(
@@ -99,4 +120,9 @@ XMLHttpRequest.prototype.open = function open(
   return nativeOpen.call(this, method, url, rest[0] ?? true, rest[1], rest[2]);
 };
 
-void ready.then((server) => showBanner(server.fixtures.manifest, readFailed));
+void ready.then((server) =>
+  showBanner(server.fixtures.manifest, [
+    ...(readFailed ? ["the failed daemon read"] : []),
+    ...(settingsFailed ? ["the failed Legion setting read"] : []),
+  ])
+);
