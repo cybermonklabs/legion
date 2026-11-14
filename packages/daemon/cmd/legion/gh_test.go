@@ -372,13 +372,17 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// key with no remote, a key with no dot). The leaf must honour the marker: a group gh builds
 		// without it (secret) takes the first of gh's sorted remotes, upstream, and repo set-default
 		// reads every remote's network unless --view or --unset is true, which a value that is no
-		// boolean is not.
+		// boolean is not, the last value given each option deciding, as pflag reads it.
 		{argv: []string{"secret", "set", "TOKEN", "--body", "dummy"}, remotes: markedFork(), err: "more than one owner"},
 		{argv: []string{"repo", "set-default", "--view"}, remotes: markedFork(), owner: "acme"},
 		{argv: []string{"repo", "set-default", "-v"}, remotes: markedFork(), owner: "acme"},
 		{argv: []string{"repo", "set-default", "--unset"}, remotes: markedFork(), owner: "acme"},
 		{argv: []string{"repo", "set-default", "-u"}, remotes: markedFork(), owner: "acme"},
 		{argv: []string{"repo", "set-default", "--view=maybe", "acme/widgets"}, remotes: markedFork(), err: "more than one owner"},
+		{argv: []string{"repo", "set-default", "--view", "--view=false", "acme/widgets"}, remotes: markedFork(), err: "more than one owner"},
+		{argv: []string{"repo", "set-default", "--view=false", "--view"}, remotes: markedFork(), owner: "acme"},
+		{argv: []string{"repo", "set-default", "--unset", "--unset=false", "acme/widgets"}, remotes: markedFork(), err: "more than one owner"},
+		{argv: []string{"repo", "set-default", "--unset=false", "--unset"}, remotes: markedFork(), owner: "acme"},
 		// One marker line gh reads must be left: a dotted key gh gives origin, `base` or empty, is
 		// a second, while a key with no dot, which names gh no remote, a key with no value and an
 		// empty value on a remote other than origin, as gh names it, are none.

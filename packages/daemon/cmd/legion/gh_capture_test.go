@@ -595,6 +595,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		row{marked, nil, []string{"variable", "list"}, "", "more than one owner"},
 		row{marked, nil, []string{"repo", "set-default", "acme/widgets"}, "", "more than one owner"},
 		row{marked, nil, []string{"repo", "set-default", "--view=false", "acme/widgets"}, "", "more than one owner"},
+		row{marked, nil, []string{"repo", "set-default", "--view", "--view=false", "acme/widgets"}, "", "more than one owner"},
 	)
 	for _, changes := range [][][]string{
 		{{"config", "--unset", "remote.origin.gh-resolved"}, {"config", "remote.upstream.gh-resolved", "base"}},
