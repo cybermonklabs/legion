@@ -348,8 +348,9 @@ person closed the question), `turn` (a session handed it back to the agent's tur
 (Dispatch's settlement), and `approved` also when the spec's gate stands open with nobody's
 approval on a deployment that gates no step, or when the last gated step was taken out of
 `gates.design` while the root waited on it. The root is in `admission.active` throughout, since an
-issue keeps its admission slot from the moment the daemon starts it
-until it is done or leaves the workflow;
+issue holds one of the cap's slots from the moment the daemon starts it until its work is past its
+review — `accepting`, `retro` and `merging` hold none — or until it is done or
+Dispatch takes it out of the workflow;
 once it is answered it stands in `admission.waiting` too,
 among the issues whose work came back, oldest first, until the pass that resumes it. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
@@ -1049,8 +1050,8 @@ On such a daemon, an update round or a message wake can take the author of the c
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
   reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
-  issue that only waits keeps both its slot and its pod,
-  so keep the pods a deployment's open trees run within what the pool's limits
+  issue keeps its pod past its slot — through its acceptance, its retro and its merge, on to its
+  own close — so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
   deleted with it, so a replacement brings a disk of its own. The image probe pod,

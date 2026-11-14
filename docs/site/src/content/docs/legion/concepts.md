@@ -159,14 +159,17 @@ in the daemon's configuration, four by default; an issue that finds no free slot
 a labelled `todo` root takes its place in that line in the project board's order.
 
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
-architect, a child at the start of its first phase — and it keeps that slot
-until it is done or leaves the workflow.
-So it holds its slot through every wait as well: in `accepting`, on a blocker, on its own children,
-on a person, and in merging while a closed design gate holds its merge request. An issue holding a
-slot starts its next phase whatever the cap says, and an issue holding none, a child its architect
-has just released among them, waits in line while the project stands at the cap. A slot stops
-nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
-questions until the issue closes.
+architect, a child at the start of its first phase. An issue holds one of the cap's slots from the
+moment the daemon starts it until its work is past its review — `accepting`, `retro` and
+`merging` hold none — or until it is done or Dispatch takes it out of the workflow.
+So it holds its slot through every wait up to its review as well: on a blocker, on its own
+children, on a person, and on the review itself. Past the review the issue writes no more of the
+change, so its acceptance, its retro and its merge run on no slot at all. An issue holding a slot
+starts its next phase whatever the cap says, and so does an issue past its review, which holds
+none. An issue that holds none and is owed a start, a child its architect has just released among
+them, waits in line while the project stands at the cap. A slot stops nothing either way: every
+worker of a waiting issue stays live in the issue's pod and answers questions until the issue
+closes.
 
 The line has two parts, and `legion state` prints them in the order the daemon promotes them:
 the issues whose work came back, oldest first by the moment it came back, and then the issues

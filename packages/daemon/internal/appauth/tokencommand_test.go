@@ -382,6 +382,37 @@ func TestTheInstallationReadAsksPastARememberedNarrowingRefusal(t *testing.T) {
 	}
 }
 
+// A narrowing the broker goes on refusing is an ERROR of the installation read, never the answer
+// "not installed": the two are different facts, and a daemon that reads a refusal as an absent
+// installation would record an issue's repository as one the App does not reach while the App is
+// installed on it, and would say so on the issue. So listInstallation tests ErrNotInstalled
+// alone; the clause that read a narrowing refusal the same way is gone with the narrowing itself
+// (INFRA-2543), and this row fails if it comes back.
+func TestTheInstallationReadOfARefusedNarrowingIsAnErrorAndNotNotInstalled(t *testing.T) {
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))
+	broker.refusesNarrowing(t, "acme")
+	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345", repos: []string{"acme/widgets"}}
+	var stderr bytes.Buffer
+	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+
+	installed, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/widgets"))
+	switch {
+	case installed:
+		t.Fatalf("InstalledOn under a refused narrowing = %v, want not installed", installed)
+	case err == nil:
+		t.Fatal("InstalledOn under a refused narrowing answered no error, which reads as a repository the App does not reach")
+	case errors.Is(err, ErrNotInstalled):
+		t.Fatalf("InstalledOn under a refused narrowing = %v, want an error that is not ErrNotInstalled", err)
+	case !NarrowingRefused(err):
+		t.Fatalf("InstalledOn under a refused narrowing = %v, want the narrowing refusal carried to the caller", err)
+	}
+	want := []string{"acme|1"}
+	if runs := broker.runs(t); !slices.Equal(runs, want) {
+		t.Errorf("command runs = %q, want %q: the one narrowed read-only run the refusal answered", runs, want)
+	}
+}
+
 // `agent-secrets` exits 75 while its request still waits for approval: transient, never the
 // configuration's answer.
 func TestTokenModeAPendingApprovalIsTransient(t *testing.T) {

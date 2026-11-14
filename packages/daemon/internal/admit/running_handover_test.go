@@ -3,6 +3,7 @@ package admit
 import (
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -41,8 +42,14 @@ func TestAPersonsTodoOnARunningHandedOverRootDoesNotPromoteItAgain(t *testing.T)
 	if holders := slots(t, pool); len(holders) != 0 {
 		t.Fatalf("slots = %#v, want none: a root waiting for its merge has no worker with work", holders)
 	}
-	if started := startsOf(t, pool, root); len(started) != 0 {
-		t.Fatalf("%d supervise rows were queued for %s, want none: nothing of a running root is started again", len(started), root)
+	// The repair of a worker with no task reaches an issue standing past its review, which holds
+	// no row of the cap's (record.PastReview, admit's resumeSlottedWorkers), so this root's
+	// merger is started again. What a second promotion would write is the architect's own start,
+	// and that is what must not be here.
+	for _, started := range startsOf(t, pool, root) {
+		if started.role != claim.RoleMerger {
+			t.Fatalf("a %s of %s was started, want the merger alone: nothing of a running root is promoted again", started.role, root)
+		}
 	}
 }
 
