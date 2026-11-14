@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // claimReady gives a tree's root architect its first instruction. Nothing else starts a turn of it:
@@ -40,6 +41,13 @@ import (
 // transaction, so a start row that runs again after a crash takes no second one: the fact applies
 // once for the row that wrote it. A launch's own ready takes none, since the launch took its turn
 // at the machine's gate (supervise's reserveWake); so does every ready while the pacing is off.
+//
+// A launch's ready that carries the sentence of what the last let-go of the architect's process
+// ended (intake.ClaimReady.Relaunch) has its catch-up open with it (QueueCatchUp): the first turn
+// of a relaunched root architect can be this catch-up's rather than its prompt's, and the
+// architect then reads that its subagent died before it reads its tree. A prompt the claim's
+// machine sends tells the same record and is what marks it told, so a catch-up that is held,
+// superseded or never queued here costs nothing (dispatch://INFRA-3276 R3).
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
 	if fact.Role != claim.RoleArchitect {
 		return intake.Result{}, e.readyWorkerTask(ctx, tx, fact)
@@ -56,7 +64,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 	if fact.Paced && e.cfg.Reserve != nil {
 		paced = e.cfg.Reserve(now)
 	}
-	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *root, fact.Launch, now, paced)
+	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *root, fact.Launch, fact.Relaunch, now, paced)
 }
 
 // QueueCatchUp is the one composer of a root architect's catch-up, which both the ready
@@ -64,6 +72,14 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // through, so the two never compose one differently. It states root's tree as the record holds it
 // (treeCatchUp) for launch, the launch it was written for, so a failed forward of an older one is
 // not queued again behind it (the outbox's rehold).
+//
+// relaunch is the sentence of what the last let-go of the architect's process ended, which a
+// launch's ready carries while the claim's record of it is untold (intake.ClaimReady.Relaunch),
+// and "" from every other caller. The notice's reason — the text the architect reads of the
+// catch-up — opens with it, so the architect reads what died with its last process before it
+// reads its tree. The copy tells nothing: the record is the claim's, and it is told at the
+// confirmation of a prompt the claim's machine sends that tells the same record (supervise's
+// confirm, Delivery.message), which the outbox's publish of this notice does not see.
 //
 // A catch-up an earlier launch never had delivered is dropped first (DropCatchUps, at the caller's
 // now, which is the clock a lane's lease is written from), so the agent is given one catch-up,
@@ -83,7 +99,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // releaseWaiting), and with now beside it (record.Notice.PacedFrom) it is the wait in the line
 // that wake writes when it runs (the daemon's wakeRan). The pair is written only where the
 // pacing reserved something: a catch-up it held to no moment reports no wait, having had none.
-func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue, launch uint64, now, paced time.Time) error {
+func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue, launch uint64, relaunch string, now, paced time.Time) error {
 	catchUp, awaiting, err := treeCatchUp(ctx, tx, store, steps, root)
 	if err != nil {
 		return err
@@ -106,6 +122,9 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	reason := fmt.Sprintf("the tree of %s at generation %d as the daemon records it now; start or resume it as your role says", root.Key, root.Generation)
 	if len(awaiting) > 0 {
 		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))
+	}
+	if relaunch != "" {
+		reason = relaunch + "\n\n" + reason
 	}
 	at := now
 	notice := record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: reason, CatchUp: &catchUp}
@@ -155,9 +174,16 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // one claim: the issue is this project's and in the workflow, its phase's role (RoleFor) is this
 // claim's, its tree does not linger, and its phase's own terminating fact has not arrived
 // (PhaseFinished) — a merged root stands in merging for as long as the rest of its tree runs, and
-// its merger must not be handed merging again at every launch. A claim that holds any task is left
+// its merger must not be handed merging again at every launch. A claim that holds a task is left
 // alone: it has work, and a second task would be a second prompt for work under way. So is a role
 // a queued row already covers (queuedRowCovers).
+//
+// The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
+// that holds that alone is read as holding nothing. The phase's task that this queues takes that
+// delivery's place while no prompt of it waits on a result, or waits for its turn to end
+// (supervise's queue), and carries the sentence in front of itself while the record is untold.
+// A worker that came back holding only that delivery — its ready found it holding one from an
+// earlier launch its agent never read — would otherwise be given no phase task at all.
 //
 // What such a claim is sent is decided by the entry its role's phases row names
 // (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
@@ -209,7 +235,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
-	if held := run.Claim; held == nil || held.Pending != nil {
+	// A claim holding only the daemon's own delivery of a relaunch's record holds no task (above).
+	if held := run.Claim; held == nil || supervise.HoldsTask(held.Pending) {
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {

@@ -1008,7 +1008,8 @@ Its deadline is the stop's grace less the proxy's 1 s drain.
 This save is best effort: at the 9 s floor of `worker_stop_timeout_seconds`, a worker that spends its whole 5 s agent grace can leave it no time.
 A hard kill (a node lost, a SIGKILL) makes no last save.
 The table then holds what the last committed save left: the transcript up to a newline, without at most the lines of its last 2 s.
-The daemon sends an interrupted task again, so the worker does that turn again.
+The daemon sends an interrupted task again, behind a sentence that names what the relaunch ended (the turn, its tool calls and each kind of background work the process last reported) and says that the subagents and background jobs of that turn are gone, so the worker checks what that turn did and does the rest again.
+A Claude Code worker reports only at its Stop hook, so its newest report is older than the turn cut off: the sentence adds that the daemon has no report of what that turn started, and a process that left no activity report at all is told that every subagent and background job it started is gone.
 
 The recreated-workspace notice reaches a Claude Code role too:
 its own MCP server (`packages/claude-envoy`) reads `LEGION_WORKSPACE_RECREATED` at start and writes the same text into the session over the bridge's inbox, once per launch, recorded beside the phase reminder's state so a restarted server does not repeat it.
@@ -4646,6 +4647,9 @@ The migration drops two columns that every release from `legion-v19.16.0` on rea
 
 How many update rounds run at once is the project's to cap, with two optional top-level `legion.yaml` keys, each a positive integer (`beginPodUpdateSweep`, `podUpdateSweep`):
 `pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`).
+An issue holds one of those slots while a claim of it holds the round over the pod its claims record, or while its claims record two pods with a round open, which is a replacement in flight (`holdsOpenRound`).
+A round over a pod the claims no longer record holds none, since that pod is gone and the same sweep ends the round, and neither does a round whose claims record no pod at all.
+A round this daemon opened at an earlier sweep that no claim of the issue records yet holds a slot too, since it is an opening all the same: the post that carries a round to a machine is asynchronous, and a machine in a relaunch can take minutes to take it (`podUpdateOpenings`).
 A key the file leaves out is no limit at all, and there is no default:
 one change to the pod template drifts every pod of the project at once, and the first sweep after it would otherwise ask every worker of the fleet to stop what it is doing and push.
 Neither limit ends a round, pauses one, or holds back the message of one that is open:
@@ -4665,15 +4669,19 @@ One round is told once, however many sweeps find it open.
 A round that waits for its roles before its bound is told to nobody, since the bound ends that wait by itself.
 An operator's suspension is the one hold only a person can clear: the daemon replaces the pod only after the operator resumes each such claim.
 A pod that goes before its round is over, replaced where it stood for a failure of its own, has the daemon write on the issue which roles had not answered and that the work they did not push went with the disk.
-Two readings say the pod went:
-the runtime answering that the pod the claims record is not there, and the claims recording another pod in its place.
+Three readings say the pod went:
+the runtime answering that the pod the claims record is not there; the claims recording another pod in its place; and, while no claim of the issue records a pod at all, the runtime answering that the issue's Sandbox holds another pod or none.
 Whichever of them a sweep reaches first ends the round, and every sweep asks it before the round waits on a turn, because each such wait is a wait on the pod.
+The claims recording another pod end the round whatever the drift of the pod in its place: a drifting replacement gets a round of its own at a later sweep, as an opening under the limits above.
+The end goes to the members of that round alone, so a claim already in a round over the pod in its place stays in it (`endPodUpdates`).
+Every sweep reads the claims afresh, so an end that a restart lost on its way to a claim's machine is made again at the next sweep, and so is the end of a stale round on a claim that `fresh_session` started again in a new session.
 The message is decided from the round's own record and not from where any claim's process is now (`endRoundOverAGonePod`):
 the round records, on each claim it asked, the round that claim left and whether it had answered when it left, and only the round's end clears either.
 So a worker relaunched into the pod that replaced this one is still a member of the round, with the part the dead pod left it; a role first started in that new pod is no member and is named nothing; and an earlier sweep's end landing on some claims before others takes those claims out of the round rather than into the message.
 What the pod took with it is the members who neither answered nor left having answered, so a round every member had answered lost nothing and nothing is written on the issue at all.
 That is a different question from whom a replacement waits for before the round's bound, which stays every blocking claim that has not answered and has not left: a claim the round has not asked yet still holds the pod, and is asked at the next tick.
-While no claim of the issue records a pod at all — every role suspended, or the one live role relaunching — the round waits, because no locator is evidence either way;
+While no claim of the issue records a pod at all — every role suspended, or the one live role relaunching — no locator is evidence either way, so the daemon asks the runtime which pod the issue's Sandbox holds now (`IssuePod`, `podlessRound`):
+another pod than the round's own, or none, ends the round as a gone pod's round ends, and the round's own pod, or a runtime that cannot say, leaves the round waiting for a claim to record a pod again;
 and a round whose workers have all answered but whose pod no live claim records asks the runtime about that pod, ending only if it is gone and waiting otherwise.
 
 What a pod's disk carries is therefore the issue's work in progress and nothing more:

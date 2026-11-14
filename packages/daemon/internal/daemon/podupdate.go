@@ -101,26 +101,39 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // reconcileIssuePodUpdate carries one issue's pod round a step. group is every claim of the issue
 // that has not retired, whatever state it is in.
 //
-// The decisions are taken in this order, and the order is the rule. A pod the group has replaced
-// with another went while its round was open, whatever the runtime says of a pod that is not
-// there. Then the drift, which is also what says the pod is not there: a round open over a pod
-// the runtime no longer has ends at that reading, and a pod that has drifted from nothing and
-// has no round open over it needs no replacement, as does one whose round's own pod is already
-// gone, which ends that round over the pod that replaced it. A round open over the pod the
-// claims still record goes on, drift or no drift: once opened, a round ends only by replacing
-// its pod, or because that pod is gone. Only then is a complete round acted on, and only then is
-// a round opened or kept open.
+// The decisions are taken in this order, and the order is the rule. A round open over a pod other
+// than the one the claims record is over: that pod went, and the pod the claims record now is the
+// one in its place. Such a round ends at that sweep whatever the runtime says of the pod that
+// replaced it, its drift included — a drifting replacement is given a round of its own at a later
+// sweep, an opening under the project's limits like any other — and the end is posted to the
+// members of that round alone (endPodUpdates), so a claim already in a round over the new pod
+// stays in it. Then the drift, which is also what says the pod is not there: a round open over a
+// pod the runtime no longer has ends at that reading, and a pod that has drifted from nothing and
+// has no round open over it needs no replacement. A round open over the pod the claims still
+// record goes on, drift or no drift: once opened, a round ends only by replacing its pod, or
+// because that pod is gone. Only then is a complete round acted on, and only then is a round
+// opened or kept open.
 //
-// A group whose claims record no pod at all decides nothing: not that the pod went, and not that
-// it has drifted from nothing. No locator is no evidence either way — every claim of the issue
-// may be suspended (letGo clears the locator), or the one live claim may be minutes into a
-// relaunch — and the round waits for a claim to record a pod again. The one thing that says a
-// pod went is a different pod in its place.
+// The end of a round over a replaced pod is read from the claims at every sweep, so an end that
+// never reached a machine is made again a minute later: the post that carries an end lives in
+// memory alone, a member whose machine is in a relaunch when the daemon stops loses it, and the
+// store keeps the round for the next boot to restore. Waiting for the pod in its place to stop
+// drifting would leave such a round open for as long as that pod drifted, and the dead round's
+// slot would hold the issue's own next round back behind the project's open-round limit
+// (dispatch://INFRA-3276, R5).
+//
+// A group whose claims record no pod at all decides nothing from its claims: no locator is no
+// evidence either way — every claim of the issue may be suspended (letGo clears the locator), or
+// the one live claim may be minutes into a relaunch. So the runtime is asked, by the issue alone,
+// which pod the issue's Sandbox holds now (podlessRound): another pod than the round's, or none,
+// is the round's pod gone, and the round ends as a gone pod's round does; the round's own pod, or
+// no answer, leaves the round waiting for a claim to record a pod again.
 //
 // A group whose claims record a pod the runtime no longer has ends the round open over it at
 // that sweep, and decides nothing else (groupDrift, podGone, endRoundOverAGonePod). It is one of
-// the two readings that say a pod went, the other being a different pod in its place, and the
-// round ends on whichever the sweep reaches first.
+// the readings that say a pod went, beside a different pod in its place and, where no claim
+// records a pod, the runtime's word on the issue's Sandbox, and the round ends on whichever the
+// sweep reaches first.
 //
 // Which reading that is, and when it comes, changes nothing the issue is told, because the
 // report is read from the round's own record rather than from where any claim's process is now.
@@ -147,29 +160,38 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	open := openPodRound(group)
 	if pod == "" {
 		if open != "" {
-			s.log.Info("supervise: no claim of this issue records a pod; its update round waits for one to run again",
-				"issue", issue, "round", open)
-			s.tellPodlessRound(ctx, issue, group, open, now)
-			return nil
+			s.podlessRound(ctx, issue, group, open, now)
 		}
-		// Nothing can be read of a pod no claim records, so no pod round opens and none ends.
+		// No drift can be read of a pod no claim records, so no pod round opens over one.
 		return nil
 	}
-	// The pod went without the round: it was replaced where it stood for a failure of its own — a
-	// terminal pod, a failed init container, a superseded disk, a lost launcher binding — and its
-	// disk went with it while a worker still had work to push. The claims record the pod that
-	// replaced it, which is the evidence. A round that lost nothing — every member of it pushed
-	// its work before the pod went — is written on no issue, and ends below with the drift or
-	// the replacement.
-	//
-	// What was lost is counted here exactly as the message counts it (lostClaims), so the branch
-	// is taken when, and only when, there is a role to name. Counted as the claims the
-	// replacement waits for (waitingClaims), it would take this branch for a claim of the issue
-	// that is in no round at all — one an earlier sweep's end has already taken out of this
-	// round, or a role first started in the pod that replaced this one — and write a message
-	// naming either nobody or a worker that lost nothing.
-	if open != "" && open != supervise.PodRound(pod) && len(lostClaims(group, open)) > 0 {
-		s.podWentWithoutItsRound(ctx, issue, group, open, pod)
+	round := supervise.PodRound(pod)
+	if open != "" && open != round {
+		// The pod went without the round: it was replaced where it stood for a failure of its
+		// own — a terminal pod, a failed init container, a superseded disk, a lost launcher
+		// binding — and its disk went with it while a worker still had work to push. The claims
+		// record the pod that replaced it, which is the evidence. A round that lost nothing —
+		// every member of it pushed its work before the pod went — is written on no issue, and
+		// ends below.
+		//
+		// What was lost is counted here exactly as the message counts it (lostClaims), so the
+		// message is written when, and only when, there is a role to name. Counted as the claims
+		// the replacement waits for (waitingClaims), it would be written for a claim of the issue
+		// that is in no round at all — one an earlier sweep's end has already taken out of this
+		// round, or a role first started in the pod that replaced this one — naming either
+		// nobody or a worker that lost nothing.
+		if len(lostClaims(group, open)) > 0 {
+			s.podWentWithoutItsRound(ctx, issue, group, open, pod)
+			return nil
+		}
+		// The round's pod is gone, and with every member's work pushed before it went (the
+		// message above is written for a round that lost any) nothing is left to tell the issue.
+		// Nothing of the pod in its place decides anything here: the round was opened over a pod
+		// that is not there, no answer and no replacement can end it any more, and the drift of
+		// the new pod is that pod's own round to open.
+		s.log.Info("supervise: the pod this issue's update round was opened over is gone; the round is over",
+			"issue", issue, "round", open, "pod", pod)
+		s.endPodUpdates(group, open)
 		return nil
 	}
 	reasons, reading := s.groupDrift(ctx, issue, group)
@@ -180,16 +202,9 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	if reading != podRead {
 		return nil
 	}
-	if len(reasons) == 0 && open != supervise.PodRound(pod) {
-		// The round's own pod is gone: the claims record another one in its place, and that pod
-		// has drifted from nothing. A round that still had a worker to lose work with the pod
-		// was taken by the branch above, so this one lost nothing and ends here, over the pod
-		// that replaced its own.
-		if open != "" {
-			s.log.Info("supervise: the pod this issue's update round was opened over is gone, and the pod in its place has drifted from nothing; the round is over",
-				"issue", issue, "round", open, "pod", pod)
-			s.endPodUpdates(group)
-		}
+	if len(reasons) == 0 && open == "" {
+		// A pod that has drifted from nothing, with no round open over it, needs no replacement:
+		// returning here is what keeps the code below from opening a round over it.
 		return nil
 	}
 	// The drift this tick read opens a round and decides nothing of a round already open: a
@@ -201,7 +216,6 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// it was told would be replaced. Replacing it is one restart of each role in its own session,
 	// which the alternative — a release of the answered roles that the daemon alone knows about —
 	// is not.
-	round := supervise.PodRound(pod)
 	terms := strings.Join(reasons, ", ")
 	// One live read, given to both decisions below, so the claims the replacement waits on and
 	// the claims the post records the round on, which the ask then reaches, are one set. Read
@@ -212,12 +226,12 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// nothing had asked anything of.
 	var live []supervise.Claim
 	if open != "" {
+		// A round open here is over the pod the claims record, the one round this issue can be
+		// in: a round over any other pod has ended above.
 		live = s.liveGroup(group)
-		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, roundReasons(group, open), now); decided {
+		terms = roundReasons(group, open)
+		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, terms, now); decided {
 			return replace
-		}
-		if open == round {
-			terms = roundReasons(group, open)
 		}
 	}
 	// A round the claims do not already record is an opening, and the project's limits may hold
@@ -231,7 +245,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// posted again too, as that same opening rather than a new one, and no limit holds that post
 	// back either (podUpdateSweep.reposts): it is in a round for the sweep's record, and nothing
 	// more is charged for it.
-	opening := open != round && !sweep.reposts(issue, round)
+	opening := open == "" && !sweep.reposts(issue, round)
 	if opening && sweep.holds(issue) {
 		return nil
 	}
@@ -629,7 +643,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 			"issue", issue, "round", round, "pod", pod,
 			"answered", namesOf(ended.answered), "unanswered", namesOf(ended.unanswered), "working", ended.working)
 	}
-	s.endPodUpdates(live)
+	s.endPodUpdates(live, round)
 }
 
 // boundPastReason opens every reason the late-round notice gives (tellLateRound,
@@ -660,8 +674,11 @@ func operatorHoldReason(held []supervise.Claim) string {
 // tick would open the round over the same pod again.
 //
 // So the runtime is asked about the pod itself, through the claim the sweep's snapshot still
-// records it on, and only runtime.ErrPodGone ends the round, as every reading of a gone pod ends
-// one (endRoundOverAGonePod). What the pod has drifted to says nothing here: the round is open,
+// records it on, and only runtime.ErrPodGone ends the round, through endRoundOverAGonePod, as
+// every answer of the runtime that a round's pod is gone ends one (groupDrift's podGone,
+// podlessRound). The other reading of a gone pod, claims recording the pod in its place, ends its
+// round before this is reached, through podWentWithoutItsRound or endPodUpdates
+// (reconcileIssuePodUpdate). What the pod has drifted to says nothing here: the round is open,
 // and its recorded reasons are what its ask and its notice state.
 //
 // Any other answer, a read that could not be made included, leaves the round where it stands for
@@ -678,18 +695,13 @@ func operatorHoldReason(held []supervise.Claim) string {
 // a claim it has not asked yet. A read that could not be made leaves such a round undecided too,
 // and tells nobody of a hold over a pod it could not read.
 //
-// The snapshot recording no process in that pod either is the claims recording another pod in
-// its place, which is the one thing that says this pod went (reconcileIssuePodUpdate): no pod of
-// the round is left to ask about, and the round ends over it with the report its answers decide,
-// whatever the hold.
+// The snapshot always records a process in that pod, and that process's claim is the one this
+// asks through: the sweep decides a round here only over the pod its claims record, and ends a
+// round over any other pod before it gets this far (reconcileIssuePodUpdate).
 //
 // It reports whether it decided the round (completePodUpdate).
 func (s *supervision) roundWithNoProcessInItsPod(ctx context.Context, issue string, snapshot, live []supervise.Claim, round, pod, reasons string, now time.Time, held []supervise.Claim) bool {
-	recorded, ok := podProcess(snapshot, round)
-	if !ok {
-		s.endRoundOverAGonePod(ctx, issue, snapshot, round, pod)
-		return true
-	}
+	recorded, _ := podProcess(snapshot, round)
 	switch _, err := s.runtime.PodDrift(ctx, recorded); {
 	case errors.Is(err, runtime.ErrPodGone):
 		s.endRoundOverAGonePod(ctx, issue, snapshot, round, pod)
@@ -878,15 +890,50 @@ func (s *supervision) tellLateRound(ctx context.Context, issue string, group []s
 	})
 }
 
-// tellPodlessRound tells the operator's side of a round whose issue records no pod at all, once
-// the round's bound has come (roundBound), the same clock as every other late-round notice
-// (tellLateRound). Nothing of such a round can move: no drift can be read, no pod can be
-// replaced, and it waits for one of the issue's workers to run again. That is the reading of a
-// claim that records no process in the round's pod, and the notice names it so. Where an
-// operator's suspension holds a claim of the round (heldByOperator) — a lone worker an operator
-// suspended is the common shape, since a suspension lets the process go (letGo clears the
-// locator) — only that operator can end the wait, and the notice names the suspension instead.
-// No other path here would ever tell them: this round reaches no replacement decision.
+// podlessRound decides a round open over an issue whose claims record no pod at all. No locator
+// is no evidence either way — every claim of the issue may be suspended (letGo clears the
+// locator), or the one live claim may be minutes into a relaunch — so nothing is decided from the
+// claims, and the runtime is asked about the round's own pod by the one thing left to ask it by:
+// the issue, whose Sandbox that pod was (runtime.IssuePodReader).
+//
+// A Sandbox that holds another pod than the round's, or no pod, or no Sandbox at all, is the
+// round's pod gone, whatever replaced or removed it — the release of a pod no live claim owns, the
+// issue's stop, a pod replaced for a failure of its own while every role of it was suspended — and
+// the round ends there as every gone pod's round ends, naming the members that lost work
+// (endRoundOverAGonePod). That end is told of the round's own pod, the uid its id carries
+// (supervise.PodRound), since that is the pod that is not there; what the Sandbox holds now is
+// this reading's own line. Left open, the round would hold the next task of every member that
+// answered it for as long as no claim runs, and neither an answer nor a replacement could end it
+// then: the pod both of them are about is gone.
+//
+// The round's own pod, or no answer — a store that could not be read, or a runtime that runs no
+// pods and implements no such read — leaves the round where it stands, waiting for a claim to
+// record a pod again, and tells the operator's side of it once the round's bound has come
+// (tellPodlessRound).
+func (s *supervision) podlessRound(ctx context.Context, issue string, group []supervise.Claim, round string, now time.Time) {
+	if pods, ok := s.runtime.(runtime.IssuePodReader); ok {
+		if held, read := pods.IssuePod(issue); read && supervise.PodRound(held) != round {
+			s.log.Info("supervise: no claim of this issue records a pod, and the issue's Sandbox no longer holds the pod its update round was opened over",
+				"issue", issue, "round", round, "sandboxPod", held)
+			s.endRoundOverAGonePod(ctx, issue, group, round, strings.TrimPrefix(round, supervise.PodRoundPrefix))
+			return
+		}
+	}
+	s.log.Info("supervise: no claim of this issue records a pod; its update round waits for one to run again",
+		"issue", issue, "round", round)
+	s.tellPodlessRound(ctx, issue, group, round, now)
+}
+
+// tellPodlessRound tells the operator's side of a round whose issue records no pod at all, and
+// whose own pod the runtime says is still there or cannot say of (podlessRound), once the round's
+// bound has come (roundBound), the same clock as every other late-round notice (tellLateRound).
+// Nothing of such a round can move: no drift can be read, no pod can be replaced, and it waits
+// for one of the issue's workers to run again. That is the reading of a claim that records no
+// process in the round's pod, and the notice names it so. Where an operator's suspension holds a
+// claim of the round (heldByOperator) — a lone worker an operator suspended is the common shape,
+// since a suspension lets the process go (letGo clears the locator) — only that operator can end
+// the wait, and the notice names the suspension instead. No other path here would ever tell
+// them: this round reaches no replacement decision.
 //
 // A round every claim of which has answered, with no claim an operator holds, is told nothing,
 // and that is the ordinary end of a phase rather than a hold: the workers answered, the daemon
@@ -919,11 +966,13 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 // Nothing here can bring the work back — the disk went with the pod — so the message is the whole
 // of it.
 //
-// Two readings say the pod went, and each calls this with the claims it decided from. The claims
-// recording a pod other than the round's own is one (reconcileIssuePodUpdate), and the runtime
-// answering that the pod is not there is the other (endRoundOverAGonePod). What was lost is read
-// from the group this is given, so the caller's own reading of the claims is the one the issue
-// is told of and the one the round ends on.
+// Three readings say the pod went. The claims recording a pod other than the round's own is one
+// (reconcileIssuePodUpdate), which calls this with the claims it decided from; the runtime
+// answering that the pod the claims record is not there is another; and, where no claim records a
+// pod, the runtime answering that the issue's Sandbox holds another pod or none is the third
+// (podlessRound). The last two come here through endRoundOverAGonePod, which passes the machines'
+// own unmasked view of the group (noticeGroup). What was lost is read from the group this is
+// given, so that group is the one the issue is told of and the one the round ends on.
 //
 // What was lost is the round's own question, which is why it is lostClaims and never
 // waitingClaims: the members of the round that neither answered nor left having answered. A
@@ -940,7 +989,7 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 		s.log.Error("supervise: write on the issue that its pod went without its update round",
 			"issue", issue, "round", round, "error", err)
 	}
-	s.endPodUpdates(group)
+	s.endPodUpdates(group, round)
 }
 
 // endRoundOverAGonePod ends the round the sweep has just read the pod of as gone. The report is
@@ -960,9 +1009,9 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 // which is what the mask exists for (roundGroup).
 //
 // A pod that is not there with no round open over it decides nothing, as a group whose claims
-// record no pod at all does: there is no round to end, the drift of a pod that is not there says
-// nothing, and the next launch into the issue builds a pod from the configuration the runtime
-// has now.
+// record no pod and hold no round does: there is no round to end, the drift of a pod that is not
+// there says nothing, and the next launch into the issue builds a pod from the configuration the
+// runtime has now.
 func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, group []supervise.Claim, round, pod string) {
 	if round == "" {
 		s.log.Info("supervise: the pod this issue's claims record is not there, and no update round is open over it; nothing is decided of this issue",
@@ -976,7 +1025,7 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 	}
 	s.log.Info("supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over",
 		"issue", issue, "round", round, "pod", pod)
-	s.endPodUpdates(told)
+	s.endPodUpdates(told, round)
 }
 
 // openPodUpdate opens the round, or keeps it open, and asks each role of it once. Every claim that
@@ -1214,16 +1263,21 @@ func (s *supervision) writeOnIssue(ctx context.Context, issue string, post recor
 	return s.enqueue(ctx, issue, post)
 }
 
-// endPodUpdates ends the round on every claim of the group that is in one. A round ends only
-// where the pod it was opened over is gone — replaced by the round itself, replaced under it, or
-// gone for a failure of its own — so the post carries nothing of that pod's fate
-// (supervise.PodUpdateEnded).
-func (s *supervision) endPodUpdates(group []supervise.Claim) {
+// endPodUpdates ends round on every claim of the group that is one of its members (memberOf), and
+// on no other. A round ends only where the pod it was opened over is gone — replaced by the round
+// itself, replaced under it, or gone for a failure of its own — so the post carries nothing of
+// that pod's fate (supervise.PodUpdateEnded).
+//
+// A claim of the group in another round is left in it. Read while a replacement settles, one
+// group can hold the dead pod's round on one claim and the round over the pod that replaced it on
+// another, and posted each claim's own round, the end of the one would end the other as well: a
+// round its workers have been asked to push for, over a pod that is still there.
+func (s *supervision) endPodUpdates(group []supervise.Claim, round string) {
 	for _, c := range group {
-		if c.UpdateRound == "" {
+		if !memberOf(c, round) {
 			continue
 		}
-		s.supervisor.post(c.Token, supervise.PodUpdateEnded{Claim: c.Token, Round: c.UpdateRound})
+		s.supervisor.post(c.Token, supervise.PodUpdateEnded{Claim: c.Token, Round: round})
 	}
 }
 

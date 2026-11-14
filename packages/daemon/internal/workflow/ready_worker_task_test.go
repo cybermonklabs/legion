@@ -77,6 +77,36 @@ func TestAReadyWorkerHoldingItsPhaseWithNothingPendingIsGivenItsPhaseTask(t *tes
 	}
 }
 
+// A tester whose claim becomes ready holding only the daemon's own delivery of a relaunch's record
+// (supervise.Delivery.Relaunch) holds no task: that delivery carries no run, phase or entry, only
+// the sentence of what the relaunch ended. So it is queued its phase's resume task, as a claim
+// holding nothing is, rather than left with nothing to do once it has read that sentence.
+func TestAReadyWorkerHoldingOnlyARelaunchDeliveryIsGivenItsPhaseTask(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
+	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
+	token := seedPhaseWorker(t, pool, "LEGION-209", claim.RoleTester, "")
+	relaunch := supervise.Delivery{ID: "relaunch:WORD", Task: "Your previous process ended because its pod was replaced."}
+	if !relaunch.Relaunch() {
+		t.Fatalf("%s reads as no relaunch delivery", relaunch.ID)
+	}
+	if _, err := pool.Exec(t.Context(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at)
+		values ($1, $2, $3, now())`, string(token), relaunch.ID, relaunch.Task); err != nil {
+		t.Fatalf("seed the tester's delivery of the relaunch's record: %v", err)
+	}
+
+	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
+		intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("apply the ready: %v", err)
+	}
+
+	if got, want := superviseRequests(t, pool, "start"), map[string]int{"LEGION-209/tester": 1}; !sameCounts(got, want) {
+		t.Fatalf("the ready queued starts %v, want %v: the delivery of the relaunch's record is no task", got, want)
+	}
+}
+
 // A role that does not hold the issue's phase is given nothing: its phase is over, and the phase
 // that is running belongs to another claim.
 func TestAReadyWorkerThatDoesNotHoldTheIssuesPhaseIsGivenNothing(t *testing.T) {

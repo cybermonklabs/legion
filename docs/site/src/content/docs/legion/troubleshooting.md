@@ -1012,7 +1012,7 @@ If the wrong commit is older than that line, read the daemon's lines from the lo
 A search that finds no line for a time before the first line does not show that no adoption occurred.
 
 - `supervise: the working copy was adopted for the phase task` is one adoption that the shim answered `ok`.
-  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and the time the shim took as `took`, in nanoseconds.
+  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and, as `took` in nanoseconds, how long the daemon's call to adopt took: the daemon's own check of where the claim's process runs, then the round trip to the shim and back, with the shim's own work inside it.
   The release that carries cybermonklabs/legion#3971 is the first to write this line.
 
 - `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
@@ -1022,8 +1022,9 @@ A search that finds no line for a time before the first line does not show that 
   The task stays queued, and the refusal counts against the prompt budget of the claim.
 
 - `supervise: the prompt was lost to the transport; the delivery waits` is a send that got no answer.
-  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon sent the adoption to the shim, and the answer did not come back: the connection closed, or the daemon stopped its wait.
-  The shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
+  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon asked over the claim's connection, and the call did not succeed.
+  That does not show that the adoption reached the shim: the frame can fail its own check, the write can fail, or the connection can close before the frame goes out, and the shim can also answer with a frame of another type.
+  When the frame went out and its answer did not come back, because the connection closed or the daemon stopped its wait, the shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
   The task stays queued.
 
 Compare the time of the wrong commit with these lines.
@@ -1174,6 +1175,72 @@ On such a daemon, an update round or a message wake can take the author of the c
   `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process
   speaks another plugin contract; relaunching it onto the current plugin`, or `supervise: the
   update round is over for this claim`, each of which says what became of the turn instead.
+- **`supervise: the agent's busy answer records the claim working; its task waits for the end of
+  the turn the agent is in`** at Info, with the `delivery` and the prompts still `outstanding`, is
+  Oh My Pi answering a prompt with `Agent is already processing`: at the send, after its
+  acknowledgement, or in the prompt's result. That answer means the session is in a prompt, so a
+  ready or idle claim is recorded `working`, with a `supervise: a turn started` line that names no
+  delivery, and its task is held for that turn's end rather than sent again at every sweep and
+  hello. When the turn's own start comes, **`supervise: the turn a busy answer recorded has
+  begun`** says so, with the delivery it confirms, and writes no second start line. When no start
+  or end of the turn is ever read, the next sweep asks the agent: **`supervise: the agent is in no
+  prompt; the turn its busy answer recorded is over`** ends the turn and sends the task, and
+  `supervise: the agent did not say whether the turn its busy answer recorded is over; the claim
+  stays working and the next sweep asks again` is an ask nobody answered. Nothing to do.
+- **`supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of
+  this task, whose result settles the task`** (and the same line for an acknowledged prompt, and
+  for `Oh My Pi ran no turn for the prompt`) is a re-send of a task whose first prompt Oh My Pi
+  acknowledged and is still preparing: its pre-turn work, such as a memory recall, outlasted the
+  daemon's five-second wait for the turn. The first prompt stays outstanding, its late turn
+  confirms the task, and its result retires it, so a completion made in that turn is accepted and
+  the task is not sent again after it. Nothing to do.
+- **`supervise: the relaunch ended work the agent had running`** at Warn, with the `cause`,
+  whether a `turn` and the task's turn (`taskTurn`) were cut off, the `background` work and its
+  `kinds` the process last reported, and whether a report covers its last turn (`reported`), is
+  a relaunch, a suspension or a failure that ended the process while work of its agent ran. A
+  suspension that lands over a process the daemon had already found gone, as a fresh session
+  over a dead role does, records the death in the runtime's words, not the suspension. The claim
+  records it (the `ended_work` column of its row), and the first prompt the next process is sent
+  carries a sentence naming it: in front of the task the claim holds, or, for a claim that holds
+  none, alone
+  in a delivery of the daemon's own (`supervise: the claim holds no task; a delivery of the
+  daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and which a
+  newer task replaces while no prompt of it is outstanding). That delivery is also given when the
+  claim's held task is dropped at its send: the issue left the task's phase, the task is an ask
+  an older daemon queued for an update round, or a root architect's held task names nothing any
+  more. A root
+  architect's catch-up opens with the same sentence, and the daemon-launched controller reads it
+  in front of its start message. Every turn cut off is told that its subagents and background
+  jobs are gone. A process whose newest activity report is older than the start of its last
+  turn is told the background work that report named, and that the daemon has no report of what
+  that turn started. A process in no turn that has no report of its last turn (it left no report,
+  or only one older than that turn) is told that the daemon has no report of the background work
+  of its last turn, and so that every subagent and background job it started is gone. Nothing to
+  do; the agent checks what that work did before it repeats it.
+- **`supervise: a turn took the prompt that told the agent what its relaunch ended`** and
+  **`supervise: a turn took the prompt that told the agent of the session its claim abandoned`**
+  at Info, each with the `delivery`, mark the claim's record told. A record is told when a turn
+  confirms a prompt that carried its sentence, and never when Oh My Pi only acknowledges the
+  prompt, since it can acknowledge and then answer busy. Nothing to do.
+- **`supervise: the confirmation of the prompt that told the agent what became of its earlier
+  work was taken back; the next prompt tells it again`** at Info, with the `delivery`, is the
+  turn that confirmed the task no longer counted as the agent reading that prompt: the turn was
+  another input's (an Envoy notice's, say), the prompt came to nothing (a refusal, a busy answer,
+  or no turn), a provider error failed a model call of the turn, a compaction aborted the turn,
+  or the process ended in a turn that confirmed the task before the prompt's result came (while
+  its send was in flight or it waited on its result), since only that result says the turn was
+  the prompt's. The record is untold again, and the next prompt carries the sentence. Nothing to
+  do.
+- **`supervise: the claim abandons its session, so the record of what the old session's process
+  ended is not told to the fresh agent; the abandoned session's sentence says that work is
+  gone`** at Info is a fresh session: the claim's first task names the session it left behind,
+  and the record of the old process's end is marked told with no prompt. A record written later,
+  of the fresh session's own process, is told after the abandoned session's sentence, in the
+  same prompt. Nothing to do.
+- **`supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that
+  record no longer tells; it is dropped rather than sent`** at Info is a `relaunch:` delivery
+  that the claim still held when its record was told by other means, as a fresh session's
+  start tells it. Nothing to do.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The

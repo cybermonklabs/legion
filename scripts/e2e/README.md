@@ -319,6 +319,16 @@ Each item below names a script, then what it proves.
   and the reviewer the pass started, its turn held while its review App's approval moves the issue to `accepting`, then completes, the tool names its own review record, and the completion is taken, which `GET /legion/v1/state` shows on the reviewer's phases row, with the issue still in `accepting`.
   Needs an Oh My Pi (`LEGION_OMP_PATH`), `jj`, `git` and `bun`; no cluster, no Claude Code, no GitHub and no tmux, so a Legion pod and a devbox both run it
 
+- `busy-relaunch-delivery.sh`
+
+  a worker in a turn is sent its task once and again only after that turn, the turn that serves a task settles it, and a relaunched process reads what the relaunch ended in the first prompt it is sent (dispatch://INFRA-3276 R4 and R3), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with five real `omp --mode rpc` panes under the real `legion worker-shim`, each carrying this checkout's two plugins and answered by a model stand-in of the driver's own, one of them recalling from a Hindsight stand-in whose held recall is the measured wait between Oh My Pi's acknowledgement of a prompt and that prompt's turn:
+  a task whose prompt waits on that recall past the daemon's five-second wait for its turn is answered busy at most once, its late turn confirms it and that turn's result retires it, no prompt result is dropped as stale and nothing is sent after it;
+  a task queued while a turn of Oh My Pi's own runs, the one an `async` bash job's result starts, is sent only after that turn;
+  a newer task `legion claims deliver` queues during a late turn is taken and sent after it, and a worker in no turn is sent its task at once;
+  and a phase worker and a root architect that die with a `task` subagent running, the architect a second time holding a task in its turn, and a worker that dies in its task's turn with an `async` bash job running are each sent a first prompt that names that work and the death, the root architect's catch-up opens with the same sentence, and each claim row's `ended_work` records it.
+  `--base-commit <rev>` makes the same run over a `git archive` of that commit, which is the negative control: five of the steps fail there, each at the assertion it names.
+  Needs an Oh My Pi (`LEGION_OMP_PATH`); no cluster, no Claude Code and no tmux, so a Legion pod and a devbox both run it
+
 - `refusal-fallback-omp.sh`
 
   a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (dispatch://INFRA-956 R1), measured on three real Legion panes of the pinned Oh My Pi, each the root architect of an issue of its own, each with this checkout's two plugins, an OpenAI-shaped model stand-in of its own and a chain that carries `retry.fallbackRevertPolicy: never`:
@@ -4618,6 +4628,68 @@ What the proof stands in for lies outside the completion: the broker is a native
 `LATE_COMPLETION_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`), each pane's (`panes/`) and the driver's output;
 the run's work directory, the driver binary among it, is under `TMPDIR` too.
 
+## busy-relaunch-delivery.sh
+
+```sh
+LEGION_OMP_PATH=/opt/omp/bin/omp \
+  LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/busy-relaunch-delivery.sh     # → "busy relaunch delivery e2e: PASS in <n>s", exit 0
+LEGION_OMP_PATH=/opt/omp/bin/omp LEGION_TEST_PG_DSN=… \
+  bash scripts/e2e/busy-relaunch-delivery.sh --base-commit <rev>     # → "busy relaunch delivery negative control: PASS in <n>s", exit 0
+```
+
+dispatch://INFRA-3276's live proof of its R4 and its R3 on the binary that has them, with real agents rather than a fake runtime.
+R4: a worker in a turn is sent its task once and again only after that turn, the turn that serves a task settles it, and a newer task takes its place.
+R3: a relaunched process reads what the relaunch ended — its turn, its subagents and its background jobs — in the first prompt it is sent, a root architect reads it in its catch-up too, and the claim row records it.
+It runs on any Linux host with `go`, `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
+`LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN` are required and mean what they mean for [`provider-error-retry.sh`](#provider-error-retrysh), the DSN's host must be loopback as it must there, and the broker is the run's own.
+A whole run took 262 s and 271 s on two runs measured in a Legion worker pod (omp/18.16.0) with a warm Go build cache, the driver 214 s and 212 s of them, and the first build of the driver 102 s:
+five panes start Oh My Pi and four relaunches start it again, and the waits are two held recalls of 20 s, a 20 s background job and those four relaunches of about five seconds each.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | what [`claim-compaction.sh`](#claim-compactionsh)'s holds, in the same words and with the same refusals |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive` (`internal/daemon/busy_relaunch_live_test.go`, `-tags e2e`) |
+| `proof` | the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>`, or `FAIL <name> at <assertion>` |
+
+The driver boots the whole daemon through `run`, the function `legion start` calls, and seeds five issues, each its own tree: an implementer's, a tester's, a planner's, a root architect's in `accepting` and a second implementer's, each with its worker mid-launch.
+Each phase worker is seeded holding the task its phase's start left pending, and answers it before the first step, for the reason [`claim-compaction.sh`](#claim-compactionsh)'s seed gives: admission's repair of a slotted worker holding no task.
+Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by the package's own local runtime (`internal/daemon/localruntime_live_test.go`), with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own.
+The Envoy listener a pane registers with answers its registration with a consumer of the session's own, as every stand-in listener of the plugins does (`packages/envoy-client/test/subscribe-answer.ts`):
+since cybermonklabs/legion#2603 a session receives only what its own consumer holds, and a pane whose registration is answered no `delivery` ends its claim boot and is launched again until the deaths fail the claim.
+Each step runs as a subtest of its own, on a claim no earlier step left working, so a step that fails ends there and the next one runs.
+
+What stands in is the model endpoint and one pane's memory backend.
+Each pane talks to a model stand-in of the driver's own, which answers every turn alike unless a step scripts a request: a `tool_use` answer, ported from the plugins' own pane harness (`packages/pi-shared/test/omp-harness.ts`), so a turn starts a `task` subagent of the `deep-worker` agent or an `async` bash job; or a request held open until the step lets it go or the process that asked dies, so a late turn runs while the step reads the claim, a turn of the agent's own runs while a task waits, and a subagent is alive when its process is killed.
+The implementer of the first issue also runs Oh My Pi's memory backend at a Hindsight stand-in, through one more overlay: `memory.backend: hindsight`, `hindsight.apiUrl` at the stand-in, and `hindsight.mentalModelsEnabled` and `hindsight.autoRetain` off, so the recall before each prompt's turn is the one call it is asked.
+At the pin Oh My Pi acknowledges a prompt at its admission and waits on that recall before the turn's `agent_start`, with the session counted as streaming the whole time, so a recall held 20 s is the measured wait between the acknowledgement and the turn: past the daemon's own five-second wait for the turn and under the client's own 30 s bound on a recall.
+The stand-in answers every recall 503.
+Read on the pin by a run made for this proof: a recall answered 200 is committed to the session and the next prompt starts its turn at once, while one answered 503 commits nothing and the next prompt recalls again, which is what lets a later step hold one again.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `busy-late-turn` | a task delivered to the implementer, with its prompt's recall held 20 s and its late turn's model request held | the recall held and answered after 20 s; the daemon's own five-second wait charged inside it; no prompt result of the claim dropped at the fence (`stale-result`); one busy answer at most; `legion claims list --json` reading the task confirmed while the late turn ran; one turn carrying the task; and the claim holding nothing after it |
+| `busy-own-turn` | a task to the tester whose turn starts `sleep 20; echo …` as an `async` bash job and ends, then the turn the job's result starts, held at its model request, and a task delivered into it | the task answered busy once at most, and sent once, after that turn of Oh My Pi's own ended |
+| `newer-task` | a second held recall and late turn at the implementer, and `legion claims deliver`, the built binary, while that turn's request is held | the deliver taken (`accepted`), and the newer task sent once, after the late turn ended |
+| `idle-control` | a task delivered to the planner in no turn | its turn begun before the daemon's five-second wait ran out, with no busy answer and no prompt charged |
+| `relaunch-subagent-worker` | a task to the planner whose turn starts a `task` subagent, held, and ends; once the claim row's activity report names `subagent`, SIGKILL to the pane's process group | the relaunched process's first prompt naming the death and the subagent (`sentence`), and the claim row's `ended_work` recording the death, no turn and the kind `subagent` (`claim-row`) |
+| `relaunch-subagent-architect` | the same at the root architect, then a second subagent and a task whose turn is held, and a second SIGKILL | each time the first prompt naming the death and the subagent (`sentence`), the second also the interrupted turn, the task, and that the daemon has no report of that turn, so its subagents and background jobs are gone, since Oh My Pi made its newest report, which names the subagent, before that turn began; the catch-up the daemon publishes at the new process's ready opening with the sentence (`catch-up`); and the claim row recording it, the second time with no report of the turn (`claim-row`) |
+| `relaunch-task` | a task to the second implementer whose turn starts `sleep 600` as an `async` bash job and goes on, held; once the report names `async-job`, SIGKILL | the claim row recording the death, the task's turn and the kind `async-job` (`claim-row`), and the task sent again behind the sentence naming the interrupted turn, the death and the background job (`sentence`) |
+
+`busy-own-turn` holds the turn of the agent's own at its model request rather than at a recall, because at the pin a turn a job's result starts runs no recall — a run of the pin made for this proof saw that turn start with no recall asked, where every prompt before it asked one — and its `agent_start` reaches the daemon at once, so the daemon sees the turn begin and sends the waiting task nothing until its end: the step reads one busy answer at most there, for a send that reached the agent before that `agent_start` did.
+`--base-commit <rev>` takes the tree of that commit with `git archive` into a directory of the run's own under `TMPDIR`, lays this checkout's driver file over it, gives it node_modules of its own with `bun install --frozen-lockfile`, and makes the same four checks there in a subshell whose root is that tree, so the daemon, the `legion` and both plugins the driver builds are the base's.
+The driver names no Go symbol the base lacks: it reads the claim row's `ended_work` through SQL and the relaunch sentence as literals, so over a base whose schema has no such column the read itself fails `claim-row`.
+That run must fail, and the script's `negative-control` check reads its `proof.log` for five steps each failing at the assertion it names — `busy-late-turn` at `stale-result`, `newer-task` at `accepted`, `relaunch-subagent-worker` and `relaunch-subagent-architect` at `sentence`, and `relaunch-task` at `claim-row` — and prints what `busy-own-turn` and `idle-control` did there as it came.
+An empty `<rev>` is refused with exit 2; the DSN is read with the same loopback guard before the tree is taken, and a refusal of the base run (exit 2) is the script's own exit 2; and a `proof.log` an earlier run left in the evidence directory is removed before the base run, so only that run's steps are read.
+
+What the proof stands in for lies outside the rule, and is what [`claim-compaction.sh`](#claim-compactionsh) stands in for: the broker is a native `nats-server`, GitHub is the REST stand-in the whole-daemon drivers share, Dispatch is their board, Envoy's listener is the package's `noticeListener` for what the daemon publishes and a consumer-answering stand-in for what a pane registers, the two Apps' tokens are placeholders, and each pane's provider and the one memory backend are stand-ins of the driver's own.
+The issues, their claims, their slots and the task each phase worker's start left pending are seeded through the store, as every daemon test seeds its fixture.
+The configuration, the store and its migrations, the HTTP API, the claim supervision with its worker stream and its timers, `openWorkflow`, the JetStream consumers and the outbox lanes are the real ones, and so are the agents and their deaths.
+`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, each pane's output and the driver's output, and with `--base-commit` the base run's and the negative control's own transcript;
+the run's work directory, the driver binary among it, is under `TMPDIR` too.
+
 ## refusal-fallback-omp.sh
 
 ```sh
@@ -4991,7 +5063,7 @@ Do not edit the script while a run is going: bash reads it as it runs.
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Nine call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Ten call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
 Seven are proofs of their own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
@@ -5002,18 +5074,19 @@ Seven of them source that file through [`lib/rig.sh`](#librigsh), and [`envoy-se
 require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 ```
 
-The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each of the nine proofs that make that run: [`behind-entry-fence.sh`](#behind-entry-fencesh), `child-adoption.sh`, `claim-compaction.sh`, [`conflict-no-takeover.sh`](#conflict-no-takeoversh), [`handoff-records.sh`](#handoff-recordssh), [`late-completion.sh`](#late-completionsh), [`phase-entry-converge.sh`](#phase-entry-convergesh), [`provider-error-retry.sh`](#provider-error-retrysh) and [`role-prompt-rule.sh`](#role-prompt-rulesh).
+The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each of the ten proofs that make that run: [`behind-entry-fence.sh`](#behind-entry-fencesh), [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), `child-adoption.sh`, `claim-compaction.sh`, [`conflict-no-takeover.sh`](#conflict-no-takeoversh), [`handoff-records.sh`](#handoff-recordssh), [`late-completion.sh`](#late-completionsh), [`phase-entry-converge.sh`](#phase-entry-convergesh), [`provider-error-retry.sh`](#provider-error-retrysh) and [`role-prompt-rule.sh`](#role-prompt-rulesh).
+The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
-That is the first of two frames for the nine whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary those nine run reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
+That is the first of two frames for the ten whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary those ten run reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
 The rationale is written once, above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh): the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
 That one copy also says which client each call site then writes the server with, what the pinned `github.com/jackc/pgx/v5 v5.11.0` carries for the four proofs that give Dispatch the caller's raw DSN and for the binary's own rewrites, and what a raise of that pin moves.
 
 A caller clears `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before its first connection, because this helper reads the DSN alone.
 psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `~/.pg_service.conf` that can set `hostaddr`.
 Measured with an exported entry that sets `hostaddr=127.0.0.2`: psql connected to 127.0.0.2, and the helper printed `127.0.0.1` for the same DSN.
-Each of the nine proofs those eight call sites serve drops the three before its first connection: eight in the sweep of the environment it does not inherit, the two two-builds proofs through [`lib/two-builds.sh`](#libtwo-buildssh), and `plan-pointer-drive.sh` in an `unset` of its own.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) unsets the three in `prerequisites`, before its own call.
+Each of the nine proofs those eight call sites serve drops the three before its first connection: six in the sweep of the environment it does not inherit, the two two-builds proofs through [`lib/two-builds.sh`](#libtwo-buildssh), and `plan-pointer-drive.sh` in an `unset` of its own.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) unsets the three in `prerequisites`, before its own call, and [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh) unsets them before the call of its negative control.
 
 `loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
 WHAT is what the run does on that server, in a few words, and a refusal about the host ends with it.
@@ -5055,8 +5128,9 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing.
-[`lib/rig.sh`](#librigsh) sources this file, which is how seven of the eight proofs have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for the eight proofs that make its run.
+[`lib/rig.sh`](#librigsh) sources this file, which is how seven of the nine proofs that call its helpers themselves have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for the ten proofs that make its run.
+The ninth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_dsn` itself once more, for its negative control.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -5687,8 +5761,9 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Seven of the eight proofs that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers themselves source it too, for those two helpers, which this file sources for them.
+Seven of the nine proofs that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers themselves source it too, for those two helpers, which this file sources for them.
 `envoy-session-delivery.sh` is the eighth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
+`busy-relaunch-delivery.sh` is the ninth: it has those helpers through [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), which it sources, and sources no rig.
 
 ```sh
 . "$root/scripts/e2e/lib/rig.sh"     # sourced, never run
@@ -6396,7 +6471,8 @@ Each item below names a function, then what it does.
 ## lib/live-daemon-proof.sh
 
 The run a whole-daemon live proof makes around its driver.
-`child-adoption.sh`, `conflict-no-takeover.sh`, `behind-entry-fence.sh`, `phase-entry-converge.sh`, `handoff-records.sh`, `provider-error-retry.sh`, `claim-compaction.sh`, `role-prompt-rule.sh` and `late-completion.sh` differ only in what their driver proves, so each sets its own values and makes this run.
+`busy-relaunch-delivery.sh`, `child-adoption.sh`, `conflict-no-takeover.sh`, `behind-entry-fence.sh`, `phase-entry-converge.sh`, `handoff-records.sh`, `provider-error-retry.sh`, `claim-compaction.sh`, `role-prompt-rule.sh` and `late-completion.sh` differ only in what their driver proves, so each sets its own values and makes this run.
+`busy-relaunch-delivery.sh --base-commit <rev>` makes it once over a `git archive` of that commit instead, in a subshell whose `root` is that tree, so the run's exit trap is the subshell's and the script goes on to read the run's `proof.log`.
 
 ```sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"     # sourced, never run
@@ -6418,10 +6494,10 @@ On any exit it stops the `nats-server`, removes the work directory and prints `L
 
 | argument | is |
 | :--- | :--- |
-| `LABEL` | the run's name in its last line: `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion` |
+| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 
 The drivers share their Go harness the same way:
 `internal/daemon/live_proof_test.go` (no build tag, so the package's ordinary `go test` builds it too) holds the broker and log variables (`LEGION_E2E_NATS_URL`, `LEGION_E2E_DAEMON_LOG`);

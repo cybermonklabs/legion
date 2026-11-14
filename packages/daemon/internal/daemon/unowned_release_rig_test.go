@@ -241,7 +241,11 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 // The order is the whole of what it reads. The other pods are waited for as idle-release
 // candidates first, because a pod the idle rule would keep for a reason of its own says nothing
 // about the gate; the count of the line the daemon logs at the gate is taken after that wait,
-// so the lines read after the release belong to the ticks that made it.
+// so the lines read after the release belong to the ticks that made it. The teardown's own line
+// is written only after the runtime has deleted the pod, its Sandbox and its disk (the outbox's
+// SuspendIssue, then its line), which is what the release wait reads, so the line is waited for
+// rather than read once: read at once, a release that has deleted everything and not yet written
+// its line reads as no release at all, which a loaded run of the whole package met.
 func releasedWithNoLiveClaim(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {
 	t.Helper()
 	others := idleRigOtherIssues(rig, issue)
@@ -250,6 +254,9 @@ func releasedWithNoLiveClaim(t *testing.T, rig *idleWakeRig, issue idleRigIssue)
 	teardowns := rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key})
 
 	rig.awaitUnownedReleased(issue)
+	idleRigEventually(t, idleRigRecordWait, "the daemon's line of the teardown of "+issue.key+"'s pod", func() bool {
+		return rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key}) > teardowns
+	})
 
 	if now := rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key}); now != teardowns+1 {
 		t.Errorf("the daemon logged the teardown of %s's pod %d times, want the %d it had and this release's one",
