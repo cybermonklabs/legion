@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -221,18 +220,14 @@ func seedOwedDocuments(t *testing.T, service *Service, projectKey, issueKey, slu
 	return ids
 }
 
-// leaveTheSchema has service's room of artifactID take an element the Proof schema does not hold,
-// as TestSettleSkipsVersionWhenTreeLeavesTheSchema does, and waits until the store holds it. Every
-// settlement of the document then ends on ErrDocSchema and leaves its row.
+// leaveTheSchema has service's room of artifactID take an element the Proof schema does not hold
+// (InjectSchemaInvalidForTest), as TestSettleSkipsVersionWhenTreeLeavesTheSchema does, and waits
+// until the store holds it. Every settlement of the document then ends on ErrDocSchema and leaves
+// its row.
 func leaveTheSchema(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := service.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
-		fragment := doc.GetXmlFragment(fragmentName)
-		transact(func(txn *crdt.Transaction) {
-			fragment.InsertElement(txn, 0, crdt.NewYXmlElement("callout"))
-		})
-	}); err != nil {
+	if err := service.InjectSchemaInvalidForTest(ctx, artifactID); err != nil {
 		t.Fatalf("put the document outside the Proof schema: %v", err)
 	}
 	waitForLandedAppends(t, service, artifactID)
@@ -314,10 +309,7 @@ func resumptionCounts(t *testing.T, service *Service, ids []string) map[string]i
 	t.Helper()
 	counts := make(map[string]int, len(ids))
 	for _, id := range ids {
-		counters, err := service.RoomCounters(id)
-		if err != nil {
-			t.Fatalf("read the room counters of %s: %v", id, err)
-		}
+		counters := requireRoomCounters(t, service, id)
 		counts[id] = len(counters.SettlementResumptions)
 	}
 	return counts

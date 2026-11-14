@@ -36,10 +36,10 @@ func (s *Service) AfterSettleLockForTest(hook func(room string)) {
 }
 
 // ResumeOwedSettlementsForTest runs one pass of the settlement resumption
-// (resumeOwedSettlements): it arms the settlement of each document whose pending-settlement row is
-// at least age old, as RunSettlementResumption's pass does once a minute under its lease. Tests in
-// package api run it with age 0 to settle a document that nothing else settles, whether or not
-// its issue is closed.
+// (resumeOwedSettlements): it arms the settlement of at most settlementResumeBatch documents whose
+// pending-settlement row is at least age old, those no pass has tried first, as
+// RunSettlementResumption's pass does once a minute under its lease. Tests in package api run it
+// with age 0 to settle a document that nothing else settles, whether or not its issue is closed.
 func (s *Service) ResumeOwedSettlementsForTest(ctx context.Context, age time.Duration) error {
 	return s.resumeOwedSettlements(ctx, age)
 }

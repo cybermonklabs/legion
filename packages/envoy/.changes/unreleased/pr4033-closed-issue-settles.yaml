@@ -2,8 +2,8 @@ kind: Fixed
 body: |-
   A Dispatch document of a closed issue now gets its owed settlement, so its saved version, its
   search rows and its block index catch up with the live text. On a closed issue the settlement
-  changes no ask and wakes nobody: it saves an ask block with no ask row resolved and records its
-  author, records no edit notice and carries no approval. The reopen marks owed each document whose
-  ask blocks wait for it. The settlement resumption arms at most 50 documents a pass, those no pass
-  has tried first, and migration `20261114100038` adds `doc_settlements_pending.tried_at` for that
-  order.
+  changes no ask and wakes nobody. When an ask block has no ask row, the settlement saves the
+  block with `state="resolved"` and records the block's author. It records no edit notice and
+  carries no approval. The reopen marks owed each document whose ask blocks wait for it. The
+  settlement resumption arms at most 50 documents a pass, those no pass has tried first, and
+  migration `20261114100038` adds `doc_settlements_pending.tried_at` for that order.

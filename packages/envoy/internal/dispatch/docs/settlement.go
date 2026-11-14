@@ -846,7 +846,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		// reopen, which would start from that row's from_version (openEditNotice), carries the
 		// edits this version saves.
 		if st.issueClosed {
-			if _, err := tx.Exec(ctx, `delete from document_edit_notices where artifact_id = $1`, room); err != nil {
+			if _, err := tx.Exec(ctx, dropEditNotice, room); err != nil {
 				return settleDone, st.abandon(fmt.Errorf("delete the closed issue's document's edit notice: %w", err))
 			}
 		} else if err := s.recordEditNotice(ctx, tx, room, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {

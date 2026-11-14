@@ -178,23 +178,7 @@ func TestHeldVersionBlocksGivesAnEditedUntypedBlockItsRowWithTheVersionsText(t *
 	cited := holderOf(t, service, spec, "dispatch://CORE-2")
 	edited := holderOf(t, service, spec, "Plain paragraph.")
 
-	replaced := false
-	var replace func(node *pmdoc.Node)
-	replace = func(node *pmdoc.Node) {
-		if node.Type == "text" && strings.Contains(node.Text, "Plain paragraph.") {
-			node.Text, replaced = strings.Replace(node.Text, "Plain paragraph.", "Edited paragraph.", 1), true
-		}
-		for _, child := range node.Children {
-			replace(child)
-		}
-	}
-	editLiveTree(t, service, spec, func(tree *pmdoc.Node) *pmdoc.Node {
-		replace(tree)
-		return tree
-	})
-	if !replaced {
-		t.Fatalf("no text of %s holds the plain paragraph", spec)
-	}
+	editLiveTree(t, service, spec, replaceRun("Plain paragraph.", "Edited paragraph."))
 	waitForLandedAppends(t, service, spec)
 	closeDocumentRoom(t, service, spec)
 	if holder := holderOf(t, service, spec, "Edited paragraph."); holder != edited {
@@ -228,16 +212,11 @@ func TestHeldVersionBlocksGivesIdenticalParagraphsTheirOwnRows(t *testing.T) {
 	if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 || tick.OwedDocuments != 0 {
 		t.Fatalf("indexing version 1: tick = %#v", tick)
 	}
-	_, firstBlocks, err := service.TextWithBlocks(ctx, spec)
+	first, firstBlocks, err := service.TextWithBlocks(ctx, spec)
 	if err != nil {
 		t.Fatalf("read the live document: %v", err)
 	}
-	var held []string
-	for _, block := range firstBlocks {
-		if block.Type == "paragraph" {
-			held = append(held, block.ID)
-		}
-	}
+	held, _ := heldParagraphs(first, firstBlocks)
 	if len(held) != 4 {
 		t.Fatalf("version 1's paragraphs %#v, want 4", firstBlocks)
 	}
@@ -254,16 +233,11 @@ func TestHeldVersionBlocksGivesIdenticalParagraphsTheirOwnRows(t *testing.T) {
 	})
 	waitForLandedAppends(t, service, spec)
 	closeDocumentRoom(t, service, spec)
-	_, liveBlocks, err := service.TextWithBlocks(ctx, spec)
+	live, liveBlocks, err := service.TextWithBlocks(ctx, spec)
 	if err != nil {
 		t.Fatalf("read the live document: %v", err)
 	}
-	var order []string
-	for _, block := range liveBlocks {
-		if block.Type == "paragraph" {
-			order = append(order, block.ID)
-		}
-	}
+	order, _ := heldParagraphs(live, liveBlocks)
 	if want := []string{held[0], held[1], held[2], inserted, held[3]}; !slices.Equal(order, want) {
 		t.Fatalf("live paragraphs %v, want %v", order, want)
 	}
@@ -353,16 +327,11 @@ func TestHeldVersionBlocksMatchesAVersionAcrossCrossedEdits(t *testing.T) {
 			if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 || tick.OwedDocuments != 0 {
 				t.Fatalf("indexing version 1: tick = %#v", tick)
 			}
-			_, firstBlocks, err := service.TextWithBlocks(ctx, spec)
+			first, firstBlocks, err := service.TextWithBlocks(ctx, spec)
 			if err != nil {
 				t.Fatalf("read the live document: %v", err)
 			}
-			var held []string
-			for _, block := range firstBlocks {
-				if block.Type == "paragraph" {
-					held = append(held, block.ID)
-				}
-			}
+			held, _ := heldParagraphs(first, firstBlocks)
 			if len(held) != 8 {
 				t.Fatalf("version 1's paragraphs %#v, want 8", firstBlocks)
 			}
@@ -422,13 +391,10 @@ func TestHeldVersionBlocksMatchesAVersionAcrossCrossedEdits(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the live document: %v", err)
 			}
-			var order []string
-			liveTexts := map[string]string{}
-			for _, block := range liveBlocks {
-				if block.Type == "paragraph" {
-					order = append(order, block.ID)
-					liveTexts[block.ID] = live[block.From:block.To]
-				}
+			order, orderTexts := heldParagraphs(live, liveBlocks)
+			liveTexts := make(map[string]string, len(order))
+			for index, id := range order {
+				liveTexts[id] = orderTexts[index]
 			}
 			if want := []string{held[0], held[2], held[3], retypedAgain, middle, typedAfter, held[6], held[7], moved}; !slices.Equal(order, want) {
 				t.Fatalf("live paragraphs %v, want %v", order, want)

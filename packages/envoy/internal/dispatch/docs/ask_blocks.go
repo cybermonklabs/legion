@@ -311,7 +311,7 @@ func (s *Service) reconcileAskBlocks(
 	actor := credit.actor
 	var reconciled settlementReconciliation
 	// unindexed are the authors of the new blocks a closed issue's settlement leaves with no row,
-	// recorded once the blocks are reconciled.
+	// where the durable record holds none yet, recorded once the blocks are reconciled.
 	var unindexed map[string]model.Actor
 	for _, invalid := range invalidBlocks {
 		delete(rows, invalid.id)
@@ -352,12 +352,15 @@ func (s *Service) reconcileAskBlocks(
 			}
 			if issueClosed {
 				// No ask on a closed issue: the block reads resolved, as the close left the
-				// issue's asks, and keeps its author for the ask the reopen's settlement opens.
+				// issue's asks, and keeps its author for the ask the reopen's settlement opens. An
+				// author the durable record holds already stays (askAuthorsStatement keeps it).
 				reconciled.repair(block.node, block.id, resolveUnindexedAskBlock)
-				if unindexed == nil {
-					unindexed = make(map[string]model.Actor)
+				if _, stored := credit.askSources.recorded[block.id]; !stored {
+					if unindexed == nil {
+						unindexed = make(map[string]model.Actor)
+					}
+					unindexed[block.id] = blockActor
 				}
-				unindexed[block.id] = blockActor
 				continue
 			}
 			ask, err = createAskBlock(ctx, tx, artifactID, owner, block, blockActor)

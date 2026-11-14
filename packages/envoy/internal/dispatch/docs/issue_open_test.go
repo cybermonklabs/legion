@@ -281,15 +281,9 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenItsAppendReachesTheGateA
 	waitPastCloseMargin(t, database, "DOC-1")
 	// The room's close waits for its persistence to store what it holds (CloseRoom's flush), so
 	// once the gate is open and alice's room is gone the keystroke's append has been decided. The
-	// wait is for that room alone, not for task A to hold none: the stored keystroke arms a
-	// settlement, which alice's socket leaving runs at once (settleLastPeer), on the closed issue as
-	// on an open one, and its warm-up can load the document into a new room before the poll reads
-	// alice's gone. That room stays resident until it idles out (roomIdleTimeout), which says
-	// nothing about alice's keystroke.
+	// wait is for that room alone, not for task A to hold none (waitForRoomGone).
 	appends.release()
-	waitFor(t, roomWait(t), "task A's room alice was in to finish closing", func() bool {
-		return taskA.srv.GetDoc(artifactID) != alicesRoom
-	})
+	waitForRoomGone(t, taskA, artifactID, "DOC-1", alicesRoom)
 	if stored := storedMarkdown(t, database, artifactID); !strings.Contains(stored, "typed before the close") {
 		t.Fatalf("the keystroke alice typed while the issue was open was dropped by its close: the store holds %q", stored)
 	}
@@ -353,14 +347,7 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenACompactionFoldedTheHist
 	}
 
 	requireEnds(t, alice, "closing the issue left alice's browser on task A connected")
-	// The wait is for alice's room alone, not for task A to hold none: the settlement her stored
-	// keystroke arms runs on the closed issue as on an open one, at once when her socket leaves
-	// (settleLastPeer), and its warm-up can load the document into a new room before the poll reads
-	// hers gone. That room stays resident until it idles out (roomIdleTimeout), which says nothing
-	// about her keystroke.
-	waitFor(t, roomWait(t), "task A's room alice was in to finish closing", func() bool {
-		return taskA.srv.GetDoc(artifactID) != alicesRoom
-	})
+	waitForRoomGone(t, taskA, artifactID, "DOC-1", alicesRoom)
 	if stored := storedMarkdown(t, database, artifactID); !strings.Contains(stored, "typed before the close") {
 		t.Fatalf("the keystroke alice typed while the issue was open was dropped: the store holds %q", stored)
 	}

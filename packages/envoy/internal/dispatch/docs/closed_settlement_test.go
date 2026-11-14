@@ -139,16 +139,6 @@ func (f closedSettlementFixture) settlementArmed() bool {
 	return f.service.isSettleTimerArmed(state.settle)
 }
 
-// recordReadsClosed is whether the service's record of the document's room reads its issue closed.
-func (f closedSettlementFixture) recordReadsClosed() bool {
-	state := f.service.lockExistingState(f.artifactID)
-	if state == nil {
-		return false
-	}
-	defer f.service.unlockState(f.artifactID, state)
-	return state.closed
-}
-
 // waitForNoSettlement waits until no settlement of the document is armed or running: the timer's
 // callback has returned, with what follows its settlement (followUpSettlement), and nothing armed
 // the settlement again. A settlement that stopped short is run again a settle delay later, so the
@@ -233,7 +223,9 @@ func settleAnAppendInsideTheCloseMargin(t *testing.T) {
 		defer close(recorded)
 		f.service.issueOpenChanged(store.WithTransactionTracking(context.Background()), "CORE-1")
 	}()
-	waitFor(t, roomWait(t), "the close to be recorded on the room's record", f.recordReadsClosed)
+	waitFor(t, roomWait(t), "the close to be recorded on the room's record", func() bool {
+		return recordReadsClosed(f.service, f.artifactID)
+	})
 	if f.settlementArmed() {
 		t.Fatal("the close left the keystroke's settlement armed, so the append's own settlement is not what this case settles with")
 	}
@@ -298,10 +290,7 @@ func settleOnTheResumption(t *testing.T) {
 	}
 
 	f.resume(t)
-	counters, err := f.service.RoomCounters(f.artifactID)
-	if err != nil {
-		t.Fatalf("read the document's room counters: %v", err)
-	}
+	counters := requireRoomCounters(t, f.service, f.artifactID)
 	if armed := len(counters.SettlementResumptions); armed != 1 {
 		t.Fatalf("the resumption pass armed the closed issue's document %d times, want once", armed)
 	}
@@ -399,10 +388,7 @@ func (f closedSettlementFixture) watchRefusals(t *testing.T) *refusalWatch {
 // close starts the count over (closeRecordLocked).
 func (f closedSettlementFixture) requireNoSettlementFailure(t *testing.T, watch *refusalWatch, where string) {
 	t.Helper()
-	counters, err := f.service.RoomCounters(f.artifactID)
-	if err != nil {
-		t.Fatalf("read the document's room counters: %v", err)
-	}
+	counters := requireRoomCounters(t, f.service, f.artifactID)
 	failures, roomErr := 0, f.service.roomFailure(f.artifactID)
 	if state := f.service.lockExistingState(f.artifactID); state != nil {
 		failures = state.settleFailures
@@ -515,11 +501,7 @@ func settleAfterTheRoomsPersistenceIsRefused(t *testing.T) {
 	alice := f.admitBeforeTheClose(t)
 	before := latestVersionNumber(t, f.service, f.artifactID)
 	typeOver(t, alice, closedSettlementParagraph, refusedKeystroke)
-	select {
-	case <-watch.parked:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("the gate had not refused alice's keystroke %v after she typed it", roomWait(t))
-	}
+	awaitRefusedAppendCloseParked(t, watch.parked)
 	if markdown := residentRoomMarkdown(t, f.service, f.artifactID); !strings.Contains(markdown, refusedKeystroke) {
 		t.Fatalf("the room reads %q, want the keystroke the store refused still in it, which is what a settlement must not save", markdown)
 	}

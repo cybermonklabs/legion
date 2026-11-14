@@ -49,7 +49,7 @@ func indexedBlocks(ctx context.Context, tx pgx.Tx, artifactID string) ([]indexed
 // (TextWithBlocks).
 //
 // A version this build cannot read back is no reason to leave the document without windows for
-// ever: the failure is logged under warning, with artifactID, attrs and the error, and the stored
+// ever: the failure is logged under warning, with artifactID and the error, and the stored
 // markdown is used with no block at all, so what is written covers text the version holds and
 // no block it does not.
 func heldVersionBlocks(
@@ -58,7 +58,6 @@ func heldVersionBlocks(
 	artifactID, stored, live string,
 	liveBlocks []model.ArtifactBlock,
 	warning string,
-	attrs ...any,
 ) (string, []model.ArtifactBlock, error) {
 	indexRows, err := indexedBlocks(ctx, tx, artifactID)
 	if err != nil {
@@ -66,11 +65,7 @@ func heldVersionBlocks(
 	}
 	held, heldBlocks, err := closedVersionBlocks(stored, live, liveBlocks, indexRows)
 	if err != nil {
-		logged := make([]any, 0, len(attrs)+4)
-		logged = append(logged, "artifact", artifactID)
-		logged = append(logged, attrs...)
-		logged = append(logged, "error", err)
-		slog.Warn(warning, logged...)
+		slog.Warn(warning, "artifact", artifactID, "error", err)
 		return stored, nil, nil
 	}
 	return held, heldBlocks, nil

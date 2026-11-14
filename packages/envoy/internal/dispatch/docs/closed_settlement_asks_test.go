@@ -337,13 +337,7 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 		t.Fatalf("task B's settlements read its room's record open %d times and closed %d times at the owner lock, want open every time: its process has not heard the close",
 			readOpen.Load(), readClosed.Load())
 	}
-	var rows int
-	if err := pair.database.Pool.QueryRow(ctx, `
-		select count(*) from asks where block_artifact_id = $1 and block_id = 'unheard-close'
-	`, pair.artifactID).Scan(&rows); err != nil {
-		t.Fatalf("count the block's ask rows: %v", err)
-	}
-	if rows != 0 {
+	if rows := askRowCount(t, pair.taskA, pair.artifactID, "unheard-close"); rows != 0 {
 		t.Fatalf("the block written on the closed issue has %d ask rows, want none", rows)
 	}
 	if _, markdown, _ := latestDocumentVersion(t, pair.database, pair.artifactID); !strings.Contains(markdown, resolved) {
@@ -356,18 +350,6 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 	if author, ok := recorded["unheard-close"]; !ok || !author.SameAs(bob) {
 		t.Fatalf("the block's recorded author is %+v (recorded %t), want bob, for the ask the reopen's settlement opens", author, ok)
 	}
-}
-
-// blockAskOf is the ask row of the document's ask block blockID.
-func blockAskOf(t *testing.T, database *store.Store, artifactID, blockID string) model.Ask {
-	t.Helper()
-	ask, err := ScanAsk(database.Pool.QueryRow(context.Background(), `
-		select `+AskColumns+` from asks a where a.block_artifact_id = $1 and a.block_id = $2
-	`, artifactID, blockID))
-	if err != nil {
-		t.Fatalf("read the ask of block %s: %v", blockID, err)
-	}
-	return ask
 }
 
 // An ask a settlement retracted when its block left is restored once its issue reopens, though
@@ -385,13 +367,13 @@ func TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen(t *testi
 	const block = ":::ask{#returning-ask urgency=\"med\" multiple=\"false\"}\nWill it come back?\n:::\n"
 	seedServiceText(t, service, artifactID, "Context.\n\n"+block)
 	settleCurrentGeneration(t, service, artifactID)
-	if ask := blockAskOf(t, service.store, artifactID, "returning-ask"); ask.State != "open" {
+	if ask := blockAskOn(t, service, artifactID, "returning-ask"); ask.State != "open" {
 		t.Fatalf("the seeded ask block's ask reads %s, want open", ask.State)
 	}
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	editAsConnectedPeer(t, service, artifactID, 1, alice, withoutAskBlocks)
 	settleCurrentGeneration(t, service, artifactID)
-	if ask := blockAskOf(t, service.store, artifactID, "returning-ask"); !settlementRetracted(ask) {
+	if ask := blockAskOn(t, service, artifactID, "returning-ask"); !settlementRetracted(ask) {
 		t.Fatalf("the ask whose block alice deleted reads %s %+v, want the settlement's retraction", ask.State, ask.Resolution)
 	}
 
@@ -421,7 +403,7 @@ func TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen(t *testi
 	if _, markdown, _ := latestDocumentVersion(t, service.store, artifactID); !strings.Contains(markdown, resolved) {
 		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the returned block saved resolved: %s", markdown, resolved)
 	}
-	if ask := blockAskOf(t, service.store, artifactID, "returning-ask"); !settlementRetracted(ask) {
+	if ask := blockAskOn(t, service, artifactID, "returning-ask"); !settlementRetracted(ask) {
 		t.Fatalf("the closed issue's settlement left the ask %s %+v, want it still retracted while DOC-1 is closed", ask.State, ask.Resolution)
 	}
 
@@ -430,7 +412,7 @@ func TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen(t *testi
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
 	settled("the reopened issue's document to settle")
-	if ask := blockAskOf(t, service.store, artifactID, "returning-ask"); ask.State != "open" || ask.Resolution != nil {
+	if ask := blockAskOn(t, service, artifactID, "returning-ask"); ask.State != "open" || ask.Resolution != nil {
 		t.Fatalf("after the reopen and a resumption pass the ask reads %s %+v, want it open again: its block is back in the document", ask.State, ask.Resolution)
 	}
 }

@@ -5376,14 +5376,6 @@ func requireAskWithdrawn(t *testing.T, p *dispatchProcess, issueKey, askID, when
 	}
 }
 
-// documentVersion is a version of a document as a process's API reads it: its number, its text
-// and the people it credits.
-type documentVersion struct {
-	Number   int           `json:"number"`
-	Markdown string        `json:"markdown"`
-	Authors  []model.Actor `json:"authors"`
-}
-
 // newestVersionNumber is the number of the document's newest version as the process's API reads
 // it (GET /api/v1/artifacts/{id}), or 0 while the document has none. The read is of the database
 // alone: it loads no room, so it arms no settlement.
@@ -5405,16 +5397,18 @@ func (p *dispatchProcess) newestVersionNumber(t *testing.T, artifactID string) i
 	return newest
 }
 
-// readVersion is the document's version number as the process's API reads it
+// readVersionMarkdown is the text of the document's version number as the process's API reads it
 // (GET /api/v1/artifacts/{id}/versions/{n}).
-func (p *dispatchProcess) readVersion(t *testing.T, artifactID string, number int) documentVersion {
+func (p *dispatchProcess) readVersionMarkdown(t *testing.T, artifactID string, number int) string {
 	t.Helper()
 	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/versions/"+strconv.Itoa(number), "", http.StatusOK)
-	var version documentVersion
+	var version struct {
+		Markdown string `json:"markdown"`
+	}
 	if err := json.Unmarshal(answer, &version); err != nil {
 		t.Fatalf("decode version %d of the document: %v: %s", number, err, answer)
 	}
-	return version
+	return version.Markdown
 }
 
 // closingAskSpec is the spec of the issues below: a paragraph to type into and an open decision.
@@ -5522,7 +5516,7 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 	pair.a.patchIssueStatus(t, issueKey, "done")
 	versionBefore, markdownBefore, authorsBefore := latestVersion(t, pair.database, artifactID)
 	if !strings.Contains(markdownBefore, "Context late") ||
-		!slices.ContainsFunc(decodeAuthors(t, versionBefore, authorsBefore), func(author model.Actor) bool { return author.Kind == "user" && author.ID == "bob" }) {
+		!slices.ContainsFunc(decodeAuthors(t, versionBefore, authorsBefore), model.Actor{Kind: "user", ID: "bob"}.SameAs) {
 		t.Fatalf("version %d, the one the close left, does not hold bob's keystroke credited to him: it credits %s and reads:\n%s",
 			versionBefore, authorsBefore, markdownBefore)
 	}
@@ -5579,10 +5573,11 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 // spec first, so the keystroke is in the version the close leaves; the close's withdrawal of the
 // decision's ask then writes the block resolved, which leaves the spec owing a settlement, and the
 // close closes B's room. Nothing opens the spec after that, so a resumption pass arms the
-// settlement, on whichever process holds that period's lease. The newest version is read through
-// A's own API, and the pending row in the database: within closedSettlementWithin of the close the
-// version is past the one the close left and holds bob's keystroke and the block resolved, the row
-// is gone, and the ask still reads withdrawn on both processes.
+// settlement, on whichever process holds that period's lease. Within closedSettlementWithin the
+// pending row in the database is gone. The settlement that deletes it writes its version in the
+// same transaction, so the newest version, read once through A's own API, is past the one the
+// close left and holds bob's keystroke and the block resolved, and the ask still reads withdrawn
+// on both processes.
 func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
 	const settleDelay = 2 * time.Second
 	pair := newPair(t)
@@ -5602,23 +5597,14 @@ func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
 	}
 	requireAskWithdrawn(t, pair.a, issue.key, issue.askID, "after the close")
 
-	deadline := closed.Add(closedSettlementWithin)
-	for {
-		newest, owed := pair.a.newestVersionNumber(t, issue.artifactID), settlementOwed(t, pair.database, issue.artifactID)
-		if newest > before && !owed {
-			version := pair.a.readVersion(t, issue.artifactID, newest)
-			if !strings.Contains(version.Markdown, "Context late") || !strings.Contains(version.Markdown, closingAskResolved) {
-				t.Fatalf("version %d of the closed issue's spec, as A reads it, does not hold bob's keystroke and the decision block resolved:\n%s",
-					newest, version.Markdown)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%v after the close, A reads version %d as the newest of the closed issue's spec, the close having left %d, and its pending settlement row %s; the resumptions armed it at %v on A and at %v on B:\n%s",
-				time.Since(closed), newest, before, map[bool]string{true: "stands", false: "is gone"}[owed],
-				pair.a.roomCounters(t, issue.artifactID).SettlementResumptions, pair.b.roomCounters(t, issue.artifactID).SettlementResumptions, pair.buffers())
-		}
-		time.Sleep(500 * time.Millisecond)
+	pair.waitForNoSettlementOwedWithin(t, issue.artifactID, closedSettlementWithin, "the closed issue's spec")
+	newest := pair.a.newestVersionNumber(t, issue.artifactID)
+	if newest <= before {
+		t.Fatalf("the closed issue's spec owes no settlement, yet A reads version %d as its newest, the close having left %d", newest, before)
+	}
+	if markdown := pair.a.readVersionMarkdown(t, issue.artifactID, newest); !strings.Contains(markdown, "Context late") || !strings.Contains(markdown, closingAskResolved) {
+		t.Fatalf("version %d of the closed issue's spec, as A reads it, does not hold bob's keystroke and the decision block resolved:\n%s",
+			newest, markdown)
 	}
 	requireAskWithdrawn(t, pair.a, issue.key, issue.askID, "once the closed issue's spec settled")
 	requireAskWithdrawn(t, pair.b, issue.key, issue.askID, "once the closed issue's spec settled")

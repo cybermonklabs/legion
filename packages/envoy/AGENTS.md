@@ -486,8 +486,7 @@ Each pass runs under the lease `settlement-resumption` (`duty.Exclusive`), so on
 a settlement reads the store under the document's lock whichever process runs it.
 A document settles whether or not its issue is closed.
 Nothing that arms or runs a settlement reads the issue's state.
-The settlement reads the issue row that it locks (`settlement.issueClosed`), not the room's record.
-A process that has not heard of a close still records the issue as open.
+The settlement reads the issue row that it locks (`settlement.issueClosed`), not the room's record, because the record of a process that has not heard of a close still reads open.
 One pass arms at most 50 documents (`settlementResumeBatch`), and the documents of closed and open issues share that bound.
 The pass takes first the rows that no pass tried, oldest `marked_at` first, and then the rows that a pass tried, oldest `tried_at` first.
 The statement that picks the rows also writes `tried_at` on them (migration `20261114100038`), and a settlement that commits deletes the row.

@@ -49,9 +49,7 @@ func newClosedSettlementHandler(t *testing.T) (http.Handler, *store.Store, *docs
 // browser's update its room takes from now on however long the test runs (observedBeforeClose).
 func closeIssueThroughPatch(t *testing.T, handler http.Handler, database *store.Store, issue string) {
 	t.Helper()
-	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
-		t.Fatalf("close %s: status=%d body=%s", issue, closed.Code, closed.Body.String())
-	}
+	closeArtifactIssue(t, handler, issue)
 	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() + interval '1 minute' where key = $1`, issue); err != nil {
 		t.Fatalf("move the close of %s a minute ahead: %v", issue, err)
 	}
@@ -100,16 +98,6 @@ func recordedAskAuthor(t *testing.T, database *store.Store, document, blockID st
 	return actor, true
 }
 
-// documentUpdateCount counts document's stored updates.
-func documentUpdateCount(t *testing.T, database *store.Store, document string) int {
-	t.Helper()
-	var count int
-	if err := database.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, document).Scan(&count); err != nil {
-		t.Fatalf("count the stored updates of %s: %v", document, err)
-	}
-	return count
-}
-
 // documentOwesSettlement is whether document has a pending-settlement row.
 func documentOwesSettlement(t *testing.T, database *store.Store, document string) bool {
 	t.Helper()
@@ -120,18 +108,6 @@ func documentOwesSettlement(t *testing.T, database *store.Store, document string
 		t.Fatalf("read whether %s owes a settlement: %v", document, err)
 	}
 	return owed
-}
-
-// awaitStoredUpdate waits until document stores more updates than before, the count it stored
-// before a browser's edit: the edit's append has stored it, and the document owes the settlement
-// that reads it or has had it.
-func awaitStoredUpdate(t *testing.T, database *store.Store, document string, before int) {
-	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); documentUpdateCount(t, database, document) <= before; time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("document %s still stores %d updates, want the browser's edit stored", document, before)
-		}
-	}
 }
 
 // awaitSettledVersionHolding waits until document owes no settlement and its latest version holds
@@ -185,10 +161,10 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 	// The close's ask-state write left the spec owed, and its settlement may store updates of its
 	// own: it is done before the count the browser's edit is waited for against.
 	awaitSettled(t, database, spec)
-	stored := documentUpdateCount(t, database, spec)
+	stored := storedUpdateCount(t, database, spec)
 	peer.appendParagraph(t, ":::ask{#late-decision urgency=\"low\" multiple=\"false\"}\nWritten after the close's sweep?\n:::\n")
 	peer.barrier(t)
-	awaitStoredUpdate(t, database, spec, stored)
+	awaitStoredUpdates(t, database, spec, stored+1)
 	if err := documentService.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
 		t.Fatalf("settle the closed issue's documents: %v", err)
 	}
@@ -237,10 +213,10 @@ func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 
 	awaitSettled(t, database, spec)
-	stored := documentUpdateCount(t, database, spec)
+	stored := storedUpdateCount(t, database, spec)
 	peer.appendParagraph(t, ":::ask{#closed-decision urgency=\"med\" multiple=\"false\"}\nAsked while the issue is closed?\n:::\n")
 	peer.barrier(t)
-	awaitStoredUpdate(t, database, spec, stored)
+	awaitStoredUpdates(t, database, spec, stored+1)
 	author := model.Actor{Kind: "user", ID: "alice"}
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the closed issue's owed settlements: %v", err)
@@ -258,14 +234,14 @@ func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.
 	}
 	live, _ := documentTexts(t, handler, spec)
 
-	updates := documentUpdateCount(t, database, spec)
+	updates := storedUpdateCount(t, database, spec)
 	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
 	}
 	if after, _ := documentTexts(t, handler, spec); after == "" || after != live {
 		t.Fatalf("the reopen's ask-state write changed the document:\n%s\nwant it as it was:\n%s", after, live)
 	}
-	if after := documentUpdateCount(t, database, spec); after != updates {
+	if after := storedUpdateCount(t, database, spec); after != updates {
 		t.Fatalf("the reopen's ask-state write stored %d updates, want none", after-updates)
 	}
 	if !documentOwesSettlement(t, database, spec) {
