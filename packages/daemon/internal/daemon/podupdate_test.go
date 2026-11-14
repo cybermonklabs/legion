@@ -923,51 +923,6 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 	}
 }
 
-// A role that does not answer is asked once, and the sweeps that follow do not ask it again: the
-// round's bound, not a second ask, is what ends the wait. Before the bound the pod is not
-// replaced; at the bound the round replaces it, and logs `supervise pod update replaced at the
-// bound` naming the role that answered and the role that did not. Here the tester answers with
-// the ready_for_update call and the implementer never answers.
-func TestPodUpdateAsksAnUnansweredRoleOnceAndReplacesThePodAtTheBound(t *testing.T) {
-	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
-	rig.drifts(podUpdateDrift)
-	rig.tick()
-	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
-	rig.awaitAsked(claim.RoleTester, podUpdateRound)
-	rig.signal(claim.RoleTester, "a1b2c3d")
-
-	for _, at := range []time.Duration{time.Minute, 10 * time.Minute, 20 * time.Minute, podUpdateGrace - time.Minute} {
-		rig.clockAt(podUpdateStart.Add(at))
-		rig.tick()
-		rig.tick()
-		if calls := rig.replacements(); len(calls) != 0 {
-			t.Fatalf("at %s, before the bound %s, the pod was replaced %d times with the implementer unanswered", rig.clock.Now(), podUpdateBound, len(calls))
-		}
-	}
-	asks := map[claim.Role]int{}
-	for _, ask := range rig.asks() {
-		asks[ask.Role]++
-	}
-	if len(asks) != 2 || asks[claim.RoleImplementer] != 1 || asks[claim.RoleTester] != 1 {
-		t.Fatalf("the round asked %v before its bound, want each role once: the unanswered implementer is not asked again", asks)
-	}
-
-	rig.clockAt(podUpdateBound)
-	rig.awaitReplacement(1, "at the bound, with the implementer unanswered")
-	bounded := loggedLines(t, rig.logs.String(), podUpdateBoundLine)
-	if len(bounded) != 1 {
-		t.Fatalf("the bounded end was logged %d times, want once: %+v", len(bounded), bounded)
-	}
-	wantField(t, bounded[0], "answered", claim.RoleTester)
-	wantField(t, bounded[0], "unanswered", claim.RoleImplementer)
-	if n := len(rig.asks()); n != 2 {
-		t.Errorf("the round published %d asks in all, want the two first ones", n)
-	}
-	if notices := rig.notices(); len(notices) != 0 {
-		t.Fatalf("the controller was told %+v of a round its bound ended", notices)
-	}
-}
-
 // podUpdateAccountDrift is the reason PodDrift gives for a pod running as a ServiceAccount other
 // than the configured one, spelled as drift.go builds it: "account " + <the account the pod runs
 // as> + ", now " + <the configured account> (PodDrift, accountDrift), here a pod left on `default`

@@ -1856,7 +1856,7 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 
 #### Rolling back the release whose update round ends at its bound
 
-This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end`, and the re-ask mark that the second `alter` statement below adds back.
+This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
 This release reads neither column and writes neither column.
 It takes no turn's end as an answer, it takes no answer back, and it asks no worker a second time.
 Pull request cybermonklabs/legion#2792 added both columns in `store/migrations/20261105022045_claim_update_answer_marks.up.sql`.
@@ -4588,7 +4588,9 @@ nothing is suspended, the round stays open, and the next sweep decides again.
 
 The daemon then replaces the pod with nothing read from its disk: a role's own push is what keeps its work, and work not pushed when the pod goes, a failed claim's included, is lost with the disk, so the agent does it again in the new pod, by the decision recorded at dispatch://INFRA-2848/ask/dc797d9e-49a6-49f6-b279-d27702c9ebd9.
 An earlier release checked the disk first, from the shim, and pushed what the remote lacked; that check and the frame that asked for it are gone.
-A daemon of that earlier release still sends the frame to a shim of this image, which passes it to its agent unchanged, and the agent refuses a command it does not know, which that daemon reads as a shim that predates the check: it replaces the pod on its workers' answers, asking once more a worker whose standing answer was a turn's end.
+A daemon of an earlier release still sends the frame to a shim of this image, which passes it to its agent unchanged, and the agent refuses a command it does not know, which that daemon reads as a shim that predates the check, so it replaces the pod with no check of the disk.
+A `legion-v20.14.0` daemon then replaces the pod as this release does: once every role it asked has answered, or at the round's bound, and it asks no role a second time.
+A daemon before `legion-v20.14.0` replaces the pod on its workers' answers, asking once more a worker whose standing answer was a turn's end.
 
 Nothing the round decides is held in memory:
 it is all claim columns, so a daemon restart resumes a round where it stood, and each claim shows it as `updateRound` and `updateHead` on every claim view, except to a caller in a pod whose claims record a plugin contract below 46, whose strict reader knows neither field: `GET /legion/v1/state` serves that caller, known by the pod that holds its address, the claim views without them.

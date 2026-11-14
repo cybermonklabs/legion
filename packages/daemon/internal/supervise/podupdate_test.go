@@ -612,7 +612,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"The round ends at 2026-11-13T12:30:00Z whatever you do.",
 		"- The turn that is in progress.",
 		"- The background jobs of that turn.",
-		"- Each file that .gitignore ignores.",
+		"- Each commit and each file that you did not push.",
 		"- The pod's test database.",
 		"- The pod's caches.",
 		"Only your own push keeps your work. Work that you do not push before the pod goes is lost.",
@@ -622,7 +622,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 			t.Errorf("the ask does not say %q:\n%s", want, text)
 		}
 	}
-	for _, gone := range []string{"reads the end of this turn as your answer", "WAITING", "Each commit that the workspace holds and the remote does not have.", "push check", "rescue"} {
+	for _, gone := range []string{"reads the end of this turn as your answer", "WAITING", "Each commit that the workspace holds and the remote does not have.", "Each file that .gitignore ignores.", "push check", "rescue"} {
 		if strings.Contains(text, gone) {
 			t.Errorf("the ask still says %q, which this round does not do:\n%s", gone, text)
 		}
