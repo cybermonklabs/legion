@@ -371,7 +371,7 @@ type deliveryFreshnessVerdict struct {
 
 // deliveryHubNote is one thing the hub did, for a test's observe.
 type deliveryHubNote struct {
-	what  string // "recompute begin", "recompute position", "recompute read", "recompute end", "connected", "events seeded", "event", "feed closed"
+	what  string // "recompute begin", "recompute position", "recompute read", "recompute end", "connected", "events seeded", "event", "feed closed", "freshness applied"
 	view  string // the view's key
 	cause string
 	sent  int

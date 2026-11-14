@@ -89,6 +89,7 @@ func runDocumentRoomSyncDialing(
 // the request - a client that has hung up included - can keep a room taking edits from the
 // browsers connected to it.
 func TestClosingAnIssueClosesItsRoomsFromItsCommit(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{

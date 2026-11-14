@@ -35,6 +35,7 @@ import (
 // --github-token beside a narrowing, the child's own NAME holds that installation's token alone,
 // not the JSON object of installations, minted with the access_tokens body of that narrowing.
 func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
+	t.Parallel()
 	type tokenRequest struct{ installation, body string }
 	var mu sync.Mutex
 	var asked []tokenRequest

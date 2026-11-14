@@ -39,6 +39,18 @@ runs:
           [ -z "$image" ] || images+=("$image")
         done <<<"$IMAGES"
         [ "${#images[@]}" -gt 0 ] || { echo "::error::no image to pull"; exit 1; }
+        # One pull per image, all at once: the daemon fetches a layer at a time per image anyway,
+        # so three serial pulls are three waits on the registry where three concurrent ones are
+        # one. Each pid is captured and waited for by its own value, and the step fails naming
+        # every image whose pull did, since a missing image is a test that fails far from its
+        # cause (dispatch://INFRA-1075).
+        pids=()
         for image in "${images[@]}"; do
-          docker pull "$image"
+          docker pull "$image" &
+          pids+=("$!")
         done
+        failed=()
+        for index in "${!pids[@]}"; do
+          wait "${pids[index]}" || failed+=("${images[index]}")
+        done
+        [ "${#failed[@]}" -eq 0 ] || { echo "::error::pulling ${failed[*]} failed"; exit 1; }

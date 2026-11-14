@@ -204,7 +204,7 @@ Each item below names a task and where its code is, then notes on it.
 - **Migration runners' shared rules**: `internal/pgmigrate/`
 
   Dispatch's and the secrets broker's runners:
-  the set loader that refuses a set before anything applies (`Load`), the lock bound on every migration (`LockTimeout`), the watch that names the lock a timed-out migration wanted, and the pre-deploy census of pending migrations (`Census`, and `CensusTables`, its one reading of what a migration locks;
+  the set loader that refuses a set before anything applies (`Load`), the lock bound and retry on every migration (`Locking`, whose zero value is production's `LockTimeout`, `LockTimeoutAttempts` and `LockTimeoutRetryPause`), the watch that names the lock a timed-out migration wanted, and the pre-deploy census of pending migrations (`Census`, and `CensusTables`, its one reading of what a migration locks;
   the `<version>_<name>.census.sql` a migration declares;
   `envoy-dispatch census`); a migration runs while the build before it is still serving, which is what it may add and what it must split across two releases (`cmd/dispatch/README.md`, "Database migrations")
 
@@ -218,6 +218,14 @@ Each item below names a task and where its code is, then notes on it.
   The delivery hub, the event stream relay and the events outbox (`internal/dispatch/outbox/lease.go`, its LISTEN on `dispatch_events` and `dispatch_duty_holds`) keep a `Listener` each.
   Shared the way `internal/pgmigrate` is, since the broker's cross-pod secret-reread fan-out (`internal/broker/reread`) listens on the same kind of connection as Dispatch's delivery hub, event stream relay, events outbox and, under `DISPATCH_TEST_HOOKS` alone, test-hook fan-out (`internal/dispatch/api`, `test_hooks_fanout.go`) and its listener hub;
   each caller sets `Listener.Owner` (or `Hub.Owner`), the prefix of the one line the loop logs, and an unset `Owner` logs `dispatch`
+
+- **Test databases' shared rules**: `internal/testpg/pgtemplate/`, `internal/dispatch/store/storetest/`, `internal/broker/store/storetest/`
+
+  `pgtemplate` is the one harness both stores' tests clone through: one migrated template per migration set (`dispatch_template_<fingerprint>`, `broker_template_<fingerprint>`), built under an advisory lock by the first test process that wants it, shared by every other process on the server and never dropped, and for each test a `strategy file_copy` clone of it, dropped once that test ends (`New`, `Harness.Clone`, `Harness.Unmigrated`, `Harness.Main`).
+  Dispatch's `storetest` (`Open`, `Main`) and `internal/dispatch/store`'s own tests, which cannot import it, each hold a harness of the one Dispatch template;
+  the broker's `storetest` hands each test a clone of the broker's template (`URL`, `Open`, `Main`), and a fresh unmigrated database to a test that needs one (`DatabaseURL`).
+  Nothing is handed from one test to the next, so no test can be given a database another test wrote in; what makes three forced checkpoints a test affordable is the server, a container deleted with the job running with `fsync`, `full_page_writes` and `synchronous_commit` off (docs/testing.md, "A database a Go test creates" and "A test Postgres's five settings").
+  Each `storetest` keeps its own exported surface, environment variable and migrations
 
 - **GitHub webhook redelivery**: `internal/dispatch/redeliver/`, `cmd/dispatch/redeliver.go`
 
@@ -821,10 +829,12 @@ The replica is listed for its document's reads (`Service.replicas`), the documen
 the update observer, which the document holds, is the replica's one strong holder, so the replica is collected with an evicted document, in the same collection, and the listing goes once the document is collected (`keepReplica`, `TestAnEvictedRoomsReplicaGoesWithIt`).
 A reader holding an evicted instance of a room reaches that instance's replica or none, never its successor's.
 `TestReadsOfALiveDocumentRunBesideItsPeers` runs each of these reads while a websocket peer types, until 50 of its runs have overlapped one of the peer's updates, and CI runs the `docs` and `api` packages under `-race`, each in a race job of its own, which reports a walk of the live tree beside a write;
-the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-go-race-api`, and each of those two packages runs under the detector there and nowhere else: `envoy-go`'s unit step leaves both out, and the only plain run it keeps of them is its step "Test what the race build cannot run at all or at full size", which runs the few tests the detector makes impossible or shrinks.
+the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-go-race-api`, and each of those two packages runs under the detector there and nowhere else: `envoy-go`'s unit step ("Unit test envoy Go package") leaves both out of its package list, and the only plain run it keeps of them is that step's race-impossible call, which runs by name the few tests the detector makes impossible or shrinks.
 Each race job runs only when a file its own filter in `.github/workflows/ci.yaml` names changes
-— `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 60-minute deadline, and `envoy_go_race_api` for the API;
+— `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 56-minute deadline (`-timeout 56m`), and `envoy_go_race_api` for the API;
 see Critical conventions for what keeps those filters current.
+`envoy-go-race-docs` runs the package at `-parallel 2` under `race_memory.py`, which fails the step when the largest process of the run passes 8,388,608 kB, and the tests that build a million-item ygo document are serial so that no two of them are resident at once: `TestRebuildDocumentRestoresDocumentThatCannotLoad` and `TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge` (`docs/rebuild_test.go`), and `TestAnUndecodableHistoryLoadsAsDocumentUnloadable` (`docs/read_cache_test.go`), as `TestAMarginWriteMatchesTheWholeDocumentWrite` is for its hundreds-of-kilobytes sources.
+Two of the three at once is what took the job to 8,939,044 kB (run 42397241249, job 128477192418); those five rebuild tests on their own peaked at 9,207,356 kB at `-parallel 2` and at 5,311,220 kB serialised (dispatch://INFRA-1075, `docs/rebuild_test.go`).
 
 A cleanup this package registers captures nothing that reaches the document it is attached to.
 `runtime.AddCleanup` says what that costs: "If ptr is reachable from cleanup or arg, ptr will never be collected and the cleanup will never run."
@@ -836,6 +846,10 @@ The rule covers the cleanup's argument alike, so an argument reaching the docume
 `keepInstance` once passed its `*roomLoad`, which reaches a document by two routes through `roomInstance.unstored`: each `queuedClass`'s `UpdateCredit` carries the `service`, and it carries the `state` whose `roomState.reservedFor` is a `*crdt.Doc`, so it holds the load weakly too and passes an empty struct.
 `envoy-go-docs-finalizers` runs `GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/` on the same `envoy_go_race_docs` filter, and fails on `is reachable from cleanup or cleanup argument` and then `fatal error: detected possible issues with cleanups and/or finalizers`;
 its `-v` also carries this package's leak line, `docs: <built> services built, <alive> still alive after <duration>`, which names each test that built a service and never shut it down, so a test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
+That leak line answers only what is alive once `m.Run()` has returned, so it reads 0 for a service a finished test's cleanup held through the run: the root `*testing.T`, and every cleanup it reached, are unreachable by the time it runs.
+Hence a cleanup of this package's tests is registered through `cleanupAndRelease` (`docs/service_test.go`), which lets go of the function the moment it has run.
+`testing`'s `runCleanup` takes the last function off the slice and shortens it, leaving the element it ran in the backing array, and `T.Parallel` appends the test to `parent.sub`, which for a top-level test holds its `*testing.T` until the run ends, so a cleanup closing over a service held that service, every room it had loaded and each room's document for the rest of the binary, however cleanly the test shut it down:
+`go test -run TestRenderReuse` built 45 services and held 38 of them at once, peaking at 4,021,096 kB resident and 3,108,906 kB live, where through the helper it holds at most 3 and peaks at 717,396 kB resident and 456,587 kB live (dispatch://INFRA-1075).
 This package is the only one of the repository that registers a cleanup today, and one added in another package comes with a detector job of its own, in the same pull request;
 `docs/testing.md` states the rule in full.
 
@@ -1404,12 +1418,12 @@ Everything the load needs comes from that pool, `onLoadDocument`'s issue read in
   an observation queued behind requests would hold back every live reader of the event log.
 
 The migration runner takes one more connection outside the shared pool.
-`pgmigrate.Exec` sets a transactional migration's `lock_timeout` to `pgmigrate.LockTimeout` (five seconds), after the runner's advisory lock; `pgmigrate.ExecNonTransactional` sets and restores the session setting for a marked single concurrent index build.
+`pgmigrate.Locking.Exec` sets a transactional migration's `lock_timeout` to its `Locking`'s timeout, after the runner's advisory lock, which production's zero `Locking{}` makes `pgmigrate.LockTimeout` (five seconds); `pgmigrate.Locking.ExecNonTransactional` sets and restores the session setting for a marked single concurrent index build.
 Every wait for that key is a poll of `pg_try_advisory_lock` in statements of its own, with nothing open between two tries (`store.lockMigrations`), at all three places a boot waits for it and at the auto-deployer's schema read: a backend blocked on a lock keeps its statement's snapshot, a concurrent index build waits for every older snapshot, so a blocking wait deadlocks with the build that holds the key (SQLSTATE 40P01, measured on PostgreSQL 18.6).
 The auto-deployer takes it in a `psql` session of its own and reads the applied set in that same session, in a statement of its own that a `\if` runs only once the try was granted (`deploy/scripts/autodeploy.sh`, `schema_applied`): a statement's snapshot is taken before its own one-time filter calls `pg_try_advisory_lock`, so one statement that did both would read the schema as it stood before the migration it waited for committed, and a read that ran behind a held key could fail and end the deployer's read instead of its next try.
 The key is session-level on a connection that serves nothing else while it is held, through the separate version insert for a marked migration and through the transaction for an ordinary one, and a connection whose lock attempt failed, or whose release does not answer true, is closed rather than returned to the pool.
 The marked mode also owns a leftover of its own name: an INVALID index of the migration's own index name on the table it builds on is dropped with `drop index concurrently if exists`, logged at WARN, and built again, while any other relation of that name in the schema is refused and an index of another name is left alone.
-While either mode runs, its shared lock watch reads `pg_locks` for the migration backend every 200 ms on a connection opened at its first reading:
+While either mode runs, its shared lock watch reads `pg_locks` for the migration backend every twenty-fifth of the timeout, 200 ms at production's five seconds, on a connection opened at its first reading:
 from that backend's own configuration (`pgx.Conn.Config`), signed in first through the pool's `BeforeConnect` when the pool has one (the broker's RDS IAM token minter, since the backend's own token may be older than a token lasts).
 It closes when the migration ends, so a migration faster than one reading dials nothing.
 The watch's last reading is how the failure names the lock and its holders: Postgres's own error says only `canceling statement due to lock timeout`.
@@ -3506,7 +3520,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Any change that makes a job's command, or a binary its tests build, compile a new package or read a new file - production code included, not only a test - adds that package or file to that job's filter in the same pull request.
   `.github/scripts/check-ci-filters.sh` (ci.yaml's `ci-filters` job) recomputes each go command's package closure and fails naming a file a filter misses;
   a file a test reads through `..` and a go command a test starts are rows of `.github/scripts/ci_job_reads.py`, which the change that adds them extends, since the check finds neither by itself.
-  `envoy-go`, gated by its broad `envoy_go` filter, runs on every Envoy change the untagged unit tests of every package of the `packages/envoy` module that no other job runs (`internal/integration` in a step of its own in that job, and the packages the race lane runs left to it), so a package with no job of its own is tested there;
+  `envoy-go`, gated by its broad `envoy_go` filter, runs on every Envoy change the untagged unit tests of every package of the `packages/envoy` module that no other job runs (`internal/integration`, `internal/pgmigrate` and `internal/dispatch/routes` each in a call of its own in that job's unit step, and the packages the race lane runs left to it, but for the few tests the race build cannot make, which that step's race-impossible call runs), so a package with no job of its own is tested there;
   `packages/envoy/infra` is a module of its own, which that `go test` does not reach, so envoy-infra's unit tests run only in `envoy-infra-go`.
 
 ## Security
@@ -6704,14 +6718,14 @@ the table starts empty, so the first deploy restores nothing; and a pod whose re
 Tests: `cd packages/envoy && go vet ./... && go test ./internal/broker/... ./cmd/broker/...
 ./cmd/agent-secrets/... ./cmd/agent-secrets-devrelay/... ./cmd/dev-oidc-issuer/...`.
 The Postgres-backed tests skip, rather than fail, when `BROKER_TEST_DATABASE_URL` is unset (`t.Skip`, e.g. `internal/broker/store`, `internal/broker/requests`);
-`packages/envoy/scripts/dev-postgres.sh` starts a local Postgres for them, the same script `cmd/dispatch/README.md` documents for its own Postgres-backed tests, and CI's `envoy-go` job (in `.github/workflows/ci.yaml`) points `BROKER_TEST_DATABASE_URL` at the same server as `DISPATCH_TEST_DATABASE_URL`.
-`storetest.URL` stays the helper for everything ordinary: a migrated schema of its own per test, cheaper than a database and isolating rows just as well.
-`storetest.DatabaseURL` hands out a fresh, unmigrated database instead, for the two things that are per database rather than per schema
-— a `LISTEN`/`NOTIFY` channel name, so a test on a schema would hear a sibling test's notifications on the one channel constant, and the migration advisory lock, which `Migrate` takes database-wide.
+`packages/envoy/scripts/dev-postgres.sh --throwaway` starts a throwaway Postgres for them, the server `cmd/dispatch/README.md` points its own Postgres-backed tests at (Tests), and CI's `envoy-go` job (in `.github/workflows/ci.yaml`) points `BROKER_TEST_DATABASE_URL` at the same server as `DISPATCH_TEST_DATABASE_URL`.
+`storetest.URL` stays the helper for everything ordinary: a database of its own per test, a clone of the migrated `broker_template_<fingerprint>` (`internal/testpg/pgtemplate`) dropped when the test ends, in a package whose `TestMain` is `storetest.Main`, and a database migrated for that test alone in a package without one.
+`storetest.DatabaseURL` hands out a fresh, unmigrated database instead, for a test that needs one no migration has touched
+— a `LISTEN`/`NOTIFY` test, which reads no table, a subcommand's refusal of a schema nobody applied, and two broker processes migrating one empty database at once.
 `cmd/broker/multiprocess_test.go` builds under the `multiprocess` tag alone and starts real `cmd/broker` binaries against one such database, driving them over real HTTP (`brokertest`'s client) and their own logs:
 one refresh token and one device code each raced against both processes, both migrating one empty database at once, a retag one process is told to reread being enforced by the other through the fan-out, that fan-out spending no rate-limit token on the pod it reaches, and a signalled process failing readiness while it serves a request out past the old ten-second shutdown budget.
 CI's `broker-multiprocess` job runs them
-— `go test -tags multiprocess -count=1 -timeout 20m ./cmd/broker` in `packages/envoy` — in a job of its own, since each row waits out tens of seconds and `envoy-go`'s unit step runs under go test's default ten-minute package deadline.
+— `go test -tags multiprocess -count=1 -timeout 20m ./cmd/broker` in `packages/envoy` — in a job of its own, since each row waits out tens of seconds, which would move the limit `envoy-go`'s package list runs `cmd/broker` under (`-timeout 18m`, sized from its slowest package's measured time).
 The job runs only when a file its `broker_multiprocess` filter in `.github/workflows/ci.yaml` names changes;
 see Critical conventions for what keeps that filter current.
 Every client-facing lane's own test mounts the real broker handlers (`api.Register` with real, Postgres-backed services) rather than a hand-rolled fake standing in for broker behavior
@@ -6748,7 +6762,7 @@ That person carries both claim shapes Dispatch reads:
 a Google Workspace account of the email's domain, and a Cognito pool user federated from `DevIdP`, a member of `--sign-in-group <group>`'s group when that flag is given.
 Dispatch accepts `DISPATCH_SIGNIN_DOMAIN` only under Google's issuer, so a local Dispatch signs in through this issuer with `DISPATCH_SIGNIN_GROUP` set to that group.
 Each `dev-broker.sh` run creates and drops its own isolated database, on the shared `dispatch-pg` container, which it boots through `dev-postgres.sh` (so a `dispatch-pg` off that script's pinned image is refused before anything is created), or, with `DEV_BROKER_POSTGRES_URL` set, through `psql` on the server that URL names (no Docker), so concurrent instances never see each other's enrollments, requests or grants, and listens on the port its own `cmd/broker` binds and logs (`BROKER_LISTEN_ADDR=127.0.0.1:0`), so concurrent instances can never collide on a shared port either.
-`dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, exports the caller token that issuer wrote, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go` job.
+`dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, exports the caller token that issuer wrote, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go-checks` job.
 `scripts/github-narrowing-check.sh` drives that stack end to end, as `airlock-check.sh` and `judge-check.sh` drive theirs: it starts `dev-broker.sh`, enrols one pod session of the registered service, runs checks k1, k2 and k4 of `dispatch://INFRA-2687` against it, and prints one PASS or FAIL line for each property with `all <n> assertions passed` as its last line.
 It takes `DEV_BROKER_POSTGRES_URL` as `dev-broker.sh` does, so a box with no container runtime names its own server there.
 

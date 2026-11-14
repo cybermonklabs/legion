@@ -191,6 +191,7 @@ func describeMarkdown(markdown *string) string {
 // point takes its copy from the room itself and starts the replica from it, which the fork read
 // then clones, and after each of its browser edits.
 func TestTheClonedForkMatchesTheReadPointsForkAcrossTheCorpus(t *testing.T) {
+	t.Parallel()
 	writes := 0
 	forks, documents := driveCorpusRooms(t, func(at corpusRoom) {
 		writes += compareForkReads(t, at)
@@ -261,8 +262,8 @@ func TestEveryForkLeavesTheWriteAuthoringUnderItsForksClientID(t *testing.T) {
 	server := websocket.NewServer()
 	server.RoomIdleTimeout = time.Hour
 	service := &Service{srv: newRoomServer(server)}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cleanupAndRelease(t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
 			t.Errorf("shut the server down: %v", err)

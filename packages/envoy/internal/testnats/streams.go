@@ -142,13 +142,13 @@ func describeCluster(cluster *natsgo.ClusterInfo) string {
 		Copies(cluster), cluster.Leader, strings.Join(peers, "; "))
 }
 
-// awaitInfo reads an info every retryInterval until a read succeeds and done holds for it, and
-// returns that info; after within it fails the test with failure, what describe says of the info
-// it read last, and the last error.
+// awaitInfo reads an info until a read succeeds and done holds for it, waiting a little longer
+// between tries each time (backoff), and returns that info; after within it fails the test with
+// failure, what describe says of the info it read last, and the last error.
 func awaitInfo[T any](t testing.TB, within time.Duration, failure string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
 	t.Helper()
 	deadline := time.Now().Add(within)
-	for {
+	for wait := (backoff{}); ; wait.next() {
 		info, err := read()
 		if err == nil && done(info) {
 			return info
@@ -156,7 +156,6 @@ func awaitInfo[T any](t testing.TB, within time.Duration, failure string, read f
 		if time.Now().After(deadline) {
 			t.Fatalf("%s within %s: %s (%v)", failure, within, describe(info), err)
 		}
-		time.Sleep(retryInterval)
 	}
 }
 

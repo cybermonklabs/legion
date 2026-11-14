@@ -16,6 +16,7 @@ import (
 // why a browser claim is made here. For each row Parse reads it as the engine does, ParseForWrite
 // stores it, Render's bytes read back as Parse's tree in both parsers, and those bytes are want.
 func TestTheWriterSpellsEveryTreeItReadsAsTheEngine(t *testing.T) {
+	t.Parallel()
 	rows := []struct {
 		name, markdown, want string
 	}{

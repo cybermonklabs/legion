@@ -128,10 +128,16 @@ type Deps struct {
 	// row either way (files.BackfillRows moves them).
 	Files            files.Store
 	TestHooksEnabled bool
-	// StreamHeartbeat is how often a document socket and a live socket resolve their caller again
-	// (whileCallerResolves), each closing once the caller no longer resolves, and a live socket
-	// pings its page and sends it a heartbeat frame.
+	// StreamHeartbeat is how often a live socket pings its page and sends it a heartbeat frame,
+	// and the default of CallerRecheck below, with which a document socket and a live socket
+	// resolve their caller again (whileCallerResolves), each closing once it no longer resolves.
 	StreamHeartbeat time.Duration
+	// CallerRecheck is how often such a connection resolves its caller again. It is
+	// StreamHeartbeat in every deployment, which is what NewDeps sets it to; a test that proves
+	// a socket outlives its re-resolutions, or loses itself at one, sets a short one of its own
+	// so that it neither waits out a heartbeat nor shortens the page's pong deadline, which is
+	// two heartbeats (dispatch://INFRA-1075).
+	CallerRecheck time.Duration
 	// RouteRosterTTL replaces how long a stored listener answer serves issue reads and agents
 	// lists (routeRosterTTL, issue_route_status.go). Zero keeps five seconds; only a test process
 	// sets another (cmd/dispatch: DISPATCH_TEST_ROUTE_ROSTER_TTL, under the test hooks), so a row
@@ -233,6 +239,9 @@ type DepsInput struct {
 	// (Deps.StreamHeartbeat). Zero keeps fifteen seconds; a test proving a connection closes
 	// sets a short one.
 	StreamHeartbeat time.Duration
+	// CallerRecheck replaces how often a socket resolves its caller again; see
+	// Deps.CallerRecheck. Zero is StreamHeartbeat, which is every deployment.
+	CallerRecheck time.Duration
 	// RouteRosterTTL replaces the five seconds a stored listener answer serves issue reads and
 	// agents lists; see Deps.RouteRosterTTL.
 	RouteRosterTTL time.Duration
@@ -327,6 +336,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
+		CallerRecheck:          cmp.Or(input.CallerRecheck, heartbeat),
 		RouteRosterTTL:         input.RouteRosterTTL,
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
 		HorizonStallAfter:      input.HorizonStallAfter,
@@ -380,6 +390,12 @@ type server struct {
 	// write, held to the table this server mounts (going_catalogue.go).
 	going           GoingCatalogue
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
+	// legionStatusSQL replaces the statement the legion-label walk runs (issue_parent.go,
+	// legionManagedStatusSQL); empty, which every server the deployment builds leaves it, runs
+	// that statement. Only a test of what a failing or a hanging walk costs a claim sets it
+	// (issue_claim_test.go), on its own server rather than on the package's variable, so those
+	// tests run beside the package's parallel ones.
+	legionStatusSQL string
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
@@ -424,6 +440,22 @@ type server struct {
 	// agentWatchInterval is how often an agent view re-arms its session: agentStreamWatchInterval,
 	// which a test replaces.
 	agentWatchInterval time.Duration
+	// agentStreamRetryWait is how long a view whose relay call failed waits before it ends as
+	// dropped: agentStreamRetry, which a test replaces.
+	agentStreamRetryWait time.Duration
+	// relayStartRead, when a test sets it before the relay's first subscription, runs inside the
+	// relay's first cursor read once it has read the log and before it waits for a horizon
+	// (firstRelayCursor). Nil outside tests.
+	relayStartRead func()
+	// relayFoundReset, when a test sets it, runs inside the relay's reset check once it has found
+	// the event log replaced and before it waits for a horizon of the new one (resetCursor). Nil
+	// outside tests.
+	relayFoundReset func()
+	// callerResolved, when a test sets it before the socket it drives opens, runs each time a
+	// connection that outlives its request has resolved its caller again (whileCallerResolves),
+	// so a test that proves such a socket outlives its re-resolutions waits for them rather than
+	// for a number of heartbeats. Nil outside tests.
+	callerResolved func()
 	// eventRelay is the live feed every events subscription and the delivery hub read (INFRA-66),
 	// on every server register mounts: it starts its listening connection on the first of them to
 	// subscribe and stops it with the last.
@@ -587,10 +619,14 @@ type Background struct {
 	EventHead func(context.Context) (int64, error)
 	// EventHorizon answers the server's one events.Horizon (horizon(), event_stream_relay.go),
 	// built on the first call: the safe horizon every reader that pages the event log by a global
-	// id cursor reads up to. The suggestion outcome sweep takes it (RunSuggestionOutcomeSweep) so
-	// it trails that horizon as the live event feed does, rather than observing on a Horizon of
-	// its own: one per process is what lets its readers share an observation. Only a server
-	// registered with a Store has an event log to answer for.
+	// id cursor reads up to. The suggestion outcome sweep takes it (RunSuggestionOutcomeSweep),
+	// but caps its pages at a writer floor rather than at that horizon: the floor is read through
+	// this Horizon (events.Horizon.WriterFloor) from marks of the log the sweep keeps for itself,
+	// it waits on no transaction outside this database's event writes, and the sweep awaits the
+	// horizon itself only when the floor reads 0 with events in the log - a process's first pass
+	// under an event write older than every mark it holds (suggestionOutcomeFloor.read). Taking
+	// this Horizon, not one of its own, is what lets that await share the live event feed's
+	// observations. Only a server registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
 }
 
@@ -673,9 +709,14 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
-		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
-	}}
+	s := &server{
+		deps: deps, lifetime: lifetime,
+		agentWatchInterval: agentStreamWatchInterval, agentStreamRetryWait: agentStreamRetry,
+		listAnswers: newListAnswerCache(),
+		rosters: rosterCache{
+			ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
+		},
+	}
 	s.liveKinds = map[string]liveKind{
 		liveEventsView: {resumes: true, start: s.startEventsView},
 		liveAgentView:  {start: s.startAgentView},
@@ -808,10 +849,11 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 }
 
 // whileCallerResolves serves a connection that outlives its request, a websocket, only while its
-// caller resolves: on every StreamHeartbeat it resolves the caller again, and once the caller no
-// longer resolves (a logout, a membership the sign-in issuer no longer confirms, a revoked token)
-// it cancels the connection's context, on which the document server and the live socket close the
-// socket. The check runs beside the handler, which holds pooled connections of its own while it
+// caller resolves: on every Deps.CallerRecheck (StreamHeartbeat in every deployment) it resolves
+// the caller again, and once the caller no longer resolves (a logout, a membership the sign-in
+// issuer no longer confirms, a revoked token) it cancels the connection's context, on which the
+// document server and the live socket close the socket. The check runs beside the handler, which
+// holds pooled connections of its own while it
 // admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and
 // it resolves on a context detached from the access-log line, which names the caller the socket
 // was admitted as (accesslog.Detached).
@@ -821,13 +863,15 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 		defer closeConnection()
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		go func() {
-			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
-			defer heartbeat.Stop()
+			// A Deps built by hand rather than by NewDeps carries no CallerRecheck, and ran on
+			// the heartbeat before this field existed.
+			recheck := time.NewTicker(cmp.Or(s.deps.CallerRecheck, s.deps.StreamHeartbeat))
+			defer recheck.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-heartbeat.C:
+				case <-recheck.C:
 					// The check resolves the credential the request was admitted with, from a
 					// detached copy of that request, which for a broker-issued token asks the
 					// broker's answer alone rather than the proof the upgrade already spent
@@ -836,6 +880,9 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 					if err := s.callerStillResolves(check); err != nil {
 						closeConnection()
 						return
+					}
+					if s.callerResolved != nil {
+						s.callerResolved()
 					}
 				}
 			}

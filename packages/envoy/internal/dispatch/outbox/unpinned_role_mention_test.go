@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -84,7 +83,7 @@ func TestACommentAnUnansweredRoleMentionNotYetPinnedReachesThatSessionOnce(t *te
 		t.Fatalf("the comment reached %s while its only mention's attempt was live and not yet pinned to that session; the mention is on its way to the same host, so this copy shows the comment twice (reached %v)",
 			subject, reached)
 	}
-	time.Sleep(2 * time.Second)
+	claimant.drained(t)
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while its own mention of %s was still live and unpinned, want nothing: that mention is on its way to the same host, so this copy shows it the comment twice",
 			holder, got, fmt.Sprintf("dispatch-%d", comment.ID))

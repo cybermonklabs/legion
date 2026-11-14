@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -41,7 +40,12 @@ func countExcerptLeaseLines(logs *storetest.LockedLog, message, lease string) in
 // own first statement by a lock this test takes on refs, which is the moment the lease is about -
 // both processes' loops woken at once. The second keeps trying, and once the first pass is done
 // it runs a pass of its own: the first may have read before whatever woke the second, so a woken
-// loop never gives its pass up to another process's.
+// loop never gives its pass up to another process's. Each wait is the package's hang guard: how
+// long two processes on a loaded runner take to reach a lock or to log a pass is the machine's
+// to say, and what the row reads is which lines were logged, not when.
+//
+// Serial: it swaps process-wide state, the default slog logger, which is how it counts the two
+// loops' own lease lines back (captureLogs).
 func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -65,12 +69,12 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 	}
 
 	runExcerpts(t, func(ctx context.Context) { first.RunReferenceExcerptReconciliation(ctx, firstLeases, nil) })
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 30*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1, roomWait(t)); waiting < 1 {
 		t.Fatal("the first runner's pass never reached the refs lock: it never took the lease")
 	}
 	runExcerpts(t, func(ctx context.Context) { other.RunReferenceExcerptReconciliation(ctx, secondLeases, nil) })
 	// The second runner's boot attempt and at least one retry find the lease held.
-	waitFor(t, 30*time.Second, "the second runner to find the lease held twice", func() bool {
+	waitFor(t, roomWait(t), "the second runner to find the lease held twice", func() bool {
 		return countExcerptLeaseLines(logs, "dispatch duty: leased pass skipped", referenceExcerptLease) >= 2
 	})
 	if ran := countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", referenceExcerptLease); ran != 0 {
@@ -80,7 +84,7 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release refs: %v", err)
 	}
-	waitFor(t, 30*time.Second, "both runners to run a pass of their own", func() bool {
+	waitFor(t, roomWait(t), "both runners to run a pass of their own", func() bool {
 		return countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", referenceExcerptLease) == 2
 	})
 	if isOwed(t, database, document) {

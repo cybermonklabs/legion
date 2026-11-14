@@ -21,9 +21,9 @@ import (
 // behind its own request for as long as the holder lives. Five seconds is far longer than any of
 // the services' own transactions holds a table, so an ordinary deploy never trips it, and short
 // enough that a deploy stalled behind a stray holder fails, and is noticed, instead of being
-// absorbed by every request queued behind it. Exec sets it on every migration it runs; a migration
-// that needs another bound sets its own with SET LOCAL lock_timeout, which lasts until the
-// runner's transaction ends.
+// absorbed by every request queued behind it. It is a zero Locking's timeout, which Locking.Exec
+// and Locking.ExecNonTransactional set on every migration they run; a migration that needs another
+// bound sets its own with SET LOCAL lock_timeout, which lasts until the runner's transaction ends.
 const LockTimeout = 5 * time.Second
 
 // diagnosisCleanupTimeout bounds the rollback and the close that end a diagnosis's connection,
@@ -41,8 +41,9 @@ const diagnosisCleanupTimeout = 1 * time.Second
 // out.
 const lockNotAvailable = "55P03"
 
-// lockTimeoutSetting is LockTimeout as lock_timeout takes it.
-var lockTimeoutSetting = strconv.FormatInt(LockTimeout.Milliseconds(), 10) + "ms"
+// lockTimeoutSetting is LockTimeout as lock_timeout takes it: production's bound, which the census
+// reads a migration's own statements against (migrationLockTimeouts).
+var lockTimeoutSetting = Locking{}.Setting()
 
 // LockTimeoutAttempts is how many times RetryLockTimeouts applies a migration whose lock wait
 // outlasts its lock_timeout before the runner gives up and fails. LockTimeoutRetryPause is how long
@@ -56,36 +57,83 @@ const (
 	LockTimeoutRetryPause = 2 * time.Second
 )
 
+// Locking is the discipline a runner applies its migrations under: how long each one waits for a
+// lock, how many attempts it makes of one whose wait outlasts that, and how long it holds nothing
+// between them. A zero field takes its package constant, so a runner that sets none of them -
+// Locking{} - applies production's five seconds, three attempts, two seconds apart, and a test of
+// the bound, of the retry or of the give-up sets its own short rather than waiting nineteen
+// seconds out for each of them (docs/testing.md, "Go's package deadline").
+//
+// It is the whole of the retry timing, in both execution modes (Exec, ExecNonTransactional): the
+// watch that names the lock a timed-out migration wanted reads twenty-five times inside the
+// timeout whatever the timeout is (watchInterval), so a runner on a short timeout still names its
+// holder. The read that diagnoses a holder keeps LockTimeout whatever a runner's own timeout is
+// (diagnoseHolders): it is not a lock wait but a bound on a read that must not hold the runner up.
+type Locking struct {
+	Timeout    time.Duration
+	Attempts   int
+	RetryPause time.Duration
+}
+
+// resolve is l with each zero field at its package constant.
+func (l Locking) resolve() Locking {
+	if l.Timeout == 0 {
+		l.Timeout = LockTimeout
+	}
+	if l.Attempts == 0 {
+		l.Attempts = LockTimeoutAttempts
+	}
+	if l.RetryPause == 0 {
+		l.RetryPause = LockTimeoutRetryPause
+	}
+	return l
+}
+
+// Setting is l's timeout as lock_timeout takes it, for a runner that bounds a statement of its own
+// by the same timeout: the version record of a marked migration (internal/dispatch/store).
+func (l Locking) Setting() string {
+	return strconv.FormatInt(l.resolve().Timeout.Milliseconds(), 10) + "ms"
+}
+
+// watchInterval is how often a watch reads what the migration waits for: twenty-five readings
+// inside the timeout, so the last one before Postgres gives up names the wait, and 200 ms at
+// production's five seconds, which is what it has always been. A millisecond is the floor, since
+// a reading is a round trip to the server.
+func (l Locking) watchInterval() time.Duration {
+	return max(l.resolve().Timeout/25, time.Millisecond)
+}
+
 // RetryLockTimeouts runs attempt, which applies the migration named migration in a transaction of
 // its own, until it succeeds, fails with anything but a *LockTimeoutError, or has timed out
-// LockTimeoutAttempts times. It logs each timed-out attempt at WARN with its error, which names the
+// l.Attempts times. It logs each timed-out attempt at WARN with its error, which names the
 // lock, the sessions holding it and their diagnoses (LockTimeoutError), and pauses
-// LockTimeoutRetryPause before the next. The last attempt's error comes back, wrapped with the
+// l.RetryPause before the next. The last attempt's error comes back, wrapped with the
 // number of attempts, so errors.As still finds the *LockTimeoutError. A runner that applies every
 // migration in one transaction cannot use it: rolling back an attempt there would roll back the
 // earlier migrations too, and retrying inside it would hold their locks across the pause.
-func RetryLockTimeouts(ctx context.Context, migration string, attempt func(context.Context) error) error {
+func (l Locking) RetryLockTimeouts(ctx context.Context, migration string, attempt func(context.Context) error) error {
+	l = l.resolve()
 	for n := 1; ; n++ {
 		err := attempt(ctx)
 		var lockTimeout *LockTimeoutError
 		if err == nil || !errors.As(err, &lockTimeout) {
 			return err
 		}
-		if n == LockTimeoutAttempts {
-			slog.Warn("pgmigrate: a migration gave up waiting for a lock on its last attempt; the runner fails", "migration", migration, "attempt", n, "attempts", LockTimeoutAttempts, "reason", err.Error())
+		if n == l.Attempts {
+			slog.Warn("pgmigrate: a migration gave up waiting for a lock on its last attempt; the runner fails", "migration", migration, "attempt", n, "attempts", l.Attempts, "reason", err.Error())
 			return fmt.Errorf("after %d attempts: %w", n, err)
 		}
-		slog.Warn("pgmigrate: a migration gave up waiting for a lock; the runner tries it again", "migration", migration, "attempt", n, "attempts", LockTimeoutAttempts, "pause", LockTimeoutRetryPause, "reason", err.Error())
+		slog.Warn("pgmigrate: a migration gave up waiting for a lock; the runner tries it again", "migration", migration, "attempt", n, "attempts", l.Attempts, "pause", l.RetryPause, "reason", err.Error())
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("after %d attempts: %w", n, err)
-		case <-time.After(LockTimeoutRetryPause):
+		case <-time.After(l.RetryPause):
 		}
 	}
 }
 
 // Exec is how a runner applies one migration's statements in tx. It first sets tx's lock_timeout
-// to LockTimeout, so every migration a runner applies is bounded whatever the migration's file
+// to l's timeout, so every migration a runner applies is bounded whatever the migration's file
 // says, and then runs the statements while a watch reads what tx's backend waits for. A runner
 // calls it once it holds its own advisory lock, never before: a second process's runner waiting
 // for that lock is waiting for the first to finish, which queues no read or write behind it,
@@ -102,19 +150,19 @@ func RetryLockTimeouts(ctx context.Context, migration string, attempt func(conte
 // statement due to lock timeout", so Exec reports that cancellation as a *LockTimeoutError naming
 // the migration, the lock it wanted and the sessions holding it, as the watch last saw them. Any
 // other error comes back prefixed with the migration's file name.
-func Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
+func (l Locking) Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
 	if migration.NonTransactional || nonTransactionalHeader(migration.SQL) {
 		return fmt.Errorf("migration %s is non-transactional; this transactional runner cannot apply it", migration.Name)
 	}
-	if _, err := tx.Exec(ctx, "select set_config('lock_timeout', $1, true)", lockTimeoutSetting); err != nil {
+	if _, err := tx.Exec(ctx, "select set_config('lock_timeout', $1, true)", l.Setting()); err != nil {
 		return fmt.Errorf("migration %s: set lock_timeout: %w", migration.Name, err)
 	}
-	return execWatched(ctx, tx.Conn(), migration, signIn)
+	return l.execWatched(ctx, tx.Conn(), migration, signIn)
 }
 
 // execWatched executes on the connection's current transaction, explicit or implicit. Both
 // execution modes set their lock bound before starting the same diagnostic watch.
-func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
+func (l Locking) execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
 	// The watch's own copy of the configuration (pgx.Conn.Config), which signIn may give a fresh
 	// password before each dial.
 	config := conn.Config()
@@ -130,7 +178,7 @@ func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signI
 		}
 		return dialed, nil
 	}
-	watch := startWatch(ctx, dial, conn.PgConn().PID())
+	watch := startWatch(ctx, dial, conn.PgConn().PID(), l.watchInterval())
 	var err error
 	if migration.NonTransactional {
 		// The extended protocol independently refuses a second statement, even if the server's
@@ -145,7 +193,7 @@ func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signI
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable {
-		timedOut := &LockTimeoutError{Migration: migration.Name, Wait: wait, WatchErr: watchErr, Err: err, NonTransactional: migration.NonTransactional}
+		timedOut := &LockTimeoutError{Migration: migration.Name, Timeout: l.resolve().Timeout, Wait: wait, WatchErr: watchErr, Err: err, NonTransactional: migration.NonTransactional}
 		if wait != nil {
 			timedOut.Diagnoses = diagnoseHolders(ctx, dial, wait.Holders)
 		}
@@ -280,6 +328,9 @@ func sessionList(sessions []Session) string {
 type LockTimeoutError struct {
 	Migration        string
 	NonTransactional bool
+	// Timeout is the lock_timeout the runner set (its Locking's), which the migration waited
+	// under unless it set its own.
+	Timeout time.Duration
 	// Wait is the lock the watch last saw the migration waiting for, nil when it saw none.
 	Wait *LockWait
 	// WatchErr is the last error the watch's reads met, which is why Wait can be nil.
@@ -298,13 +349,13 @@ func (e *LockTimeoutError) Error() string {
 		effect = "; a concurrent build may have left an INVALID index of its own name; the next attempt drops that leftover and builds the index again"
 	}
 	if e.Wait == nil {
-		fmt.Fprintf(&b, "migration %s gave up waiting for a lock when its lock_timeout ran out (%s unless the migration sets its own)%s; the lock watch did not see which lock", e.Migration, LockTimeout, effect)
+		fmt.Fprintf(&b, "migration %s gave up waiting for a lock when its lock_timeout ran out (%s unless the migration sets its own)%s; the lock watch did not see which lock", e.Migration, e.Timeout, effect)
 		if e.WatchErr != nil {
 			fmt.Fprintf(&b, " (%v)", e.WatchErr)
 		}
-		fmt.Fprintf(&b, ". Find the transactions open longer than that: select pid, usename, application_name, state, xact_start, query from pg_stat_activity where xact_start < now() - interval '%d milliseconds' order by xact_start", LockTimeout.Milliseconds())
+		fmt.Fprintf(&b, ". Find the transactions open longer than that: select pid, usename, application_name, state, xact_start, query from pg_stat_activity where xact_start < now() - interval '%d milliseconds' order by xact_start", e.Timeout.Milliseconds())
 	} else {
-		fmt.Fprintf(&b, "migration %s gave up waiting for %s on %s when its lock_timeout ran out (%s unless the migration sets its own)%s", e.Migration, e.Wait.Mode, e.Wait.Object, LockTimeout, effect)
+		fmt.Fprintf(&b, "migration %s gave up waiting for %s on %s when its lock_timeout ran out (%s unless the migration sets its own)%s", e.Migration, e.Wait.Mode, e.Wait.Object, e.Timeout, effect)
 		if len(e.Wait.Holders) > 0 {
 			fmt.Fprintf(&b, "; it was queued behind %s", sessionList(e.Wait.Holders))
 		}
@@ -318,7 +369,7 @@ func (e *LockTimeoutError) Error() string {
 			}
 			fmt.Fprintf(&b, ". Read them: select pid, usename, application_name, state, xact_start, query from pg_stat_activity where pid in (%s)", strings.Join(pids, ", "))
 		default:
-			fmt.Fprintf(&b, ". Find the transactions open longer than the timeout: select pid, usename, application_name, state, xact_start, query from pg_stat_activity where xact_start < now() - interval '%d milliseconds' order by xact_start", LockTimeout.Milliseconds())
+			fmt.Fprintf(&b, ". Find the transactions open longer than the timeout: select pid, usename, application_name, state, xact_start, query from pg_stat_activity where xact_start < now() - interval '%d milliseconds' order by xact_start", e.Timeout.Milliseconds())
 		}
 	}
 	for _, diagnosis := range e.Diagnoses {
@@ -329,10 +380,6 @@ func (e *LockTimeoutError) Error() string {
 }
 
 func (e *LockTimeoutError) Unwrap() error { return e.Err }
-
-// watchInterval is how often a watch reads what the migration waits for: many times inside
-// LockTimeout, so the last reading before Postgres gives up names the wait.
-const watchInterval = 200 * time.Millisecond
 
 // lockWaitQuery reads the lock backend $1 is waiting for, if any, and the sessions ahead of it, each
 // transaction's age in nanoseconds, as Session's time.Duration decodes it.
@@ -350,7 +397,7 @@ const lockWaitQuery = `
 	where w.pid = $1 and not w.granted
 	limit 1`
 
-// watch reads, every watchInterval until stopped, what one backend is waiting for. It reads on a
+// watch reads, every interval until stopped, what one backend is waiting for. It reads on a
 // connection of its own, since the backend's own connection is busy with the statement that
 // waits: one dial opens, at the first reading, so a migration that finishes inside one interval
 // dials nothing, and closed when the watch stops. A connection outside every pool keeps it clear
@@ -367,14 +414,14 @@ type watch struct {
 	heldBack bool
 }
 
-func startWatch(ctx context.Context, dial func(context.Context) (*pgx.Conn, error), pid uint32) *watch {
+func startWatch(ctx context.Context, dial func(context.Context) (*pgx.Conn, error), pid uint32, interval time.Duration) *watch {
 	ctx, cancel := context.WithCancel(ctx)
 	w := &watch{cancel: cancel, done: make(chan struct{})}
-	go w.run(ctx, dial, pid)
+	go w.run(ctx, dial, pid, interval)
 	return w
 }
 
-func (w *watch) run(ctx context.Context, dial func(context.Context) (*pgx.Conn, error), pid uint32) {
+func (w *watch) run(ctx context.Context, dial func(context.Context) (*pgx.Conn, error), pid uint32, interval time.Duration) {
 	defer close(w.done)
 	var conn *pgx.Conn
 	closeConn := func() {
@@ -387,7 +434,7 @@ func (w *watch) run(ctx context.Context, dial func(context.Context) (*pgx.Conn, 
 		conn = nil
 	}
 	defer closeConn()
-	ticker := time.NewTicker(watchInterval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

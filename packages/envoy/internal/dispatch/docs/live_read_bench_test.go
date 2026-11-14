@@ -173,7 +173,7 @@ func BenchmarkKeystrokeBesideReads(b *testing.B) {
 func benchmarkReplica(b *testing.B, service *Service, live *crdt.Doc) *renderedReplica {
 	b.Helper()
 	log := live.OpenUpdateLog()
-	b.Cleanup(log.Close)
+	cleanupAndRelease(b, log.Close)
 	replica := service.keepReplica(live, log, nil)
 	live.Transact(func(*crdt.Transaction) {})
 	replica.observe("bench")

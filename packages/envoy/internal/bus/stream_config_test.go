@@ -76,6 +76,8 @@ func (js *streamInfoJetStream) ConsumerNames(_ string, _ ...nats.JSOpt) <-chan s
 }
 
 func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
+	// Serial: its assertion is a time (the connect returns within 6 s, about its outer 5 s
+	// deadline).
 	accepted := make(chan net.Conn, 32)
 	urls := make([]string, 0, 2)
 	for range 2 {
@@ -131,13 +133,14 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 }
 
 func TestConnectWithContextDoesNotPoisonAutomaticReconnect(t *testing.T) {
+	t.Parallel()
 	baseCtx := context.Background()
 	uri := testnats.URL(t)
 
 	// The property under test is that a connect context that is done by the time the server
 	// drops the connection does not poison automatic reconnect; cancel it explicitly instead of
 	// racing a short dial deadline against the freshly started server.
-	connectCtx, cancel := context.WithTimeout(baseCtx, 10*time.Second)
+	connectCtx, cancel := context.WithTimeout(baseCtx, busWait)
 	defer cancel()
 	reconnected := make(chan struct{}, 1)
 	conn, err := connectWithContext(connectCtx, "reconnect-dialer-test", []string{uri}, nil, nil, func(*nats.Conn) {
@@ -155,12 +158,13 @@ func TestConnectWithContextDoesNotPoisonAutomaticReconnect(t *testing.T) {
 	}
 	select {
 	case <-reconnected:
-	case <-time.After(10 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("connection did not automatically reconnect after its initial context expired")
 	}
 }
 
 func TestEnsureStreamWithConfig_updatesMaxAgeWhenExistingStreamDiffers(t *testing.T) {
+	t.Parallel()
 	// Given
 	oldConfig := *streamCfg
 	oldConfig.MaxAge = time.Minute
@@ -180,6 +184,7 @@ func TestEnsureStreamWithConfig_updatesMaxAgeWhenExistingStreamDiffers(t *testin
 }
 
 func TestConnectOwningStreamMigratesExistingStreamDuplicatesWindow(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	legacyConn := testnats.Connect(t, uri)
 	t.Cleanup(legacyConn.Close)
@@ -208,6 +213,7 @@ func TestConnectOwningStreamMigratesExistingStreamDuplicatesWindow(t *testing.T)
 }
 
 func TestEnsureStreamWithConfigPurgesLegacyRoleMessages(t *testing.T) {
+	t.Parallel()
 	oldConfig := *streamCfg
 	oldConfig.Subjects = []string{"notifications.>"}
 	js := &streamInfoJetStream{config: oldConfig}
@@ -228,6 +234,7 @@ func TestEnsureStreamWithConfigPurgesLegacyRoleMessages(t *testing.T) {
 }
 
 func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *testing.T) {
+	t.Parallel()
 	oldConfig := *streamCfg
 	oldConfig.Subjects = []string{"notifications.>"}
 	js := &streamInfoJetStream{
@@ -253,6 +260,7 @@ func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *tes
 }
 
 func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	legacyConn := testnats.Connect(t, uri)
 	legacyJS, err := legacyConn.JetStream()
@@ -283,7 +291,7 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 	if _, err := legacyJS.Publish("notifications.role.legion-replay", []byte("legacy role message")); err != nil {
 		t.Fatalf("publish legacy role message: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(busWait)
 	for legacyDelivery.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -309,7 +317,7 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 	// nats-server releases a push binding on the consumer's own goroutine, after the client's
 	// Close is answered, so only the consumer's own report tells this test that the durable may
 	// be bound again; Client.Subscribe does not retry a "consumer is already bound" refusal.
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(busWait); ; time.Sleep(10 * time.Millisecond) {
 		consumer, err := client.JS().ConsumerInfo(Stream, "legacy-role-replay")
 		if err != nil {
 			t.Fatalf("read the legacy durable consumer: %v", err)
@@ -318,7 +326,7 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the server still reports the legacy durable consumer bound 10s after the legacy connection closed")
+			t.Fatalf("the server still reports the legacy durable consumer bound %s after the legacy connection closed", busWait)
 		}
 	}
 
@@ -339,6 +347,7 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 }
 
 func TestStreamConfigExcludesRoleLanes(t *testing.T) {
+	t.Parallel()
 	wantSubjects := []string{
 		"notifications.agent.>",
 		"notifications.dispatch.>",
@@ -372,6 +381,7 @@ func TestStreamConfigExcludesRoleLanes(t *testing.T) {
 // subject added to the stream without one fails here, one in both lists fails, and a private
 // subject the stream does not carry is a stale classification and fails too.
 func TestEveryStreamSubjectIsClassifiedForInterestRegistration(t *testing.T) {
+	t.Parallel()
 	notPrivate := []string{
 		// Dispatch's outbox: an issue's, a document's or a project's events
 		// (internal/dispatch/outbox envelope), each readable on its owner in Dispatch, and
@@ -413,6 +423,7 @@ func TestEveryStreamSubjectIsClassifiedForInterestRegistration(t *testing.T) {
 // The legacy notifications.> catch-all captured the role lanes, so it is the one deployed subject
 // start-up replaces outright with the binary's own list.
 func TestEnsureStreamWithConfigReplacesTheLegacyRoleLaneCatchAll(t *testing.T) {
+	t.Parallel()
 	oldConfig := *streamCfg
 	oldConfig.Subjects = []string{"notifications.>"}
 	js := &streamInfoJetStream{config: oldConfig}
@@ -431,6 +442,7 @@ func TestEnsureStreamWithConfigReplacesTheLegacyRoleLaneCatchAll(t *testing.T) {
 // separately, and a rollback or a restart during a rollout starts a binary compiled with a
 // different subject list. Whichever starts must leave every subject the other still needs.
 func TestConnectOwningStreamKeepsTheSubjectsAnotherDeploymentOfTheStreamNeeds(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	// The other deployment was compiled before notifications.legion.> existed and carries a
 	// subject this binary does not know.
@@ -503,6 +515,7 @@ func assertStreamSubjectsInclude(t *testing.T, js nats.JetStreamContext, want []
 // directory is empty. The deleted stream's own directory is not what a recreate races:
 // nats-server renames it aside and removes the renamed copy, which a recreate never meets.
 func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testing.T) {
+	t.Parallel()
 	shaped := func(legion string) nats.StreamConfig {
 		cfg := *streamCfg
 		cfg.Subjects = nil
@@ -613,6 +626,7 @@ func captureLogs(t *testing.T) *capturedLogs {
 // Every subject that can capture a role lane leaves the stream, whichever role it names: the role
 // lanes travel over core NATS and a retained copy would be delivered twice.
 func TestEnsureStreamWithConfigDropsEveryRoleLaneSubject(t *testing.T) {
+	t.Parallel()
 	for _, roleSubject := range []string{
 		"notifications.role.sre",
 		"notifications.role.*",
@@ -637,6 +651,7 @@ func TestEnsureStreamWithConfigDropsEveryRoleLaneSubject(t *testing.T) {
 
 // A deployed subject split into several of the binary's own names every one it was replaced by.
 func TestEnsureStreamWithConfigNamesEverySubjectThatReplacedAnOverlappingOne(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	logs := captureLogs(t)
 	deployed := *streamCfg
 	deployed.Subjects = []string{"notifications.agent.>", "notifications.legion.>"}
@@ -662,6 +677,7 @@ func TestEnsureStreamWithConfigNamesEverySubjectThatReplacedAnOverlappingOne(t *
 // A start that keeps deployed subjects it does not compile names them, so the retire step can find
 // them; it names them on every start that keeps them, whether or not the stream changed.
 func TestEnsureStreamWithConfigNamesTheDeployedSubjectsItKeepsWithoutCompilingThem(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	logs := captureLogs(t)
 	deployed := *streamCfg
 	deployed.Subjects = append(slices.Clone(streamCfg.Subjects), "notifications.retired.>")
@@ -684,6 +700,7 @@ func TestEnsureStreamWithConfigNamesTheDeployedSubjectsItKeepsWithoutCompilingTh
 
 // Nothing is reported as replaced or kept when the update that would install it fails.
 func TestEnsureStreamWithConfigLogsNoReconciliationWhenTheUpdateFails(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	logs := captureLogs(t)
 	deployed := *streamCfg
 	deployed.Subjects = []string{"notifications.retired.>", "notifications.legion.>"}
@@ -706,7 +723,22 @@ func TestEnsureStreamWithConfigLogsNoReconciliationWhenTheUpdateFails(t *testing
 // streamTestJetStream is a JetStream context in an account of the test's own, with no stream yet.
 func streamTestJetStream(t *testing.T) nats.JetStreamContext {
 	t.Helper()
-	conn := testnats.Connect(t, testnats.URL(t))
+	return jetStreamAt(t, testnats.URL(t))
+}
+
+// ownServerJetStream is streamTestJetStream on a NATS server of the test's own, for a test whose
+// stream carries a byte limit: a byte limit is reserved on the whole server rather than on the
+// account that holds the stream (testnats.URL).
+func ownServerJetStream(t *testing.T) nats.JetStreamContext {
+	t.Helper()
+	_, uri := testnats.Start(t)
+	return jetStreamAt(t, uri)
+}
+
+// jetStreamAt is a JetStream context on the server at uri, closed when the test ends.
+func jetStreamAt(t *testing.T, uri string) nats.JetStreamContext {
+	t.Helper()
+	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream()
 	if err != nil {
@@ -727,6 +759,7 @@ func deployedStream(t *testing.T, js nats.JetStreamContext) *nats.StreamInfo {
 // A stream a start creates carries an id of its own: two streams, each in an account of its own,
 // get different ones.
 func TestEnsureStreamWithConfigCreatesTheStreamWithAFreshID(t *testing.T) {
+	t.Parallel()
 	var ids []string
 	for _, name := range []string{"first stream", "second stream"} {
 		t.Run(name, func(t *testing.T) {
@@ -751,8 +784,10 @@ func TestEnsureStreamWithConfigCreatesTheStreamWithAFreshID(t *testing.T) {
 // settings the binary's configuration does not choose (here the message limits and a description;
 // in a cluster, the stream's placement) stay as deployed, and so do the ones it would only keep (a
 // byte limit, with no limit of its own set) or already matches (DiscardNew, the replicas).
+// The deployed byte limit is reserved on the whole server, so this test takes one of its own.
 func TestEnsureStreamWithConfigGivesADeployedStreamWithoutAnIDOne(t *testing.T) {
-	js := streamTestJetStream(t)
+	t.Parallel()
+	js := ownServerJetStream(t)
 	deployed := *streamCfg
 	deployed.Description = "deployed by operations"
 	deployed.MaxMsgs = 100_000
@@ -790,6 +825,7 @@ func TestEnsureStreamWithConfigGivesADeployedStreamWithoutAnIDOne(t *testing.T) 
 // A start that changes the deployed stream's subjects and retention writes the stream's whole
 // configuration, and keeps its id and the rest of its metadata in it.
 func TestEnsureStreamWithConfigKeepsTheIDAndMetadataWhenItReconcilesTheStream(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	deployed := *streamCfg
 	deployed.MaxAge = time.Hour
@@ -819,6 +855,7 @@ func TestEnsureStreamWithConfigKeepsTheIDAndMetadataWhenItReconcilesTheStream(t 
 // another deployment's start that changes the stream's subjects, and not by a start that found no
 // stream and created it after another start already had.
 func TestEnsureStreamWithConfigNeverReplacesTheStreamsID(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	client, err := ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -898,6 +935,7 @@ func (js *staleStreamInfoJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...na
 // Two starts that both find the deployed stream without an id, before either writes one, write the
 // same id, so the later write does not replace the earlier one.
 func TestEnsureStreamWithConfigRacingStartsWriteOneID(t *testing.T) {
+	t.Parallel()
 	js := &staleStreamInfoJetStream{read: nats.StreamInfo{
 		Config:  *streamCfg,
 		Created: time.Date(2026, 10, 27, 9, 30, 0, 123456789, time.UTC),
@@ -921,6 +959,7 @@ func TestEnsureStreamWithConfigRacingStartsWriteOneID(t *testing.T) {
 // that sets none, the default the hub's stream filled, after which every new session was refused
 // its own consumer and fell back to core delivery.
 func TestTheCompiledStreamCarriesTheConsumerCap(t *testing.T) {
+	t.Parallel()
 	if streamCfg.MaxConsumers != 24000 {
 		t.Fatalf("streamCfg.MaxConsumers = %d, want 24000", streamCfg.MaxConsumers)
 	}
@@ -934,6 +973,7 @@ func TestTheCompiledStreamCarriesTheConsumerCap(t *testing.T) {
 // topic under no lane is named "". A notification topic, and a wildcard wider than any lane, are
 // no lane of the listener's.
 func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
+	t.Parallel()
 	lanes := ListenerOwnLanes()
 	if len(lanes) != len(listenerOwnStreamLanes) {
 		t.Fatalf("ListenerOwnLanes() = %q, want one entry for each of %q", lanes, listenerOwnStreamLanes)

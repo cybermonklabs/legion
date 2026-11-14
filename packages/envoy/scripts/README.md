@@ -172,7 +172,7 @@ work directories under `TMPDIR`, two brokers with the whole airlock block on one
 database, one front over each pair of ports, the options reaching the brokers, the
 enrolment written beside the session key, the usage error, and the cleanup stopping
 everything it started — with no real Postgres, no network and no Go build; CI runs
-it in the `envoy-go` job of `.github/workflows/ci.yaml`.
+it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`.
 
 ## airlock-check.sh
 
@@ -450,7 +450,7 @@ while, so the target fails: a client that reached it then was refused the list
 
 `listener-deploy-probe.test.sh` proves the verdict over two fake tasks, one
 Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
-kernel chose, behind a fake `getent`; CI runs it in the `envoy-go` job of
+kernel chose, behind a fake `getent`; CI runs it in the `envoy-go-checks` job of
 `.github/workflows/ci.yaml`.
 
 ## Measuring search on a copy of the corpus

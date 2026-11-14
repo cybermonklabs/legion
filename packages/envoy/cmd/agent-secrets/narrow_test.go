@@ -144,6 +144,7 @@ func (b *narrowBroker) takeRequests() int {
 // repositories sorted, each once, and run the command once the broker answers that it applied that
 // narrowing. Without them the release carries no body at all, as before.
 func TestTheGitHubFlagsNarrowTheRelease(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, nil)
 	keyDir := newKeyDir(t)
@@ -180,6 +181,7 @@ func TestTheGitHubFlagsNarrowTheRelease(t *testing.T) {
 // release's body and answers the owner-wide token with no github_app, so the exec form exits 1
 // saying so and runs nothing, rather than handing the command a token wider than it asked for.
 func TestANarrowingTheBrokerDidNotApplyRunsNothing(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, nil)
 	keyDir := newKeyDir(t)
@@ -197,6 +199,7 @@ func TestANarrowingTheBrokerDidNotApplyRunsNothing(t *testing.T) {
 // one asked for (here the owner alone, without the read-only limit) is no narrowing the command
 // asked for, so the exec form exits 1 and runs nothing.
 func TestANarrowingTheBrokerAppliedOtherwiseRunsNothing(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, nil)
 	keyDir := newKeyDir(t)
@@ -216,6 +219,7 @@ func TestANarrowingTheBrokerAppliedOtherwiseRunsNothing(t *testing.T) {
 // refuses (policy.ParseGitHubNarrowing): the CLI runs that parser itself, so nothing reaches the
 // broker, not even the request a person would approve.
 func TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, nil)
 	keyDir := newKeyDir(t)

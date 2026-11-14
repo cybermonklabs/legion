@@ -40,7 +40,7 @@ func TestAnIssueCloseReachesTheRoomsWhileAnotherRoomSyncLaneHoldsAConnection(t *
 			close(release)
 		}
 	}
-	t.Cleanup(releaseOnce)
+	cleanupAndRelease(t, releaseOnce)
 	lane.push(func(ctx context.Context) {
 		tx, err := task.store.Pool.Begin(ctx)
 		if err != nil {

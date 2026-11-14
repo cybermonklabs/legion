@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -82,6 +83,9 @@ func renewalSession(t *testing.T, broker string) (*client, Signer, string, strin
 // request. The test advances the loop through a channel, so the rotation and the terminal broker
 // refusal are steps, not wall-clock delays. ENROLLMENT_NOT_LIVE exits exitRenewRefused so the
 // worker shim can stop instead of restarting a renewer whose enrollment has ended.
+// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL,
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK - which the renew loop reads for itself;
+// t.Setenv panics under t.Parallel.
 func TestRenewSendsThePodsCurrentToken(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("first-token\n"), 0o600); err != nil {
@@ -119,7 +123,7 @@ func TestRenewSendsThePodsCurrentToken(t *testing.T) {
 	var stderr bytes.Buffer
 	result := make(chan int, 1)
 	go func() {
-		result <- renewLoop(ctx, client, signer, enrollmentID, tokenFile, &stderr, after)
+		result <- renewLoop(ctx, client, signer, enrollmentID, tokenFile, &stderr, after, retryCap)
 	}()
 	receive(t, first, "first renewal")
 	receive(t, waits, "wait for the next renewal") <- time.Now()
@@ -145,6 +149,9 @@ func TestRenewSendsThePodsCurrentToken(t *testing.T) {
 
 // TestRenewWithoutAPodTokenFileSendsNoBody: a box renewal posts no body, and a refusal outside the
 // terminal set (here an iat-skewed PROOF_INVALID) reaches the retry wait rather than exit 76.
+// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL,
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK - which the renew loop reads for itself;
+// t.Setenv panics under t.Parallel.
 func TestRenewWithoutAPodTokenFileSendsNoBody(t *testing.T) {
 	var mu sync.Mutex
 	var bodies [][]byte
@@ -167,7 +174,7 @@ func TestRenewWithoutAPodTokenFileSendsNoBody(t *testing.T) {
 	defer cancel()
 	result := make(chan int, 1)
 	go func() {
-		result <- renewLoop(ctx, client, signer, enrollmentID, "", io.Discard, after)
+		result <- renewLoop(ctx, client, signer, enrollmentID, "", io.Discard, after, retryCap)
 	}()
 	awaitRetry(t, waits, result, "an iat-skewed PROOF_INVALID")
 	mu.Lock()
@@ -186,6 +193,9 @@ func TestRenewWithoutAPodTokenFileSendsNoBody(t *testing.T) {
 // and so does an older broker's PROOF_INVALID that says the enrollment is not live (its renew
 // handler's and its proof check's wording), since that broker has no ENROLLMENT_NOT_LIVE to send.
 // The injected wait fails the test, so a terminal code that regresses to a retry fails at once.
+// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL,
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK - which the renew loop reads for itself;
+// t.Setenv panics under t.Parallel.
 func TestRenewStopsOnlyForTerminalBrokerCodes(t *testing.T) {
 	for _, tc := range []struct {
 		code, message string
@@ -211,7 +221,7 @@ func TestRenewStopsOnlyForTerminalBrokerCodes(t *testing.T) {
 				cancel()
 				return make(chan time.Time)
 			}
-			if got := renewLoop(ctx, client, signer, enrollmentID, "", io.Discard, after); got != exitRenewRefused {
+			if got := renewLoop(ctx, client, signer, enrollmentID, "", io.Discard, after, retryCap); got != exitRenewRefused {
 				t.Fatalf("renew loop exit = %d, want %d", got, exitRenewRefused)
 			}
 		})
@@ -224,6 +234,9 @@ func TestRenewStopsOnlyForTerminalBrokerCodes(t *testing.T) {
 // after which the next renewal is ENROLLMENT_NOT_LIVE. POD_TOKEN_EXPIRED is retried with the token
 // the file holds next, and PROOF_INVALID that does not say "not live" (clock skew, key, URL) can
 // clear on its own.
+// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL,
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK - which the renew loop reads for itself;
+// t.Setenv panics under t.Parallel.
 func TestRenewRetriesEveryOtherRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		code, message string
@@ -256,7 +269,7 @@ func TestRenewRetriesEveryOtherRefusal(t *testing.T) {
 			defer cancel()
 			result := make(chan int, 1)
 			go func() {
-				result <- renewLoop(ctx, client, signer, enrollmentID, tokenFile, io.Discard, after)
+				result <- renewLoop(ctx, client, signer, enrollmentID, tokenFile, io.Discard, after, retryCap)
 			}()
 			awaitRetry(t, waits, result, tc.code) <- time.Now()
 			awaitRetry(t, waits, result, tc.code+" again")
@@ -278,6 +291,9 @@ func TestRenewRetriesEveryOtherRefusal(t *testing.T) {
 // cmdRenew sends anything. A blank projected file is never silently turned into the legacy
 // bodyless renewal, at startup or after a successful renewal, and the refusal is an ERROR naming
 // the enrollment, since the broker hears nothing and the lease lapses.
+// Serial: it sets process-wide variables - AGENT_SECRETS_URL, AGENT_SECRETS_KEY_DIR and
+// AGENT_SECRETS_HELPER_SOCK - which the renew loop reads for itself; t.Setenv panics under
+// t.Parallel.
 func TestRenewRefusesAnUnreadableOrBlankPodTokenFile(t *testing.T) {
 	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -320,6 +336,9 @@ func TestRenewRefusesAnUnreadableOrBlankPodTokenFile(t *testing.T) {
 // TestRenewNeverSendsABlankLaterToken: after one successful renewal, a token file that turns blank
 // is a local transient error and starts the retry wait, printed as an ERROR naming the enrollment;
 // it never makes a second, bodyless request.
+// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL,
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK - which the renew loop reads for itself;
+// t.Setenv panics under t.Parallel.
 func TestRenewNeverSendsABlankLaterToken(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("first-token\n"), 0o600); err != nil {
@@ -353,7 +372,7 @@ func TestRenewNeverSendsABlankLaterToken(t *testing.T) {
 	result := make(chan int, 1)
 	var stderr syncWriter
 	go func() {
-		result <- renewLoop(ctx, client, signer, enrollmentID, tokenFile, &stderr, after)
+		result <- renewLoop(ctx, client, signer, enrollmentID, tokenFile, &stderr, after, retryCap)
 	}()
 	receive(t, first, "first renewal")
 	awaitRetry(t, waits, result, "the wait after the first renewal") <- time.Now()
@@ -374,6 +393,7 @@ func TestRenewNeverSendsABlankLaterToken(t *testing.T) {
 }
 
 func TestUsageDocumentsPermanentRenewalRefusalExit(t *testing.T) {
+	t.Parallel()
 	if !strings.Contains(usage(), "76 permanent renewal refusal") {
 		t.Fatalf("usage does not document exit 76: %q", usage())
 	}
@@ -382,6 +402,7 @@ func TestUsageDocumentsPermanentRenewalRefusalExit(t *testing.T) {
 // TestRenewHelpNamesTheTerminalSet: renew's help names every member of terminalRenewal, so the
 // help and the set Permanent reads cannot drift apart.
 func TestRenewHelpNamesTheTerminalSet(t *testing.T) {
+	t.Parallel()
 	summary := strings.ReplaceAll(lookupCommand("renew").summary, "\n", " ")
 	for _, want := range append(append([]string(nil), terminalRenewal.Codes...), terminalRenewal.LegacyCode, `"`+terminalRenewal.LegacyMessage+`"`) {
 		if !strings.Contains(summary, want) {
@@ -390,5 +411,31 @@ func TestRenewHelpNamesTheTerminalSet(t *testing.T) {
 	}
 	if strings.Contains(summary, "POD_IDENTITY_MISMATCH") {
 		t.Errorf("renew help %q names POD_IDENTITY_MISMATCH, which retries", summary)
+	}
+}
+
+// TestRenewTakesProductionsRetryCap pins --retry-cap's default to leasetime.RenewBackoffMax, the
+// cap internal/broker/leasetime models the renewer by and internal/broker/config refuses a
+// too-short lease against: the flag is there so a test can shorten the wait, never so a
+// deployment that renews without it keeps a shorter schedule than the broker's lease floor was
+// computed from. The flag set prints that default in renew's own help, which is where a test
+// reads it without running the renewal loop.
+func TestRenewTakesProductionsRetryCap(t *testing.T) {
+	t.Parallel()
+	var stderr bytes.Buffer
+	if code := cmdRenew([]string{"--help"}, io.Discard, &stderr); code != 0 {
+		t.Fatalf("renew --help exit = %d, want 0: %s", code, stderr.String())
+	}
+	help := stderr.String()
+	at := strings.Index(help, "-retry-cap")
+	if at < 0 {
+		t.Fatalf("renew --help names no --retry-cap:\n%s", help)
+	}
+	printed := help[at:]
+	if next := strings.Index(printed[1:], "\n  -"); next >= 0 {
+		printed = printed[:next+1]
+	}
+	if want := "(default " + leasetime.RenewBackoffMax.String() + ")"; !strings.Contains(printed, want) {
+		t.Fatalf("renew prints --retry-cap as %q, want production's %s: a shorter default would renew a deployed session on a schedule the broker's lease floor was not computed for", printed, want)
 	}
 }

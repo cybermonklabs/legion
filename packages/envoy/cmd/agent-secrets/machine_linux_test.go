@@ -65,6 +65,7 @@ func loggedInElsewhere(t *testing.T, rig *brokertest.Rig, host string) (*helper.
 // case (the broker reads any case), warns that it ends this machine's access, and the broker
 // refuses the next command, which says to log the machine in again.
 func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
+	t.Parallel()
 	rig := brokertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -137,6 +138,7 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 // the secret, which now names a reason because the revoke withheld the name and so put it to a
 // person, waits for approval.
 func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
+	t.Parallel()
 	rig := brokertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -204,6 +206,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 // process tree gets no launcher proof from the helper, so every machine and grant command run
 // from inside one says so and exits 1.
 func TestMachineAndGrantCommandsRefusedInsideASession(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	for _, args := range [][]string{{"machine", "list"}, {"machine", "revoke", uuid.NewString()}, {"grant", "list"}, {"grant", "revoke", uuid.NewString()}} {
@@ -218,6 +221,7 @@ func TestMachineAndGrantCommandsRefusedInsideASession(t *testing.T) {
 // TestMachineAndGrantCommandsOnAMachineNotLoggedIn: from the operator's own shell on a machine
 // whose helper holds no machine login, every machine and grant command says to log it in.
 func TestMachineAndGrantCommandsOnAMachineNotLoggedIn(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, "http://127.0.0.1:1", "ada@example.com")
 	for _, args := range [][]string{{"machine", "list"}, {"machine", "revoke", uuid.NewString()}, {"grant", "list"}, {"grant", "revoke", uuid.NewString()}} {

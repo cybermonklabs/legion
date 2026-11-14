@@ -124,7 +124,7 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 	for {
 		next, err := s.eventRelay.subscribe(ctx, liveEventsBuffer)
 		if err != nil {
-			endEventsAfterFailure(ctx, stream, sub, "subscribe to the event stream relay", err)
+			s.endEventsAfterFailure(ctx, stream, sub, "subscribe to the event stream relay", err)
 			return
 		}
 		if subscribed {
@@ -138,7 +138,7 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 		// the pool once before its replay rather than twice.
 		var cursorAt *time.Time
 		if head, cursorAt, behind, err = eventSubscriptionCheck(ctx, s.deps.Store.Pool, subscription.head, since); err != nil {
-			endEventsAfterFailure(ctx, stream, sub, "read the event log's head", err)
+			s.endEventsAfterFailure(ctx, stream, sub, "read the event log's head", err)
 			return
 		}
 		if !eventLogWasReset(subscription.head, subscription.headAt, head, cursorAt) {
@@ -146,7 +146,7 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 		}
 		if since == nil && replacedFrom < 0 {
 			if replacedFrom, err = s.eventLogUnbrokenThrough(ctx); err != nil {
-				endEventsAfterFailure(ctx, stream, sub, "read the event log's unbroken ids", err)
+				s.endEventsAfterFailure(ctx, stream, sub, "read the event log's unbroken ids", err)
 				return
 			}
 		}
@@ -164,7 +164,7 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 
 	replay, err := s.resolveEventReplay(ctx, since, subscription.head, head, replacedFrom, behind)
 	if err != nil {
-		endEventsAfterFailure(ctx, stream, sub, "read the event log", err)
+		s.endEventsAfterFailure(ctx, stream, sub, "read the event log", err)
 		return
 	}
 	if stream.SendWait(ctx, liveEventsStart(sub, replay.start, replay.complete)) != nil {
@@ -386,12 +386,12 @@ func eventSubscriptionCheck(ctx context.Context, q queryer, cursor int64, since 
 // every end does while the head cannot be read, the page answers after its own doubling backoff. A
 // subscription whose own context ended (stopped, or its socket closed) sends nothing: that is why
 // its read failed.
-func endEventsAfterFailure(ctx context.Context, stream liveStreamer, sub, what string, err error) {
+func (s *server) endEventsAfterFailure(ctx context.Context, stream liveStreamer, sub, what string, err error) {
 	if ctx.Err() != nil {
 		return
 	}
 	slog.Warn("dispatch: an events subscription could not "+what+"; it ends, and its page subscribes again", "error", err)
-	if !waitFor(ctx, eventRelayRetry) {
+	if !waitFor(ctx, s.eventRelay.failedReadWait()) {
 		return
 	}
 	_ = stream.SendWait(ctx, liveEnded(sub, liveEndedBehind))

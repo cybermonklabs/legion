@@ -126,11 +126,12 @@ func tracedStore(t *testing.T, database *store.Store, tracer pgx.QueryTracer) *s
 	return &store.Store{Pool: pool}
 }
 
-// sendClock is a bus client whose windows record when the first envelope was sent.
+// sendClock is a bus client whose windows report each send's answer to onAnswer as it comes back,
+// before the outbox sees it: a test that must act the moment a send is decided waits on that
+// rather than on a clock of its own.
 type sendClock struct {
 	*bus.Client
-	once  sync.Once
-	first chan struct{}
+	onAnswer func()
 }
 
 func (c *sendClock) WindowUntil(deadline func() time.Time) bus.Sender {
@@ -143,8 +144,14 @@ type sendClockSender struct {
 }
 
 func (s sendClockSender) PublishAsync(item contracts.Envelope) <-chan error {
-	s.clock.once.Do(func() { close(s.clock.first) })
-	return s.Sender.PublishAsync(item)
+	answer := s.Sender.PublishAsync(item)
+	relayed := make(chan error, 1)
+	go func() {
+		err := <-answer
+		s.clock.onAnswer()
+		relayed <- err
+	}()
+	return relayed
 }
 
 // An issue's events each go to its topic family and to session S. S's destination fails for the
@@ -155,12 +162,13 @@ func (s sendClockSender) PublishAsync(item contracts.Envelope) <-chan error {
 // the issue's role, whose first forward fails because the stream, capturing no agent subject,
 // acknowledges nothing of it.
 func TestABackedOffEventHoldsBackOnlyItsDestination(t *testing.T) {
+	t.Parallel()
 	t.Run("a session route the stream does not take", holdsBackASessionRouteTheStreamRefuses)
 	t.Run("a role holder whose forward the stream does not acknowledge", holdsBackARoleHolderWhoseForwardIsNotAcknowledged)
 }
 
 func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
-	_, url := testnats.Start(t)
+	url := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
@@ -201,10 +209,43 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 		_, attempts := publishedDestinations(t, database, first.ID)
 		return attempts > 0
 	})
+	// The later events are written while the stream still refuses S's subject, so what holds the
+	// first event back is this row's own doing and not a timer it has to beat: every retry of it
+	// fails for S again, for as long as the subject is refused, exactly as the withheld receipt
+	// holds the first event in the half of this row below.
+	second, third := write("second"), write("third")
+
+	topic := "notifications.dispatch.issue.T-1.message.created"
+	session := contracts.AgentSubject("S")
+	// The two later events reach the topic family while the first event is still unreached at S:
+	// the back-off holds back its own destination and no other. It is read here, while that hold
+	// is on, and not from where two subjects' copies fell in one stream's sequence afterwards:
+	// the first event's retry falls due on its own back-off, about a second after its failure, so
+	// a run that took longer than that to restore the subject and write these two events saw S's
+	// copy of the first event stored ahead of them and read the owner's order as broken, though
+	// nothing had waited on anything. That is how this row reached a CI red (run 42779139068
+	// attempt 2, dispatch://INFRA-1075).
+	waitFor(t, eventWait, "the later events on the topic family", func() bool {
+		bySubject, _ := streamOrder(t, reader)
+		return slices.Contains(bySubject[topic], second.ID) && slices.Contains(bySubject[topic], third.ID)
+	})
+	for _, event := range []model.Event{first, second, third} {
+		if publishedAt(t, database, event.ID) != nil {
+			t.Fatalf("event %d was published while S's subject was still refused, want it waiting on S", event.ID)
+		}
+	}
+	if bySubject, _ := streamOrder(t, reader); len(bySubject[session]) != 0 {
+		t.Fatalf("S's subject holds %v while the stream refuses it, want nothing", bySubject[session])
+	}
+
+	// S's subject is taken again and the first event is made due, with a wake of its own: an
+	// update of the row notifies nothing, and the outbox's retry timer is armed to the back-off
+	// the refusals grew, which this row would otherwise wait out.
 	if _, err := js.UpdateStream(&capturing); err != nil {
 		t.Fatalf("let the stream capture agent subjects again: %v", err)
 	}
-	second, third := write("second"), write("third")
+	dueNow(t, database, first.ID)
+	broker.Publish(model.Event{})
 
 	waitFor(t, 30*time.Second, "all three events published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil &&
@@ -215,36 +256,13 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
-	topic := "notifications.dispatch.issue.T-1.message.created"
-	session := contracts.AgentSubject("S")
-	order := map[string][]int64{}
-	sequence := map[string]uint64{}
-	stream, err := js.StreamInfo(bus.Stream)
-	if err != nil {
-		t.Fatalf("read the stream: %v", err)
-	}
-	for seq := stream.State.FirstSeq; seq <= stream.State.LastSeq; seq++ {
-		message, err := js.GetMsg(bus.Stream, seq)
-		if err != nil {
-			t.Fatalf("read stream message %d: %v", seq, err)
-		}
-		id := envelopeEventID(t, message.Data)
-		order[message.Subject] = append(order[message.Subject], id)
-		sequence[fmt.Sprintf("%s %d", message.Subject, id)] = seq
-	}
+	bySubject, _ := streamOrder(t, reader)
 	want := []int64{first.ID, second.ID, third.ID}
-	if !slices.Equal(order[topic], want) {
-		t.Fatalf("the topic family holds %v, want %v", order[topic], want)
+	if !slices.Equal(bySubject[topic], want) {
+		t.Fatalf("the topic family holds %v, want %v", bySubject[topic], want)
 	}
-	if !slices.Equal(order[session], want) {
-		t.Fatalf("S's subject holds %v, want %v: each event only after the one before it", order[session], want)
-	}
-	firstAtS := sequence[fmt.Sprintf("%s %d", session, first.ID)]
-	for _, event := range []model.Event{second, third} {
-		if at := sequence[fmt.Sprintf("%s %d", topic, event.ID)]; at > firstAtS {
-			t.Fatalf("event %d reached the topic family at stream sequence %d, after the first event reached S at %d: it waited on S",
-				event.ID, at, firstAtS)
-		}
+	if !slices.Equal(bySubject[session], want) {
+		t.Fatalf("S's subject holds %v, want %v: each event only after the one before it", bySubject[session], want)
 	}
 }
 
@@ -355,6 +373,11 @@ func shiftedClock(t *testing.T, database *store.Store) *store.Store {
 // event's next attempt is set on the database's clock, so it is not sent again before then. A
 // connection that is lost instead releases the event with no attempt, and it is sent once NATS is
 // back.
+//
+// Serial: its assertion is a time - in "no responders" the read of the next attempt and the second
+// scan must both fall inside the event's first one-second back-off (retry.BaseDelay), and in "a
+// stream that never answers" the probe after the thaw must answer within probeTimeout (2 s). The
+// subtests run beside each other alone, never beside a parallel batch of the package.
 func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	seed := func(t *testing.T, database *store.Store) model.Event {
 		t.Helper()
@@ -379,8 +402,9 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	}
 
 	t.Run("no responders", func(t *testing.T) {
-		_, url := testnats.Start(t)
-		// A client that owns no stream, on a server that has none: no stream captures the subject.
+		t.Parallel()
+		url := testnats.URL(t)
+		// A client that owns no stream, in an account that has none: no stream captures the subject.
 		client, err := bus.Connect([]string{url})
 		if err != nil {
 			t.Fatalf("connect: %v", err)
@@ -414,6 +438,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	})
 
 	t.Run("a stream that never answers", func(t *testing.T) {
+		t.Parallel()
 		server, url := testnats.Start(t)
 		client, err := bus.ConnectOwningStream([]string{url})
 		if err != nil {
@@ -422,24 +447,19 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		t.Cleanup(client.Close)
 		database := storetest.Open(t)
 		event := seed(t, database)
-		clock := &sendClock{Client: client, first: make(chan struct{})}
 		thaw := server.Freeze(t)
-		thawed := make(chan struct{})
-		go func() {
-			defer close(thawed)
-			<-clock.first
-			// Past the five seconds the window waits for an acknowledgement, and well inside
-			// the flush probe that follows, so the connection answers that probe.
-			time.Sleep(5*time.Second + 300*time.Millisecond)
-			thaw()
-		}()
+		// The send's own answer is the thaw's cue: the window gave the acknowledgement up, and the
+		// flush probe that follows has not run yet, so the probe finds the connection answering.
+		// Sleeping past the window's five seconds waited for this same moment by the clock
+		// (dispatch://INFRA-1075).
+		clock := &sendClock{Client: client, onAnswer: sync.OnceFunc(thaw)}
 		holding(t, Deps{Store: database, Publisher: clock}).scan(context.Background(), unfenced{})
-		<-thawed
 		backedOff(t, database, event, bus.ErrNotAcknowledged.Error())
 	})
 
 	t.Run("a lost connection", func(t *testing.T) {
-		_, url := testnats.Start(t)
+		t.Parallel()
+		url := testnats.URL(t)
 		proxy := testnats.StartProxy(t, url)
 		client, err := bus.ConnectOwningStream([]string{proxy.URL()})
 		if err != nil {
@@ -449,7 +469,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		database := storetest.Open(t)
 		event := seed(t, database)
 		proxy.Cut()
-		waitFor(t, 5*time.Second, "the client noticing the cut", func() bool { return !client.Connected() })
+		waitFor(t, eventWait, "the client noticing the cut", func() bool { return !client.Connected() })
 		outbox := holding(t, Deps{Store: database, Publisher: client})
 		outbox.scan(context.Background(), unfenced{})
 		var attempts int
@@ -486,6 +506,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 // issue's claim (readBatch). A document's writers are one kind, whether a comment on it or an edit
 // of it asks for them, so the edits add no statement.
 func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostSevenStatements(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
@@ -591,6 +612,7 @@ func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostS
 // refused half's halves down to that id alone (loadRecipients): at most 2*ceil(log2(n)) more
 // statements for n ids, where a run of each id alone would cost n.
 func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t *testing.T) {
+	t.Parallel()
 	const n = 64
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -648,6 +670,7 @@ func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t
 // An event is written once, when its batch records it: reading the batch writes nothing, so however
 // many destinations it has, a published event costs its row exactly one update.
 func TestAPublishedEventIsWrittenOnce(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	for _, tc := range []struct {
 		destinations int
@@ -680,6 +703,7 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 		}},
 	} {
 		t.Run(fmt.Sprintf("%d destinations", tc.destinations), func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			database := storetest.Open(t)
 			broker := events.NewBroker()
@@ -911,32 +935,64 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		t.Fatalf("acquire the connection the counters are read on: %v", err)
 	}
 	defer conn.Release()
-	rowsRead, seqRead, indexBlocks, kept := claimReads(t, conn, claim)
-	secondRowsRead, _, secondIndexBlocks, _ := claimReads(t, conn, claim)
-	if rowsRead != secondRowsRead {
-		t.Errorf("the claim read %d rows from events on the first run and %d on the second, want one figure twice: a measurement that reads pg_stat_xact_user_tables' counter rather than its difference across the claim gives the second run as twice the first",
-			rowsRead, secondRowsRead)
+	// What the claim reads is settled rather than read twice: claimReads runs again on the
+	// pinned connection until two consecutive readings report the same rowsRead and the same
+	// indexBlocks, at most five readings, and that pair is the measurement. A claim run marks
+	// the dead index entries the scan's publish left and reads those pages again to do it,
+	// which the 20 explains above run the claim first to absorb; under this lane's load the
+	// marking of one page does not always land before the first reading, and two consecutive
+	// readings then differ by one block. Job 130541308666 of run 43021338811 read 37 blocks on
+	// the first run and 38 on the second and failed there, where the same head read one figure
+	// twice in attempt 1 (job 130525083786) and in three earlier pairs. Five is the bound
+	// because the marking is bounded work that each reading retires: no reading leaves more of
+	// it than the reading before, so a pair agrees within a few readings, and five gives four
+	// chances to agree before the loop ends rather than runs on. On a two-core pod all 20
+	// measurements of 5 runs of this row agreed at the second reading, idle and under two busy
+	// loops alike, so the four spare readings are for a pod slower than that one.
+	const mostReadings = 5
+	type reading struct {
+		rowsRead    int64
+		seqRead     int64
+		indexBlocks int64
+		kept        []int64
 	}
-	// The blocks are as steady as the rows once the claim has run on this database: 37 on both
-	// runs of each size, in all 12 readings of 3 runs of the healthy claim on 2026-11-09, and 56
-	// and 113 on both runs of the mutated one. The 20 explains above run it first. A claim run
-	// for the first time marks the dead index entries the scan's publish left, and reads those
-	// pages again to do it: measured before the explains, a pair read 38 and 37, and 39 and 37
-	// (the review of INFRA-2065, round 2). So the pair stays after the explains.
-	if indexBlocks != secondIndexBlocks {
-		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and once the explains above have run the claim, a second run on the same connection fetches the same blocks",
-			indexBlocks, secondIndexBlocks)
+	taken := make([]reading, 0, mostReadings)
+	settledAt := -1
+	for len(taken) < mostReadings && settledAt < 0 {
+		rowsRead, seqRead, indexBlocks, kept := claimReads(t, conn, claim)
+		taken = append(taken, reading{rowsRead: rowsRead, seqRead: seqRead, indexBlocks: indexBlocks, kept: kept})
+		if last := len(taken) - 1; last > 0 && taken[last-1].rowsRead == rowsRead && taken[last-1].indexBlocks == indexBlocks {
+			settledAt = last
+		}
 	}
-	if rowsRead == 0 && secondRowsRead == 0 {
-		t.Errorf("the claim read 0 rows from events on both runs: track_counts must be on for pg_stat_xact_user_tables to count a row")
+	// Settling hides no regression, because a broken claim reads the same figures on every run:
+	// the claim over a retry index rebuilt as (id, next_attempt_at) fetched 56 blocks at 5,000
+	// and 113 at 20,000 on both runs of each size, so its first two readings agree and the
+	// bounds below weigh those figures. Only the marking moves a reading, by the one block it
+	// has left to do, and only on the first reading. Readings that never agree are a measurement
+	// that does not hold still, which is no measurement at all, so the row names them all and
+	// stops.
+	if settledAt < 0 {
+		shown := make([]string, 0, len(taken))
+		for index, each := range taken {
+			shown = append(shown, fmt.Sprintf("reading %d read %d rows and fetched %d blocks", index+1, each.rowsRead, each.indexBlocks))
+		}
+		t.Fatalf("no two consecutive readings of the claim agreed in %d readings on the same connection, want a pair reading the same rows and the same blocks from the indexes of events; in order: %s. Each figure is the difference across the claim, and a measurement that reads pg_stat_xact_user_tables' counter rather than its difference grows by about the first reading every time",
+			mostReadings, strings.Join(shown, "; "))
 	}
+	measured := taken[settledAt]
+	if measured.rowsRead == 0 {
+		t.Errorf("the claim read 0 rows from events in both readings of the settled pair: track_counts must be on for pg_stat_xact_user_tables to count a row")
+	}
+	t.Logf("the claim settled at reading %d of at most %d: %d rows read from events and %d blocks fetched from its indexes",
+		settledAt+1, mostReadings, measured.rowsRead, measured.indexBlocks)
 
 	return claimCost{
 		backlog:     backlog,
-		rowsRead:    rowsRead,
-		seqRead:     seqRead,
-		indexBlocks: indexBlocks,
-		kept:        kept,
+		rowsRead:    measured.rowsRead,
+		seqRead:     measured.seqRead,
+		indexBlocks: measured.indexBlocks,
+		kept:        measured.kept,
 		unpublished: unpublished,
 		plans:       plans,
 		fastest:     fastest,
@@ -993,6 +1049,7 @@ func someIDs(ids []int64) string {
 // loops. No one wall-clock bound separates a healthy claim from a broken one on every machine
 // that runs this row, so the row asserts the counts and only logs the time.
 func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
+	t.Parallel()
 	small := measureClaim(t, 5000)
 	big := measureClaim(t, 20000)
 	costs := []claimCost{small, big}
@@ -1049,6 +1106,7 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 // destinations its events reached, and the events that reached all of them published - and
 // schedules nothing: no back-off, no attempt, no error, no hold-back.
 func TestARecordFromAProcessThatLostTheHoldWritesNoBackOff(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	broker := events.NewBroker()

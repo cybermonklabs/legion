@@ -30,6 +30,19 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 		if held {
 			feed.cancel()
 		}
+		// The seed sends its feed into a channel of one, so a send can land while g is still
+		// live and this goroutine return on g's end before it takes it. Nobody would then
+		// cancel that subscription, and the relay would keep its generation, and its wait, for
+		// a feed no goroutine will ever take. This goroutine is the channel's only reader and
+		// it is returning, so whatever stands in it now is nobody's (dispatch://INFRA-1075).
+		for {
+			select {
+			case taken := <-g.feeds:
+				taken.feed.cancel()
+			default:
+				return
+			}
+		}
 	}()
 	for attempt := 1; !h.readChangeCursor(g); attempt++ {
 		if !waitFor(g.ctx, pglisten.RedialBackoff(attempt)) {
@@ -112,6 +125,18 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 			if err == nil {
 				select {
 				case g.feeds <- hubEventFeed{feed: feed, p0: p0}:
+					// The send and the end can both be ready - g.feeds holds one feed, so the
+					// send never blocks - and a select picks between two ready cases at random,
+					// so this one can win after the intake has already returned on the same
+					// end. Nobody would then cancel the subscription, and the relay would keep
+					// its generation, and its wait, for a feed no goroutine will ever take.
+					// The intake returns only once g has ended, so an ended g here means the
+					// feed may be unowned; cancel is sync.OnceFunc, so cancelling one the
+					// intake did take costs nothing but the end it is already taking
+					// (dispatch://INFRA-1075).
+					if g.ctx.Err() != nil {
+						feed.cancel()
+					}
 				case <-g.ctx.Done():
 					feed.cancel()
 				}

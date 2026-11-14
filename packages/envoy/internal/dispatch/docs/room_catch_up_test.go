@@ -332,7 +332,7 @@ func TestARemoteUpdateCreditsNoLocalPeerAndAttributesNoAskBlock(t *testing.T) {
 		":::ask{#bob-ask urgency=\"high\" multiple=\"false\"}\nWhich transport?\n:::\n")
 	room := pair.taskA.srv.GetDoc(pair.artifactID)
 	pair.taskA.addConnection(pair.artifactID, 7, alice)
-	t.Cleanup(func() { pair.taskA.removeConnection(pair.artifactID, 7) })
+	cleanupAndRelease(t, func() { pair.taskA.removeConnection(pair.artifactID, 7) })
 	state := pair.taskA.room(pair.artifactID)
 	state.mu.Lock()
 	before := state.creditSeq.Load()
@@ -697,7 +697,7 @@ func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 	catchUps.mu.Unlock()
 	held := make(chan struct{})
 	release := sync.OnceFunc(func() { close(held) })
-	t.Cleanup(release)
+	cleanupAndRelease(t, release)
 	lane.push(func(context.Context) { <-held })
 
 	const burst = 5
@@ -761,7 +761,7 @@ func listenForDocumentChanges(t *testing.T, database *store.Store) <-chan docume
 		defer close(done)
 		listener.Run(ctx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		cancel()
 		<-done
 	})
@@ -892,7 +892,7 @@ func TestARebuildAnnouncesTheDocumentsChange(t *testing.T) {
 	// invalid makes the document's first load unreadable, which is what a rebuild needs to see
 	// before it replaces the history (rebuild_test.go).
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	heard := listenForDocumentChanges(t, database)
 
 	replacement := "Rebuilt.\n"

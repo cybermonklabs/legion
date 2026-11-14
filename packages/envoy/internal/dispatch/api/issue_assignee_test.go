@@ -45,6 +45,7 @@ func expectAssignee(t *testing.T, got *string, want string) {
 // A human who creates an issue is its assignee. Every identity names a person by lowercase
 // email, so the assignee is lowercase even when the identity header that named them was not.
 func TestCreateIssueByHumanAssignsCreatorLowercased(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -58,6 +59,7 @@ func TestCreateIssueByHumanAssignsCreatorLowercased(t *testing.T) {
 
 // A personal token acts for its owner: an issue it creates is assigned to that human.
 func TestCreateIssueByPersonalTokenAssignsOwner(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	minted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "planner"}, "Bob")
@@ -80,6 +82,7 @@ func TestCreateIssueByPersonalTokenAssignsOwner(t *testing.T) {
 // that issue reaches the default like any other create with nobody above it
 // (TestCreateIssueFallsBackToProjectDefaultAssignee). An explicit assignee always wins.
 func TestCreateIssueBySharedTokenInheritsParentOrTakesTheDefault(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	root := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -131,6 +134,7 @@ func TestCreateIssueBySharedTokenInheritsParentOrTakesTheDefault(t *testing.T) {
 }
 
 func TestIssueAssigneeRejectsUnlistedAndMalformedLogins(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -174,6 +178,7 @@ func TestIssueAssigneeRejectsUnlistedAndMalformedLogins(t *testing.T) {
 // open issue only to the person it is assigned to; a write that moves neither the status nor the
 // assignee carries no thread_logins at all.
 func TestPatchIssueReassignsClearsAndLeavesAssigneeAlone(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createAssigneeProject(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -343,6 +348,7 @@ func TestAssigningAnIssueNobodyHeldNamesTheProjectDefault(t *testing.T) {
 // A summary carries the issue's assignee: the person who filed it, and null for an issue nobody
 // holds, which only a PATCH clearing its assignee leaves (a create always lands on a person).
 func TestListIssuesSummariesCarryAssignee(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -376,6 +382,7 @@ func TestListIssuesSummariesCarryAssignee(t *testing.T) {
 // the person scope, so the deployment's shared token is turned away and a person's own token
 // reads the same list their browser reads.
 func TestListUsersReturnsSignedInPeopleToThePersonScope(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/users", nil, "alice")
 	if response.Code != http.StatusOK {
@@ -402,6 +409,7 @@ func TestListUsersReturnsSignedInPeopleToThePersonScope(t *testing.T) {
 
 // With nobody in `people`, GET /users is an empty list, never null: the picker maps over it.
 func TestListUsersAnswersAnEmptyListWhenNobodyHasSignedIn(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), Deps{
 		Store:    storetest.Open(t),
@@ -417,6 +425,7 @@ func TestListUsersAnswersAnEmptyListWhenNobodyHasSignedIn(t *testing.T) {
 // casing the identity header carried, a personal token by its owner, the shared token by a null
 // owner.
 func TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	type whoami struct {
 		Kind  string  `json:"kind"`
@@ -461,6 +470,7 @@ func TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken(t *testing.T) {
 // not say". A personal token holding the person scope is still kind `agent`, since the kind
 // names the credential and the owner names the person it acts for.
 func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t)})
 	for _, test := range []struct {
@@ -566,6 +576,7 @@ func unassignIssue(t *testing.T, handler http.Handler, key string) model.Issue {
 // assignee, under no parent, goes to it. A parent whose assignee was cleared has nobody on it, so
 // its child reaches the default too.
 func TestCreateIssueFallsBackToProjectDefaultAssignee(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	putDefaultAssignee(t, handler, "CORE", "Bob")
@@ -586,6 +597,7 @@ func TestCreateIssueFallsBackToProjectDefaultAssignee(t *testing.T) {
 // Every earlier step of the chain wins over the project's default, in order, and a create that
 // sends a null assignee names nobody, so it reaches the default as one that sends none does.
 func TestProjectDefaultAssigneeYieldsToEveryEarlierChainStep(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAssigneeProject(t, handler)
 	putDefaultAssignee(t, handler, "CORE", "bob")

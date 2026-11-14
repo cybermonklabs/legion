@@ -73,6 +73,7 @@ var previousReleaseNodeKinds = []string{"artifact", "ask", "block", "comment", "
 // through document_blocks. This build lists each block's edge in place of its item's, an ask's
 // question part in place of the ask's own row.
 func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -172,14 +173,11 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	if got, want := resolved(current), []string{"ask", "ask_block", "comment", "comment_block", "issue", "message", "message_block"}; !slices.Equal(got, want) {
 		t.Errorf("this build resolves the kinds %v; want %v", got, want)
 	}
-	loaders := nodeLoaders
 	previous := make(map[string]nodeLoader, len(previousReleaseNodeKinds))
 	for _, kind := range previousReleaseNodeKinds {
-		previous[kind] = loaders[kind]
+		previous[kind] = nodeLoaders[kind]
 	}
-	nodeLoaders = previous
-	older, err := resolveNodes(ctx, tx, false, ends)
-	nodeLoaders = loaders
+	older, err := resolveNodesWith(ctx, tx, false, ends, previous)
 	if err != nil {
 		t.Fatalf("resolve the ends as the previous release: %v", err)
 	}
@@ -193,6 +191,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 // not the block holding the link. A document an item block's reference names reaches nothing:
 // the item is no document.
 func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -227,6 +226,7 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 // the document joins its issue's closure at the depth an item's own link has, with the ask as its
 // via - the rule every item's blocks follow.
 func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)

@@ -227,7 +227,7 @@ func TestASettlementFromARoomBehindTheHeadKeepsItsRoomWithWorkInFlightOnIt(t *te
 		}},
 		{"a shutdown", func(t *testing.T, pair processPair) func() {
 			pair.taskA.shutdownRooms.Store(pair.artifactID, struct{}{})
-			t.Cleanup(func() { pair.taskA.shutdownRooms.Delete(pair.artifactID) })
+			cleanupAndRelease(t, func() { pair.taskA.shutdownRooms.Delete(pair.artifactID) })
 			return nil
 		}},
 	} {
@@ -587,7 +587,7 @@ func TestARoomOnAReplacedHistoryAnotherCallerIsInsideIsClosedOnceItLeaves(t *tes
 			t.Errorf("the Apply inside the room: %v", err)
 		}
 	})
-	t.Cleanup(leaveRoom)
+	cleanupAndRelease(t, leaveRoom)
 
 	pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID)
 	if pair.taskA.srv.GetDoc(pair.artifactID) != live {
@@ -629,7 +629,7 @@ func TestAReplacedRoomThatIsAnotherClosesIsAnAnswerForTheCatchUp(t *testing.T) {
 		{"its failure's own eviction", func(t *testing.T, pair processPair, live *crdt.Doc) func() {
 			hold := make(chan struct{})
 			release := sync.OnceFunc(func() { close(hold) })
-			t.Cleanup(release)
+			cleanupAndRelease(t, release)
 			pair.taskA.beforeFailedEviction = func(room string) {
 				if room == pair.artifactID {
 					<-hold
@@ -667,7 +667,7 @@ func TestAReplacedRoomThatIsAnotherClosesIsAnAnswerForTheCatchUp(t *testing.T) {
 			// close's: the failure's own eviction closes the room.
 			hold := make(chan struct{})
 			release := sync.OnceFunc(func() { close(hold) })
-			t.Cleanup(release)
+			cleanupAndRelease(t, release)
 			pair.taskA.beforeFailedEviction = func(room string) {
 				if room == pair.artifactID {
 					<-hold
@@ -785,6 +785,10 @@ func TestARoomReservedForTheInstanceItReplacedIsTriedAgain(t *testing.T) {
 // document's room is loaded and left idle after it. Once the sweep has retired that sentinel, a
 // sweep pass has run with the held room idle for longer than the timeout as well, and it is still
 // the room the document holds when the close closes it.
+//
+// Serial: on its one-second idle timeout the sweep could retire a room the close left resident
+// a second after the close's Apply stamped it, so the final wait (waitForNoLiveDocument) stops
+// at 500 ms, a wall-clock window that must begin as the close returns.
 func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -794,7 +798,7 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before")
 	sentinel := createDocument(t, service.store, "Sentinel.")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	browser := connectPeer(t, server.URL, artifactID, "alice")
 	connected := func() int {
 		state := service.room(artifactID)
@@ -945,7 +949,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, "before")
 			server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-			t.Cleanup(server.Close)
+			cleanupAndRelease(t, server.Close)
 			browser := connectPeer(t, server.URL, artifactID, "alice")
 			waitFor(t, 10*time.Second, "the browser to join the document's room", func() bool {
 				return service.srv.GetDoc(artifactID) != nil
@@ -1420,7 +1424,7 @@ func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) 
 	var opened, closed sync.Once
 	releaseWindow := func() { closed.Do(func() { close(release) }) }
 	// Before the service's own cleanup, which cannot shut down while an append is held here.
-	t.Cleanup(releaseWindow)
+	cleanupAndRelease(t, releaseWindow)
 	appends.afterAppendCommit = func(room string, _ persistence.Version) {
 		held := false
 		if room == artifactID {
@@ -1512,7 +1516,7 @@ func TestAReadInsideAnAppendsCursorWindowHoldsTheRoomsKeystroke(t *testing.T) {
 	var opened, closed sync.Once
 	releaseWindow := func() { closed.Do(func() { close(release) }) }
 	// Before the service's own cleanup, which cannot shut down while an append is held here.
-	t.Cleanup(releaseWindow)
+	cleanupAndRelease(t, releaseWindow)
 	appends.afterAppendCommit = func(room string, _ persistence.Version) {
 		held := false
 		if room == artifactID {
@@ -1571,16 +1575,18 @@ func TestAReadInsideAnAppendsCursorWindowHoldsTheRoomsKeystroke(t *testing.T) {
 // observer, which takes the record (consumeUpdateClass). An observer registered in
 // OnLoadDocument after the service's own runs there: ygo fires a transaction's update observers in
 // the order they were registered, and the room registers its persistence observer after
-// OnLoadDocument returns. Only rooms loaded after recordClasses installs it are read.
+// OnLoadDocument returns. Only rooms loaded after the recorder is installed are read. Each record
+// names the room it came from, so a service holding more than one recorded room reads each room's
+// records apart from the others' (count, since).
 type recordedClasses struct {
 	mu      sync.Mutex
 	classes []recordedClass
 }
 
-// recordedClass is what the room recorded for one update, kept as the six facts its readers
-// decide on: origin, a label for the origin the room applied the update with -
-// publishedWriteClass for a *liveWriteOrigin, the string itself for a string origin, and the
-// origin's type otherwise; marginOnly, that *liveWriteOrigin's own tag (false for every other
+// recordedClass is what the room recorded for one update, kept as the facts its readers decide
+// on: room, the room that applied it; origin, a label for the origin the room applied the update
+// with - publishedWriteClass for a *liveWriteOrigin, the string itself for a string origin, and
+// the origin's type otherwise; marginOnly, that *liveWriteOrigin's own tag (false for every other
 // origin); found, false when the room recorded no class for the update; and contentChanged,
 // durable and credited (class.credit != nil) from the class it recorded.
 //
@@ -1590,6 +1596,7 @@ type recordedClasses struct {
 // bytes. The slice grows for the whole life of each side's flows, so every pointer in it is
 // memory the test binary never gives back (dispatch://INFRA-1085).
 type recordedClass struct {
+	room           string
 	origin         string
 	marginOnly     bool
 	found          bool
@@ -1606,11 +1613,10 @@ type recordedClass struct {
 // for byte unchanged.
 const publishedWriteClass = "a published write"
 
-// recordClasses installs the recorder on service and reloads artifactID's room, which a seed may
-// have loaded before the recorder was there, so the room it returns is read.
-func recordClasses(t *testing.T, service *Service, artifactID string) (*recordedClasses, *crdt.Doc) {
-	t.Helper()
-	ctx := context.Background()
+// installClassRecorder installs the recorder on service, for every room it loads from now on. A
+// caller that installs it before the service has loaded anything - before any test goroutine of
+// its own runs - needs no reload; recordClasses is for one that does.
+func installClassRecorder(service *Service) *recordedClasses {
 	recorded := &recordedClasses{}
 	load := service.srv.OnLoadDocument
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
@@ -1618,7 +1624,7 @@ func recordClasses(t *testing.T, service *Service, artifactID string) (*recorded
 			return err
 		}
 		doc.OnUpdate(func(update []byte, origin any) {
-			var read recordedClass
+			read := recordedClass{room: room}
 			switch published := origin.(type) {
 			case *liveWriteOrigin:
 				read.origin, read.marginOnly = publishedWriteClass, published.marginOnly
@@ -1645,6 +1651,15 @@ func recordClasses(t *testing.T, service *Service, artifactID string) (*recorded
 		})
 		return nil
 	}
+	return recorded
+}
+
+// recordClasses installs the recorder on service and reloads artifactID's room, which a seed may
+// have loaded before the recorder was there, so the room it returns is read.
+func recordClasses(t *testing.T, service *Service, artifactID string) (*recordedClasses, *crdt.Doc) {
+	t.Helper()
+	ctx := context.Background()
+	recorded := installClassRecorder(service)
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatalf("evict the room loaded before the recorder: %v", err)
 	}
@@ -1652,6 +1667,38 @@ func recordClasses(t *testing.T, service *Service, artifactID string) (*recorded
 		t.Fatalf("load the recorded room: %v", err)
 	}
 	return recorded, service.srv.GetDoc(artifactID)
+}
+
+// count is how many updates the rooms of artifactID have recorded so far: the cursor a caller
+// reads its own records from (since).
+func (r *recordedClasses) count(artifactID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	counted := 0
+	for _, class := range r.classes {
+		if class.room == artifactID {
+			counted++
+		}
+	}
+	return counted
+}
+
+// since is every class the rooms of artifactID recorded past the first from of them, oldest first.
+func (r *recordedClasses) since(artifactID string, from int) []recordedClass {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var taken []recordedClass
+	for _, class := range r.classes {
+		if class.room != artifactID {
+			continue
+		}
+		if from > 0 {
+			from--
+			continue
+		}
+		taken = append(taken, class)
+	}
+	return taken
 }
 
 // latest is the record the room left for the latest update it applied that matches accepts,
@@ -1952,7 +1999,7 @@ func TestAFailedRoomsEvictionWaitsForTheStampsCommitAndReloadsIt(t *testing.T) {
 	// backfill's append, inside the transaction that holds the document's advisory lock.
 	appends := &failingBrowserAppendStore{VersionedStore: NewPgVersioned(database)}
 	service := New(Deps{Store: database, Persistence: appends, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

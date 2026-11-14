@@ -249,6 +249,7 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 // the pull-request body line. An id neither holds is refused, and one two of them share is
 // refused until the caller names which document it means.
 func TestResultRecordsAgainstAChecksOfTheIssueAndOfAnAncestor(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	parent := createInteractionIssue(t, handler, "RES", "Parent", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", twoChecks)
@@ -355,6 +356,7 @@ func TestCheckResultsComeBackNewestFirst(t *testing.T) {
 
 // A pass that counts a skipped case contradicts itself.
 func TestResultRefusesAPassThatCountsASkippedCase(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESC", "Contradiction", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -375,6 +377,7 @@ func TestResultRefusesAPassThatCountsASkippedCase(t *testing.T) {
 // stays refused. A comment is no such write: a closed issue takes one, and this states that the
 // result route's exemption is not what lets it through.
 func TestClosedIssueTakesAnAfterMergeResultAndStillRefusesADocumentWrite(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESX", "Closed", "A spec\n")
 	owner := "/api/v1/issues/" + issue.Key
@@ -417,6 +420,7 @@ func TestClosedIssueTakesAnAfterMergeResultAndStillRefusesADocumentWrite(t *test
 // The issue resolves to a repository the App can read, which is what makes "this commit heads
 // no pull request I know" another commit rather than an unknown.
 func TestBeforeMergeResultFollowsTheHeadAndTheChecksWords(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESH", "acme/widgets", "Heads")
@@ -863,6 +867,7 @@ func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *t
 // none for this issue, is TestAfterMergeResultFallsBackToTheTrunkWithoutAMergeOfTheIssue
 // below.
 func TestAfterMergeResultWithNoPullRequestFollowsTheDefaultBranch(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	handler, _ := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
 		calls++
@@ -1077,6 +1082,7 @@ func TestAfterMergeResultFallsBackWhenTheMergedRowNamesNoBaseBranch(t *testing.T
 // is the other kind of nothing: there is no pull request and no branch, so its results stand
 // at another commit and no pass of them stands.
 func TestAfterMergeResultIsUnknownWhenTheAppCannotReadTheRepository(t *testing.T) {
+	t.Parallel()
 	handler, _ := resultsGitHub(t, map[string]bool{}, func(string, string) string { return "behind" })
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "RESU", "name": "Unknown"}, "alice")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/hidden",
@@ -1471,6 +1477,7 @@ func TestAfterMergeResultIsUnknownWhenTheBaseBranchReadFails(t *testing.T) {
 // read the repository the same commit stands at another commit, which is what makes the
 // answer worth reading.
 func TestBeforeMergeResultIsUnknownWhenDispatchCannotSeeTheRepository(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 
@@ -1540,6 +1547,7 @@ func TestBeforeMergeResultStaysUnknownAtAnotherRepositorysHead(t *testing.T) {
 // for reads GitHub through the App and stores every pull request it names, so the result
 // stands at that head without a webhook ever arriving.
 func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -1724,6 +1732,7 @@ func TestAResultOfAnIssueRecordedUnderARepositorysOldNameStandsAtItsHead(t *test
 // The answer to a record carries the moment the row was written, not the zero time: created_at
 // is a declared field of the contract, and a reader takes it for when the run happened.
 func TestRecordedResultAnswersTheTimeItWasStored(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESA", "Stored at", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -1750,6 +1759,7 @@ func TestRecordedResultAnswersTheTimeItWasStored(t *testing.T) {
 // pull request answers for nothing on the parent's tab. What stands there is the parent's own
 // result at a head of the parent's own pull request.
 func TestChildsResultAgainstAnAncestorsCheckStandsAtNoBasisAtTheChildsHead(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 	parent := issueInRepository(t, handler, "RESX", "acme/widgets", "Parent")
@@ -1779,6 +1789,7 @@ func TestChildsResultAgainstAnAncestorsCheckStandsAtNoBasisAtTheChildsHead(t *te
 // request is never learned, and the child's result stands at no head on the parent's tab
 // although GitHub would name a pull request for that commit in the child's repository.
 func TestChildsResultInItsOwnRepositoryStandsAtNoBasisOnTheParentsTab(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)

@@ -20,12 +20,12 @@ import (
 func newEditNoticeSweeper(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
 
 // runEditNoticeLoop runs the sweep until the test ends, and fails the test if it does not return
-// promptly once its context ends.
+// within loopStopBound once its context ends.
 func runEditNoticeLoop(t *testing.T, run func(ctx context.Context)) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -34,12 +34,12 @@ func runEditNoticeLoop(t *testing.T, run func(ctx context.Context)) {
 		defer close(done)
 		run(ctx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the edit notice sweep did not return within 10s of its context ending")
+		case <-time.After(loopStopBound):
+			t.Errorf("the edit notice sweep did not return within %v of its context ending", loopStopBound)
 		}
 	})
 }
@@ -58,14 +58,14 @@ func startEditNoticeHub(t *testing.T, database *store.Store) <-chan struct{} {
 		defer close(done)
 		hub.Run(ctx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stop()
 		<-done
 	})
 	select {
 	case <-connected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the hub did not connect within 10s")
+	case <-time.After(roomWait(t)):
+		t.Fatal("the hub did not connect within roomWait")
 	}
 	return wake
 }
@@ -73,7 +73,10 @@ func startEditNoticeHub(t *testing.T, database *store.Store) <-chan struct{} {
 // With no notice due - one held, naming nobody, and one an hour off - the sweep makes no statement
 // at all after its boot pass, over a window longer than the five-second period of the timer it
 // replaced: no sweep on a timer and no lease attempt. Its pass asks to run again at the hour-off
-// notice's due time, the one timer it keeps.
+// notice's due time, the one timer it keeps. This row is the one that runs
+// editNoticeSweepSchedule end to end, through RunEditNotices: the window it watches is what
+// proves the production gap arms no sweep of its own. The rows below pass a gap of their own to
+// runEditNotices.
 func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -187,7 +190,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	}()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the other caller never took the edit-notices lease")
 	}
 

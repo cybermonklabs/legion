@@ -49,7 +49,7 @@ func captureWarnings(t *testing.T) *storetest.LockedLog {
 	logs := &storetest.LockedLog{}
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	cleanupAndRelease(t, func() { slog.SetDefault(previous) })
 	return logs
 }
 
@@ -282,7 +282,7 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the silent member: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	cleanupAndRelease(t, func() { _ = conn.Close(context.Background()) })
 	logs := captureWarnings(t)
 
 	for _, kind := range []string{roomQueryHolds, roomQueryFlush, roomQueryShare} {

@@ -35,6 +35,7 @@ var errorLine = regexp.MustCompile(`"level":"ERROR"|level=ERROR|^\d{4}/\d{2}/\d{
 // Whether a goroutine logs before the exit is a race, so the test stops the real binary several
 // times.
 func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	testnats.Connect(t, uri).Close()
 
@@ -110,6 +111,7 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 // (a circuit-breaker rollback, a second deploy) is an ordered shutdown like any other: HTTP drains,
 // NATS drains, nothing on the path is an error, and the durable the old task holds is left alone.
 func TestASIGTERMWhileAnotherTaskHoldsTheDurableIsAnOrderedShutdown(t *testing.T) {
+	t.Parallel()
 	const machineID = "sigterm-during-bind"
 	old, holder := durableHeldElsewhere(t, testnats.URL(t), "listener-"+machineID)
 
@@ -170,6 +172,7 @@ func startListenerProcess(t *testing.T, binary, uri, machineID string, env ...st
 // for it, and says that address in its listening line. Without the socket it would bind
 // 127.0.0.1:9020.
 func TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T) {
+	t.Parallel()
 	held := cmdtest.HoldPort(t)
 	cmd := exec.Command(cmdtest.Build(t, "envoy-listener"))
 	cmd.Env = []string{
@@ -187,6 +190,7 @@ func TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T)
 // PORT=0 with no inherited socket still binds a port the kernel chooses, and the listening line
 // names the port it got, so a harness that starts the listener this way reads its port there.
 func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command(cmdtest.Build(t, "envoy-listener"))
 	cmd.Env = []string{
 		"PORT=0",
@@ -212,6 +216,7 @@ func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
 // is, though ENVOY_LISTEN_HOST is unset and would mean loopback: with no bearer, no OIDC pair and
 // no ENVOY_API_ALLOW_UNAUTHENTICATED, the listener refuses to start and serves nothing.
 func TestListenerRefusesAnInheritedSocketOnEveryInterfaceWithoutCredentials(t *testing.T) {
+	t.Parallel()
 	wildcard, err := net.Listen("tcp4", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("listen on every interface: %v", err)
@@ -239,6 +244,7 @@ func TestListenerRefusesAnInheritedSocketOnEveryInterfaceWithoutCredentials(t *t
 // PORT, when set beside an inherited socket, must name the socket's port, and PORT=0 names none:
 // the listener refuses to start, naming PORT and ENVOY_LISTEN_FD, and serves nothing.
 func TestListenerRefusesAPortThatIsNotItsInheritedSocketsPort(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	for name, port := range map[string]func(held *cmdtest.HeldPort) string{
 		"another port": func(held *cmdtest.HeldPort) string { return strconv.Itoa(held.Port%65535 + 1) },
@@ -268,6 +274,7 @@ func TestListenerRefusesAPortThatIsNotItsInheritedSocketsPort(t *testing.T) {
 // the variable, and the listener binds nothing in its place: not PORT, which here names a port the
 // test holds, so a bind would fail on it.
 func TestListenerRefusesAListenFDThatIsNotASocketAndBindsNothing(t *testing.T) {
+	t.Parallel()
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("hold the port PORT names: %v", err)
@@ -338,15 +345,21 @@ func postListener(t *testing.T, port int, path, body string) {
 	}
 }
 
-// waitHealthy waits up to 30 s for the listener to log that it listens on its own loopback port,
-// then up to 30 s more for /healthz there to report "healthy", and kills the listener and fails
-// the test when it never does. The socket the listener inherited is not readiness: the kernel
-// queues connections on it from before the process starts, so a request there waits rather than
-// fails until the process serves, and only its listening line says it does. Each request has a
-// timeout, so one that waits on a socket nothing serves cannot outlast the deadline. /healthz
-// answers 200 with "starting" from the moment the listener serves, before NATS connects and
-// before the listener installs its SIGTERM handler, and a SIGTERM in that window kills the
-// process without an ordered shutdown.
+// waitHealthy waits for the listener to log that it listens on its own loopback port, then for
+// the line it writes once every dependency is up, then reads /healthz there until it reports
+// "healthy", and kills the listener and fails the test when it never does. The socket the
+// listener inherited is not readiness: the kernel queues connections on it from before the
+// process starts, so a request there waits rather than fails until the process serves, and only
+// its listening line says it does. Each request has a timeout, so one that waits on a socket
+// nothing serves cannot outlast the deadline. /healthz answers 200 with "starting" from the
+// moment the listener serves, before NATS connects and before the listener installs its SIGTERM
+// handler, and a SIGTERM in that window kills the process without an ordered shutdown.
+//
+// The ready line is the event the wait is on: the listener writes it where it publishes the
+// dependencies /healthz reads, so a poll before it can only answer "starting". What is left
+// after it is the role claim view's own first scan, which /healthz reports as "degraded" until
+// it finishes, so the read is repeated at a short interval rather than the fifth of a second a
+// poll of the whole start used.
 //
 // A listener that exits during its start-up fails this wait at once, naming its exit status and
 // its last output line, rather than waiting the whole 30 s out: a process that has exited answers
@@ -360,6 +373,7 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 		_ = p.Cmd.Process.Kill()
 		t.Fatalf("the listener logged that it listens on %s, not on its own %s:\n%s", addr, own, p.Output.String())
 	}
+	p.WaitForOutput(t, "envoy-listener ready (NATS connected)")
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
 	deadline := time.Now().Add(30 * time.Second)
@@ -401,7 +415,7 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 			}
 		}
 		failIfExited()
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 	failIfExited()
 	_ = p.Cmd.Process.Kill()

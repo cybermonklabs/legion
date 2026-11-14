@@ -208,12 +208,24 @@ func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Regist
 // process, or until LiveWindow and one HeartbeatInterval have passed since its first refusal, when
 // that last refusal is returned. A refusal naming another process than the one before is logged
 // again, so the log names every process the wait was on.
+//
+// ctx ending ends the wait with an error wrapping ctx's error, whether it ends between two tries
+// or during one. A try's own error does not always carry it: when ctx ends while a statement is
+// being written, pgx's context watcher sets a deadline on the socket and the statement fails with
+// the write's error ("write failed: … i/o timeout", pgproto3's writeError), which wraps no context
+// error (TestRegistersWaitEndsWithItsContext, run 43596122521, dispatch://INFRA-1075). So a try
+// that fails once ctx has ended returns an error wrapping both ctx's error and the try's: a caller
+// tells a stop from a failure by ctx's error - cmd/dispatch logs a SIGTERM during the wait as a
+// clean stop - and the log still reads what the statement hit.
 func waitForAdmission(ctx context.Context, pool *pgxpool.Pool, id string, instance Instance) error {
 	var giveUp time.Time
 	logged := ""
 	for {
 		refusal, err := tryRegister(ctx, pool, id, instance)
 		if err != nil {
+			if ctx.Err() != nil && !errors.Is(err, ctx.Err()) {
+				return fmt.Errorf("register this server process: %w: %w", ctx.Err(), err)
+			}
 			return fmt.Errorf("register this server process: %w", err)
 		}
 		if refusal == nil {

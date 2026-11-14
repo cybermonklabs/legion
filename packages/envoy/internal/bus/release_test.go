@@ -85,6 +85,7 @@ func publishReleaseProbe(t *testing.T, client *bus.Client, subject string) {
 // stopped handler take the durable's deliveries. A later Subscribe on the same client binds the
 // durable afresh and is handed what was published meanwhile.
 func TestADrainedSubscriptionIsNotBoundAgainByAReconnect(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		reconnect func(*bus.Client) error
@@ -159,6 +160,7 @@ func TestADrainedSubscriptionIsNotBoundAgainByAReconnect(t *testing.T) {
 // is bound again by the next reconnect; DrainSubscription then drains that rebound handle and gives
 // the registration up, so the durable is left free and the stopped handler is handed nothing more.
 func TestDrainSubscriptionEndsWhatARestoreBoundAfterTheSubscriptionEnded(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -422,6 +424,7 @@ func TestDrainSubscriptionWhileTheConnectionIsLiveStillDrains(t *testing.T) {
 // replacement stays the client's subscription, and a recovery onto a replacement connection binds
 // it again.
 func TestDrainSubscriptionOfAReplacedSubscriptionKeepsTheReplacement(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -472,6 +475,7 @@ func subscribeAbsent(t *testing.T, client *bus.Client, name string, count *atomi
 // and the handler its caller gave up takes the durable's deliveries. A later Subscribe on the same
 // client binds the durable and is handed what was published meanwhile.
 func TestAFailedSubscriptionReleasedIsNotBoundByAReconnect(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		reconnect func(*bus.Client) error
@@ -539,6 +543,7 @@ func TestAFailedSubscriptionReleasedIsNotBoundByAReconnect(t *testing.T) {
 // registration binds it; ReleaseFailed then gives up the registration and unsubscribes that bound
 // handle, so the durable is left free and the handler is handed nothing.
 func TestReleaseFailedUnsubscribesWhatARestoreBound(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -588,6 +593,7 @@ func TestReleaseFailedUnsubscribesWhatARestoreBound(t *testing.T) {
 // (ErrSubscriptionHeld). The kept subscription is bound again by a recovery onto a replacement
 // connection.
 func TestReleaseFailedKeepsASubscriptionThatBound(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -627,6 +633,7 @@ func TestReleaseFailedKeepsASubscriptionThatBound(t *testing.T) {
 // No recovery binds the drained registration again, and a later Subscribe binds the durable afresh
 // and is handed what was published meanwhile.
 func TestDrainSubscriptionDrainsTheHandleARestoreBound(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {

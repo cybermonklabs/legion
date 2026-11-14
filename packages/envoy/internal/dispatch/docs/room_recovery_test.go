@@ -26,8 +26,18 @@ import (
 // A failed room's eviction flushes the document and compacts its rows older than the tail under
 // its advisory lock. An operation inside a database transaction that waited for that eviction
 // could be waiting on its own transaction, which Postgres cannot see, so these tests bound every
-// such wait.
-const recoveryBound = 10 * time.Second
+// such wait. The bound is where a test gives up, never a measurement: each asserts that the
+// operation answered - ErrServiceUnavailable, or the recovery finishing - and never how soon, so
+// it allows for a loaded runner. Every package of this module now runs at once, four CI cores to
+// some 3,800 parallel tests and the race detector besides (dispatch://INFRA-1075). The one row
+// that asserts how soon, TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast, holds its write
+// to failFastBound instead, and is serial.
+const recoveryBound = 30 * time.Second
+
+// failFastBound is how soon a write on a failed room must answer ErrServiceUnavailable to be
+// failing fast, the base's ten seconds: a write that waited for the room's recovery on a timer
+// of its own before answering would pass the give-up of recoveryBound.
+const failFastBound = 10 * time.Second
 
 // seedFoldableText seeds the document as markdown in rows older than the tail, so a failed room's
 // eviction has rows to compact and waits for the document's advisory lock to write them: every
@@ -41,8 +51,14 @@ func seedFoldableText(t *testing.T, service *Service, artifactID, markdown strin
 	ageUpdatesThrough(t, service.store, artifactID, everyVersion, time.Hour)
 }
 
-// failsFast runs op and requires ErrServiceUnavailable within the bound.
+// failsFast runs op and requires ErrServiceUnavailable within recoveryBound.
 func failsFast(t *testing.T, what string, op func() error) {
+	t.Helper()
+	failsFastWithin(t, recoveryBound, what, op)
+}
+
+// failsFastWithin runs op and requires ErrServiceUnavailable within bound.
+func failsFastWithin(t *testing.T, bound time.Duration, what string, op func() error) {
 	t.Helper()
 	returned := make(chan error, 1)
 	go func() { returned <- op() }()
@@ -51,8 +67,8 @@ func failsFast(t *testing.T, what string, op func() error) {
 		if !errors.Is(err, ErrServiceUnavailable) {
 			t.Fatalf("%s on a failed room = %v, want ErrServiceUnavailable", what, err)
 		}
-	case <-time.After(recoveryBound):
-		t.Fatalf("%s waited for the failed room's recovery, which waits on a lock its transaction holds", what)
+	case <-time.After(bound):
+		t.Fatalf("%s did not answer within %v: it waited for the failed room's recovery, which waits on a lock its transaction holds", what, bound)
 	}
 }
 
@@ -126,6 +142,7 @@ func (s *failRoomDuringLoadStore) failDuringLoad(room string) {
 // failed, and every later write to the document answers 503 until the server restarts
 // (LEGION-282).
 func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	persist := &failRoomDuringLoadStore{
@@ -134,7 +151,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 		failed:         make(chan struct{}),
 	}
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), recoveryBound)
 		defer cancel()
 		_ = service.Shutdown(stop)
@@ -182,6 +199,11 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 // A publish loads no room of its own (publishLiveWrite); here a browser opens the document
 // between the write's commit and its publish, so the publish finds the room loading and waits for
 // that load (Server.Apply), which meets the failure.
+//
+// Serial: it releases the held load on a whole-process goroutine dump
+// (publishWaitsForALoadingRoom), which any test's publish parked on any loading room satisfies,
+// so a parallel neighbour's publish would let the load go before this row's publish reached it -
+// releasing it too early is the race this row used to lose.
 func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
@@ -191,7 +213,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 		failed:         make(chan struct{}),
 	}
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), recoveryBound)
 		defer cancel()
 		_ = service.Shutdown(stop)
@@ -228,7 +250,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	persist.loading, persist.hold = make(chan struct{}), make(chan struct{})
 	var released sync.Once
 	release := func() { released.Do(func() { close(persist.hold) }) }
-	t.Cleanup(release)
+	cleanupAndRelease(t, release)
 	persist.armed.Store(true)
 	go func() { _ = service.warmLiveDocument(context.Background(), artifactID) }()
 	<-persist.loading
@@ -309,6 +331,7 @@ func publishWaitsForALoadingRoom() bool {
 // alone, so the ask blocks the dropped settlement would have indexed stayed out of the open
 // asks until someone edited the document. The replacement settles once instead.
 func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID,
@@ -350,6 +373,7 @@ func indexedAsks(t *testing.T, service *Service, artifactID string) int {
 }
 
 func TestATransactionHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
+	t.Parallel()
 	for name, create := range map[string]func(*testing.T, *store.Store, string) string{
 		"issue document":   createDocument,
 		"project document": createProjectDocument,
@@ -393,6 +417,7 @@ func TestATransactionHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 // document's locks: the transaction holding them may be waiting on a lock this one holds. Once
 // the room has recovered, a write runs as ever.
 func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedFoldableText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -454,6 +479,7 @@ func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
 // the mark waits, as every document read outside a transaction does, and answers once the room
 // has recovered.
 func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedFoldableText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -502,6 +528,7 @@ func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
 }
 
 func TestARoomFailingBetweenTwoJoinedOperationsFailsTheSecondFast(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -535,6 +562,7 @@ func TestARoomFailingBetweenTwoJoinedOperationsFailsTheSecondFast(t *testing.T) 
 // that holds off every other writer and the settlement is on the failed room. The write fails,
 // and its transaction rolls back.
 func TestARoomFailingDuringAJoinedWriteFailsTheWrite(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -575,6 +603,7 @@ func TestARoomFailingDuringAJoinedWriteFailsTheWrite(t *testing.T) {
 // no lock either transaction holds, and the second write then either runs on the reloaded room
 // or, had it reached the failed room first, fails fast. It never waits for good.
 func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -675,6 +704,7 @@ func awaitOwnerRowTaken(t *testing.T, ctx context.Context, database *store.Store
 // ids into the room, so a room that fails in that window fails the settlement rather than
 // holding it until an eviction that waits for its lock. The reloaded room settles as ever.
 func TestASettlementHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
@@ -772,6 +802,9 @@ func (s *failingBrowserAppendStore) AppendUpdateTx(ctx context.Context, tx pgx.T
 // paragraph and its slot is on the failed room, so the write fails at its append rather than
 // versioning or publishing a document the room never held, and its transaction rolls back to the
 // durable document, which the reloaded room then serves.
+//
+// Serial: "fails fast" is failsFastWithin's failFastBound, 10 s of wall clock, which a parallel
+// neighbour's load spends.
 func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -781,7 +814,7 @@ func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 		release:        make(chan struct{}),
 	}
 	service := New(Deps{Store: database, Persistence: store, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	liveTree(t, service, artifactID)
 
@@ -803,7 +836,7 @@ func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 		store.failing.Store(false)
 	}
 	store.beforeTx.Store(&fail)
-	failsFast(t, "a joined write whose room failed before its first append", func() error {
+	failsFastWithin(t, failFastBound, "a joined write whose room failed before its first append", func() error {
 		_, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{Op: "replace", Find: "before", With: "after"}}, model.Actor{Kind: "user", ID: "alice"}, nil)
 		return err
 	})

@@ -44,10 +44,11 @@ func timelineRows(t *testing.T, ctx context.Context, pool *store.Pool) []string 
 // merged-PR search and both run listings answer nothing, and every runs backfill has finished. It
 // runs one reconcile pass to settle the progress rows, then a second on a recorded pool, and
 // answers that second pass's statements once it has proved the pass succeeded and changed no
-// stored row, logged no change and made no direct write to the timeline's tables.
+// stored row, logged no change and made no direct write to the timeline's tables. Its GitHub
+// answers no 502, 504 or timeout, so no read waits to retry (githubPageRetryWait), and the
+// parallel test it serves leaves that package variable to the serial rows that shrink it.
 func quietReconcilePass(t *testing.T, prs int) []string {
 	t.Helper()
-	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	finished := time.Now().UTC()
@@ -122,6 +123,7 @@ func quietReconcilePass(t *testing.T, prs int) []string {
 // miss), so what it reads every five minutes must not grow with the table. 50 stored rows sit
 // well inside one bounded attribution batch, so they cost the pass no statement more than one.
 func TestAReconcilePassWithNothingNewCostsTheSameStatementsWhateverIsStored(t *testing.T) {
+	t.Parallel()
 	one := quietReconcilePass(t, 1)
 	fifty := quietReconcilePass(t, 50)
 	if len(fifty) != len(one) {

@@ -27,22 +27,47 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// endableIdentity names one person until their session ends.
-type endableIdentity struct{ ended atomic.Bool }
+// endableIdentity names one person until their session ends, and counts the resolutions it
+// refused once it had: a socket that closes at the first re-resolution after the end has asked it
+// once.
+type endableIdentity struct {
+	ended   atomic.Bool
+	refused atomic.Int32
+}
 
 func (i *endableIdentity) Login(*http.Request) (string, error) {
 	if i.ended.Load() {
+		i.refused.Add(1)
 		return "", identity.ErrNoIdentity
 	}
 	return "alice@d.example", nil
 }
 
+// requireClosedAtTheFirstRefusal requires that the socket whose person ended closed at the first
+// re-resolution that refused them: no re-resolution after the end but the one already under way
+// found them still resolving, and the person was refused once. The close itself is waited for
+// with a give-up bound; these counts are what bound how long the socket outlived the session.
+func requireClosedAtTheFirstRefusal(t *testing.T, person *endableIdentity, rechecks *callerRechecks, what string) {
+	t.Helper()
+	if resolved := len(rechecks.resolved); resolved > 1 {
+		t.Fatalf("%s resolved its ended person again %d times before it closed, want at most the one under way as the session ended", what, resolved)
+	}
+	if refused := person.refused.Load(); refused != 1 {
+		t.Fatalf("%s closed after its ended person was refused %d times, want at the first refusal", what, refused)
+	}
+}
+
 // A person whose session ends (logout, a refresh the sign-in pool refuses, a lost group) stops
-// receiving the event feed they subscribed to while signed in: the live socket resolves them again
-// on each heartbeat (whileCallerResolves) and closes with 1008 once they no longer resolve. The
-// heartbeat is a second, so the client's pong meets the pong deadline on a loaded runner and the
-// socket lasts until the session ends.
+// receiving the event feed they subscribed to while signed in: the live socket resolves them
+// again on every CallerRecheck (whileCallerResolves) and closes with 1008 at the first
+// re-resolution that no longer finds them. The heartbeat is long and the recheck short, so the
+// socket's life turns on that check alone and never on a pong a loaded runner delayed.
 func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
+	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
+	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
+	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
+	// lock on purpose out of the parallel set left five of these timing out on events_start;
+	// the whole family is out of it (dispatch://INFRA-1075).
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
@@ -50,13 +75,15 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	person := &endableIdentity{}
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
-		StreamHeartbeat: time.Second,
+		StreamHeartbeat: time.Hour, CallerRecheck: liveRecheck,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(served.waitBackground)
+	rechecks := countCallerRechecks(served)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -64,15 +91,22 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	subscribeEvents(t, client, "events", nil)
 
 	person.ended.Store(true)
-	if closed := client.closeError(t, 5*time.Second); closed.Code != gws.ClosePolicyViolation {
+	rechecks.drain()
+	if closed := client.closeError(t, eventFeedWait); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the event feed's socket closed with %d %q once its person stopped resolving, want 1008", closed.Code, closed.Text)
 	}
+	requireClosedAtTheFirstRefusal(t, person, rechecks, "the event feed's socket")
 }
 
 // The same holds for a human watching an agent's live conversation: the socket that carries the
-// agent view resolves its person on each heartbeat and closes with 1008 once their session has
-// ended, so the view stops relaying.
+// agent view resolves its person on every CallerRecheck and closes with 1008 at the first
+// re-resolution after their session has ended, so the view stops relaying.
 func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
+	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
+	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
+	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
+	// lock on purpose out of the parallel set left five of these timing out on events_start;
+	// the whole family is out of it (dispatch://INFRA-1075).
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
@@ -82,13 +116,15 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	source.SetResponder(plannerSessionID, true)
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
-		AgentStream: source, StreamHeartbeat: time.Second,
+		AgentStream: source, StreamHeartbeat: time.Hour, CallerRecheck: liveRecheck,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(served.waitBackground)
+	rechecks := countCallerRechecks(served)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -99,19 +135,25 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	}
 
 	person.ended.Store(true)
-	if closed := client.closeError(t, 5*time.Second); closed.Code != gws.ClosePolicyViolation {
+	rechecks.drain()
+	if closed := client.closeError(t, eventFeedWait); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the agent view's socket closed with %d %q once its viewer stopped resolving, want 1008", closed.Code, closed.Text)
 	}
-	pollUntil(t, 5*time.Second, "the closed socket's view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	requireClosedAtTheFirstRefusal(t, person, rechecks, "the agent view's socket")
+	pollUntil(t, concurrentWait, "the closed socket's view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 }
 
 // A person whose session ends while their editor holds a document open loses the live document
-// too: the document socket resolves them again on every heartbeat, as the live socket does, and
+// too: the document socket resolves them again on every CallerRecheck, as the live socket does,
 // closes once they no longer resolve, so the editor neither receives the document's edits nor
 // sends its own. Each case ends the session the way it ends in production: the hourly membership
 // check finding the person out of the group, and a sign-out.
 func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
-	const heartbeat = 250 * time.Millisecond
+	// No t.Parallel: this test measures the process. The document socket must close within a
+	// second and a recheck of the session's end, and another test's work on the same machine
+	// would read as a socket that kept its ended person.
+	// No heartbeat worth waiting for: what this test turns on is the re-resolution, which the
+	// rig runs every liveRecheck and each case waits for.
 	for name, end := range map[string]func(*testing.T, *documentSocketRig){
 		"the sign-in pool drops them from the group": func(t *testing.T, rig *documentSocketRig) {
 			// The pool drops the group before the confirmation lapses, so the first refresh after
@@ -131,7 +173,8 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			rig := newDocumentSocketRig(t, heartbeat)
+			rig := newDocumentSocketRig(t)
+			rechecks := countCallerRechecks(rig.served)
 			peer := &syncedPeer{
 				wsURL: "ws" + strings.TrimPrefix(rig.server.URL, "http") + "/ws/doc/" + rig.artifactID, sockets: rig.sockets,
 				headers: http.Header{"Cookie": []string{rig.cookie.Name + "=" + rig.cookie.Value}}, artifactID: rig.artifactID, doc: crdt.New(),
@@ -139,9 +182,9 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 			peer.connect(t)
 			t.Cleanup(peer.close)
 
-			// While they are a member the socket outlives several heartbeats, each resolving them
-			// again, and stays writable: their edit reaches the room.
-			time.Sleep(4 * heartbeat)
+			// While they are a member the socket outlives several re-resolutions and stays
+			// writable: their edit reaches the room.
+			rechecks.await(t, 4, "a person who is still a member")
 			peer.appendParagraph(t, "typed while a member")
 			peer.barrier(t)
 			if refreshes := rig.pool.Refreshes(); refreshes != 0 {
@@ -150,11 +193,15 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 
 			end(t, rig)
 			ended := time.Now()
+			rechecks.drain()
 			select {
 			case <-peer.connection().Ended:
-				t.Logf("the document socket closed %s after the session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
-			case <-time.After(heartbeat + time.Second):
+				t.Logf("the document socket closed %s after the session ended (recheck %s)", time.Since(ended).Round(time.Millisecond), liveRecheck)
+			case <-time.After(liveRecheck + time.Second):
 				t.Fatalf("the document socket stayed open %s after its person's session ended", time.Since(ended).Round(time.Millisecond))
+			}
+			if resolved := len(rechecks.resolved); resolved > 1 {
+				t.Fatalf("the document socket resolved its ended person again %d times before it closed, want at most the one under way as the session ended", resolved)
 			}
 			if generation, _, err := rig.sessions.CurrentSessionGeneration(context.Background(), rig.email); err != nil || generation != rig.generation+1 {
 				t.Fatalf("session generation after the session ended = %d (%v), want %d", generation, err, rig.generation+1)
@@ -189,6 +236,7 @@ type documentSocketRig struct {
 	sessions   *store.PgSessionStore
 	documents  *docs.Service
 	server     *httptest.Server
+	served     *server
 	sockets    *servedSockets
 	email      string
 	generation int64
@@ -198,7 +246,8 @@ type documentSocketRig struct {
 
 // newDocumentSocketRig signs alice@d.example in through a fake pool as a member of
 // dispatch-members, as the sign-in callback does, and gives her an issue whose spec she can open.
-func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocketRig {
+// Its sockets ping on no heartbeat worth waiting for and resolve their caller every liveRecheck.
+func newDocumentSocketRig(t *testing.T) *documentSocketRig {
 	t.Helper()
 	ctx := context.Background()
 	rig := &documentSocketRig{pool: oidctest.New(t), email: "alice@d.example"}
@@ -244,13 +293,14 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 	t.Cleanup(func() { _ = rig.documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: rig.documents, Events: broker,
-		StreamHeartbeat: heartbeat,
+		StreamHeartbeat: time.Hour, CallerRecheck: liveRecheck,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	rig.served = register(mux, t.Context(), deps)
+	t.Cleanup(rig.served.waitBackground)
 	rig.sockets = &servedSockets{finished: make(map[string]chan struct{})}
 	rig.server = httptest.NewServer(rig.sockets.serve(mux.ServeHTTP))
 	t.Cleanup(rig.server.Close)
@@ -286,7 +336,12 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 // signed in: their session generation and refresh token are kept, and once the issuer answers the
 // same cookie is served again after one refresh.
 func TestASignInIssuerOutageAnswersTheAPIAndTheDocumentSocket503AndKeepsTheSession(t *testing.T) {
-	rig := newDocumentSocketRig(t, time.Hour)
+	// No t.Parallel: this test reads the event log by id cursor, and the safe horizon it waits
+	// on is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
+	// instance (internal/dispatch/events, horizon.go). Keeping only the tests that hold a
+	// lock on purpose out of the parallel set left five of these timing out on events_start;
+	// the whole family is out of it (dispatch://INFRA-1075).
+	rig := newDocumentSocketRig(t)
 	ctx := context.Background()
 	signedIn, found, err := rig.people.Membership(ctx, rig.email)
 	if err != nil || !found {

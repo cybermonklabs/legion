@@ -251,7 +251,7 @@ func writeCorpusSha256(text string) string {
 // operation with "<mode>/<transaction>/<operation>".
 func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, observe func(step string)) writeCorpusLine {
 	t.Helper()
-	t.Cleanup(func() { pmdoc.SetBlockIDGenerator(nil) })
+	cleanupAndRelease(t, func() { pmdoc.SetBlockIDGenerator(nil) })
 	if observe == nil {
 		observe = func(string) {}
 	}
@@ -486,6 +486,8 @@ func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, o
 	return line
 }
 
+// It runs on its own: pmdoc.SetBlockIDGenerator replaces the package-level generator every minted
+// block id comes from, so any test whose write mints an id beside it would be given this test's.
 func TestWriteCorpus(t *testing.T) {
 	dir := os.Getenv("DISPATCH_TOKEN_CORPUS")
 	if dir == "" {

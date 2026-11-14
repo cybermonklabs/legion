@@ -218,33 +218,63 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
 
+      # The lookup names the save's own paths, exclusion and all. actions/cache keys an entry on
+      # its path list as well as its key, so a lookup that names other paths hits an entry this
+      # fill's own save would not write and skips the build and the save: that is what kept
+      # envoy-go's restore missing go-envoy-test-Linux-go1.27.3 on every run while this lookup
+      # hit the entry saved before the zips were left out (dispatch://INFRA-1075).
       - id: go-envoy-test
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
       # envoy-go's set: the test binary of every package of the envoy module, the integration
-      # package's and the natslive build of internal/testnats among them. `go test -c` links each
-      # package's test binary and `-o /dev/null` writes none of them, so every object the restored
-      # build cache holds is made and no test runs: envoy-go's tests want the job's Postgres
-      # service and container images, which a cache fill has no reason to start.
+      # package's and the natslive build of internal/testnats among them. It runs each binary
+      # with `-run '^$'`, which matches no test, rather than `go test -c -o /dev/null`: measured
+      # on 2026-11-08, a job restoring a `-c -o /dev/null` fill still spent about 70 s of its unit
+      # step on work this step had done. No stored test result is reused either way: the job
+      # passes -count=1, which turns go test's result cache off, so all a fill can hand it is
+      # build actions. What a `-c` fill leaves out is one of them per package, the compile of its
+      # test main: `go test` compiles the test main of a binary it runs with -dwarf=false, since
+      # it deletes that binary afterwards, and `go test -c` compiles it with DWARF for the file it
+      # writes, so the two are different actions to the build cache. Measured with go1.27.3 on
+      # internal/dispatch/text, each fill into an empty build cache: after a `-c -o /dev/null`
+      # fill, `go test -count=1 -run '^$'` compiled the package's test main again before it
+      # linked, and after a `-run '^$'` fill it compiled nothing and only linked (a link is no
+      # cache entry under either fill). That the 70 s was test-main compiles and nothing else was
+      # not measured. So the fill does what the job does, to the last cached action, and starts
+      # no test: `-run '^$'` runs each binary, which prints `ok … [no tests to run]` and touches
+      # no Postgres and no container image, which a cache fill has no reason to start
+      # (dispatch://INFRA-1075).
       - name: Build the test binary of every package of the envoy module
         if: steps.go-envoy-test.outputs.cache-hit != 'true'
         run: |
-          go test -c -o /dev/null ./...
-          go test -c -o /dev/null -tags natslive ./internal/testnats/
+          go list ./... | xargs go test -count=1 -run '^$' -p 8 > /dev/null
+          go test -count=1 -run '^$' -tags natslive ./internal/testnats/ > /dev/null
         working-directory: packages/envoy
 
+      # Without the module zips. A module Go has already extracted is read from its extracted
+      # tree under ~/go/pkg/mod/<module>@<version>; the zip it came out of, under
+      # ~/go/pkg/mod/cache/download/<module>/@v/<version>.zip, is read only to extract it again,
+      # which no job restoring this entry does - the .info, .mod and .ziphash beside it, which go
+      # does read, are kept. Measured on 2026-11-07 by downloading this module's own cache fresh:
+      # 2,299 MB on disk of which the zips are 409 MB in 460 files, and they are deflate already,
+      # so they are the one part of this entry that the archive cannot compress and the largest
+      # single block of the 918 MB envoy-go restores in 23 s (dispatch://INFRA-1075). A zip left
+      # out that a later run does need is downloaded again, as one for a module the entry never
+      # held is.
       - if: steps.go-envoy-test.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
 
   # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action

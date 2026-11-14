@@ -27,6 +27,7 @@ import (
 // of the recursive delete is 208 bytes, so at this depth it needs about 40 MiB, two and a half
 // times the cap.
 func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
+	t.Parallel()
 	stacktest.Under(t, 16<<20, func(t *testing.T) {
 		const (
 			levels      = 200_000
@@ -36,7 +37,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		service.settle = time.Hour
 		seedServiceText(t, service, artifactID, "before")
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(httpServer.Close)
+		cleanupAndRelease(t, httpServer.Close)
 
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
 		// The peer writes on the room's document, as a browser does once the room has sent it, so

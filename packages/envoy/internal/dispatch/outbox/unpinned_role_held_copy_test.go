@@ -61,6 +61,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, live, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	claimant.drained(t)
 	if row := readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder)); row.settled || row.published {
 		t.Fatalf("the batch left the claimant's held copy settled=%v published=%v, want the unpublished row the lapsed attempt's state owes every key of this comment",
 			row.settled, row.published)
@@ -78,7 +79,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	time.Sleep(time.Second)
+	claimant.drained(t)
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("the fallback pass sent %s %v while the live unnamed mention, which its sender can pin to this very claimant, is still being sent: the mention would land beside the copy under %s",
 			holder, keysOf(got),

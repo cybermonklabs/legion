@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // waitForQueuedLock waits until some session is queued, not yet granted, for mode on relation: a
@@ -41,6 +43,7 @@ func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 // From 0065 a comment that names no created_at is stamped when its insert runs, so two comments
 // one transaction inserts are ordered as they were written.
 func TestMigrate0064To0066RecordApprovalHandBacks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	migrateThrough(t, store, 63)
@@ -170,9 +173,18 @@ func TestMigrate0064To0066RecordApprovalHandBacks(t *testing.T) {
 // while 0066 waits for comments closes a cycle with it, and 0066 gives up first, applying nothing,
 // before Postgres's deadlock check runs on either side: the write commits, and the runner's next
 // attempt applies 0066. Under the runner's five-second bound that cycle aborts one side with 40P01.
+// The test runs the runner at that production bound, not at testLocking's half second: half a
+// second is below deadlock_timeout too, so under it the runner would give up first by itself and
+// the test would pass with 0066's own bound gone.
+//
+// It runs on its own, as the other migration lock tests do (migrate_lock_retry_test.go): it reads
+// what the migration runner logged, and captureLogs sends the default logger, which the whole
+// process shares, to this test's buffer. A test running beside it would take those lines into its
+// own buffer, leaving this one with none to read.
 func TestMigrate0066GivesUpBeforeACommentWriteThatWritesAsksDeadlocks(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
+	store.Locking = pgmigrate.Locking{Timeout: pgmigrate.LockTimeout, Attempts: testLocking.Attempts, RetryPause: testLocking.RetryPause}
 	migrateThrough(t, store, 65)
 	logs := captureLogs(t)
 	var askID string

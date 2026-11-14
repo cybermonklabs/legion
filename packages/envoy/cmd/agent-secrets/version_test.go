@@ -15,6 +15,7 @@ import (
 // `--version`, so a stamped build prints exactly the tag. Any other build says devel rather than
 // naming a release it is not.
 func TestVersionNamesTheStampedReleaseAndOtherwiseSaysDevel(t *testing.T) {
+	t.Parallel()
 	stamped := cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets",
 		Flags: []string{"-ldflags", "-X github.com/sjawhar/envoy/internal/buildversion.tag=legion-envoy-v9.9.9"}})
 	if out, err := exec.Command(stamped, "--version").Output(); err != nil || string(out) != "agent-secrets legion-envoy-v9.9.9\n" {

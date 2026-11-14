@@ -1253,6 +1253,6 @@ func (s *Service) removeLocalAwareness(room string) {
 		return
 	}
 	if err := aw.ApplyUpdate(removal, nil); err != nil {
-		slog.Warn("dispatch: remove a closing document room's awareness", "room", room, "error", err)
+		s.log().Warn("dispatch: remove a closing document room's awareness", "room", room, "error", err)
 	}
 }

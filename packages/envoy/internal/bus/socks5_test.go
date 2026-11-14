@@ -27,7 +27,7 @@ const unresolvable = "nats.example.test:4222"
 // waitForConnects waits for the proxy to have received n requests, every one of them want.
 func waitForConnects(t *testing.T, proxy *testsocks5.Server, n int, want testsocks5.Request) {
 	t.Helper()
-	waitFor(t, 15*time.Second, fmt.Sprintf("%d requests at the proxy", n), func() bool { return len(proxy.Requests()) >= n })
+	waitFor(t, busWait, fmt.Sprintf("%d requests at the proxy", n), func() bool { return len(proxy.Requests()) >= n })
 	requireConnects(t, proxy, slices.Repeat([]testsocks5.Request{want}, n))
 }
 
@@ -82,6 +82,7 @@ type clientConnect func([]string, ...bus.ConnectOption) (*bus.Client, error)
 // for a Client the replacement its recovery dials once the connection is closed. The name resolves
 // nowhere, so a connection that went around the proxy would reach nothing.
 func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
+	t.Parallel()
 	want := testsocks5.Request{AddressType: 0x03, Address: unresolvable}
 	for name, connect := range map[string]clientConnect{"Connect": bus.Connect, "ConnectOwningStream": bus.ConnectOwningStream} {
 		t.Run(name, func(t *testing.T) {
@@ -103,7 +104,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 				t.Helper()
 				envelope := roleEnvelope(topic)
 				envelope.EventID = marker
-				waitFor(t, 15*time.Second, "a core publish to come back through the proxy "+marker, func() bool {
+				waitFor(t, busWait, "a core publish to come back through the proxy "+marker, func() bool {
 					if err := client.Publish(envelope); err != nil {
 						return false
 					}
@@ -130,7 +131,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 			// with the same proxy.
 			client.Conn.Close()
 			waitForConnects(t, fake, 3, want)
-			waitFor(t, 15*time.Second, "the replacement connection", client.Connected)
+			waitFor(t, busWait, "the replacement connection", client.Connected)
 			roundTrip("after-the-replacement")
 		})
 	}
@@ -152,7 +153,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 		}
 		roundTrip := func(marker string) {
 			t.Helper()
-			waitFor(t, 15*time.Second, "a publish to come back through the proxy "+marker, func() bool {
+			waitFor(t, busWait, "a publish to come back through the proxy "+marker, func() bool {
 				if err := conn.Publish(subject, []byte(marker)); err != nil {
 					return false
 				}
@@ -179,6 +180,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 // nats.go resolves a URL's host itself unless told not to, and the address it found would reach
 // nothing through a proxy that knows names this machine's resolver does not.
 func TestSOCKS5ProxyIsHandedANameTheResolverKnows(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	server := hostOf(t, uri)
 	_, port, err := net.SplitHostPort(server)
@@ -198,6 +200,8 @@ func TestSOCKS5ProxyIsHandedANameTheResolverKnows(t *testing.T) {
 // the process environment names; one left on the process environment goes through the proxy it
 // names. The connect's own lookup decides, never the process environment beside it.
 func TestNoProxyIsDialedWhenTheSettingIsUnset(t *testing.T) {
+	// Serial: it sets ENVOY_NATS_SOCKS5_PROXY and ENVOY_ALLOW_REMOTE_NATS with t.Setenv, which
+	// panics the process beside t.Parallel.
 	uri := testnats.URL(t)
 	server := hostOf(t, uri)
 	_, serverPort, err := net.SplitHostPort(server)
@@ -250,6 +254,7 @@ func TestNoProxyIsDialedWhenTheSettingIsUnset(t *testing.T) {
 // setting. Each connect makes the bus's ten attempts a second apart, so each subtest takes about
 // ten seconds; they run in parallel. Every proxy is a loopback address: nothing is looked up.
 func TestAFailedConnectThroughAProxyNamesIt(t *testing.T) {
+	t.Parallel()
 	urls := []string{"nats://" + unresolvable}
 	silent := testsocks5.Start(t, "127.0.0.1:1")
 	unreachable := testsocks5.StartRefusing(t, 0x04)
@@ -297,6 +302,8 @@ func TestAFailedConnectThroughAProxyNamesIt(t *testing.T) {
 // before the replacement dial has made its ten attempts, and still names the setting and the
 // proxy's address: an operator reads a publish's error first.
 func TestAPublishWhoseDeadlineEndsFirstNamesTheProxy(t *testing.T) {
+	// Serial: its assertion is a time (the publish fails at its 5 s deadline, within 7 s, before
+	// the replacement dial's ten attempts a second apart run out).
 	uri := testnats.URL(t)
 	fake := testsocks5.Start(t, hostOf(t, uri))
 	client, err := bus.Connect([]string{withHost(t, uri, unresolvable)}, bus.WithEnvironment(proxied(fake.Addr)))
@@ -336,6 +343,7 @@ func TestAPublishWhoseDeadlineEndsFirstNamesTheProxy(t *testing.T) {
 // failed dial through a proxy names the setting too, so "at once" is under a second. The server URL
 // is the fake itself, so a connect that ignored the setting and dialled directly would reach it.
 func TestAMalformedProxyIsRefusedBeforeAnyDial(t *testing.T) {
+	// Serial: its assertion is a time (each refusal comes within 1 s, before any dial).
 	fake := testsocks5.Start(t, "127.0.0.1:1")
 	urls := []string{"nats://" + fake.Addr}
 	connects := map[string]func(func(string) (string, bool)) error{
@@ -395,6 +403,7 @@ func TestAMalformedProxyIsRefusedBeforeAnyDial(t *testing.T) {
 // (underscores allowed, as in a Compose service name), passes the check, as does a port written
 // with leading zeros or the highest port.
 func TestAWellFormedProxyIsAccepted(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{
 		"127.0.0.1:1055", "[::1]:1055", "localhost:1055", "localhost.:1055",
 		"127.0.0.1:01055", "127.0.0.1:65535", "proxy.example.test:1080", "tailscale-sidecar:1055",
@@ -412,6 +421,7 @@ func TestAWellFormedProxyIsAccepted(t *testing.T) {
 // refusal prints the value: not the remote-reach refusal of a run that has not opted in, and not
 // the address check's.
 func TestARefusalNeverPrintsTheProxyValue(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2"
 	for _, value := range []string{
 		"socks5://user:" + secret + "@proxy.example:1080", "user:" + secret + "@127.0.0.1:1055",
@@ -458,7 +468,9 @@ func printsSome(message, secret string) bool {
 // labels by '.', '-' or '_', in lower case, and of any type (bus.HoldsSeed). The check decodes
 // rather than matching a shape: a 58-letter base32 label that is a user seed with one character
 // changed, which its checksum catches, is still a proxy address, whole or split across labels, and
-// a connect through it dials (about ten seconds, the bus's ten attempts). The rows run in parallel.
+// a connect through it dials (about ten seconds, the bus's ten attempts). The control rows run in
+// parallel with each other; the seed rows run one at a time.
+// Serial: it holds each seed row's three refusals to 1 s of wall clock.
 func TestAProxyHoldingAnNkeySeedIsRefused(t *testing.T) {
 	seedOf := func(create func() (nkeys.KeyPair, error)) string {
 		t.Helper()
@@ -491,7 +503,7 @@ func TestAProxyHoldingAnNkeySeedIsRefused(t *testing.T) {
 		{"lower case, split across labels", "sidecar." + lower(user[:25]) + "." + lower(user[25:]) + ".example.test:1055", user},
 	} {
 		t.Run("seed/"+row.name, func(t *testing.T) {
-			t.Parallel()
+			// Serial: each row bounds its three refusals at 1 s of wall clock.
 			if err := bus.CheckSOCKS5Proxy(row.value); err == nil || !strings.Contains(err.Error(), "nkey seed") || printsSome(err.Error(), row.seed) {
 				t.Errorf("CheckSOCKS5Proxy(%q) = %v, want a refusal saying it holds an nkey seed, printing none of it", row.value, err)
 			}

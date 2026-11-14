@@ -145,12 +145,14 @@ func backoffAttempts(t *testing.T, database *store.Store, document string) (vers
 func newExcerptService(t *testing.T, database *store.Store, persistence VersionedStore) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	// The server's own pace (referenceExcerptSchedule), which the windows these tests watch for
+	// statements are measured against.
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
 
 // runExcerpts runs the reconciliation loop run until the test ends, and fails the test if it does
-// not return promptly once its context ends.
+// not return within loopStopBound once its context ends.
 func runExcerpts(t *testing.T, run func(ctx context.Context)) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -159,21 +161,29 @@ func runExcerpts(t *testing.T, run func(ctx context.Context)) {
 		defer close(done)
 		run(ctx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the reconciliation did not return within 10s of its context ending")
+		case <-time.After(loopStopBound):
+			t.Errorf("the reconciliation did not return within %v of its context ending", loopStopBound)
 		}
 	})
 }
+
+// loopStopBound is how soon a reconciliation or sweep loop must return once its context ends
+// (runExcerpts, runEditNoticeLoop): those helpers are the one check that a loop stops on
+// cancellation, so the bound is that check's subject, the base's ten seconds, and never the
+// package's give-up wait (roomWait), which a loop that took a minute to notice would pass. Every
+// row that runs one of the loops is serial.
+const loopStopBound = 10 * time.Second
 
 // One document the reconciliation cannot read for any other reason than the two it records as no
 // block is deferred; the other nineteen of its batch still get their excerpts, and the batch
 // reports no error, so the document that sorts first never holds the rest back. The next batch
 // leaves it alone until its retry is due rather than reading it again.
 func TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	documents := owedDocuments(t, database, referenceExcerptBatch)
@@ -210,6 +220,7 @@ func TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch(t *test
 // update - is deferred and stays owed; the others of its batch are recorded, the batch reports no
 // error, and the next batch does not try it again before its retry is due.
 func TestADocumentTheExcerptReconciliationCannotRecordIsDeferredAndStaysOwed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	documents := owedDocuments(t, database, 3)
@@ -252,6 +263,24 @@ func TestADocumentTheExcerptReconciliationCannotRecordIsDeferredAndStaysOwed(t *
 // A document that keeps failing is tried again when its retry falls due, each wait twice the one
 // before - not on every pass, which here may run every 50 ms - and the pass that defers it
 // returns that due time as the loop's one timer.
+//
+// The growth is held from both sides. Below, retry n may not come before base << (n-1) has run
+// since the attempt before it: the pass defers a document only after its read has failed, to the
+// database's own now() plus the base doubled once per failure already counted, plus up to a fifth
+// again of jitter (refs.DeferExcerpts, refs/excerpts.go:224-239), and the loop holds its one timer
+// to that moment (reconcileExcerptPass, reference_excerpts.go:281-289). A product that retried on
+// every pass fails at retry 1, and one whose wait stopped doubling fails at retry 2. The 20 ms is
+// for the two clocks the bound crosses, since the database stamps next_attempt_at from its own
+// now() and the loop waits out time.Until on this process's. Above, retry n must come within the
+// fifth of jitter and a second past base << (n-1): the second is for the timer, the lease
+// attempt, the drift query and the document read between the due time and the read this test
+// counts. That side is what says the wait doubles rather than grows faster: a backoff that
+// tripled (0.4, 1.2, 3.6 s) fails at retry 3.
+//
+// Serial: the upper bound is a second of wall clock between a due time and a read, which a
+// parallel neighbour's load spends: run in parallel, CI run 42959489662 read retry 3
+// 3.294159096s after the attempt before against a want of about 1.6 s (dispatch://INFRA-1075).
+// The wait for the four attempts is the package's hang guard; the gaps are the bounds.
 func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 	database := storetest.Open(t)
 	failing := owedDocuments(t, database, 1)[0]
@@ -263,15 +292,21 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 		service.runReferenceExcerptReconciliation(ctx, leases, nil, excerptSchedule{minGap: 50 * time.Millisecond, retryBase: base})
 	})
 
-	waitFor(t, 15*time.Second, "the failing document's first attempt and three retries", func() bool {
+	waitFor(t, roomWait(t), "the failing document's first attempt and three retries", func() bool {
 		return len(persistence.reads.attempts(failing)) >= 4
 	})
 	attempts := persistence.reads.attempts(failing)
 	for index := 1; index < 4; index++ {
 		gap, want := attempts[index].Sub(attempts[index-1]), base<<(index-1)
-		if gap < want-20*time.Millisecond || gap > want+want/5+time.Second {
-			t.Fatalf("retry %d came %v after the attempt before; want about %v (the base doubled per failure, plus up to a fifth)", index, gap, want)
+		if gap < want-20*time.Millisecond {
+			t.Fatalf("retry %d came %v after the attempt before, inside the %v its own backoff owes it (the base doubled once per failure): a document tried again before its retry falls due fills every batch ahead of the documents that sort after it",
+				index, gap, want)
 		}
+		if ceiling := want + want/5 + time.Second; gap > ceiling {
+			t.Fatalf("retry %d came %v after the attempt before, past the %v its backoff of %v allows (the base doubled per failure, plus up to a fifth, and a second): the wait grows faster than doubling",
+				index, gap, ceiling, want)
+		}
+		t.Logf("retry %d came %v after the attempt before, its backoff being %v", index, gap, want)
 	}
 	if !isOwed(t, database, failing) {
 		t.Fatal("the failing document's mention is no longer owed")
@@ -281,6 +316,9 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 // Twenty documents that fail, sorting before a twenty-first, fill one batch; deferring them lets
 // the next batch reach the twenty-first at once, and none of the twenty is read again before its
 // retry is due.
+//
+// Serial: the twenty-first document's excerpt must be stored within 10 s of the start, a
+// wall-clock bound: it is what says the next batch comes at once rather than after a pause.
 func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) {
 	database := storetest.Open(t)
 	documents := owedDocuments(t, database, referenceExcerptBatch+1)
@@ -306,7 +344,15 @@ func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) 
 
 // Once the reconciliation has stored every owed excerpt, it makes no statement at all - no batch
 // on a timer, no lease attempt - over a window longer than the two-second step the timer it
-// replaced took, and its last pass asked for no timer.
+// replaced took, and its last pass asked for no timer. This row is the one that runs
+// referenceExcerptSchedule end to end, through RunReferenceExcerptReconciliation: the window it
+// watches is what proves the production gap arms no pass of its own.
+//
+// Serial: it measures the process. The windows it watches are on the wall clock, and a parallel
+// neighbour stretches this service's own boot pass into the window the row needs quiet, where
+// its statements read as a loop that armed a pass of its own. The wait for the excerpts
+// themselves is the package's hang guard, since how long three documents take is the machine's
+// to say.
 func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 	database := storetest.Open(t)
 	documents := owedDocuments(t, database, 3)
@@ -316,7 +362,7 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 	leases := excerptLeases(t, counted)
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, nil) })
 
-	waitFor(t, 15*time.Second, "every owed excerpt stored", func() bool { return len(owedMentions(t, database)) == 0 })
+	waitFor(t, roomWait(t), "every owed excerpt stored", func() bool { return len(owedMentions(t, database)) == 0 })
 	storetest.AwaitQuiet(t, counter, time.Second, 10*time.Second)
 	storetest.RequireNoStatements(t, counter, 3*time.Second, "the reconciliation with nothing owed")
 	if next := service.reconcileExcerptPass(context.Background(), referenceExcerptSchedule); !next.IsZero() {
@@ -330,9 +376,16 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 }
 
 // A mention left owed while the reconciliation is idle wakes it through its notification on a
-// real pglisten.Hub, and its excerpt is stored within 3 seconds: one ClearExcerpts leaves, and
-// one an old-style direct update leaves, as the previous release's code and rebuild-refs write
-// them, with no call in Go to announce them.
+// real pglisten.Hub, and its excerpt is stored within the loop's gap and 3 seconds: one
+// ClearExcerpts leaves, and one an old-style direct update leaves, as the previous release's code
+// and rebuild-refs write them, with no call in Go to announce them. Nothing but the notification
+// can store either one - with nothing owed and nothing deferred the loop holds no timer and polls
+// for no work - and the wake runs a pass no sooner than the gap after the last one began, so the
+// bound is the row's own schedule.minGap plus the base's three seconds: a wake served late fails.
+//
+// Serial: it measures the process, watching a window in which the woken loop must make no
+// statement once its boot pass is done, which a parallel neighbour's load moves this service's
+// own statements into, and it holds each wake's excerpt to a wall-clock bound.
 func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 	database := storetest.Open(t)
 	document := owedDocuments(t, database, 1)[0]
@@ -346,7 +399,7 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 		defer close(hubDone)
 		hub.Run(hubCtx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stopHub()
 		<-hubDone
 	})
@@ -354,17 +407,22 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	service := newExcerptService(t, counted, nil)
 	leases := excerptLeases(t, counted)
+	// The gap is this row's own, a tenth of the server's: what it reads is that the wake runs a
+	// pass and the excerpt it left owed is stored within the gap and three seconds, never how long
+	// the gap between passes is (TestTheExcerptReconciliationMakesNoStatementOnceDrained runs the
+	// server's).
+	schedule := excerptSchedule{minGap: 200 * time.Millisecond, retryBase: referenceExcerptSchedule.retryBase}
 	started := time.Now()
-	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, wake) })
+	runExcerpts(t, func(ctx context.Context) { service.runReferenceExcerptReconciliation(ctx, leases, wake, schedule) })
 	select {
 	case <-connected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the hub did not connect within 10s")
+	case <-time.After(roomWait(t)):
+		t.Fatal("the hub did not connect within roomWait")
 	}
-	waitFor(t, 10*time.Second, "the boot pass to store the excerpt", func() bool { return !isOwed(t, database, document) })
+	waitFor(t, roomWait(t), "the boot pass to store the excerpt", func() bool { return !isOwed(t, database, document) })
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the
 	// boot pass began; after it the loop is idle.
-	time.Sleep(time.Until(started.Add(referenceExcerptSchedule.minGap + time.Second)))
+	time.Sleep(time.Until(started.Add(schedule.minGap + time.Second)))
 	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
 
 	ctx := context.Background()
@@ -381,6 +439,6 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 		if !isOwed(t, database, document) {
 			t.Fatalf("%s left nothing owed", name)
 		}
-		waitFor(t, 3*time.Second, "the excerpt "+name+" left owed to be stored", func() bool { return !isOwed(t, database, document) })
+		waitFor(t, schedule.minGap+3*time.Second, "the excerpt "+name+" left owed to be stored", func() bool { return !isOwed(t, database, document) })
 	}
 }

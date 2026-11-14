@@ -56,6 +56,22 @@ import (
 // alone.
 const promptShutdown = 3 * time.Second
 
+// bootWait bounds a wait for a process this package started to serve: waitHealthy's wait for the
+// listening line and a 200 from /healthz, and registry_test's waits for a line a boot writes
+// before it serves. It is a give-up bound and never a measurement: no test here asserts anything
+// about how long a boot takes, and the boot's cost is not this package's to choose. Dispatch
+// opens its pool and runs the migration pass over every migration of the set
+// (224 of them) before it serves, and a test's database is a clone that already holds them all,
+// so the pass reads the version table once per migration and applies none: that pass alone took
+// 13.2 s of a 15.5 s boot on an idle two-core box, and 28.0 s of a 29.9 s boot on CI's envoy-go
+// lane, where seven go test calls share four cores (run 42779139068 attempt 2, job 129723739595:
+// the boot's first line at 08:51:42.685, the document_search fill's first batch at 08:52:10.681,
+// "dispatch: listening" at 08:52:12.583). Against that boot the 30 s this wait once gave was
+// 0.3 s short, and failed a process that was serving by the time the failure was written. So the
+// number is far above what a loaded boot costs, and what it still catches is a process that
+// never serves at all: a boot that hangs, and a process the kernel never scheduled.
+const bootWait = 2 * time.Minute
+
 // streamedSessionID is the session whose conversation the test's agent view watches; an agent
 // view names a session uuid.
 const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
@@ -67,6 +83,20 @@ const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
 // the document an edit has just left owing a settlement. An edit's settlement runs two seconds after
 // it (docs.Deps.Settle's default), so a signal sent as soon as the edit answers reaches the document
 // service with that settlement still owed, and Shutdown is the one that runs it.
+// Serial: its assertion is a time. waitPromptExit holds the whole ordered shutdown to
+// promptShutdown, three seconds, and a parallel test's load is what would stretch it past that
+// (dispatch://INFRA-985).
+//
+// Its Postgres must be an instance no other package writes on, which ci.yaml's envoy-go lane gives
+// it by running it in a go test call of its own, with DISPATCH_TEST_DATABASE_URL naming a service
+// of its own, as it does for internal/dispatch/routes (postgres_routes). The two live sockets
+// below each wait for the event feed's events_start, which waits for the safe horizon, and that
+// horizon waits on the oldest transaction id open anywhere on the instance, whatever database it
+// is in and whatever it is doing (internal/dispatch/events, horizon.go). On the lane's shared
+// service this test failed that wait in run 42581214577: its own process logged "event horizon
+// held back by an open transaction" naming a backend of another package's clone,
+// database=dispatch_test_2be55348167c1ee8, running a block-state read, and the events_start never
+// came.
 func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T) {
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -108,6 +138,7 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // the document service started, which is ample for it to read what is owed; a release before that
 // read could let the timer's settlement commit first.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
 	process.waitHealthy(t)
@@ -150,6 +181,7 @@ const renameLock = `select parent_key from issues where key = $1 for no key upda
 // commits and its answer is sent, and only then closes the pool, as the deferred close of the pool
 // before this shutdown order did.
 func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.T) {
+	t.Parallel()
 	const lockHeldAfterSIGTERM = 27 * time.Second
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -212,6 +244,7 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 // exit. A process that exited first would leave the attempt pending under a claim no process
 // holds, which the page's retry under the key reads as a send still on its way.
 func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T) {
+	t.Parallel()
 	const sessionID = "s1"
 	held, release := make(chan struct{}), make(chan struct{})
 	var holding atomic.Bool
@@ -338,6 +371,7 @@ func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T)
 // Dispatch exit. Bound to the process lifetime instead, the signal cut the held recipient off
 // and left every recipient the workers had not reached with a pending attempt no process holds.
 func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *testing.T) {
+	t.Parallel()
 	const heldSession = "s2"
 	// Each selected session is resolved by id against its own record (`/v1/registry/{id}`).
 	sessions := map[string]string{
@@ -448,6 +482,7 @@ func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *te
 // shutdown must wait for the socket handler and the delivery hub after cancelling Lifetime, before
 // it closes the database pool they use.
 func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{Store: database, Events: broker})
@@ -554,6 +589,7 @@ func (p *stallingPublisher) Probe(time.Duration) error { return nil }
 // batch and releases the hold through that pool, so the hold's row is gone when Dispatch exits and
 // a standby takes the hold at once rather than when it lapses.
 func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	observer := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
@@ -663,6 +699,7 @@ const githubAnswersAfterSignal = 3 * time.Second
 // pool closed under it, the handler's write failed and its message was acknowledged all the same,
 // which left the event to the reconcile minutes later.
 func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	// The fetched pull request's author is outside the population, so the handler deletes any row
 	// it has and records the event's time: two writes to the pool once GitHub has answered.
@@ -826,6 +863,7 @@ func testGitHubApp(t *testing.T, baseURL string) *githubapp.Client {
 // without cancelling first never returned, and the process hung with the panic unprinted while its
 // intake kept consuming.
 func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	_, natsURL := testnats.Start(t)
 	// The publisher owns the stream, as the server's does, so the intakes bind their durables.
@@ -900,6 +938,7 @@ func (p *dispatchProcess) renameIssue(key, title string) (int, error) {
 // so its room is loaded with an editor connected. The test gives its test-only process a longer
 // settle delay than its whole shutdown budget, so only Shutdown can version the edit.
 func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	process := startDispatchProcessWithSettleDelay(t, database.Pool.Config().ConnString(), 5*time.Minute)
 	process.waitHealthy(t)
@@ -942,6 +981,9 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 // it would create has none yet. Dispatch then gives up on the connection when silentProbes health
 // probes in a row have failed with no connection taken back meanwhile, so it exits well inside a
 // runtime's grace period instead of being killed, and says why.
+// Serial: its assertion is a time. It bounds how long after SIGTERM the process exits with the
+// database unanswering, against a budget read off the binary's own timeouts, and a parallel
+// test's load is what would stretch it past that (dispatch://INFRA-985).
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -1168,6 +1210,7 @@ func (p *dispatchProcess) checkSettledAtShutdown(t *testing.T, database *store.S
 // both answers, and takes the same answer from a running process whose output says it serves on
 // the port.
 func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) {
+	t.Parallel()
 	holder := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	t.Cleanup(holder.Close)
 	port := holder.Listener.Addr().(*net.TCPAddr).Port
@@ -1202,6 +1245,7 @@ func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) 
 // chose for it, and says that address in its listening line. Without the socket it would bind
 // every interface on 8766.
 func TestDispatchServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		Without: []string{"DISPATCH_LISTEN_HOST", "DISPATCH_PORT"},
@@ -1221,6 +1265,7 @@ func TestDispatchServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T)
 // the test holds, so a bind would log its failure. The refusal comes before Dispatch reads its
 // database, so the test needs none.
 func TestDispatchRefusesAListenFDThatIsNotASocketAndBindsNothing(t *testing.T) {
+	t.Parallel()
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("hold the port DISPATCH_PORT names: %v", err)
@@ -1401,11 +1446,11 @@ func (p *dispatchProcess) listeningLine() string {
 	return `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(p.port)
 }
 
-// waitHealthy waits up to 30 s for the process to be healthy (healthyWithin), and fails the test
+// waitHealthy waits bootWait for the process to be healthy (healthyWithin), and fails the test
 // when it is not.
 func (p *dispatchProcess) waitHealthy(t *testing.T) {
 	t.Helper()
-	if err := p.healthyWithin(30 * time.Second); err != nil {
+	if err := p.healthyWithin(bootWait); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1460,7 +1505,12 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 	if exited() {
 		return fmt.Errorf("Dispatch exited before it became healthy:\n%s", p.Output.String())
 	}
-	return fmt.Errorf("Dispatch never became healthy:\n%s", p.Output.String())
+	// Which of the two waits ran out says what to read the output for: a boot still working its
+	// way to its listening line, or a server that logged it serves and did not answer on the port.
+	if !strings.Contains(p.Output.String(), listening) {
+		return fmt.Errorf("Dispatch never logged that it serves on its port, so its boot was unfinished %v after it started:\n%s", within, p.Output.String())
+	}
+	return fmt.Errorf("Dispatch logged that it serves but never answered /healthz 200 within %v:\n%s", within, p.Output.String())
 }
 
 // waitPromptExit waits for Dispatch to exit after the SIGTERM sent at signalled, and requires it to
@@ -1589,6 +1639,10 @@ type streamEnd struct {
 // the socket the feed's frames arrive on. The frame is behind the event horizon, so the wait for it
 // is the server's own stall warning rather than a deadline (live_events_wait_test.go). The socket
 // closes when the test ends.
+//
+// That horizon is held back by any transaction open anywhere on this Postgres instance, so a test
+// that calls this needs an instance no other package writes on, which is why this one test of the
+// package runs on a service of its own (dispatch://INFRA-1075).
 func (p *dispatchProcess) openLiveEvents(t *testing.T) *gws.Conn {
 	t.Helper()
 	conn, response, err := gws.DefaultDialer.Dial("ws://127.0.0.1:"+strconv.Itoa(p.port)+"/ws/live", http.Header{

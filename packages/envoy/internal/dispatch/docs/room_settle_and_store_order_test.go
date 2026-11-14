@@ -214,14 +214,14 @@ func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *ga
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	// Registered after the shutdown, so it runs first: a test that fails with the gate held does
 	// not leave the shutdown waiting on an append that never comes.
-	t.Cleanup(gated.release)
+	cleanupAndRelease(t, gated.release)
 	return service, gated
 }
 

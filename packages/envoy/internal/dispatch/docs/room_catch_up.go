@@ -181,7 +181,7 @@ func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live 
 	}
 	if parks(live) {
 		pending := live.PendingStats()
-		slog.Error("dispatch: a document room holds updates it cannot place after catching up to the stored head",
+		s.log().Error("dispatch: a document room holds updates it cannot place after catching up to the stored head",
 			"room", room, "versions", versions, "pending_items", pending.Items, "pending_delete_ranges", pending.DeleteRanges)
 	}
 	if applied == nil {

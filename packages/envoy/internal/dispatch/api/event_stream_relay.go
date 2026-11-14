@@ -129,7 +129,9 @@ type eventStreamRelay struct {
 	listenIdle, pingTimeout time.Duration
 	backoff                 func(attempt int) time.Duration
 	// coalesce is the window a notification waits before its read; zero is eventRelayCoalesce.
-	coalesce time.Duration
+	// retry is how long a failed read waits before the next; zero is eventRelayRetry. A test
+	// that drives a failing read sets its own rather than waiting out the production second.
+	coalesce, retry time.Duration
 	// readAfter reads one page of the committed events in (after, through]; nil is
 	// readEventsAfterID. A test counts the relay's reads of the event log through it.
 	readAfter func(ctx context.Context, after, through int64) ([]model.Event, error)
@@ -387,7 +389,7 @@ func (r *eventStreamRelay) run(ctx context.Context, g *relayGeneration) {
 		gaps.stop()
 		safe, gap, ok := r.read(ctx, g, checkReset)
 		for !ok {
-			if !waitFor(ctx, eventRelayRetry) {
+			if !waitFor(ctx, r.failedReadWait()) {
 				return
 			}
 			safe, gap, ok = r.read(ctx, g, checkReset)
@@ -518,6 +520,13 @@ func (r *eventStreamRelay) resetCursor(ctx context.Context, g *relayGeneration) 
 	if !eventLogWasReset(cursor, at, maxID, cursorAt) {
 		return false, nil
 	}
+	// A test of a subscription made while the relay still stands on the replaced log waits here,
+	// rather than on a span of time: past this point the generation ends, and until then the
+	// cursor is still the old log's (relayStartRead is the same seam for the first start). Nil
+	// outside tests.
+	if r.server.relayFoundReset != nil {
+		r.server.relayFoundReset()
+	}
 	r.server.resetEventHorizon()
 	r.mu.Lock()
 	r.endLocked(g)
@@ -539,6 +548,15 @@ func (r *eventStreamRelay) window() time.Duration {
 		return eventRelayCoalesce
 	}
 	return r.coalesce
+}
+
+// failedReadWait is how long the relay waits before reading again after a read failed: retry, or
+// eventRelayRetry when no test set one.
+func (r *eventStreamRelay) failedReadWait() time.Duration {
+	if r.retry == 0 {
+		return eventRelayRetry
+	}
+	return r.retry
 }
 
 // firstRelayCursor is a generation's first cursor, which is the start point of the subscription
@@ -570,6 +588,12 @@ func (s *server) firstRelayCursor(ctx context.Context) (int64, time.Time, error)
 	newest, gaps, err := eventLogGapsAbove(ctx, pool, floor)
 	if err != nil {
 		return 0, time.Time{}, err
+	}
+	// A test of the first start commits an event after this read and before the wait below ends,
+	// which is the one window its subject lives in; the hook is how it knows the read is done,
+	// rather than resting on a sleep (live_events_horizon_test.go). Nil outside tests.
+	if s.relayStartRead != nil {
+		s.relayStartRead()
 	}
 	if _, err := s.horizon().Await(ctx); err != nil {
 		return 0, time.Time{}, err

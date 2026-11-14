@@ -115,6 +115,7 @@ func TestListIssuesCarriesCreatorAndCreationTime(t *testing.T) {
 // A caller that asks the listing for a page gets that page and how many issues the filters
 // matched, rather than every issue (LEGION-406).
 func TestListIssuesServesTheRequestedPage(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	keys := createListedIssues(t, handler, "TEST", 7)
 	createListedIssues(t, handler, "OTHER", 2)
@@ -157,6 +158,7 @@ func TestListIssuesServesTheRequestedPage(t *testing.T) {
 // label in SQL and by route_status after the query, so the page must be cut after both. The
 // rows share one rank and creation time, so only the key orders them.
 func TestListIssuePagesCoverAFilteredListingOnce(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	handler, database := routeStatusServer(t, roster)
 	keys := createListedIssues(t, handler, "TEST", 10)
@@ -214,6 +216,7 @@ func TestListIssuePagesCoverAFilteredListingOnce(t *testing.T) {
 // a tie among other rows in an order of its own making, and a write anywhere in the listing can
 // reshuffle it between two pages of one walk.
 func TestListIssuesOrdersTiesByKeyAmongOtherIssues(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	tied := []string{}
 	for _, project := range []string{"ALPHA", "BRAVO", "CHARLIE", "DELTA", "ECHO", "FOXTROT", "GOLF", "HOTEL", "INDIA", "JULIET", "KILO", "LIMA"} {
@@ -239,6 +242,7 @@ func TestListIssuesOrdersTiesByKeyAmongOtherIssues(t *testing.T) {
 
 // Without limit or offset the listing is what it was: every matching issue, as a bare array.
 func TestListIssuesWithoutPagingAnswersEveryIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	test := createListedIssues(t, handler, "TEST", 3)
 	other := createListedIssues(t, handler, "OTHER", 1)
@@ -256,6 +260,7 @@ func TestListIssuesWithoutPagingAnswersEveryIssue(t *testing.T) {
 
 // The nine filters narrow the listing as before, paged or not.
 func TestListIssuesFiltersStillApplyBesidePaging(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	handler, database := routeStatusServer(t, roster)
 	test := createListedIssues(t, handler, "TEST", 4)
@@ -317,6 +322,7 @@ func TestListIssuesFiltersStillApplyBesidePaging(t *testing.T) {
 // A page the listing cannot serve is refused naming the parameter, and cursor, which the listing
 // does not page with, is refused rather than answered with the first page.
 func TestListIssuesRefusesAPageItCannotServe(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createListedIssues(t, handler, "TEST", 2)
 	for _, test := range []struct{ query, parameter string }{

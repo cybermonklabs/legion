@@ -30,6 +30,7 @@ import (
 // held hand-over; and once that hand-over runs it stores nothing and leaves the room counting no
 // update as pending, so nothing holds the room's settlement or its record (unusedLocked).
 func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	var attempts atomic.Int64
@@ -39,7 +40,7 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 	held, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	releaseHeld := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseHeld)
+	cleanupAndRelease(t, releaseHeld)
 	load := service.srv.OnLoadDocument
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
 		if err := load(ctx, room, doc); err != nil {
@@ -59,7 +60,7 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 	}
 	seedServiceText(t, service, artifactID, "before")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	alpha := connectPeer(t, server.URL, artifactID, "alice")
 	beta := connectPeer(t, server.URL, artifactID, "alice")
 	first.Store(uint64(alpha.Doc.ClientID()))
@@ -100,7 +101,7 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 	}
 	select {
 	case <-held:
-	case <-time.After(10 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the room did not apply the first peer's update")
 	}
 	if _, err := beta.Send(typeParagraph(beta.Doc, "beta")); err != nil {
@@ -190,7 +191,7 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 	room.OnUpdate(func([]byte, any) { updates.Add(1) })
 	stored := storedUpdateCount(t, service.store, artifactID)
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	peer := connectPeer(t, server.URL, artifactID, "alice")
 	if err := peer.Write(ygsync.EncodeUpdate(parked)); err != nil {
 		t.Fatalf("send the later update ahead of its predecessor: %v", err)
@@ -319,7 +320,7 @@ func TestAPeerUpdateThatChangesTheRoomAndParksKeepsBothAcrossARestart(t *testing
 
 	stored := storedUpdateCount(t, service.store, artifactID)
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	peer := connectPeer(t, server.URL, artifactID, "alice")
 	if err := peer.Write(ygsync.EncodeUpdate(mixed)); err != nil {
 		t.Fatalf("send an update that changes the room and parks: %v", err)

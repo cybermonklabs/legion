@@ -68,7 +68,7 @@ func startRoomSync(t *testing.T, hub *pglisten.Hub, rs *roomSync) (listening <-c
 			}
 		})
 	}
-	t.Cleanup(stop)
+	cleanupAndRelease(t, stop)
 	return connected, stop
 }
 

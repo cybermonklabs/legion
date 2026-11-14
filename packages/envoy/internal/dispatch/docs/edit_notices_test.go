@@ -71,6 +71,11 @@ func requireDueWithin(t *testing.T, row editNoticeRow, quiet, slack time.Duratio
 // before theirs to theirs, naming them, due a quiet time after the settlement. A second person's
 // edit inside the window keeps where it starts, moves where it ends and when it is due, and names
 // both people.
+//
+// Serial: requireDueWithin holds each notice's due time to within 2 s of the database's clock at
+// the read after the settlement that wrote it, a wall-clock window: the settlement's commit, its
+// publish and the read all have to end inside it, which a parallel neighbour's load can stall
+// past.
 func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -122,6 +127,7 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 // last editor, whatever order their ids sort in: contract C4's actor is the person whose edit was
 // last in the quiet window.
 func TestEditNoticeNamesThePersonWhoEditedLast(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -143,6 +149,11 @@ func TestEditNoticeNamesThePersonWhoEditedLast(t *testing.T) {
 // The quiet window starts when the settlement writes the notice, not when its transaction began:
 // a settlement that waited on its locks longer than the quiet time still commits a notice that is
 // not due yet, so the card never goes out before the document has been quiet that long.
+//
+// Serial: the notice must still be inside its 500 ms quiet window when it is read and swept,
+// a wall-clock window: everything after the notice's insert - the settlement's commit and
+// publish, the read, the sweep's query - has to end inside it, which a parallel neighbour's load
+// can stall past (a 300 ms wait read 1.767 s on CI job 128420803760, marks_test.go).
 func TestEditNoticeQuietStartsWhenTheNoticeIsWrittenNotWhenItsTransactionBegan(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -176,6 +187,7 @@ func TestEditNoticeQuietStartsWhenTheNoticeIsWrittenNotWhenItsTransactionBegan(t
 // A named version an agent writes over two people's edits names the person who edited last as the
 // notice's last editor, not the one whose id sorts last.
 func TestEditNoticeAnAgentsNamedVersionNamesThePersonWhoEditedLast(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -197,6 +209,7 @@ func TestEditNoticeAnAgentsNamedVersionNamesThePersonWhoEditedLast(t *testing.T)
 
 // A snapshot version an agent writes over two people's edits names the person who edited last too.
 func TestEditNoticeASnapshotVersionNamesThePersonWhoEditedLast(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -218,6 +231,7 @@ func TestEditNoticeASnapshotVersionNamesThePersonWhoEditedLast(t *testing.T) {
 
 // A zero quiet time in the service's dependencies is the 30-second default.
 func TestEditNoticeQuietDefaultsToThirtySeconds(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	if service.editNoticeQuiet != 30*time.Second {
 		t.Fatalf("editNoticeQuiet = %v, want 30s", service.editNoticeQuiet)
@@ -226,6 +240,7 @@ func TestEditNoticeQuietDefaultsToThirtySeconds(t *testing.T) {
 
 // An agent's settled edit opens no quiet window: the notice is for a person's edit alone.
 func TestEditNoticeAnAgentsSettledEditOpensNone(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -245,6 +260,7 @@ func TestEditNoticeAnAgentsSettledEditOpensNone(t *testing.T) {
 // A named version a person names over their own browser edit opens the notice window, since the
 // version lists that person. A named version that lists no person opens none.
 func TestEditNoticeANamedVersionByAPersonOverTheirOwnEditOpensTheWindow(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -268,6 +284,7 @@ func TestEditNoticeANamedVersionByAPersonOverTheirOwnEditOpensTheWindow(t *testi
 
 // A named version by an agent, with no person's credit pending, opens no window.
 func TestEditNoticeAnAgentOnlyNamedVersionOpensNone(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -289,6 +306,7 @@ func TestEditNoticeAnAgentOnlyNamedVersionOpensNone(t *testing.T) {
 // its own version, still opens the edit notice: every version write that carries a person opens or
 // extends the window (writeVersionTx), so the settlement is not the only path.
 func TestEditNoticeAnAgentsNamedVersionThatCapturesAPersonsEditOpensTheWindow(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -317,6 +335,7 @@ func TestEditNoticeAnAgentsNamedVersionThatCapturesAPersonsEditOpensTheWindow(t 
 
 // A snapshot version that carries a person's edit opens the same window.
 func TestEditNoticeASnapshotVersionThatCapturesAPersonsEditOpensTheWindow(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -430,6 +449,7 @@ func addPersonsVersion(t *testing.T, database *store.Store, document string, num
 // version events are, naming the person who edited last, notifying, and carrying the two versions'
 // diff; the row goes, and the event is published once its transaction commits.
 func TestEditNoticeSweepSendsADueNotice(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -472,13 +492,14 @@ func TestEditNoticeSweepSendsADueNotice(t *testing.T) {
 		if event.Type != "artifact.human_edited" {
 			t.Fatalf("published %q, want artifact.human_edited", event.Type)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the sent notice was never published")
 	}
 }
 
 // A project document's notice is owned by the document itself, as its version events are.
 func TestEditNoticeSweepOwnsAProjectDocumentsNoticeByTheDocument(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	document := createProjectDocument(t, service.store, "First.")
 	addPersonsVersion(t, service.store, document, 2, "Second.\n", model.Actor{Kind: "user", ID: "alice@example.com"})
@@ -493,6 +514,7 @@ func TestEditNoticeSweepOwnsAProjectDocumentsNoticeByTheDocument(t *testing.T) {
 
 // A notice whose quiet time has not passed stays, and sends nothing.
 func TestEditNoticeSweepLeavesANoticeThatIsNotDue(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -513,6 +535,7 @@ func TestEditNoticeSweepLeavesANoticeThatIsNotDue(t *testing.T) {
 // A diff longer than 4,096 bytes is cut at its last line end at or under 4,096 bytes, and the
 // notice says it was cut.
 func TestEditNoticeSweepCutsALongDiff(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	before := strings.Repeat("The export runs at 02:00 UTC on every weekday.\n\n", 120)
 	after := strings.Repeat("The export runs at 04:00 UTC on every weekday.\n\n", 120)
@@ -538,6 +561,7 @@ func TestEditNoticeSweepCutsALongDiff(t *testing.T) {
 
 // A version a rebuild removed gives the notice an empty diff, and the notice still goes.
 func TestEditNoticeSweepSendsAnEmptyDiffForAMissingVersion(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	document := createIssueDocument(t, service.store, 3, "First.")
 	if _, err := service.store.Pool.Exec(context.Background(), `
@@ -557,6 +581,7 @@ func TestEditNoticeSweepSendsAnEmptyDiffForAMissingVersion(t *testing.T) {
 // A notice on a document whose issue closed inside the quiet window goes with no event: nobody
 // can write the closed issue's spec, so its sessions have nothing to change.
 func TestEditNoticeSweepDropsANoticeOnAClosedIssue(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	document := createIssueDocument(t, service.store, 4, "First.")
 	addPersonsVersion(t, service.store, document, 2, "Second.\n", model.Actor{Kind: "user", ID: "alice@example.com"})
@@ -579,10 +604,11 @@ func TestEditNoticeSweepDropsANoticeOnAClosedIssue(t *testing.T) {
 // own, send each due notice once: the row is claimed by its delete, under the document owner's
 // lock, so the second sweep to reach it finds nothing to delete.
 func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
 	second := New(Deps{Store: storetest.SecondProcess(t, database), Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		_ = first.Shutdown(context.Background())
 		_ = second.Shutdown(context.Background())
 	})
@@ -625,6 +651,9 @@ func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
 // the document's due notice; once the settlement goes on, it moves the notice on and commits, and
 // the sweep finds nothing due. Once the quiet time passes, one notice covers both people's
 // versions, so each person's version is in exactly one sent notice's range.
+//
+// Serial: it swaps process-wide state, the default slog logger (logtest.SetDefault), and it holds
+// the notice to going within ten seconds of its quiet time, a wall-clock bound.
 func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -656,7 +685,7 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 			sent, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background()))
 			swept <- sweepResult{sent, err}
 		}()
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(roomWait(t))
 		for {
 			waiting, err := storetest.CountLockWaits(context.Background(), service.store, "%from issues where key = $1 for no key update%")
 			if err != nil {
@@ -687,14 +716,18 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 		if result.err != nil || result.sent != 0 {
 			t.Fatalf("the sweep that met the settlement = %d sent, %v; want none sent, since the settlement moved the notice on", result.sent, result.err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the sweep that met the settlement never finished")
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
+	// Bob's settlement moved the notice on by this service's own quiet time, so the notice goes
+	// once that has passed: the bound is the quiet time and the base's ten seconds past it, not the
+	// package's give-up wait, which a notice moved on by production's thirty seconds would pass.
+	sentBy := service.editNoticeQuiet + 10*time.Second
+	deadline := time.Now().Add(sentBy)
 	for len(humanEdits(t, service.store, artifactID)) == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("no notice went once the quiet time passed")
+			t.Fatalf("no notice went within %v of bob's settlement, its quiet time of %v and ten seconds", sentBy, service.editNoticeQuiet)
 		}
 		if _, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background())); err != nil {
 			t.Fatalf("sweep after the quiet time: %v", err)
@@ -793,6 +826,7 @@ func answerDecision(t *testing.T, service *Service, artifactID, askID string, pe
 // (ask.answered) already reaches the spec's writers: the version it leaves sends no edit notice,
 // and the window it opened goes.
 func TestEditNoticeAnAnswerAloneSendsNone(t *testing.T) {
+	t.Parallel()
 	service, artifactID, askID, settle, _ := blockAskHarness(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	answerDecision(t, service, artifactID, askID, alice)
@@ -814,6 +848,7 @@ func TestEditNoticeAnAnswerAloneSendsNone(t *testing.T) {
 
 // A person's resolve of an ask block changes only its server state too, and sends no notice.
 func TestEditNoticeAResolveAloneSendsNone(t *testing.T) {
+	t.Parallel()
 	service, artifactID, askID, settle, _ := blockAskHarness(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	resolution, err := json.Marshal(model.AskResolution{Kind: "resolved", Reason: "Waived.", Actor: alice, At: time.Now().UTC()})
@@ -842,6 +877,7 @@ func TestEditNoticeAResolveAloneSendsNone(t *testing.T) {
 // An answer and a typed edit in one quiet window send exactly one notice, whose diff holds the
 // typed edit.
 func TestEditNoticeAnAnswerAndATypedEditSendOne(t *testing.T) {
+	t.Parallel()
 	service, artifactID, askID, settle, _ := blockAskHarness(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	answerDecision(t, service, artifactID, askID, alice)
@@ -861,10 +897,11 @@ func TestEditNoticeAnAnswerAndATypedEditSendOne(t *testing.T) {
 // A person's rebuild writes a version that lists them, and opens the window as any person's
 // version does.
 func TestEditNoticeAPersonsRebuildOpensTheWindow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	replacement := "replacement\n"
 	_, written, err := rebuildDocument(t, service, artifactID, &replacement)
 	if err != nil || !written.Wrote {
@@ -883,6 +920,7 @@ func TestEditNoticeAPersonsRebuildOpensTheWindow(t *testing.T) {
 // beside them: the version it leaves sends exactly one notice, whose diff holds the new question.
 // It guards the sweep's server-state filter (serverStateOnly) against dropping a real edit.
 func TestEditNoticeAPersonsQuestionEditSendsOne(t *testing.T) {
+	t.Parallel()
 	service, artifactID, _, settle, _ := blockAskHarness(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	if err := joinedWrite(service, func(ctx context.Context) error {
@@ -912,6 +950,7 @@ func TestEditNoticeAPersonsQuestionEditSendsOne(t *testing.T) {
 // own write in the version's transaction is a session sender the walk skips (latestEditSource), so
 // no room's memory in another process decides it.
 func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
+	t.Parallel()
 	first, artifactID := newTestService(t)
 	first.settle = time.Hour
 	seedServiceText(t, first, artifactID, "First.\n\nSecond.\n\nThird.\n")
@@ -922,7 +961,7 @@ func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
 	editAsConnectedPeer(t, first, artifactID, 2, adam, replaceRun("Second.", "Second, by adam."))
 	waitForLandedAppends(t, first, artifactID)
 	second := New(Deps{Store: storetest.SecondProcess(t, first.store), Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = second.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = second.Shutdown(context.Background()) })
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	if err := joinedWrite(second, func(ctx context.Context) error {
 		if _, err := second.ApplyOps(ctx, artifactID, []model.EditOp{{Op: "replace", Find: "Third.", With: "Third, by agent."}}, agent, nil); err != nil {
@@ -947,6 +986,7 @@ func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
 // itself as the newest edit, by the sequence its operation took (liveWrite.creditSeq). Zoe edits,
 // Adam edits and names the version, and the notice must name Adam.
 func TestOutsideReviewJoinedHumanEditLastHuman(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -989,7 +1029,7 @@ func TestEditNoticeTwoConnectedOneEditsNamesNobody(t *testing.T) {
 	// Adam only watches; zoe types. Adam's id sorts first, so a notice naming him is the defect.
 	service.addConnection(artifactID, 1, adam)
 	service.addConnection(artifactID, 2, zoe)
-	t.Cleanup(func() { service.removeConnection(artifactID, 1); service.removeConnection(artifactID, 2) })
+	cleanupAndRelease(t, func() { service.removeConnection(artifactID, 1); service.removeConnection(artifactID, 2) })
 	editAsPeer(t, service, artifactID, replaceRun("First.", "First, typed by one of them."))
 	settleCurrentGeneration(t, service, artifactID)
 	if row, open := readEditNotice(t, service, artifactID); open {
@@ -1003,6 +1043,7 @@ func TestEditNoticeTwoConnectedOneEditsNamesNobody(t *testing.T) {
 // The same rule for a session peer editing while a person is merely connected: the person must
 // not be named as the editor.
 func TestEditNoticeASessionPeerEditingBesideAConnectedPersonNamesNobody(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -1011,7 +1052,7 @@ func TestEditNoticeASessionPeerEditingBesideAConnectedPersonNamesNobody(t *testi
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service.addConnection(artifactID, 1, adam)
 	service.addConnection(artifactID, 2, agent)
-	t.Cleanup(func() { service.removeConnection(artifactID, 1); service.removeConnection(artifactID, 2) })
+	cleanupAndRelease(t, func() { service.removeConnection(artifactID, 1); service.removeConnection(artifactID, 2) })
 	editAsPeer(t, service, artifactID, replaceRun("First.", "First, by one of the two peers."))
 	settleCurrentGeneration(t, service, artifactID)
 	if row, open := readEditNotice(t, service, artifactID); open {
@@ -1025,6 +1066,7 @@ func TestEditNoticeASessionPeerEditingBesideAConnectedPersonNamesNobody(t *testi
 // The named version holds the write's own state alone (captureWrite): the browser edit came after
 // the write read the document, so the settlement that follows the write versions it.
 func TestEditNoticeABrowserEditAfterAJoinedWriteNamesTheBrowserEditor(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -1063,10 +1105,11 @@ func TestEditNoticeABrowserEditAfterAJoinedWriteNamesTheBrowserEditor(t *testing
 // The person who rebuilt it wrote that content, so the notice names them, never an older editor
 // whose pending credit the rebuild did not clear.
 func TestEditNoticeARebuildNamesThePersonWhoRebuiltIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into doc_pending_authors (artifact_id, actor_kind, actor_id, actor, written_through)
@@ -1115,6 +1158,7 @@ func recordLatestEditSourceTx(t *testing.T, service *Service, artifactID string,
 // commits before the settlement runs. The agent's edit is the latest edit of any kind, but it is
 // no person's, so the settlement's notice must still name the person who typed.
 func TestEditNoticeAnAgentsCommittedEditAfterAPersonsLandedEditNamesThePerson(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -1141,6 +1185,7 @@ func TestEditNoticeAnAgentsCommittedEditAfterAPersonsLandedEditNamesThePerson(t 
 // B1's second shape: after its committed edit, the agent writes a named version in a transaction
 // of its own. That version captures alice's edit, and its notice must name her.
 func TestEditNoticeAnAgentsNamedVersionAfterItsCommittedEditNamesThePerson(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -1171,6 +1216,7 @@ func TestEditNoticeAnAgentsNamedVersionAfterItsCommittedEditNamesThePerson(t *te
 // write holds, lands after his commit. After a close within the settle delay and a reopen, the
 // settlement's notice must name zoe, whose edit is the later one, and not the memory of adam.
 func TestEditNoticeAClosedAndReopenedIssueNamesTheLaterBrowserEditor(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -1209,6 +1255,7 @@ func TestEditNoticeAClosedAndReopenedIssueNamesTheLaterBrowserEditor(t *testing.
 // names nobody; then alice edits alone. Her next notice must cover the unnamed edit too: its diff
 // holds both changes and its editors hold bob.
 func TestEditNoticeAnUnnamedVersionAfterASentNoticeIsInTheNextNotice(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n\nThird.\n")
@@ -1260,6 +1307,7 @@ func TestEditNoticeAnUnnamedVersionAfterASentNoticeIsInTheNextNotice(t *testing.
 // two-peer append, so the notice names nobody. Without that arm the row still names alice, and
 // the notice would name her for an edit that may be Bob's.
 func TestEditNoticeATwoPeerEditThatLandedClearsTheStoredPerson(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -1305,6 +1353,7 @@ func storedLastPerson(t *testing.T, service *Service, artifactID string) *model.
 // room's in-flight credits, its last editor was alice, who is not among the people it lists, so
 // the version held the window and named nobody.
 func TestEditNoticeAVersionFromTheStoreNamesNoEditInFlightInTheRoom(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
 	alice := model.Actor{Kind: "user", ID: "alice-on-task-a"}

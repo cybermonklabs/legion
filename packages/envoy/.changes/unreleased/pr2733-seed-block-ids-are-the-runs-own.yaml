@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `dispatch-seed` takes the block ids of the documents it writes from a counter the run itself
+  holds and hands to the one parse whose ids are stored, rather than installing that counter in
+  the document parser for the whole process. The ids a run writes are unchanged, so a data set
+  seeded by this build is the one an earlier build seeded; two runs in one process no longer
+  render each other's documents under the other's counter. The parser gains
+  `pmdoc.ParseWithBlockIDs` for it, a parse stamped from a generator its caller holds.

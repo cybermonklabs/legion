@@ -55,6 +55,13 @@ func registerAndWait(sock string) {
 	os.Exit(0)
 }
 
+// buildHelper compiles this package's binary. cmdtest.Build builds it once per test process and
+// keeps it, so the tests that drive the binary share one compile instead of paying for one each.
+func buildHelper(t *testing.T) string {
+	t.Helper()
+	return cmdtest.Build(t, "agent-secrets-helper")
+}
+
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 
 // shortTempDir is a directory of the test's own, removed when the test ends, with room under it
@@ -222,7 +229,7 @@ func registerChild(t *testing.T, sock string) {
 // unit's journal then says only that it ended, so the helper's last line names the signal, how
 // many sessions it had and that it held a launcher credential.
 func TestServeNamesTheSignalItStopsOn(t *testing.T) {
-	binary := cmdtest.Build(t, "agent-secrets-helper")
+	binary := buildHelper(t)
 	for _, tc := range []struct {
 		sig  syscall.Signal
 		name string
@@ -312,7 +319,7 @@ func TestServeNamesTheSignalItStopsOn(t *testing.T) {
 // TestServeLogsTheBrokerWithoutACredential: a user name and password AGENT_SECRETS_URL carries
 // never reach the helper's journal; its listening line names the broker with both masked.
 func TestServeLogsTheBrokerWithoutACredential(t *testing.T) {
-	binary := cmdtest.Build(t, "agent-secrets-helper")
+	binary := buildHelper(t)
 	dir := shortTempDir(t)
 	stderr, err := os.Create(filepath.Join(dir, "stderr"))
 	if err != nil {
@@ -357,7 +364,7 @@ func TestServeLogsTheBrokerWithoutACredential(t *testing.T) {
 // redact.URL will not print, it names the URL as redact.NotPrinted and the failure's class
 // alone; for a clean one, it reads as net/http wrote it.
 func TestALoginTheBrokerNeverAnswersNamesNoCredential(t *testing.T) {
-	binary := cmdtest.Build(t, "agent-secrets-helper")
+	binary := buildHelper(t)
 	for _, row := range []struct{ base, want string }{
 		{"http://127.0.0.1:1", `"http://127.0.0.1:1/v1/oauth/device_authorization": dial tcp 127.0.0.1:1: connect: connection refused`},
 		{"http://tokuser9f3:hunter2pw@127.0.0.1:1", `"` + redact.NotPrinted + `": connection refused`},

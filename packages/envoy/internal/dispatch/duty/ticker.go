@@ -98,19 +98,27 @@ const (
 //
 // ctx ending returns at once from a wait, and from a tick once its pass returns.
 func RunLeased(ctx context.Context, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
+	runLeased(ctx, leases, name, interval, first, Exclusive, pass)
+}
+
+// runLeased is RunLeased with the gate handed in (ExclusiveFunc), so the schedule above - the
+// tick at start, the ticker's ticks after it, and the period each one is due in - can be tested
+// on a fake clock against a gate of the test's own, with no Postgres a synctest bubble would
+// have to wait on (ExclusiveFunc; redeliver.Sweeper.run is the same seam).
+func runLeased(ctx context.Context, leases Leases, name string, interval time.Duration, first FirstTick, exclusive ExclusiveFunc, pass func(context.Context)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	if first == TickAtStart {
 		// Read after the ticker started, so the ticker's first tick is no more than one interval
 		// after this one: in the next period, or in this one and refused, but never one beyond.
-		Exclusive(ctx, leases, name, time.Now(), interval, pass)
+		exclusive(ctx, leases, name, time.Now(), interval, pass)
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case due := <-ticker.C:
-			Exclusive(ctx, leases, name, due, interval, pass)
+			exclusive(ctx, leases, name, due, interval, pass)
 		}
 	}
 }

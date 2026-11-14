@@ -14,8 +14,10 @@
 // window a plugin's reconnect wait leaves.
 //
 // Its own build tag, and its own CI job (listener-server-change), because one run sends for a
-// minute and then waits out each server's restart and the JetStream catch-up after it, past what
-// envoy-go's unit step holds under go test's ten-minute package deadline.
+// minute and then waits out each server's restart and the JetStream catch-up after it, which,
+// beside the listener's other tests, would hold up the job that runs them: envoy-go-race, which
+// runs cmd/listener under the race detector within one -timeout 16m, where it would be slower
+// still. envoy-go's unit step leaves cmd/listener out.
 
 package main
 
@@ -189,6 +191,7 @@ type serverChangeRun struct {
 // crosses the hub, and through the holder's listener H, so the publish route runs on the machine
 // the stand-in registered through.
 func TestServerChange(t *testing.T) {
+	t.Parallel()
 	runs := []serverChangeRun{
 		{name: "senders through S"},
 		{name: "senders through H", sendThroughHolder: true},

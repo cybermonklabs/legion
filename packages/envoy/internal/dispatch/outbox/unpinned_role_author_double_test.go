@@ -124,6 +124,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		t.Fatalf("the comment reached %v, want %s not among them: that session claims the issue, so its copy waits for an attempt that names no session yet and whose role this read can name no holder for",
 			reached, claimantSubject)
 	}
+	claims.drained(t)
 	if got := claims.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while the mention of %s was live and named no session, want nothing: the sender can pin that mention to the issue's claimant", claimant, got, target)
 	}
@@ -152,7 +153,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	wrote.drained(t)
 	// The outbox sends that session nothing further - its copy went, and the settled mention
 	// leaves it nothing to publish - so the comment stands at its host under two keys: this copy
 	// under the event's own, and the mention's steer under the mention's. That is the double.
@@ -232,6 +233,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		t.Fatalf("the comment reached %v, want %s not among them: that session claims the issue, so its copy waits for an attempt that names no session yet and whose role this read can name no holder for",
 			reached, claimantSubject)
 	}
+	claims.drained(t)
 	if got := claims.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while the mention of %s was live and named no session, want nothing: the sender can pin that mention to the issue's claimant", claimant, got, target)
 	}
@@ -253,7 +255,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	follows.drained(t)
 	// The outbox sends that session nothing further, so the comment stands at its host under two
 	// keys: this copy under the event's own, and the mention's steer under the mention's.
 	copies = follows.received()
@@ -341,7 +343,7 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
+	wrote.drained(t)
 	// The outbox sends that session nothing further, so the comment stands at its host under two
 	// keys: this copy under the event's own, and the mention's steer under the mention's.
 	copies = wrote.received()

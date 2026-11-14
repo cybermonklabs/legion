@@ -94,14 +94,16 @@ func TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength(t *testing
 		}
 		t.Run(shape.Name, func(t *testing.T) {
 			sizes := []int{shape.Grown / growthStep, shape.Grown}
-			growsLinearly(t, "parsing "+shape.Name, sizes, linearSlack, func(size int) (time.Duration, error) {
-				body := shape.Body(size)
-				var err error
-				took, measureErr := cpuTimeOf(again(func() { _, err = ParseForWrite(body, nil) }))
-				if err != nil {
-					return 0, fmt.Errorf("parsing %d characters of %s: %w", size, shape.Name, err)
+			growsLinearly(t, "parsing "+shape.Name, sizes, linearSlack, func(size int) func() (time.Duration, error) {
+				body := shape.Body(size) // the parse only reads it, so the rung's samples share one
+				return func() (time.Duration, error) {
+					var err error
+					took, measureErr := cpuTimeOf(again(func() { _, err = ParseForWrite(body, nil) }))
+					if err != nil {
+						return 0, fmt.Errorf("parsing %d characters of %s: %w", size, shape.Name, err)
+					}
+					return took, measureErr
 				}
-				return took, measureErr
 			})
 		})
 	}
@@ -116,8 +118,9 @@ func TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength(t *testing
 // is measured beside it because it is the rest of the time an API write spends on a body, which
 // the end-to-end bound this test replaced used to cover (INFRA-985).
 //
-// Each run gets a document of its own, since a write changes the document it writes into, and the
-// body it writes is built before the window opens (cpuTimeOf).
+// Each run gets a document of its own, since a write changes the document it writes into. The body
+// it writes is built once for the rung, above its samples, since the parse and the write only read
+// it (growsLinearly, linear_test.go), and before the window opens (cpuTimeOf).
 func TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength(t *testing.T) {
 	for _, shape := range heavybodies.Shapes() {
 		if shape.Refusal != "" {
@@ -125,36 +128,38 @@ func TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength(t 
 		}
 		t.Run(shape.Name, func(t *testing.T) {
 			sizes := []int{shape.Grown / growthStep, shape.Grown}
-			growsLinearly(t, "writing "+shape.Name, sizes, linearSlack, func(size int) (time.Duration, error) {
-				body := shape.Body(size)
-				var err error
-				var update []byte
-				took, measureErr := cpuTimeOf(func() func() {
-					// "prosemirror" is the fragment the document service writes a document's
-					// blocks into (fragmentName, internal/dispatch/docs/tree.go).
-					doc := crdt.New()
-					fragment := doc.GetXmlFragment("prosemirror")
-					return func() {
-						tree, parseErr := ParseForWrite(body, nil)
-						if parseErr != nil {
-							err = parseErr
-							return
+			growsLinearly(t, "writing "+shape.Name, sizes, linearSlack, func(size int) func() (time.Duration, error) {
+				body := shape.Body(size) // the parse and the write only read it, so the rung's samples share one
+				return func() (time.Duration, error) {
+					var err error
+					var update []byte
+					took, measureErr := cpuTimeOf(func() func() {
+						// "prosemirror" is the fragment the document service writes a document's
+						// blocks into (fragmentName, internal/dispatch/docs/tree.go).
+						doc := crdt.New()
+						fragment := doc.GetXmlFragment("prosemirror")
+						return func() {
+							tree, parseErr := ParseForWrite(body, nil)
+							if parseErr != nil {
+								err = parseErr
+								return
+							}
+							if err = doc.TransactE(func(txn *crdt.Transaction) error {
+								return Update(txn, fragment, tree)
+							}); err != nil {
+								return
+							}
+							update = crdt.EncodeStateAsUpdateV1(doc, nil)
 						}
-						if err = doc.TransactE(func(txn *crdt.Transaction) error {
-							return Update(txn, fragment, tree)
-						}); err != nil {
-							return
-						}
-						update = crdt.EncodeStateAsUpdateV1(doc, nil)
+					})
+					if err != nil {
+						return 0, fmt.Errorf("writing %d characters of %s: %w", size, shape.Name, err)
 					}
-				})
-				if err != nil {
-					return 0, fmt.Errorf("writing %d characters of %s: %w", size, shape.Name, err)
+					if len(update) == 0 {
+						return 0, fmt.Errorf("writing %d characters of %s encoded no update", size, shape.Name)
+					}
+					return took, measureErr
 				}
-				if len(update) == 0 {
-					return 0, fmt.Errorf("writing %d characters of %s encoded no update", size, shape.Name)
-				}
-				return took, measureErr
 			})
 		})
 	}

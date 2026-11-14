@@ -14,6 +14,7 @@ import (
 )
 
 func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.T) {
+	t.Parallel()
 	var database *store.Store
 	pendingDuringSend := "not observed"
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
@@ -92,6 +93,7 @@ func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.
 }
 
 func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	roleHolder := "s1"
 	roleLookups := 0
@@ -160,8 +162,14 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		t.Fatalf("load retry event: %v", err)
 	}
 	stale := ResolvedMention{Target: "role:reviewer", Delivery: "steer", SessionID: new("s1"), attemptSessionID: "s1"}
+	// The retries below are read from zero, the role lookups with the sends: what the comment's
+	// own creation costs in lookups is not a fixed number. A lookup the listener answers after
+	// mentionLookupTimeout (comment_delivery.go) leaves the mention unresolved, and the sender of
+	// that mention resolves the role again after the commit (mentionResolutionFor), so the
+	// creation above makes one lookup or two.
 	mu.Lock()
 	blockS1 = true
+	roleLookups = 0
 	sent = nil
 	mu.Unlock()
 	type deliveryResult struct {
@@ -202,9 +210,11 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 	defer mu.Unlock()
 	// Each retry sends exactly once, to the session its own attempt resolved. The two sends
 	// no longer run one after the other: the claim transaction commits before the listener is
-	// called, so which of them reaches the listener first is a race by design.
+	// called, so which of them reaches the listener first is a race by design. One role lookup
+	// pays for both: the attempt resumed under its pin rechecks s1 alone, and only the fresh
+	// attempt, opened with no resolution of its own, asks who holds the role now.
 	sort.Strings(sent)
-	if roleLookups != 2 || len(sent) != 2 || sent[0] != "s1" || sent[1] != "s2" {
+	if roleLookups != 1 || len(sent) != 2 || sent[0] != "s1" || sent[1] != "s2" {
 		t.Fatalf("concurrent retry decisions = lookups:%d sends:%#v, want one send to the original s1 and one to the fresh s2", roleLookups, sent)
 	}
 }
@@ -214,6 +224,7 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 // takes an attempt of its own; once it is plainly abandoned a retry resumes the original
 // attempt, under its original number, so the listener deduplicates a send that did land.
 func TestAbandonedMentionAttemptIsResumedUnderItsOriginalIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	keys := []string{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -310,6 +321,7 @@ func TestAbandonedMentionAttemptIsResumedUnderItsOriginalIdempotencyKey(t *testi
 // never sent: once its claim lapses the next retry must resolve it and send it, under its own
 // number and idempotency key, not report it undeliverable without ever calling the listener.
 func TestStrandedMentionAttemptIsResolvedRatherThanFailedUnsent(t *testing.T) {
+	t.Parallel()
 	keys := []string{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

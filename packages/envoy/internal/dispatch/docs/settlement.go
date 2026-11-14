@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -283,7 +282,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	st.latest = latest
 	if err := s.lockSettlementCursor(ctx, tx, room); err != nil {
 		if s.shuttingDown(room) {
-			slog.Warn("dispatch: skip shutdown document settlement while cursor lock is held", "room", room, "error", err)
+			s.log().Warn("dispatch: skip shutdown document settlement while cursor lock is held", "room", room, "error", err)
 			return settleDone, settleOutcome{}
 		}
 		return settleDone, st.stoppedShort(fmt.Errorf("lock document cursor: %w", err))
@@ -362,7 +361,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	first, err := s.readSettlementTree(state, st.doc, room, s.afterSettleAuthorsTake, false)
 	if err != nil {
 		if errors.Is(err, ErrDocSchema) {
-			slog.Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
+			s.log().Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
 			return settleDone, settleOutcome{}
 		}
 		return settleDone, st.stoppedShort(err)
@@ -452,7 +451,7 @@ func (st *settlement) applyStamp(ctx context.Context) (settleStep, settleOutcome
 		st.keep(slot, update)
 		if err != nil {
 			if len(st.slots) == 0 && errors.Is(err, ErrDocSchema) {
-				slog.Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
+				s.log().Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
 				return settleDone, settleOutcome{}
 			}
 			return settleDone, st.abandon(err)
@@ -657,7 +656,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}
 	if err != nil {
 		if len(st.slots) == 0 && errors.Is(err, ErrDocSchema) {
-			slog.Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
+			s.log().Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
 			return settleDone, settleOutcome{}
 		}
 		return settleDone, st.abandon(err)

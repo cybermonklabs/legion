@@ -69,6 +69,7 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	recv.drained(t)
 
 	if forwards := recv.received(); len(forwards) > 0 {
 		t.Fatalf("the batch forwarded %s %d copies of the comment, the first under %q, while the mention of %s was live and pinned to no session yet, want none: that mention is on its way to the same host, so this copy shows it the comment twice",
@@ -101,6 +102,7 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	dueNow(t, rig.database, comment.ID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	recv.drained(t)
 
 	if publishedAt(t, rig.database, comment.ID) == nil {
 		attempts, failure, reached := eventState(t, rig.database, comment.ID)
@@ -180,6 +182,7 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 		t.Fatalf("the comment reached %v, want %s not among them: that session holds the role the comment mentions, and its mention is on its way to the same host",
 			reached, contracts.AgentSubject(holder))
 	}
+	claimant.drained(t)
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while its own mention of %s was live and unpinned, want nothing", holder, got, target)
 	}

@@ -22,6 +22,7 @@ import (
 // snapshot writes, so a snapshot that walks and renders the tree again is doing the whole
 // document's work twice while it holds the issue row.
 func TestSnapshotReusesTheTransactionsRenderedDocument(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -31,9 +32,9 @@ func TestSnapshotReusesTheTransactionsRenderedDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -67,6 +68,7 @@ func TestSnapshotReusesTheTransactionsRenderedDocument(t *testing.T) {
 // transaction's version, which is the write's own state (captureWrite), and the settlement that
 // follows the write's publish versions it.
 func TestContentTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -76,9 +78,9 @@ func TestContentTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testing.
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -131,13 +133,13 @@ func countedService(t *testing.T) (*Service, string, *anchorQueryCounter) {
 	if err != nil {
 		t.Fatalf("open counted pool: %v", err)
 	}
-	t.Cleanup(counted.Close)
+	cleanupAndRelease(t, counted.Close)
 	service := New(Deps{
 		Store:  &store.Store{Pool: store.NewPool(counted)},
 		Events: events.NewBroker(),
 		Settle: time.Hour,
 	})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -194,6 +196,7 @@ const anchorRefreshPasses = 2
 // refresh anchors from the same tree; refreshing twice is a whole extra pass over every open
 // anchor, under the issue row, for no change.
 func TestAnEditRefreshesItsAnchorsOncePerTransaction(t *testing.T) {
+	t.Parallel()
 	service, artifactID, counter := countedService(t)
 	seedServiceText(t, service, artifactID, "before the anchored quote and after")
 
@@ -206,9 +209,9 @@ func TestAnEditRefreshesItsAnchorsOncePerTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	counter.count.Store(0)
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -237,6 +240,7 @@ func TestAnEditRefreshesItsAnchorsOncePerTransaction(t *testing.T) {
 // An edit that moves an anchored quote refreshes that anchor exactly once, whichever pass does
 // it: the row carries the new quote and the change is announced one time.
 func TestAnEditAnnouncesEachChangedAnchorOnce(t *testing.T) {
+	t.Parallel()
 	service, artifactID, _ := countedService(t)
 	seedServiceText(t, service, artifactID, "before the anchored quote and after")
 
@@ -249,9 +253,9 @@ func TestAnEditAnnouncesEachChangedAnchorOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
 		Op: "replace", Find: "before", With: "BEFORE",
@@ -287,6 +291,7 @@ func TestAnEditAnnouncesEachChangedAnchorOnce(t *testing.T) {
 // A version written without a live write of its own - a named version, and settlement - is the
 // only refresh its anchors get, so that pass must still run.
 func TestANamedVersionRefreshesAnchorsWithNoLiveWriteOfItsOwn(t *testing.T) {
+	t.Parallel()
 	service, artifactID, counter := countedService(t)
 	seedServiceText(t, service, artifactID, "before the anchored quote and after")
 
@@ -347,6 +352,7 @@ func boldBlock(t *testing.T, text string) func(*pmdoc.Node) *pmdoc.Node {
 // records. Made in the room after the write read the document, it is not in the transaction's
 // version, which is the write's own state, and the settlement that follows versions it.
 func TestFormattingTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before\n\nplain paragraph")
@@ -356,9 +362,9 @@ func TestFormattingTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testi
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{

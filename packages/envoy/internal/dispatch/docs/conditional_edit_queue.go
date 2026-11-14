@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -233,7 +232,7 @@ func (s *Service) releaseConditionalEdit(ctx context.Context, artifactID string,
 		_, err = s.store.Pool.Exec(ctx, conditionalEditQueueWrite, artifactID, s.processID, queued)
 	}
 	if err != nil {
-		slog.Warn("dispatch: write this process's queued conditional edits of a document; the other processes count the last one written until the next",
+		s.log().Warn("dispatch: write this process's queued conditional edits of a document; the other processes count the last one written until the next",
 			"artifact_id", artifactID, "queued", queued, "error", err)
 	}
 }

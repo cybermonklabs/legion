@@ -257,6 +257,7 @@ func coverage(t *testing.T, database *store.Store, identity string) (items, curr
 // written beside it hold no window, and the pass adds none: a window is the block index's to
 // write, not the queue's, so no kind but the issue has an item to cover here.
 func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := 1
 	withTriggersOff(t, database, func(q querier) { seedItems(t, q, "PRET") })
@@ -292,7 +293,7 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatal("Run did not return after its context ended")
 	}
 }
@@ -307,6 +308,7 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 // pass is for - an issue the queue holds no row of - reached without the superuser setting
 // that turns triggers off (withTriggersOff).
 func TestCoverLabelsTheIssueRowItAddsWithTheIssuesProject(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "PRJK", "PRJK-1", "An issue the queue holds no row of")
 	mustExec(t, database.Pool, `delete from embeddings where kind = 'issue' and id = 'PRJK-1'`)
@@ -324,6 +326,7 @@ func TestCoverLabelsTheIssueRowItAddsWithTheIssuesProject(t *testing.T) {
 
 // Run with no embedder starts nothing: no pass adds a row.
 func TestRunWithNoEmbedderDoesNothing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	withTriggersOff(t, database, func(q querier) { seedItems(t, q, "NOEM") })
 	Run(context.Background(), Deps{Store: database})
@@ -341,6 +344,7 @@ func TestRunWithNoEmbedderDoesNothing(t *testing.T) {
 // and a rewrite of the windows of an owner nothing changed (as every index of unchanged blocks
 // makes) write no row, and nothing is embedded again.
 func TestCoverChangesNothingTheTriggersAlreadyEnqueued(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedEveryKind(t, database.Pool, "PARI")
 	embedder := newPlaceEmbedder(configuredIdentity)
@@ -380,6 +384,7 @@ func TestCoverChangesNothingTheTriggersAlreadyEnqueued(t *testing.T) {
 // A row whose text changed with the triggers off is repaired to the item's text with fresh
 // attempts, and then embedded at it.
 func TestCoverRepairsAStaleRow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "STLE", "STLE-1", "Old title")
 	embedder := newPlaceEmbedder(configuredIdentity)
@@ -469,6 +474,7 @@ func embeddedTexts(e *placeEmbedder) map[string]bool {
 // again at the title, a blank line and that version's markdown, a title change keeps the spec,
 // and the coverage pass builds the same text, so it changes nothing the triggers wrote.
 func TestASpecEditRequeuesTheIssueWithItsTitleAndSpec(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	const title = "Ünïcödé title — 日本語 ✓"
 	seedIssue(t, database, "SPEC", "SPEC-1", title)
@@ -503,6 +509,7 @@ func TestASpecEditRequeuesTheIssueWithItsTitleAndSpec(t *testing.T) {
 // Only the issue's primary document is its spec: a version of another document on the issue
 // leaves the issue's row as it was.
 func TestAVersionOfAnotherDocumentLeavesTheIssuesTextAlone(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "NPRI", "NPRI-1", "Title")
 	seedSpec(t, database.Pool, "NPRI", "NPRI-1", "The spec")
@@ -530,6 +537,7 @@ func TestAVersionOfAnotherDocumentLeavesTheIssuesTextAlone(t *testing.T) {
 // An issue whose row a release before 0140 embedded at its title alone is queued again by the
 // coverage pass at its title and spec, and then embedded at that text.
 func TestCoverRequeuesAnIssueEmbeddedWithItsTitleAlone(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	withTriggersOff(t, database, func(q querier) {
 		mustExec(t, q, `insert into projects (key, name, default_assignee) values ('OLDE', 'Test', 'alice')`)
@@ -560,6 +568,7 @@ func TestCoverRequeuesAnIssueEmbeddedWithItsTitleAlone(t *testing.T) {
 // A spec that is empty or holds only white space adds nothing to the issue's text: the issue
 // embeds its title alone, and the coverage pass agrees.
 func TestAnIssueWhoseSpecIsBlankEmbedsItsTitleAlone(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "BLNK", "BLNK-1", "Title")
 	spec := seedSpec(t, database.Pool, "BLNK", "BLNK-1", "")
@@ -588,6 +597,7 @@ func TestAnIssueWhoseSpecIsBlankEmbedsItsTitleAlone(t *testing.T) {
 // before it updated it wins, keeping the trigger's text, hash, claim and counters. The trigger's
 // transaction holds the row while the pass's update waits on it, so the interleaving is exact.
 func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "CASW", "CASW-1", "First title")
@@ -642,6 +652,7 @@ func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T
 // pending now and is embedded again under the configured identity, a row already pending keeps its
 // claim, backoff and pending_since, and a second pass changes nothing.
 func TestCoverDropsAnotherIdentitysVectors(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "FRGN", "FRGN-1", "Embedded elsewhere")
@@ -695,6 +706,7 @@ func TestCoverDropsAnotherIdentitysVectors(t *testing.T) {
 // confirmed dead during the roll), gets the configured identity's attempts once; a row dead under
 // the configured identity stays dead, and so does a re-admitted row once it dies again here.
 func TestCoverReadmitsARowDeadUnderAnotherIdentityOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, id := range []string{"DEDA-1", "DEDA-2", "DEDA-3"} {
@@ -740,6 +752,7 @@ func TestCoverReadmitsARowDeadUnderAnotherIdentityOnce(t *testing.T) {
 // its counters, and costs no call, on a deployment that keeps Bedrock: its other rows' vectors are
 // Bedrock's too, so the pass finds nothing foreign. A switch to Azure re-admits it once.
 func TestCoverLeavesARowDeadUnderBedrockDeadUntilAnotherIdentity(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, id := range []string{"BDRK-1", "BDRK-2", "BDRK-3"} {
@@ -789,11 +802,12 @@ func seedForeignRows(t *testing.T, database *store.Store, project string) {
 
 // A misnamed Azure deployment answers every call 404 DeploymentNotFound, through the real
 // AzureClient. Until the configured embedder has answered, the pass leaves another identity's
-// vector and dead row exactly as they were, after one canary per pass and after Run for a while,
-// and the coverage report counts them lacking and failed as before; a throttled canary proves
-// nothing either. Once the deployment answers, a fresh process's first pass drops the vector and
-// re-admits the dead row, with one canary call.
+// vector and dead row exactly as they were, after one canary per pass and after a Run whose
+// boot pass sent its canary, and the coverage report counts them lacking and failed as before;
+// a throttled canary proves nothing either. Once the deployment answers, a fresh process's
+// first pass drops the vector and re-admits the dead row, with one canary call.
 func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedForeignRows(t, database, "MISN")
 	fake := &azureFake{missing: true}
@@ -835,9 +849,26 @@ func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 	requireUnchanged("a pass while the deployment is missing")
 	requireOneCanary("a pass while the deployment is missing")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	Run(ctx, deps)
-	cancel()
+	// Run's boot pass sends its canary from a goroutine of its own, and the row reads what Run
+	// left behind only once that pass has read the 404 and its loop has parked on the embedder's
+	// first answer with that answer still to come (Deps.coverageAwaitingAnswer). Stopping Run as
+	// soon as the fake held the request, which it records before it answers, read the rows before
+	// the pass could have acted on its answer, and passed a loop that took a failed canary for
+	// proof. Such a loop never parks there: it runs the identity steps again at once and settles
+	// with nothing owed (Deps.coverageWaiting), which fails the row here.
+	parked, settled := make(chan struct{}), make(chan struct{})
+	running := deps
+	running.coverageAwaitingAnswer = sync.OnceFunc(func() { close(parked) })
+	running.coverageWaiting = sync.OnceFunc(func() { close(settled) })
+	stop := runQueue(t, running)
+	select {
+	case <-parked:
+	case <-settled:
+		t.Fatal("Run's coverage loop settled with nothing owed while the deployment is missing: it took the failed canary for proof")
+	case <-time.After(eventWait):
+		t.Fatalf("Run's coverage loop did not park on the embedder's answer within %s", eventWait)
+	}
+	stop()
 	requireUnchanged("Run while the deployment is missing")
 	requireOneCanary("Run while the deployment is missing")
 
@@ -870,6 +901,7 @@ func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 // An Embed this process's queue made that succeeded proves the configured embedder: the pass
 // then drops another identity's vector and re-admits its dead row with no canary call.
 func TestASuccessfulEmbedProvesTheEmbedderForThePass(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedForeignRows(t, database, "PRVN")
 	seedIssue(t, database, "PRVN", "PRVN-3", "Pending here")
@@ -933,6 +965,7 @@ func normalizedRows(t *testing.T, database *store.Store) map[string]rowState {
 
 // Two passes at once, in two processes, finish and leave the state one pass leaves.
 func TestTwoConcurrentPassesLeaveTheStateOnePassLeaves(t *testing.T) {
+	t.Parallel()
 	single := storetest.Open(t)
 	seedCoverageWork(t, single)
 	cover(t, Deps{Store: single, Embedder: newPlaceEmbedder(configuredIdentity)})
@@ -1006,7 +1039,7 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 	shortenIdentityRecheck(t, 3*time.Second)
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity)})
 	// The boot pass has dropped ROLL-2's vector, and the queue has embedded ROLL-1 here.
-	eventually(t, 10*time.Second, "the boot pass and the boot drain", func() bool {
+	eventually(t, eventWait, "the boot pass and the boot drain", func() bool {
 		return modelOf(t, database, "ROLL-1") == configuredIdentity && modelOf(t, database, "ROLL-2") != foreignIdentity
 	})
 	commitForeignVector(t, database, "ROLL-1")
@@ -1028,7 +1061,7 @@ func TestTheIdentityRecheckDropsAVectorCommittedAfterAPassThatFoundNone(t *testi
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity)})
 	// The boot drain embeds the issue here, so the boot pass's look for rows of another identity
 	// finds none: the database holds one row and this process made its vector.
-	eventually(t, 15*time.Second, "the boot pass and the boot drain", func() bool {
+	eventually(t, eventWait, "the boot pass and the boot drain", func() bool {
 		return modelOf(t, database, "CLEAN-1") == configuredIdentity
 	})
 	commitForeignVector(t, database, "CLEAN-1")
@@ -1049,7 +1082,7 @@ func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	embedder.setErr(errors.New("simulated: the deployment does not answer yet"))
 	runQueue(t, Deps{Store: database, Embedder: embedder})
 	// Two canaries fail: the boot pass's, and the one confirming ANSR-1's own failed embed.
-	eventually(t, 10*time.Second, "the boot pass's canary", func() bool { return embedder.canaryCalls() >= 2 })
+	eventually(t, eventWait, "the boot pass's canary", func() bool { return embedder.canaryCalls() >= 2 })
 	if got := modelOf(t, database, "ANSR-2"); got != foreignIdentity {
 		t.Fatalf("ANSR-2 holds %q before the embedder answered, want the foreign vector left in place", got)
 	}
@@ -1063,6 +1096,7 @@ func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 // hash, another identity's vector, no vector, dead, current; then with no embedder; then an empty
 // backlog.
 func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	withTriggersOff(t, database, func(q querier) {
@@ -1124,6 +1158,7 @@ func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 }
 
 func TestCoverageOfAnEmptyBacklogHasNoOldestAge(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedEveryKind(t, database.Pool, "EMPT")
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(foreignIdentity)})
@@ -1347,6 +1382,7 @@ func (p *pausingProxy) serve(client net.Conn) {
 // changed with the triggers off - starts while the claim's cursor is still open, and the pass
 // must still reach that issue, which the scan then embeds.
 func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const blockedTitle = "Issue whose row an open transaction is inserting"
@@ -1417,10 +1453,10 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 
 	select {
 	case <-proxy.paused:
-	case <-time.After(15 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatal("the scan loop's claim of SIDE-2 never reached the client")
 	}
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(eventWait)
 	for {
 		var waiting int
 		if err := database.Pool.QueryRow(ctx, `

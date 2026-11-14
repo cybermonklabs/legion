@@ -26,7 +26,11 @@ import (
 // wait this bound replaces: with two issues routed to a holder that never answered, 24 of 30
 // comments on a third issue reached their holder more than 1 s late (median 2.8 s, max 5.0 s),
 // against 3 of 30 on main's build.
+//
+// The row reads no window of the process - its verdict is the order above, not a clock - so it
+// runs beside the rest of the package (docs/testing.md).
 func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *testing.T) {
+	t.Parallel()
 	const (
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"
@@ -51,7 +55,7 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
 	deps.forwardAckWait = stalledForwardWait
-	stop := runDeps(t, deps, 15*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	held := rig.routedEvent(t, "T-1", stalledRole, model.Actor{Kind: "user", ID: "alice"})

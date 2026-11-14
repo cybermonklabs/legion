@@ -18,6 +18,7 @@ import (
 // matches, wildcards included, with the concrete subject, body and stored time; past the last one
 // it is nats.ErrMsgNotFound, and with no stream nats.ErrStreamNotFound.
 func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
+	t.Parallel()
 	client, err := ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -62,6 +63,7 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 }
 
 func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		pattern, subject string
 		want             bool
@@ -90,6 +92,7 @@ func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
 }
 
 func TestCheckFilterSubjectRefusesWhatNATSCannotFilterOn(t *testing.T) {
+	t.Parallel()
 	for subject, refused := range map[string]bool{
 		"notifications.dispatch.issue.KEY-1.>": false,
 		"notifications.*.ses_a":                false,
@@ -147,6 +150,7 @@ func TestControllerNoticeRolePairsALaneWithItsRoleToken(t *testing.T) {
 // by both on the next test run and neither can drift from a hand copy. Each case is a session id,
 // a topic, the roles that session holds and the answer.
 func TestReachesPrivateStreamSubjectBoundsInterests(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("testdata", "private-stream-subjects.json"))
 	if err != nil {
 		t.Fatalf("read the shared cases: %v", err)

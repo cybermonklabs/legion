@@ -58,6 +58,8 @@ func newMemoryHarness(t *testing.T) *memoryHarness {
 	if runtime.GOOS != "linux" {
 		t.Skip("the memory tests read a server's resident memory from /proc")
 	}
+	// The rows count what a server holds against a database no other test has written into
+	// (dispatch://INFRA-985), which is every database storetest.Open hands out.
 	harness := &memoryHarness{t: t, database: storetest.Open(t)}
 	server := harness.start(t)
 	for _, request := range []struct{ path, body string }{

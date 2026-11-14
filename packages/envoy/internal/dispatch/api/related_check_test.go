@@ -92,6 +92,7 @@ func readRelatedCheckRows(t *testing.T, database *store.Store, where string, arg
 // for the rare words, so it lists that one item and none of the thirty that share only the common
 // word. The old query ORed every word of the text and listed common-word matches beside it.
 func TestRelatedCheckListsTheRareWordMatchNotTheCommonWordMatches(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RARE")
 	var common []string
@@ -126,6 +127,9 @@ func TestRelatedCheckListsTheRareWordMatchNotTheCommonWordMatches(t *testing.T) 
 // listed the repeater first. The meaning stage answers here with no item near the text's
 // meaning, so its order is its keyword arms'.
 func TestRelatedCheckRanksMoreChosenWordsAboveOneRepeated(t *testing.T) {
+	// No t.Parallel: this test measures the process. Its meaning-and-keywords case needs the
+	// meaning stage to answer inside the 3 s meaning allowance (relatedMeaningAllowance); past
+	// it the check answers by keywords alone.
 	for _, stage := range []struct {
 		name    string
 		options testServerOptions
@@ -135,6 +139,8 @@ func TestRelatedCheckRanksMoreChosenWordsAboveOneRepeated(t *testing.T) {
 		{"meaning and keywords", testServerOptions{embedder: &fakeEmbedder{}}, "meaning_and_keywords"},
 	} {
 		t.Run(stage.name, func(t *testing.T) {
+			// No t.Parallel: the meaning-and-keywords case needs the 3 s meaning allowance met,
+			// as its test says.
 			handler, database, deps := newTestServer(t, stage.options)
 			createSuggestionProject(t, handler, "COORD")
 			for index := range 5 {
@@ -166,6 +172,9 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 // An item whose meaning matches and which holds none of the text's words is found by the meaning
 // search, and the result says it searched by meaning and keywords.
 func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) {
+	// No t.Parallel: this test measures the process. Its assertion needs the meaning stage to
+	// answer inside the 3 s meaning allowance (relatedMeaningAllowance); past it the check
+	// answers by keywords alone.
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Archive snapshots finish late"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
@@ -252,6 +261,9 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 // by meaning and keywords. Left out after the page instead, the ten take every place in it and
 // the keeper, eleventh by vector, is never seen (INFRA-1160).
 func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
+	// No t.Parallel: this test measures the process. Its assertion needs the meaning stage to
+	// answer inside the 3 s meaning allowance (relatedMeaningAllowance); past it the check
+	// answers by keywords alone.
 	const text = "Archive snapshots finish late"
 	const keeperTitle = "Our own nightly backup cousin"
 	arc := func(angle float64) []float32 { return angledVector(math.Cos(angle), 1) }
@@ -284,6 +296,7 @@ func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
 
 // A failing embedder leaves the check its keyword search, and the result says so and why.
 func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{err: errors.New("model service throttled")}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MFAIL")
@@ -302,6 +315,9 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 // An embedder slower than the meaning allowance costs the check three seconds, not five: it
 // answers its keyword search's result then, saying meaning search did not answer in time.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
+	// No t.Parallel: this test measures the process. It requires the check to answer between 3
+	// and 4 s, which leaves a second for the keyword stage's queries, and another test's work
+	// on the same machine would read as the check running long.
 	embedder := &fakeEmbedder{delay: time.Minute}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MSLOW")
@@ -333,6 +349,9 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 // TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan), and without JIT, which the disabled
 // plans' inflated costs would otherwise spend seconds compiling.
 func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t *testing.T) {
+	// No t.Parallel: this test measures the process. Its assertion needs the meaning stage to
+	// answer inside the 3 s meaning allowance (relatedMeaningAllowance), with plans the
+	// disabled scans make costly; past it the check answers by keywords alone.
 	const text = "Find what this is about"
 	const nearer = 60
 	arc := func(angle float64) []float32 { return angledVector(math.Cos(angle), 1) }
@@ -375,6 +394,10 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 // A keyword stage held a second, well past the old 300 ms bound, still answers within the
 // check's allowance.
 func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
+	// No t.Parallel: this test measures the process. A keyword stage held 1 s behind the lock
+	// must still answer inside the check's 5 s allowance (relatedCheckAllowance), which is its
+	// subject. The lock it holds is a table lock, which takes no transaction id and so holds
+	// back no event log reader.
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SLOW")
 	key := createSearchIssue(t, handler, "SLOW", "Quarterly zymurgy ledger drifts", "")
@@ -409,6 +432,7 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 // A keyword stage held past the allowance answers that the check was not made, for time, and the
 // check is recorded so.
 func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "STUCK")
 	createSearchIssue(t, handler, "STUCK", "Quarterly zymurgy ledger drifts", "")
@@ -460,6 +484,7 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 // ends, is not made because the request ended, and is recorded as cancelled: it did not run out of
 // time, so the records route must not count it as skipped for time.
 func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "GONE")
 	createSearchIssue(t, handler, "GONE", "Quarterly zymurgy ledger drifts", "")
@@ -489,7 +514,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 			record: true,
 		})
 	}()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(10 * time.Millisecond) {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
@@ -507,8 +532,8 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	var suggestions *model.Suggestions
 	select {
 	case suggestions = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the check did not answer within 10s of its request ending")
+	case <-time.After(concurrentWait):
+		t.Fatalf("the check did not answer within %s of its request ending", concurrentWait)
 	}
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
@@ -516,6 +541,10 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	if suggestions.Outcome != "not_made" || suggestions.Missing != "the request that ran it ended before the check finished" {
 		t.Errorf("suggestions = %+v, want not made, the request having ended first", suggestions)
 	}
+	// The record's first attempt is given relatedRecordTimeout, and a slower one is written by
+	// the retry srv detached onto its own lifetime (recordRelatedChecks), so the read below waits
+	// for that work first.
+	awaitBackgroundWrites(t, srv)
 	rows := readRelatedCheckRows(t, database, "source_issue_key = $1 and outcome = 'not_made'", source)
 	if len(rows) != 1 || deref(rows[0].Reason) != "cancelled" {
 		reasons := make([]string, len(rows))
@@ -532,6 +561,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 // left off, each block's check would read its context's end as the request that ran it going away
 // and record cancelled, which the records route does not count as skipped for time.
 func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "DBTO")
 	createSearchIssue(t, handler, "DBTO", "Quarterly zymurgy ledger drifts", "")
@@ -578,7 +608,10 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 		}
 	}
 	// The rows are recorded as each check answers, in no order of the blocks', so each block's
-	// row is read by its id.
+	// row is read by its id. A record whose first attempt ran past relatedRecordTimeout is
+	// written by the retry srv detached onto its own lifetime (recordRelatedChecks), so the read
+	// waits for that work first.
+	awaitBackgroundWrites(t, srv)
 	rows := map[string]decisionBlockRow{}
 	for _, row := range readDecisionBlockRows(t, database) {
 		rows[row.BlockID] = row
@@ -601,6 +634,10 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 // When the record's second runs out, pgx cancels its statement, so the row is lost unless it is
 // tried again: it is written once the lock is released.
 func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t *testing.T) {
+	// No t.Parallel: this test measures the process. It reads the database's clock and takes
+	// any insert started more than relatedRecordTimeout/2 (500 ms) before it for the record's
+	// first attempt; a read the machine delays by more than that after the retry's insert began
+	// takes the retry for it too, and the poll waits out the retry.
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "MIGR")
 	createSearchIssue(t, handler, "MIGR", "Quarterly zymurgy ledger drifts", "")
@@ -630,10 +667,10 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	// only once it had failed, so an insert started more than half that before is the first.
 	poll := func(what string, done func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(concurrentWait)
 		for !done() {
 			if time.Now().After(deadline) {
-				t.Fatalf("%s: not within 5s", what)
+				t.Fatalf("%s: not within %s", what, concurrentWait)
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -675,6 +712,7 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 // wait open. The retry is counted with that work: the wait neither returns while the retry still
 // holds its row nor panics, and the row is written once the lock holding it up is released.
 func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.T) {
+	t.Parallel()
 	handler, database, _, srv := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SHUT")
 	createSearchIssue(t, handler, "SHUT", "Quarterly zymurgy ledger drifts", "")
@@ -723,8 +761,8 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 		if recovered != nil {
 			t.Fatalf("the shutdown wait panicked: %v", recovered)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the shutdown wait did not return within 10s of the lock's release")
+	case <-time.After(concurrentWait):
+		t.Fatalf("the shutdown wait did not return within %s of the lock's release", concurrentWait)
 	}
 	rows := readRelatedCheckRows(t, database, "source_issue_key = $1 and outcome = 'not_made'", source)
 	if len(rows) != 1 || deref(rows[0].Reason) != "timeout" {
@@ -735,6 +773,7 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 // A text with no word to search for, blank or stopwords alone, answers that no check was made
 // and why, never nothing.
 func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "BLANK")
 	createSearchIssue(t, handler, "BLANK", "Is it to be or not to be", "")
@@ -756,6 +795,9 @@ func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
 // since the gate prices the text's words through the check's own picker, and that case is the
 // third state of R3's record (TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList).
 func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
+	// No t.Parallel: this test measures the process. Its title_matches come only from the
+	// near-copy gate, which answers only when its whole read ends inside duplicateGateTimeout
+	// (500 ms); past it the create goes in told that no near-copy check was made.
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "FORCE")
 	const title = "Archive search drops rows past offset fifty"
@@ -783,6 +825,7 @@ func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 
 // An issue create whose write-advice read fails still answers its check, on advice of its own.
 func TestCreateIssueKeepsTheCheckWhenWriteAdviceFails(t *testing.T) {
+	t.Parallel()
 	handler, _ := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "ADVISSUE")
 	spec := ""
@@ -873,6 +916,7 @@ func checkThroughJSON(t *testing.T, srv *server, input relatedInput) testSuggest
 // chosen, on the item the ask route's check lists. Only the person who gave the current answer
 // may change it, so both answers are alice's; the time, the option and the text tell them apart.
 func TestRelatedCheckShowsTheLatestAnswer(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "LATEST")
 	first := fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}, "text": "Keep the brass one."})
 	latest := fixture.answer(t, "twice", "alice", map[string]any{
@@ -900,6 +944,7 @@ func TestRelatedCheckShowsTheLatestAnswer(t *testing.T) {
 
 // An answer that chose no option says so with an empty list, never null.
 func TestRelatedCheckShowsAnAnswerWithNoOptionChosen(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "NOOPT")
 	fixture.answer(t, "no-option", "alice", map[string]any{"selected": []string{}, "text": "Neither; use enamel."})
 
@@ -925,6 +970,7 @@ func TestRelatedCheckShowsAnAnswerWithNoOptionChosen(t *testing.T) {
 
 // An ask closed with no answer carries its resolution and no answer.
 func TestRelatedCheckShowsAnAskClosedWithNoAnswer(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "CLOSED")
 	if response := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/asks/"+fixture.asks["closed"]+"/resolve", map[string]any{
 		"kind": "resolved", "reason": "The roster settles it.",
@@ -942,6 +988,7 @@ func TestRelatedCheckShowsAnAskClosedWithNoAnswer(t *testing.T) {
 
 // An open ask says it is open.
 func TestRelatedCheckShowsAnOpenAsk(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "OPENASK")
 	suggestions := checkThroughJSON(t, fixture.srv, relatedInput{project: "OPENASK", text: "Should the balloon cross the fjord?"})
 	item := relatedAsk(t, suggestions, fixture.asks["open"])
@@ -955,6 +1002,7 @@ func TestRelatedCheckShowsAnOpenAsk(t *testing.T) {
 // events locked past the read's deadline, keeping the states already read would show that ask as
 // closed with no answer.
 func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "PARTIAL")
 	fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}})
 	retractedAnswer := fixture.answer(t, "closed", "alice", map[string]any{"selected": []string{"Steel"}, "text": "Steel pilots."})
@@ -1049,6 +1097,7 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 // An issue matched through its title and through its spec fills one place, so the other places go
 // to other owners.
 func TestRelatedCheckListsOneItemPerOwner(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "OWNER")
 	key := createSearchIssue(t, handler, "OWNER", "Zymurgy ledger drifts", "The zymurgy ledger drifts every quarter.")
@@ -1061,7 +1110,8 @@ func TestRelatedCheckListsOneItemPerOwner(t *testing.T) {
 
 // Every issue and ask check is recorded with how it went: a found, a none and a not-made one.
 func TestRelatedCheckRecordsEachCheck(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "REC")
 	existing := createSearchIssue(t, handler, "REC", "Zymurgy ledger drifts", "")
 
@@ -1088,6 +1138,10 @@ func TestRelatedCheckRecordsEachCheck(t *testing.T) {
 		t.Fatalf("stopword ask suggestions = %+v, want not made", notMade)
 	}
 
+	// Each row is written by the request's own first record attempt if it ends inside
+	// relatedRecordTimeout, and by the retry the server detaches onto its lifetime if not
+	// (recordRelatedChecks), so the reads below wait for that work first.
+	awaitBackgroundWrites(t, served)
 	foundRows := readRelatedCheckRows(t, database, "source_issue_key = $1 and source_kind = 'issue'", foundKey)
 	if len(foundRows) != 1 {
 		t.Fatalf("related_checks rows for %s = %+v, want one", foundKey, foundRows)
@@ -1123,7 +1177,8 @@ func TestRelatedCheckRecordsEachCheck(t *testing.T) {
 // A create naming a GitHub issue Dispatch already holds creates nothing, so it makes no check, and
 // says so; the check is recorded as not made.
 func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "EXT")
 	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
 		"project": "EXT",
@@ -1144,6 +1199,10 @@ func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
 		len(suggestions.Related) != 0 {
 		t.Fatalf("suggestions = %+v, want not made because Dispatch already holds the issue", suggestions)
 	}
+	// The row goes through the same record as a check's (recordRelatedChecks): written by its
+	// first attempt inside relatedRecordTimeout, else by the retry the server detaches onto its
+	// lifetime, so the read waits for that work first.
+	awaitBackgroundWrites(t, served)
 	if rows := readRelatedCheckRows(t, database, "source_issue_key = $1 and reason = 'already_exists'", key); len(rows) != 1 || rows[0].Outcome != "not_made" {
 		t.Fatalf("already_exists rows for %s = %+v, want one not-made check", key, rows)
 	}

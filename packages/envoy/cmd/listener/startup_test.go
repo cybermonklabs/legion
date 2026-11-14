@@ -33,6 +33,7 @@ import (
 // healthy answer there would let ECS take the replacement for ready before it fans anything out,
 // and a 503 would keep ECS from ever stopping the task that holds the durable.
 func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "v1-bind-window"
 		secret    = "bind-window-secret"
@@ -123,7 +124,7 @@ func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
 		if forwarded.Topic != contracts.RoleTopicPrefix+role || !strings.HasPrefix(forwarded.DedupeKey, roleForwardDedupePrefix) {
 			t.Fatalf("the holder received topic %q dedupe key %q, want the role forward of %s", forwarded.Topic, forwarded.DedupeKey, contracts.RoleTopicPrefix+role)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWait):
 		t.Fatalf("the role holder received no forward while another task holds the durable:\n%s", listener.Output.String())
 	}
 
@@ -165,6 +166,7 @@ func assertSessionsMatchTheirSample(t *testing.T, listener *listenerProcess, wan
 // drops that copy by its dedupe key. The messages go straight onto the lane, as an operator's or
 // an earlier listener's do: the publish route forwards a role message itself.
 func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "two-tasks"
 		holderID  = "ses_two_tasks_holder"
@@ -219,7 +221,7 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 				t.Fatalf("the holder received dedupe key %q, want one prefixed %s", frame.DedupeKey, roleForwardDedupePrefix)
 			}
 			keys[frame.DedupeKey]++
-		case <-time.After(10 * time.Second):
+		case <-time.After(listenerWait):
 			t.Fatalf("the holder received %d of %d role messages", received, messages)
 		}
 	}
@@ -261,7 +263,7 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 		}
 		return total
 	}
-	waitFor(t, 10*time.Second, "the two tasks to handle the repeated key twice", func() bool { return handled() == 2 })
+	waitFor(t, listenerWait, "the two tasks to handle the repeated key twice", func() bool { return handled() == 2 })
 	repeats := 0
 	for collecting := true; collecting; {
 		select {
@@ -341,6 +343,7 @@ func countRecords(p *listenerProcess, name string, match func(map[string]any) bo
 // It must start healthy over them and serve the ordinary keys beside them: one stored role must not
 // keep every listener from starting.
 func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
+	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
@@ -451,6 +454,8 @@ func ciSettled(t *testing.T, client *bus.Client) bool {
 // cache not applicable instead of waiting on it. Seeded with a record any summary loop would settle,
 // it creates no consumer on the CI bucket's stream, publishes no settlement, and reports healthy.
 func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
+	// Serial: its assertion is a time window: nothing settles in the 5 s within which the
+	// positive control settles the same seed.
 	client := setupTestNATS(t)
 	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
@@ -492,6 +497,8 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 // the record seedDueCIRecord leaves settles: the settlement reaches the stream and the record is
 // marked settled. It is the positive control for the test above.
 func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
+	// Serial: its assertion is a time (the seed settles within 15 s of the listener turning
+	// healthy).
 	client := setupTestNATS(t)
 	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
@@ -506,7 +513,7 @@ func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Logf("settled %s after turning healthy", time.Since(healthy).Round(10*time.Millisecond))
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+	for deadline := time.Now().Add(listenerWait); ; time.Sleep(100 * time.Millisecond) {
 		entry, err := kv.Get(key)
 		if err != nil {
 			t.Fatalf("read the seeded CI record: %v", err)
@@ -563,6 +570,7 @@ func do(t *testing.T, request *http.Request) (int, string) {
 // anything. This test holds both halves, so reintroducing that SetDefault reds it. The listener
 // mounts the GitHub route, so all three caches warm up.
 func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
+	t.Parallel()
 	const machineID = "logger-split"
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))

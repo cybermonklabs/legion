@@ -1,5 +1,9 @@
 package main
 
+// TestThermoOpsListenerConfigDefaultsToLoopback and TestThermoOpsListenerConfigAllowsExplicitWidening
+// set listener settings with t.Setenv, which panics the process beside t.Parallel, so they are
+// serial (dispatch://INFRA-1075).
+
 import (
 	"context"
 	"errors"
@@ -57,6 +61,7 @@ func TestThermoOpsListenerConfigAllowsExplicitWidening(t *testing.T) {
 }
 
 func TestThermoOpsRoleSetRejectsUnregisteredSession(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions}
 

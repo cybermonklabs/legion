@@ -67,7 +67,7 @@ func requireReadUnchangedWhenReused(t *testing.T, service *Service) *readInvaria
 			t.Errorf("a settlement of room %s reused the rendering of the tree it read, which changed after the read:\nread:    %s\nversion: %s", room, before, after)
 		}
 	}
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		service.afterSettleTreeRead = nil
 		service.beforeSettleVersionRender = nil
 	})
@@ -91,6 +91,7 @@ func (i *readInvariant) requireCounts(t *testing.T, room string, reuses, renders
 // block that matches its row, which repairs nothing. The document holds that block, and the
 // settlement under test versions a plain text edit.
 func TestSettlementReusesTheRenderOnlyOfAnUntouchedRead(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n\n- Yes: Monday.\n- No: Later.\n:::\n\nThe quick brown fox.\n")

@@ -54,7 +54,7 @@ func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgr
 			if err != nil {
 				t.Fatalf("connect a socket to document %s: response=%#v err=%v", artifactID, response, err)
 			}
-			t.Cleanup(func() { _ = socket.Close() })
+			cleanupAndRelease(t, func() { _ = socket.Close() })
 
 			if err := socket.WriteMessage(gws.BinaryMessage, message.first); err != nil {
 				t.Fatalf("send a first message that names no document: %v", err)

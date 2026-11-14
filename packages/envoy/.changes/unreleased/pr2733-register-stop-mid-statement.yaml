@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  A Dispatch server stopped while it waits for a refusing peer to lapse now stops cleanly even
+  when the stop lands during one of its registry statements. That statement failed with a write
+  error that named no stop, so the server logged a failure and exited 1.

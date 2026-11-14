@@ -96,6 +96,7 @@ func adviceSessionActor(id string) map[string]any {
 }
 
 func TestWriteAdviceCountsDecisionBlocksAtDocumentWriteTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "ADVICE")
 
@@ -168,6 +169,7 @@ Which transport?
 }
 
 func TestWriteAdviceOmitsDecisionBlocksWhenMarkdownCannotBeParsed(t *testing.T) {
+	t.Parallel()
 	blocks := readDocumentBlocks(":::callout{#broken}\nUnclosed\n")
 	if blocks != nil {
 		t.Fatalf("invalid markdown document blocks = %#v, want absent", blocks)
@@ -196,6 +198,7 @@ func TestWriteAdviceOmitsDecisionBlocksWhenMarkdownCannotBeParsed(t *testing.T) 
 // A code block before an ask - a spec that shows a snippet, then asks about it - neither hides the
 // ask from the count nor adds the opening quoted in the code to the openings stored as text.
 func TestReadDocumentBlocksReadsPastCode(t *testing.T) {
+	t.Parallel()
 	blocks := readDocumentBlocks("Context\n\n```md\n:::ask{urgency=\"med\"}\n```\n\n:::ask{urgency=\"med\"}\nShip it?\n:::\n\nThen write :::callout{kind=\"note\"} as text.\n")
 	if blocks == nil || blocks.DecisionBlocks != 1 || blocks.UnparsedOpeners == nil || blocks.UnparsedOpeners.Count != 1 {
 		t.Fatalf("blocks = %#v (unparsed %#v), want one ask block and the one opening after it", blocks, blocks.UnparsedOpeners)
@@ -205,6 +208,7 @@ func TestReadDocumentBlocksReadsPastCode(t *testing.T) {
 // An opening longer than the stretch an example quotes - a long name, or a long run of colons - is
 // quoted whole rather than taking the write's response down after the write committed.
 func TestReadDocumentBlocksQuotesLongOpenings(t *testing.T) {
+	t.Parallel()
 	name := strings.Repeat("n", 90)
 	colons := strings.Repeat(":", 90)
 	blocks := readDocumentBlocks("Write :::" + name + "{a=\"b\"} and " + colons + "ask{} as text.\n")
@@ -219,6 +223,7 @@ func TestReadDocumentBlocksQuotesLongOpenings(t *testing.T) {
 // that it is text rather than only that the document holds no decisions (LEGION-416). A mention
 // in code is not an opening, and a document whose openings all became blocks reports none.
 func TestWriteAdviceReportsTypedBlockOpeningsStoredAsText(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "OPENERS")
 
@@ -248,6 +253,7 @@ func TestWriteAdviceReportsTypedBlockOpeningsStoredAsText(t *testing.T) {
 }
 
 func TestWriteAdviceCountsSessionWritesSinceLastHumanEvent(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createAdviceProject(t, handler, "COUNT")
 	spec := "# Count\n"
@@ -315,6 +321,7 @@ func TestWriteAdviceCountsSessionWritesSinceLastHumanEvent(t *testing.T) {
 // number as "You've sent N messages on KEY with no human response", so a second session's writes
 // must not inflate the first session's count, and a human event resets both.
 func TestWriteAdviceCountsOnlyTheCallingSessionsOwnWrites(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "OWN")
 	spec := "# Own writes\n"
@@ -377,6 +384,7 @@ func appendAdviceSystemEvent(t *testing.T, database *store.Store, issueKey strin
 }
 
 func TestWriteAdviceListsOnlyCallersOpenAsksAndExcludesCreatedAsk(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "ASKS")
 	spec := "# Asks\n"
@@ -428,6 +436,7 @@ func TestWriteAdviceListsOnlyCallersOpenAsksAndExcludesCreatedAsk(t *testing.T) 
 }
 
 func TestWriteAdviceLimitsOpenAsksToTwoOldest(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "LIMIT")
 	spec := "# Limited advice\n"
@@ -462,6 +471,7 @@ func TestWriteAdviceLimitsOpenAsksToTwoOldest(t *testing.T) {
 }
 
 func TestWriteAdviceReportsIssueStatusAtWriteTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "STATUS")
 	spec := "# Status\n"
@@ -538,6 +548,7 @@ func rawAdviceFields(t *testing.T, what, responseBody string) map[string]json.Ra
 // it reads the label in whatever case it was typed and the issue's parents' labels too, and it is
 // resolved only where it decides that line - a session's write on an issue still in triage.
 func TestWriteAdviceAnswersWhoOwnsTheIssuesStatus(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	actor := adviceSessionActor("session-owner")
 
@@ -584,6 +595,7 @@ func TestWriteAdviceAnswersWhoOwnsTheIssuesStatus(t *testing.T) {
 // The walk runs where its answer is used and nowhere else: an issue past triage prints no triage
 // line whatever the answer would be, so an ordinary write on an ordinary issue gains no query.
 func TestWriteAdviceLeavesWhoOwnsTheStatusUnaskedPastTriage(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	key := labelledIssueKey(t, handler, "PAST", "Already under way", []string{"legion"}, "")
 	moved := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]string{
@@ -611,6 +623,7 @@ func TestWriteAdviceLeavesWhoOwnsTheStatusUnaskedPastTriage(t *testing.T) {
 // and persists them only once the advice survives, after it. A failed walk costs its own field
 // alone.
 func TestWriteAdviceKeepsItsFieldsWhenTheLegionWalkFails(t *testing.T) {
+	t.Parallel()
 	handler, _ := newFailingAdviceHandler(t, "legion_managed_status", 0)
 	createAdviceProject(t, handler, "WALK")
 	spec := "# Walk failure\n"
@@ -651,6 +664,7 @@ func TestWriteAdviceKeepsItsFieldsWhenTheLegionWalkFails(t *testing.T) {
 // or in indented code. A block the edit moved or reworded was already there. The inserts are the
 // shared table's rows (decisionBlockInsert), and each one's ask blocks are the ids it names.
 func TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "ADDED")
 	const spec = "# Spec\n\nPick a transport.\n\n:::ask{#decision urgency=\"high\"}\nWhich transport?\n:::\n\nContext ends with no drift.\n"
@@ -757,6 +771,7 @@ func TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded(t *testing.T) {
 }
 
 func TestWriteAdviceOnIdempotentExternalIssueCreate(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "EXTERNAL")
 	mapped := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
@@ -795,6 +810,8 @@ func TestWriteAdviceOnIdempotentExternalIssueCreate(t *testing.T) {
 }
 
 func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
+	// No t.Parallel: this test measures the process. Its assertion is a time: the advice round
+	// trip over 5,001 events within 2 s.
 	handler, database := newTestHandlerWithStore(t)
 	createAdviceProject(t, handler, "PERF")
 	spec := "# Performance\n"
@@ -844,6 +861,9 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 }
 
 func TestWriteAdviceFailureDoesNotAbortWrite(t *testing.T) {
+	// No t.Parallel: this test measures the process. Its assertion is a time: the write must not
+	// wait out the 2 s advice stall, which the advice's 500 ms statement timeout cuts, leaving the
+	// write's other database work the rest of the 2 s.
 	handler, database := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "FAIL")
 	spec := "# Failure isolation\n"
@@ -880,6 +900,7 @@ func TestWriteAdviceFailureDoesNotAbortWrite(t *testing.T) {
 // Only a session's write runs the issue-advice queries, so only a session's document edit can
 // meet one that fails; what it keeps is the document's own block count and the block's check.
 func TestDocumentEditAdviceKeepsCountWhenIssueAdviceFails(t *testing.T) {
+	t.Parallel()
 	handler, _ := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "COUNT")
 	spec := "# Count-only advice\n"

@@ -1,18 +1,31 @@
-// Package storetest gives each Postgres-backed broker test a migrated schema of its own on the
-// BROKER_TEST_DATABASE_URL server, dropped when the test ends. Every broker package's tests run
-// against one server at once, and the poller's passes act on every row of their tables, so tests
-// that shared tables would act on each other's rows; with a schema per test no test can see
-// another's rows, in its own package, a sibling package, or a concurrent run of either. It also
-// writes the rows only a database writer other than the broker could (Exec, ForgeRequestSignature,
+// Package storetest gives each Postgres-backed broker test a fully migrated database of its own,
+// waits for backends to queue behind a lock a test holds (AwaitLockWaiters), and writes the rows
+// only a database writer other than the broker could (Exec, ForgeRequestSignature,
 // CopyAsOtherKind), for the tests that pin what a release or an authentication refuses. It is an
 // ordinary package rather than a _test.go file so every broker package can import it.
+//
+// URL clones each database from one migrated template, which the first test process to want it
+// builds and every other shares, through the harness internal/testpg/pgtemplate implements for
+// both stores: its package comment says how the template is named, built, copied and kept, and
+// how a test's database is dropped. Migrate applies the whole set inside one transaction under a
+// database-wide advisory lock (internal/broker/store), so tests that each migrated a schema of
+// their own on one shared database both re-ran every migration and queued on that one lock,
+// which was most of the Postgres work a broker test did (dispatch://INFRA-1075). A clone costs
+// one create database. Nothing is handed from one test to the next: a test's database is dropped
+// once the test ends, so no test can be given a database another test wrote in.
+//
+// A package whose tests call URL or Open uses Main as its TestMain:
+// func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }. Main waits for the tests' drops. A
+// package that installs none still works: each call makes a database of its own, migrates it and
+// drops it with the test, a whole migration run per test, as each test's own schema cost before
+// this harness.
 package storetest
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
+	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -24,14 +37,28 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/pgtemplate"
 )
 
 // DatabaseURLEnv names the Postgres server the broker's tests run against.
 const DatabaseURLEnv = "BROKER_TEST_DATABASE_URL"
 
-// serverURL is the DatabaseURLEnv server every schema and database here is made on, skipping t
-// when the variable is unset: a run with no server is skipped rather than failed, which is the
-// contract URL, Open and DatabaseURL all state.
+// harness clones every database URL hands out from the broker's template.
+var harness = pgtemplate.New(pgtemplate.Broker, store.MigrationsFingerprint, migrate)
+
+// migrate applies every migration to the database a build of the template runs in.
+func migrate(ctx context.Context, url string) error {
+	st, err := store.Open(ctx, url)
+	if err != nil {
+		return fmt.Errorf("open the template database: %w", err)
+	}
+	defer st.Close()
+	return st.Migrate(ctx)
+}
+
+// serverURL is the DatabaseURLEnv server every database here is made on, skipping t when the
+// variable is unset: a run with no server is skipped rather than failed, which is the contract
+// URL, Open and DatabaseURL all state.
 func serverURL(t testing.TB) string {
 	t.Helper()
 	raw := os.Getenv(DatabaseURLEnv)
@@ -41,57 +68,18 @@ func serverURL(t testing.TB) string {
 	return raw
 }
 
-// randomName mints the name of the schema one test gets of its own. It is random rather than
-// derived from t.Name() because two concurrent runs of one test - this package's tests and a
-// sibling package's, against the one server - would otherwise mint the same name and act on each
-// other's rows.
-func randomName(t testing.TB) string {
-	t.Helper()
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random schema name: %v", err)
-	}
-	return "broker_test_" + hex.EncodeToString(suffix[:])
-}
-
-// URL creates a fresh schema on the DatabaseURLEnv server, migrates it, drops it when t ends, and
-// returns a connection string whose connections use that schema. params are extra connection
-// parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset.
+// URL returns the DSN of a database of t's own, carrying every migration and nothing another test
+// wrote, dropped when t ends. params are extra connection parameters as key=value (e.g.
+// "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset.
 func URL(t testing.TB, params ...string) string {
 	t.Helper()
 	raw := serverURL(t)
-	ctx := context.Background()
-	schema := randomName(t)
-	admin(t, raw, "create schema "+schema)
-	t.Cleanup(func() { admin(t, raw, "drop schema "+schema+" cascade") })
-
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("parse %s: %v", DatabaseURLEnv, err)
+	if !harness.InMain() {
+		// Only Main waits for a clone's drop, so a package that installs none migrates a
+		// database of its own instead.
+		return ownMigratedURL(t, raw, params)
 	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	for _, param := range params {
-		values, err := url.ParseQuery(param)
-		if err != nil {
-			t.Fatalf("connection parameter %q: %v", param, err)
-		}
-		for key := range values {
-			query.Set(key, values.Get(key))
-		}
-	}
-	parsed.RawQuery = query.Encode()
-	dsn := parsed.String()
-
-	st, err := store.Open(ctx, dsn)
-	if err != nil {
-		t.Fatalf("open test schema: %v", err)
-	}
-	defer st.Close()
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatalf("migrate test schema: %v", err)
-	}
-	return dsn
+	return withParams(harness.Clone(t, raw, "broker_test_"), params...)
 }
 
 // Open is store.Open on a fresh URL(t, params...), closed when t ends.
@@ -101,8 +89,57 @@ func Open(t testing.TB, params ...string) *store.Store {
 	if err != nil {
 		t.Fatalf("open test store: %v", err)
 	}
+	// The store closes before the drop URL registered, which t.Cleanup's reverse order gives, so
+	// the drop meets no session of this store's.
 	t.Cleanup(st.Close)
 	return st
+}
+
+// ownMigratedURL is what a package with no Main gets: a database of its own (testpg.DatabaseOn),
+// migrated, and dropped with the test - a whole migration run per test, as each test's own schema
+// cost before this harness.
+func ownMigratedURL(t testing.TB, raw string, params []string) string {
+	t.Helper()
+	// The database is a file copy of template1 (docs/testing.md, "A database a Go test creates").
+	dsn := withParams(testpg.DatabaseOn(t, raw, "broker_test"), params...)
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open the test database: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate the test database: %v", err)
+	}
+	return dsn
+}
+
+// Main runs the package's tests and waits for their databases to drop (pgtemplate.Harness.Main).
+func Main(m *testing.M) int { return harness.Main(m) }
+
+// withParams is dsn carrying params as extra connection parameters, each given as key=value.
+func withParams(dsn string, params ...string) string {
+	if len(params) == 0 {
+		return dsn
+	}
+	database, err := url.Parse(dsn)
+	if err != nil {
+		// url.Parse's own error quotes the URL it was given, which carries a credential, so only
+		// the error it wraps is printed.
+		panic("storetest: parse a test database's URL: " + errors.Unwrap(err).Error())
+	}
+	query := database.Query()
+	for _, param := range params {
+		values, err := url.ParseQuery(param)
+		if err != nil {
+			panic("storetest: connection parameter " + param + ": " + err.Error())
+		}
+		for key := range values {
+			query.Set(key, values.Get(key))
+		}
+	}
+	database.RawQuery = query.Encode()
+	return database.String()
 }
 
 // PerPodLoginSchema applies by hand the one statement the release after this one migrates:
@@ -120,35 +157,14 @@ func PerPodLoginSchema(t testing.TB, st *store.Store) {
 }
 
 // DatabaseURL creates a fresh, UNMIGRATED database on the DatabaseURLEnv server, drops it when t
-// ends, and returns its DSN. URL remains the right helper for everything else: a schema is
-// cheaper than a database and isolates rows just as well. A test needs a database of its own
-// only when what it exercises is per-database rather than per-schema, and two things are.
-// LISTEN/NOTIFY is one: a channel name is a database-wide identifier, so every schema on one
-// server hears every other's notifications on the one channel constant a feature listens to, and
-// a test on a schema would hear a sibling test's sends. The migration advisory lock is the
-// other: Migrate takes it database-wide, so two processes migrating their own schemas of one
-// database still serialize on each other.
-//
-// The DSN is unmigrated because that is what both callers need: a LISTEN/NOTIFY test, which
-// reads no table at all, and a test that starts two broker processes against a database neither
-// has migrated yet, which is the race those two processes are there to settle. A caller that
-// wants tables runs store.Migrate on it itself.
+// ends, and returns its DSN. URL remains the right helper for everything else: it hands out a
+// database already carrying every migration. The DSN is unmigrated because that is what both
+// callers need: a LISTEN/NOTIFY test, which reads no table at all, and a test that starts two
+// broker processes against a database neither has migrated yet, which is the race those two
+// processes are there to settle. A caller that wants tables runs store.Migrate on it itself.
 func DatabaseURL(t testing.TB) string {
 	t.Helper()
 	return testpg.DatabaseOn(t, serverURL(t), "broker_test")
-}
-
-func admin(t testing.TB, databaseURL, statement string) {
-	t.Helper()
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to %s: %v", DatabaseURLEnv, err)
-	}
-	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, statement); err != nil {
-		t.Fatalf("%s: %v", statement, err)
-	}
 }
 
 // Querier is what AwaitLockWaiters polls through: a pool, or a connection of its own when the

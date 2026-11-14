@@ -33,7 +33,7 @@ func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	cleanupAndRelease(t, func() { slog.SetDefault(previous) })
 
 	// Both first ticks land in one period of the database's clock, not on either side of a
 	// boundary, where each would serve a period of its own.

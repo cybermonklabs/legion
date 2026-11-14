@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,9 +29,19 @@ const testScale = 0.01
 // TestSeedAtASmallScale seeds two fresh databases and holds the pair, and then one of them, to
 // everything the seed promises. Both runs are in one test because each one takes most of a
 // minute: a test of its own for each check would seed six databases to read one data set.
+//
+// The two seeds run side by side. The second is the first's control - an independent repeat
+// the pair's row counts and checksums are compared against (assertSameRowCounts,
+// assertSameChecksums) - and it reads nothing the first left: every row of a run is a function
+// of the one random seed and the one base time alone (ids.go), so neither run needs the other
+// to have finished and only the comparison between them does. Nothing a run writes is another
+// run's, here or across the package's tests, which all run beside each other too: a run's block
+// ids come from a counter the run itself holds and passes to the parse that stores them
+// (seedRun.blockIDs, run.go), and its database is its own (storetest.Open)
+// (dispatch://INFRA-1075).
 func TestSeedAtASmallScale(t *testing.T) {
-	first, firstRun := seedTestDatabase(t)
-	second, _ := seedTestDatabase(t)
+	t.Parallel()
+	first, second, firstRun := seedTestDatabasePair(t)
 
 	t.Run("two runs at one scale write the same rows", func(t *testing.T) {
 		assertSameRowCounts(t, first, second)
@@ -74,17 +85,29 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 }
 
-// seedTestDatabase seeds a database of its own and answers it with the run that filled it.
-func seedTestDatabase(t *testing.T) (*store.Store, *seedRun) {
+// seedTestDatabasePair seeds two databases of their own, side by side, and answers them with the
+// run that filled the first. The seeds share nothing - each fills a database storetest opened for
+// it alone and draws its block ids from the counter its own run holds (seedRun.blockIDs, run.go) -
+// so a test that wants a control pays one seed's wall rather than two.
+//
+// The databases are opened, and a seed that failed reported, on the test's own goroutine: only
+// it may call storetest.Open's t.Skip or t.Fatalf (testing.T.FailNow).
+func seedTestDatabasePair(t *testing.T) (first, second *store.Store, firstRun *seedRun) {
 	t.Helper()
-	database := storetest.Open(t)
+	first, second = storetest.Open(t), storetest.Open(t)
+	var firstErr, secondErr error
 	started := time.Now()
-	run, err := seed(context.Background(), database, testScale, io.Discard)
-	if err != nil {
-		t.Fatalf("seed at scale %v: %v", testScale, err)
+	var seeds sync.WaitGroup
+	seeds.Go(func() { firstRun, firstErr = seed(context.Background(), first, testScale, io.Discard) })
+	seeds.Go(func() { _, secondErr = seed(context.Background(), second, testScale, io.Discard) })
+	seeds.Wait()
+	for _, err := range []error{firstErr, secondErr} {
+		if err != nil {
+			t.Fatalf("seed at scale %v: %v", testScale, err)
+		}
 	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
-	return database, run
+	t.Logf("seeded two databases at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
+	return first, second, firstRun
 }
 
 // TestSeedBuildsTermStatisticsOnMainsSchema seeds the shape the measurement protocol's "before"
@@ -100,6 +123,7 @@ func seedTestDatabase(t *testing.T) (*store.Store, *seedRun) {
 // the step reads the catalogue for; the rest of that release's schema is older still, and the
 // step's build reads nothing of it that this head does not also have.
 func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx,
@@ -139,6 +163,7 @@ func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
 }
 
 func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	rollback, err := os.ReadFile("../../internal/dispatch/store/migrations/20261105014808_comments_answers.down.sql")
 	if err != nil {
@@ -160,6 +185,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 }
 
 func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
+	t.Parallel()
 	plan := newPlan(newSizes(testScale))
 	for index, comment := range plan.comments {
 		parent := comment.ReplyTo
@@ -195,6 +221,7 @@ func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
 // migrate-first run creates schema_migrations before it applies anything (store.createVersionTable),
 // so it shows there whichever migration it then fails on.
 func TestSeedRefusesAFilledDatabaseWithoutMigratingIt(t *testing.T) {
+	t.Parallel()
 	t.Run("a database that is not Dispatch's", func(t *testing.T) {
 		ctx := context.Background()
 		database := storetest.Open(t)
