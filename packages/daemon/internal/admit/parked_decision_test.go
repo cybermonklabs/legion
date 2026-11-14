@@ -339,9 +339,9 @@ func TestAFirstAdmissionStartsItsArchitectWithItsOwnTaskAlone(t *testing.T) {
 // own words (workflow.ArchitectStartTask). A root whose earlier generation ended in no phase of
 // its own and whose architect never claimed it owes the whole first act, so it reads as a tree
 // nobody has architected; one whose architect ran at the generation before is told that its tree
-// ran then and that re-admission cleared the old design gate. Both end with the first-task tail,
-// so a narrowing of a decision that leaves the tree keeps the instruction
-// (workflow.CarriesArchitectStart).
+// ran then and that re-admission cleared the old design gate. Both carry the first-task
+// instruction, which a narrowing of a decision that leaves the tree keeps, since the start is of
+// the entry its promotion raised (workflow.NarrowRootTask).
 func TestAKeptDecisionLeadsTheArchitectTaskOfARootAdmissionStarts(t *testing.T) {
 	const decided = "While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: " +
 		"dispatch://LEGION-ROOT/ask/ask-1 (ask-answered by user:alice). Read each before you continue."
@@ -372,8 +372,8 @@ func TestAKeptDecisionLeadsTheArchitectTaskOfARootAdmissionStarts(t *testing.T) 
 			if len(tasks) != 1 || !strings.HasPrefix(tasks[0], decided+"\n\n") {
 				t.Fatalf("architect start tasks %q, want one led by %q", tasks, decided)
 			}
-			if !strings.Contains(tasks[0], tc.label) || !workflow.CarriesArchitectStart(tasks[0]) {
-				t.Fatalf("the start's task %q, want the shape labelled %q and the first-task tail", tasks[0], tc.label)
+			if !strings.Contains(tasks[0], tc.label) {
+				t.Fatalf("the start's task %q, want the shape labelled %q", tasks[0], tc.label)
 			}
 		})
 	}

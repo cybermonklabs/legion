@@ -116,3 +116,73 @@ func TestARootArchitectEntryIsHeldOnItsPhasesRowAsAPhaseWorkersIs(t *testing.T) 
 		t.Fatalf("the tester's claim was given entry %d and served entry %d, want both 2", got.GivenEntry, got.ServedEntry)
 	}
 }
+
+// A root architect's row says whether the sweep's send of its entry again sends the entry's task
+// as written (PhaseRow.EntryVerbatim), which only the resume of an answered root sets. The record
+// holds that fact as it holds the task: written with the row and read back with it, both ways,
+// and cleared with the task by a re-admission, whose promotion raises a new entry with work of
+// its own. Both clears a re-admission makes are read: of one issue (ClearGeneration) and of a
+// whole tree (ClearTreeGeneration). The entry and the moment it was raised stay, as they do for
+// every role.
+func TestTheArchitectEntryMarkToSendAsWrittenRoundTripsAndGoesWithTheGeneration(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	raised := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	const resumed = "A person answered your ask ask-1; read it. Continue."
+	architectRow := func(key string) PhaseRow {
+		t.Helper()
+		var row PhaseRow
+		inTx(t, st, func(tx pgx.Tx) {
+			rows, err := records.Phases(ctx, tx, key)
+			must(t, err)
+			row = PhaseRowOf(rows, claim.RoleArchitect)
+		})
+		return row
+	}
+	for _, tc := range []struct {
+		name  string
+		key   string
+		clear func(tx pgx.Tx, issue Issue) error
+	}{
+		{name: "a re-admission of the issue", key: "LEGION-291", clear: func(tx pgx.Tx, issue Issue) error {
+			return records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC())
+		}},
+		{name: "a re-admission of the tree", key: "LEGION-292", clear: func(tx pgx.Tx, issue Issue) error {
+			return records.ClearTreeGeneration(ctx, tx, issue.Tree, time.Now().UTC())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := issueFixture(tc.key)
+			row := PhaseRow{Issue: issue.Key, Role: claim.RoleArchitect, Claim: "architect", Entry: 3,
+				EntryTask: resumed, EntryVerbatim: true, EntryRaisedAt: raised}
+			inTx(t, st, func(tx pgx.Tx) {
+				must(t, records.PutIssue(ctx, tx, issue))
+				must(t, records.PutPhase(ctx, tx, row))
+			})
+			if got := architectRow(issue.Key); got.EntryTask != resumed || !got.EntryVerbatim {
+				t.Fatalf("the architect's row = task %q, sent as written %t; want %q marked to be sent as written, as it was put",
+					got.EntryTask, got.EntryVerbatim, resumed)
+			}
+			row.EntryVerbatim = false
+			inTx(t, st, func(tx pgx.Tx) { must(t, records.PutPhase(ctx, tx, row)) })
+			if got := architectRow(issue.Key); got.EntryVerbatim {
+				t.Fatal("the architect's row is still marked to be sent as written after a put that clears it, want the mark the put wrote")
+			}
+			row.EntryVerbatim = true
+			inTx(t, st, func(tx pgx.Tx) {
+				must(t, records.PutPhase(ctx, tx, row))
+				must(t, tc.clear(tx, issue))
+			})
+			got := architectRow(issue.Key)
+			if got.EntryTask != "" || got.EntryVerbatim {
+				t.Fatalf("the architect's row after %s = task %q, sent as written %t; want no task and no mark: both were the generation's that ended",
+					tc.name, got.EntryTask, got.EntryVerbatim)
+			}
+			if got.Entry != 3 || !got.EntryRaisedAt.Equal(raised) {
+				t.Fatalf("the architect's row after %s = entry %d raised at %s, want the entry 3 raised at %s it stood on",
+					tc.name, got.Entry, got.EntryRaisedAt, raised)
+			}
+		})
+	}
+}

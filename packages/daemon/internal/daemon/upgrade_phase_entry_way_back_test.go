@@ -30,23 +30,24 @@ import (
 // source — upgradeRecoveryReadsAnswer runs the block that file carries, as the one transaction
 // an operator runs — and the guide's copy is held to it by
 // TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide. The way back of contract 117, which
-// an operator runs before it, stands in the headers of its three migrations and in a fenced block
+// an operator runs before it, stands in the headers of its four migrations and in a fenced block
 // of the guide of its own, and
 // TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide holds those copies to
 // one text.
 const (
 	// phaseEntryMigrationFile, architectStalledNoticesMigrationFile,
-	// architectUpgradeMigrationFile, claimHandshakeMigrationFile and wayBackGuideFile are the
-	// paths the failures below print, so a failing run names the file to open rather than the
-	// text alone.
+	// architectUpgradeMigrationFile, claimHandshakeMigrationFile, entryVerbatimMigrationFile and
+	// wayBackGuideFile are the paths the failures below print, so a failing run names the file to
+	// open rather than the text alone.
 	phaseEntryMigrationFile              = "internal/store/migrations/20261111225552_phase_entry.up.sql"
 	architectStalledNoticesMigrationFile = "internal/store/migrations/20261113181500_architect_stalled_notices.up.sql"
 	architectUpgradeMigrationFile        = "internal/store/migrations/20261113182000_architect_entry_upgrade.up.sql"
 	claimHandshakeMigrationFile          = "internal/store/migrations/20261114020537_claim_entry_handshake.up.sql"
+	entryVerbatimMigrationFile           = "internal/store/migrations/20261114061900_phase_entry_verbatim.up.sql"
 	wayBackGuideFile                     = "docs/kubernetes.md"
-	// claimHandshakeMigration is the version of the newest of contract 117's three migrations,
+	// entryVerbatimMigration is the version of the newest of contract 117's four migrations,
 	// whose version row is the first that way back deletes.
-	claimHandshakeMigration = 20261114020537
+	entryVerbatimMigration = 20261114061900
 	// wayBackHeredoc opens the block in every file and wayBackTerminator closes it. What stands
 	// between them is what psql reads on its standard input, which is the transaction
 	// upgradeRecoveryReadsAnswer sends in one exec.
@@ -228,17 +229,18 @@ func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 	assertOneWayBackText(t, phaseEntryMigrationFile, header, wayBackGuideMark(phaseEntryMigration))
 }
 
-// The way back of contract 117 is one text standing in four files: the headers of its three
-// migrations, 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade
-// and 20261114020537_claim_entry_handshake, and the fenced block of docs/kubernetes.md that an
-// operator runs before the phase entry's. A copy that drifted is the same wrong procedure at a
-// rollback as the phase entry's would be. internal/admit's
+// The way back of contract 117 is one text standing in five files: the headers of its four
+// migrations, 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade,
+// 20261114020537_claim_entry_handshake and 20261114061900_phase_entry_verbatim, and the fenced
+// block of docs/kubernetes.md that an operator runs before the phase entry's. A copy that drifted
+// is the same wrong procedure at a rollback as the phase entry's would be. internal/admit's
 // TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward runs the header's block as the
 // one transaction an operator runs; what this adds is that each header and the guide carry the
-// same text, so an edit of one statement in any of the four fails here.
+// same text, so an edit of one statement in any of the five fails here.
 func TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide(t *testing.T) {
-	mark := wayBackGuideMark(claimHandshakeMigration)
-	for _, file := range []string{architectStalledNoticesMigrationFile, architectUpgradeMigrationFile, claimHandshakeMigrationFile} {
+	mark := wayBackGuideMark(entryVerbatimMigration)
+	for _, file := range []string{architectStalledNoticesMigrationFile, architectUpgradeMigrationFile, claimHandshakeMigrationFile,
+		entryVerbatimMigrationFile} {
 		assertOneWayBackText(t, file, wayBackBlockOfTheHeader(t, file), mark)
 	}
 }

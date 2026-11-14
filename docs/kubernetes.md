@@ -2277,15 +2277,19 @@ Store migration 20261113181500_architect_stalled_notices adds `architect_stalled
 Store migration 20261113182000_architect_entry_upgrade settles every root architect of the release before it at entry 1, on its row and on its claim, and marks the first and the third arm told for each root, so the upgrade sends no running architect a first task and wakes the controller for none of them.
 Store migration 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns that hold a claim's handshake, at defaults that name no entry.
 The state of such a root carries its two numbers and neither time, since the upgrade queues no task and records no handshake.
+Store migration 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, the mark that the sweep sends a root architect's entry again as written, which the resume of a root a person answered sets and every other raise of an entry clears;
+every row it finds takes the default, false, which the sweep derives again.
 
 To roll a release at contract 117 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
 A rollback below contract 111 also takes the steps of the releases it crosses, which "Rolling back the release that frees the slot past review" and "Rolling back the release whose update round ends at its bound" above give.
 To roll it back to contract 111 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
-The block below is the way back of those three migrations, and the header of each carries it:
+The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
+alter table phases drop column if exists entry_verbatim;
+delete from schema_version where version = 20261114061900;
 alter table claims drop column if exists handshake_entry;
 alter table claims drop column if exists handshake_generation;
 alter table claims drop column if exists handshake_queued_at;
@@ -2299,10 +2303,16 @@ commit;
 SQL
 ```
 
-It prints `BEGIN`, four `ALTER TABLE`s, `DELETE 1`, `DELETE 1`, `DELETE <n>` for the wakes it drops, `DROP TABLE`, `DELETE 1` and `COMMIT`;
-a rerun prints a `NOTICE` that each of the four columns does not exist beside the same four `ALTER TABLE`s, `DELETE 0` three times, a `NOTICE` that the table does not exist, the same `DROP TABLE`, `DELETE 0` and `COMMIT`, and changes nothing.
+It prints `BEGIN`, an `ALTER TABLE`, `DELETE 1`, four `ALTER TABLE`s, `DELETE 1`, `DELETE 1`, `DELETE <n>` for the wakes it drops, `DROP TABLE`, `DELETE 1` and `COMMIT`;
+a rerun prints a `NOTICE` that each of the five columns does not exist beside the same five `ALTER TABLE`s, `DELETE 0` four times, a `NOTICE` that the table does not exist, the same `DROP TABLE`, `DELETE 0` and `COMMIT`, and changes nothing.
 It runs first because the upgrade writes into three of the six columns the phase entry's block drops, which is the case that block's own text covers below.
-The four `alter table`s and the first `delete` go together, and come first because the claim handshake is the newest of the three migrations.
+The first `alter table` and the first `delete` go together, and come first because the mark is the newest of the four migrations.
+The earlier release needs neither: its phases read and its phases write name each column they touch, so the column would stand unread, and every row that release inserts would take the default.
+Both are owed to the roll-forward: with the column dropped and the row deleted, `Migrate` adds the column again at its default.
+What the drop costs is the mark on each entry a resume raised before the rollback: after the roll-forward each such entry reads as one the derivation wrote.
+A resume whose start reached its claim costs nothing, since nothing sends that entry again;
+a resume whose start was lost, with the claim still behind its entry at the roll-forward, is sent the derivation's task for its root rather than the resume's own.
+The next four `alter table`s and the second `delete` go together, and come next because the claim handshake is the newest of the other three migrations.
 The earlier release needs neither: its claim read and its claim write name each column they touch, so the four columns would stand unread and unwritten.
 Both are owed to the roll-forward.
 The earlier release queues tasks and records no handshake, so a handshake left standing would name an entry that release has since replaced, and the state of a root still at the same generation would show the times of that older entry.
@@ -2323,15 +2333,15 @@ The `drop table` and the last `delete` go together.
 The earlier release reads no such table, and the delete makes the store report that release's own version again.
 The drop is owed to the roll-forward, which cannot create the table again while it stands.
 `Migrate` makes the table again, empty, and the re-armed upgrade marks it again.
-The SQL was run on 2026-11-14 at 02:21Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own migration step (`store.apply`) took through 20261113181500 and that then held one root at `admitted` whose architect claim stood with no architect `phases` row.
-`Migrate` then applied the upgrade and the claim handshake and left 139 versions recorded, the highest 20261114020537, with the architect's row and claim at entry 1 and two marks.
-After it the architect's claim was written given entry 2 with a handshake of that entry, queued and confirmed, and one unsent `architect-stalled` wake was written into the outbox.
-This block's first run printed `BEGIN`, four `ALTER TABLE`s, `DELETE 1`, `DELETE 1`, `DELETE 1`, `DROP TABLE`, `DELETE 1` and `COMMIT`.
-Its rerun printed `BEGIN`, `NOTICE:  column "handshake_entry" of relation "claims" does not exist, skipping` and the same `NOTICE` for each of the other three columns, each followed by `ALTER TABLE`, then `DELETE 0`, `DELETE 0`, `DELETE 0`, `NOTICE:  table "architect_stalled_notices" does not exist, skipping`, `DROP TABLE`, `DELETE 0` and `COMMIT`.
+The SQL was run on 2026-11-14 at 06:45Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own migration step (`store.apply`) took through 20261113181500, leaving 139 versions recorded, and that then held one root at `admitted` whose architect claim stood with no architect `phases` row.
+`Migrate` then applied the upgrade, the claim handshake and the mark and left 142 versions recorded, the highest 20261114061900, with the architect's row and claim at entry 1, the row unmarked, and two marks.
+After it the architect's claim was written given entry 2 with a handshake of that entry, queued and confirmed, the architect's row was written at entry 2 carrying a resume's task marked to be sent as written, and one unsent `architect-stalled` wake was written into the outbox.
+This block's first run printed `BEGIN`, `ALTER TABLE`, `DELETE 1`, four `ALTER TABLE`s, `DELETE 1`, `DELETE 1`, `DELETE 1`, `DROP TABLE`, `DELETE 1` and `COMMIT`.
+Its rerun printed `BEGIN`, `NOTICE:  column "entry_verbatim" of relation "phases" does not exist, skipping`, `ALTER TABLE`, `DELETE 0`, `NOTICE:  column "handshake_entry" of relation "claims" does not exist, skipping` and the same `NOTICE` for each of the other three handshake columns, each followed by `ALTER TABLE`, then `DELETE 0`, `DELETE 0`, `DELETE 0`, `NOTICE:  table "architect_stalled_notices" does not exist, skipping`, `DROP TABLE`, `DELETE 0` and `COMMIT`.
 The phase entry's block then printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 0`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and all three runs exited 0.
-After them the store reported 20261112180548 with 135 versions recorded, neither `architect_stalled_notices` nor the wake stood, the claims table held no `handshake_` column, and the architect's `phases` row stood without its entry columns and its claim without `given_entry` and `served_entry`.
-That run was on the tree before the forward merge that brought in cybermonklabs/legion#3982; on a store this release migrates, the highest row the two blocks leave is that pull request's 20261113110610_drop_claim_update_answer_marks, which neither block touches, so the store reports 20261113110610 after them (`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward`).
-Running `Migrate` again applied four migrations, 20261111225552, 20261113181500, 20261113182000 and 20261114020537, and the store reported 20261114020537 with 139 versions recorded, the architect's row and claim at entry 1 again, its two marks again at the root's generation, and its claim with no handshake.
+After them the store reported 20261113110610 with 137 versions recorded: that is cybermonklabs/legion#3982's 20261113110610_drop_claim_update_answer_marks, the highest row neither block touches (`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward`).
+Neither `architect_stalled_notices` nor the wake stood, the claims table held no `handshake_` column, and the architect's `phases` row stood without `entry_verbatim` and the entry columns and its claim without `given_entry` and `served_entry`.
+Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 142 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 117 migrated, run the contract 117 block above first.
@@ -2377,10 +2387,12 @@ The re-arm needs nothing of the other rows:
 What the block does need is that no migration recorded after this one builds on the six columns it drops.
 Such a migration keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever it built on those columns, an index or a constraint on `phases.entry`, say:
 reverse such a migration by its own way back first, and run this block after it.
-Four migrations are recorded above this one at contract 117.
+Seven migrations are recorded above this one at contract 117.
 20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
+20261113082214_outbox_kinds_with_the_update_ask and 20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982, touch none of the six either, so the block holds over them too, and a rollback below contract 111 reverses them by their own steps.
 20261113182000_architect_entry_upgrade writes into three of the six, and 20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 117 block above reverses both first.
 20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 117 block above reverses it too, because the earlier release writes no handshake into them.
+20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 117 block above reverses it too, so that the roll-forward can add it again.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database migrated to this release's head by `internal/store`'s own `Migrate`, which applied 133 migrations and left 133 versions recorded, the highest 20261112180548, and holding four outbox rows:

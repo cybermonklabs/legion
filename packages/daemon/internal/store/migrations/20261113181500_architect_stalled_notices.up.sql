@@ -26,12 +26,15 @@
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon
 -- stopped and before the one the phase entry's own header carries
 -- (20261111225552_phase_entry.up.sql). It is the way back of this migration, of
--- 20261113182000_architect_entry_upgrade and of 20261114020537_claim_entry_handshake, whose
--- headers carry the same block. 20261113182000's header says what each statement prints, why the
--- block runs first and why it drops the wakes still unsent.
+-- 20261113182000_architect_entry_upgrade, of 20261114020537_claim_entry_handshake and of
+-- 20261114061900_phase_entry_verbatim, whose headers carry the same block. 20261113182000's
+-- header says what each statement prints, why the block runs first and why it drops the wakes
+-- still unsent.
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
+--   alter table phases drop column if exists entry_verbatim;
+--   delete from schema_version where version = 20261114061900;
 --   alter table claims drop column if exists handshake_entry;
 --   alter table claims drop column if exists handshake_generation;
 --   alter table claims drop column if exists handshake_queued_at;

@@ -47,12 +47,14 @@
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon
 -- stopped and before the one the phase entry's own header carries
 -- (20261111225552_phase_entry.up.sql). It is the way back of this migration, of
--- 20261113181500_architect_stalled_notices and of 20261114020537_claim_entry_handshake, whose
--- headers carry the same block, and docs/kubernetes.md carries it as the step an operator runs
--- before the phase entry's.
+-- 20261113181500_architect_stalled_notices, of 20261114020537_claim_entry_handshake and of
+-- 20261114061900_phase_entry_verbatim, whose headers carry the same block, and docs/kubernetes.md
+-- carries it as the step an operator runs before the phase entry's.
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
+--   alter table phases drop column if exists entry_verbatim;
+--   delete from schema_version where version = 20261114061900;
 --   alter table claims drop column if exists handshake_entry;
 --   alter table claims drop column if exists handshake_generation;
 --   alter table claims drop column if exists handshake_queued_at;
@@ -65,18 +67,21 @@
 --   commit;
 --   SQL
 --
--- The run prints BEGIN, four ALTER TABLEs, DELETE 1, DELETE 1, DELETE <n> for the wakes it drops,
--- DROP TABLE, DELETE 1 and COMMIT. A rerun prints BEGIN, a NOTICE for each of the four columns
--- that it does not exist with the same four ALTER TABLEs, DELETE 0, DELETE 0, DELETE 0, a NOTICE
--- that the table does not exist, DROP TABLE, DELETE 0 and COMMIT, and changes nothing. The phase
--- entry's block after it drops the phase entry's columns, and the store then reports the highest
--- row the two blocks leave standing: 20261113110610_drop_claim_update_answer_marks, a migration of
--- main's that neither block touches. A rollback below contract 111 takes the steps of each release
--- it crosses as well (docs/kubernetes.md).
+-- The run prints BEGIN, ALTER TABLE, DELETE 1, four ALTER TABLEs, DELETE 1, DELETE 1, DELETE <n>
+-- for the wakes it drops, DROP TABLE, DELETE 1 and COMMIT. A rerun prints BEGIN, a NOTICE that the
+-- phases column does not exist with the same ALTER TABLE, DELETE 0, a NOTICE for each of the four
+-- claims columns that it does not exist with the same four ALTER TABLEs, DELETE 0, DELETE 0,
+-- DELETE 0, a NOTICE that the table does not exist, DROP TABLE, DELETE 0 and COMMIT, and changes
+-- nothing. The phase entry's block after it drops the phase entry's columns, and the store then
+-- reports the highest row the two blocks leave standing:
+-- 20261113110610_drop_claim_update_answer_marks, a migration of main's that neither block touches.
+-- A rollback below contract 111 takes the steps of each release it crosses as well
+-- (docs/kubernetes.md).
 --
--- The four drops and the first delete are 20261114020537_claim_entry_handshake's way back, and
--- its header says why they go together and why they come first: that migration is the newest of
--- the three.
+-- The first drop and the first delete are 20261114061900_phase_entry_verbatim's way back, and the
+-- four drops after them and the second delete are 20261114020537_claim_entry_handshake's. Each of
+-- those headers says why its statements go together, and the two come first, newest first, since
+-- those are the newest of the four migrations.
 --
 -- The block runs before the phase entry's because this migration writes into three of the six
 -- columns the phase entry's block drops: the architect's phases.entry and its claim's given_entry
@@ -98,7 +103,7 @@
 -- architect holds. With this row left standing, Migrate would not run this file again: every root
 -- architect would read entry 0 on its row and given 0 on its claim, and the sweep's raise for an
 -- architect row that names no entry (admit's resumeSlottedWorkers,
--- workflow.RaiseArchitectEntryAndStart) would hand every live architect a first task at once,
+-- workflow.Engine.StartArchitect) would hand every live architect a first task at once,
 -- which is the very thing this fill exists to prevent. With it deleted, store.apply finds no row
 -- of 20261113182000 and runs this file again, after the phase entry's own fill, since Migrate
 -- applies the versions in order, and it settles the roots standing at the roll-forward as it
@@ -129,7 +134,7 @@
 -- the new daemon serves. That promotion raised no entry, so its architect holds a claim with no
 -- phases row and this fill never saw it. The first sweep of the new daemon raises that entry and
 -- sends the architect its first-act task (admit's resumeSlottedWorkers,
--- workflow.RaiseArchitectEntryAndStart), which is the right outcome for such a root and is not
+-- workflow.Engine.StartArchitect), which is the right outcome for such a root and is not
 -- what the fill is for. A rollback and its roll-forward are no such window: the roll-forward runs
 -- this fill again over every root standing then.
 

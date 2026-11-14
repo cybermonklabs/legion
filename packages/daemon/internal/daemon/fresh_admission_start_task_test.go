@@ -46,13 +46,14 @@ func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 			t.Fatalf("the architect's start task = %q, want it naming %q: a fresh tree's architect is given the whole first act", pending.Task, want)
 		}
 	}
-	if !workflow.CarriesArchitectStart(pending.Task) {
-		t.Fatalf("the architect's start task = %q, want the first-task instruction the derivation writes", pending.Task)
-	}
 	row := rolePhaseRow(t, r.pool, mainPathRoot, claim.RoleArchitect)
 	if row.Entry != 1 || row.EntryTask != pending.Task || row.EntryRaisedAt.IsZero() {
 		t.Fatalf("the architect's phases row = entry %d, task %q, raised at %s; want entry 1 carrying the task it was given, with the moment it was raised",
 			row.Entry, row.EntryTask, row.EntryRaisedAt)
+	}
+	if row.EntryVerbatim {
+		t.Fatalf("the architect's phases row marks the derivation's task %q to be sent again as written, want it derived again: "+
+			"a send again names what is still unclaimed then (workflow.Engine.SendArchitectStart)", row.EntryTask)
 	}
 	if pending.Entry != 1 {
 		t.Fatalf("the architect's pending task is of entry %d, want the 1 its row names: the start carries the entry its own transaction raised", pending.Entry)

@@ -53,9 +53,11 @@ func ArchitectAtWork(ctx context.Context, tx pgx.Tx, store record.Store, root re
 // ArchitectCarried is whether a hand-over created root at the generation it stands at
 // (record.Store.HandedOverRoot), which is what says the phase it stands in came with it. A row of
 // an earlier generation belongs to a run that has ended, so it says nothing of this one. It is
-// the reading every caller past the promotion makes, since that promotion clears the mark on the
-// issue (record.Issue.HandedOverFrom): the sweep's reach (ArchitectAtWork), the task its start
-// derives (architectStartWork) and the daemon's narrowing of a held task (its rootTask).
+// the one reading of that question: the sweep's reach (ArchitectAtWork) and the reader of what a
+// root architect's task is derived from (ArchitectStartOf) both make it, which is every start of a
+// root architect and the daemon's narrowing of a held task. The mark on the issue
+// (record.Issue.HandedOverFrom) is no such reading: the promotion that opens the root's tree
+// clears it.
 func ArchitectCarried(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue) (bool, error) {
 	handed, err := store.HandedOverRoot(ctx, tx, root.Key)
 	if err != nil {
@@ -81,96 +83,94 @@ func ArchitectStartPending(run record.RoleRun) (string, bool) {
 }
 
 // SendArchitectStart writes the start of root's architect again, for the entry its phases row
-// already names (row): the same row admission's queued-root branch writes, enqueued directly
-// rather than through StartOrOwe, so it waits for no admission slot and marks no movement (the
-// root holds the row the cap counts from its promotion until its work passes its review, and
-// holds none after it, record.KeepsSlot). It raises no entry, as no resume of the work an entry
-// already names does (enter, SendOwedEntry).
+// already names (row): the start StartArchitect writes, enqueued directly rather than through
+// StartOrOwe, so it waits for no admission slot and marks no movement (the root holds the row the
+// cap counts from its promotion until its work passes its review, and holds none after it,
+// record.KeepsSlot). It raises no entry, as no resume of the work an entry already names does
+// (enter, SendOwedEntry).
 //
-// What it sends depends on what raised the entry, which the row's own task says. An entry the
-// derivation raised (admission's promotion, RaiseArchitectEntryAndStart) carries a task that
-// ends in architectStartTail (CarriesArchitectStart), and that task is derived again from the
-// record as it stands rather than sent as written. The reason is the kept decisions such a task
-// names: a kept decision is claimed by the outbox row that names it, and
+// What it sends is what the row says of the entry's task (record.PhaseRow.EntryVerbatim), and
+// never a reading of that task's text. An entry whose task is not marked to be sent as written is
+// one StartArchitect raised, or one the upgrade gave no task, and its task is derived again from
+// the record as it stands (architectStartWork) rather than sent as written. The reason is the kept
+// decisions such a task names: a kept decision is claimed by the outbox row that names it, and
 // record.Postgres.UnclaimedKept locks and reads only what nothing claims, so a text composed once
 // and sent again could name a decision another telling has already claimed. The derivation reads
 // what is still unclaimed now, and EnqueueNaming claims exactly what this row names in the same
-// transaction.
+// transaction. That holds for every task the derivation writes, the one with no first-task
+// instruction among them: for a root past phase.Admitted under its own power the derivation's
+// answer is what a person decided on the tree and nothing else.
 //
-// An entry the resume of a root a person answered raised (ResumeAwaitedRoot) carries the
-// resume's own task, which names the answer — which ask or which review, and where to read it —
-// and no kept decision, so that text is sent as written. The answer is the work that entry owes,
-// and the derivation cannot give it: its shapes are a tree's first act, which is false of a root
-// whose architect has run in this generation, and they end in "no message is coming", which is
-// false of a root whose person's answer stands (dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e).
-// An entry with no task, which the upgrade gives every architect of the release before, is
-// derived as an entry of the derivation's.
-func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.TreeGate, row record.PhaseRow) error {
-	if row.EntryTask != "" && !CarriesArchitectStart(row.EntryTask) {
+// An entry marked to be sent as written is one the resume of a root a person answered raised
+// (ResumeAwaitedRoot), and its task names the answer — which ask or which review, and where to
+// read it — and no kept decision, so that text is sent as written. The answer is the work that
+// entry owes, and the derivation cannot give it: its shapes are a tree's first act, which is false
+// of a root whose architect has run in this generation, and they end in "no message is coming",
+// which is false of a root whose person's answer stands
+// (dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e).
+func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, row record.PhaseRow) error {
+	if row.EntryVerbatim {
 		return e.enqueueArchitectStart(ctx, tx, root, row.EntryTask, nil, row.Entry)
 	}
-	task, kept, err := e.architectStartWork(ctx, tx, root, gate)
+	task, kept, err := e.architectStartWork(ctx, tx, root)
 	if err != nil {
 		return err
 	}
 	return e.enqueueArchitectStart(ctx, tx, root, task, kept, row.Entry)
 }
 
-// RaiseArchitectEntryAndStart hands root's architect work it was not already on: it raises that
-// architect's phase entry with the task the derivation gives over the record as it stands, writes
-// that task as the work of the entry on the architect's phases row (EnterArchitect, the call
-// admission's promotion makes), and writes the start of that entry by SendArchitectStart's own
-// path. It answers the entry it raised, and 0 where it wrote nothing.
-//
-// It is the sweep's one raise, for the root whose architect's row names no entry at all (admit's
-// resumeSlottedWorkers). Every other start of this file resumes the work an entry already names and
-// raises none.
+// StartArchitect hands root's architect work it was not on, which two starts do: admission's
+// promotion of a queued root (admit's LineQueuedRoot branch) and the sweep's raise for an
+// architect whose phases row names no entry at all (admit's resumeSlottedWorkers). It derives
+// the architect's task from the record as it stands (architectStartWork), raises the architect's
+// phase entry with that task as the entry's work where the task is not empty (EnterArchitect),
+// and writes the start, carrying the task and the entry and claiming the kept decisions the task
+// names, all in the caller's transaction. Every other start of this file resumes the work an
+// entry already names and raises none.
 //
 // The derivation is read once and the row and the start carry that one text, because a kept
 // decision is claimed by the outbox row that names it: deriving twice would compose a task from
-// decisions the first text had already claimed. A derivation that gives no task writes nothing at
-// all — an entry raised with no work on it would stand above every entry its claim was ever
-// given, with nothing to send it — though the reach this is called under is the two roots the
-// derivation serves (ArchitectAtWork, ArchitectStartTask).
-func (e *Engine) RaiseArchitectEntryAndStart(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.TreeGate) (int64, error) {
-	task, kept, err := e.architectStartWork(ctx, tx, root, gate)
+// decisions the first text had already claimed.
+//
+// A task the derivation leaves empty raises no entry, and the start carries no task and no entry,
+// so the outbox delivers nothing for it and the start only launches the claim. That is the
+// promotion of a root past phase.Admitted under its own power on which nobody decided anything
+// (ArchitectStartTask's second rule): an entry raised with no work on it would stand above every
+// entry its claim was ever given, with nothing to send it. The sweep's raise never meets that
+// case, because the roots it raises an entry for are inside its reach (ArchitectAtWork), and those
+// are the two roots the derivation writes a first task for.
+//
+// The start waits for no admission slot, so it is enqueued directly rather than through
+// StartOrOwe, and it marks no movement of its own: the promotion marks the movement of the tree it
+// opens, and the sweep's raise is the daemon sending work the record already owes.
+func (e *Engine) StartArchitect(ctx context.Context, tx pgx.Tx, root record.Issue) error {
+	task, kept, err := e.architectStartWork(ctx, tx, root)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	if task == "" {
-		return 0, nil
+	var entry int64
+	if task != "" {
+		if entry, err = e.EnterArchitect(ctx, tx, root, task, false); err != nil {
+			return err
+		}
 	}
-	entry, err := e.EnterArchitect(ctx, tx, root, task)
-	if err != nil {
-		return 0, err
-	}
-	return entry, e.enqueueArchitectStart(ctx, tx, root, task, kept, entry)
+	return e.enqueueArchitectStart(ctx, tx, root, task, kept, entry)
 }
 
 // architectStartWork is the task a root architect's start carries, derived from the record as it
-// stands, and the kept decisions that task names, which the row that carries it claims.
-func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.Issue,
-	gate record.TreeGate,
-) (string, *record.KeptDecisions, error) {
+// stands (ArchitectStartOf) with what its tree is owed and nothing claims (ParkedDecisionTask), and
+// the kept decisions that task names, which the row that carries it claims.
+func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.Issue) (string, *record.KeptDecisions, error) {
 	decided, kept, err := e.ParkedDecisionTask(ctx, tx, root)
 	if err != nil {
 		return "", nil, err
 	}
-	launches, err := e.store.ArchitectLaunches(ctx, tx, []string{root.Tree})
+	start, err := ArchitectStartOf(ctx, tx, e.store, e.cfg.Steps, root)
 	if err != nil {
 		return "", nil, err
 	}
-	// The derivation reads whether the root was carried only past phase.Admitted (its rule 1),
-	// so the hand-over row is read there alone; a root at admitted, which is almost every start
-	// the sweep writes, is given the same task either way.
-	carried := false
-	if root.Phase != phase.Admitted {
-		if carried, err = ArchitectCarried(ctx, tx, e.store, root); err != nil {
-			return "", nil, err
-		}
-	}
-	return ArchitectStartTask(ArchitectStart{Root: root, Carried: carried, Gate: gate,
-		Launch: launches[root.Tree], Decided: decided}), kept, nil
+	start.Decided = decided
+	return ArchitectStartTask(start), kept, nil
 }
 
 // enqueueArchitectStart writes the start row of root's architect for entry, carrying task and

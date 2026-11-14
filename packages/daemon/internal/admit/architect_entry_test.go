@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,10 +42,10 @@ func putArchitectRow(t *testing.T, pool *pgxpool.Pool, root string, entry int64,
 }
 
 // seededArchitectTask is the work a seeded architect entry carries: a task the derivation wrote,
-// as admission's promotion writes one, so the sweep's send derives it again rather than sending
-// it as written (workflow.Engine.SendArchitectStart). It is the derivation for a generation no
-// fixture's root stands at, so a send that derives again is told apart from one that sends the
-// row's text.
+// as admission's promotion writes one, on a row that does not mark it to be sent as written, so
+// the sweep's send derives it again (workflow.Engine.SendArchitectStart). It is the derivation for
+// a generation no fixture's root stands at, so a send that derives again is told apart from one
+// that sends the row's text.
 func seededArchitectTask(root string) string {
 	return workflow.ArchitectStartTask(workflow.ArchitectStart{
 		Root: record.Issue{Key: root, Tree: root, Phase: phase.Admitted, Generation: 99}})
@@ -88,7 +89,7 @@ func assertArchitectEntry(t *testing.T, pool *pgxpool.Pool, root string, entry i
 
 // A first admission hands a tree's architect its first work, so it raises that architect's phase
 // entry, writes the task as the work of that entry on the architect's phases row and carries the
-// number on the start it queues (workflow.Engine.EnterArchitect, record.SuperviseRequest.Entry).
+// number on the start it queues (workflow.Engine.StartArchitect, record.SuperviseRequest.Entry).
 // A root's architect holds that row exactly as every phase worker does, so the work survives the
 // outbox row that carried it: the record alone says what this architect was handed.
 func TestAFirstAdmissionRaisesItsArchitectEntryAndCarriesItOnTheStart(t *testing.T) {
@@ -135,23 +136,51 @@ func TestAReadmittedQueuedRootRaisesItsArchitectEntryAgain(t *testing.T) {
 // A hand-over carries a root into a tree of its own at the phase it ran in elsewhere, and its
 // promotion hands that architect the work of taking that phase up: the entry is raised and the
 // start carries it, for a root standing past admitted exactly as for one standing at it.
+//
+// The hand-over runs as it does in production: the end of the old root's linger fences the child,
+// the daemon's labelled todo re-admits it carrying its run, and the same pass promotes it. So
+// what says the root was carried is what the record holds at that promotion, and the one reader
+// of it, the hand-over row of the root's generation (workflow.ArchitectStartOf), reads the row
+// that re-admission wrote in that pass, while the promotion's own write clears the mark on the
+// issue. The derived task is not marked to be sent as written, so a send of that entry again
+// derives it once more.
 func TestAHandOverRaisesTheCarriedRootsArchitectEntryAtThePhaseItCarries(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 4)
-	const root = "LEGION-301"
-	putIssue(t, pool, record.Issue{Key: root, Tree: root, Repo: "acme/widgets", DefaultBranch: "main",
+	const oldRoot, root = "LEGION-700", "LEGION-301"
+	until := fixedNow.Add(time.Hour)
+	parent := oldRoot
+	putIssue(t, pool, record.Issue{Key: oldRoot, Tree: oldRoot, Repo: "acme/widgets", DefaultBranch: "main",
+		GitHubRepo: "acme/widgets", Project: testProject, Title: "the root whose linger ends", Phase: phase.Done,
+		Generation: 1, Status: "done", LingerUntil: &until})
+	putIssue(t, pool, record.Issue{Key: root, Tree: oldRoot, Parent: &parent, Repo: "acme/widgets", DefaultBranch: "main",
 		GitHubRepo: "acme/widgets", Project: testProject, Title: "a carried root to promote", Phase: phase.Accepting,
-		Generation: 2, Status: "todo", Rank: "A", HandedOver: true, HandedOverFrom: "LEGION-700"})
-	seedMirror(t, pool, root, "todo")
+		Generation: 1, Status: "needs_review", Rank: "A", LastDispatchSeq: 1})
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := record.NewStore().PutHandover(context.Background(), tx, record.Handover{Issue: root, Tree: oldRoot, Generation: 1}); err != nil {
+			t.Fatalf("fence the hand-over of %s: %v", root, err)
+		}
+	})
 
-	tick(t, pool, admission, "tick")
+	apply(t, pool, admission, "handover", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+		Status: "todo", Title: root, Parent: oldRoot, Rank: "A", HandedOver: true, DaemonActor: true}, admission.engine)
 
-	if stands := issue(t, pool, root); stands.Phase != phase.Accepting {
-		t.Fatalf("the carried root stands in %s after its promotion, want the accepting the hand-over carried", stands.Phase)
+	stands := issue(t, pool, root)
+	if stands.Tree != root || stands.Generation != 2 || stands.Phase != phase.Accepting || stands.Status != "in_progress" || stands.HandedOverFrom != "" {
+		t.Fatalf("the carried root after the hand-over = %#v, want a tree of its own at generation 2, promoted in accepting with its mark cleared", stands)
 	}
+	inTx(t, pool, func(tx pgx.Tx) {
+		handed, err := record.NewStore().HandedOverRoot(context.Background(), tx, root)
+		if err != nil || handed == nil || handed.Generation != 2 {
+			t.Fatalf("the hand-over row of %s = %#v, %v; want the one the re-admission wrote at generation 2: the case's premise", root, handed, err)
+		}
+	})
 	start := assertArchitectEntry(t, pool, root, 1)
-	if !workflow.CarriesArchitectStart(start.Task) {
-		t.Fatalf("the carried root's architect task = %q, want the first-task instruction the derivation writes for it", start.Task)
+	if !strings.Contains(start.Task, workflow.ArchitectCarriedPhaseLabel) {
+		t.Fatalf("the carried root's architect task = %q, want the take-the-phase-up instruction the derivation writes for it", start.Task)
+	}
+	if row := architectRow(t, pool, root); row.EntryVerbatim {
+		t.Fatalf("the carried root's architect row marks %q to be sent again as written, want it derived again", row.EntryTask)
 	}
 }
 

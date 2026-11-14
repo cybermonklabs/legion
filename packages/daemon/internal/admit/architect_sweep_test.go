@@ -145,22 +145,29 @@ func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testin
 	for _, tc := range []struct {
 		name   string
 		change func(*architectSweepFixture)
-		why    string
+		// label is the shape of the first task the derivation writes for the root: the work of
+		// its entry is derived again from the record, since its row does not mark the task to be
+		// sent as written.
+		label string
+		why   string
 	}{
 		{
 			name: "a root at admitted whose gate has never opened", change: func(*architectSweepFixture) {},
-			why: "its architect is writing the design, which is the whole of the tree's work",
+			label: workflow.ArchitectFreshTreeLabel,
+			why:   "its architect is writing the design, which is the whole of the tree's work",
 		},
 		{
 			name: "a root at admitted whose gate has opened", change: func(f *architectSweepFixture) { f.gateOpened = true },
-			why: "the children do the work after that opening, and the root's own architect is still the role at work here",
+			label: workflow.ArchitectGateRowsLabel,
+			why:   "the children do the work after that opening, and the root's own architect is still the role at work here",
 		},
 		{
 			name: "a root a hand-over carried in at the phase that came with it",
 			change: func(f *architectSweepFixture) {
 				f.stands, f.carried = phase.Implementing, true
 			},
-			why: "the carry put it in that phase, and its architect has still to be told the tree is its own",
+			label: workflow.ArchitectCarriedPhaseLabel,
+			why:   "the carry put it in that phase, and its architect has still to be told the tree is its own",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,8 +187,8 @@ func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testin
 			if starts[0].entry != seededEntry || starts[0].task == "" {
 				t.Fatalf("the architect start of %s = %+v, want the work of entry %d: %s", root, starts[0], seededEntry, tc.why)
 			}
-			if !workflow.CarriesArchitectStart(starts[0].task) {
-				t.Fatalf("the task sent to %s = %q, want the first-task instruction the derivation writes: %s", root, starts[0].task, tc.why)
+			if !strings.Contains(starts[0].task, tc.label) {
+				t.Fatalf("the task sent to %s = %q, want the first-task instruction the derivation writes, labelled %q: %s", root, starts[0].task, tc.label, tc.why)
 			}
 		})
 	}
@@ -263,7 +270,7 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 // A root architect whose phases row names no entry is handed one: the sweep raises the entry
 // with the task the derivation composes over the record as it stands, writes that task as the
 // work of the entry on the row, and the start it writes carries both
-// (workflow.RaiseArchitectEntryAndStart). Two roots stand in that shape — one the daemon of the
+// (workflow.Engine.StartArchitect). Two roots stand in that shape — one the daemon of the
 // release before this one admitted after this release's migration ran, and one whose architect
 // claim exists while no transition of this generation raised an entry for it — and each would
 // otherwise hold its slot with an architect that was handed nothing at all.
@@ -301,8 +308,9 @@ func TestTheArchitectSweepRaisesTheEntryOfARootWhoseArchitectRowNamesNone(t *tes
 		if len(starts) != 1 || starts[0].entry != 1 || starts[0].task != row.EntryTask {
 			t.Fatalf("the architect starts of %s = %+v, want the one of entry 1 carrying %q", root, starts, row.EntryTask)
 		}
-		if !workflow.CarriesArchitectStart(starts[0].task) {
-			t.Fatalf("the task sent to %s = %q, want the first-task instruction the derivation writes", root, starts[0].task)
+		if !strings.Contains(starts[0].task, workflow.ArchitectFreshTreeLabel) || row.EntryVerbatim {
+			t.Fatalf("the task sent to %s = %q, sent again as written %t; want the first-task instruction the derivation writes, derived again at a later send",
+				root, starts[0].task, row.EntryVerbatim)
 		}
 
 		applySweep(t, pool, admission, "architect-raise-2")
@@ -435,9 +443,10 @@ func TestTheArchitectSweepSendsTheTaskTheDerivationGivesOverTheRecord(t *testing
 // as the outbox's fences or a lost lane leave one. The claim stands one entry below its row, and
 // the sweep is the only thing left that sends the raised entry's work. One sweep writes one
 // architect start at the raised entry, carrying the resume's own task as the row stores it
-// (workflow.Engine.SendArchitectStart): that task names the answer, which is the work the entry
-// owes, and no kept decision, so it is sent as written and claims nothing. A second sweep, while
-// that row is still queued, writes no second row.
+// (workflow.Engine.SendArchitectStart): the row marks that task to be sent as written
+// (record.PhaseRow.EntryVerbatim), since it names the answer, which is the work the entry owes,
+// and no kept decision, so it claims nothing. A second sweep, while that row is still queued,
+// writes no second row.
 //
 // The control is the same resume with its start row left in the outbox: that row already carries
 // the raised entry (workflow.OwedEntry), so the sweep writes nothing beside it.
@@ -463,9 +472,9 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 			t.Fatalf("%s after alice's answer stands in %s waiting on %+v, want it resumed at admitted with no wait", root, got.Phase, got.Awaiting)
 		}
 		row := architectRow(t, pool, root)
-		if row.Entry != seededEntry+1 || !strings.Contains(row.EntryTask, "ask-q") {
-			t.Fatalf("the architect row of %s after the resume = entry %d carrying %q, want entry %d carrying the resume's task, which names ask-q",
-				root, row.Entry, row.EntryTask, seededEntry+1)
+		if row.Entry != seededEntry+1 || !strings.Contains(row.EntryTask, "ask-q") || !row.EntryVerbatim {
+			t.Fatalf("the architect row of %s after the resume = entry %d carrying %q, sent again as written %t; want entry %d carrying the resume's task, "+
+				"which names ask-q, marked to be sent as written", root, row.Entry, row.EntryTask, row.EntryVerbatim, seededEntry+1)
 		}
 		starts := architectSweepStarts(t, pool, root)
 		if len(starts) != 1 || starts[0].entry != row.Entry || starts[0].task != row.EntryTask {
@@ -501,7 +510,7 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 		if starts[0].entry != row.Entry {
 			t.Fatalf("the architect start of %s after the sweep = %+v, want it at the entry %d the resume raised", root, starts[0], row.Entry)
 		}
-		if starts[0].task != row.EntryTask || workflow.CarriesArchitectStart(starts[0].task) {
+		if starts[0].task != row.EntryTask {
 			t.Fatalf("the task the sweep sent %s = %q, want the resume's own %q stored on the row, which names the answer",
 				root, starts[0].task, row.EntryTask)
 		}

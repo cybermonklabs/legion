@@ -725,16 +725,13 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
-	// The record the rewrite reads where the task carries the first-task instruction
-	// (workflow.NarrowRootTask): the tree's root as the record holds it at the narrowing, whether a
-	// hand-over carried it in at its generation, the design gate rows it holds and the generation
-	// its architect claim stands at. The four reads are made only where a decision was dropped,
-	// since nothing else rewrites the task. Whether the root was carried is the hand-over row's
-	// answer, as the sweep reads it (workflow.ArchitectCarried), and not the mark on the issue:
-	// the promotion that opens a carried root's tree clears that mark, and a held task is
-	// narrowed only after the root runs again.
+	// The record the rewrite reads where the task is of an entry and so carries the first-task
+	// instruction (workflow.NarrowRootTask): the tree's root as the record holds it at the
+	// narrowing, and what its first task is derived from, read by the reader every start of a
+	// root architect reads it through (workflow.ArchitectStartOf). The reads are made only where
+	// a decision was dropped, since nothing else rewrites the task.
 	var root *record.Issue
-	start := workflow.ArchitectStart{Gate: record.TreeGate{Steps: w.gatedSteps}}
+	var start workflow.ArchitectStart
 	var left []record.DecisionMark
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -775,17 +772,9 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 				return err
 			}
 			if root != nil {
-				if start.Carried, err = workflow.ArchitectCarried(scoped, tx, w.records, *root); err != nil {
+				if start, err = workflow.ArchitectStartOf(scoped, tx, w.records, w.gatedSteps, *root); err != nil {
 					return err
 				}
-				if start.Gate.Rows, err = w.records.GatesOf(scoped, tx, root.Key); err != nil {
-					return err
-				}
-				launches, err := w.records.ArchitectLaunches(scoped, tx, []string{c.Tree})
-				if err != nil {
-					return err
-				}
-				start.Launch = launches[c.Tree]
 			}
 		}
 		if len(left) == 0 {
@@ -805,15 +794,14 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	}
 	// A task that carries the root's own first task keeps it: a decision leaving this tree says
 	// nothing about whether the tree has been taken up, and a rewrite from the decisions alone
-	// would hand a fresh architect the empty task that instruction exists to replace
-	// (workflow.NarrowRootTask). A root the record now shows past admitted under its own power is
-	// served no first task, so its rewrite is the decisions' own; with no root recorded there is
-	// nothing to write one from either, so the rewrite is the decisions' own there too, as it
-	// always was.
+	// would hand a fresh architect the empty task that instruction exists to replace. Which task
+	// carries it is the entry the delivery is of, never the task's text (workflow.NarrowRootTask
+	// says why). A root the record now shows past admitted under its own power is served no first
+	// task, so its rewrite is the decisions' own; with no root recorded there is nothing to write
+	// one from either, so the rewrite is the decisions' own there too, as it always was.
 	var task string
 	if root != nil {
-		start.Root = *root
-		task = workflow.NarrowRootTask(start, d.Task, stays)
+		task = workflow.NarrowRootTask(start, d.Entry, stays)
 	} else {
 		task = workflow.KeptDecisionsTask(c.Tree, stays)
 	}

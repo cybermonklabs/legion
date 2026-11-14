@@ -27,14 +27,17 @@
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon
 -- stopped and before the one the phase entry's own header carries
--- (20261111225552_phase_entry.up.sql). It is the way back of the three migrations of contract 117:
--- this one, 20261113182000_architect_entry_upgrade and 20261113181500_architect_stalled_notices,
--- whose headers carry the same block. docs/kubernetes.md carries it as the step an operator runs
--- before the phase entry's, and the header of 20261113182000_architect_entry_upgrade says what
--- each statement prints and why the block runs first.
+-- (20261111225552_phase_entry.up.sql). It is the way back of the four migrations of contract 117:
+-- this one, 20261114061900_phase_entry_verbatim, 20261113182000_architect_entry_upgrade and
+-- 20261113181500_architect_stalled_notices, whose headers carry the same block. docs/kubernetes.md
+-- carries it as the step an operator runs before the phase entry's, and the header of
+-- 20261113182000_architect_entry_upgrade says what each statement prints and why the block runs
+-- first.
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
+--   alter table phases drop column if exists entry_verbatim;
+--   delete from schema_version where version = 20261114061900;
 --   alter table claims drop column if exists handshake_entry;
 --   alter table claims drop column if exists handshake_generation;
 --   alter table claims drop column if exists handshake_queued_at;
@@ -47,17 +50,19 @@
 --   commit;
 --   SQL
 --
--- The four drops and the delete of this migration's row go together, and they come first because
--- this is the newest of the three migrations. The release before this one needs neither: its
--- claim read and its claim write name each column they touch (internal/store's claimSelect and
--- putClaim), so the four columns would stand there unread and unwritten. Both are owed to the
--- roll-forward. That release queues tasks and writes no handshake, so a handshake left standing
--- would name an entry that release has since replaced, and after the roll-forward the state of a
--- root still at the same generation would show the times of that older entry. With the columns
--- dropped and the row deleted, store.apply finds no row of this version and runs this file
--- again, which adds the four columns again at their defaults: every claim reads as having no
--- handshake until its role's next start. The drop is also what lets this file run again at all,
--- since an add of a column that stands fails.
+-- The four drops and the delete of this migration's row go together. They come second, after the
+-- drop of 20261114061900_phase_entry_verbatim's column and the delete of its row, because that
+-- migration is the newest of the four and this one the next, and the header of
+-- 20261114061900_phase_entry_verbatim says why its own two go first. The release before this one
+-- needs neither of these: its claim read and its claim write name each column they touch
+-- (internal/store's claimSelect and putClaim), so the four columns would stand there unread and
+-- unwritten. Both are owed to the roll-forward. That release queues tasks and writes no handshake,
+-- so a handshake left standing would name an entry that release has since replaced, and after the
+-- roll-forward the state of a root still at the same generation would show the times of that
+-- older entry. With the columns dropped and the row deleted, store.apply finds no row of this
+-- version and runs this file again, which adds the four columns again at their defaults: every
+-- claim reads as having no handshake until its role's next start. The drop is also what lets this
+-- file run again at all, since an add of a column that stands fails.
 alter table claims add column handshake_entry bigint not null default 0;
 alter table claims add column handshake_generation bigint not null default 0;
 alter table claims add column handshake_queued_at timestamptz;

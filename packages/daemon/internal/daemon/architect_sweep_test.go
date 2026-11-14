@@ -119,8 +119,8 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 		t.Fatalf("the start the sweep wrote for %s = %+v, want %+v: the sweep sends the architect the task the derivation gives over the record, at the entry its row names",
 			root.Key, first, want)
 	}
-	if !workflow.CarriesArchitectStart(first.task) {
-		t.Fatalf("the task the sweep sent = %q, want the first-task instruction the derivation writes", first.task)
+	if !strings.Contains(first.task, workflow.ArchitectFreshTreeLabel) {
+		t.Fatalf("the task the sweep sent = %q, want the first-task instruction the derivation writes for a tree nobody has architected", first.task)
 	}
 	if starts := sweptStarts(t, pool, root.Key); len(starts) != 1 || starts[0] != first {
 		t.Fatalf("the start rows of %s after %d sweeps = %+v, want the one row %+v the first sweep wrote: a later sweep reads the start already on its way and writes nothing",

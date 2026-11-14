@@ -70,6 +70,10 @@ func architectStartOf(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest 
 // handed work before counts from where it stood, which is what tells the work of one entry from
 // the work of the next.
 //
+// Each raise writes whether the sweep sends its task again as written
+// (record.PhaseRow.EntryVerbatim), so the mark a resume's entry carried goes with that entry: a
+// raise that does not say it clears it.
+//
 // The row is the architect's own: the entry of a phase worker of the same issue stands where it
 // was, because the record counts the entries each role has been handed.
 func TestTheRootArchitectEntryIsRaisedWithItsTaskAndTheMomentItWasRaised(t *testing.T) {
@@ -81,34 +85,35 @@ func TestTheRootArchitectEntryIsRaisedWithItsTaskAndTheMomentItWasRaised(t *test
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	const first = "A person answered your ask ask-1 on LEGION-208."
-	if entry := enterArchitect(t, pool, engine, root, first); entry != seededEntry+1 {
+	if entry := enterArchitect(t, pool, engine, root, first, true); entry != seededEntry+1 {
 		t.Fatalf("the architect's entry after the first raise = %d, want %d: the number is raised, never written", entry, seededEntry+1)
 	}
 	row := entryRow(t, pool, claim.RoleArchitect)
-	if row.Entry != seededEntry+1 || row.EntryTask != first || !row.EntryRaisedAt.Equal(engine.now()) {
-		t.Fatalf("the architect's row = entry %d, task %q, raised at %s; want entry %d carrying %q, raised at the %s the engine read from its own clock",
-			row.Entry, row.EntryTask, row.EntryRaisedAt, seededEntry+1, first, engine.now())
+	if row.Entry != seededEntry+1 || row.EntryTask != first || !row.EntryVerbatim || !row.EntryRaisedAt.Equal(engine.now()) {
+		t.Fatalf("the architect's row = entry %d, task %q, sent as written %t, raised at %s; want entry %d carrying %q to send as written, raised at the %s the engine read from its own clock",
+			row.Entry, row.EntryTask, row.EntryVerbatim, row.EntryRaisedAt, seededEntry+1, first, engine.now())
 	}
 
-	const second = "A person requested changes to your spec on LEGION-208."
-	if entry := enterArchitect(t, pool, engine, root, second); entry != seededEntry+2 {
+	second := ArchitectStartTask(ArchitectStart{Root: root})
+	if entry := enterArchitect(t, pool, engine, root, second, false); entry != seededEntry+2 {
 		t.Fatalf("the architect's entry after the second raise = %d, want %d: each entry counts from the one before it", entry, seededEntry+2)
 	}
-	if row := entryRow(t, pool, claim.RoleArchitect); row.Entry != seededEntry+2 || row.EntryTask != second {
-		t.Fatalf("the architect's row after the second raise = entry %d carrying %q, want entry %d carrying the work of that entry",
-			row.Entry, row.EntryTask, seededEntry+2)
+	if row := entryRow(t, pool, claim.RoleArchitect); row.Entry != seededEntry+2 || row.EntryTask != second || row.EntryVerbatim {
+		t.Fatalf("the architect's row after the second raise = entry %d carrying %q, sent as written %t; want entry %d carrying the work of that entry, "+
+			"derived again: the first entry's mark went with it", row.Entry, row.EntryTask, row.EntryVerbatim, seededEntry+2)
 	}
 	assertEntryUntouched(t, pool, claim.RoleImplementer, "the architect's two entries")
 }
 
-// enterArchitect raises the architect's entry for task through the one exported door onto it, in
-// a transaction of its own as a transition's own transaction does.
-func enterArchitect(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue, task string) int64 {
+// enterArchitect raises the architect's entry for task, sent again as written where verbatim
+// says so, through the one exported door onto it, in a transaction of its own as a transition's
+// own transaction does.
+func enterArchitect(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue, task string, verbatim bool) int64 {
 	t.Helper()
 	var entry int64
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		entry, err = engine.EnterArchitect(t.Context(), tx, root, task)
+		entry, err = engine.EnterArchitect(t.Context(), tx, root, task, verbatim)
 		return err
 	})
 	return entry
@@ -245,8 +250,9 @@ func TestResumeAwaitedRootRaisesTheArchitectEntryForBothOfItsCallers(t *testing.
 }
 
 // assertArchitectEntryRaised holds the resume's two writes to each other: the architect's row
-// names entry, carries the work of it and the moment the engine raised it, and the one start the
-// resume wrote carries that same entry and that same task.
+// names entry, carries the work of it, marked to be sent again as written, and the moment the
+// engine raised it, and the one start the resume wrote carries that same entry and that same
+// task and claims no kept decision.
 func assertArchitectEntryRaised(t *testing.T, pool *pgxpool.Pool, engine *Engine, entry int64) {
 	t.Helper()
 	row := entryRow(t, pool, claim.RoleArchitect)
@@ -254,10 +260,14 @@ func assertArchitectEntryRaised(t *testing.T, pool *pgxpool.Pool, engine *Engine
 		t.Fatalf("the architect's row after the resume = entry %d, task %q, raised at %s; want entry %d carrying the resume's own task, raised at %s",
 			row.Entry, row.EntryTask, row.EntryRaisedAt, entry, engine.now())
 	}
+	if !row.EntryVerbatim {
+		t.Fatal("the architect's row after the resume is not marked to be sent as written, want it marked: its task names the answer, " +
+			"which the derivation cannot give, so a lost start is sent this text again (SendArchitectStart)")
+	}
 	start := architectStartOf(t, pool)
-	if start.Entry != entry || start.Task != row.EntryTask {
-		t.Fatalf("the resume's start = entry %d carrying %q, want entry %d carrying the %q its row names: the two are written in one transaction",
-			start.Entry, start.Task, entry, row.EntryTask)
+	if start.Entry != entry || start.Task != row.EntryTask || start.Kept != nil {
+		t.Fatalf("the resume's start = entry %d carrying %q naming %+v, want entry %d carrying the %q its row names and no kept decision: "+
+			"the two are written in one transaction", start.Entry, start.Task, start.Kept, entry, row.EntryTask)
 	}
 }
 

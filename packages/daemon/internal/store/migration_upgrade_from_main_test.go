@@ -38,26 +38,27 @@ import (
 // the update ask (20261113082214) and its drop of the claim's two update answer marks
 // (20261113110610), which are applied after the leak-check cause, in that order.
 // dispatch://INFRA-2614's architect stall marks (20261113181500), its architect entry upgrade
-// (20261113182000) and its claim handshake (20261114020537) came after all of them and are named
-// here too: an upgrade of a database main migrated takes them last, in that order, the upgrade
-// after the phase entry whose columns it fills.
+// (20261113182000), its claim handshake (20261114020537) and its phase entry's mark that a task is
+// sent again as written (20261114061900) came after all of them and are named here too: an
+// upgrade of a database main migrated takes them last, in that order, the upgrade after the phase
+// entry whose columns it fills.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111181500,
 	20261111225552, 20261112180548, 20261113082214, 20261113110610, 20261113181500, 20261113182000,
-	20261114020537,
+	20261114020537, 20261114061900,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
 // failure. Every embedded version above it is named in thisBranchsMigrations: main's newest came
-// in above dispatch://INFRA-714's own at the forward merge of 2026-11-12, and seven versions stand
+// in above dispatch://INFRA-714's own at the forward merge of 2026-11-12, and eight versions stand
 // above it, the phase entry's 20261111225552, dispatch://INFRA-3219's 20261112180548,
 // dispatch://INFRA-2981's 20261113082214 and 20261113110610, and dispatch://INFRA-2614's
-// 20261113181500, 20261113182000 and 20261114020537, which is why the loop below holds the list
-// rather than counting it, so that a version added above any of them is named here rather than
-// read as main's.
+// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, which is why the loop below
+// holds the list rather than counting it, so that a version added above any of them is named here
+// rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

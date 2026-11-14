@@ -1,0 +1,67 @@
+-- 20261114061900_phase_entry_verbatim.up.sql — the mark that a root architect's phase entry is
+-- sent again as written (INFRA-2614).
+--
+-- phases.entry_verbatim is record.PhaseRow.EntryVerbatim. The resume of a root a person answered
+-- sets it where it raises its architect's entry (workflow's ResumeAwaitedRoot): that task names the
+-- answer and no kept decision, so the sweep's send of that entry again sends the task as written.
+-- Every other raise clears it (workflow's enter), and a re-admission resets it with the task
+-- (record.Store.ClearGeneration). False is a task the derivation of a root architect's first task
+-- wrote, or no task at all, and the sweep's send of such an entry again derives the task from the
+-- record as it stands (workflow.Engine.SendArchitectStart), because a kept decision is claimed by
+-- the outbox row that names it. A phase worker's row carries false and nothing reads it there: the
+-- send of a phase worker's entry sends its task as written in every case (SendOwedEntry).
+--
+-- Before this column, that send told the two kinds of task apart by their text: a task that ended
+-- in the derivation's closing sentence was derived again, and every other task was sent as
+-- written. That read one release's wording out of a row another release can have written, and one
+-- task the derivation writes carries no such sentence: for a root past admitted under its own
+-- power, the derivation's answer is what a person decided on the tree and nothing else, which that
+-- reading would have sent as written, naming kept decisions another telling can have claimed
+-- since.
+--
+-- Every row the table already holds takes the default, false, and nothing fills it. No row of the
+-- release before this one is a resume's: that release raised no entry for an architect at all,
+-- and every architect row the architect upgrade writes carries no task
+-- (20261113182000_architect_entry_upgrade), which the send derives.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction below, run with the daemon
+-- stopped and before the one the phase entry's own header carries
+-- (20261111225552_phase_entry.up.sql). It is the way back of the four migrations of contract 117:
+-- this one, 20261114020537_claim_entry_handshake, 20261113182000_architect_entry_upgrade and
+-- 20261113181500_architect_stalled_notices, whose headers carry the same block. docs/kubernetes.md
+-- carries it as the step an operator runs before the phase entry's, and the header of
+-- 20261113182000_architect_entry_upgrade says what each statement prints and why the block runs
+-- first.
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   alter table phases drop column if exists entry_verbatim;
+--   delete from schema_version where version = 20261114061900;
+--   alter table claims drop column if exists handshake_entry;
+--   alter table claims drop column if exists handshake_generation;
+--   alter table claims drop column if exists handshake_queued_at;
+--   alter table claims drop column if exists handshake_confirmed_at;
+--   delete from schema_version where version = 20261114020537;
+--   delete from schema_version where version = 20261113182000;
+--   delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'architect-stalled';
+--   drop table if exists architect_stalled_notices;
+--   delete from schema_version where version = 20261113181500;
+--   commit;
+--   SQL
+--
+-- The drop and the delete of this migration's row go together, and they come first because this
+-- is the newest of the four migrations. The release before this one needs neither: its phases read
+-- and its phases write name each column they touch (record's Phases and PutPhase), so the column
+-- would stand there unread, and every row that release inserts would take the default. Both are
+-- owed to the roll-forward. With the column dropped and the row deleted, store.apply finds no row
+-- of this version and runs this file again, which adds the column again at its default. The drop
+-- is also what lets this file run again at all, since an add of a column that stands fails.
+--
+-- What the drop costs is the mark on each entry a resume raised before the rollback: after the
+-- roll-forward every such entry reads as one the derivation wrote. A resume whose start reached its
+-- claim costs nothing, since that claim stands level with its entry and nothing sends the entry
+-- again. A resume whose start was lost, with the claim still behind its entry at the roll-forward,
+-- is sent the derivation's task for its root rather than the resume's own, as an entry the
+-- architect upgrade gave no task is.
+alter table phases add column entry_verbatim boolean not null default false;

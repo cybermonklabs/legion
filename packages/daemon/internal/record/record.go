@@ -515,8 +515,8 @@ type PhaseRow struct {
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
 	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
 	// tree brings back, and a root architect's start of work it was not on raise it by one and
-	// write the two fields below beside it, in their own transaction (workflow's start,
-	// StartPromotedWorker, EnterArchitect and ResumeAwaitedRoot). It is the finer of the
+	// write the three fields below beside it, in their own transaction (workflow's start,
+	// StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the finer of the
 	// two numbers a completion is held to: the issue's generation is the same for every entry of
 	// one run, where the entry is new at each one, which is what tells one testing phase from the
 	// testing phase a conflicting head sent the work back to (api/handoff.go). A start that hands
@@ -534,6 +534,19 @@ type PhaseRow struct {
 	// task again, however that row ended. Empty on a row no entry has been raised on, and on one
 	// ClearGeneration reset, whose re-admitted tree's promotion writes the task again.
 	EntryTask string
+	// EntryVerbatim says the sweep's send of a root architect's entry again sends EntryTask as
+	// written (workflow's SendArchitectStart). Only the resume of a root a person answered sets
+	// it (workflow's ResumeAwaitedRoot): its task names the answer and no kept decision, and the
+	// answer is the work the entry owes. Every other raise clears it (workflow's enter), and
+	// ClearGeneration resets it with the task. False, the default, is a task the derivation of a
+	// root architect's first task wrote, or no task at all, which that send derives again from
+	// the record as it stands: a kept decision is claimed by the outbox row that names it, so a
+	// text composed once and sent again could name one another telling has claimed since. It is
+	// a fact of the record rather than a reading of the task's text, so what wrote an entry never
+	// turns on the wording of one release. A phase worker's row carries false and nothing reads
+	// it there, since the send of a phase worker's entry sends its task as written in every case
+	// (workflow's SendOwedEntry).
+	EntryVerbatim bool
 	// EntryRaisedAt is when the entry was raised, read from the transition's own clock. It is
 	// what tells how long a role has been owed the work its entry names, for a reader weighing a
 	// difference that has stood. Zero on a row no entry has been raised on.

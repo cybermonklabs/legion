@@ -140,6 +140,12 @@ func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) 
 // is gone by then, since the promotion that opened the root's own tree cleared it, and a
 // narrowing that read the mark would take every carried root for one past admitted under its
 // own power, whose rewrite is the decisions' text alone.
+//
+// Whether the held task carried the instruction is the entry its delivery is of, and not its
+// text (workflow.NarrowRootTask). The held task here ends in words a later release could have
+// written in place of the derivation's closing sentence, and the instruction is kept all the same.
+// The control is the same delivery of no entry, which a release before the architect held an
+// entry queued, and whose narrowing is the decisions' own text alone.
 func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -171,29 +177,40 @@ func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t 
 		key, kept.Ref, string(kept.Decision), kept.Actor, kept.At, string(token), replaced.Ref, at.Add(time.Hour)); err != nil {
 		t.Fatalf("keep the decisions of %s, the first held by the architect's task: %v", key, err)
 	}
-	held := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: *root, Carried: true, Gate: record.TreeGate{Steps: steps},
+	derived := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: *root, Carried: true, Gate: record.TreeGate{Steps: steps},
 		Decided: workflow.KeptDecisionsTask(key, named)})
-	if !strings.Contains(held, workflow.ArchitectCarriedPhaseLabel) {
-		t.Fatalf("the held task = %q, want the carried shape: the case's premise", held)
+	if !strings.Contains(derived, workflow.ArchitectCarriedPhaseLabel) {
+		t.Fatalf("the derived task = %q, want the carried shape: the case's premise", derived)
 	}
+	const reworded = " A later release's own closing words."
+	held := derived + reworded
 	encoded, err := json.Marshal(named)
 	if err != nil {
 		t.Fatalf("encode what the held task names: %v", err)
 	}
 
 	w := &workflowRuntime{pool: pool, records: records, gatedSteps: steps}
-	task, _, err := w.rootTask(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key, Issue: key, Role: claim.RoleArchitect},
-		supervise.Delivery{ID: "outbox:7", Task: held, Kept: encoded})
-	if err != nil {
-		t.Fatalf("narrow the held task of %s: %v", key, err)
+	narrow := func(entry int64) string {
+		t.Helper()
+		task, _, err := w.rootTask(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key, Issue: key, Role: claim.RoleArchitect},
+			supervise.Delivery{ID: "outbox:7", Task: held, Kept: encoded, Entry: entry})
+		if err != nil {
+			t.Fatalf("narrow the held task of %s at entry %d: %v", key, entry, err)
+		}
+		return task
 	}
+	stays := workflow.KeptDecisionsTask(key, record.KeptDecisions{Decisions: []record.DecisionMark{kept}})
+	task := narrow(1)
 	want := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: *root, Carried: true, Gate: record.TreeGate{Steps: steps},
-		Decided: workflow.KeptDecisionsTask(key, record.KeptDecisions{Decisions: []record.DecisionMark{kept}})})
+		Decided: stays})
 	if task != want {
 		t.Fatalf("the narrowed task of the carried root = %q, want %q: the take-the-phase-up instruction, naming the one decision the task still holds", task, want)
 	}
-	if strings.Contains(task, replaced.Ref) {
-		t.Fatalf("the narrowed task %q still names %s, which a newer decision replaced", task, replaced.Ref)
+	if strings.Contains(task, replaced.Ref) || strings.Contains(task, reworded) {
+		t.Fatalf("the narrowed task %q still names %s, which a newer decision replaced, or keeps the held text's own words", task, replaced.Ref)
+	}
+	if task := narrow(0); task != stays {
+		t.Fatalf("the narrowed task of a held task of no entry = %q, want the decisions' own text %q", task, stays)
 	}
 }
 

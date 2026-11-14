@@ -247,7 +247,7 @@ func TestTheArchitectUpgradeLeavesTheStateCarryingTwoEntriesAndNoTimes(t *testin
 // The root this release admits is handed its entry by the promotion itself. The root of the
 // window holds an architect claim with no phases row, because the older daemon's promotion
 // raised no entry and the fill never saw it: the first pass raises entry 1 with the derivation's
-// own task and sends it (workflow.RaiseArchitectEntryAndStart), and a second pass raises no
+// own task and sends it (workflow.Engine.StartArchitect), and a second pass raises no
 // second entry and writes no second row. No mark of the fill stands in the way of either root.
 func TestARootAdmittedAfterTheArchitectUpgradeIsOwedItsTask(t *testing.T) {
 	pool := migratedPool(t)
@@ -415,35 +415,39 @@ func headerWayBack(t *testing.T, version int) string {
 // phaseEntryVersion is the version of the phase entry's own migration
 // (20261111225552_phase_entry.up.sql), whose way back drops the entry columns and re-arms it.
 // stalledNoticesVersion is the version of the marks' table
-// (20261113181500_architect_stalled_notices.up.sql), and claimHandshakeVersion the version of the
-// claim's handshake columns (20261114020537_claim_entry_handshake.up.sql), whose way back is this
-// migration's. leftStandingVersion is the highest migration neither way back deletes,
+// (20261113181500_architect_stalled_notices.up.sql), claimHandshakeVersion the version of the
+// claim's handshake columns (20261114020537_claim_entry_handshake.up.sql) and entryVerbatimVersion
+// the version of the phases row's mark that a resume's task is sent again as written
+// (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
+// leftStandingVersion is the highest migration neither way back deletes,
 // 20261113110610_drop_claim_update_answer_marks (cybermonklabs/legion#3982, which main carries
-// above the phase entry and below this change's three), which is the version the store reports
+// above the phase entry and below this change's four), which is the version the store reports
 // once both ways back have run.
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
 	claimHandshakeVersion = 20261114020537
+	entryVerbatimVersion  = 20261114061900
 	leftStandingVersion   = 20261113110610
 )
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
 // upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, each as the
 // one transaction its header carries (headerWayBack): this migration's first, which the headers
-// of 20261113181500 and 20261114020537 carry as well, and the phase entry's after it. This
-// migration's block drops the claim's four handshake columns and deletes 20261114020537's version
-// row, deletes its own and 20261113181500's, and drops the marks' table and the architect wakes
-// still unsent, so the roll-forward makes the table and the columns again and runs this fill
-// again after the phase entry's. Then the first pass prompts no architect and wakes the
-// controller for no arm, each root is marked again at the run it stands at, and each architect
-// claim holds no handshake.
+// of 20261113181500, 20261114020537 and 20261114061900 carry as well, and the phase entry's after
+// it. This migration's block drops the phases row's mark and deletes 20261114061900's version
+// row, drops the claim's four handshake columns and deletes 20261114020537's version row, deletes
+// its own and 20261113181500's, and drops the marks' table and the architect wakes still unsent,
+// so the roll-forward makes the table and the columns again and runs this fill again after the
+// phase entry's. Then the first pass prompts no architect and wakes the controller for no arm,
+// each root is marked again at the run it stands at, each architect claim holds no handshake, and
+// each architect row reads as one the derivation wrote.
 //
 // One architect-stalled wake stands unsent before the ways back, as a rollback can find one: the
 // release before this one refuses its kind and would retry it for ever, so the block drops it and
 // none stands after the two blocks. The store between the blocks and the roll-forward is that
-// release's: it reports that release's own version and holds no marks' table and no handshake
-// column.
+// release's: it reports that release's own version and holds no marks' table, no handshake column
+// and no column of the mark.
 //
 // The record is the one the older release leaves after the rollback, written with that release's
 // own statements: two roots at admitted with no design gate registered, each holding an architect
@@ -460,7 +464,7 @@ const (
 func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T) {
 	const settled, readmitted = "LEGION-850", "LEGION-851"
 	wayBack := headerWayBack(t, architectUpgradeVersion)
-	for _, version := range []int{stalledNoticesVersion, claimHandshakeVersion} {
+	for _, version := range []int{stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion} {
 		if other := headerWayBack(t, version); other != wayBack {
 			t.Fatalf("the headers of migrations %d and %d carry two ways back, want the one block both are reversed by:\n%s\nagainst\n%s",
 				version, architectUpgradeVersion, other, wayBack)
@@ -519,7 +523,7 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 				if err != nil {
 					t.Fatalf("read the version the store reports after the way back: %v", err)
 				}
-				var marksTable, handshakeColumn bool
+				var marksTable, handshakeColumn, markColumn bool
 				if err := pool.QueryRow(ctx, `select to_regclass('architect_stalled_notices') is not null`).Scan(&marksTable); err != nil {
 					t.Fatalf("look for the marks' table after the way back: %v", err)
 				}
@@ -528,9 +532,15 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&handshakeColumn); err != nil {
 					t.Fatalf("look for the claim's handshake columns after the way back: %v", err)
 				}
-				if version != leftStandingVersion || marksTable || handshakeColumn {
-					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, and a handshake column "+
-						"stands: %v; want %d and neither: the highest row neither block deletes", version, marksTable, handshakeColumn, leftStandingVersion)
+				if err := pool.QueryRow(ctx, `select exists (select 1 from information_schema.columns
+					where table_schema = current_schema() and table_name = 'phases' and column_name = 'entry_verbatim')`).
+					Scan(&markColumn); err != nil {
+					t.Fatalf("look for the phases row's mark after the way back: %v", err)
+				}
+				if version != leftStandingVersion || marksTable || handshakeColumn || markColumn {
+					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, a handshake column "+
+						"stands: %v, and the phases row's mark stands: %v; want %d and none of them: the highest row neither block deletes",
+						version, marksTable, handshakeColumn, markColumn, leftStandingVersion)
 				}
 			}
 
@@ -547,7 +557,7 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 			}
 			want := 1
 			if tc.rearmed {
-				want = 4
+				want = 5
 			}
 			if applied != want {
 				t.Fatalf("the roll-forward applied %d migrations, want %d: each way back re-arms its own migrations and no other", applied, want)
@@ -579,8 +589,9 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					t.Fatalf("the arms %s is marked told for at generation %d = %v, want the first and the third the second run wrote",
 						root.key, root.generation, marks)
 				}
-				if row := architectRow(t, pool, root.key); row.Entry != 1 {
-					t.Fatalf("the architect row of %s after the roll-forward = entry %d, want the 1 the second run wrote", root.key, row.Entry)
+				if row := architectRow(t, pool, root.key); row.Entry != 1 || row.EntryVerbatim {
+					t.Fatalf("the architect row of %s after the roll-forward = entry %d, sent again as written %t; want the 1 the second run "+
+						"wrote, which the derivation's send reads", root.key, row.Entry, row.EntryVerbatim)
 				}
 				var given, served, handshakeEntry int64
 				var handshakeQueued *time.Time

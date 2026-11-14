@@ -776,8 +776,9 @@ type SuperviseRequest struct {
 	// carry: a transition's start of the phase the issue has moved into, the promotion's start of
 	// a mid-phase worker a re-admitted tree brings back (workflow's start and
 	// StartPromotedWorker), and a root architect's start that hands it work it was not on —
-	// admission's promotion of its root where the derivation serves it a task, and the resume of
-	// a root a person answered (workflow.Engine.EnterArchitect and ResumeAwaitedRoot). The
+	// admission's promotion of its root and the sweep's raise for an architect whose row names no
+	// entry, where the derivation serves it a task (workflow.Engine.StartArchitect), and the
+	// resume of a root a person answered (workflow.Engine.ResumeAwaitedRoot). The
 	// architect's start names no phase (Phase above), so the outbox holds it to the generation
 	// and the claim's given entry alone. Three more carry the entry the role's row already names
 	// without raising it: the send of an owed entry (workflow's SendOwedEntry), the sweep's start

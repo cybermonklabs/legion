@@ -549,11 +549,12 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // writes this task as the work of that entry (EnterArchitect), and the start carries the number
 // (record.SuperviseRequest.Entry) as a phase worker's start does. That is what makes a resume
 // survivable: the entry and this task live on the record, so a start row that reaches no claim
-// leaves the architect's claim below that entry, and the entry sweep sends it that entry's work,
-// which is this text as written (SendArchitectStart): it names the answer and no kept decision,
-// so nothing it says can have been told by another start. Both callers get it — the promotion of
-// an answered root (admit's record.LineAnswered branch) and tellInPlace, which gives a live
-// architect this task where it stands.
+// leaves the architect's claim below that entry, and the entry sweep sends it that entry's work.
+// The raise marks the task as one to send as written (record.PhaseRow.EntryVerbatim), so that work
+// is this text (SendArchitectStart): it names the answer and no kept decision, so nothing it says
+// can have been told by another start. Both callers get it — the promotion of an answered root
+// (admit's record.LineAnswered branch) and tellInPlace, which gives a live architect this task
+// where it stands.
 //
 // The resume starts the root's architect, which is a movement of the issue
 // (record.Store.MarkIssueMoved, the rule in dispatchIssue). It is marked here rather than at
@@ -584,7 +585,7 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 		return err
 	}
 	task := resumeTask(root.Key, waiting, step, gate, asks[root.Key], e.armed())
-	entry, err := e.EnterArchitect(ctx, tx, root, task)
+	entry, err := e.EnterArchitect(ctx, tx, root, task, true)
 	if err != nil {
 		return err
 	}

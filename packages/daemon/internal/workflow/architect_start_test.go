@@ -147,8 +147,8 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 }
 
 // Every label is a label of one shape: a task carries its own shape's label, carries no other
-// shape's, and ends with the tail that tells a first task from a task naming decisions alone
-// (CarriesArchitectStart). The decomposition is asked for by the one shape that opens a tree.
+// shape's, and ends with the tail that tells the architect nothing else starts its tree. The
+// decomposition is asked for by the one shape that opens a tree.
 func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 	labels := []string{ArchitectFreshTreeLabel, ArchitectCarriedPhaseLabel, ArchitectGateRowsLabel, ArchitectReadmittedLabel}
 	for i, label := range labels {
@@ -203,7 +203,7 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 			if asks := strings.Contains(task, ArchitectDecompositionLabel); asks != tc.decomposes {
 				t.Fatalf("the task %q asks for a decomposition = %v, want %v", task, asks, tc.decomposes)
 			}
-			if !strings.HasSuffix(task, startTail) || !CarriesArchitectStart(task) {
+			if !strings.HasSuffix(task, startTail) {
 				t.Fatalf("the task %q does not end with the first-task tail", task)
 			}
 		})
@@ -323,7 +323,7 @@ func TestTheArchitectTaskIsNoneForARootPastAdmitted(t *testing.T) {
 			if got != decidedOnTheTree {
 				t.Fatalf("the architect's start task = %q, want the decided text alone %q", got, decidedOnTheTree)
 			}
-			if CarriesArchitectStart(got) {
+			if strings.HasSuffix(got, startTail) {
 				t.Fatalf("the task %q carries the first-task tail, want none", got)
 			}
 		})
@@ -353,11 +353,15 @@ func TestTheArchitectTaskNamesAKeptDecisionFirstInEveryShape(t *testing.T) {
 }
 
 // Narrowing a root architect's held task writes it again from the decisions it still names. A
-// task that carried the first-task instruction keeps it, in the shape the record gives the root
-// now: a decision leaving the tree says nothing about whether the tree has been taken up, and a
-// rewrite that dropped the instruction would hand a fresh architect the empty task the
-// instruction exists to replace. A task that carried no instruction is the decisions' own text
-// alone.
+// task of an entry carried the first-task instruction and keeps it, in the shape the record gives
+// the root now: a decision leaving the tree says nothing about whether the tree has been taken
+// up, and a rewrite that dropped the instruction would hand a fresh architect the empty task the
+// instruction exists to replace. A task of no entry carried no instruction, and is the decisions'
+// own text alone.
+//
+// What decides it is the entry and not the held task's text, which the narrowing is not given:
+// whatever wording a release wrote a derived task in, the instruction is written again, so a
+// closing sentence reworded by a later release costs no first act.
 func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 	stays := childDecision()
 	decided := KeptDecisionsTask("LEGION-208", stays)
@@ -392,44 +396,43 @@ func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			held := ArchitectStartTask(tc.start)
 			whole := tc.start
 			whole.Decided = decided
-			narrowed := NarrowRootTask(tc.start, held, stays)
+			narrowed := NarrowRootTask(tc.start, heldEntry, stays)
 			if want := ArchitectStartTask(whole); narrowed != want {
 				t.Fatalf("the narrowed task =\n%q\nwant\n%q", narrowed, want)
 			}
 			if !strings.Contains(narrowed, tc.label) {
 				t.Fatalf("the narrowed task lost the shape labelled %q", tc.label)
 			}
-			if got := NarrowRootTask(tc.start, "a catch-up's own task, which carries no instruction", stays); got != decided {
-				t.Fatalf("the narrowed task of a held task carrying no instruction = %q, want the decisions' own text %q", got, decided)
+			if got := NarrowRootTask(tc.start, 0, stays); got != decided {
+				t.Fatalf("the narrowed task of a held task of no entry = %q, want the decisions' own text %q", got, decided)
 			}
 		})
 	}
 }
 
+// heldEntry is the phase entry a held task of these cases is of: the entry the start that queued
+// it carried, which a start the derivation wrote carries wherever it hands the architect work.
+const heldEntry int64 = 3
+
 // A root that moved on while its task waited is served no first task, so the narrowing of a held
-// task that carries the instruction writes the kept decisions' own text alone: the tree has been
-// taken up, and its phase's own role says what the work is.
+// task of an entry writes the kept decisions' own text alone: the tree has been taken up, and its
+// phase's own role says what the work is.
 func TestNarrowingARootsArchitectTaskThatMovedOnDropsTheInstruction(t *testing.T) {
 	stays := childDecision()
 	decided := KeptDecisionsTask("LEGION-208", stays)
-	held := ArchitectStartTask(ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}})
-	if !CarriesArchitectStart(held) {
-		t.Fatalf("the held task %q carries no first-task instruction, so this pins nothing", held)
-	}
 	moved := ArchitectStart{Root: rootAt(phase.Planning), Gate: record.TreeGate{Steps: specGated}}
-	if got := NarrowRootTask(moved, held, stays); got != decided {
+	if got := NarrowRootTask(moved, heldEntry, stays); got != decided {
 		t.Fatalf("the narrowed task of a root now in planning = %q, want the kept decisions' own text %q", got, decided)
 	}
 }
 
 // A narrowing that leaves no decision at all writes the empty task its caller retires rather than
-// sends, where the held task carried no first-task instruction.
+// sends, where the held task is of no entry and so carried no first-task instruction.
 func TestNarrowingARootsKeptDecisionsToNothingWritesNoTask(t *testing.T) {
 	start := ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}}
-	if got := NarrowRootTask(start, "a catch-up's own task, which carries no instruction", record.KeptDecisions{}); got != "" {
+	if got := NarrowRootTask(start, 0, record.KeptDecisions{}); got != "" {
 		t.Fatalf("the narrowed task = %q, want the empty task its caller retires", got)
 	}
 }
