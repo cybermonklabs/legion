@@ -49,6 +49,40 @@ func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 	}
 }
 
+// An open of an existing bucket (OpenKeyValue, a rebuild's and the listener's task relay's) whose
+// lookup the server refuses under the connection's grant ends with that refusal, naming the
+// subject refused, as a start's lookup does (TestADeniedBucketLookupIsNotSentAgain): the server
+// answers the refused STREAM.INFO with nothing, so before the open read the connection's record
+// it ended in a bare "nats: timeout", and the task relay could not say which subject the
+// listener's grant is missing.
+func TestADeniedBucketOpenNamesTheRefusedSubject(t *testing.T) {
+	const bucket = "envoy_denied_open"
+	seed, public := testnats.User(t)
+	grant := testnats.StartNkeyGranted(t, public, accountInfoSubject(), "_INBOX.>")
+	t.Setenv("NATS_NKEY_SEED", seed)
+	// A client's connection, as every caller of OpenKeyValue holds one: the refusal is read from the
+	// record of the client that owns it (clientOwning).
+	client, err := Connect([]string{grant.URL})
+	if err != nil {
+		t.Fatalf("connect the client whose connection opens the bucket: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js, err := client.Conn.JetStream(nats.MaxWait(time.Second))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+
+	_, err = OpenKeyValue(client.Conn, js, bucket)
+
+	if !errors.Is(err, ErrPublishDenied) {
+		t.Fatalf("an open whose bucket lookup the server refused = %v, want ErrPublishDenied", err)
+	}
+	if !strings.Contains(err.Error(), `Permissions Violation for Publish to "`+openSubject(bucket)+`"`) {
+		t.Fatalf("the refused open was reported as %q, which does not carry the server's violation of %s",
+			err, openSubject(bucket))
+	}
+}
+
 // A start whose lookup of a bucket draws no answer is not ended by the server's refusal of a
 // subject that lookup never published to: a refusal of another subject is not this send's
 // answer, so the lookup is sent again, up to unansweredSends sends, and the start ends on its

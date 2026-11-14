@@ -1304,6 +1304,11 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
+	// The task relay relays each claim's task value from the Legion daemons' task bucket to the
+	// session holding the claim's role, on that session's relay subject, from the listener that
+	// relays the session's consumer. It opens the bucket only once this listener gives consumer
+	// delivery, and nothing it meets ends the start or reaches the self-health monitor (taskRelay).
+	tasks := startTaskRelay(client, relays, registry, logger, taskRelayInterval, bus.RequestTimeout)
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
 	parts := listenerParts{
@@ -1312,6 +1317,7 @@ func main() {
 		lane:      lane,
 		delivery:  delivery,
 		relays:    relays,
+		tasks:     tasks,
 		caches:    caches,
 		stopWakes: stopWakeReports,
 	}
@@ -1595,7 +1601,8 @@ type listenerLoops struct {
 
 // listenerParts are the parts of a started listener that shut down: server is the /v1 HTTP server,
 // client the main bus connection, lane the role lane, delivery the session-consumer connection,
-// relays the relay of its consumers (nil when it does not run), and caches the KV caches whose
+// relays the relay of its consumers (nil when it does not run), tasks the task relay, which
+// publishes on that connection too (nil when it does not run), and caches the KV caches whose
 // watchers are retired last.
 type listenerParts struct {
 	server   *http.Server
@@ -1603,6 +1610,7 @@ type listenerParts struct {
 	lane     roleLane
 	delivery *sessionDelivery
 	relays   *sessionRelays
+	tasks    *taskRelay
 	caches   []listenerCache
 	// stopWakes ends the wake reports still retrying (wakeReporter), nil on a shutdown reached
 	// before the reporter was built.
@@ -1660,13 +1668,15 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	}
 
 	// Ordered shutdown:
-	// 1. Session relays — publish no frame and ack nothing more; each one pulling returns the
-	//    messages it holds to the server with a nak (sessionRelays.release), so they are
-	//    delivered again at once rather than after their ack wait.
+	// 1. Session relays and the task relay — publish no frame and ack nothing more; each session
+	//    relay pulling returns the messages it holds to the server with a nak
+	//    (sessionRelays.release), so they are delivered again at once rather than after their ack
+	//    wait, and the task relay retires its watcher, which the drain below ends (taskRelay.end).
 	// 2. HTTP server — stop accepting new requests, drain in-flight.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), stopHTTPGrace)
 	defer cancel()
 	parts.relays.stop(shutdownCtx)
+	parts.tasks.stop()
 	if err := parts.server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("http shutdown error", slog.String("error", err.Error()))
 	}

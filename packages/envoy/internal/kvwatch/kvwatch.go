@@ -85,6 +85,12 @@ type Read struct {
 	// MaxAge is the stream's MaxAge, the bucket's TTL, as the watch read it before it installed
 	// this read: a bucket recreated with another TTL moves it. 0 keeps records for good.
 	MaxAge time.Duration
+	// Created is when the bucket's stream this read reads was created, as the watch read it before
+	// it installed this read: the stream's identity, which a bucket recreated moves (Recreated). A
+	// cache whose records carry the bucket's incarnation by name reads it here, the Envoy
+	// listener's task relay among them, whose relay frames name it as the bucket's epoch
+	// (legiontasks.Epoch).
+	Created time.Time
 }
 
 // Watcher is one cache's KV watcher, from New.
@@ -515,7 +521,7 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	idle := make(chan struct{}, 1)
 	idleSince := w.now()
 	w.armIdle(w.scanIdle, idle)
-	read := Read{Epoch: w.epoch, Recreated: recreated, MaxAge: state.MaxAge}
+	read := Read{Epoch: w.epoch, Recreated: recreated, MaxAge: state.MaxAge, Created: stream}
 	w.mu.Unlock()
 	w.cache.BeginRead(read)
 	w.applyMu.Unlock()

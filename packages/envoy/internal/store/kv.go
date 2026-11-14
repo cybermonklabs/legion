@@ -47,6 +47,14 @@ type Registry struct {
 	roleWatcher *kvwatch.Watcher
 	holdersMu   sync.RWMutex
 	roleHolders kvwatch.Copy[string]
+	// changedRoles is every role whose holder the work under holdersMu stored or removed, which
+	// unlockHoldersAndNotify reports once that lock is released. Guarded by holdersMu.
+	changedRoles []string
+	// roleChangeMu guards onRoleChange, the functions OnRoleHolderChange registered, by
+	// registration number.
+	roleChangeMu   sync.Mutex
+	onRoleChange   map[uint64]func(role string)
+	nextRoleChange uint64
 }
 
 // OpenOption configures the registry.
@@ -111,11 +119,11 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 		roleKV:                roleKV,
 		log:                   opts.log,
 		index:                 newSubjectIndex(),
-		roleHolders:           newRoleHolderCopy(),
 		now:                   opts.now,
 		openedAt:              opts.now(),
 		restoredRoleRevisions: restoredRoleRevisions,
 	}
+	r.roleHolders = newRoleHolderCopy(r.roleHolderChangedLocked)
 	r.cache = newInterestCopy(r)
 	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, kvwatch.WithLogger(opts.log))
 	r.roleWatcher = r.newRoleWatcher(roleKV)

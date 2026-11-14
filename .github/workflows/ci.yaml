@@ -671,6 +671,9 @@ jobs:
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/verify/*'
               - 'packages/envoy/internal/webhook/*'
+              # The task bucket's name, key rule, value and relay frame headers, which the
+              # listener's task relay (cmd/listener/task_relay.go) reads and relays.
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/roleholder/*'
             # What `go test ./cmd/dispatch` reads under both its memory and its multiprocess tag:

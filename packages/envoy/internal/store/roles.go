@@ -231,15 +231,82 @@ func DecodeRoleClaim(value []byte) (RoleClaim, error) {
 
 // newRoleHolderCopy is an empty copy of the role claim bucket, which keeps the session each claim
 // it can read names. A claim this build cannot read (ErrMalformedRoleClaim) gives its role to
-// nobody, so the copy keeps no entry for it, as a delete marker leaves none.
-func newRoleHolderCopy() kvwatch.Copy[string] {
-	return kvwatch.NewCopy(kvwatch.Rows[string]{Decode: func(entry kvwatch.Entry) (string, bool, error) {
+// nobody, so the copy keeps no entry for it, as a delete marker leaves none. changed, when not nil,
+// is handed each role whose entry the copy stores or removes for the bucket's sake (kvwatch.Rows):
+// the registry passes roleHolderChangedLocked, which collects them for OnRoleHolderChange's
+// functions.
+func newRoleHolderCopy(changed func(role string)) kvwatch.Copy[string] {
+	rows := kvwatch.Rows[string]{Decode: func(entry kvwatch.Entry) (string, bool, error) {
 		claim, err := DecodeRoleClaim(entry.Value)
 		if err != nil {
 			return "", false, err
 		}
 		return claim.HolderSessionID, true, nil
-	}})
+	}}
+	if changed != nil {
+		rows.Stored = func(role, _ string) { changed(role) }
+		rows.Removed = func(role, _ string) { changed(role) }
+	}
+	return kvwatch.NewCopy(rows)
+}
+
+// OnRoleHolderChange registers changed to be called with a role after each change the role claim
+// view (CachedRoleHolder, RolesHeldBy) makes to that role's entry: a claim this registry wrote or
+// read through, the role claim watcher delivering a claim of this or another listener, a delete,
+// and the sweep of a read that no longer found the claim. Every claim stored counts, whether or
+// not its holder moved - a renewal writes the same holder again at a new revision - so the caller
+// reads the holder itself (CachedRoleHolder) rather than trusting the order or the count of its
+// calls.
+//
+// changed runs outside the registry's locks, on the goroutine that made the change: the role claim
+// watcher's, or a caller's of a claim, renewal, hand-back or release. Calls can therefore run
+// concurrently and out of revision order, and changed must not block. The Envoy listener's task
+// relay hears a role's new holder this way. stop unregisters it.
+func (r *Registry) OnRoleHolderChange(changed func(role string)) (stop func()) {
+	r.roleChangeMu.Lock()
+	defer r.roleChangeMu.Unlock()
+	if r.onRoleChange == nil {
+		r.onRoleChange = map[uint64]func(string){}
+	}
+	r.nextRoleChange++
+	id := r.nextRoleChange
+	r.onRoleChange[id] = changed
+	return func() {
+		r.roleChangeMu.Lock()
+		delete(r.onRoleChange, id)
+		r.roleChangeMu.Unlock()
+	}
+}
+
+// roleHolderChangedLocked records role as one whose entry the work under holdersMu stored or
+// removed, for unlockHoldersAndNotify to report once that lock is released. Callers hold holdersMu
+// for writing.
+func (r *Registry) roleHolderChangedLocked(role string) {
+	r.changedRoles = append(r.changedRoles, role)
+}
+
+// unlockHoldersAndNotify releases holdersMu and calls OnRoleHolderChange's functions for each role
+// the work under that lock changed (roleHolderChangedLocked). Every site that changes the role
+// claim view releases the lock through it, so no change goes unreported. Callers hold holdersMu
+// for writing.
+func (r *Registry) unlockHoldersAndNotify() {
+	changed := r.changedRoles
+	r.changedRoles = nil
+	r.holdersMu.Unlock()
+	if len(changed) == 0 {
+		return
+	}
+	r.roleChangeMu.Lock()
+	callbacks := make([]func(string), 0, len(r.onRoleChange))
+	for _, callback := range r.onRoleChange {
+		callbacks = append(callbacks, callback)
+	}
+	r.roleChangeMu.Unlock()
+	for _, role := range changed {
+		for _, callback := range callbacks {
+			callback(role)
+		}
+	}
 }
 
 // roleCache is the registry as the role claim cache its watcher feeds (kvwatch.Cache). The hooks
@@ -260,7 +327,7 @@ func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
 	malformed := r.roleHolders.Delivered(entry)
-	r.holdersMu.Unlock()
+	r.unlockHoldersAndNotify()
 	if malformed != nil {
 		r.logger().Warn("role claim watcher found a claim it cannot read; it names no holder",
 			slog.String("role", entry.Key),
@@ -275,7 +342,7 @@ func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 func (c roleCache) CompleteRead(kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
-	defer r.holdersMu.Unlock()
+	defer r.unlockHoldersAndNotify()
 	r.roleHolders.CompleteRead()
 }
 
@@ -288,7 +355,7 @@ func (r *Registry) setOwnRoleHolder(role, holder string, revision, epoch uint64)
 		return
 	}
 	r.holdersMu.Lock()
-	defer r.holdersMu.Unlock()
+	defer r.unlockHoldersAndNotify()
 	r.roleHolders.Put(r.roleWatcher, epoch, role, holder, revision)
 }
 
@@ -301,7 +368,7 @@ func (r *Registry) forgetRoleHolder(role string, revision, epoch uint64) {
 		return
 	}
 	r.holdersMu.Lock()
-	defer r.holdersMu.Unlock()
+	defer r.unlockHoldersAndNotify()
 	r.roleHolders.Evict(r.roleWatcher, epoch, role, revision+1)
 }
 
