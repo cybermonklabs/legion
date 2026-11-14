@@ -381,10 +381,9 @@ const legionPullRequestView = z.object({
  * (`classify.RoundWaitsOnMergeState`): a reviewer's approval stands on the head the pull request
  * is at, and the merge state the record holds for that head is not one the issue may advance on.
  * It stands for the round waiting for a first answer and for the stuck round alike — both wait on
- * GitHub's next answer about the same head — and `toldHead` with `toldState` are what tell the
- * two apart: a stuck round is one the architect and the reviewer have been told of. The merge
- * state alone rides on `pullRequest`, but neither when it was read nor what the round's own wait
- * is, which is what this carries. */
+ * GitHub's next answer about the same head — and `toldHead` with `toldState` say what the architect
+ * and the reviewer were last told of for it. The merge state alone rides on `pullRequest`, but
+ * neither when it was read nor what the round's own wait is, which is what this carries. */
 const legionMergeWaitView = z.object({
   /** The head the round waits on, the pull request's current head: the head the approval stands
    * on, and the head GitHub's answer is about. */
@@ -392,13 +391,11 @@ const legionMergeWaitView = z.object({
   /** The merge state the record holds for that head (`record.PullRequest.MergeState`), the same
    * word `pullRequest.mergeState` carries. Absent while the record holds no state for this head:
    * beside no `stateReadAt` the record holds no read of this head, and beside a `stateReadAt` it
-   * holds a read whose answer carried no state (`record.PullRequest.StateReadAt` says when each is
-   * the case). */
+   * holds a read whose answer carried no state. */
   mergeState: legionMergeState.optional(),
   /** `record.PullRequest.StateReadAt`, the moment GitHub's last answer about this head was in
-   * hand, a confirming answer included; that field's doc says who stamps it, what clears it and
-   * what its absence means. Absent when the record holds none, and absent beside a recorded
-   * `mergeState` it is a state read before the daemon recorded read times. */
+   * hand, a confirming answer included. Absent when the record holds none; absent beside a
+   * recorded `mergeState`, the record holds a state with no read time. */
   stateReadAt: timestamp.optional(),
   /** The newest `updated_at` GitHub gave among the pull request's lifecycle observations: a
    * reopen at the same head moves it, and a push whose event carried no clock does not raise it.
@@ -413,8 +410,9 @@ const legionMergeWaitView = z.object({
   checkRuns: z.number().int().nonnegative(),
   /** The head and the merge state the architect and the reviewer were told of
    * (`record.ReviewDecision.ToldStuckHead` and `ToldStuckState`, the marks workflow's
-   * `tellStuckMergeState` leaves). Absent while the round is still waiting for a first answer,
-   * and they name what was told of, which a later answer may have moved past. */
+   * `tellStuckMergeState` leaves). They name what the reviewer's decision last records as told,
+   * whatever the merge state and the read time say now, and a later answer may have moved past
+   * them; absent when that decision records none. */
   toldHead: nonEmptyString.optional(),
   toldState: legionMergeState.optional(),
 });

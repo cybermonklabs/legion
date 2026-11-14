@@ -1134,8 +1134,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   the time is what is missing, never the read, and the daemon's next read of the pull request
   records it. `read 2026-10-19T09:00:00Z with no merge state` is a read of this head whose answer
   carried no merge state, which is rare. `no read recorded for this head` says the record holds no
-  read of this head yet, usually right after a new pull request, a push or a reopen, and the
-  daemon's next read of the pull request fills it. The line says "the oldest head" because that is
+  read of this head yet, and the daemon's next read of the pull request fills it. The line says "the oldest head" because that is
   what it is oldest by: the head that has stood longest, the smallest `headUpdatedAt`, and not the
   round read longest ago, although the read is the only moment the line prints — the wait an
   operator acts on is the one a head has sat through.

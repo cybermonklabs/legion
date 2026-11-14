@@ -1603,42 +1603,42 @@ package api
 // the runs a CI settlement has applied for it and so 0 until a settlement has arrived, which is no
 // evidence of what GitHub holds, written whatever its value so that 0 is that reading rather than a
 // gap in the view; and `toldHead` with `toldState`, the head and state the architect and the
-// reviewer were told of once the round was reported stuck, both empty while the round still waits
-// for its first answer, which is what tells a stuck round from a new one. A caller from a pod whose
-// claims record a contract below 129 is served the state with no `mergeWait` on any issue at all —
-// the key absent rather than empty, since a strict reader before the contract that added a key
-// refuses it whatever it names (api's stateNarrowings, withoutMergeWait) — as a caller below 111 is
-// served every issue without `treeMovedAt` and `quietHours`, one below 98 the admission block
-// without `admission.held`, one below 94 every issue without `phaseEntry` and `givenEntry`, one
-// below 87 every claim view without `leakCheckCause`, one below 85 every issue without `why` and
-// every member of the waiting line with its `place` and its `length` alone, one below 75 the claim
-// views and the issues without the nine keys the decided record added and the body without its
-// `contract` mark, one below 73 a body with no `claimsToRefresh`, one below 62 the workers without
-// their counts of the moves back, one below 58 the issues without their place in the admission
-// line, one below 57 the claim views with no `step`, one below 56 the stranded report without its
-// retired entries, one below 55 the issues without the gated steps, one below 53 a body with no
-// `wakesWaiting`, one below 51 the issues without the admission's trees, one below 49 one with no
-// memory draw and one below 46 the claim views without their update rounds; the bands compose, and
-// every reader from this contract on takes the object as optional. The daemon makes no read of
-// GitHub of its own for any of it: every field is the record as the daemon's own reads of the pull
-// request have left it, so a state request costs no GitHub call and the object says how old the
-// daemon's knowledge of the head is rather than what GitHub would answer now.
-// The number is a census of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
-// request of this repository, taken at the moment the sites are written and never the base's number
-// plus one, because the open heads move the free number within the hour. The reading that chose
-// this one was taken at 2026-11-14T13:11Z-13:15Z, at the forward merge of main 25f3e38a, over the
-// 150 open pull requests: main declares 123 (INFRA-3146's entry above, landed by #3793), and the
-// open heads above it declare 124 (#4021), 125 (#4030), 126 (#2230, #4017), 127 (#3519, #3659) and
-// 128 (#3730), and none declares 129 or above, so 129 is the lowest number above the base's that no
-// other open head declares. This change keeps its number while it stands above its base, even when
-// another open head declares the same one: check-daemon-api-contract.sh compares a change with its
-// base alone, a renumber costs a push, a full check run and a test round, and the change that lands
-// second is the one renumbered (AGENTS.md). When the base declares this change's number or a higher
-// one, the base has taken it, and this change takes the free number at its next forward merge, from
-// a census read then, in one push. The readings that chose this change's earlier numbers are in its
-// implement handoffs on dispatch://INFRA-3027 rather than here, since each merge would make them
-// false, and the entries above keep the numbers they were read at. Read the base's own number and
-// every open head again at the next merge rather than from this entry, as
+// reviewer were last told of once the round was reported stuck, absent when the reviewer's decision
+// records none. A caller from a pod whose claims record a contract below 129 is served the state
+// with no `mergeWait` on any issue at all — the key absent rather than empty, since a strict reader
+// before the contract that added a key refuses it whatever it names (api's stateNarrowings,
+// withoutMergeWait) — as a caller below 111 is served every issue without `treeMovedAt` and
+// `quietHours`, one below 98 the admission block without `admission.held`, one below 94 every issue
+// without `phaseEntry` and `givenEntry`, one below 87 every claim view without `leakCheckCause`,
+// one below 85 every issue without `why` and every member of the waiting line with its `place` and
+// its `length` alone, one below 75 the claim views and the issues without the nine keys the decided
+// record added and the body without its `contract` mark, one below 73 a body with no
+// `claimsToRefresh`, one below 62 the workers without their counts of the moves back, one below 58
+// the issues without their place in the admission line, one below 57 the claim views with no
+// `step`, one below 56 the stranded report without its retired entries, one below 55 the issues
+// without the gated steps, one below 53 a body with no `wakesWaiting`, one below 51 the issues
+// without the admission's trees, one below 49 one with no memory draw and one below 46 the claim
+// views without their update rounds; the bands compose, and every reader from this contract on
+// takes the object as optional. The daemon makes no read of GitHub of its own for any of it: every
+// field is the record as the daemon's own reads of the pull request have left it, so a state
+// request costs no GitHub call and the object says how old the daemon's knowledge of the head is
+// rather than what GitHub would answer now. The number is a census of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every open pull request of this repository, taken at the moment the sites
+// are written and never the base's number plus one, because the open heads move the free number
+// within the hour. The reading that chose this one was taken at 2026-11-14T13:11Z-13:15Z, at the
+// forward merge of main 25f3e38a, over the 150 open pull requests: main declares 123 (INFRA-3146's
+// entry above, landed by #3793), and the open heads above it declare 124 (#4021), 125 (#4030), 126
+// (#2230, #4017), 127 (#3519, #3659) and 128 (#3730), and none declares 129 or above, so 129 is the
+// lowest number above the base's that no other open head declares. This change keeps its number
+// while it stands above its base, even when another open head declares the same one:
+// check-daemon-api-contract.sh compares a change with its base alone, a renumber costs a push, a
+// full check run and a test round, and the change that lands second is the one renumbered
+// (AGENTS.md). When the base declares this change's number or a higher one, the base has taken it,
+// and this change takes the free number at its next forward merge, from a census read then, in one
+// push. The readings that chose this change's earlier numbers are in its implement handoffs on
+// dispatch://INFRA-3027 rather than here, since each merge would make them false, and the entries
+// above keep the numbers they were read at. Read the base's own number and every open head again at
+// the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 const DaemonAPIVersion = 129

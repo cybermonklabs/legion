@@ -1215,12 +1215,11 @@ type CheckWakeView struct {
 // engine reads that same rule to decide whether to read GitHub for the round, so the object is
 // on the view exactly for the rounds the daemon is reading for.
 //
-// It stands for the round waiting for a first answer and for the stuck round alike — both wait
-// on GitHub's next answer about the same head — and ToldHead with ToldState is what tells the
-// two apart to a reader: a stuck round is one the architect and the reviewer have been told of.
-// The reading it is here for is the approval that stands for days while GitHub holds the head on
-// a state the issue may not advance on: the merge state alone is on the pull request's view, but
-// not when it was read, nor what the round's own wait is.
+// It stands for the round waiting for a first answer and for the stuck round alike — both wait on
+// GitHub's next answer about the same head — and ToldHead with ToldState say what the architect and
+// the reviewer were last told of for it. The reading it is here for is the approval that stands for
+// days while GitHub holds the head on a state the issue may not advance on: the merge state alone
+// is on the pull request's view, but not when it was read, nor what the round's own wait is.
 type MergeWaitView struct {
 	// WaitsOn is the head the round waits on, the pull request's current head: the head the
 	// approval stands on, and the head GitHub's answer is about.
@@ -1234,8 +1233,8 @@ type MergeWaitView struct {
 	// StateReadAt is record.PullRequest.StateReadAt, the moment GitHub's last answer about this
 	// head was in hand, a confirming answer included; that field's doc says who stamps it, what
 	// clears it and what its zero means. It is absent rather than zero when the record holds none,
-	// so a reader never takes a read at the zero instant for a time, and absent beside a recorded
-	// MergeState it is a state read before the daemon recorded read times.
+	// so a reader never takes a read at the zero instant for a time; absent beside a recorded
+	// MergeState, the record holds a state with no read time.
 	StateReadAt *time.Time `json:"stateReadAt,omitempty"`
 	// HeadUpdatedAt is the record's HeadUpdatedAt, the newest `updated_at` GitHub gave among the
 	// pull request's lifecycle observations: a reopen at the same head moves it, and a push whose
@@ -1252,9 +1251,9 @@ type MergeWaitView struct {
 	CheckRuns int `json:"checkRuns"`
 	// ToldHead and ToldState are the reviewer's record.ReviewDecision.ToldStuckHead and
 	// ToldStuckState, the marks workflow's tellStuckMergeState leaves once the architect and the
-	// reviewer have been told of this round. They are empty while the round is still waiting for
-	// a first answer, and they name the head and state told of, which a later answer may have
-	// moved past.
+	// reviewer have been told of this round. They name the head and state the reviewer's decision
+	// last records as told, whatever the record holds of the merge state and the read time now,
+	// and a later answer may have moved past them; they are empty when that decision records none.
 	ToldHead  string `json:"toldHead,omitempty"`
 	ToldState string `json:"toldState,omitempty"`
 }
