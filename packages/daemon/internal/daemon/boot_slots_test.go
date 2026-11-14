@@ -328,8 +328,9 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 		t.Fatalf("migrate the pre-release store onto the release: %v", err)
 	}
 	granted := slotHolders(t, pool)
-	// Merging is a worker's phase on this release — the merger merges the pull request itself — so
-	// the two issues standing in it are at work and hold slots like the rest.
+	// The migration was written for the rule where merging held a slot — the merger merges the
+	// pull request itself, so its phase is work — so it grants the two issues standing in it a
+	// slot like the rest. The boot's first pass below takes those rows back (record.KeepsSlot).
 	if want := []string{spec, running, building, testing, heldReady, merging, lingering}; !reflect.DeepEqual(granted, want) {
 		t.Fatalf("the slots the migration left = %v, want %v: every issue of a live tree at work, and the roots that already held one",
 			granted, want)

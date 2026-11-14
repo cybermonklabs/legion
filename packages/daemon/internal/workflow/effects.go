@@ -749,10 +749,10 @@ const (
 // readyWorkerTask) are enqueued directly and stay claimable at once. None of the first five
 // puts a worker to work on a phase, so none of them is the cap's to hold, and a slot they waited
 // for might never be offered. The last is sent to a worker already at work on the phase it is
-// in — its agent has just reported ready, and admission gave its tree its slot long before — so
-// the issue holds the row the cap counts already and this one has nothing to wait for. The work
-// of an entry that same ready worker stands below is sent through SendOwedEntry, and that start
-// comes through here with the rest.
+// in — its agent has just reported ready — so the issue already holds the row the cap counts in
+// a phase up to its review, and needs none past it (record.KeepsSlot), and this one has nothing
+// to wait for. The work of an entry that same ready worker stands below is sent through
+// SendOwedEntry, and that start comes through here with the rest.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
 	return startOrOwe(ctx, tx, store, issue, payload, at, newsOfTheIssue)
 }
