@@ -21,10 +21,11 @@ function patchOf(page: Page, key: string) {
 }
 
 /**
- * Waits until no card is mid-flight. dnd-kit lands every reorder it did not animate itself - the
- * rollback and refetch after a rejected rank included - with a 200 ms transform transition, and a
- * card later in the DOM paints over the ones it crosses, so a press during that flight lifts
- * whichever card is passing the point rather than the one measured there.
+ * Waits until no card is mid-flight. dnd-kit lands every reorder it did not animate itself - a
+ * card going back to Dispatch's place once a refused rank stops being shown, and the refetch,
+ * included - with a 200 ms transform transition, and a card later in the DOM paints over the ones
+ * it crosses, so a press during that flight lifts whichever card is passing the point rather than
+ * the one measured there.
  */
 async function boardAtRest(page: Page): Promise<void> {
   await page.getByRole("region", { name: "Project board" }).evaluate(async (board) => {

@@ -339,7 +339,7 @@ test("RepoControl shows a failed mappings read beside a resolved repository", as
   }
 });
 
-test("RepoControl rolls back and shows the server's refusal", async () => {
+test("RepoControl shows Dispatch's repository again and the server's refusal when a pick is refused", async () => {
   const patchIssue = answerIssuePatches().mockRejectedValue(
     new ApiError(400, {
       code: "REPO_NOT_MAPPED",
