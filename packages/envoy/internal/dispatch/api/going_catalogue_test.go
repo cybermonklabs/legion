@@ -1,6 +1,6 @@
 // going_catalogue_test.go holds the catalogue to the tool specs it is built from and to the
 // route table it is served beside: every row a tool names is a write of that table, and every
-// write no tool names is reported for follow-up rather than failing the build
+// write no catalogue action performs is named in a committed list rather than failing the build
 // (TestTheMutatingRoutesNoToolSpecNames).
 package api
 
@@ -21,10 +21,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// goingMutatingRoutesWithNoTool is every write of the served table no dispatch tool performs,
-// which is the catalogue's gap and this tree's follow-up work: each of these is an operation the
-// bar cannot yet propose. TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a
-// write added later is named here or in goingToolRoutes and never silently missing.
+// goingMutatingRoutesWithNoTool is every write of the served table no action of the catalogue
+// performs. Nearly all of them are the catalogue's gap and this tree's follow-up work: an
+// operation the bar cannot yet propose. One is not, and its row says why.
+// TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a write added later is
+// named here or in goingToolRoutes and never silently missing.
 var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/artifacts/{id}",
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
@@ -40,6 +41,10 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PATCH /api/v1/me/agent-tokens/{id}",
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
 	"POST /api/v1/artifacts/{id}/rebuild",
+	// dispatch_review performs this write, and goingToolRoutes gives it no row on purpose: a
+	// review records an approval or a changes request in a person's name, and the loop that
+	// proposes operations on Dispatch's graph must never propose one. Keep it here; never give
+	// it a row.
 	"POST /api/v1/artifacts/{id}/reviews",
 	"POST /api/v1/artifacts/{id}/versions",
 	"POST /api/v1/asks/{id}/answer",
@@ -189,8 +194,9 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 }
 
 // TestTheMutatingRoutesNoToolSpecNames: the catalogue's gap, named rather than refused. A write
-// of the served table no dispatch tool performs is an operation the bar cannot yet propose, and
-// the list is committed here so a write added later is either given a tool or added to it.
+// of the served table no catalogue action performs is an operation the bar cannot yet propose,
+// or, for the review route, one it must never propose, and the list is committed here so a write
+// added later is either given a tool or added to it.
 func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
 	routes := (&server{}).routes()
 	performed := map[string]bool{}

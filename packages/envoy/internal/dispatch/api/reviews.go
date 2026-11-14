@@ -309,9 +309,13 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 type createArtifactReviewInput struct {
 	State  string  `json:"state" required:"true"`
 	Reason *string `json:"reason"`
+	// Version is the version the caller read and reviews, when it names one: the review is
+	// refused 409 REVIEW_VERSION_MOVED unless it is the version the review would record. Absent,
+	// the review records that version whichever it is, as the document header's does.
+	Version *int `json:"version" minimum:"1"`
 }
 
-// POST /api/v1/artifacts/{id}/reviews  {state, reason?}  (the person and approve scopes)
+// POST /api/v1/artifacts/{id}/reviews  {state, reason?, version?}  (the person and approve scopes)
 func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 	var input createArtifactReviewInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -334,6 +338,10 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 	}
 	if state == "changes_requested" && reason == nil {
 		writeError(w, "REASON_REQUIRED", http.StatusBadRequest, "requesting changes requires a reason")
+		return
+	}
+	if input.Version != nil && *input.Version < 1 {
+		writeError(w, "INVALID_REVIEW", http.StatusBadRequest, "version must name a version of the document, 1 or more")
 		return
 	}
 	// Before the open approval request is looked for: a reason answers that request, so it
@@ -377,6 +385,22 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 	open, err := docs.OpenApprovalAsk(r.Context(), tx, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	// The version this review records for the document: the one the open request names for it,
+	// else the latest settled version. A caller that names the version it read is refused here
+	// when that is not it, before the request is answered or anything is written, so no review
+	// records in a person's name a version that person did not read.
+	recorded := version
+	if open != nil {
+		if named := open.Approval.Document(artifact.ID); named != nil {
+			recorded = named.Version
+		}
+	}
+	if input.Version != nil && *input.Version != recorded {
+		writeError(w, "REVIEW_VERSION_MOVED", http.StatusConflict, fmt.Sprintf(
+			"the review would record version %d of %s, not version %d: read version %d and review it",
+			recorded, artifact.Name, *input.Version, recorded))
 		return
 	}
 	events := []model.Event{}
