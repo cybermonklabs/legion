@@ -796,8 +796,17 @@ BROWSER_CONTRACTS = "Build contracts for dispatch e2e"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
+# The merge job's three other readings and its verdict, each a step running a script of its own.
+BROWSER_READ_TWO_STEP = "Reading two, the flake rate"
+BROWSER_READ_THREE_STEP = "Reading three, the leg exits with no failed row"
+BROWSER_READ_FOUR_STEP = "Reading four, the row durations"
+BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a failed row"
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
+BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
+# One name, two steps: the shard job's and the alone job's, each running a script of its own,
+# since the shard job's machine also runs the file store whose log that job collects.
+BROWSER_RECORD_STEP = "What the run left behind"
 # The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host, where
 # e2e/run-server.sh's `go build` of the Dispatch server has already run, and then runs Playwright
 # in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
@@ -1201,6 +1210,44 @@ GATES = [
          f"own attempt's jobs, and {at_browser(BROWSER_BLOBS_REFUSED_STEP, BROWSER_MERGE)} its "
          "blobs-refused mode, which prints the line for a blob download actions/download-artifact "
          "could not complete"),
+        (".github/scripts/dispatch-browser-wait-for-store.sh",
+         f"{at_browser(BROWSER_WAIT_STORE_STEP)} runs it to wait for the file store the step "
+         "before it started, which it makes a bucket in and writes, reads back and deletes one "
+         "object in"),
+        (".github/scripts/dispatch-browser-shard-suite.sh",
+         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's rows"),
+        (".github/scripts/dispatch-browser-shard-record.sh",
+         f"{at_browser(BROWSER_RECORD_STEP)} runs it to print and collect the file store's log "
+         "and the stacks' own logs"),
+        (".github/scripts/dispatch-browser-alone-suite.sh",
+         f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} runs it for this leg's one "
+         "unsharded project"),
+        (".github/scripts/dispatch-browser-alone-record.sh",
+         f"{at_browser(BROWSER_RECORD_STEP, BROWSER_ALONE)} runs it to print and collect the "
+         "stack's own logs, there being no file store on that machine"),
+        (".github/scripts/dispatch-browser-visual-suite.sh",
+         f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} runs it for the stack and the "
+         "e2e/visual-run.sh the comparison against the baselines needs"),
+        (".github/scripts/dispatch-browser-merge-reports.sh",
+         f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} runs it to join the legs' blob "
+         "reports into the one HTML and JSON report of the run"),
+        (".github/scripts/dispatch-browser-reading-rows.sh",
+         f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs it for the rows each leg's "
+         "log printed against the rows the merged report holds, and for the legs that owed a "
+         "blob report and uploaded none"),
+        (".github/scripts/dispatch-browser-reading-flake-rate.sh",
+         f"{at_browser(BROWSER_READ_TWO_STEP, BROWSER_MERGE)} runs it for the count and the "
+         "percentage of the rows that passed on a retry"),
+        (".github/scripts/dispatch-browser-reading-leg-exits.sh",
+         f"{at_browser(BROWSER_READ_THREE_STEP, BROWSER_MERGE)} runs it to name every leg that "
+         "concluded anything but success beside what its own blob report holds"),
+        (".github/scripts/dispatch-browser-reading-row-durations.sh",
+         f"{at_browser(BROWSER_READ_FOUR_STEP, BROWSER_MERGE)} runs it for the row count, the "
+         "median and the 95th percentile of each layer's passing rows"),
+        (".github/scripts/dispatch-browser-verdict.sh",
+         f"{at_browser(BROWSER_VERDICT_STEP, BROWSER_MERGE)} runs it to fail the job on an "
+         "upstream result that is neither success nor skipped and on a failed row in the "
+         "merged report"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:330 runs")
@@ -1486,7 +1533,8 @@ GATES = [
     # This check itself: it lists every module's packages (vet mode: each package directory, its
     # dependencies' and the test files, without the files tests read), reads the target lists
     # the runs above expand, reads every workflow of .github/workflows, and is its own script,
-    # engine, data, rules and path model.
+    # engine, data, rules and path model. The job runs the workflow-file size check beside it,
+    # which reads that same directory and is a script of its own.
     gate("ci_filters", "ci-filters", runs=[
         run(DAEMON, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the daemon module", mode="vet", step=CHECK_STEP,
             text=".github/scripts/check-ci-filters.sh"),
@@ -1497,6 +1545,8 @@ GATES = [
     ], reads=reads(
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
         (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
+        (".github/scripts/check-workflow-files.sh",
+         at("ci-filters", "Check every workflow file GitHub can read and its size")),
         (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "

@@ -206,6 +206,10 @@ YAML
 docker run --rm --network host --cpus 2 --memory 4g $REGISTRY@$NATS \\
   node node_modules/@playwright/test/cli.js test --project=visual
 YAML
+  cat > "$root/.github/scripts/dispatch-browser-visual-suite.sh" <<YAML
+#!/usr/bin/env bash
+export DISPATCH_E2E_PG_IMAGE=$REGISTRY@$NATS
+YAML
   cat > "$root/packages/pi-legion/scripts/skill-scenarios/rig.sh" <<YAML
 #!/usr/bin/env bash
 judge_image=$REGISTRY@$NATS

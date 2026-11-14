@@ -79,8 +79,10 @@ allowlist=(
   packages/daemon/internal/daemon/imageprobe_test.go
   packages/daemon/cmd/legion/controller_test.go
   # The release workflow's first-release seed reads the old name's npm version, so the two new
-  # packages continue its version line instead of restarting at 0.x.
+  # packages continue its version line instead of restarting at 0.x. Its notes file holds the
+  # paragraph that says why, which moved out of the workflow file with every other derivation.
   .github/workflows/release.yaml
+  .github/ci-notes/release.md
   # This check and its test spell the name they hunt.
   .github/scripts/check-plugin-names.sh
   .github/scripts/check-plugin-names.test.sh
