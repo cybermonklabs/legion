@@ -132,13 +132,17 @@ export function PriorityPage(): ReactNode {
                 <InPlaceField
                   id={OWNER_FIELD}
                   label="Owner"
-                  onSave={(owner) =>
+                  onSave={(next) => {
+                    // Dispatch stores the owner trimmed, so the change the page shows over its
+                    // answer is the trimmed text too, and leaves an answer that carries it alone.
+                    const owner = next.trim();
+                    if (owner === item.priority.owner) return;
                     patch.mutate({
                       id,
                       input: { owner },
                       label: `Owner of the priority “${title}”`,
-                    })
-                  }
+                    });
+                  }}
                   options={owners}
                   placeholder="Who holds it"
                   value={item.priority.owner}
