@@ -18,7 +18,6 @@ import {
 } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
-import { nearestAncestorNamed } from "./process-ancestry";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
 import { DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
@@ -34,6 +33,7 @@ import {
 } from "./dispatch-session-state";
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
+import { nearestAncestorNamed } from "./process-ancestry";
 import {
   handedConfigFile,
   sessionConfigFile,

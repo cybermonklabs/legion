@@ -39,9 +39,9 @@ describe("the Codex session record", () => {
   })
 
   test("the plugin's state directory follows from where Codex installed it", () => {
-    expect(codexPluginDataDirectory("/h/.codex/plugins/cache/legion-plugins/claude-envoy/1.2.3")).toBe(
-      "/h/.codex/plugins/data/claude-envoy-legion-plugins",
-    )
+    expect(
+      codexPluginDataDirectory("/h/.codex/plugins/cache/legion-plugins/claude-envoy/1.2.3"),
+    ).toBe("/h/.codex/plugins/data/claude-envoy-legion-plugins")
     expect(codexPluginDataDirectory("/data/checkout/packages/claude-envoy")).toBeUndefined()
   })
 
@@ -126,7 +126,13 @@ describe("the Codex live view", () => {
     stream.expect("ship it", "message-1")
     stream.event({ at: 11, id: "u1", kind: "user", text: "ship it" })
     stream.event({ at: 12, id: "a1", kind: "assistant", text: "on it" })
-    stream.event({ arguments: '{"cmd":"ls"}', at: 13, callId: "c1", kind: "tool-call", name: "exec_command" })
+    stream.event({
+      arguments: '{"cmd":"ls"}',
+      at: 13,
+      callId: "c1",
+      kind: "tool-call",
+      name: "exec_command",
+    })
     stream.event({ at: 14, callId: "c1", kind: "tool-result", output: "README.md" })
     stream.delivered("mid-turn words", "message-2")
     control("watch")
@@ -134,14 +140,30 @@ describe("the Codex live view", () => {
     control("replay", "_INBOX.1")
     await Bun.sleep(10)
     const reply = published.find((entry) => entry.subject === "_INBOX.1")?.payload as {
-      frames: { kind: string; message?: Record<string, unknown>; result?: Record<string, unknown> }[]
+      frames: {
+        kind: string
+        message?: Record<string, unknown>
+        result?: Record<string, unknown>
+      }[]
     }
-    const messages = reply.frames.filter((frame) => frame.kind === "message").map((frame) => frame.message)
-    expect(messages.map((message) => message?.["role"])).toEqual(["user", "assistant", "assistant", "user"])
+    const messages = reply.frames
+      .filter((frame) => frame.kind === "message")
+      .map((frame) => frame.message)
+    expect(messages.map((message) => message?.["role"])).toEqual([
+      "user",
+      "assistant",
+      "assistant",
+      "user",
+    ])
     expect(messages[0]).toMatchObject({ dispatchMessageId: "message-1" })
     expect(messages[1]).toMatchObject({ model: "openai/gpt-x" })
     expect(messages[2]?.["parts"]).toEqual([
-      { argsText: '{\n  "cmd": "ls"\n}', toolCallId: "c1", toolName: "exec_command", type: "tool-call" },
+      {
+        argsText: '{\n  "cmd": "ls"\n}',
+        toolCallId: "c1",
+        toolName: "exec_command",
+        type: "tool-call",
+      },
     ])
     expect(messages[3]).toMatchObject({ dispatchMessageId: "message-2" })
     expect(reply.frames.find((frame) => frame.kind === "tool-result")?.result).toMatchObject({
@@ -149,7 +171,11 @@ describe("the Codex live view", () => {
       toolCallId: "c1",
       toolName: "exec_command",
     })
-    expect(reply.frames.at(-1)).toMatchObject({ kind: "settings", model: "openai/gpt-x", reported: true })
+    expect(reply.frames.at(-1)).toMatchObject({
+      kind: "settings",
+      model: "openai/gpt-x",
+      reported: true,
+    })
     stream.stop()
   })
 
@@ -159,7 +185,9 @@ describe("the Codex live view", () => {
     stream.event({ at: 1, id: "u1", kind: "user", text: "hello" })
     control("replay", "_INBOX.2")
     await Bun.sleep(10)
-    expect(published.find((entry) => entry.subject === "_INBOX.2")?.payload).toMatchObject({ frames: [] })
+    expect(published.find((entry) => entry.subject === "_INBOX.2")?.payload).toMatchObject({
+      frames: [],
+    })
     stream.stop()
   })
 })
@@ -199,7 +227,11 @@ describe("the Codex router of a person's messages", () => {
       },
       dispatch: () =>
         ({
-          acceptMessageDelivery: async (id: string) => ({ body, delivery: "steer", message_id: id }),
+          acceptMessageDelivery: async (id: string) => ({
+            body,
+            delivery: "steer",
+            message_id: id,
+          }),
         }) as unknown as DispatchClient,
       expect: (text, id) => expected.push(`${id}:${text}`),
       reply: async (_delivery, result) => {
@@ -216,7 +248,11 @@ describe("the Codex router of a person's messages", () => {
     const { delivered, expected, router } = await harness("the stored words")
     expect(await router.route(frame("steer", "the frame's words"))).toBe(true)
     expect(delivered).toEqual([
-      { content: "the stored words", dispatchMessageId: "33333333-3333-4333-8333-333333333333", eventId: "evt-1" },
+      {
+        content: "the stored words",
+        dispatchMessageId: "33333333-3333-4333-8333-333333333333",
+        eventId: "evt-1",
+      },
     ])
     expect(expected).toEqual(["33333333-3333-4333-8333-333333333333:the stored words"])
   })

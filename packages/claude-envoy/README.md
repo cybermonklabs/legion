@@ -230,8 +230,10 @@ codex plugin add claude-envoy@legion-plugins
 Start `codex` as usual and trust the plugin's hooks when Codex asks (it asks again after an update
 that changes them; an untrusted hook does not run). The session reads the same envoy.json as every
 other session on the machine: the file `ENVOY_CONFIG_FILE` names, else
-`${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`. Nothing under the Codex home (`CODEX_HOME`,
-else `~/.codex`) is read or written but the session's transcript and Codex's own message queue.
+`${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`. Under the Codex home (`CODEX_HOME`, else
+`~/.codex`) the plugin reads the session's transcript, writes only to the state directory Codex
+gives each plugin (`plugins/data/`), and adds to Codex's message queue through `codex queue`;
+it never touches Codex's configuration.
 Measured on Codex CLI 0.154.0.
 
 - `.codex-plugin/plugin.json` names the skills, `codex/hooks.json` and one MCP server,

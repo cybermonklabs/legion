@@ -9,8 +9,8 @@ import { nkeys } from "nats"
 import marketplace from "../../../.claude-plugin/marketplace.json" with { type: "json" }
 import plugin from "../.claude-plugin/plugin.json" with { type: "json" }
 import codexPlugin from "../.codex-plugin/plugin.json" with { type: "json" }
-import codexHooks from "../codex/hooks.json" with { type: "json" }
 import ompPlugin from "../.omp-plugin/plugin.json" with { type: "json" }
+import codexHooks from "../codex/hooks.json" with { type: "json" }
 import type { ModCallArguments, ModCallName, ModCallResults } from "../hooks/mod-protocol"
 import pkg from "../package.json" with { type: "json" }
 import {

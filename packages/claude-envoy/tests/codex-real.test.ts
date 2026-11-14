@@ -68,7 +68,8 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
         requests.push(body)
         const id = `resp_${requests.length}`
         const events: Record<string, unknown>[] = [{ response: { id }, type: "response.created" }]
-        for (const item of answer(body.input ?? [])) events.push({ item, type: "response.output_item.done" })
+        for (const item of answer(body.input ?? []))
+          events.push({ item, type: "response.output_item.done" })
         events.push({
           response: {
             id,
@@ -83,7 +84,9 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
           type: "response.completed",
         })
         return new Response(
-          events.map((event) => `event: ${event["type"]}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+          events
+            .map((event) => `event: ${event["type"]}\ndata: ${JSON.stringify(event)}\n\n`)
+            .join(""),
           { headers: { "content-type": "text/event-stream" } },
         )
       },
