@@ -151,6 +151,16 @@ test("no narrowing, panel, display menu or selection moves the first row of a li
           Math.abs(after - first),
           `${where}: ${act} left the first row at ${Math.round(after)}px against a first reading of ${Math.round(first)}px`
         ).toBeLessThanOrEqual(CHIP_LINE);
+        // Shut as a reader shuts it: the panel holds the focus once it opens, and Escape from
+        // inside it closes it. Left open, it covers the display menu's trigger on a phone, and
+        // the next act's press lands on the panel until one of its retries scrolls it away.
+        if (run === surface.panel) {
+          await page.keyboard.press("Escape");
+          await expect(
+            control(controlRow(surface.root), CONTROL.panelTrigger),
+            `${where}: Escape left the filter panel open`
+          ).toHaveAttribute("aria-expanded", "false");
+        }
       }
     }
   }
