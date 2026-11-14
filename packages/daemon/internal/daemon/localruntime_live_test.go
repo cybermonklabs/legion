@@ -33,9 +33,8 @@
 //     is the same pane a runtime with no GitHubCredential function opens.
 //   - ProvisionsWorkspaces answers true, as the Sandbox runtime does, so the daemon clones no
 //     repository on its host; this runtime makes the claim's working directory itself.
-//   - PodDrift, ReplacePod, RescueUnpushed and CleanupTree hold nothing per place or per tree, so
-//     each answers as a process-only runtime answers: no drift, nothing to replace, nothing to
-//     rescue, nothing to delete.
+//   - PodDrift, ReplacePod and CleanupTree hold nothing per place or per tree, so each answers
+//     as a process-only runtime answers: no drift, nothing to replace, nothing to delete.
 //
 // Every child is started in a process group of its own (Setpgid) and every stop signals that
 // group, so Oh My Pi and the shim go together and a failed or finished run leaves no child
@@ -688,11 +687,6 @@ func (r *localRuntime) PodDrift(context.Context, runtime.Known) ([]string, error
 // ReplacePod has no place to replace.
 func (r *localRuntime) ReplacePod(context.Context, runtime.Known, func(context.Context) error) error {
 	return nil
-}
-
-// RescueUnpushed has no disk that goes with a place, so it has nothing to check.
-func (r *localRuntime) RescueUnpushed(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	return nil, nil
 }
 
 // CleanupTree holds nothing per tree.

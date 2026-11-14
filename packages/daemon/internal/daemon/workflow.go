@@ -225,8 +225,9 @@ type workflowRuntime struct {
 	// the engine's Config.ReadMergeState) that readMergeStates has not started a ladder for yet,
 	// and mergeStateRunning each issue whose ladder is still reading, which is why a second fact
 	// of an issue already being read starts no second ladder. mergeStateRetry is how long a
-	// ladder waits between reads of a state GitHub answers `unknown` for, mergeStateLadderWait
-	// when zero, which a test shortens.
+	// ladder waits between reads of a state GitHub answers `unknown` for, and how long the
+	// outbox's merge-queue read waits after a failed read (mergeStateWait, which attach hands the
+	// outbox), mergeStateLadderWait when zero, which a test shortens (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateRunning map[string]bool
@@ -1053,13 +1054,21 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
 // the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run).
+// lanes reserve from was built before either of them (run). The outbox's merge-queue read reads
+// GitHub through this runtime's own read of a pull request and waits this runtime's wait between
+// failed reads (readPullRequest, mergeStateWait), both set before the records' wake can reach the
+// outbox (outboxWake).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, w.log)
+	w.outbox.readPullRequest = func(ctx context.Context, pr record.PullRequest) (githubPullRequest, error) {
+		_, pull, err := w.readPullRequest(ctx, pr)
+		return pull, err
+	}
+	w.outbox.mergeStateWait = w.mergeStateWait
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1177,6 +1186,24 @@ func (w *workflowRuntime) booted(ctx context.Context, bootID int64) error {
 	fact := intake.DaemonBooted{Boot: bootID}
 	if _, err := intake.ApplyFact(ctx, w.pool, "daemon", fmt.Sprintf("boot:%s:%d", w.dispatchProject, bootID), fact, w.handlers...); err != nil {
 		return fmt.Errorf("apply the boot of %s: %w", w.dispatchProject, err)
+	}
+	return nil
+}
+
+// repairCutoverMergers applies the boot's one-time repair of the mergers the `awaiting_merge`
+// cutover left stopped (intake.CutoverMergerRepair, workflow's cutoverMergerRepair), under the
+// one event id the project keeps for it, so processed_events records that it ran and a later
+// boot's apply is a duplicate that repairs nothing (dispatch://INFRA-3274/spec R2). run applies
+// it after the listing's reconcile and the roots' catch-up and before the consumers start, so no
+// wake of the boot comes before it. A duplicate runs no handler, and the boot still writes its one
+// record of the repair (R2), so this logs it: the repair owed a start to no merger.
+func (w *workflowRuntime) repairCutoverMergers(ctx context.Context) error {
+	result, err := intake.ApplyFact(ctx, w.pool, "daemon", "cutover-merger-repair:"+w.dispatchProject, intake.CutoverMergerRepair{}, w.handlers...)
+	if err != nil {
+		return fmt.Errorf("apply the cutover merger repair of %s: %w", w.dispatchProject, err)
+	}
+	if result.Duplicate {
+		w.log.Info("cutover merger repair: owed a start to 0 mergers; the repair ran at an earlier boot", "count", 0, "issues", []string{})
 	}
 	return nil
 }

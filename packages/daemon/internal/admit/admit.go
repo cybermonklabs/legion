@@ -2574,7 +2574,9 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 		// which is the release working rather than a worker that lost its task, and the wake
 		// brings the pod back with the one task that says so (workflow's wakeRow). One below
 		// that entry is behind like any other claim: no wake is armed for work it was never
-		// given, and sending that entry's task is what brings its pod back.
+		// given, and sending that entry's task is what brings its pod back. The one other start
+		// of a released claim is the boot's one-time repair of a merger the `awaiting_merge`
+		// cutover left stopped (workflow's cutoverMergerRepair), which no wake would start.
 
 		// A claim an operator suspended is passed over whatever entry it stands on: `legion
 		// claims stop` stopped that worker and only the operator's own resume starts it again
