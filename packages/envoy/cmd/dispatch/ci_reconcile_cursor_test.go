@@ -233,10 +233,12 @@ func ciReconcilePasses(output string) []map[string]string {
 
 // waitForCIReconcilePasses waits for the pass lines the process has logged to satisfy enough,
 // and answers them. The passes run a second apart, so a cycle of them is several seconds of
-// waiting.
+// waiting, and on a loaded runner a cycle can outlast a minute. So this wait is not
+// testwait.Eventually, whose bound is a minute: it ends 30 s before the test binary's own
+// deadline, and only a binary run with no deadline (-timeout 0) falls back to a day.
 func waitForCIReconcilePasses(t *testing.T, process *dispatchProcess, what string, enough func([]map[string]string) bool) []map[string]string {
 	t.Helper()
-	testwait.Eventually(t, "the process to log "+what, func() bool {
+	testwait.WithinPolling(t, testwait.Bounded(t, 24*time.Hour, 30*time.Second), testwait.Poll, "the process to log "+what, func() bool {
 		return enough(ciReconcilePasses(process.Output.String()))
 	})
 	return ciReconcilePasses(process.Output.String())
