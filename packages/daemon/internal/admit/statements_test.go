@@ -60,9 +60,10 @@ func slottedKey(i int) string { return fmt.Sprintf("LEGION-%d", 1000+i) }
 //
 // The count holds as well where every slotted root is stalled: each has stood at admitted past
 // the gate arm's bound with no step of its design gate registered, and an earlier fact has told
-// the controller so. The pass reads that arm over every root on every fact, and marks what it
-// reads in one statement for the whole pass (record.Store.TellArchitectsStalled), so a root that
-// stays stalled costs no statement of its own.
+// the project's controller so. The pass reads that arm over every root on every fact, asks once
+// whether a controller is registered to be told, and marks what it reads in one statement for the
+// whole pass (record.Store.TellArchitectsStalled), so a root that stays stalled costs no statement
+// of its own.
 func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 	facts := []struct {
 		name string
@@ -85,6 +86,7 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 		admission := newAdmission(t, 2*held+2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		handlers := []intake.Handler{blockers.NewMirror(record.NewStore(), testProject), admission.engine, admission}
 		if stalled {
+			registerController(t, pool)
 			if _, err := pool.Exec(context.Background(), `update slots set admitted_at = $1`, fixedNow.Add(-pastTheGate)); err != nil {
 				t.Fatalf("age the slots of %d roots past the gate arm's bound: %v", held, err)
 			}

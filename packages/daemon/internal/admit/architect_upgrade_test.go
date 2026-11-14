@@ -99,6 +99,7 @@ func storedClaims(t *testing.T, pool *pgxpool.Pool) []supervise.Claim {
 // keeps that reading from waking anybody.
 func TestTheArchitectUpgradeSendsNoTaskAndRaisesNoWakeOnTheFirstPasses(t *testing.T) {
 	pool := migratedPool(t)
+	registerController(t, pool)
 	admission := quiet(t, 3)
 	const working, writing, holding = "LEGION-830", "LEGION-831", "LEGION-832"
 
@@ -171,8 +172,9 @@ func TestTheArchitectUpgradeSendsNoTaskAndRaisesNoWakeOnTheFirstPasses(t *testin
 
 // A claim the fill settled that then fails, and one that is retired, each wake the project's
 // controller once. The fill marks the first and the third arm and leaves the second unmarked,
-// because the second reports a claim that is failed or retired: the record states that plainly,
-// no send of the daemon's cures it, and the reason the fill stands on does not cover it.
+// because the second reports a claim that is failed or retired with no start of its run queued to
+// relaunch it: the record states that plainly, no send of the sweep cures it, and the reason the
+// fill stands on does not cover it.
 func TestTheArchitectUpgradeStillWakesForAClaimThatFailsOrIsRetired(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -180,12 +182,13 @@ func TestTheArchitectUpgradeStillWakesForAClaimThatFailsOrIsRetired(t *testing.T
 		why   string
 	}{
 		{name: "a claim that failed", state: supervise.StateFailed,
-			why: "a failed architect claim of a running tree is a claim workflow.Stranded names"},
+			why: "a failed architect claim of a running tree with no start of its run queued is a claim no start will reach"},
 		{name: "a claim that is retired", state: supervise.StateRetired,
 			why: "the sweep sends a retired claim nothing, and only a start that relaunches it, such as the controller's fresh_session, starts it again"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
+			registerController(t, pool)
 			admission := quiet(t, 1)
 			const root = "LEGION-833"
 			seedArchitectWakeRoot(t, pool, upgradedRoot(root, supervise.StateIdle))
@@ -301,6 +304,7 @@ func TestARootAdmittedAfterTheArchitectUpgradeIsOwedItsTask(t *testing.T) {
 // has stood its own ninety minutes.
 func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(t *testing.T) {
 	pool := migratedPool(t)
+	registerController(t, pool)
 	admission := newAdmission(t, 1, nil)
 	const root = "LEGION-837"
 	// The root as the park left it, with the architect claim of the run that was parked: the
@@ -481,6 +485,7 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			pool := migratedPool(t)
+			registerController(t, pool)
 			// The wake this release wrote and had not sent when the daemon stopped.
 			inTx(t, pool, func(tx pgx.Tx) {
 				row, err := record.NewOutboxRow(settled, record.ControllerNotice{Kind: record.ArchitectStalledNotice,

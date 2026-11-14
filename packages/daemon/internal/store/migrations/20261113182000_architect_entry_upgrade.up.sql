@@ -39,9 +39,20 @@
 -- project's controller for no root it has not repaired. The first arm reads a task queued to a
 -- claim that confirmed nothing, and the third a root standing at admitted with no design-gate step
 -- registered, which is what the 16 measured roots are. The second arm is marked for none of them:
--- it reports a claim that is failed or retired, which the record states plainly and no send can
--- cure, so a filled claim that fails or that an operator retires wakes the controller as any other
--- claim does.
+-- it reports a claim that is failed or retired with no start of its run queued to relaunch it,
+-- which the record states plainly and no send of the sweep cures, so a filled claim that fails or
+-- that an operator retires wakes the controller as any other claim does.
+--
+-- The marks are written only for a root whose run has started: its architect claim is of the
+-- generation the root stands at, or the root holds its admission slot, which the promotion that
+-- starts a run takes. A root re-admitted before the upgrade and still waiting in the line holds
+-- neither. readmit raised its generation and set it to todo, and its claim is the one of the run
+-- that ended, so the run its record names has not started, and that run is not standing when
+-- this runs. Its promotion after the upgrade raises its architect's entry and sends the task
+-- (admit's LineQueuedRoot branch, workflow.Engine.StartArchitect), and that run's arms wake the
+-- controller as any run's do. The entry fill, the first two statements below, needs no such
+-- exception: it puts that root's row and claim at entry 1, the promotion raises the entry to 2,
+-- and the start carries entry 2, which is above what the claim was given.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon
@@ -115,10 +126,10 @@
 -- notice strictly and refuses a kind it does not know (record.DecodeOutboxPayload, "unknown
 -- controller notice kind"), and its runner retries such a row on its backoff for ever, failing at
 -- every try. What the drop costs is what the roll-forward does with those wakes. A wake of the
--- first or the third arm is not raised again: the fill marks both arms for every root it settles,
--- as it does at a first upgrade. A wake of the second arm is: the fill marks that arm for no
--- root, so the first pass wakes the controller again for a root whose claim is still failed or
--- retired then.
+-- first or the third arm is not raised again for a root whose run has started: the fill marks
+-- both arms for every such root, as it does at a first upgrade. A wake of the second arm is: the
+-- fill marks that arm for no root, so the first pass wakes the controller again for a root whose
+-- claim is still failed or retired then, and no start of its run waits in the queue.
 --
 -- The drop of the table and the delete of 20261113181500's row are that migration's way back, and
 -- its header says why they go together. The roll-forward makes the marks' table again, empty,
@@ -128,7 +139,8 @@
 -- only from entry 0, which is what the re-added column holds, and the claims update moves a claim
 -- only from given entry 0, likewise. The marks are keyed by the run each root stands at
 -- (architect_stalled_notices' primary key, which names the generation), so a root the older
--- daemon re-admitted inside the window is marked at the generation it now stands at.
+-- daemon re-admitted and promoted inside the window is marked at the generation it now stands at,
+-- and one it re-admitted that still waits in the line is marked at none.
 --
 -- What it does not cover: a root the older daemon admits after this migration has run and before
 -- the new daemon serves. That promotion raised no entry, so its architect holds a claim with no
@@ -157,11 +169,12 @@ from issues i
 where i.key = c.issue and i.key = i.tree and c.role = 'architect' and c.given_entry = 0;
 
 -- The two arms this release will not wake anybody for, marked told at the run each root stands at,
--- as record.Store.TellArchitectsStalled writes them.
+-- as record.Store.TellArchitectsStalled writes them, for each root whose run has started.
 insert into architect_stalled_notices (issue, tree, generation, arm, told_at)
 select i.key, i.tree, i.generation, arm, now()
 from issues i
   join claims c on c.issue = i.key and c.role = 'architect'
   cross join unnest(array['took-nothing', 'slow-before-gate']) as arm
 where i.key = i.tree
+  and (c.generation = i.generation or exists (select 1 from slots s where s.issue = i.key))
 on conflict do nothing;

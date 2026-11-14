@@ -163,13 +163,26 @@ A root whose own architect is not taking the work the daemon states it is owed.
 - "the architect took nothing": the task of the architect's phase entry was queued to its claim more than ten minutes ago and no turn of that claim confirmed it.
   The daemon writes no second start while that task stands, so this wake is the one thing left.
 
-- "the architect's claim cannot be reached": the claim is failed or retired, or the root has no architect claim at all and the work of its entry has stood that same bound.
+- "the architect's claim cannot be reached": the claim is failed or retired and no start of the root's run waits in the queue to relaunch it, or the root has no architect claim at all and the work of its entry has stood that same bound.
+  While a queued start will relaunch a failed or retired claim, the daemon raises no such wake, because that start resumes the session the claim kept.
+  A root waiting on a person raises none either: the person's answer resumes its architect with a start of its own.
   For a root with no claim, the reason also says whether the daemon wrote the start of its architect again in the same transaction as the wake.
 
 - "the root is slow before its gate": the root stands at `admitted` with no design-gate step registered, 90 minutes after it was admitted or after its architect's entry was last raised, whichever is later.
   An architect that is writing a spec raises this one, and that is healthy work: the wake reports it and decides nothing.
 
-Read `issues.<KEY>`'s `phaseEntry`, `givenEntry`, `entryQueuedAt` and `entryConfirmedAt` to see the handshake the daemon and that architect have, and `gatedSteps` to see where each step of its gate stands.
+The daemon tells you of an arm only while a controller is registered for the project.
+An arm that holds while none is registered is told at the first pass after one registers.
+
+Read `issues.<KEY>.architectStalls` to see every arm that holds for that root now, by the arm's value: `took-nothing`, `claim-unreachable` or `slow-before-gate`.
+The daemon reads that key by the same rules as this wake, and it lists an arm whether or not you were told of it.
+`legion state` prints the same key.
+
+Read `issues.<KEY>.entryQueuedAt` and `entryConfirmedAt` to see the handshake the daemon and that architect have: when the task of its entry was queued to its claim, and when a turn of that claim confirmed it.
+Those two times are the architect's in every phase the root stands in.
+At `admitted`, `phaseEntry` and `givenEntry` are the architect's as well.
+Past `admitted`, they are the numbers of the role that works the phase the root stands in, and that role is the architect again only in `accepting`.
+Read `gatedSteps` to see where each step of its gate stands.
 
 For the first arm, read the root's architect claim in `read_state` (`issues.<KEY>.architect`).
 The daemon sends that task no second time while it stands, so you are the one who acts on it:
@@ -186,7 +199,8 @@ The daemon sends that task no second time while it stands, so you are the one wh
    A new session loses everything the old one held.
 
 For the second arm, read the root's architect claim in `read_state` too.
-A `failed` or `retired` claim takes nothing the daemon sends, and `fresh_session` on it, with the root's key as the issue and `architect` as the role, starts it again.
+A `failed` or `retired` claim this wake names has no start of its run in the queue to relaunch it, and it takes nothing the daemon sends.
+`fresh_session` on it, with the root's key as the issue and `architect` as the role, starts it again.
 A root with no architect claim has no claim for `compact` or `fresh_session` to reach, and each answers `NO_CLAIM` for it.
 When the reason says the daemon wrote the start of its architect again, take nothing, because that start creates the claim when it runs, and name the root in the day's report.
 When the reason says no start waits in the queue, or a later `read_state` still shows no `architect` for the root, name it in the day's report as a root the daemon could not start.

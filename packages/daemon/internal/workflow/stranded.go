@@ -29,7 +29,8 @@ const StrandedReleaseWake = 10 * time.Minute
 // healthy time measured, 77 minutes (dispatch://INFRA-2614). It is the bound of that arm alone,
 // since a root writing its own design has turns of its own to take before it registers
 // anything, and the two arms that read a handshake take StrandedReleaseWake. It is the one copy
-// of that bound: `legion state`'s plain line reads it here, as admission does.
+// of that bound, and admission reads it here. `legion state`'s plain line prints the arms the
+// state serves (api.Issue.ArchitectStalls) and reads no bound of its own.
 const ArchitectGateWake = 90 * time.Minute
 
 // ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the pod and

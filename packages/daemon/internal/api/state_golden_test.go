@@ -478,6 +478,12 @@ func populatedState(t *testing.T) State {
 					State:  WhyClaimStopped,
 					Reason: "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it.",
 				},
+				// No architect claim of this root stands in the record, so the view carries no
+				// `architect`, and the work of its architect's entry has waited past the bound with
+				// no start of one queued: the daemon's reading of the second arm holds for it, and the
+				// state serves that arm whether or not the controller was told of it
+				// (admit.Admission.ArchitectStallArms).
+				ArchitectStalls: []record.ArchitectStallArm{record.ArchitectClaimUnreachable},
 			},
 			// LEGION-211 is a root another tree handed over, carrying the phase it ran there and
 			// that run's suspended implementer, whose own tree has not been opened: it holds no

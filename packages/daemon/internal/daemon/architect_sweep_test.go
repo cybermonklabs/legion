@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -139,18 +141,72 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 //
 // The next sweep applies its fact and wakes the controller with the first arm's words. The mark
 // that fact wrote is what shuts the gate again, so a sweep after it applies nothing and the
-// controller is woken once.
+// controller is woken once. The project's controller is registered, as the daemon tells a stall
+// only to a controller that is (admit's wakeStalledArchitects).
 func TestTheArchitectSweepWakesTheControllerForAStallInAQuietProject(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	log := quietLogger()
 	records := record.NewStore()
-	const sweepProject = "ARCHSTALL"
+	registerProjectController(t, pool, quietStallProject)
+	root := seedQuietArchitectStall(t, pool)
+
+	engine := workflow.New(records, workflow.Config{Project: quietStallProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps()}, log)
+	admission := admit.New(records, engine, 1, quietStallProject, log)
+	w := &workflowRuntime{
+		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
+		dispatchProject: quietStallProject, bootID: "test-boot", log: log,
+	}
+	swept := func() (n int) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `select count(*) from processed_events
+			where event_id like 'entry-sweep:ARCHSTALL:test-boot:%'`).Scan(&n); err != nil {
+			t.Fatalf("read the sweeps applied: %v", err)
+		}
+		return n
+	}
+
+	// On a hold mark of its own, as the sweep runs in production (tickEntrySweep's caller).
+	w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now())
+	if n := swept(); n != 1 {
+		t.Fatalf("the sweep over a quiet project whose one root's architect took nothing applied %d facts, want the one that wakes the controller", n)
+	}
+	wakes := architectStalledWakes(t, pool, root.Key)
+	if len(wakes) != 1 || !strings.HasPrefix(wakes[0], record.ArchitectTookNothing.Words()+":") {
+		t.Fatalf("the architect-stalled wakes of %s = %q, want the one wake of the first arm", root.Key, wakes)
+	}
+	if starts := sweptStarts(t, pool, root.Key); len(starts) != 0 {
+		t.Fatalf("the sweep wrote %s %+v, want no start: its architect holds the task of its entry, and the wake is what is left", root.Key, starts)
+	}
+
+	w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Second))
+	if n := swept(); n != 1 {
+		t.Fatalf("a second sweep after the wake applied %d facts in all, want still the one: the mark shuts the gate once the stall is told", n)
+	}
+	if wakes := architectStalledWakes(t, pool, root.Key); len(wakes) != 1 {
+		t.Fatalf("the architect-stalled wakes of %s after a second sweep = %q, want the one", root.Key, wakes)
+	}
+}
+
+// quietStallProject is the Dispatch project key of the quiet project whose one root's architect
+// took nothing (seedQuietArchitectStall).
+const quietStallProject = "ARCHSTALL"
+
+// seedQuietArchitectStall records the one root of quietStallProject and answers it: at admitted,
+// holding its slot, its architect's phases row at entry 2, and an architect claim given that
+// entry that holds its task, queued twenty minutes ago and confirmed by no turn. That is the
+// first arm of the architect-stalled reading, past its ten minutes, and no role of the project is
+// owed anything the pass sends: the daemon writes no second start while that task stands.
+func seedQuietArchitectStall(t *testing.T, pool *store.Pool) record.Issue {
+	t.Helper()
+	ctx := context.Background()
+	records := record.NewStore()
 	now := time.Now().UTC()
-	root := record.Issue{Key: "ARCHSTALL-910", Tree: "ARCHSTALL-910", Project: sweepProject, Title: "the root",
+	root := record.Issue{Key: "ARCHSTALL-910", Tree: "ARCHSTALL-910", Project: quietStallProject, Title: "the root",
 		Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
 		Rank: "ARCHSTALL-910", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
-	project, err := claim.ProjectToken(sweepProject)
+	project, err := claim.ProjectToken(quietStallProject)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,41 +240,77 @@ func TestTheArchitectSweepWakesTheControllerForAStallInAQuietProject(t *testing.
 	}); err != nil {
 		t.Fatalf("seed the root whose architect took nothing: %v", err)
 	}
+	return root
+}
 
-	engine := workflow.New(records, workflow.Config{Project: sweepProject, Repositories: testRepositories,
+// The state serves, on each root's own view, the arms of the architect-stalled reading that hold
+// for its architect (api.Issue.ArchitectStalls), read in the state's own snapshot by the reading
+// the admission pass wakes the controller from (admit's ArchitectStallArms), and it serves them
+// whether or not the controller was told. So the arm is on the root's view while no controller
+// is registered, when the daemon tells nobody and marks nothing, and it is still there after the
+// sweep has told a registered controller: `legion state` prints that key and judges no arm of its
+// own, so the view is the one place an operator reads which arms hold.
+func TestTheArchitectSweepsStallArmsAreServedOnTheStateWhetherOrNotTheControllerWasTold(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	log := quietLogger()
+	records := record.NewStore()
+	root := seedQuietArchitectStall(t, pool)
+	engine := workflow.New(records, workflow.Config{Project: quietStallProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps()}, log)
-	admission := admit.New(records, engine, 1, sweepProject, log)
+	admission := admit.New(records, engine, 1, quietStallProject, log)
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	project, err := claim.ProjectToken(quietStallProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := &source{
+		store: st, records: records, project: quietStallProject, projectToken: project, runtime: "tmux", admissionCap: 1,
+		startedAt: time.Now(), deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+		reports:         func() map[claim.Token]capabilities.Report { return nil },
+		architectStalls: admission.ArchitectStallArms,
+	}
+	served := func() []record.ArchitectStallArm {
+		t.Helper()
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		if err != nil {
+			t.Fatalf("begin the state snapshot: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		state, _, err := view.State(ctx, tx)
+		if err != nil {
+			t.Fatalf("State: %v", err)
+		}
+		issue, shown := state.Issues[root.Key]
+		if !shown {
+			t.Fatalf("the state carries no view of %s", root.Key)
+		}
+		return issue.ArchitectStalls
+	}
+	tookNothing := []record.ArchitectStallArm{record.ArchitectTookNothing}
+
+	if arms := served(); !slices.Equal(arms, tookNothing) {
+		t.Fatalf("the state serves %s the arms %v while no controller is registered, want %v: the arm holds whether or not "+
+			"anybody was told of it", root.Key, arms, tookNothing)
+	}
+	if wakes := architectStalledWakes(t, pool, root.Key); len(wakes) != 0 {
+		t.Fatalf("the architect-stalled wakes of %s = %q, want none: the state's reading sends nothing", root.Key, wakes)
+	}
+
+	registerProjectController(t, pool, quietStallProject)
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: sweepProject, bootID: "test-boot", log: log,
+		dispatchProject: quietStallProject, bootID: "test-boot", log: log,
 	}
-	swept := func() (n int) {
-		t.Helper()
-		if err := pool.QueryRow(ctx, `select count(*) from processed_events
-			where event_id like 'entry-sweep:ARCHSTALL:test-boot:%'`).Scan(&n); err != nil {
-			t.Fatalf("read the sweeps applied: %v", err)
-		}
-		return n
-	}
-
-	// On a hold mark of its own, as the sweep runs in production (tickEntrySweep's caller).
 	w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now())
-	if n := swept(); n != 1 {
-		t.Fatalf("the sweep over a quiet project whose one root's architect took nothing applied %d facts, want the one that wakes the controller", n)
-	}
-	wakes := architectStalledWakes(t, pool, root.Key)
-	if len(wakes) != 1 || !strings.HasPrefix(wakes[0], record.ArchitectTookNothing.Words()+":") {
-		t.Fatalf("the architect-stalled wakes of %s = %q, want the one wake of the first arm", root.Key, wakes)
-	}
-	if starts := sweptStarts(t, pool, root.Key); len(starts) != 0 {
-		t.Fatalf("the sweep wrote %s %+v, want no start: its architect holds the task of its entry, and the wake is what is left", root.Key, starts)
-	}
-
-	w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Second))
-	if n := swept(); n != 1 {
-		t.Fatalf("a second sweep after the wake applied %d facts in all, want still the one: the mark shuts the gate once the stall is told", n)
-	}
 	if wakes := architectStalledWakes(t, pool, root.Key); len(wakes) != 1 {
-		t.Fatalf("the architect-stalled wakes of %s after a second sweep = %q, want the one", root.Key, wakes)
+		t.Fatalf("the architect-stalled wakes of %s after the sweep = %q, want the one that tells the registered controller", root.Key, wakes)
+	}
+	if arms := served(); !slices.Equal(arms, tookNothing) {
+		t.Fatalf("the state serves %s the arms %v after the controller was told, want %v: a told arm still holds", root.Key, arms, tookNothing)
 	}
 }

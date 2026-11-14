@@ -198,8 +198,8 @@ func withoutQuietKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
-// withoutEntryTimeKeys is a state body with no issue carrying `entryQueuedAt` or
-// `entryConfirmedAt`, which is what a caller below entryTimesContract is served of a state that
+// withoutEntryTimeKeys is a state body with no issue carrying `entryQueuedAt`, `entryConfirmedAt`
+// or `architectStalls`, which is what a caller below entryTimesContract is served of a state that
 // carries them (api's withoutEntryTimes). It serves the table below as withoutQuietKeys does: a
 // row's baseline is the full state with exactly the keys that row's own contract holds back taken
 // out of it.
@@ -213,6 +213,7 @@ func withoutEntryTimeKeys(t *testing.T, body []byte) []byte {
 		issue := issue.(map[string]any)
 		delete(issue, "entryQueuedAt")
 		delete(issue, "entryConfirmedAt")
+		delete(issue, "architectStalls")
 	}
 	encoded, err := json.Marshal(served)
 	if err != nil {
@@ -397,9 +398,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// leave together (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// times is whether the caller is served each issue's `entryQueuedAt` and
-		// `entryConfirmedAt` (entryTimesContract, the contract 117 added, which is this daemon's
-		// own), so the only pod served the two times is one at it. The two leave together
-		// (withoutEntryTimes), so one column answers for both.
+		// `entryConfirmedAt`, and each root's `architectStalls` (entryTimesContract, the contract
+		// 117 added, which is this daemon's own), so the only pod served them is one at it. The
+		// three leave together (withoutEntryTimes), so one column answers for all of them.
 		times bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -525,9 +526,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go holds
 			// that half), with the two keys contract 111 added gone, each issue of a live tree's
 			// `treeMovedAt` and `quietHours` (withoutQuietTime), and with each issue's
-			// `entryQueuedAt` and `entryConfirmedAt` gone, the two keys contract 117 added
-			// (withoutEntryTimes). Every row that reaches here is below all of them, so those
-			// seventeen strips take their keys whatever the row is.
+			// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` gone, the three keys
+			// contract 117 added (withoutEntryTimes). Every row that reaches here is below all of
+			// them, so those seventeen strips take their keys whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -552,12 +553,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					delete(issue, key)
 				}
 				// Every row that reaches here is below phaseEntriesContract too, so the two
-				// entry numbers and the two times of their task go whatever the row is, as the
-				// decided record's keys above do.
+				// entry numbers, the two times of their task and the architect-stalled arms go
+				// whatever the row is, as the decided record's keys above do.
 				delete(issue, "phaseEntry")
 				delete(issue, "givenEntry")
 				delete(issue, "entryQueuedAt")
 				delete(issue, "entryConfirmedAt")
+				delete(issue, "architectStalls")
 				if !tc.quiet {
 					delete(issue, TreeMovedAtField)
 					delete(issue, QuietHoursField)

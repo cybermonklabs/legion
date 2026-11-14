@@ -1,0 +1,23 @@
+kind: Fixed
+custom:
+  Issue: pr3711
+body: |-
+  A freshly admitted root's architect is given its first task with the start that launches it:
+  claim the root, have its spec written and every child filed, then request approval and register
+  its design gate. Before, a fresh architect was launched with no task and could hold its
+  admission slot for hours until a person sent it a message. The architect now holds a row of the
+  `phases` record like every phase worker, every start that hands it new work raises that row's
+  entry, and the entry sweep sends the work of that entry again when the start is lost: a task the
+  derivation wrote is derived again from the record, and the task a person's answer resumed is
+  sent as written. The question which role works a phase answers the architect for `admitted`.
+  The state carries each root's handshake with its architect (`entryQueuedAt`,
+  `entryConfirmedAt`) and the arms that hold for it (`architectStalls`), under daemon API contract
+  117, and `legion state` prints those arms. The project's controller gets an `architect-stalled`
+  notice, once per arm and run, for a root whose architect took nothing, whose claim cannot be
+  reached, or that is slow before its design gate, and only while a controller is registered.
+  Four migrations come with it: `20261113181500` (the wakes' marks), `20261113182000` (settles
+  every architect of the release before at entry 1 and marks its first and third arm, for a run
+  that has started), `20261114020537` (the claim's handshake) and `20261114061900` (whether an
+  entry is sent as written). A rollback to contract 111 runs the contract 117 block in
+  docs/kubernetes.md with the daemon stopped; a rollback below 111 also runs the phase entry's
+  block and the steps of each release it crosses.

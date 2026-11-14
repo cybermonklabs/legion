@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr3711
+body: The plugin declares daemon API contract 117, so a daemon of that contract serves it the state with each issue's `entryQueuedAt`, `entryConfirmedAt` and, for a root, `architectStalls`; a daemon serves a plugin that declares a contract below 117 the state without them.

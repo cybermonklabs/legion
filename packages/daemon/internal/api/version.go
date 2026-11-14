@@ -1565,8 +1565,21 @@ package api
 // gives the claim the two numbers and no handshake, which is how a reader tells such a root from
 // one this release served — and `entryConfirmedAt` alone is absent while no turn has confirmed a
 // task of the entry, which is the root whose architect took nothing.
+// A tree's own root carries `architectStalls` too: every arm of INFRA-2614's architect-stalled
+// reading that holds for its architect at that read, as `record.ArchitectStallArm`'s values —
+// `took-nothing` (the task of its entry was queued to its claim more than ten minutes ago and no
+// turn confirmed it), `claim-unreachable` (the claim is failed or retired and no start of the
+// root's run waits in the queue to relaunch it, or no architect claim stands and the work of its
+// entry has waited the same ten minutes) and `slow-before-gate` (it stands at `admitted` with no
+// design-gate step registered 90 minutes after the later of its admission and its architect's
+// last raised entry) — in that order. The daemon serves the arms the admission pass reads before
+// it wakes the controller, by the same predicates over the same reads
+// (admit.Admission.ArchitectStallArms, in the state's own snapshot), whether or not the
+// controller was told of an arm, and the key is absent for a root no arm holds for and for every
+// issue that is not a tree's root.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 117 is served the issues without both times (api's stateFor, withoutEntryTimes),
+// contract below 117 is served the issues without both times and without `architectStalls`
+// (api's stateFor, withoutEntryTimes),
 // as a caller below 111 is served the issues without `treeMovedAt` and `quietHours`, one below 98
 // the admission block without `admission.held`, one below 94 the issues without `phaseEntry` and
 // `givenEntry`, one below 87 every claim view without `leakCheckCause`, one below 85 every issue
@@ -1578,15 +1591,13 @@ package api
 // below 55 without the gated steps, one below 53 a body with no wakes waiting, one below 51
 // without the admission's trees and each issue's tree, one below 49 without the memory draw and
 // one below 46 without the claim views' update rounds; the seventeen compose, and every reader
-// from 117 on takes both times as optional. The two entry numbers move no further: a plugin at
-// 94 parses them already, and a root carrying them is the same shape the issue beside it carries.
-// `legion state`'s plain line changes with them: it names a tree's own root wherever an arm of
-// INFRA-2614's third requirement of the daemon holds for it, whether or not the controller was
-// told of that arm — its architect took nothing, its claim is failed or retired, or it stands at
-// `admitted` with no step of its design gate registered (no `designGate`, and no `gatedSteps`
-// entry other than `unregistered`) 90 minutes after the later of its admission and the queueing
-// of its architect's task — and no longer for the mere difference of its two numbers, which
-// every root reads as between a transition and its delivery. The rest of the change moves no
+// from 117 on takes both times and `architectStalls` as optional. The two entry numbers move no
+// further: a plugin at 94 parses them already, and a root carrying them is the same shape the
+// issue beside it carries.
+// `legion state`'s plain line changes with them: it names a tree's own root where the state
+// names an arm for it (`architectStalls`), with that arm's words, and states no arm of its own,
+// and it no longer names a root for the mere difference of its two numbers, which every root
+// reads as between a transition and its delivery. The rest of the change moves no
 // shape a caller reads: the architect's row of the `phases` record, the derivation that fills its
 // entry and the sweep that sends that entry's task are the daemon's own lanes and no route.
 // (This entry took 94 on cybermonklabs/legion#3677's head 643be0c4ae84, whose own entry stood

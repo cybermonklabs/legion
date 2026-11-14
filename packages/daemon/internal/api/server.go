@@ -794,21 +794,23 @@ func statementBound(bound time.Duration) int64 {
 // is served it without `admission.held` (withoutHeld); a caller below quietTimeContract, the
 // contract that added each issue's measure of its tree's quiet time, is served it without
 // `treeMovedAt` and `quietHours` (withoutQuietTime); and a caller below entryTimesContract, the
-// contract that added the two times of the task that entry was queued as, is served it without
-// `entryQueuedAt` and `entryConfirmedAt` (withoutEntryTimes).
+// contract that added the two times of the task that entry was queued as and the arms of the
+// architect-stalled reading that hold for a root, is served it without `entryQueuedAt`,
+// `entryConfirmedAt` and `architectStalls` (withoutEntryTimes).
 // The seventeen compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
-// carrying none of the thirty-two keys, the line's own fields being fields of a view such a
+// carrying none of the thirty-three keys, the line's own fields being fields of a view such a
 // caller is served none of at all, each of them absent rather than empty, since a strict reader
 // before the contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes all thirty-two keys as
+// retired entry under `strandedClaims`. Every later reader takes all thirty-three keys as
 // optional and all three states — `packages/contracts/src/legion-api.ts` marks
 // `admission.trees`, `admission.held`, `wakesWaiting`, `claimsToRefresh`, the issues'
 // `gatedSteps`, `waitingLine`, `why`, `phaseEntry`, `givenEntry`, `treeMovedAt`, `quietHours`,
-// `entryQueuedAt` and `entryConfirmedAt`, the workers' counts of the moves back, the claim views'
-// `step` and `leakCheckCause`, each of the nine the decided record added and `contract` itself
-// optional for exactly these bodies. Any other caller — a pod at this contract, the operator's
-// `legion state`, a tmux pane — is served the state as this contract writes it.
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls`, the workers' counts of the moves
+// back, the claim views' `step` and `leakCheckCause`, each of the nine the decided record added
+// and `contract` itself optional for exactly these bodies. Any other caller — a pod at this
+// contract, the operator's `legion state`, a tmux pane — is served the state as this contract
+// writes it.
 //
 // Each narrowing is written to the daemon's own log as it is applied, one line naming the
 // caller, the contract that caller's pod records, the contract this daemon declares and what
@@ -919,7 +921,7 @@ var stateNarrowings = []stateNarrowing{
 	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry"},
 	{heldContract, carriesHeld, withoutHeld, "admission.held"},
 	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours"},
-	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt and entryConfirmedAt"},
+	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1064,12 +1066,14 @@ const quietTimeContract = 111
 
 // entryTimesContract is the daemon contract that added each issue's `entryQueuedAt` and
 // `entryConfirmedAt`, the time the task of its phase entry was first queued to its role's claim
-// and the time that claim's worker confirmed it (version.go's 117). A plugin before it is served
-// the state without the two keys: one built before sjawhar/legion#2788 reads it with a strict
-// schema and would refuse the whole body for a key it does not name, and one built after strips
-// the keys instead, so the strip is what keeps the times from a caller that did not ask for them
-// rather than what keeps such a caller reading at all. It is the highest of the seventeen bands,
-// this daemon's own contract, so the only caller served the two keys is one at it.
+// and the time that claim's worker confirmed it, and each root's `architectStalls`, the arms of
+// the architect-stalled reading that hold for its architect (version.go's 117). A plugin before
+// it is served the state without the three keys: one built before sjawhar/legion#2788 reads it
+// with a strict schema and would refuse the whole body for a key it does not name, and one built
+// after strips the keys instead, so the strip is what keeps them from a caller that did not ask
+// for them rather than what keeps such a caller reading at all. It is the highest of the
+// seventeen bands, this daemon's own contract, so the only caller served the three keys is one at
+// it.
 const entryTimesContract = 117
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
@@ -1334,27 +1338,28 @@ func withoutQuietTime(state State) State {
 	return state
 }
 
-// carriesEntryTimes is whether any issue of state carries either key entryTimesContract added:
-// `entryQueuedAt` and `entryConfirmedAt`. Like the two entry numbers they are written only where
-// the projection has one to write — an issue whose role holds no task of its entry carries
-// neither — so this is asked of the state rather than answered true.
+// carriesEntryTimes is whether any issue of state carries a key entryTimesContract added:
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls`. Like the two entry numbers they are
+// written only where the daemon has one to write — an issue whose role holds no task of its
+// entry carries neither time, and a root no arm holds for carries no arm — so this is asked of
+// the state rather than answered true.
 func carriesEntryTimes(state State) bool {
 	for _, issue := range state.Issues {
-		if issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil {
+		if issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0 {
 			return true
 		}
 	}
 	return false
 }
 
-// withoutEntryTimes is state with no issue carrying `entryQueuedAt` or `entryConfirmedAt`, the
-// two fields entryTimesContract added to the state; nothing else of that contract is on the
-// route. The issue map is copied, as every sibling strip copies it, so the state the source
-// answered is left as it was.
+// withoutEntryTimes is state with no issue carrying `entryQueuedAt`, `entryConfirmedAt` or
+// `architectStalls`, the three fields entryTimesContract added to the state; nothing else of that
+// contract is on the route. The issue map is copied, as every sibling strip copies it, so the
+// state the source answered is left as it was.
 func withoutEntryTimes(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
-		issue.EntryQueuedAt, issue.EntryConfirmedAt = nil, nil
+		issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
 		issues[key] = issue
 	}
 	state.Issues = issues

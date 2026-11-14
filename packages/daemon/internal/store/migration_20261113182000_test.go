@@ -25,6 +25,13 @@ const architectUpgradeVersion = 20261113182000
 // as a sweep of the table: a child's own sub-architect claim, which the rule leaves outside; a
 // root with no architect claim, which the daemon never started; and a role of the same root that
 // is not its architect, whose own entry the earlier migration decides.
+//
+// The marks are read on two more roots, each a root the older daemon re-admitted before the
+// upgrade, so each stands at a generation its architect claim was not started at. One still
+// waits in the line: it holds no slot, and its next run has not started, so the fill marks no arm
+// of it and that run's arms wake the controller as any run's do. The other was promoted: it holds
+// its slot and its start is queued, so its run has started under the older release, and the fill
+// marks it as it marks every root standing in a run.
 func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -56,6 +63,24 @@ func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testi
 		// A root the daemon holds no architect claim of: nothing of it was ever started.
 		`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 			values ('LEGION-210', 'LEGION-210', 'LEGION', 'unstarted root', 'admitted', 1, 'in_progress', 'C', 1)`,
+		// A root the older daemon re-admitted, still waiting in the line: its generation is
+		// raised to 4 and its status is todo, while its architect claim is the retired one of
+		// run 3, the run that ended.
+		`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+			values ('LEGION-211', 'LEGION-211', 'LEGION', 'queued root', 'admitted', 4, 'todo', 'D', 1)`,
+		`insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+			launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation)
+			values ('legion-LEGION-211-architect', 'legion', 'LEGION-211', 'LEGION-211', 'architect', 3, 'ses_q', '',
+				'retired', 0, 0, 0, 0, 3)`,
+		// A root the older daemon re-admitted and then promoted: it holds its slot at generation
+		// 5, and the start of its architect is queued, so the claim is still the one of run 4.
+		`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+			values ('LEGION-212', 'LEGION-212', 'LEGION', 'promoted root', 'admitted', 5, 'in_progress', 'E', 1)`,
+		`insert into slots (issue, index, admitted_at) values ('LEGION-212', 0, now())`,
+		`insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+			launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation)
+			values ('legion-LEGION-212-architect', 'legion', 'LEGION-212', 'LEGION-212', 'architect', 4, 'ses_p', '',
+				'retired', 0, 0, 0, 0, 4)`,
 	} {
 		if _, err := store.Pool().Exec(ctx, seed); err != nil {
 			t.Fatalf("record before the migration: %v", err)
@@ -99,7 +124,19 @@ func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testi
 	if arms := architectUpgradeMarks(t, store, "LEGION-208", 3); !slices.Equal(arms,
 		[]record.ArchitectStallArm{record.ArchitectSlowBeforeGate, record.ArchitectTookNothing}) {
 		t.Fatalf("the arms LEGION-208 is marked told for = %v, want the first and the third: the second reports a claim that is failed "+
-			"or retired, which no send can cure", arms)
+			"or retired with no start queued to relaunch it, which no send of the sweep cures", arms)
+	}
+
+	if arms := architectUpgradeMarks(t, store, "LEGION-212", 5); !slices.Equal(arms,
+		[]record.ArchitectStallArm{record.ArchitectSlowBeforeGate, record.ArchitectTookNothing}) {
+		t.Fatalf("the arms the promoted LEGION-212 is marked told for = %v, want the first and the third: its run started under "+
+			"the older release, as every root the fill marks did", arms)
+	}
+	for _, generation := range []uint64{3, 4} {
+		if arms := architectUpgradeMarks(t, store, "LEGION-211", generation); len(arms) != 0 {
+			t.Fatalf("the queued LEGION-211 is marked told for %v at generation %d after the migration, want no arm: its next run "+
+				"has not started, so a mark would keep that run's first and third arms from waking anybody", arms, generation)
+		}
 	}
 
 	for _, quiet := range []struct {

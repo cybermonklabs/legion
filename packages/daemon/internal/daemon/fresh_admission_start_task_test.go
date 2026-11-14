@@ -68,10 +68,14 @@ func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 		t.Fatalf("the architect was prompted %#v, want the one start task %q in its first turn", prompts, pending.Task)
 	}
 	// The arms are read on every pass of the project, so one runs here with the architect up and
-	// holding the task it was sent.
+	// holding the task it was sent. The project registers no controller, so the reading itself is
+	// asked as well as the outbox: no wake could be queued here whatever the arms said.
 	r.admitPass()
 	if reasons := architectStalledWakes(t, r.pool, mainPathRoot); len(reasons) != 0 {
 		t.Fatalf("the architect wakes of %s = %q, want none: the root was served its first task, so no arm of the stall reading holds",
 			mainPathRoot, reasons)
+	}
+	if arms := architectStallArmsOf(t, r.pool, r.admission, mainPathRoot); len(arms) != 0 {
+		t.Fatalf("the architect-stalled arms of %s = %v, want none: the root was served its first task", mainPathRoot, arms)
 	}
 }

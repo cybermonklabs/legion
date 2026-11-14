@@ -326,6 +326,9 @@
         "state": "claim_stopped",
         "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
       },
+      "architectStalls": [
+        "claim-unreachable"
+      ],
       "treeMovedAt": "2026-09-22T06:18:00Z",
       "quietHours": 3
     },

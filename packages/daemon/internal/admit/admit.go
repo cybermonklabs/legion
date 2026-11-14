@@ -2507,8 +2507,9 @@ const (
 // every admission pass reads the project (reread) and answered by the two selections that pass
 // itself acts on: a role owed the work of the entry its phases row names (owedEntryRoles), and an
 // arm of the stall reading that holds for a root architect the selection holds, slotted or past
-// its review, and that no mark has told the controller yet (architectStalls,
-// record.Store.ArchitectStallsUntold). It writes nothing, so
+// its review, that no mark has told the controller yet, while a controller is registered to be
+// told (architectStalls, record.Store.ArchitectStallsUntold, wakeStalledArchitects). It writes
+// nothing, so
 // the entry sweep's gate (internal/daemon's applyEntrySweep) asks it in a read-only transaction
 // of its own, before any fact. The answer is a yes or a no rather than the selection, so no
 // caller outside this package depends on the shape of a row the pass reads. A root architect the
@@ -2519,9 +2520,13 @@ const (
 // reads: that pass reads them after its sends, and a pass with nothing owed sends nothing. A
 // stalled architect is owed nothing the pass sends, so a gate that read no arm would answer no
 // for every stall, and a quiet project's controller would hear of the stall only at the next fact
-// of the project, which can be its own hourly tick. The arms add one statement, the read of their
-// marks, and only where an arm holds: the one arm that reads the record itself
-// (architectTookNothing) reads it only for a root its own terms already hold.
+// of the project, which can be its own hourly tick. The arms add two statements, the read of the
+// controller's registration and the read of their marks, and only where an arm holds: the one arm
+// that reads the record itself (architectTookNothing) reads it only for a root its own terms
+// already hold. While no controller is registered the pass tells nobody of a stall
+// (wakeStalledArchitects), so the gate answers no for a stall alone then: a gate that answered
+// yes would apply a fact a minute for as long as no controller runs, each one a processed event
+// that nothing prunes.
 func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) {
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
@@ -2535,7 +2540,11 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 		return true, nil
 	}
 	stalls, err := a.architectStalls(ctx, tx, read, facts, nil)
-	if err != nil {
+	if err != nil || len(stalls) == 0 {
+		return false, err
+	}
+	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
+	if err != nil || !registered {
 		return false, err
 	}
 	return a.store.ArchitectStallsUntold(ctx, tx, stallMarks(stalls))
@@ -2860,220 +2869,6 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 	return reached, nil
 }
 
-// architectStall is one arm the stall reading raises over one root on a pass: the root,
-// the arm, what the record says, which the wake's reason carries after the arm's own words, and
-// the moment the pass read it.
-type architectStall struct {
-	root record.Issue
-	arm  record.ArchitectStallArm
-	why  string
-	at   time.Time
-}
-
-// mark is the stall as the mark that keeps its arm to one wake keys it (record.ArchitectStall).
-func (s architectStall) mark() record.ArchitectStall {
-	return record.ArchitectStall{Issue: s.root.Key, Tree: s.root.Tree, Generation: s.root.Generation, Arm: s.arm, At: s.at}
-}
-
-// stallMarks is the mark of each of stalls, in their order.
-func stallMarks(stalls []architectStall) []record.ArchitectStall {
-	marks := make([]record.ArchitectStall, len(stalls))
-	for i, stall := range stalls {
-		marks[i] = stall.mark()
-	}
-	return marks
-}
-
-// architectStalls reads the three arms over the architect of every root of read, in the order
-// the holders are read and, for each root, in the order a controller is told them: the architect
-// took nothing, its claim cannot be reached, the root is slow before its gate. The domain is the
-// selection's (readSlotHolders): a root holding a slot and a root past its review alike. A root
-// in accepting, retro or merging holds no slot since cybermonklabs/legion#3573, so the first two
-// arms read it here as they read it while it held one. The third reads a root at admitted alone,
-// whose slot gives it the admission time its bound is weighed from. sent names the roots whose
-// architect start this pass wrote (resumeSlottedWorkers), which the second arm's reason says; the
-// sweep's gate passes none, since it asks only where the pass would send nothing
-// (OwesEntryWork). Each root's arms are read at that root's own reading of the clock.
-func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotReading, facts record.LineFacts,
-	sent map[string]bool,
-) ([]architectStall, error) {
-	var stalls []architectStall
-	for _, held := range read.holders {
-		if held.role != claim.RoleArchitect {
-			continue
-		}
-		root, run := held.issue, read.runs[held.token]
-		row := read.entries[record.PhaseRole{Issue: root.Key, Role: claim.RoleArchitect}]
-		now := a.now()
-		took, err := a.architectTookNothing(ctx, tx, root, run, now)
-		if err != nil {
-			return nil, err
-		}
-		for _, arm := range []struct {
-			arm record.ArchitectStallArm
-			why string
-		}{
-			{record.ArchitectTookNothing, took},
-			{record.ArchitectClaimUnreachable, architectClaimUnreachable(root, row, run, sent[root.Key], now)},
-			{record.ArchitectSlowBeforeGate, architectSlowBeforeGate(root, facts.Gates[root.Tree], held.admittedAt, row, now)},
-		} {
-			if arm.why != "" {
-				stalls = append(stalls, architectStall{root: root, arm: arm.arm, why: arm.why, at: now})
-			}
-		}
-	}
-	return stalls, nil
-}
-
-// wakeStalledArchitects wakes the project's controller once for each of stalls no mark has told
-// yet, once per run of its root's tree (record.Store.TellArchitectsStalled). The pass calls it
-// after it has sent every role the work its phase entry names, so each arm reads a root the
-// daemon has already done what it can for.
-//
-// Every stall of the pass is marked in one statement, and a stall marked already answers false,
-// so a root that stays stalled costs no statement of its own on the facts after its telling. The
-// wakes are queued for the stalls that statement told, in the order the pass read them, and per
-// issue rather than through wakeController, which keeps one unpublished notice per project and
-// kind: every root of a project whose architects are stuck owes a wake of its own, and the
-// project-wide rule would let the first root's wake hide every other root's. What keeps one
-// root's arm to one wake is the mark instead, which is keyed by the arm as well, so a root two
-// arms read wakes the controller twice and neither case hides the other.
-//
-// The reason each wake carries begins with the arm's own words (record.ArchitectStallArm.Words)
-// and then says what the record says, so a controller reads which of the three raised the wake
-// it holds without opening anything.
-func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls []architectStall) error {
-	if len(stalls) == 0 {
-		return nil
-	}
-	told, err := a.store.TellArchitectsStalled(ctx, tx, stallMarks(stalls))
-	if err != nil {
-		return err
-	}
-	for i, stall := range stalls {
-		if !told[i] {
-			continue
-		}
-		reason := stall.arm.Words() + ": " + stall.why
-		if err := a.enqueue(ctx, tx, stall.root.Key, record.ControllerNotice{Kind: record.ArchitectStalledNotice,
-			Role: claim.RoleArchitect, Reason: reason}, stall.at); err != nil {
-			return err
-		}
-		intake.OnCommit(ctx, func() {
-			a.log.Warn("admission: the controller was told a root's architect has stalled",
-				"issue", stall.root.Key, "arm", string(stall.arm), "phase", stall.root.Phase,
-				"generation", stall.root.Generation, "reason", reason)
-		})
-	}
-	return nil
-}
-
-// architectTookNothing is the first arm: the architect's claim holds the task of the entry it
-// was given, that task was queued more than workflow.StrandedReleaseWake ago, and no turn of the
-// claim has confirmed it. It answers what the record says, and "" for a root it does not read.
-//
-// The task is read as the delivery carrying the entry the claim was given — the task the claim's
-// own handshake was written from (supervise.Claim.Handshake), whose two times the state shows
-// beside the two numbers (api.Issue.EntryQueuedAt) — rather than as the entry the phases row
-// names, because a claim still holding an older entry's task unconfirmed took nothing either,
-// and the sweep writes no newer start for it while that task stands
-// (workflow.ArchitectStartPending).
-//
-// The root must also be one the sweep serves (architectServed): no root outside the reach is
-// sent an architect's task at all, so none can have failed to take one, and a root that cannot
-// hear is one nothing a controller does reaches, so it raises nothing, while one that could not
-// hear earlier and can now raises the arm, because the task it was owed never arrived. Those
-// readings are asked last, so a root whose claim holds no such task costs no read.
-func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root record.Issue, run record.RoleRun,
-	now time.Time,
-) (string, error) {
-	held := run.Claim
-	if held == nil || held.Pending == nil {
-		return "", nil
-	}
-	task := held.Pending
-	if task.Entry == 0 || task.Entry != held.GivenEntry || !task.ConfirmedAt.IsZero() {
-		return "", nil
-	}
-	if task.QueuedAt.IsZero() || now.Sub(task.QueuedAt) <= workflow.StrandedReleaseWake {
-		return "", nil
-	}
-	served, err := a.architectServed(ctx, tx, root)
-	if err != nil || !served {
-		return "", err
-	}
-	return fmt.Sprintf("the task of phase entry %d was queued to the architect's claim of %s at %s. No turn of that claim has confirmed it. The root stands at %s. The daemon writes no second start while that task stands.",
-		task.Entry, root.Key, task.QueuedAt.UTC().Format(time.RFC3339), root.Phase), nil
-}
-
-// architectClaimUnreachable is the second arm: the root is in the workflow and its architect's
-// claim is failed or retired, or the root holds no architect claim at all while the work of its
-// entry has stood more than workflow.StrandedReleaseWake. It answers what the record says, and
-// "" for a root it does not read.
-//
-// A failed or a retired claim is read whatever else is queued for it, which is what makes this
-// the wake for a claim workflow.Stranded names. A root with no claim is read unless a start of
-// one already waited in the outbox when the pass began (workflow.ArchitectStartPending, the
-// sweep's own reading), since a queued start is the daemon's own next move and the claim is
-// created by running it. run is the reading the pass made before its sends, so where the pass
-// itself wrote the start again (sent) the wake still stands — a root with no claim that long is
-// stalled whatever this pass writes — and its reason says the start was written, rather than that
-// none waits.
-func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run record.RoleRun, sent bool, now time.Time) string {
-	if !record.InWorkflow(root) {
-		return ""
-	}
-	if held := run.Claim; held != nil {
-		if held.State != supervise.StateFailed && held.State != supervise.StateRetired {
-			return ""
-		}
-		return fmt.Sprintf("the architect claim of %s is %s, and the root stands at %s in the workflow.",
-			root.Key, held.State, root.Phase)
-	}
-	if _, pending := workflow.ArchitectStartPending(run); pending {
-		return ""
-	}
-	if row.Entry == 0 || row.RaisedAt.IsZero() || now.Sub(row.RaisedAt) <= workflow.StrandedReleaseWake {
-		return ""
-	}
-	queue := "no start of one waits in the queue"
-	if sent {
-		queue = "the daemon wrote the start of its architect again in the same transaction as this wake"
-	}
-	return fmt.Sprintf("%s holds no architect claim at all, and %s. The work of phase entry %d has stood since %s.",
-		root.Key, queue, row.Entry, row.RaisedAt.UTC().Format(time.RFC3339))
-}
-
-// architectSlowBeforeGate is the third arm: the root stands at phase.Admitted with no step of
-// its design gate registered, more than workflow.ArchitectGateWake after the later of its
-// admission and the moment its architect's entry was last raised. It answers what the record
-// says, and "" for a root it does not read.
-//
-// The later of the two moments is the issue's own decision. A root a person answered after a six
-// hour wait comes back to admitted holding the admission row it has held all along, so its
-// admitted moment is six hours old and the bound would be past the moment it resumed. The entry
-// its resume raised is what says when the work came back to it. For a first admission and for a
-// re-admission the two are one moment, since the promotion that takes the slot raises the entry
-// in the same transaction (promoteHolds).
-//
-// It reads a root standing at admitted and no other. A root a hand-over carried in stands in the
-// phase that came with it, where its tree's work is already running under a phase worker, and a
-// gate it has not registered holds nothing up yet.
-func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt time.Time, row record.PhaseEntry, now time.Time) string {
-	if root.Phase != phase.Admitted || len(gate.Rows) > 0 {
-		return ""
-	}
-	since := admittedAt
-	if row.RaisedAt.After(since) {
-		since = row.RaisedAt
-	}
-	if since.IsZero() || now.Sub(since) <= workflow.ArchitectGateWake {
-		return ""
-	}
-	return fmt.Sprintf("%s has stood at admitted since %s with no step of its design gate registered, which is more than %s.",
-		root.Key, since.UTC().Format(time.RFC3339), workflow.ArchitectGateWake)
-}
-
 // resumeSlottedWorkers sends every role owedEntryRoles names the work of the entry its phases
 // row names, in the way the selection decided for it (entrySend). A phase worker is sent the task
 // that entry was raised with, at that entry, so no completion in flight is refused for an entry
@@ -3128,12 +2923,12 @@ func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt
 // whose start row the fences rejected on the pass that rejected it, instead of a pass later.
 //
 // After the sends it reads the three stall arms over the architect of every root the selection
-// holds, slotted or past its review, and wakes the controller for each arm no mark has told yet
-// (architectStalls, wakeStalledArchitects), so a root the pass could still do something for is
-// wholly served before the controller is woken
-// about it. The arms read the holders as the pass read them before its sends, and the roots
-// whose architect start the pass wrote are handed to them, so the second arm's reason says what
-// the pass did.
+// holds, slotted or past its review, and wakes the controller for each arm no mark has told yet,
+// while a controller is registered (architectStalls, wakeStalledArchitects), so a root the pass
+// could still do something for is wholly served before the controller is woken about it. The
+// arms read the holders as the pass read them before its sends, and the roots whose architect
+// start the pass wrote are handed to them, so the second arm reads that start and its reason
+// says what the pass did.
 func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts,
 ) error {

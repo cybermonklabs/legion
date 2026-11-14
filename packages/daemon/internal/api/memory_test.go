@@ -205,8 +205,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// (withoutQuietTime), so one column answers for both.
 		quiet bool
 		// times is whether the caller is served each issue's `entryQueuedAt` and
-		// `entryConfirmedAt` (entryTimesContract, 117, this daemon's own), so the only pod served
-		// them is one at it.
+		// `entryConfirmedAt`, and each root's `architectStalls` (entryTimesContract, 117, this
+		// daemon's own), so the only pod served them is one at it.
 		times bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
@@ -311,9 +311,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// LEGION-208, whose implementer holds the work its row names, and LEGION-211, whose
 			// implementer is behind it. The held, awaiting_person and done issues carry neither
 			// whoever asks. The same two carry the times of the task they hold of that entry,
-			// LEGION-208 both and LEGION-211 the queued time alone.
+			// LEGION-208 both and LEGION-211 the queued time alone. LEGION-210, a root no
+			// architect claim stands for, is the one the daemon names an architect-stalled arm for,
+			// which leaves with the two times.
 			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true}
 			timed := map[string]bool{"LEGION-208": true, "LEGION-211": true}
+			stalled := map[string]bool{"LEGION-210": true}
 			for key, view := range issueViews(t, body) {
 				carries := view["memoryGroup"] != nil || view["memoryDrawMode"] != nil || view["memoryDrawnAt"] != nil
 				if want := tc.memory && drawn[key]; carries != want {
@@ -336,6 +339,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				carriesTimes := view["entryQueuedAt"] != nil || view["entryConfirmedAt"] != nil
 				if want := tc.times && timed[key]; carriesTimes != want {
 					t.Errorf("issue %s of %s carries the two entry times = %v, want %v", key, body, carriesTimes, want)
+				}
+				if carries, want := view["architectStalls"] != nil, tc.times && stalled[key]; carries != want {
+					t.Errorf("issue %s of %s carries the architect-stalled arms = %v, want %v", key, body, carries, want)
 				}
 				if tc.memory {
 					continue
@@ -455,6 +461,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				if !tc.times {
 					delete(issue, "entryQueuedAt")
 					delete(issue, "entryConfirmedAt")
+					delete(issue, "architectStalls")
 				}
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {

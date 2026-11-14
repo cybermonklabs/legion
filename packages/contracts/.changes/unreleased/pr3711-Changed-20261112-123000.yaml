@@ -1,6 +1,8 @@
 kind: Changed
 body: |-
   The Legion daemon's state carries the handshake between the daemon and a root's architect: the
-  phase entry that architect's work stands at, the entry its claim was queued, the time that work
-  was first queued and the time its worker confirmed it. A reader below the contract that added
-  the two times is served a body without them.
+  time a task of the entry the architect's claim was last queued was first queued, and the time
+  a turn of its worker first confirmed one (`entryQueuedAt`, `entryConfirmedAt`), which a root
+  carries in every phase of its current generation, and the arms of a stalled architect that hold
+  for the root (`architectStalls`). `roleForPhase` answers the architect for `admitted`. A reader
+  below the contract that added these keys, 117, is served a body without them.

@@ -627,10 +627,21 @@ type Issue struct {
 	// row of, a re-admitted root whose new architect entry is not queued yet, and one of the
 	// release before this one, whose migration gives the claim the two numbers and no handshake.
 	// EntryConfirmedAt alone is absent while no turn of its worker has confirmed a task of the
-	// entry, which is the root whose architect took nothing, and the shape `legion state` names in
-	// its plain line (its entrySummary).
+	// entry, which is the root whose architect took nothing.
 	EntryQueuedAt    *time.Time `json:"entryQueuedAt,omitempty"`
 	EntryConfirmedAt *time.Time `json:"entryConfirmedAt,omitempty"`
+	// ArchitectStalls is, for a tree's own root, every arm of the daemon's architect-stalled
+	// reading that holds for that root's architect at this read, in the order the controller is
+	// told them: `took-nothing`, `claim-unreachable` and `slow-before-gate`
+	// (record.ArchitectStallArm). It is the reading the admission pass wakes the controller from
+	// (admit.Admission.ArchitectStallArms, the same reads and the same three predicates), made in
+	// this state's own snapshot, and it carries an arm whether or not the controller was told of
+	// it: the daemon tells each arm once per run and only while a controller is registered. It is
+	// absent for a root no arm holds for and for every issue that is not a tree's root.
+	// `legion state`'s plain line prints it and reads no arm of its own. It arrived with the two
+	// times above (contract 117), and a caller below that contract is served the issues without
+	// all three (api's stateFor, withoutEntryTimes).
+	ArchitectStalls []record.ArchitectStallArm `json:"architectStalls,omitempty"`
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
 	// is how long that tree has been still at this read, in hours (contract 111). The two are one
 	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every

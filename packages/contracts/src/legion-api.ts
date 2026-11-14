@@ -713,6 +713,22 @@ const legionIssue = z.object({
    * both as optional. */
   entryQueuedAt: timestamp.optional(),
   entryConfirmedAt: timestamp.optional(),
+  /** For a tree's own root, every arm of the daemon's architect-stalled reading that holds for its
+   * architect at this read, in the order the controller is told them (contract 117):
+   * `took-nothing`, the task of its entry was queued to its claim more than ten minutes ago and no
+   * turn confirmed it; `claim-unreachable`, the claim is failed or retired and no start of the
+   * root's run waits in the queue to relaunch it, or no architect claim stands and the work of its
+   * entry has waited the same ten minutes; `slow-before-gate`, it stands at `admitted` with no
+   * design-gate step registered 90 minutes after the later of its admission and its architect's
+   * last raised entry. The daemon reads the arms by the predicates its own `architect-stalled`
+   * wake uses and serves them whether or not the controller was told, and `legion state`'s plain
+   * line prints them. Absent for a root no arm holds for and for every issue that is not a tree's
+   * root; a daemon before contract 117 writes none, and a caller in a pod whose plugin declares a
+   * contract below 117 is served the state without it (the daemon's `withoutEntryTimes`), which is
+   * why a reader takes it as optional. */
+  architectStalls: z
+    .array(z.enum(["took-nothing", "claim-unreachable", "slow-before-gate"]))
+    .optional(),
   /** When the daemon last saw anything of this issue's tree move, and how long that tree has
    * been still at this read, in hours (contract 111). The pair is the tree's and not the issue's,
    * so every issue of one tree carries the same two values — an issue past its own review, which

@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -19,6 +20,8 @@ import (
 // architectStalls). A proof reads it to say that a root the daemon served raises no wake of
 // any arm: each arm is a reading that the architect did not take its work, is not there, or has
 // not moved, and none of the three is true of a root whose architect holds the task it was sent.
+// The daemon queues such a wake only for a registered controller, so a proof whose project
+// registers none reads the arms themselves as well (architectStallArmsOf).
 func architectStalledWakes(t *testing.T, pool *store.Pool, issue string) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select coalesce(payload->>'reason', '') from outbox
@@ -40,6 +43,22 @@ func architectStalledWakes(t *testing.T, pool *store.Pool, issue string) []strin
 		t.Fatalf("list the architect wakes of %s: %v", issue, err)
 	}
 	return reasons
+}
+
+// architectStallArmsOf is every arm of the architect-stalled reading that holds for root now, as
+// the state serves them (admit.Admission.ArchitectStallArms): the reading a wake is told from,
+// made whether or not a controller is registered to be told of it.
+func architectStallArmsOf(t *testing.T, pool *store.Pool, admission *admit.Admission, root string) []record.ArchitectStallArm {
+	t.Helper()
+	var arms []record.ArchitectStallArm
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		held, err := admission.ArchitectStallArms(context.Background(), tx)
+		arms = held[root]
+		return err
+	}); err != nil {
+		t.Fatalf("read the architect-stalled arms of %s: %v", root, err)
+	}
+	return arms
 }
 
 // dropArchitectStarts deletes every architect start row of the rig's root the outbox still holds,
@@ -200,6 +219,9 @@ func TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask(t *testin
 	}
 	if reasons := architectStalledWakes(t, r.pool, mainPathRoot); len(reasons) != 0 {
 		t.Fatalf("the architect wakes of %s = %q, want none: its architect holds the task of its entry", mainPathRoot, reasons)
+	}
+	if arms := architectStallArmsOf(t, r.pool, r.admission, mainPathRoot); len(arms) != 0 {
+		t.Fatalf("the architect-stalled arms of %s = %v, want none: its architect holds the task of its entry", mainPathRoot, arms)
 	}
 
 	for _, row := range aside {

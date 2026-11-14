@@ -2262,19 +2262,24 @@ Both are read from the claim's own record of its handshake of the last entry it 
 A tree's own root carries its architect's handshake whatever phase it stands in, through `awaiting_person` and the phases a phase role works, where `phaseEntry` and `givenEntry` are that role's;
 any other issue carries the handshake of the role of its current phase.
 Both are absent where no entry was queued to that claim in the issue's current generation, so a root re-admitted carries neither until its new architect entry is queued, and `entryConfirmedAt` alone is absent while no turn has confirmed a task of the entry.
-A caller from a pod whose claims record a contract below 117 is served the issues without either time (`withoutEntryTimes` in `internal/api/server.go`).
+A caller from a pod whose claims record a contract below 117 is served the issues without either time and without `architectStalls` (`withoutEntryTimes` in `internal/api/server.go`).
 The daemon wakes the project's controller with `architect-stalled on <KEY>` (`skill://legion-controller/references/wakes.md`), once for each arm in each run of the root:
 
 - the architect took nothing: the task of its entry was queued to its claim more than ten minutes ago, and no turn confirmed it.
 
-- the architect's claim cannot be reached: the claim is failed or retired, or no architect claim stands and the work of the entry has waited the same ten minutes.
+- the architect's claim cannot be reached: the claim is failed or retired and no start of the root's run waits in the queue to relaunch it, or no architect claim stands and the work of the entry has waited the same ten minutes.
 
 - the root is slow before its gate: it still stands at `admitted` with no design-gate step registered 90 minutes after its admission or its architect's last raised entry, whichever is later.
 
 The daemon reads the three arms on every admission pass, and its sweep of each minute runs while an arm holds that no wake has told yet, so in a project where no other fact arrives the controller is woken within a minute of the arm holding.
+While no controller is registered for the project, the daemon marks no arm told and queues no wake, and its sweep does not run for an arm alone, so the first pass after a controller registers tells it.
+Each tree root of `GET /legion/v1/state` carries `architectStalls`, the arms that hold for its architect at that read (`took-nothing`, `claim-unreachable`, `slow-before-gate`), whether or not the controller was told of them.
+The daemon reads them by the same rules as the wake, and the plain `legion state` prints them, with each arm's words, on its line of the roots a wake names.
 
 Store migration 20261113181500_architect_stalled_notices adds `architect_stalled_notices`, which marks each wake told.
-Store migration 20261113182000_architect_entry_upgrade settles every root architect of the release before it at entry 1, on its row and on its claim, and marks the first and the third arm told for each root, so the upgrade sends no running architect a first task and wakes the controller for none of them.
+Store migration 20261113182000_architect_entry_upgrade settles every root architect of the release before it at entry 1, on its row and on its claim, so the upgrade sends no running architect a first task.
+It marks the first and the third arm told for each root whose run has started, which is a root whose architect claim is of the generation it stands at or a root that holds its admission slot, so the upgrade wakes the controller for none of them.
+A root re-admitted before the upgrade and still waiting in the line is marked for no arm, so the arms of its next run wake the controller as any run's do.
 Store migration 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns that hold a claim's handshake, at defaults that name no entry.
 The state of such a root carries its two numbers and neither time, since the upgrade queues no task and records no handshake.
 Store migration 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, the mark that the sweep sends a root architect's entry again as written, which the resume of a root a person answered sets and every other raise of an entry clears;
@@ -2327,8 +2332,8 @@ The roll-forward moves each of those rows from the 0 its re-added column holds b
 The outbox `delete` drops the `architect-stalled` wakes this release wrote and had not sent when the daemon stopped.
 A sent wake leaves no row, so these are the only ones standing, and the earlier release cannot send them:
 it refuses a controller notice of a kind it does not know (`record.DecodeOutboxPayload`, `unknown controller notice kind`), and its runner retries such a row on its backoff for ever.
-After the roll-forward no wake of the first or the third arm comes again, since the upgrade marks both arms for every root it settles;
-a wake of the second arm comes again on the first pass for a root whose claim is still failed or retired.
+After the roll-forward no wake of the first or the third arm comes again for a root whose run has started, since the upgrade marks both arms for every such root it settles;
+a wake of the second arm comes again on the first pass for a root whose claim is still failed or retired with no start of its run queued.
 The `drop table` and the last `delete` go together.
 The earlier release reads no such table, and the delete makes the store report that release's own version again.
 The drop is owed to the roll-forward, which cannot create the table again while it stands.

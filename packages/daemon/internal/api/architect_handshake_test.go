@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // entryQueuedField and entryConfirmedField are the names the two times carry on the wire. The
@@ -146,6 +147,40 @@ func TestTheArchitectHandshakeTimesDowngradeBelowTheirContract(t *testing.T) {
 	if served.queued == nil || !served.queued.Equal(queued) || served.confirmed == nil || !served.confirmed.Equal(confirmed) {
 		t.Errorf("the pod at %d is served %+v for LEGION-20, want queued %s confirmed %s: %s",
 			entryTimesContract, served, queued, confirmed, at)
+	}
+}
+
+// A root's `architectStalls` arrived with the two times, at contract 117, and leaves with them: a
+// caller at that contract is served the arms the daemon names for the root, and one below it is
+// served none. The state here carries no time at all, so the arms alone are what the strip must
+// see as something of that contract to take away (carriesEntryTimes); a strip that looked for
+// the times alone would serve the key to the strict reader that refuses it.
+func TestTheArchitectStallArmsDowngradeWithTheEntryTimes(t *testing.T) {
+	state := State{Issues: map[string]Issue{
+		"LEGION-50": {Key: "LEGION-50", Phase: phase.Admitted, Status: "in_progress", Tree: "LEGION-50",
+			Workers: map[claim.Role]PhaseView{}, ArchitectStalls: []record.ArchitectStallArm{record.ArchitectClaimUnreachable}},
+	}}
+	arms := func(body []byte) (json.RawMessage, bool) {
+		t.Helper()
+		var served struct {
+			Issues map[string]map[string]json.RawMessage `json:"issues"`
+		}
+		if err := json.Unmarshal(body, &served); err != nil {
+			t.Fatalf("decode state %s: %v", body, err)
+		}
+		raw, carried := served.Issues["LEGION-50"]["architectStalls"]
+		return raw, carried
+	}
+
+	at := stateFrom(t, state, statePodAddr+":4100", podClaims(entryTimesContract))
+	if raw, carried := arms(at); !carried || string(raw) != `["claim-unreachable"]` {
+		t.Errorf("the pod at %d is served the arms %s (carried %t) for LEGION-50, want [\"claim-unreachable\"]: %s",
+			entryTimesContract, raw, carried, at)
+	}
+	behind := stateFrom(t, state, statePodAddr+":4100", podClaims(entryTimesContract-1))
+	if raw, carried := arms(behind); carried {
+		t.Errorf("the pod below %d is served the arms %s for LEGION-50, want no key: the arms are not its contract's: %s",
+			entryTimesContract, raw, behind)
 	}
 }
 
