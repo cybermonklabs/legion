@@ -66,7 +66,7 @@ type issueDesignGatesInput struct {
 func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	var input issueDesignGatesInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The actor is resolved as every write's is, so a caller that names none is turned away
@@ -114,7 +114,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -135,13 +135,13 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `
 		delete from design_gates where issue = $1 and not (step = any($2::text[]))
 	`, issue, steps); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The delete above stands for the publish that names no gate — the one that clears a record,
@@ -155,12 +155,12 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 			from unnest($2::text[], $3::text[]) as published(step, artifact_id)
 			on conflict (issue, step) do update set artifact_id = excluded.artifact_id
 		`, issue, steps, documents); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, issueDesignGates{Issue: issue, Gates: gates})

@@ -44,8 +44,13 @@ import (
 // parser version, so two envoy-dispatch processes filling, or one filling again after a restart,
 // inside one aligned hour would be that whole reading twice. The period is also what paces the
 // retention, which runs on every tick whether or not the fill has anything left to do.
+//
+// The name is duty's constant and not a string of this package's: duty spells every lease name
+// once, refuses a name that is not on its list, and the lease pool holds a connection for each
+// of them (store.LeaseNameCount), so a name spelled here as well could drift from the list the
+// pool is sized from.
 const (
-	fillLease  = "text-tree-fill"
+	fillLease  = duty.TextTreeFillLease
 	fillPeriod = time.Hour
 )
 

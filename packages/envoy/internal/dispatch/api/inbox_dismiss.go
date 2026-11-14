@@ -569,12 +569,12 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	var input inboxDismissRequest
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	rows, err := parseInboxDismissRows(input.Threads)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Which form the body is, read once here and once in the transaction's own read
@@ -602,7 +602,7 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if named && !input.Restore {
 		if err := readInboxDismissSeen(&rows, input.SeenReplies); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -618,18 +618,18 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := parseAgentStateCutoff("dismiss_through", input.DismissThrough); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		scope, err = parseInboxReadScope(input.inboxThreadFilters)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	dismissed, events, err := s.dismissInboxThreads(r.Context(), actor, inboxDismissPlanOf(input), rows, scope)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), events...)

@@ -314,7 +314,7 @@ func TestAKeyedRepeatSendsTheAttemptAFailedRetryOvertook(t *testing.T) {
 		keyedRequest(t, handler, http.MethodPost, comments, keyed, "alice", "mention-queued")).ID
 	// The process that queued the send stopped writing its claim, so the repeat takes the attempt
 	// over and queues it on this process's lane again.
-	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse+time.Second)
+	ageQueuedClaims(t, database.Pool, served.mentions, model.DeliveryClaimLapse+time.Second)
 	repeat := keyedRequest(t, handler, http.MethodPost, comments, keyed, "alice", "mention-queued")
 	if repeat.Code != http.StatusCreated || !replayed(repeat) {
 		t.Fatalf("the repeat: status=%d body=%s, want the comment replayed", repeat.Code, repeat.Body.String())
@@ -362,7 +362,7 @@ func TestTheSweepSendsTheAttemptAFailedRetryOvertookOnceItsClaimLapses(t *testin
 	// The process holding the queued send is gone: its attempt is a lease old and nothing has
 	// written its claim since.
 	ageAttempts(t, lane.database, lane.queued)
-	ageQueuedClaims(t, lane.database, lane.served.mentions, model.DeliveryClaimLapse+time.Second)
+	ageQueuedClaims(t, lane.database.Pool, lane.served.mentions, model.DeliveryClaimLapse+time.Second)
 	owed, resumed, abandoned, live := mentionAttemptSplit(t, lane.database, lane.queued, "session:s1", 1)
 	if !owed || !resumed || abandoned || live {
 		t.Fatalf("the attempt the failed Retry overtook reads owed=%v resumed=%v abandoned=%v live=%v, want "+

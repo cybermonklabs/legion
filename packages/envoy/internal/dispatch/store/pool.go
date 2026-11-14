@@ -16,8 +16,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ErrNestedAcquire is the shared pool refusing a second connection to a caller that already
-// holds one of its connections.
+// ErrNestedAcquire is a pool this package guards (Pool: the request pool and the pools it wraps)
+// refusing a connection to a caller that already holds a connection of one of them.
 //
 // One caller, one connection, is the rule the pool cannot survive without. A transaction
 // holds its connection until it commits; a caller that asks for a second one while it holds a
@@ -25,7 +25,7 @@ import (
 // release, and they are waiting for the lock. Two anchored writes and two document
 // settlements on one issue closed that cycle on a four-connection pool, and nothing but
 // pg_terminate_backend recovered it. Rationing connections cannot fix it, and neither can
-// sharedPoolSize's size: the queue behind one writer's issue lock is unbounded - a
+// SharedPoolSize's size: the queue behind one writer's issue lock is unbounded - a
 // settlement per document, every issue-owned event append, the architecture importer - so a
 // bigger pool only moves the number of callers it takes.
 //
@@ -44,10 +44,13 @@ var ErrNestedAcquire = errors.New(
 )
 
 // holding records whether the context's caller holds a connection of this pool: its
-// transaction, or one it acquired directly. One writer sets it and one reader tests it, so a
-// flag is the whole state - a transaction never opens a second transaction of its own.
+// transaction, its open cursor, or one it acquired directly. One writer sets it and one reader
+// tests it, so a flag is the whole state - a transaction never opens a second transaction of its
+// own. A pinned request (PinConnection) also carries its pinned connection here, so a context
+// made with a mark of its own (ForConcurrentRead) pins nothing.
 type holding struct {
 	connection atomic.Bool
+	pin        *pinnedConnection
 }
 
 type holdingKey struct{}
@@ -85,28 +88,50 @@ func hold(ctx context.Context) func() {
 	return sync.OnceFunc(func() { state.connection.Store(false) })
 }
 
-func holdsConnection(ctx context.Context) bool {
+// ConnectionHeld reports whether ctx's caller holds a pooled connection: its transaction, a
+// cursor, a connection it acquired or marked (HoldsConnection), or its request's pinned connection
+// (PinConnection), idle between statements or not. Whatever a connection holder must never wait
+// for refuses the callers it reports - a document's writer gate, whose holder may be waiting for a
+// connection itself. The pools refuse a second acquire to every one of them (ErrNestedAcquire);
+// only the pool that pinned the connection serves a call under a pin, and it runs that call on
+// the pinned connection instead of taking a second.
+func ConnectionHeld(ctx context.Context) bool {
+	state, ok := ctx.Value(holdingKey{}).(*holding)
+	return ok && (state.connection.Load() || state.pin.held())
+}
+
+// HoldsPooledConnection reports whether ctx's caller holds a connection a second acquire would
+// be refused beside: its transaction, an open cursor, or a connection it acquired or marked
+// (HoldsConnection). Work that may be skipped asks before it takes one of its own - storing and
+// reading a display tree beside another caller's work (texttrees) is the one such caller -
+// because a second connection taken while one is held is the deadlock ErrNestedAcquire refuses,
+// and for optional work a quiet skip is better than that refusal, whose stack names a call site
+// that is working as intended.
+//
+// A request's pinned connection (PinConnection) is deliberately not one of them, which is what
+// makes this a different question from ConnectionHeld's. The request pool serves a call under a
+// pin on the connection the request already holds rather than taking a second, so a pinned read
+// that asks the table for its trees takes no connection beside its pin and cannot deadlock on
+// one: were a pin reported here, every pinned read - which is every ordinary GET (serveRoute) -
+// would skip the table and read each of its texts for display again, and the stored trees would
+// serve only the routes that are not pinned. ConnectionHeld answers the other question, whether
+// the caller may wait (a document's writer gate), where a pin counts because the request holds
+// it while it waits. TestAPinnedRequestDoesNotHoldAPooledConnection holds this apart.
+func HoldsPooledConnection(ctx context.Context) bool {
 	state, ok := ctx.Value(holdingKey{}).(*holding)
 	return ok && state.connection.Load()
 }
 
-// HoldsPooledConnection reports whether ctx's caller already holds one of this pool's connections:
-// its transaction, an open cursor, or a connection it acquired. Work that may be skipped asks
-// before it takes one of its own - storing a display tree beside a write (texttrees) is the one
-// such caller - because a second connection taken while one is held is the deadlock
-// ErrNestedAcquire refuses, and for optional work a quiet skip is better than that refusal, whose
-// stack names a call site that is working as intended.
-func HoldsPooledConnection(ctx context.Context) bool { return holdsConnection(ctx) }
-
 // ForConcurrentRead returns a context for one of a caller's reads that run side by side: ctx's
-// deadline, cancellation and values, with a hold mark of its own, so that read takes one
-// connection and the pool still refuses it a second. Reads sharing one mark would refuse each
-// other, since one read's open cursor marks the context they share. A caller already holding a
-// connection (its transaction, a cursor, an acquired connection) is refused with
-// ErrNestedAcquire, because each of its reads would be a second connection taken while it holds
-// one.
+// deadline, cancellation and values, with a hold mark of its own and no pinned connection, so that
+// read takes one connection and the pool still refuses it a second. Reads sharing one mark would
+// refuse each other, since one read's open cursor marks the context they share, and so would reads
+// sharing one pinned connection, which runs one call at a time. A caller already holding a
+// connection (its transaction, a cursor, an acquired connection, its pinned connection) is refused
+// with ErrNestedAcquire, because each of its reads would be a second connection taken while it
+// holds one.
 func ForConcurrentRead(ctx context.Context) (context.Context, error) {
-	if holdsConnection(ctx) {
+	if ConnectionHeld(ctx) {
 		logRefusal()
 		return nil, ErrNestedAcquire
 	}
@@ -149,483 +174,43 @@ func logRefusal() {
 		"error", ErrNestedAcquire, "stack", string(debug.Stack()))
 }
 
-// Pool is the shared Dispatch connection pool. Every way it hands out a connection refuses one
-// asked for while the caller already holds one; see ErrNestedAcquire. The pgx pool is private
-// so no caller can reach past the refusal.
+// Pool is a Dispatch connection pool: the shared request pool store.Open opens, or one of the
+// pools of its own that wraps (Outbox, Background, Live, Settlements). Every way it hands out a
+// connection refuses one asked for while the caller already holds one; see ErrNestedAcquire. The
+// pgx pool is private so no caller can reach past the refusal.
 type Pool struct {
 	pool *pgxpool.Pool
+	// name is the pool's name (RequestsPool for the shared pool), and acquire the tracer that
+	// bounds and counts its acquires, nil for a pool opened without one (configurePool).
+	name    string
+	acquire *acquireTracer
 	// mu guards each separate pool's creation against this pool's close: one lock, so a
 	// caller that loses the race is told the pool is closed rather than opening one nothing
 	// will ever close.
-	mu          sync.Mutex
-	rooms       *pgxpool.Pool
-	roomAppends *pgxpool.Pool
-	health      *pgxpool.Pool
-	listen      *pgxpool.Pool
-	leases      *pgxpool.Pool
-	outbox      *pgxpool.Pool
-	compaction  *pgxpool.Pool
-	textTrees   *pgxpool.Pool
-	horizon     *pgxpool.Pool
+	mu        sync.Mutex
+	separates map[string]openedPool
 	// closed refuses every separate pool but the health probe's from the moment Close begins
-	// (separate); healthClosed refuses that one too, once Close has closed every other pool
+	// (open); healthClosed refuses that one too, once Close has closed every other pool
 	// (healthPool).
 	closed       bool
 	healthClosed bool
+	// acquireBounds replaces defaultAcquireBound for the separate pools it names, read as each
+	// one opens: a test shortens a bound with it, so a full pool refuses in milliseconds.
+	acquireBounds map[string]time.Duration
+	// openFailures is the error each separate pool it names fails to open with, in place of
+	// opening (SetOpenFailureForTest): a test sees what its caller does when a pool cannot open.
+	openFailures map[string]error
 }
 
-// NewPool wraps an open pgx pool.
+// NewPool wraps an open pgx pool. Its name and acquire tracer are the ones configurePool set on
+// the pool's configuration; a pool opened without them is the request pool, unbounded.
 func NewPool(pool *pgxpool.Pool) *Pool {
-	return &Pool{pool: pool}
-}
-
-// sharedPoolSize bounds the shared pool, deliberately and in code. pgx's default,
-// max(4, NumCPU), is four on production's one Fargate task at cpu="512", and a connection per
-// blocked writer is all it takes to starve everything else: with four writers parked on one
-// issue's row lock, a read of an unrelated issue waited the whole seventeen seconds the lock
-// was held, where sixteen connections served 3,853 such reads at a four-millisecond median.
-// The ceiling is picked here rather than derived from the task's CPU allotment or read out of
-// the DSN another repository's URL builder writes. It is 64, from 16, since 2026-10-27: a
-// request takes a connection per statement one after another (an issue read once took six
-// statements, two more when the issue had documents, two more when it had open asks, and one per
-// artifact; it now takes two batches),
-// so under ~240 agent requests a minute the API held all sixteen and every other request waited
-// seconds for one. The database bounds it from above. Dispatch's database is the gcp:Dispatch
-// component's Cloud SQL Postgres instance, whose default max_connections follows its tier's
-// memory (https://cloud.google.com/sql/docs/postgres/flags, max_connections), and every server
-// pod opens up to ConnectionsPerProcess. During a roll, every pod that holds connections (the
-// replicas, the surge pod and pods still terminating, for up to their grace period) times that
-// sum must fit in max_connections less PostgreSQL's 3 superuser-reserved slots, so raising a pool
-// or the pod count is checked against it: read SHOW max_connections on the instance before
-// raising either. A new pool, or a new permanent Listener caller, goes into
-// ConnectionsPerProcess with it.
-const sharedPoolSize = 64
-
-// RoomsPoolSize bounds the connections document loads use. Loading takes no lock and always
-// finishes, so one is enough for the pool to be deadlock-free; a few let cold rooms load
-// concurrently. Measured on the real server, eight cold rooms loading at once are no faster at
-// eight connections than at one, so this is small on purpose.
-const RoomsPoolSize = 4
-
-// roomsApplicationName is how a connection of the rooms pool (Pool.Rooms) names itself in
-// pg_stat_activity, so a reader of the database's sessions can tell a document load from a request.
-const roomsApplicationName = "dispatch-rooms"
-
-// roomAppendsPoolSize bounds the connections the document rooms' browser updates are stored on
-// (Pool.RoomAppends). Only the browser batch path takes one: a room's queued browser updates are
-// stored together, in one transaction, so a room holds a connection for its batch's few round
-// trips and starts at most one batch per linger window, and a handful of connections serve many
-// rooms writing at once. Eight is twice the rooms pool and an eighth of the shared one: every
-// connection here is one more in the server's total against the database's limit, so it is small
-// on purpose, and a room that finds all eight held waits for another batch to commit.
-//
-// It cannot deadlock. A batch holds its connection and the document's advisory lock and takes no
-// other connection (store.HoldsConnection stays on its context, so a read of the shared pool under
-// it is refused), and no holder of a document lock ever waits for a connection of this pool:
-// settlements, live writes and the other withRoomLock callers take theirs where they always have,
-// so every holder of a lock a batch can wait on finishes without one of these connections.
-const roomAppendsPoolSize = 8
-
-// roomAppendsApplicationName is how a connection of the room-appends pool (Pool.RoomAppends) names
-// itself in pg_stat_activity.
-const roomAppendsApplicationName = "dispatch-room-appends"
-
-// healthPoolSize bounds the connections the health probe uses. The probe answers one question -
-// is Postgres reachable, and at which schema - and asks it on a connection nothing else can take,
-// so one is not a ration but the whole design.
-const healthPoolSize = 1
-
-// healthProbeTimeout bounds the health probe's own wait, dial and query together, and owns the
-// argument for why the probe is bounded at all. Every prober treats silence as a dead process:
-// the ALB fails a poll at five seconds and three consecutive failures replace the task,
-// cancelling every in-flight request of every other client, and the compose healthcheck and
-// the deploy script are tighter still at three (deploy/compose/dispatch.compose.yml,
-// deploy/scripts/autodeploy.sh). Two seconds fits inside the tightest of them, so a database
-// that has stopped answering comes back as a 503 they can read.
-//
-// Nothing else bounds it usefully. A cold dial is floored at two minutes, not unbounded -
-// pgxpool sets ConnectTimeout to two minutes whenever the config leaves it at zero, under
-// pgx's own "ensure that a connect won't hang forever", and pgconn applies that to the whole
-// connection process - but two minutes is forty times the tightest deadline above. Once the
-// connection is up nothing bounds the query at all, because an http.Server request context
-// carries no deadline, and warm is production's normal state: the probe runs every few seconds
-// and an idle connection lives for half an hour. A link that drops packets - a security-group
-// change, an availability-zone partition, an endpoint that accepts and then stalls - is the
-// unbounded case whenever the connection was already open.
-const healthProbeTimeout = 2 * time.Second
-
-// ErrPoolClosed is a connection asked for after the pool was released.
-var ErrPoolClosed = errors.New("connection pool is closed")
-
-// Rooms is where a document load takes its connection. A load runs while the request that
-// triggered it holds an open transaction on this pool - it happens when an anchored write
-// stamps its mark in a room nobody has opened yet - and it is deliberately not part of that
-// transaction, because the loaded room outlives the request and must not roll back with it. A
-// second connection from the shared pool is exactly what deadlocks it (ErrNestedAcquire), so
-// the loads have their own, opened on demand and closed with this pool: one per store, not one
-// per caller who wants to read a document.
-func (p *Pool) Rooms() (*pgxpool.Pool, error) {
-	return p.separate(&p.rooms, RoomsPoolSize, "document rooms", roomsApplicationName)
-}
-
-// RoomAppends is where a document room stores its browser updates: a batch of one room's queued
-// updates takes a connection here, holds it and the document's advisory lock for one transaction,
-// and gives it back (roomAppendsPoolSize says why that cannot deadlock). On a pool of their own
-// the appends wait for no request and hold no connection a request could use, and a request
-// waits for none of them.
-func (p *Pool) RoomAppends() (*pgxpool.Pool, error) {
-	return p.separate(&p.roomAppends, roomAppendsPoolSize, "document room appends", roomAppendsApplicationName)
-}
-
-// Healthy reports the highest schema migration Postgres has applied, read within
-// healthProbeTimeout on a connection of a pool nothing else uses; the read is the reachability
-// probe too, so an error means the database did not answer. /healthz asks it, and it must never
-// queue behind a writer: proving the shared pool has a free connection is the wrong question,
-// because during a busy period it legitimately has none. Like the rooms pool this one is outside
-// the nested-acquire guard, because a separate pool cannot close the cycle the guard prevents.
-//
-// The version is read from schema_migrations on every call rather than remembered from this
-// process's own Migrate, so it reports what the database holds: a deploy check compares it with
-// the highest migration in the commit the image was built from.
-//
-// It answers while Close waits for the connections still in use, so a caller waiting on Close
-// (cmd/dispatch's shutdown) can tell a database still finishing work from one that has stopped
-// answering; once Close has closed every other pool it closes this one and Healthy refuses
-// (ErrPoolClosed).
-func (p *Pool) Healthy(ctx context.Context) (int, error) {
-	return p.HealthyWithin(ctx, healthProbeTimeout)
-}
-
-// HealthyWithin is Healthy with a bound the caller names, for the one caller whose read is not
-// the serving process's: it reads the highest schema migration Postgres has applied, within
-// bound, on a connection of a pool nothing else uses, and an error means the database did not
-// answer. healthProbeTimeout is argued for a warm process - /healthz runs every few seconds on a
-// connection this pool already holds open - and it must stay tight, because the probers that
-// read a slow answer as a dead process are tighter still. The boot's one probe
-// (cmd/dispatch/registry.go) is the opposite case: the health pool opens on its first read
-// (healthPool), so that read always pays a fresh dial, and two seconds bounds the query where it
-// has to bound the dial as well. A caller that is always cold names a bound that covers one.
-func (p *Pool) HealthyWithin(ctx context.Context, bound time.Duration) (int, error) {
-	health, err := p.healthPool()
-	if err != nil {
-		return 0, err
+	acquire := acquireTracerOf(pool.Config().ConnConfig.Tracer)
+	name := RequestsPool
+	if acquire != nil {
+		name = acquire.name
 	}
-	// Derived from the caller's context, so a request the client already gave up on ends with
-	// it instead of holding the probe's one connection for the full bound.
-	ctx, cancel := context.WithTimeout(ctx, bound)
-	defer cancel()
-	// The cast holds the result at bigint whichever type the column has: a connection that
-	// prepared this read while schema_migrations.version was an integer would otherwise fail it
-	// once after a boot widens the column ("cached plan must not change result type").
-	var version int
-	if err := health.QueryRow(ctx, "select coalesce(max(version), 0)::bigint from schema_migrations").Scan(&version); err != nil {
-		return 0, err
-	}
-	return version, nil
-}
-
-// listenerPoolSize bounds the pool Listener and Dedicated take their connections from. Five
-// connections dial through it - the delivery hub's and the event stream relay's listeners, each
-// held only while something subscribes to them, the events outbox's listener, the process's shared
-// listener hub (pglisten.Hub, on which the document rooms' room sync and cmd/dispatch's woken
-// background loops are registered, one connection for all of their channels) and the document
-// rooms' NOTIFY sender - and a sixth, the
-// test hooks' (api/test_hooks_fanout.go), under DISPATCH_TEST_HOOKS alone, which production never
-// sets. Each connection is hijacked as soon as it is opened, so it leaves with its caller and the
-// pool holds none between dials: what one bounds is dials in flight, not connections held. A
-// caller redialling while another dials waits that dial out, which is what a loop that dials and
-// then waits for notifications for the life of the process can afford, and what the sender's
-// first send after a failure can afford too.
-const listenerPoolSize = 1
-
-// Listener returns one connection of its own for LISTEN, from a one-connection pool opened from the
-// shared pool's configuration and hijacked, so it holds no shared connection. The caller closes it.
-// The events outbox (outbox/lease.go) holds one for the life of the process, as does the test
-// hooks' fan-out (api/test_hooks_fanout.go) under DISPATCH_TEST_HOOKS; the delivery hub
-// (api/delivery_live_hub.go) and the event stream relay (api/event_stream_relay.go) each hold one
-// while something subscribes to them, and close it when the last subscriber leaves. A connection
-// of the shared pool held that long would be one fewer for every request, and a LISTEN on a
-// pooled connection would end when the pool recycled it.
-func (p *Pool) Listener(ctx context.Context) (*pgx.Conn, error) {
-	listen, err := p.separate(&p.listen, listenerPoolSize, "listener", "")
-	if err != nil {
-		return nil, err
-	}
-	conn, err := listen.Acquire(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return conn.Hijack(), nil
-}
-
-// Dedicated returns one connection of its own, as Listener does, that pg_stat_activity names
-// applicationName. The caller closes it. It is outside the nested-acquire guard
-// (ErrNestedAcquire) for the reason the other separate pools are: a connection that belongs to no
-// shared-pool caller cannot close the cycle the guard prevents, so a request holding one of the
-// shared pool's transactions may use one. Two such connections are held per process: the shared
-// listener hub that cmd/dispatch dials, whose name is how every Dispatch process reads which
-// processes are listening (docs.ListenerApplicationPrefix), and the document rooms' NOTIFY sender
-// (docs/room_sync.go), which a request inside a transaction sends through.
-func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn, error) {
-	conn, err := p.Listener(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := conn.Exec(ctx, `select set_config('application_name', $1, false)`, applicationName); err != nil {
-		// Bounded, so a connection that went half-open between its dial and this statement
-		// cannot hold the caller in its Terminate.
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = conn.Close(closeCtx)
-		return nil, fmt.Errorf("name the connection %s: %w", applicationName, err)
-	}
-	return conn, nil
-}
-
-// LeasePoolSize bounds the pool a periodic maintenance loop takes its once-overall lease on
-// (duty.Exclusive). One connection per caller that can be inside Exclusive at the same moment is
-// the whole requirement, and it is a caller and not a lease that needs one: Exclusive takes its
-// connection before it learns whether the lease is held, so a pass that skips because the other
-// process holds the lease holds a connection for that round trip too. Seventeen names are leased -
-// the document compaction, the keyed writes' maintenance sweep (api.RunMaintenanceSweep, which
-// keeps the lease name suggestion-outcomes the suggestion sweep carried that work under), the
-// reference-excerpt reconciliation, the block-index reconciliation, the term-statistics refresh,
-// the GitHub webhook redelivery sweep, the architecture import, the delivery reconcile, the CI
-// reconcile (cireconcile.Lease), the edit-notice sweep, the document settlement resumption
-// (docs.RunSettlementResumption), the repair of closed and reopened issues' asks
-// (api.RunIssueAskRepair), one per delivery durable for the consumers' reconciliation
-// (delivery.consumerLease, a name each for delivery-events and delivery-jobs), the server
-// process registry's prune (processes.RunPrune), the embeddings project_key fill
-// (api.RunEmbeddingProjectKeyFill) and the display tree fill (texttreefill.Run) - taken by
-// seventeen callers, since each delivery intake takes its own durable's name from a bind poll
-// of its own, so seventeen callers can be inside Exclusive at once. The embeddings fill is the
-// one that is no loop of a cadence: it labels in a single pass of one to two hours and holds a
-// connection for the whole of it, tries for its lease again every five minutes while another
-// process is making that pass, and gives its connection back for good once the rows stored
-// before migration 20261109120000 are labelled - which is why it is counted here like any other
-// caller, since the hours it holds one are exactly the window in which every other caller must
-// still find a connection of its own. The suggestion outcome sweep is not among them: it takes
-// no lease, since the cursor row each of its pages holds for update serialises two processes by
-// itself (api/suggestion_outcomes.go). Seventeen connections are exactly those seventeen: the
-// headroom is zero, not one, and the next leased loop added here makes an eighteenth caller
-// that waits for a connection rather than failing, for as long as the longest pass then holding
-// one - which is why cmd/dispatch counts its leased callers against this number
-// (TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller), so that caller fails a test instead.
-// They cannot come from the shared pool: a lease is held for the whole pass, which is minutes
-// for the compaction and hours for the first display tree fill of a version, and the shared
-// pool's sharedPoolSize connections are what every request reads through. The document
-// compaction and the display tree fill hold only their lease here: each reads and writes on a
-// pool of its own (Pool.Compaction, Pool.TextTrees).
-const LeasePoolSize = 17
-
-// Leases is where a periodic maintenance loop takes the connection it holds its lease on, so that
-// only one process runs each pass (duty.Exclusive). The lease is a session-level advisory lock, so
-// it lives on one connection for the length of the pass and dies with it; a connection of the
-// shared pool held that long would be one fewer for every request, and a pass that then read
-// through the shared pool - which is what a pass does - would be a caller holding two of its
-// connections (ErrNestedAcquire).
-func (p *Pool) Leases() (*pgxpool.Pool, error) {
-	return p.separate(&p.leases, LeasePoolSize, "loop leases", "")
-}
-
-// outboxPoolSize bounds the pool the events outbox reads and records events through, and takes
-// and renews its publisher hold on (duty.Hold). The outbox's scan is one goroutine that runs one
-// statement at a time and closes each cursor before its next statement, and the hold's renewal
-// runs beside it on a goroutine of its own, so two connections are every connection it can use: a
-// renewal never waits behind a batch's statement, which may take up to the five seconds a batch's
-// record is allowed, five times the hold's one second between renewals.
-const outboxPoolSize = 2
-
-// registryPoolSize bounds the pool the registry of live server processes stamps this process's row
-// through: processes.Register opens it from this pool's configuration with MaxConns 1, outside the
-// pools above, so it is counted here rather than by a method of Pool.
-const registryPoolSize = 1
-
-// listenerConnections is how many connections the listener pool dials and hands off at once in
-// production: the events outbox's LISTEN on dispatch_events and dispatch_duty_holds
-// (outbox/lease.go) and the document rooms' two (Dedicated) - the shared listener hub that room
-// sync and cmd/dispatch's woken background loops are registered on, and the NOTIFY sender, which
-// opens at the first send and then stays open - each held for the life of the process, and the
-// delivery hub's and the event stream relay's, each held only while something subscribes to them.
-// A process nobody streams from and no Delivery page is open on holds three of the five; the
-// count is what it may hold at once, which is why it is no longer named for permanence. The
-// outbox's LISTEN is its own rather than a registration on the hub, as the delivery hub's and the
-// relay's are: cmd/dispatch builds the outbox only with NATS, and the LISTEN starts and stops
-// inside outbox.Outbox.Run, while the hub takes no registration once it runs. The test hooks'
-// fan-out (api/test_hooks_fanout.go) holds a sixth under DISPATCH_TEST_HOOKS alone, which
-// production never sets, so it is not counted here.
-const listenerConnections = 5
-
-// ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres:
-// every pool's size - the shared, rooms, room-appends, health, lease, outbox, compaction and
-// display tree fill pools, the registry's own pool (processes.Register) and the event horizon's
-// (Horizon) - and one connection per listener it may hold at once, which the listener pool dials
-// and hands off rather than holds.
-const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + textTreePoolSize + registryPoolSize + horizonPoolSize + listenerConnections
-
-// Outbox is the pool the events outbox reads and records events through, reads the
-// followers and authors a publish routes to, and holds its publisher hold on. Under load the API's
-// requests queue for the shared pool's connections, and an outbox statement queued behind them
-// holds back every event behind it, or lets the hold lapse; on a pool of its own it waits for none
-// of them, and holds no connection a request could use.
-func (p *Pool) Outbox() (*Pool, error) {
-	opened, err := p.separate(&p.outbox, outboxPoolSize, "events outbox", "")
-	if err != nil {
-		return nil, err
-	}
-	return NewPool(opened), nil
-}
-
-// compactionPoolSize bounds the pool a document's compaction reads and writes through. A
-// compaction holds one connection at a time - its read transaction, then, after a fold that holds
-// none, its write under the document's lock - so one would serve one compaction; two let a second
-// compaction (a room closing while another compacts) read while the first writes.
-const compactionPoolSize = 2
-
-// Compaction is where a document's compaction takes its connections: the repeatable-read
-// transaction it reads the rows to fold in, and the connection it holds the document's advisory
-// lock on while it writes the fold back. Compaction is housekeeping. On the shared pool its write
-// would hold a connection every request reads through while it waits for the document's lock, and
-// on the rooms pool its read would queue a room's load behind a log it is folding; on a pool of
-// its own it takes neither. Like the rooms pool it is outside the nested-acquire guard, because a
-// separate pool cannot close the cycle the guard prevents.
-func (p *Pool) Compaction() (*pgxpool.Pool, error) {
-	return p.separate(&p.compaction, compactionPoolSize, "document compaction", compactionApplicationName)
-}
-
-// compactionApplicationName is how a connection of the compaction pool (Pool.Compaction) names
-// itself in pg_stat_activity, as the room pools' do, so a reader of the database's sessions - the
-// load harness's count of the shared pool's share among them - tells a compaction from a request.
-const compactionApplicationName = "dispatch-compaction"
-
-// textTreePoolSize bounds the pool the background display tree fill reads and writes through
-// (texttreefill). A pass reads its next batch of texts only once the batch before it has been
-// stored, and stores a batch with at most two readings in flight (texttreefill.fillWorkers,
-// which is fewer on a pod with fewer than three cores), so two connections are every connection
-// it can use.
-const textTreePoolSize = 2
-
-// TextTrees is where the background display tree fill takes its connections: the two scans that
-// choose a batch, the reads that take its texts back by key, and the inserts of the trees. The
-// fill is housekeeping that runs for hours - its first pass of a version ends only once every
-// stored text has a tree - so on the shared pool it would hold a connection every request reads
-// through for that whole time, and on the compaction pool it would queue a document's fold
-// behind a batch of markdown readings. Unlike the rooms and compaction pools it is inside the
-// nested-acquire guard, because the fill reaches it through this type and stores its trees
-// through texttrees.Table, which takes a *Pool: the fill drains each batch's cursor before it
-// stores anything, so it never asks for a second connection while it holds one.
-func (p *Pool) TextTrees() (*Pool, error) {
-	opened, err := p.separate(&p.textTrees, textTreePoolSize, "display tree fill", "")
-	if err != nil {
-		return nil, err
-	}
-	return NewPool(opened), nil
-}
-
-// horizonPoolSize bounds the pool the event log's safe horizon (events.Horizon) works through. The
-// server keeps one Horizon, whose concurrent callers share the one observation in flight, so one
-// connection serves every observation. The other statements the Horizon runs share both
-// connections with it: the stall diagnosis and the write of the proven horizon (event_horizon),
-// which run after an observation has released its waiters, and the reads every GET /auth/whoami and
-// the relay's first start make (a mark, the oldest transaction that can write the event log, the
-// persisted horizon), each one statement.
-const horizonPoolSize = 2
-
-// Horizon is the pool the event log's safe horizon (events.Horizon) takes its observations, its
-// marks and the reads beside them, its stall diagnosis and its persist write through. Every reader that pages the event log by a global id cursor - the
-// event stream relay, the delivery hub, a references read since a cursor - reads only up to what
-// an observation has proven safe. Under load the API's requests queue for the shared pool's
-// connections, and an observation queued behind them holds back every live reader of the event
-// log; on a pool of its own it waits for none of them, and holds no connection a request could
-// use. Like the rooms pool it is outside the nested-acquire guard, because a separate pool cannot
-// close the cycle the guard prevents: none of those statements (each one batch or one row) asks
-// for a second connection while it holds one.
-func (p *Pool) Horizon() (*pgxpool.Pool, error) {
-	return p.separate(&p.horizon, horizonPoolSize, "event horizon", "")
-}
-
-// separate opens the pool held at field on demand (openSeparateLocked) and closes it with the
-// shared pool. It refuses from the moment Close begins (ErrPoolClosed). Each caller holds mu for
-// the whole check-and-open so two of them cannot open two pools, and one opened after Close would
-// be a pool nobody closes.
-func (p *Pool) separate(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
-		return nil, ErrPoolClosed
-	}
-	return p.openSeparateLocked(field, size, name, applicationName)
-}
-
-// healthPool is separate for the health probe's pool, whose close rule is its own: it opens and
-// is handed out while Close waits for the other pools' connections, and refuses once Close has
-// closed every other pool (healthClosed), so Healthy answers for as long as Close waits.
-func (p *Pool) healthPool() (*pgxpool.Pool, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.healthClosed {
-		return nil, ErrPoolClosed
-	}
-	return p.openSeparateLocked(&p.health, healthPoolSize, "health probe", "")
-}
-
-// openSeparateLocked is the pool held at field, opened when there is none, sized at size and
-// copied from the shared pool's configuration. Its connections name themselves applicationName in
-// pg_stat_activity, or keep the shared pool's name when it is empty. Its caller holds mu and has
-// checked the pool is not closed for it.
-func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
-	if *field != nil {
-		return *field, nil
-	}
-	config := p.pool.Config().Copy()
-	config.MaxConns = size
-	// Both minimums, not just MinConns: a floor inherited from the shared pool's DSN would be
-	// a target these pools cannot reach - pool_min_idle_conns=2 on a one-connection health
-	// pool - which pgxpool re-attempts, and puddle refuses as full, every health-check period.
-	config.MinConns = 0
-	config.MinIdleConns = 0
-	if applicationName != "" {
-		if config.ConnConfig.RuntimeParams == nil {
-			config.ConnConfig.RuntimeParams = make(map[string]string)
-		}
-		config.ConnConfig.RuntimeParams["application_name"] = applicationName
-	}
-	opened, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		return nil, fmt.Errorf("open %s pool: %w", name, err)
-	}
-	*field = opened
-	return opened, nil
-}
-
-// Close releases every connection the pool holds, the separate pools' - the document rooms, their
-// appends, the compaction, the display tree fill, the health probe, the listener, the leases, the
-// outbox and the event horizon - included, and returns once every connection in use has come
-// back. It closes the health probe's pool last, after every other pool has closed: Healthy
-// answers for as long as Close waits, and Use keeps counting the closing pools' connections. No
-// other separate pool opens or is handed out once Close has begun.
-func (p *Pool) Close() {
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return
-	}
-	p.closed = true
-	separates := []*pgxpool.Pool{p.rooms, p.roomAppends, p.listen, p.leases, p.outbox, p.compaction, p.textTrees, p.horizon}
-	p.mu.Unlock()
-	for _, separate := range separates {
-		if separate != nil {
-			separate.Close()
-		}
-	}
-	p.pool.Close()
-	p.mu.Lock()
-	p.healthClosed = true
-	health := p.health
-	p.mu.Unlock()
-	if health != nil {
-		health.Close()
-	}
+	return &Pool{pool: pool, name: name, acquire: acquire}
 }
 
 // Config returns a copy of the pool's configuration.
@@ -634,54 +219,100 @@ func (p *Pool) Config() *pgxpool.Config { return p.pool.Config() }
 // Stat reports the pool's current connection counts.
 func (p *Pool) Stat() *pgxpool.Stat { return p.pool.Stat() }
 
-// ConnectionUse is how many connections of the shared, document-rooms and room-appends pools are
-// in use, and how many those pools have taken back since they opened, whether returned or
-// discarded. The health probe's pool is left out: it is how a caller asks whether the database
-// answers.
-type ConnectionUse struct {
-	InUse    int32
-	Returned int64
+// busy maps a call of this pool's that a bound of the server's ended to ErrPoolBusy, or to
+// ErrStatementOutcomeUnknown where the call is a statement that commits itself (poolBusy):
+// commits is what this call can have left behind at the database.
+func (p *Pool) busy(ctx context.Context, err error, commits outcome) error {
+	return poolBusy(ctx, p.name, err, commits)
 }
 
-// Use reports the shared, document-rooms and room-appends pools' ConnectionUse.
-func (p *Pool) Use() ConnectionUse {
-	p.mu.Lock()
-	rooms, roomAppends := p.rooms, p.roomAppends
-	p.mu.Unlock()
-	var use ConnectionUse
-	for _, pool := range []*pgxpool.Pool{p.pool, rooms, roomAppends} {
-		if pool == nil {
-			continue
-		}
-		stat := pool.Stat()
-		use.InUse += stat.AcquiredConns()
-		use.Returned += stat.AcquireCount() - int64(stat.AcquiredConns())
+// refuseOrPin is the refusal every way this pool hands out a connection makes first, and the
+// pinned connection to run the call on where ctx pins one on this pool (nil where it pins none).
+// A caller already holding a connection of these pools is refused with ErrNestedAcquire: its
+// transaction, its open cursor or one it acquired (holding.connection), and its request's pinned
+// connection on every pool but the one that pinned it. A pinned read holds its request-pool
+// connection between its statements, so a background, live or settlements connection handed to it
+// would be two of these pools' connections held by one caller, which is the cycle the guard
+// exists to prevent; the pool that pinned it serves it on that very connection instead
+// (pinnedConnection.take). Its callers log the refusal themselves (logRefusal), which keys it to
+// the call site that asked for the connection by how deep the stack is where it is logged.
+func (p *Pool) refuseOrPin(ctx context.Context) (*pinnedConnection, error) {
+	state, _ := ctx.Value(holdingKey{}).(*holding)
+	if state == nil {
+		return nil, nil
 	}
-	return use
+	if state.connection.Load() || (p.name != RequestsPool && state.pin.held()) {
+		return nil, ErrNestedAcquire
+	}
+	return p.pinned(state), nil
 }
 
-// RoomPoolStats is the document-rooms and the room-appends pools' Stat, each nil while its pool
-// has not been opened: reading them opens neither, so a reader of the room figures costs no
-// connection.
-func (p *Pool) RoomPoolStats() (rooms, roomAppends *pgxpool.Stat) {
-	p.mu.Lock()
-	roomsPool, appendsPool := p.rooms, p.roomAppends
-	p.mu.Unlock()
-	if roomsPool != nil {
-		rooms = roomsPool.Stat()
-	}
-	if appendsPool != nil {
-		roomAppends = appendsPool.Stat()
-	}
-	return rooms, roomAppends
-}
-
+// guard is the refusal alone (refuseOrPin), for a method that hands out no connection to run a
+// call on.
 func (p *Pool) guard(ctx context.Context) error {
-	if !holdsConnection(ctx) {
-		return nil
+	_, err := p.refuseOrPin(ctx)
+	if err != nil {
+		logRefusal()
 	}
-	logRefusal()
-	return ErrNestedAcquire
+	return err
+}
+
+// connection is what one call runs its statement on: the pgx pool, which takes a connection for
+// the call, or the request's pinned connection (PinConnection). pgxpool's Pool and Conn share
+// these methods.
+type connection interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
+	CopyFrom(ctx context.Context, table pgx.Identifier, columns []string, source pgx.CopyFromSource) (int64, error)
+	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
+}
+
+// target is what one call runs on - ctx's pinned connection where it pins one on this pool, else
+// the pgx pool - and done, which gives the pinned connection back once the call is over, nil for
+// a call on the pgx pool. It refuses a caller already holding a connection (refuseOrPin), and a
+// call while another runs on the pinned connection, with ErrNestedAcquire. Every exported method
+// that hands out a connection calls it directly, as guard is called, so a refusal records that
+// method's caller.
+func (p *Pool) target(ctx context.Context) (connection, func(), error) {
+	pin, err := p.refuseOrPin(ctx)
+	if err != nil {
+		logRefusal()
+		return nil, nil, err
+	}
+	if pin == nil {
+		return p.pool, nil, nil
+	}
+	conn, done, err := pin.take(ctx, p)
+	if err != nil {
+		if errors.Is(err, ErrNestedAcquire) {
+			logRefusal()
+		}
+		return nil, nil, err
+	}
+	if conn == nil {
+		return p.pool, nil, nil
+	}
+	return conn, done, nil
+}
+
+// finished gives a call's pinned connection back (target); a call on the pgx pool has nothing to.
+func finished(done func()) {
+	if done != nil {
+		done()
+	}
+}
+
+// joined is release, then done where the call ran on a pinned connection.
+func joined(release, done func()) func() {
+	if done == nil {
+		return release
+	}
+	return func() {
+		release()
+		done()
+	}
 }
 
 // Query runs a query on a pooled connection. The rows hold that connection until they close,
@@ -689,20 +320,28 @@ func (p *Pool) guard(ctx context.Context) error {
 // pool's three connection-holders - a transaction, an open cursor, and a connection taken
 // with Acquire (the durable append's withRoomLock, marked with HoldsConnection) - and work
 // done inside the loop - a publish, a follower lookup, a write per row - is exactly the shape
-// that wedges the pool.
+// that wedges the pool. On a pinned connection an open cursor is a call still running on it, so a
+// statement inside the loop is refused there too.
+//
+// Every method below that takes a connection returns ErrPoolBusy for an acquire that ran out the
+// pool's bound (acquireTracer), however it reports its errors, and runs on the request's pinned
+// connection where its context pins one (PinConnection).
 func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	if err := p.guard(ctx); err != nil {
-		return nil, err
-	}
-	rows, err := p.pool.Query(ctx, sql, args...)
+	on, done, err := p.target(ctx)
 	if err != nil {
 		return nil, err
 	}
+	rows, err := on.Query(ctx, sql, args...)
+	if err != nil {
+		finished(done)
+		return nil, p.busy(ctx, err, commitsItself)
+	}
+	// A context without a mark pins nothing, so done is nil whenever release is.
 	release := hold(ctx)
 	if release == nil {
 		return rows, nil
 	}
-	return &trackedRows{Rows: rows, release: release}, nil
+	return &trackedRows{Rows: rows, release: joined(release, done)}, nil
 }
 
 // trackedRows clears the caller's mark when pgx hands the cursor's connection back: an
@@ -742,36 +381,75 @@ func (r *trackedRows) Values() ([]any, error) {
 	return values, err
 }
 
-// QueryRow runs a single-row query on a pooled connection.
+// QueryRow runs a single-row query on a pooled connection. pgxpool defers an acquire's error to
+// the row's Scan, so the row maps it there.
 func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	if err := p.guard(ctx); err != nil {
+	on, done, err := p.target(ctx)
+	if err != nil {
 		return errRow{err: err}
 	}
-	return p.pool.QueryRow(ctx, sql, args...)
+	return busyRow{Row: on.QueryRow(ctx, sql, args...), ctx: ctx, pool: p.name, done: done}
 }
 
 // Exec runs a statement on a pooled connection.
 func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	if err := p.guard(ctx); err != nil {
+	on, done, err := p.target(ctx)
+	if err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	return p.pool.Exec(ctx, sql, args...)
+	tag, err := on.Exec(ctx, sql, args...)
+	finished(done)
+	return tag, p.busy(ctx, err, commitsItself)
 }
 
-// Acquire takes a pooled connection the caller holds until it releases it.
+// Acquire takes a pooled connection the caller holds until it releases it. Under a pin it hands
+// over the request's pinned connection, if it holds one, rather than taking a second; the request's
+// next call takes another.
 func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
-	if err := p.guard(ctx); err != nil {
+	conn, err := p.handOver(ctx)
+	if conn != nil || err != nil {
+		return conn, err
+	}
+	conn, err = p.pool.Acquire(ctx)
+	return conn, p.busy(ctx, err, commitsNothing)
+}
+
+// handOver is Acquire's refusal and its pinned connection: ErrNestedAcquire for a caller holding a
+// connection (refuseOrPin) or a pinned connection a call runs on, the pinned connection where ctx
+// pins an idle one on this pool, and nil otherwise.
+func (p *Pool) handOver(ctx context.Context) (*pgxpool.Conn, error) {
+	pin, err := p.refuseOrPin(ctx)
+	if err != nil {
+		logRefusal()
 		return nil, err
 	}
-	return p.pool.Acquire(ctx)
+	if pin == nil {
+		return nil, nil
+	}
+	conn, err := pin.handOver(p)
+	if err != nil {
+		logRefusal()
+	}
+	return conn, err
 }
 
-// AcquireFunc runs fn with a pooled connection.
+// AcquireFunc runs fn with a pooled connection - the pinned one under a pin. Only the acquire's
+// error is mapped: fn's own is returned as fn returned it.
 func (p *Pool) AcquireFunc(ctx context.Context, fn func(*pgxpool.Conn) error) error {
-	if err := p.guard(ctx); err != nil {
+	on, done, err := p.target(ctx)
+	if err != nil {
 		return err
 	}
-	return p.pool.AcquireFunc(ctx, fn)
+	if pinned, ok := on.(*pgxpool.Conn); ok {
+		defer done()
+		return fn(pinned)
+	}
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return p.busy(ctx, err, commitsNothing)
+	}
+	defer conn.Release()
+	return fn(conn)
 }
 
 // AcquireAllIdle takes every idle connection the pool holds.
@@ -789,18 +467,23 @@ func (p *Pool) CopyFrom(
 	columns []string,
 	source pgx.CopyFromSource,
 ) (int64, error) {
-	if err := p.guard(ctx); err != nil {
+	on, done, err := p.target(ctx)
+	if err != nil {
 		return 0, err
 	}
-	return p.pool.CopyFrom(ctx, table, columns, source)
+	copied, err := on.CopyFrom(ctx, table, columns, source)
+	finished(done)
+	return copied, p.busy(ctx, err, commitsItself)
 }
 
-// SendBatch runs a batch on a pooled connection.
+// SendBatch runs a batch on a pooled connection. pgxpool defers an acquire's error to the
+// results, so the results map it there.
 func (p *Pool) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
-	if err := p.guard(ctx); err != nil {
+	on, done, err := p.target(ctx)
+	if err != nil {
 		return errBatchResults{err: err}
 	}
-	return p.pool.SendBatch(ctx, batch)
+	return busyBatchResults{BatchResults: on.SendBatch(ctx, batch), ctx: ctx, pool: p.name, done: done}
 }
 
 // QueueExec queues sql with args into b; its error, wrapped in what as a statement sent alone
@@ -818,42 +501,51 @@ func QueueExec(b *pgx.Batch, what, sql string, args ...any) {
 
 // Begin opens a transaction and marks the request as holding one.
 func (p *Pool) Begin(ctx context.Context) (pgx.Tx, error) {
-	if err := p.guard(ctx); err != nil {
+	on, done, err := p.target(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return p.begin(ctx, pgx.TxOptions{})
+	return p.begin(ctx, on, done, pgx.TxOptions{})
 }
 
 // BeginTx opens a transaction with options and marks the request as holding one.
 func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	if err := p.guard(ctx); err != nil {
-		return nil, err
-	}
-	return p.begin(ctx, options)
-}
-
-// begin is the guarded body both transaction entry points share: guard runs in the exported
-// method, as it does in every exported method that hands out one of this pool's connections,
-// so a refusal records the caller that asked for the transaction rather than one of this
-// pool's own frames. A transaction with nothing to do at either end - no hold mark to clear and no
-// BeforeCommit step to take - is handed on as pgx opened it: a trackedTx around it would only
-// forward its Commit and Rollback.
-func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	tx, err := p.pool.BeginTx(ctx, options)
+	on, done, err := p.target(ctx)
 	if err != nil {
 		return nil, err
 	}
-	release := hold(ctx)
-	beforeCommit, _ := ctx.Value(beforeCommitKey{}).(BeforeCommit)
-	if release == nil && beforeCommit == nil {
-		return tx, nil
+	return p.begin(ctx, on, done, options)
+}
+
+// begin is the body both transaction entry points share, on what target gave them: target runs in
+// the exported method, as it does in every exported method that hands out one of this pool's
+// connections, so a refusal records the caller that asked for the transaction rather than one of
+// this pool's own frames. A transaction on a pinned connection gives it back when it ends.
+func (p *Pool) begin(ctx context.Context, on connection, done func(), options pgx.TxOptions) (pgx.Tx, error) {
+	tx, err := on.BeginTx(ctx, options)
+	if err != nil {
+		finished(done)
+		return nil, p.busy(ctx, err, commitsNothing)
 	}
-	return &trackedTx{Tx: tx, release: release, beforeCommit: beforeCommit}, nil
+	release := hold(ctx)
+	if release == nil {
+		release = func() {}
+	}
+	beforeCommit, _ := ctx.Value(beforeCommitKey{}).(BeforeCommit)
+	return &trackedTx{
+		Tx:           tx,
+		release:      joined(release, done),
+		beforeCommit: beforeCommit,
+		readOnly:     options.AccessMode == pgx.ReadOnly,
+	}, nil
 }
 
 // BeforeCommit is a step every transaction a request opens takes just before its COMMIT, inside
 // that transaction, so what it writes commits with the request's own write or not at all. An
 // error from it rolls the transaction back, and Commit returns that error.
+//
+// Every transaction but a read-only one: the step writes, and Postgres refuses a write inside a
+// READ ONLY transaction, which has nothing to mark in any case (Commit).
 type BeforeCommit func(ctx context.Context, tx pgx.Tx) error
 
 type beforeCommitKey struct{}
@@ -871,35 +563,251 @@ func WithBeforeCommit(ctx context.Context, step BeforeCommit) context.Context {
 // writes none of the request's own work: the document rooms' conditional-edit queue takes its
 // bookkeeping transaction this way (docs.Service.admitConditionalEdit), since it commits before
 // the request's write and a crash between the two must leave the key for the repeat to run rather
-// than answer it KEY_COMMITTED for a write nobody made.
+// than answer it KEY_COMMITTED for a write nobody made, and a cold read's fold takes its load
+// this way (docs.Service.foldContext), since the fold is the document's work rather than the
+// request's and outlives the request that waits for it.
 func WithoutBeforeCommit(ctx context.Context) context.Context {
 	return context.WithValue(ctx, beforeCommitKey{}, BeforeCommit(nil))
 }
 
-// trackedTx clears the caller's mark however the transaction ends, and takes the caller's
-// BeforeCommit step before it commits. Callers commit and then run a deferred rollback; the
-// release absorbs that second call. Either part may be absent: a context the pool does not track
-// has no mark, and one with no step commits as it is.
+// trackedTx commits apart from its caller's cancellation (CommitContext) and rolls back apart
+// from it too (RollbackContext), clears the caller's mark however the transaction ends, and
+// takes the caller's BeforeCommit step before it commits.
+// Callers commit and then run a deferred rollback; the release absorbs that second call. Either
+// part may be absent: a context the pool does not track has no mark, and one with no step commits
+// as it is.
 type trackedTx struct {
 	pgx.Tx
 	release      func()
 	beforeCommit BeforeCommit
+	// readOnly is set for a transaction opened read-only (pgx.ReadOnly). Postgres refuses every
+	// write inside such a transaction, so it takes no BeforeCommit step (Commit), its COMMIT
+	// commits nothing whatever becomes of it, and an answer it never gave leaves nothing in
+	// doubt (commitTimedOut).
+	readOnly bool
 }
 
 func (t *trackedTx) Commit(ctx context.Context) error {
 	defer t.end()
-	if t.beforeCommit != nil && t.Tx.Conn().PgConn().TxStatus() == 'T' {
+	ctx, cancel := CommitContext(ctx)
+	defer cancel()
+	// A read-only transaction takes no step: Postgres refuses every write inside one, and the
+	// step is a write (api.markRequestKeyCommitted is a SELECT with an update CTE, which a READ
+	// ONLY transaction refuses whether or not the update matches a row). Such a transaction
+	// wrote nothing, so it has nothing to mark.
+	if t.beforeCommit != nil && !t.readOnly && t.Tx.Conn().PgConn().TxStatus() == 'T' {
 		if err := t.beforeCommit(ctx, t.Tx); err != nil {
-			_ = t.Tx.Rollback(ctx)
+			// The COMMIT was never sent, so this transaction rolled back and its outcome is
+			// known, whatever ended the step: the error is the step's own, named a busy
+			// database when the commit's own bound is what ended it (RanOutTheCommitBound).
+			// The rollback runs on a context of its own, as Rollback's does, so a step whose
+			// bound passed before it sent anything still sends its ROLLBACK and gets its
+			// connection back idle. A bound that cuts a statement in flight is pgconn's to
+			// end: it closes the connection under the step, so the ROLLBACK here fails and
+			// pgx drops that connection. The outcome is the same either way -- no COMMIT was
+			// sent, and the backend's statement and its transaction end with it -- and what
+			// the in-flight case costs is the connection alone.
+			err = RanOutTheCommitBound(ctx, err)
+			rollbackCtx, cancelRollback := RollbackContext(ctx)
+			defer cancelRollback()
+			_ = t.Tx.Rollback(rollbackCtx)
 			return err
 		}
 	}
-	return t.Tx.Commit(ctx)
+	return commitTimedOut(ctx, t.readOnly, t.Tx.Commit(ctx))
 }
 
+// Rollback ends the transaction on a context of its own (RollbackContext), so a caller whose
+// context is already cancelled - every write handler's deferred rollback after its client went
+// away - still sends the ROLLBACK and gets its connection back idle.
 func (t *trackedTx) Rollback(ctx context.Context) error {
 	defer t.end()
+	ctx, cancel := RollbackContext(ctx)
+	defer cancel()
 	return t.Tx.Rollback(ctx)
+}
+
+// commitTimeout bounds a commit CommitContext has detached from its caller.
+const commitTimeout = 10 * time.Second
+
+// ErrCommitTimeout is a commit of a transaction that may have written which the database did not
+// answer: the bound of its own context cut it off (CommitContext, commitTimeout), or the socket
+// to Postgres timed out under it, which is a bound of this server's that passed on that
+// connection. Its outcome is unknown - the transaction may have committed, and nothing the
+// server holds says whether it did - so it is neither a pool that could not serve the call
+// (ErrPoolBusy) nor a failure that rolled back: a request answers it 500, naming the unknown
+// outcome, and a client must read what it wrote before sending it again
+// (admission.WriteUnserved, cmd/dispatch/README.md "Load errors"). A commit its own bound cut
+// off wraps context.DeadlineExceeded too, so errors.Is finds both.
+//
+// Two unanswered COMMITs are not this and are ErrPoolBusy (commitTimedOut): a read-only
+// transaction's, and one of a stall pgconn marks safe to retry, which the COMMIT was never sent
+// through. Nothing can have committed in either, so the request is refused and may be sent
+// again.
+var ErrCommitTimeout = errors.New("the commit was not answered; its outcome is unknown")
+
+// IsCommitTimeout reports whether err is a commit the database did not answer (ErrCommitTimeout).
+func IsCommitTimeout(err error) bool { return errors.Is(err, ErrCommitTimeout) }
+
+// commitTimedOut names err for a COMMIT the database did not answer: ctx, the commit's own
+// context, is the bound that ended it - pgx answers a statement its context cut off with that
+// context's error and not with its cause, so the cause is read here instead - or the socket
+// timed out while that context was still live, which is a bound of this server's that passed on
+// the connection (stalled). The second is told here rather than left to poolBusy, which never
+// sees a commit, because the outcome of a COMMIT whose answer was lost is unknown where every
+// other lost answer leaves the transaction rolled back.
+//
+// Unknown, that is, unless the COMMIT never reached the database or the transaction wrote
+// nothing, and both are a busy database like any other the server's bounds ended (ErrPoolBusy) -
+// a refusal the caller may make again, answered 503 DATABASE_BUSY rather than with an unknown
+// outcome a client would have to read back:
+//
+//   - a stall pgconn marks safe to retry is one the COMMIT was never sent through, so nothing
+//     of the transaction can have committed, exactly as poolBusy reads such a stall for every
+//     other call (acquire.go);
+//   - a read-only transaction's COMMIT commits nothing whether or not it ran, since Postgres
+//     let it write nothing.
+//
+// A commit that failed for any other reason, and one that did not fail at all, is returned as it
+// is.
+func commitTimedOut(ctx context.Context, readOnly bool, err error) error {
+	if err == nil || !(errors.Is(context.Cause(ctx), ErrCommitTimeout) || stalled(ctx, err)) {
+		return err
+	}
+	switch {
+	case pgconn.SafeToRetry(err):
+		return fmt.Errorf("%w: the database stopped answering before the COMMIT reached it: %w", ErrPoolBusy, err)
+	case readOnly:
+		return fmt.Errorf("%w: the database did not answer this read-only transaction's COMMIT, which commits nothing: %w", ErrPoolBusy, err)
+	}
+	return fmt.Errorf("%w: %w", ErrCommitTimeout, err)
+}
+
+// RanOutTheCommitBound names err a database too busy to serve the call (ErrPoolBusy) when ctx -
+// the bound CommitContext puts on the work a commit does - ran out while that work was still
+// before the COMMIT itself. Nothing of the transaction committed: these statements run inside it
+// and it is rolled back, so the request is refused 503 DATABASE_BUSY and the client may send the
+// whole write again (admission.WriteUnserved). Unnamed, the bare context deadline pgx answers
+// such a statement with is a failure no rule knows, which answers the client 500 INTERNAL
+// (INFRA-592: a ten-times load with the database proxy frozen answered POST
+// /api/v1/artifacts/{id}/edits that way, on the announcement).
+//
+// Two callers run statements on that bound: the document ledger's settlement credit and
+// announcement (docs.Ledger.commit), and a request's Idempotency-Key step (trackedTx.Commit,
+// BeforeCommit). A COMMIT the server did send and the database never answered is
+// ErrCommitTimeout, whose outcome nobody knows, and this never covers it: it names only the
+// statements run before the COMMIT is reached.
+//
+// A failure of any other kind, and one met while the bound still stood - a stall of the socket,
+// which DatabaseStalled names and which rolls the transaction back too - is returned as it is.
+func RanOutTheCommitBound(ctx context.Context, err error) error {
+	if err == nil || !errors.Is(context.Cause(ctx), ErrCommitTimeout) {
+		return err
+	}
+	return fmt.Errorf("%w: the commit's bound passed before the COMMIT was sent, and the transaction rolled back: %w", ErrPoolBusy, err)
+}
+
+// commitBoundKey carries the bound a test puts on the commits made under a context
+// (WithCommitBoundForTest).
+type commitBoundKey struct{}
+
+// WithCommitBoundForTest returns ctx with bound as the bound of every commit made under it, in
+// place of commitTimeout. It is for tests outside this package alone, which make a commit run out
+// its bound in milliseconds rather than in production's ten seconds; nothing in production calls
+// it, and a context carrying none commits under commitTimeout.
+func WithCommitBoundForTest(ctx context.Context, bound time.Duration) context.Context {
+	return context.WithValue(ctx, commitBoundKey{}, bound)
+}
+
+// CommitContext is the context a transaction commits on: ctx's values without its cancellation
+// or deadline, bounded at commitTimeout with ErrCommitTimeout as the cause. A commit cut short by
+// its caller - a client that went away, a caller's deadline that passed - has an unknown outcome,
+// since the server may have committed it, and the document service fails every room such a
+// transaction wrote, which then reload the durable document (docs.Ledger.Commit); a request that
+// ended mid-commit would take its rooms down with it. So a commit in flight runs to its end, and
+// only its own bound, ten seconds, keeps one the database never answers from holding its
+// connection for good. Every transaction this pool opens commits on it.
+func CommitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	bound, ok := ctx.Value(commitBoundKey{}).(time.Duration)
+	if !ok {
+		bound = commitTimeout
+	}
+	return context.WithTimeoutCause(context.WithoutCancel(ctx), bound, ErrCommitTimeout)
+}
+
+// RollbackTimeout bounds a rollback RollbackContext has detached from its caller. A ROLLBACK
+// takes no lock and waits for nothing, so the only rollback that reaches this bound is one on a
+// connection the database has stopped answering on, which the bound then stops holding. It is
+// exported because the request pool's idle-in-transaction bound is computed from it
+// (RequestIdleInTransactionTimeout).
+const RollbackTimeout = 5 * time.Second
+
+// ColdReadBound is the bound on one cold read's fold of a document's stored history: the document
+// service's own coldReadTimeout is this constant (docs/read_cache.go), and
+// TestTheRequestPoolsIdleBoundOutlastsAColdRead holds the two together. It is declared here
+// rather than in docs because the request pool's idle-in-transaction bound is computed from it
+// and docs imports this package, never the other way round.
+//
+// It is the longest a request-pool transaction sits idle by design. A write has no deadline of
+// its own (api's defaultReadDeadline says why), so a write that reads a document it holds no
+// fork for waits out the fold with its transaction open and no statement running: recording a
+// check result does exactly that, under the two issue row locks it holds (api/results.go's
+// refreshResolvedCheck, docs/read_cache.go's coldRead).
+const ColdReadBound = 60 * time.Second
+
+// requestIdleMargin is what RequestIdleInTransactionTimeout leaves over that longest idle wait
+// and the rollback that follows it, so the bound never ends a transaction the server was itself
+// about to end.
+const requestIdleMargin = 5 * time.Second
+
+// RequestIdleInTransactionTimeout is the idle_in_transaction_session_timeout every request-pool
+// connection carries, and no other pool's (configurePool): the longest a request transaction may
+// sit idle by design, plus the bound on the rollback that ends it, plus a margin - computed from
+// those three, so a raised cold-read bound raises this with it.
+//
+// Postgres is the only thing that can end an orphaned request transaction: one whose pgx
+// connection was abandoned, and whose close reached Postgres late or not at all, holds the rows
+// it locked and the event horizon until Postgres notices the socket is gone, which a stall run
+// measured at over two seconds past every request that could have owned it and which a starved
+// proxy can stretch much further. This bound ends it instead.
+const RequestIdleInTransactionTimeout = ColdReadBound + RollbackTimeout + requestIdleMargin
+
+// requestIdleInTransaction is the bound configurePool writes onto a request pool's connections.
+// Tests in this package shorten it so a transaction outlasts it in milliseconds rather than in
+// the seventy seconds production runs; nothing else moves it.
+var requestIdleInTransaction = RequestIdleInTransactionTimeout
+
+// RollbackContext is the context a transaction rolls back on: ctx's values without its
+// cancellation or deadline, bounded at RollbackTimeout. pgconn refuses a statement on a context
+// that is already done before it writes anything to the socket, and pgx answers a rollback that
+// failed by killing the connection (pgx.dbTx.Rollback -> Conn.die), so a rollback on the
+// cancelled context of a request whose client went away sent no ROLLBACK at all: the transaction
+// ended by the pooled connection being destroyed and dialled again, exactly when the server is
+// busiest. On this context the ROLLBACK is sent, the transaction ends at once instead of when
+// the connection dies, and the connection goes back to the pool idle.
+func RollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), RollbackTimeout)
+}
+
+// ErrRequestEnded is a commit never started, because the request that would have made it had
+// already ended - its client went away, or its own bound passed - and nothing it wrote is worth
+// the ten seconds CommitContext would give the commit, nor the locks and the event horizon that
+// commit holds while it runs. Nothing was committed, which a caller may rely on; the handler's
+// deferred rollback ends the transaction and api.writeHandlerError answers it as it answers
+// every request the server could not serve (admission.WriteUnserved): nothing written and a 499
+// line for a client that went away.
+var ErrRequestEnded = errors.New("the request ended before its commit began; nothing was committed")
+
+// CommitRefusal is the error a commit on ctx is refused with when ctx has already ended, and nil
+// while it is live. It is read where a commit begins and before CommitContext detaches it - the
+// transaction an API handler opened (api.server.begin) and the document ledger's commit
+// (docs.Ledger.Commit) - so a request already gone starts no commit, rather than holding its
+// rows, its documents' rooms and the event horizon for a commit nobody will read.
+func CommitRefusal(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrRequestEnded, err)
+	}
+	return nil
 }
 
 // end clears the caller's mark, when the pool tracks one.
@@ -925,3 +833,49 @@ func (b errBatchResults) Exec() (pgconn.CommandTag, error) { return pgconn.Comma
 func (b errBatchResults) Query() (pgx.Rows, error)         { return nil, b.err }
 func (b errBatchResults) QueryRow() pgx.Row                { return errRow{err: b.err} }
 func (b errBatchResults) Close() error                     { return b.err }
+
+// busyRow maps a deferred acquire error to ErrPoolBusy when the row is scanned, and gives back the
+// pinned connection the row was read on, if any, once it is. The call it carries the error of is
+// the statement itself, which runs outside any transaction (commitsItself).
+type busyRow struct {
+	pgx.Row
+	ctx  context.Context
+	pool string
+	done func()
+}
+
+func (r busyRow) Scan(dest ...any) error {
+	err := r.Row.Scan(dest...)
+	finished(r.done)
+	return poolBusy(r.ctx, r.pool, err, commitsItself)
+}
+
+// busyBatchResults maps a deferred acquire error to ErrPoolBusy in every result the caller reads,
+// and gives back the pinned connection the batch ran on, if any, once it closes. Its statements
+// run outside any transaction, as a single statement's do (commitsItself).
+type busyBatchResults struct {
+	pgx.BatchResults
+	ctx  context.Context
+	pool string
+	done func()
+}
+
+func (b busyBatchResults) Exec() (pgconn.CommandTag, error) {
+	tag, err := b.BatchResults.Exec()
+	return tag, poolBusy(b.ctx, b.pool, err, commitsItself)
+}
+
+func (b busyBatchResults) Query() (pgx.Rows, error) {
+	rows, err := b.BatchResults.Query()
+	return rows, poolBusy(b.ctx, b.pool, err, commitsItself)
+}
+
+func (b busyBatchResults) QueryRow() pgx.Row {
+	return busyRow{Row: b.BatchResults.QueryRow(), ctx: b.ctx, pool: b.pool}
+}
+
+func (b busyBatchResults) Close() error {
+	err := b.BatchResults.Close()
+	finished(b.done)
+	return poolBusy(b.ctx, b.pool, err, commitsItself)
+}

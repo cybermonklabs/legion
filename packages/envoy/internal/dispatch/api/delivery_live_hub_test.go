@@ -1730,8 +1730,21 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 	requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, snapshot.Body, delta, "")
 }
 
-// acquires is how many connections the shared pool has handed out so far.
-func acquires(database *store.Store) int64 { return database.Pool.Stat().AcquireCount() }
+// acquires is how many connections the store's pools have handed out so far, every pool it has
+// opened counted: the hub reads through the live pool, a route through the request pool.
+func acquires(database *store.Store) int64 {
+	use := database.Pool.Use()
+	return int64(use.InUse) + use.Returned
+}
+
+// readAcquires is how many connections the pools the hub's event reads run through - the request
+// pool and the live pool - have handed out. The event log's safe horizon observes on a pool of its
+// own (store.Pool.Horizon), which a gap re-read does take, and which is the whole point of it:
+// while the horizon stands still it observes and reads nothing else.
+func readAcquires(database *store.Store) int64 {
+	use := database.Pool.Use(store.RequestsPool, store.LivePool)
+	return int64(use.InUse) + use.Returned
+}
 
 // waitConnected waits for the hub's listener to have connected and caught the change log up, for
 // the hub to hold the relay's feed, and then for the shared pool to stand still for 300 ms: the
@@ -1803,13 +1816,88 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 	clock.Advance(3 * time.Second)
 	delta := conn.delta(t, 4*time.Second, "p")
 	if got := acquires(rig.database); got != before {
-		t.Fatalf("the shared pool handed out %d connections while the oldest pull request left, want none", got-before)
+		t.Fatalf("the pools handed out %d connections while the oldest pull request left, want none", got-before)
 	}
 	if got := delta.Items["prs"].Remove; !slices.Equal(got, []string{"acme/widgets#1"}) {
 		t.Fatalf("the expiry's delta removes %v, want acme/widgets#1", got)
 	}
 	conn.none(t, time.Second, "the expiry's one delta")
 	requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
+}
+
+// A change caught up while a view's expiry is computing marks the view: an expiry reads nothing,
+// so it records no read position and takes over no marks (deliveryHub.read), and the change marks
+// the view as any other does - the catch-up's cursor moves past it and the expiry ends without
+// looking at it, so a change held back here would leave every subscriber a stale answer. The
+// clock stands still, so the pull request leaving two seconds on is the view's first expiry; the
+// hook holds that expiry open, between its mark of the view as computing and its end, while the
+// test writes a second pull request and has the hub catch it up.
+func TestAChangeCaughtUpWhileAViewExpiresIsRecomputed(t *testing.T) {
+	clock := newStillHubClock()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	expiring, release := make(chan struct{}), make(chan struct{})
+	var held, released sync.Once
+	releaseExpiry := func() { released.Do(func() { close(release) }) }
+	defer releaseExpiry()
+	rig := hubOn(t, handler, database, deps, clock, func(hub *deliveryHub) {
+		observe := hub.observe
+		hub.observe = func(note deliveryHubNote) {
+			observe(note)
+			if note.what == "recompute begin" && note.cause == deliveryCauseExpiry {
+				held.Do(func() {
+					close(expiring)
+					<-release
+				})
+			}
+		}
+	})
+	seedHubSettings(t, rig.database)
+	now := clock.Now()
+	upsertPR(t, rig.database, hubPR(1, now.Add(-28*24*time.Hour+2*time.Second)))
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 28, "")))
+	conn.snapshot(t, 5*time.Second, "p")
+	rig.waitConnected(t)
+	rig.settle(t)
+	// A delivery change the snapshot did not hold may have marked the view dirty, and on this
+	// clock, standing still, its recompute is due only once the clock moves. Moving it by less
+	// than the two seconds the pull request has left runs that recompute, and sends whatever delta
+	// it has, before the expiry below.
+	clock.Advance(2 * viewQuiet)
+	rig.waitNoRecompute(t, 2*viewQuiet)
+	for drained := false; !drained; {
+		select {
+		case <-conn.frames:
+		default:
+			drained = true
+		}
+	}
+
+	start := rig.mark()
+	clock.Advance(3 * time.Second)
+	select {
+	case <-expiring:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the view's expiry did not begin within 5s of the clock passing it")
+	}
+	// The second pull request is written and caught up while the expiry computes.
+	upsertPR(t, rig.database, hubPR(2, now.Add(-time.Hour)))
+	rig.hub.catchUpNow()
+	releaseExpiry()
+
+	expired := conn.delta(t, 5*time.Second, "p")
+	if got := expired.Items["prs"].Remove; !slices.Equal(got, []string{"acme/widgets#1"}) {
+		t.Fatalf("the expiry's delta removes %v, want acme/widgets#1", got)
+	}
+	rig.waitFor(t, start, 5*time.Second, "the expiry's end", func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && note.cause == deliveryCauseExpiry
+	})
+	// The change marked the view, so its recompute is due a quiet after the mark.
+	clock.Advance(viewQuiet)
+	delta := conn.delta(t, 5*time.Second, "p")
+	if got := liveUpsertIDs(t, delta, "prs"); !slices.Equal(got, []string{"acme/widgets#2"}) {
+		t.Fatalf("the delta after the change caught up while the view expired upserts %v, want acme/widgets#2", got)
+	}
 }
 
 func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing.T) {
@@ -1827,7 +1915,7 @@ func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing
 	clock.Advance(nextUTCMidnight(now).Sub(now) + time.Second)
 	delta := conn.delta(t, 3*time.Second, "p")
 	if got := acquires(rig.database); got != before {
-		t.Fatalf("the shared pool handed out %d connections at midnight, want none", got-before)
+		t.Fatalf("the pools handed out %d connections at midnight, want none", got-before)
 	}
 	var days []string
 	if err := json.Unmarshal(delta.Set["days"], &days); err != nil {

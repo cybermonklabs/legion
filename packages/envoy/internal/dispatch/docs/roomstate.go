@@ -119,8 +119,8 @@ type roomState struct {
 	// arms no second settlement for the document's pending-settlement row (onLoadDocument).
 	settleWarming  bool
 	settleFailures int
-	// settling counts the settlements running on this state (settleRoomWithin), which hold it
-	// across their database work.
+	// settling counts the settlements running on this state (settleRoomWithin), from before their
+	// wait for a settlement slot to the end of their database work, which they hold it across.
 	settling int
 	// closed is whether the document's issue is closed as of closedRead: when the newest read of
 	// the issue recorded here began, or when a close or reopen of the issue was recorded
@@ -147,6 +147,14 @@ type roomState struct {
 	// released marks a state the service has forgotten (forgetLocked), so a lookup that found it
 	// before it went takes the document's current state instead.
 	released bool
+	// lastUsed is when the room this state holds was last used: its load, the return of a
+	// Server.Apply on it, or the last browser leaving it (noteRoomUsed). It is the order the
+	// budget of resident peerless rooms closes them in, least recently used first
+	// (peerlessRoomsOverBudget), and the start of the window the budget leaves a room alone for
+	// (roomBudgetMinIdle). weight is the heap that room is taken to hold, from the bytes
+	// its load decoded (roomWeight); both are read by the budget alone.
+	lastUsed time.Time
+	weight   int64
 }
 
 // documentUpdateClass is what the room's update observer recorded for one update, which its
@@ -211,6 +219,14 @@ func (s *Service) lockState(room string) *roomState {
 // lockExistingState returns room's state locked, or nil when the service holds none.
 func (s *Service) lockExistingState(room string) *roomState {
 	return s.lookUpState(room, false)
+}
+
+// roomGone reports whether room's state is no longer this service's to write into: the service is
+// stopping, or the room has been closed or has failed. Whoever closed or failed it - or the
+// shutdown - answers for the work left on it, so a settlement that meets it writes nothing more
+// and ends. The caller holds state.mu.
+func (s *Service) roomGone(state *roomState) bool {
+	return s.stopping.Load() || state.closed || state.failed != nil
 }
 
 // newRoomState is a document's record with nothing of a room on it yet.
@@ -378,14 +394,15 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 }
 
 // unusedLocked is whether state holds nothing that outlasts its room. These are every holder: an
-// open writer, a running or armed settlement, a latest edit source no settlement has read, a
-// failure being recovered from (whose eviction forgets the state itself, evictRoom), a connected
-// browser, a document socket's admission (admitting), an update the room's persistence has not
-// taken or appended, a commit's parked bytes not yet stored, and an in-flight credit whose append
-// has not landed. Its caller holds state.mu.
+// open writer, a settlement this process owes (owesSettlementLocked: one running, one armed, one
+// a live write took over, and a latest edit source no settlement has read), a failure being
+// recovered from (whose eviction forgets the state itself, evictRoom), a connected browser, a
+// document socket's admission (admitting), an update the room's persistence has not taken or
+// appended, a commit's parked bytes not yet stored, and an in-flight credit whose append has not
+// landed. Its caller holds state.mu.
 func (s *Service) unusedLocked(state *roomState) bool {
-	return state.liveWriter == nil && state.settling == 0 && !s.isSettleTimerArmed(state.settle) &&
-		!state.unsettled && state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
+	return state.liveWriter == nil && !owesSettlementLocked(state, s.isSettleTimerArmed(state.settle)) &&
+		state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
 		state.pendingUpdates == 0 && state.durableAppends.Load() == 0 && len(state.inflight) == 0 &&
 		len(state.parked) == 0
 }

@@ -31,12 +31,16 @@ const redeliveryPace = time.Second
 // the first sweep that finds the client connected, not here: the client connects in the background
 // (serverBus), and a bus that is down at boot must not stop the boot. A sweep before then is
 // skipped and logged as failed. Its App client and its own backoff obey the GitHub rate limits
-// every process shares, in the database's github_rate_limits.
-func webhookSweeper(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase string, replicas int) (*redeliver.Sweeper, error) {
+// every process shares, in the database's github_rate_limits, read and written on the pool of the
+// store it is given here. The server gives it the background one: the sweep is a periodic loop
+// under a lease, so its statements belong where every other loop's are and no request may queue
+// behind one of them for a connection. The operator command below has the one pool it opened for
+// itself, which serves nothing else.
+func webhookSweeper(natsClient *bus.Client, background *store.Store, app *auth.AppConfig, apiBase string, replicas int) (*redeliver.Sweeper, error) {
 	if natsClient == nil {
 		return nil, nil
 	}
-	limits := ratelimit.New(database.Pool)
+	limits := ratelimit.New(background.Pool)
 	github, err := githubapp.New(app, apiBase, githubapp.WithLimits(limits))
 	if err != nil || github == nil {
 		return nil, err

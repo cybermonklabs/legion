@@ -53,7 +53,7 @@ type projectGatedStepsInput struct {
 func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	var input projectGatedStepsInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -87,13 +87,13 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 
 	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -108,16 +108,16 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: steps})
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project.Key).event("project.updated", actor, project))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

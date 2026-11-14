@@ -155,7 +155,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	actor, err := s.requestActor(r)
 	if err != nil {
 		if errors.Is(err, identity.ErrSignInUnavailable) {
-			identity.WriteError(w, err)
+			identity.WriteError(w, r, err)
 			return
 		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -208,6 +208,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		// The 503 alone names neither the room nor what refused it, so a refusal that reached a
+		// person could be placed only from a neighbouring line: the reason is logged here, with
+		// the pool the admission's load read through (loadPoolName).
+		slog.Warn("dispatch: a document socket was refused: its document could not be admitted",
+			"room", room, "pool", loadPoolName(r.Context()), "error", err)
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}

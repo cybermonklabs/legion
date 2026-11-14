@@ -196,7 +196,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	var input answerAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The acting session the body names, where the caller's credential proved none: this route
@@ -214,7 +214,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	expectedEditedAt, provided, err := parseAnswerPrecondition("expected_edited_at", input.ExpectedEditedAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !provided {
@@ -223,7 +223,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	replacesAnswer, err := parseReplacesAnswer(input.ExpectedAnswerAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	transition := answerTransition(actor, input.Selected, input.Text, answerOptions{
@@ -296,7 +296,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
@@ -318,7 +318,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	var input resolveAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -361,7 +361,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
@@ -409,7 +409,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	var input declineAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The acting session the body names, where the caller's credential proved none, as the
@@ -451,13 +451,34 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
 }
 
+// closeAsk applies transition to ask id in a transaction of its own. A block ask's transition
+// writes its block, so closeAsk reads the ask's document before its transaction opens, takes that
+// document's writer gate, and checks under the ask's lock that the ask still names it; one that
+// moved is gated again once, and then answered DOCUMENT_CHANGED (gatedWrite).
 func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, transition askTransition) (model.Ask, error) {
+	ask, _, release, err := gatedWrite(ctx, s.deps.Docs,
+		func(ctx context.Context) ([]string, error) {
+			return s.askDocuments(ctx, id)
+		},
+		func(ctx context.Context, gated []string) (model.Ask, error) {
+			return s.closeAskGated(ctx, gated, id, actor, transition)
+		})
+	if err != nil {
+		return model.Ask{}, err
+	}
+	release()
+	return ask, nil
+}
+
+// closeAskGated is closeAsk's transaction, run with the writer gates of gated held: it refuses with
+// errDocumentsMoved, rolled back, a block ask whose document is not among them.
+func (s *server) closeAskGated(ctx context.Context, gated []string, id string, actor model.Actor, transition askTransition) (model.Ask, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return model.Ask{}, err
@@ -465,6 +486,17 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 	defer tx.Rollback(ctx)
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
+	apply := transition.Apply
+	transition.Apply = func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
+		var named []string
+		if ask.BlockID != nil && ask.BlockArtifactID != nil {
+			named = []string{*ask.BlockArtifactID}
+		}
+		if !sameDocuments(gated, named) {
+			return model.Ask{}, errDocumentsMoved
+		}
+		return apply(ctx, tx, ask)
+	}
 	ask, events, err := s.closeAskTx(documentCtx, tx, id, actor, transition)
 	if err != nil {
 		return model.Ask{}, err

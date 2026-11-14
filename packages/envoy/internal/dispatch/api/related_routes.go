@@ -83,7 +83,7 @@ func (s *server) postRelated(w http.ResponseWriter, r *http.Request) {
 	}
 	var request relatedRequest
 	if err := decodeJSON(r, &request); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if length := itemblocks.Units16(request.Title); length > contracts.IssueTitleMax {
@@ -106,13 +106,13 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		return
 	}
 	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	request.ExcludeIssue = strings.TrimSpace(request.ExcludeIssue)
 	if request.ExcludeIssue != "" {
 		if err := s.requireProjectIssue(r, project, request.ExcludeIssue); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -123,7 +123,7 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		}
 	}
 	if err := s.requireProjectIssues(r, project, excluded); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The answered asks this check offers carry the display tree of their answer for a caller
@@ -304,13 +304,13 @@ func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 		&keyword.Count, &keyword.P50, &keyword.P95, &keyword.Max, &keyword.Over300MS,
 		&total.Count, &total.P50, &total.P95, &total.Max, &total.Over300MS,
 	); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), relatedChecksOffersQuery,
 		report.Project, report.From, report.To, report.SourceKind,
 	).Scan(&report.OtherProjectOffers); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, report)

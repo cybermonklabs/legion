@@ -61,6 +61,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -289,7 +290,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			}
 			belongsTo, err := resolve(r.Context(), s.deps.Store.Pool, r)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if belongsTo != covers {
@@ -425,7 +426,7 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 func (s *server) undecidableWrites(routes []apiRoute) []string {
 	var undecidable []string
 	for _, route := range routes {
-		if route.Method == http.MethodGet {
+		if admission.Reads(route.Method) {
 			continue
 		}
 		name := route.Method + " " + route.Pattern

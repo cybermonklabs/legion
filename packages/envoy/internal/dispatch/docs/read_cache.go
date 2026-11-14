@@ -10,13 +10,13 @@ import (
 	"runtime/debug"
 	"strconv"
 	"sync"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // DocumentStamp names one stored state of a document: Version is the head Load folds the stored
@@ -76,8 +76,25 @@ func readBudgetFor(memoryLimit int64) int64 {
 }
 
 // coldReadTimeout bounds a cold read's fold of the stored history (LoadDocument), which belongs to
-// the document rather than to the request that started it, so no request's end cancels it.
-var coldReadTimeout = 60 * time.Second
+// the document rather than to the request that started it, so no request's end cancels it. It is
+// store.ColdReadBound, the one declaration of this bound: the request pool's
+// idle_in_transaction_session_timeout is computed from it (store.RequestIdleInTransactionTimeout),
+// because a request transaction waiting here sits idle for as long as the fold takes, and raising
+// the fold's bound must raise that one with it (TestTheRequestPoolsIdleBoundOutlastsAColdRead).
+var coldReadTimeout = store.ColdReadBound
+
+// coldFolds is how many cold reads fold a stored history at once (foldDocument), each holding one
+// connection of the request pool while it does (foldContext). A fold is a second connection taken
+// by the caller of a read that already holds one, which is the shape the pools refuse
+// (store.ErrNestedAcquire) and which only a bound makes safe: these connections come out of the
+// eight the request pool keeps for the users admission does not count
+// (admission.unadmittedConnections), the work a handler leaves running among them, so a fold must
+// never be able to take more of them than those users have.
+//
+// It is bufferedFolds, the folds the process holds rows in memory for at once
+// (PgVersioned.foldSlots): past that bound a fold would hold its connection waiting for a slot, so
+// the two are the same number and a fold waits here, holding nothing, instead.
+const coldFolds = bufferedFolds
 
 // documentRead is everything the four reads of a document no room holds answer (Text,
 // TextWithToken, TextWithBlocks and BlockPath), rendered from one tree of one stored state, the
@@ -109,10 +126,18 @@ type documentReads struct {
 	budget  int64
 	// flights folds each (document, stamp) once however many reads miss it at once.
 	flights singleflight.Group
+	// folds holds a token for each fold of a cold read under way (foldDocument), so at most
+	// coldFolds of them hold a request-pool connection at once.
+	folds chan struct{}
 }
 
 func newDocumentReads(budget int64) *documentReads {
-	return &documentReads{entries: make(map[string]*list.Element), order: list.New(), budget: budget}
+	return &documentReads{
+		entries: make(map[string]*list.Element),
+		order:   list.New(),
+		budget:  budget,
+		folds:   make(chan struct{}, coldFolds),
+	}
 }
 
 // figures is the cache's weight, its entry count and its budget, for the room figures.
@@ -361,9 +386,9 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 			slog.Error("dispatch: cold document read panicked", "room", artifactID, "error", err)
 		}
 	}()
-	foldCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)
+	foldCtx, cancel := context.WithTimeout(s.foldContext(ctx), coldReadTimeout)
 	defer cancel()
-	loaded, err := s.persistence.LoadDocument(foldCtx, artifactID)
+	loaded, err := s.foldLoad(foldCtx, artifactID)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && errors.Is(foldCtx.Err(), context.DeadlineExceeded) {
 			return coldFold{}, fmt.Errorf("cold document read timed out after %s", coldReadTimeout)
@@ -377,6 +402,42 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 		s.reads.put(fold.read)
 	}
 	return fold, nil
+}
+
+// foldContext is the context a cold read's fold runs on: the read's values without its
+// cancellation, without the request's commit step, a hold mark of its own, and the request pool
+// named as the pool the load opens its transaction on (loadTxSource).
+//
+// The mark is its own (store.ForConcurrentWorker) because the fold outlives the read that started
+// it: that read holds the request's pinned connection, which the request gives back when it
+// answers, so the fold takes a connection of its own rather than running on one that is about to
+// go to another request. The pool is the request pool, not the pool that owns loads, because a
+// fold is a read of the request that waits for it, and a room's load must not queue behind the
+// reads of requests (INFRA-592): the connection it takes is one of those admission never hands
+// out, which are for the work a handler leaves running (admission.unadmittedConnections), and
+// coldFolds bounds how many it may take at once.
+//
+// The step goes (store.WithoutBeforeCommit) because the fold is the document's work and not the
+// request's write: a keyed write that reads a document no room holds - recording a check result
+// against a Verification document (api/results.go) - would otherwise run the Idempotency-Key
+// step in the fold's read-only transaction, which Postgres refuses, failing the room and
+// answering the write 503 DOC_SERVICE_UNAVAILABLE. Commit skips the step for a read-only
+// transaction as well, so neither half alone can bring it back.
+func (s *Service) foldContext(ctx context.Context) context.Context {
+	return withQueryPool(store.ForConcurrentWorker(store.WithoutBeforeCommit(context.WithoutCancel(ctx))), s.store.Pool)
+}
+
+// foldLoad loads artifactID's stored history for a cold read's fold, holding one of the process's
+// cold folds (coldFolds) while it reads and decodes it. A fold past that bound waits here, where
+// it holds no connection, rather than on a connection of its own.
+func (s *Service) foldLoad(ctx context.Context, artifactID string) (LoadedDocument, error) {
+	select {
+	case s.reads.folds <- struct{}{}:
+	case <-ctx.Done():
+		return LoadedDocument{}, ctx.Err()
+	}
+	defer func() { <-s.reads.folds }()
+	return s.persistence.LoadDocument(ctx, artifactID)
 }
 
 // foldLoaded is the fold of loaded, a document its caller has just decoded and holds alone: its

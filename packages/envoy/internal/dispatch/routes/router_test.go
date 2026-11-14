@@ -85,6 +85,9 @@ type memoryPeopleStore struct {
 	now      func() time.Time
 	// afterSignIn, when set, runs once after the next SignIn or SignInSubject returns.
 	afterSignIn func()
+	// recordFails, when set, is what Record answers instead of recording the person: the store's
+	// own error, for a test of how a route answers one.
+	recordFails error
 }
 
 // memoryPerson is one person's row in memoryPeopleStore: ConfirmedAt is the store clock's time of
@@ -109,6 +112,9 @@ func (s *memoryPeopleStore) clock() time.Time {
 func (s *memoryPeopleStore) Record(_ context.Context, email string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.recordFails != nil {
+		return s.recordFails
+	}
 	if _, found := s.people[email]; !found {
 		s.people[email] = memoryPerson{}
 	}
@@ -1560,6 +1566,12 @@ func TestSanitizeNextRejectsBrowserNormalizedExternalPaths(t *testing.T) {
 		{name: "encoded backslash authority", raw: "/%5Cevil.test/path", want: "/"},
 		{name: "control character", raw: "/issues/\x00", want: "/"},
 		{name: "absolute URL", raw: "https://evil.test/path", want: "/"},
+		// A refused value is "/", the dashboard's own root, so each of these sends the
+		// browser home rather than to whoever the raw value names.
+		{name: "scheme-relative authority", raw: "//evil.test/path", want: "/"},
+		{name: "encoded slash authority", raw: "/%2Fevil.test", want: "/"},
+		{name: "doubly encoded slash authority", raw: "/%2F%2Fevil.test", want: "/"},
+		{name: "javascript scheme", raw: "javascript:alert(1)", want: "/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := sanitizeNext(tc.raw); got != tc.want {

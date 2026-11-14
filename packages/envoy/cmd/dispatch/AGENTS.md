@@ -6,14 +6,17 @@ GitHub reads go through as the GitHub App.
 
 ## Startup and persistence
 
-`DATABASE_URL` and `DISPATCH_AGENT_TOKEN` are required. Startup opens the shared
-`pgxpool.Pool` at `store.sharedPoolSize` connections — the size is a property of
-Dispatch rather than of the URL or the task's CPU allotment, and a `DATABASE_URL`
-carrying `pool_max_conns` is refused at open rather than silently overridden —
-applies embedded migrations from `internal/dispatch/store/migrations` (refusing
+`DATABASE_URL` and `DISPATCH_AGENT_TOKEN` are required. Startup opens the request
+pool at `store.SharedPoolSize` (48) connections — every pool's size is a property
+of Dispatch, set in `store/pools.go`, rather than of the URL or the task's CPU
+allotment (`packages/envoy/AGENTS.md`, "Every pool's size is set in code"), and
+a `DATABASE_URL` carrying `pool_max_conns` is refused at open rather than
+silently overridden — applies embedded migrations from `internal/dispatch/store/migrations` (refusing
 the whole set, applying nothing, when `pgmigrate.Load` refuses it, and bounding
 every migration's lock waits at `pgmigrate.LockTimeout`; README "Database
-migrations"), then binds its port, registers the process in the registry of
+migrations"), opens the lease pool its leased loops take their leases on and the
+background pool its background loops read and write through, then binds its
+port, registers the process in the registry of
 live server processes (`internal/dispatch/processes`, migration `0135`: a key
 set a live process does not share both ways refuses the start, exiting 1
 before anything is served, once the process has waited up to one live window
@@ -22,14 +25,17 @@ restart after a kill starts once the dead process's row lapses, and a SIGTERM
 during that wait logs `dispatch: stopped while waiting for admission to the
 registry of live server processes` at INFO and exits 0; `joinRegistry` in
 `registry.go`), and starts HTTP serving; shutdown deregisters it
-once HTTP has drained. A process whose heartbeat lapsed (frozen, cut from the
+once HTTP has drained, within the shutdown's one deadline. A process whose heartbeat lapsed (frozen, cut from the
 database) or whose row was pruned checks its keys again before it counts as
 live once more; beside a live process whose keys it does not share, its
 heartbeat refuses (`processes.Registration.Lost`), and `serveUntilStopped`
 logs `dispatch: this server process no longer shares its signing keys with a
 live server process` at ERROR, stops serving as at SIGTERM (listener closed,
 requests in flight answered, row deleted) and returns the refusal, so the
-process exits 1. The Postgres store contains people,
+process exits 1. The request pool, the lease pool and the background pool open at boot, the
+outbox's too where NATS is configured, and the registry's with that registration; the rest -
+document loads, the health probe, the LISTEN dials, the live readers, settlements and the event
+horizon - open when a caller first takes a connection from them. The Postgres store contains people,
 native issues, artifacts, document updates, and the event outbox.
 A migration must leave the release before it able to read and write the
 schema, since two processes serve one database through a rolling update: a
@@ -69,7 +75,7 @@ while the database does not answer, so a liveness probe on it would restart
 every server process during a database failover. The probe reads the database through
 `store.Pool.Healthy` — a one-connection pool nothing else uses, under
 `store.healthProbeTimeout`, two seconds covering dial and query. It never waits
-on the shared pool: a busy period legitimately leaves that pool with no free
+on the request pool: a busy period legitimately leaves that pool with no free
 connection, and a probe queued behind a writer reads as a dead process, so the
 ALB fails it at five seconds and ECS replaces the task, cancelling every
 in-flight request of every other client. The compose healthcheck and the deploy
@@ -235,7 +241,7 @@ any reported, or `504 TEST_HOOK_TIMEOUT` after ten seconds naming the keys that 
 (`internal/dispatch/api/test_hooks_fanout.go`). `STREAM_UNAVAILABLE` is still judged on the
 process the publish reached, and the outside-schema and slow-write hooks act where their call
 lands. The flag costs one Postgres connection per process outside the shared pool
-(`store.sharedPoolSize`).
+(`store.SharedPoolSize`).
 
 With NATS configured and the GitHub App private key loaded, startup also runs the webhook
 redelivery sweep (`internal/dispatch/redeliver`, wired in `cmd/dispatch/redeliver.go`). Every
@@ -363,6 +369,16 @@ deleted), marks every document owed a block index and every comment and message 
 index of its own blocks, and prints counts, `blocks_owed` and `items_owed` among them;
 it reads `DATABASE_URL` and the envoy config's `dispatch.server_url`, refusing an empty URL
 because dashboard-URL mentions are recognised only against it.
+
+Every line logged through slog's default goes through `logging.Handler`
+(`internal/dispatch/logging`), which `main` installs: a caller formats its line, in exactly
+`slog.TextHandler`'s format, and hands it to one writer goroutine through a channel of 4,096
+lines, so no caller ever waits on stderr. A line that finds the channel full is dropped and
+counted under its level (`Handler.Dropped`), and once the channel has room the writer writes one
+WARN `dropped N log records` with the count per level (`dropped.debug` … `dropped.error`). Since
+`os.Exit` waits for no goroutine, every exit goes through `exit` (a refused boot through `fatal`,
+which logs the reason at ERROR first), which writes the lines still buffered within
+`logFlushTimeout`; a shutdown writes them last, once every other deferred call has run.
 
 `internal/dispatch/identity` is the human identity boundary. Handlers resolve
 people through `Identity.Login`, which names a person by lowercase email, and
@@ -612,18 +628,14 @@ recorded by any process in `github_rate_limits` (then GitHub is not asked), is
 ## Routes
 
 The `/api/v1` routes are one table, `api/routes_table.go` (`routes()`): `Register` mounts it and
-`GET /api/v1` (public) serves it as `{routes: [{method, path, auth, scopes, description}], docs}`
-sorted by path then method, `scopes` left out of a route that needs none. Add a route by adding a
-row — never a `mux.HandleFunc` line — and bump the pinned
-count in `api/routes_table_test.go`. `auth` is `public`, `any` (user or bearer) or
-`bearer`; it describes the check the handler makes, the handler still enforces it. The OAuth
-scopes a route needs stand beside the table in `routeScopes`, keyed by `"<method> <pattern>"`,
-which `routes()` stamps onto `apiRoute.OAuthScopes`: a positional row literal would make every
-one of the 151 rows carry a sixth value, and most rows need no scope. A name in that map which is
-no row of the table refuses to mount (`scopedRoutesNotMounted`), as an unclassed mutating row
-does. `register` gates every row that map names (`gateRouteScopes`) ahead of the keyed, project
-and session layers, so no handler restates a scope, and `envoy-dispatch routes` prints
-each route's `scopes` as `GET /api/v1` does. An unknown path
+`GET /api/v1` (public) serves it as `{routes: [{method, path, auth, scopes, description}], docs}` sorted by path then method, `scopes` left out of a route that needs none.
+Add a route by adding a row — never a `mux.HandleFunc` line — and bump the pinned count in `api/routes_table_test.go`.
+`auth` is `public`, `any` (user or bearer) or `bearer`; it describes the check the handler makes, the handler still enforces it.
+`Register` serves every row admitted and a read under a deadline, answering what it could not serve with a retryable `429` or `503` (README "Load errors"); a row served otherwise — an upload's body limit (`upload`), a file download's deadline (`download`), the weight of a route that reads two side by side (`concurrentReads`) or whose related-item check is a question's and reads three (`questionReads`) — says so on the row itself, through the constructor it is written with, where every ordinary row is written with `served`.
+The OAuth scopes a route needs stand beside the table in `routeScopes`, keyed by `"<method> <pattern>"`, which `routes()` stamps onto `apiRoute.OAuthScopes` (`mountedRoutes`): a sixth value would otherwise be written on all 159 rows, through the row constructor each is built with, and most rows need no scope.
+A name in that map which is no row of the table refuses to mount (`scopedRoutesNotMounted`), as an unclassed mutating row does.
+`register` gates every row that map names (`gateRouteScopes`) ahead of the keyed, project and session layers, so no handler restates a scope, and `envoy-dispatch routes` prints each route's `scopes` as `GET /api/v1` does.
+An unknown path
 under a server root (`/api`, `/v1`, `/auth`, `/ws`, `/healthz`) is answered by
 `routes/router.go` with `404 {"code":"NOT_FOUND","error":"no route for <METHOD> <path>","hint":"GET
 /api/v1 lists every route"}` before any dashboard lookup; only paths outside those roots fall back
@@ -692,8 +704,10 @@ different request is `422 KEY_REUSED`; a repeat while the first still runs, whos
 on the server whatever its client does (within the 30 s stop grace on a shutdown, past which the
 lease handover takes its key over) and renews its 60 s lease every 20 s until its ten-minute
 limit, is `409 KEY_IN_FLIGHT` with `Retry-After: 1`. Such a repeat is never spooled: the key layer
-reads its body off the connection and discards it, hashing it on the way, within `bodyDrainLimit`
-(a minute), then reads the key again and judges it by that digest (`answerDrainedRepeat`), so a
+reads its body off the connection and discards it, hashing it on the way, within the bounds the
+request's body arrives under (`transferBounds`: no silence longer than 20 s between its bytes, and
+32 KiB/s or better after a minute's grace), then reads the key again and
+judges it by that digest (`answerDrainedRepeat`), so a
 different body is `KEY_REUSED` and a first that answered meanwhile is replayed; a
 5xx, 401, 408 or 429 is not stored, so the next
 attempt runs again; and a repeat whose first request committed a write but whose answer was lost
@@ -771,7 +785,7 @@ untouched; a caller that resolves to nobody keeps the route's own `401` (`refuse
 | `/api/v1/asks/{id}` | GET | user or bearer | Read an ask with its replies, edits, followers and `answers`: every user-authored answer, oldest first, with a settlement's restoration of an earlier answer collapsed. It carries `anchor_block`, where the anchor's block stands (its path, and in a table the row, column and header), when the live document holds it. When Dispatch cannot read the anchor's document the read still answers, without `anchor_block` and with `anchor_block_error`, the code the API answers that error with elsewhere: `DOC_SERVICE_UNAVAILABLE` (its room or store could not be reached), `DOC_SCHEMA` (its live tree is outside the schema), `DOCUMENT_UNLOADABLE` (its stored history cannot load; a rebuild restores it) or `INTERNAL`. |
 | `/api/v1/asks/{id}` | PATCH | user or bearer | Edit one or more of `question`, `options`, `multiple`, or `urgency` while the ask is open. A credential holding the `person` scope may edit any open ask, and somebody else's is recorded as the person with the agent beside them; every other must be the asking session, whose own reword is recorded as that session, as it always was. The response has nullable `edited_at`; `ask.edited` records the full current ask, prior mutable fields, and `edited_by`. Ask anchors cannot be changed by this route. On a block ask the `:::ask` block is written in the same transaction and the row takes the block's parsed values, so the edit versions the document once and no settlement reverts it. Only the named fields are written: `urgency`/`multiple` alone go through the attribute path and leave the body's nodes, marks and inner block ids untouched, while naming `question` or `options` replaces that part with the markdown pipeline's own parse. A field named but unchanged is not rewritten, so an idempotent retry of the whole ask writes nothing, versions nothing, keeps every anchor and returns 200. Text the block cannot carry unchanged is `400 ASK_BLOCK_TEXT` naming the field, with nothing written. The text an edit writes is weighed before it is made into markdown - an element for each backslash, `*`, `_`, `~`, backtick, `[`, `]` and `<`, which its markdown escapes or reads as syntax, and two for each line feed (`pmdoc.WriteBudget.RefusePlainText`) - and its markdown is parsed on the write's element budget, so text past the 65,536 elements one write may make is `413 CAP_EXCEEDED` before it is rendered. An edit of a block ask that would leave the document's markdown (what `.../text` answers) longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, is `413 CAP_EXCEEDED` and the ask keeps its text. |
 | `/api/v1/asks/{id}/asked-of` | PUT | user or bearer, `person` scope | Hand an open ask to another person, `asked_of` being the email of somebody who has signed in. The ask waits on them from then on, wherever its issue goes, so their Inbox lists it and the first person's no longer does; naming the assignee of the ask's own issue stores no person, which gives the ask back to whoever holds the issue. Either way the row records who handed it on and when (`asked_of_by`, `asked_of_at`), and one `ask.asked_of` event carries the ask row with the person it waited on before and the one it waits on now as its `thread_logins`; no `ask.edited` is written, so the wording history and the edit list are untouched. A login nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`, read before the ask, so it answers that whatever state the ask is in; an ask that is not open is `409 ASK_NOT_OPEN` and one whose issue is closed `409 ISSUE_CLOSED`. A credential without the `person` scope is `403 OAUTH_SCOPE_REQUIRED` before the handler runs: handing a question on is one person asking another, and no agent of a deployment may choose who answers. |
-| `/api/v1/asks/{id}/answer` | POST | user or bearer, `person` scope, and `approve` for an ask of kind `approval` | Answer an open ask, or change the current answer with `expected_answer_at` set to that answer's `at`. Without it an answered ask is `409 ASK_CLOSED`. A stale value, or one sent for an open ask, is `409 ASK_ANSWER_CHANGED`; a different person is `403 NOT_ANSWERER`; an approval is `409 ASK_APPROVAL_REVIEW`. Answering an approval request approves its document, so it needs the `approve` scope besides, checked inside the transaction under the ask's row lock, since an ask's kind is known only once its row is read: a credential without it is `403 OAUTH_SCOPE_REQUIRED` under the same challenge header the gate gives. A change appends another `ask.answered` whose `previous_answer` is the replaced answer, so its asker and followers receive it through the same path as the first answer. An approval ask is moved to each document version before the human sees it, and an `ASK_EDITED` response means the question changed after the human reviewed it, so they reload and answer the moved request. On a block ask the answer is written into its block (`SetBlockAttributes`, through `applyLive`), and a changed answer without text removes the block's old `answer`. Its words and the options it chooses, whose labels are the asker's text, are caller text (`pmdoc.IsAnswerAttribute`): where they would leave the document's markdown longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, the ask still takes the whole answer and the block is written without them, saying who answered and when. Its state and who gave it and when are server state `refuseGrowth` does not weigh (`pmdoc.EqualOutsideServerState`), so the asks of a document already past those limits can still be answered. The answer is kept on the ask as well, and settlement writes it back into a block that leaves the document and returns, weighing each returning answer on its own in document order; one that would take the document past those limits and make it bigger stays on the ask alone and its block says who answered and when (`withholdAnswers`). |
+| `/api/v1/asks/{id}/answer` | POST | user or bearer, `person` scope, and `approve` for an ask of kind `approval` | Answer an open ask, or change the current answer with `expected_answer_at` set to that answer's `at`. Without it an answered ask is `409 ASK_CLOSED`. A stale value, or one sent for an open ask, is `409 ASK_ANSWER_CHANGED`; a different person is `403 NOT_ANSWERER`; an approval is `409 ASK_APPROVAL_REVIEW`. Answering an approval request approves its document, so it needs the `approve` scope besides, checked inside the transaction under the ask's row lock, since an ask's kind is known only once its row is read: a credential without it is `403 OAUTH_SCOPE_REQUIRED` under the same challenge header the gate gives. A change appends another `ask.answered` whose `previous_answer` is the replaced answer, so its asker and followers receive it through the same path as the first answer. An approval ask is moved to each document version before the human sees it, and an `ASK_EDITED` response means the question changed after the human reviewed it, so they reload and answer the moved request. On a block ask the answer is written into its block (`SetBlockAttributes`, through `applyLive`), and a changed answer without text removes the block's old `answer`. Its words and the options it chooses, whose labels are the asker's text, are caller text (`pmdoc.IsAnswerAttribute`): where they would leave the document's markdown longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, the ask still takes the whole answer and the block is written without them, saying who answered and when. Its state and who gave it and when are server state `refuseGrowth` does not weigh (`pmdoc.EqualOutsideServerState`), so the asks of a document already past those limits can still be answered. The answer is kept on the ask as well, and settlement writes it back into a block that leaves the document and returns, weighing each returning answer on its own in document order; one that would take the document past those limits and make it bigger stays on the ask alone and its block says who answered and when (`weighAnswers`). |
 | `/api/v1/asks/{id}/resolve` | POST | user or bearer | Retract or self-resolve an open ask with a recorded reason. On a block ask the block's `state` is written with it, so no later settlement reopens it or credits the repair to whoever next edits the document; being server state, it is not weighed, so an ask on a document past what one upload may hold can still be resolved. A reason beginning `removed from the document in version`, which marks a retraction settlement wrote, is `400 INVALID_RESOLUTION`. The kind is `retracted` or `resolved`, and any other is `400 INVALID_RESOLUTION`: `withdrawn` is the server's alone, written by an issue's close, and `declined` is the decline route's alone, written by a person who will not answer. An ask on a closed issue is `409 ISSUE_CLOSED`; reopen the issue first. |
 | `/api/v1/asks/{id}/decline` | POST | user or bearer, `person` scope | Decline to answer an open ask: the person closed the question without answering it. The body is `{note?, actor?}`, both optional - a person who writes no note declines all the same, and `actor` names the acting session a personal token's credential proves none of, as the answer route reads it. The note is trimmed, and one over `contracts.DispatchEventBodyMax` (32,000) UTF-16 units is `400 CAP_EXCEEDED`, refused before the transition opens its transaction, so nothing is written. The ask resolves with the kind `declined`, its `reason` the person's own note alone and its `dispatch_words` the four sentences Dispatch writes for the asking agent (`model.DeclineDispatchWords`), which tell it to decide without an answer, so no reader has to cut one out of the other. No note is refused for how it opens, since a decline is no retraction and nothing a person writes here can be read as settlement's own work. On a block ask the block's `state` is written as the resolve route writes it. An ask of kind `approval` is `409 ASK_NOT_DECLINABLE`, checked inside the transaction under the ask's row lock, as the answer route checks its own kind-dependent refusal: an approval request is answered `Approve` or `Request changes`. An ask on a closed issue is `409 ISSUE_CLOSED`. The whole resolution rides `ask.resolved` to every following session, `GET /api/v1/agents/{session_id}/answers` lists it under the relation `declined_your_ask`, and a write that opens another question on the issue is answered its `declined_asks`. |
 | `/api/v1/issues/{key}/comments` | GET, POST | user or bearer | List or create comments and suggestions. A comment's margin record - its body and replies, or a suggestion's and its replacement - holds at most 256 KiB of text, and a document's margin 1 MiB: a comment, reply, suggestion or edit that would leave either past its bound and bigger is `413 CAP_EXCEEDED`, naming the bound and both sizes. A quote anchor that would leave the marks on the document's text carrying more than 1 MiB of ids and authors, and more than they carried, is `413 CAP_EXCEEDED` too, as for an ask's. A reply's `reply_to_block` names the block of the comment `reply_to` names that it answers, checked against that comment before `reply_to` climbs to its thread's head, and with `ask_id` in place of `reply_to` one part of that ask (`400 INVALID_COMMENT` with neither, and for a block or part the named comment or ask does not hold now); the delivery callback `POST /api/v1/comments/{id}/reply` takes it for a block of comment `{id}`, never a part of the ask its thread hangs under. Every comment a route or event returns carries `reply_block` (`model.ReplyBlock`), `null` when it names no block, and `answers`, the comment the request named (`reply_to`, or comment `{id}` on the delivery callback) kept while `reply_to` climbs to the thread's head, `null` on a comment that answers none. A create with `mentions` resolves them before its transaction, 8 lookups at once, each bounded at 250 ms (a lookup cut short leaves its mention unresolved), so a listener that answers none delays a create with up to 8 mentions by one 250 ms timeout and each further 8 mentions add one (ceil(k/8) timeouts for k mentions); it commits each mention's first attempt pending with the comment, and answers with those attempts pending; the sends run after the response, per recipient in the order this process accepted the comments (the mention sender in `packages/envoy/AGENTS.md`), and each attempt settles through `comment.delivery`. |

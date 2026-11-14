@@ -550,8 +550,11 @@ func TestARefreshWithNoChangeReadsNoItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open a pool of one connection: %v", err)
 	}
-	t.Cleanup(raw.Close)
 	alone := store.NewPool(raw)
+	// The store's whole pool set closes, not only the pgx pool it wraps: a pool this one opens
+	// on demand would hold a connection to the test's database past the test, and one left open
+	// fails storetest's drop of that database on any login without pg_signal_backend.
+	t.Cleanup(alone.Close)
 
 	// The pass that empties the queue, so that the measured one has nothing to apply.
 	if _, err := refreshSearchTermStats(context.Background(), alone, fixture.project); err != nil {

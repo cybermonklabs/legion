@@ -17,11 +17,12 @@ import (
 // A leased maintenance loop holds a connection of the lease pool for the whole of each pass it
 // makes, and takes one even for a pass it skips because another process holds the lease
 // (duty.Exclusive), so the pool needs one connection per caller that can be inside Exclusive at
-// once. Its size says so in words (store.LeasePoolSize) and the wiring below is what has to match
-// it: a caller added here without a connection added there waits for one, for as long as the
-// longest pass then holding one, and nothing says so. The test counts this package's wiring out
-// of its own source and compares the count with the pool's size, so the next caller fails here
-// instead.
+// once. Its size says so in words (store.LeasePoolSize: a connection for every lease name
+// duty.Exclusive accepts, store.LeaseNameCount, and two spare for what holds one without being a
+// listed pass) and the wiring below is what has to match it: a caller added here without a name
+// and a connection added there waits for one, for as long as the longest pass then holding one,
+// and nothing says so. The test counts this package's wiring out of its own source and compares
+// the count with the lease names the pool is sized from, so the next caller fails here instead.
 
 // leaseCallers is how many callers each call site of the lease pool starts, where it is not one.
 // A site the map does not name counts as one, so a new leased loop needs no entry.
@@ -29,14 +30,17 @@ var leaseCallers = map[string]int{
 	// joinRegistry takes the pool as a parameter and passes it on to processes.RunPrune, the
 	// caller, which is counted at that call in registry.go.
 	"joinRegistry": 0,
+	// delivery.StartIntakes takes the pool and starts one intake per durable, each counted at
+	// its own call in the delivery package (intakeLeaseSites).
+	"delivery.StartIntakes": 0,
 }
 
-// selfOpeningLeaseSites are the call sites that start leased callers without taking this
-// package's lease value, because they open the lease pool themselves. delivery.StartIntakes does:
-// it opens the pool and starts one intake per durable, each reconciling its own durable under a
-// lease of that durable's name (delivery.consumerLease), so its count is read out of the delivery
-// package rather than written here and a third intake fails this test.
-var selfOpeningLeaseSites = map[string]string{
+// intakeLeaseSites are the call sites whose leased callers are counted out of another package
+// rather than at the site. delivery.StartIntakes is the one: main hands it the lease pool and it
+// starts one intake per durable, each reconciling its own durable under a lease of that durable's
+// name (delivery.consumerLease), so its count is read out of the delivery package and a third
+// intake fails this test.
+var intakeLeaseSites = map[string]string{
 	"delivery.StartIntakes": "StartIntakes",
 }
 
@@ -44,9 +48,10 @@ var selfOpeningLeaseSites = map[string]string{
 const deliveryPackage = "../../internal/dispatch/delivery"
 
 // Every caller of the lease pool has a connection of it: the wiring of this package, plus the
-// intakes' own, counts exactly store.LeasePoolSize callers.
+// intakes' own, counts exactly store.LeaseNameCount callers, which the pool holds a connection
+// for, with two spare (store.LeasePoolSize).
 func TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller(t *testing.T) {
-	intakes := leaseSitesIn(t, deliveryPackage, selfOpeningLeaseSites["delivery.StartIntakes"])
+	intakes := leaseSitesIn(t, deliveryPackage, intakeLeaseSites["delivery.StartIntakes"])
 	if len(intakes) == 0 {
 		t.Fatal("delivery.StartIntakes passes its lease pool to nothing, so this test counts no intake")
 	}
@@ -65,19 +70,19 @@ func TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller(t *testing.T) {
 		named = append(named, site.String())
 		callers++
 	}
-	if callers != store.LeasePoolSize {
+	if callers != store.LeaseNameCount {
 		sort.Strings(named)
-		t.Fatalf("the wiring starts %d callers of the lease pool, which holds %d connections (store.LeasePoolSize); the callers are:\n\t%s",
-			callers, store.LeasePoolSize, strings.Join(named, "\n\t"))
+		t.Fatalf("the wiring starts %d callers of the lease pool, which holds a connection for each of %d lease names (store.LeaseNameCount) and two spare (store.LeasePoolSize, %d); the callers are:\n\t%s",
+			callers, store.LeaseNameCount, store.LeasePoolSize, strings.Join(named, "\n\t"))
 	}
 }
 
-// Every lease pool in the server is opened in one of these two places, so the count above is the
-// whole of the wiring: a third opener would be leased callers nothing here counts.
+// The server opens one lease pool, in main, so the count above is the whole of the wiring: a
+// second opener would be leased callers nothing here counts. `delivery.StartIntakes` takes that
+// pool rather than opening one of its own, and its intakes are counted out of its package.
 func TestTheLeasePoolIsOpenedOnlyWhereTheCountReadsIt(t *testing.T) {
 	want := []string{
 		"cmd/dispatch/main.go: main",
-		"internal/dispatch/delivery/intakes.go: StartIntakes",
 	}
 	got := leasePoolOpeners(t, ".", "../../internal")
 	if !slices.Equal(got, want) {

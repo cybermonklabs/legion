@@ -502,7 +502,7 @@ const blockIndexLeaseNamespace int32 = 0x4C4F4F50
 // pass never gave its lease back, and the window cannot be measured with the pass held off.
 const blockIndexLeaseWait = 2 * time.Minute
 
-// holdBlockIndexLease takes the block-index pass's own lease (docs.BlockIndexLease) and answers
+// holdBlockIndexLease takes the block-index pass's own lease (duty.BlockIndexLease) and answers
 // the call that gives it back. duty.Exclusive takes that lease before every pass and skips the
 // pass where another session holds it, so no block-index pass runs while this test holds it:
 // a window that owes the index of what it just wrote leaves that work to a tick after the lease
@@ -523,7 +523,7 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 	for {
 		var held bool
 		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
-			blockIndexLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
+			blockIndexLeaseNamespace, duty.BlockIndexLease).Scan(&held); err != nil {
 			conn.Release()
 			t.Fatalf("take the block-index lease: %v", err)
 		}
@@ -533,7 +533,7 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 		if time.Now().After(deadline) {
 			conn.Release()
 			t.Fatalf("the block-index pass held the %q lease for more than %s, so this window could not be measured with the pass held off:\n%s",
-				docs.BlockIndexLease, blockIndexLeaseWait, p.output.tail())
+				duty.BlockIndexLease, blockIndexLeaseWait, p.output.tail())
 		}
 		// pg_try_advisory_lock answers false rather than queueing behind the holder, so a pass
 		// running at this moment is waited out here: it gives the lease back when it ends.
@@ -541,7 +541,7 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 	}
 	return func() {
 		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
-			blockIndexLeaseNamespace, docs.BlockIndexLease); err != nil {
+			blockIndexLeaseNamespace, duty.BlockIndexLease); err != nil {
 			t.Errorf("give the block-index lease back: %v", err)
 		}
 	}

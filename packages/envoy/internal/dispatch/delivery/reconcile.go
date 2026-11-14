@@ -50,7 +50,9 @@ type Reconcile struct {
 	interval time.Duration
 }
 
-// NewReconcile builds a Reconcile.
+// NewReconcile builds a Reconcile reading and writing through pool: cmd/dispatch hands it the
+// background pool (store.Pool.Background), so a pass neither waits for the requests' connections
+// nor takes one.
 func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker) *Reconcile {
 	return &Reconcile{pool: pool, github: github, events: broker}
 }
@@ -90,21 +92,17 @@ func (r *Reconcile) HasApp() bool {
 	return r != nil && r.github != nil
 }
 
-// deliveryReconcileLease names the lease one reconcile pass runs under. Every pass searches and
-// lists GitHub against one installation's rate limit - a backfill is tens of thousands of
-// requests - so N processes reconciling is N times those calls for one result.
-const deliveryReconcileLease = "delivery-reconcile"
-
 // Run re-imports delivery facts on the interval it ticks on (ReconcileInterval unless TickEvery
 // shortened it) until ctx is cancelled. The first tick is jittered so a restart does not stampede
 // GitHub, and a server without App credentials logs once and stops: no import can be signed.
 //
-// Each pass runs under deliveryReconcileLease for one such interval, so one process reconciles
-// per interval however many serve the database: the two tickers are jittered to phases of their
-// own, so the second's tick lands between the first's rather than on it, and finds the interval
-// reconciled. leases is required: unlike StartIntakes, which opens the lease pool itself
-// because it is the boot's error-returning constructor, Run has no error to return, so it takes
-// the pool cmd/dispatch has already opened (and exits at boot without).
+// Each pass runs under duty.DeliveryReconcileLease for one such interval, so one process
+// reconciles per interval however many serve the database: every pass searches and lists GitHub
+// against one installation's rate limit - a backfill is tens of thousands of requests - so N
+// processes reconciling is N times those calls for one result. The two tickers are jittered to
+// phases of their own, so the second's tick lands between the first's rather than on it, and finds
+// the interval reconciled. leases is required, as it is of every leased loop: it is the pool
+// cmd/dispatch has already opened (and exits at boot without).
 func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 	if r.atStart && r.HasApp() {
 		r.leasedPass(ctx, leases, time.Now())
@@ -121,7 +119,7 @@ func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 // leasedPass runs one reconcile pass under the lease, for the interval this loop ticks on and
 // the tick due at due.
 func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, deliveryReconcileLease, due, r.tickInterval(), r.runOnce)
+	duty.Exclusive(ctx, leases, duty.DeliveryReconcileLease, due, r.tickInterval(), r.runOnce)
 }
 
 // runOnce performs one reconcile pass: the pull-request head refresh, then — where delivery is

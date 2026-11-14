@@ -18,8 +18,10 @@ import (
 // row the first had already labelled for no row of its own.
 //
 // Lower case and hyphenated, saying what the pass does rather than which release wanted it, as
-// every other lease name is (they are listed in store.LeasePoolSize's comment).
-const embeddingProjectKeyFillLease = "embeddings-project-key-fill"
+// every other lease name is. The name itself is duty's, since Exclusive refuses a name that is
+// not on its list and the lease pool holds a connection for each listed name
+// (duty.EmbeddingProjectKeyFillLease, store.LeaseNameCount).
+const embeddingProjectKeyFillLease = duty.EmbeddingProjectKeyFillLease
 
 // embeddingProjectKeyFillRetry is how long a process waits before trying for the lease again
 // after a try that neither finished the labelling nor ran at all. Five minutes: the pass itself

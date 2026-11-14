@@ -365,7 +365,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 	}
 	var input inboxReadRequest
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.ReadThrough == nil {
@@ -376,17 +376,17 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 	// the server clock than a minute - and then carried on as the caller's own text, which the
 	// statements cast.
 	if _, err := parseAgentStateCutoff("read_through", input.ReadThrough); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	scope, err := parseInboxReadScope(input.inboxThreadFilters)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	marked, events, err := s.markInboxReadThreads(r.Context(), actor, *input.ReadThrough, scope)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), events...)

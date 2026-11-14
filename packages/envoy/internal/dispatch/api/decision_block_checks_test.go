@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -309,13 +310,114 @@ func TestDecisionBlockCheckOnAProjectDocumentLeavesTheDocumentOut(t *testing.T) 
 	}
 }
 
-// The checks of one edit's blocks run at once, and each reads its items' ask states and writes
-// its record on a connection of its own: every block whose question restates an ask is offered
-// that ask with its state on the item, and every block's check is recorded.
-// On the request's one connection mark, one check's open cursor had the pool refuse another's
-// ask-state read and record (store.ErrNestedAcquire), which dropped the state and the row. Every
-// ask shares a word with every block and carries a long answer, so each check reads every ask's
-// state and its cursor stays open over several network reads, which is when the others collided.
+// routeWeightOf is the admission weight the table gives one route: the most request-pool
+// connections a request of it may hold at once (apiRoute.Weight, a weight below one being one).
+func routeWeightOf(t *testing.T, method, pattern string) int32 {
+	t.Helper()
+	for _, route := range (&server{}).routes() {
+		if route.Method == method && route.Pattern == pattern {
+			return int32(max(route.Weight, 1))
+		}
+	}
+	t.Fatalf("no route %s %s in the table", method, pattern)
+	return 0
+}
+
+// An edit holds no more request-pool connections than its route's admission weight, whatever its
+// decision blocks: its checks run one after another, so only one check's reads are in flight,
+// where five at once asked for three connections each against a route admission counted one
+// connection for. The one check the edit is running is held where each of its three reads has
+// taken its connection - the keyword search in its open rows (relatedSearchEntered), the meaning
+// stage in its scan transaction (meaningSearchEntered) and the cross-project leg in its own
+// (crossProjectScanEntered) - and each is let go only when this test lets it go, so what the
+// edit holds is read while all three stand still rather than sampled for a peak.
+//
+// The server has an embedder: without one a check stops at its keyword stage
+// (relatedReasonNoEmbedder) and holds one connection, which would leave the weight the route is
+// admitted for measured by a third of the check it is for. Its settlement cannot fire while the
+// three are held (settle), so the check's own reads are every connection of the request pool
+// there is to count.
+func TestAnEditHoldsNoMoreConnectionsThanItsRouteWeighs(t *testing.T) {
+	embedder := &fakeEmbedder{}
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{embedder: embedder, settle: time.Hour})
+	createSuggestionProject(t, handler, "WGHT")
+	createSearchIssue(t, handler, "WGHT", "Dashboard ledger for zymurgy batches", "")
+	spec := "# Spec\n\nPlanning notes.\n"
+	issue := createAdviceIssue(t, handler, "WGHT", "Five decisions", &spec)
+	refreshTermStats(t, database, "WGHT")
+	// The seeds' own checks are over before the marks below are armed, and the pool holds
+	// nothing again, so every connection counted while they are held is this edit's.
+	awaitQuietRequestPool(t, database.Pool)
+
+	release := make(chan struct{})
+	var released sync.Once
+	releaseChecks := func() { released.Do(func() { close(release) }) }
+	defer releaseChecks()
+	// Each mark reports the first read that reaches it and holds that read, its connection
+	// taken, until the test releases every one of them. The later checks' reads pass straight
+	// through a closed release.
+	mark := func() (<-chan struct{}, func()) {
+		entered, once := make(chan struct{}), &sync.Once{}
+		return entered, func() {
+			once.Do(func() { close(entered) })
+			<-release
+		}
+	}
+	keyword, holdKeyword := mark()
+	meaning, holdMeaning := mark()
+	cross, holdCross := mark()
+	served.relatedSearchEntered = holdKeyword
+	served.meaningSearchEntered = holdMeaning
+	served.crossProjectScanEntered = holdCross
+
+	markdown := make([]string, 0, decisionBlockCheckLimit)
+	for index := range decisionBlockCheckLimit {
+		markdown = append(markdown, fmt.Sprintf(":::ask{#choice%d}\nWhich zymurgy ledger layout %d?\n:::", index, index))
+	}
+	edited := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		edited <- editDocument(t, handler, issue.PrimaryArtifactID, insertAtEnd(strings.Join(markdown, "\n\n")))
+	}()
+	awaitMark := func(what string, entered <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-entered:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("the edit's check never reached its %s read with a connection in hand", what)
+		}
+	}
+	awaitMark("keyword", keyword)
+	awaitMark("meaning", meaning)
+	awaitMark("cross-project", cross)
+
+	// All three reads of the one check the edit is running are held, so this is what the edit
+	// holds at its most, read rather than raced for.
+	held := database.Pool.Stat().AcquiredConns()
+	if weight := routeWeightOf(t, http.MethodPost, "/api/v1/artifacts/{id}/edits"); held != weight {
+		t.Errorf("an edit adding %d decision blocks held %d request-pool connections with its check's keyword, meaning and cross-project reads all held, want exactly its route's weight %d",
+			decisionBlockCheckLimit, held, weight)
+	}
+
+	releaseChecks()
+	checks, present := decisionBlockChecksOf(t, <-edited)
+	if !present || len(checks) != decisionBlockCheckLimit {
+		t.Fatalf("decision_block_checks = %+v (present %t), want %d", checks, present, decisionBlockCheckLimit)
+	}
+	for index, check := range checks {
+		if check.Suggestions == nil || check.Suggestions.Outcome == "not_made" {
+			t.Fatalf("check %d = %+v, want it made once the reads were let go", index, check.Suggestions)
+		}
+	}
+}
+
+// Every one of an edit's blocks is checked whole, and each reads its items' ask states and
+// writes its record: every block whose question restates an ask is offered that ask with its
+// state on the item, and every block's check is recorded. The checks ran at once once, and on
+// the request's one connection mark one check's open cursor had the pool refuse another's
+// ask-state read and record (store.ErrNestedAcquire), which dropped the state and the row; they
+// run one after another now (decisionBlockChecks), each on a mark of its own. Every ask shares
+// a word with every block and carries a long answer, so each check reads every ask's state over
+// several network reads.
 func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RACE")

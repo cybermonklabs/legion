@@ -191,7 +191,7 @@ func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 		t.Fatalf("begin replace transaction: %v", err)
 	}
 	actor := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	if _, err := service.ReplaceText(joined, artifactID, "# Rolled back", actor); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestTransactionalApplySchedulesSettlementAfterCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "replace", Find: "before", With: "after"}}, model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil); err != nil {
 		t.Fatalf("apply transactional edit: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestTransactionalApplyRefreshesAnchoredComment(t *testing.T) {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	joined, ledger := service.Join(context.Background(), tx)
+	joined, ledger := service.Join(gated(t, service, context.Background(), artifactID), tx)
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{
 		{Op: "insert", Markdown: "before ", Before: "target"},
 	}, model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil); err != nil {
@@ -343,7 +343,7 @@ func TestClosedIssueTakesOnlyCommentMarksUnderWithCommentMarks(t *testing.T) {
 	}
 
 	var anchored Anchored
-	if err := joinedWrite(service, func(ctx context.Context) (err error) {
+	if err := joinedWrite(service, artifactID, func(ctx context.Context) (err error) {
 		ctx = WithCommentMarks(ctx)
 		if anchored, err = service.MarkQuote(ctx, artifactID, comment, "before", nil); err != nil {
 			return err
@@ -375,7 +375,7 @@ func TestClosedIssueTakesOnlyCommentMarksUnderWithCommentMarks(t *testing.T) {
 			return err
 		},
 	} {
-		if err := joinedWrite(service, func(ctx context.Context) error {
+		if err := joinedWrite(service, artifactID, func(ctx context.Context) error {
 			return write(WithCommentMarks(ctx))
 		}); !errors.Is(err, ErrIssueClosed) {
 			t.Fatalf("%s under WithCommentMarks on a closed issue = %v, want ErrIssueClosed", name, err)
@@ -555,7 +555,7 @@ func TestNamedVersionKeepsTheCreditOfAnEditItsAuthorMakesBeforeItCommits(t *test
 		t.Fatalf("begin edit transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "replace", Find: "Second.", With: "Second, agent."}}, agent, nil); err != nil {
 		t.Fatalf("apply the agent's edit: %v", err)
@@ -603,7 +603,7 @@ func TestNamedVersionCreditsNoAuthorOfAnEditMadeAfterItsForkRead(t *testing.T) {
 		t.Fatalf("begin edit transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "replace", Find: "Second.", With: "Second, agent."}}, agent, nil); err != nil {
 		t.Fatalf("apply the agent's edit: %v", err)
@@ -801,7 +801,7 @@ func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSet
 		t.Run(unchanged.name, func(t *testing.T) {
 			before := liveWritesOf(t, service, artifactID)
 			var answered error
-			if err := joinedWrite(service, func(ctx context.Context) error {
+			if err := joinedIssueWrite(service, "DOC-1", func(ctx context.Context) error {
 				tx, _ := txFromContext(ctx)
 				// The issue route holds the issue's row before it writes any document.
 				if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {

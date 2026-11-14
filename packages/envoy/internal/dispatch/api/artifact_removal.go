@@ -64,7 +64,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// the spec, of a role document or of anything that is no document waits for no lock a room's
 	// own writers hold.
 	if refusal := artifactRowIsUntouched(artifact); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return
 	}
 	// The document's room, taken after the owner's row and before anything of the document is
@@ -72,47 +72,47 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// would be deleted with the document, and one still in flight at the artifact's own delete
 	// would meet the foreign key of doc_updates rather than this handler's refusal.
 	if err := docs.LockDocumentRoom(r.Context(), tx, artifact.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The refusals that need the lock: the versions, the edits that have not settled, what
 	// points at the document and what links to it.
 	if refusal := artifactIsUntouched(r.Context(), tx, artifact); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return
 	}
 	for _, clear := range artifactRemovalClears(artifact) {
 		if _, err := tx.Exec(r.Context(), clear.statement, clear.args...); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("clear the %s of the removed document: %w", clear.what, err))
+			s.writeHandlerError(w, r, fmt.Errorf("clear the %s of the removed document: %w", clear.what, err))
 			return
 		}
 	}
 	// What package refs holds for the document: its own mentions, the index it is owed and the
 	// backoff its own mentions were deferred under, through that package's own statements.
 	if err := refs.ForgetDocument(r.Context(), tx, artifact.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `delete from artifacts where id = $1`, artifact.ID); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("remove the document %s: %w", artifact.ID, err))
+		s.writeHandlerError(w, r, fmt.Errorf("remove the document %s: %w", artifact.ID, err))
 		return
 	}
 	// Every process closes its room of the document, from this transaction's commit. Sent here,
 	// after the row is gone and before the commit, for the reason the seam gives: a removal that
 	// fails to commit announces nothing.
 	if err := docs.AnnounceDocumentRemoved(r.Context(), tx, artifact.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(
 		"artifact.removed", actor, map[string]any{"artifact": artifact},
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

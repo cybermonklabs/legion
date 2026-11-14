@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -18,7 +19,9 @@ import (
 
 // The codes writeHandlerError answers a document it cannot read or serve and an unclassified
 // failure with, which a comment's or ask's single read also carries as anchor_block_error
-// (anchorBlock).
+// (anchorBlock). The codes of a request the server could not serve, and of a call it never got
+// an answer to, are admission's (admission.CodeDatabaseBusy,
+// admission.CodeCommitOutcomeUnknown).
 const (
 	codeDocSchema             = "DOC_SCHEMA"
 	codeDocServiceUnavailable = "DOC_SERVICE_UNAVAILABLE"
@@ -83,7 +86,26 @@ type editLostError struct {
 	Suggestion   *string       `json:"suggestion,omitempty"`
 }
 
-func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
+// writeHandlerError answers r, whose handler failed with err. A request the server could not
+// serve - its deadline passed, its client went away, or a bound of the server's own ended one of
+// its calls before the database answered it - and a call it never got an answer to, whose
+// outcome is unknown, are both admission.WriteUnserved's to answer, and it is asked first: a
+// retryable 503, a 429, nothing for a client that is gone, or the 500 naming the unknown
+// outcome. Whether this request can have written is what that answer turns on, and the route's
+// method is what says so (admission.Reads): no GET of the table writes. Only then is err mapped
+// to the failure it names.
+func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err error) {
+	if admission.WriteUnserved(w, r.Context(), err, !admission.Reads(r.Method)) {
+		return
+	}
+	// A write that waited for a document's writer gate gave its admission units back while it
+	// waited (docs.Service.AcquireDocumentWriter) and found no room to take them back: refused
+	// as admission refuses a request, before its transaction opened.
+	var refusal *admission.Refusal
+	if errors.As(err, &refusal) {
+		admission.WriteRefused(w, refusal)
+		return
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
 		if apiErr.retryAfter > 0 {
@@ -168,6 +190,8 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, docs.ErrPreconditionBusy) {
+		// Refused before its transaction opened, so nothing ran and the writer may retry.
+		w.Header().Set("Retry-After", admission.RetryAfter)
 		writeError(w, "EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
 		return
 	}

@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -318,8 +317,7 @@ func backfillFiles(ctx context.Context, args []string, databaseURL, bucket strin
 func loadServerURL(env settingValues) string {
 	envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{})
 	if err != nil {
-		slog.Error("dispatch: load envoy config", "error", err)
-		os.Exit(1)
+		fatal("dispatch: load envoy config", "error", err)
 	}
 	if envoyConfig.Dispatch == nil {
 		return ""

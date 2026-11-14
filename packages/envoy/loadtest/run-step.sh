@@ -4,9 +4,14 @@
 #   run-step.sh <name> --events <per s> --sessions <n> --requests <per s>
 #     [--duration 180s] [--warmup 30s] [--grace 20s] [--event-mix <preset or kind=w,...>]
 #     [--route-mix <file>] [--human 0.1] [--live <n>] [--rng-seed <n>] [--heap-samples]
+#     [--schedule <factor>x:<duration>,...] [--recovery-ref-p99 <ms>]
 #     [--out <dir>] [--live-resume 0|1] [--live-stale <n>] [--restart-at <duration>]
 #     [--mention-frac <0..1>] [--mentions <n>] [--envoy-rtt <duration>]
 #     [--editors 0] [--editor-rate 2] [--editor-docs 10]
+#
+# --schedule varies the load over the window: each factor multiplies --events and --requests for its
+# duration, and the window is the schedule's total (a --duration given must equal it). Both flags go
+# to `loadgen run` as -schedule and -recovery-ref-p99 (README.md, "Load schedule and recovery").
 #
 #   run-step.sh <name> --replay [--rate F] [--reads RHO] [--read-mix M] [--uploads U]
 #     [--rng-seed N] [--from D --to D] [--roster N] [--keys-file FILE] [--warmup D]
@@ -132,7 +137,7 @@ while [ $# -gt 0 ]; do
       --events) have_events=true ;;
       --sessions) have_sessions=true ;;
       --requests) have_requests=true ;;
-      --duration | --warmup | --grace | --event-mix | --human | --live | --rng-seed | --live-stale | --restart-at | --mention-frac | --mentions) ;;
+      --duration | --warmup | --grace | --event-mix | --human | --live | --rng-seed | --schedule | --recovery-ref-p99 | --live-stale | --restart-at | --mention-frac | --mentions) ;;
       --editors | --editor-rate | --editor-docs) ;;
       --live-resume)
         case $value in

@@ -262,9 +262,11 @@ type unitStart struct {
 // proposal follows its arrival in the stream, as every openLoopPlan generator draws what an
 // arrival does, so one -rng-seed gives one schedule and one placement; fn returns false to end
 // the walk. A start no proposal had room for is dropped, counted as a spill, and fn never sees it.
+// Its rate is flat over the whole step, -schedule or no -schedule: the factors multiply the two
+// generators' rates (-events and -requests), and a session's life is no part of that load.
 func planUnitStarts(rngSeed uint64, rate float64, life time.Duration, p *unitPlacer, start, winStart, winEnd time.Time, fn func(unitStart) bool) {
 	n := 0
-	openLoopPlan(rngSeed, unitStartStream, rate, start, winStart, winEnd, func(r *rand.Rand, next time.Time, _ bool) bool {
+	openLoopPlan(rngSeed, unitStartStream, ratePlan(rate, start, winStart, nil), winStart, winEnd, func(r *rand.Rand, next time.Time, _ bool) bool {
 		x := r.Float64()
 		at, _ := p.take(next, x, life)
 		if at < 0 {

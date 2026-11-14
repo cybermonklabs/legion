@@ -46,40 +46,48 @@ type sample struct {
 	// MemStatsHeapInuse is an older run's heap read (samples.json `heap_inuse`): runtime.MemStats
 	// HeapInuse from /debug/pprof/heap?debug=1. A run now never writes it; it is read only to
 	// render an older step directory, under its own label.
-	MemStatsHeapInuse float64            `json:"heap_inuse,omitzero"`
-	HeapAt            time.Time          `json:"heap_at,omitzero"`
-	HeapInWindow      bool               `json:"heap_in_window,omitempty"`
-	NATS              map[string]float64 `json:"nats"`
-	InWindow          bool               `json:"in_window"`
+	MemStatsHeapInuse float64   `json:"heap_inuse,omitzero"`
+	HeapAt            time.Time `json:"heap_at,omitzero"`
+	HeapInWindow      bool      `json:"heap_in_window,omitempty"`
+	// Metrics is Dispatch's /metrics: every dispatch_* series, by metricKey; absent when the
+	// scrape failed.
+	Metrics  map[string]float64 `json:"metrics,omitempty"`
+	NATS     map[string]float64 `json:"nats"`
+	InWindow bool               `json:"in_window"`
 	// FailedReads names the reads of this sample that failed: readPostgres, readGoroutines,
-	// readHeap, readNATS. Their values above stay 0 (NATS empty) and enter no statistic.
+	// readHeap, readMetrics, readNATS. Their values above stay 0 (Metrics absent, NATS empty) and
+	// enter no statistic.
 	FailedReads []string `json:"failed_reads,omitempty"`
 }
 
 // The sampler's reads that can fail, as sample.FailedReads names them: pg_stat_activity (a failed
-// connect included), Dispatch's goroutine and heap profiles, and NATS /varz.
+// connect included), Dispatch's goroutine and heap profiles, its /metrics, and NATS /varz. A failed
+// metrics scrape is a skipped metrics sample (summarizeMetrics), not one of the failed reads that
+// mark a Resources row: a Dispatch build without the endpoint fails every one.
 const (
 	readPostgres   = "postgres"
 	readGoroutines = "goroutines"
 	readHeap       = "heap"
+	readMetrics    = "metrics"
 	readNATS       = "nats"
 )
 
 // sampler takes a sample every 5 s: CPU and RSS of each stack process and of loadgen from /proc,
-// Postgres connections, Dispatch's goroutines and pool waiters, NATS /varz and /jsz, and the
-// pull-request counts of the pull spy. It reads no heap profile unless heapSamples is set: the
-// profile is written inside Dispatch, so the harness would charge its own sampling to the process
-// it measures (README.md, "Why the harness reads no heap profile in the window"). With it,
-// Dispatch's heap is read on its own every 15 s (readHeaps), so that a slow read of a large heap
-// delays no sample. A failed Postgres, pprof or NATS /varz read is marked in its sample
-// (sample.FailedReads); a /jsz read that fails leaves its keys out of the sample. At each sample
-// it also checks that every stack process is alive (checkAlive). It reads stack.json again at
-// each sample, so a process stack.sh restarted is followed to its new pid, and each process's CPU
-// ticks run on across its pids (cpuStitch).
+// Postgres connections, Dispatch's goroutines and pool waiters, its /metrics, NATS /varz and
+// /jsz, and the pull-request counts of the pull spy. It reads no heap profile unless heapSamples
+// is set: the profile is written inside Dispatch, so the harness would charge its own sampling
+// to the process it measures (README.md, "Why the harness reads no heap profile in the window").
+// With it, Dispatch's heap is read on its own every 15 s (readHeaps), so that a slow read of a
+// large heap delays no sample. A failed Postgres, pprof, metrics or NATS /varz read is marked in
+// its sample (sample.FailedReads); a /jsz read that fails leaves its keys out of the sample. At
+// each sample it also checks that every stack process is alive (checkAlive). It reads stack.json
+// again at each sample, so a process stack.sh restarted is followed to its new pid, and each
+// process's CPU ticks run on across its pids (cpuStitch).
 type sampler struct {
 	pids      map[string]int // by name; "postgres" is the postmaster
 	stackPath string         // stack.json, read again at each sample; empty under -allow-foreign
 	pprof     string
+	metrics   string // Dispatch's metrics base URL; empty under -allow-foreign without -metrics
 	natsMon   string
 	pgURL     string
 	stitch    map[string]*cpuStitch // by name
@@ -105,7 +113,7 @@ type stackExit struct {
 }
 
 func newSampler(ep endpoints) *sampler {
-	s := &sampler{pids: maps.Clone(ep.pids), pprof: ep.pprof, natsMon: ep.natsMon, pgURL: ep.pg,
+	s := &sampler{pids: maps.Clone(ep.pids), pprof: ep.pprof, metrics: ep.metrics, natsMon: ep.natsMon, pgURL: ep.pg,
 		stitch: map[string]*cpuStitch{}, kick: make(chan struct{}, 1), exits: map[string]stackExit{}}
 	if len(ep.pids) > 0 {
 		s.stackPath = ep.stack
@@ -380,16 +388,18 @@ func boxBusy(ctx context.Context, window time.Duration) (float64, bool) {
 }
 
 // loop samples every 5 s until ctx ends. A failed read is marked in its sample and logged as
-// readErrors does, one count each for the Postgres, the pprof and the NATS reads. A read that
-// failed once ctx had ended is neither marked nor counted, as poll does. Under heapSamples the
-// heap reads run in readHeaps; each sample takes the one that has ended since the last sample, if
-// any, in place of reading the heap itself. A heap read that ends once the last sample is taken
-// is lost. Without heapSamples readHeaps never starts, so the window holds no request to
+// readErrors does, one count each for the Postgres, the pprof, the metrics and the NATS reads.
+// Without a metrics endpoint every sample's scrape is marked failed, unlogged. A read that failed
+// once ctx had ended is neither marked nor counted, as poll does. Under heapSamples the heap
+// reads run in readHeaps; each sample takes the one that has ended since the last sample, if any,
+// in place of reading the heap itself. A heap read that ends once the last sample is taken is
+// lost. Without heapSamples readHeaps never starts, so the window holds no request to
 // /debug/pprof/heap and no sample carries a heap read.
 func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.Logger) {
 	var pg *pgx.Conn
 	pgErrs := readErrors{name: "sampler: postgres", lg: lg}
 	pprofErrs := readErrors{name: "sampler: pprof", lg: lg}
+	metricsErrs := readErrors{name: "sampler: metrics", lg: lg}
 	natsErrs := readErrors{name: "sampler: nats", lg: lg}
 	heaps, heapsDone := make(chan heapRead, 1), make(chan struct{})
 	if s.heapSamples {
@@ -406,6 +416,7 @@ func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.
 		}
 		pgErrs.done()
 		pprofErrs.done()
+		metricsErrs.done()
 		natsErrs.done()
 		<-heapsDone // loop returns only once ctx has ended, which ends readHeaps
 	}()
@@ -474,6 +485,11 @@ func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.
 				sm.HeapLiveBytes, sm.HeapLiveObjects = h.bytes, h.objects
 			}
 		default:
+		}
+		if s.metrics == "" {
+			sm.FailedReads = append(sm.FailedReads, readMetrics)
+		} else if sm.Metrics, err = scrapeMetrics(s.metrics); err != nil {
+			failed(readMetrics, &metricsErrs, err)
 		}
 		if v, err := natsVarz(s.natsMon); err != nil {
 			failed(readNATS, &natsErrs, err)
@@ -1028,6 +1044,11 @@ func trends(win []sample) map[string]trend {
 }
 
 func logSamplerStart(lg *log.Logger, ep endpoints) {
+	if ep.metrics == "" {
+		lg.Printf("sampler: no -metrics endpoint (-allow-foreign): every metrics sample is skipped, so the Pools and admission columns stay empty")
+	} else {
+		lg.Printf("sampler: metrics %s/metrics", redactURL(ep.metrics))
+	}
 	names := make([]string, 0, len(ep.pids))
 	for name, pid := range ep.pids {
 		names = append(names, fmt.Sprintf("%s=%d", name, pid))

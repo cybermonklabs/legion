@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 )
 
@@ -97,11 +98,26 @@ func (NoBrowserIdentity) Login(*http.Request) (string, error) {
 // that needs the sign-in issuer while the issuer cannot be reached.
 const signInUnavailableMessage = "the sign-in issuer cannot be reached; try again in a minute"
 
-// WriteError renders an Identity error, or a sign-in's, as Dispatch's JSON error response: 401
-// NO_IDENTITY for ErrNoIdentity; 503 SIGNIN_UNAVAILABLE for ErrSignInUnavailable (Membership: the
-// person stays signed in, and the first request after the issuer answers is served); and 500
-// IDENTITY_ERROR for anything else.
-func WriteError(w http.ResponseWriter, err error) {
+// WriteError renders an Identity error, or a sign-in's, for request r as Dispatch's JSON error
+// response: 401 NO_IDENTITY for ErrNoIdentity; 503 SIGNIN_UNAVAILABLE for ErrSignInUnavailable
+// (Membership: the person stays signed in, and the first request after the issuer answers is
+// served); and 500 IDENTITY_ERROR for anything else. A lookup that failed because r could not be
+// served - its deadline passed, its client went away, or a bound of the server's own ended one
+// of its calls before the database answered it - is answered as admission.WriteUnserved answers
+// it, a retryable 503 or nothing, rather than as a failure of the identity service. An
+// unreachable sign-in issuer is answered as itself: the timeout its error carries is the call to
+// the issuer's, which no longer reads as a want of database room (store.IsPoolBusy).
+//
+// Resolving the caller reads (CookieIdentity.Login), and a lapsed membership's renewal also
+// writes the person's own row - its confirmation, or the end of its sign-in (Membership.refresh,
+// SignInRule.WriteConfirm, SignInRule.End) - outside any transaction. So a statement the
+// database stopped answering here may have committed, and the request's method decides as it
+// does everywhere else (admission.Reads): a read is told to try again, since repeating it only
+// re-runs the same idempotent update of that row, and a write is told its outcome is unknown.
+func WriteError(w http.ResponseWriter, r *http.Request, err error) {
+	if admission.WriteUnserved(w, r.Context(), err, !admission.Reads(r.Method)) {
+		return
+	}
 	status := http.StatusInternalServerError
 	body := map[string]string{"error": "identity resolution failed", "code": "IDENTITY_ERROR"}
 	switch {

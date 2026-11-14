@@ -92,7 +92,9 @@ type hubEventFeed struct {
 // write anywhere on the instance can hold back, which is why it does not run on the intake's
 // goroutine: the hub's ready, its delivery changes and its views' answers do not wait for the
 // event horizon. The open P0 issues are read after the subscription stands, so they hold every
-// event at or below its head, none of which arrives on the feed.
+// event at or below its head, none of which arrives on the feed. Both reads go through the live
+// pool (liveRead), as every other read of the hub and of the relay does, so a generation seeds
+// while the requests hold every connection of theirs.
 //
 // A subscribe or a read that fails is tried again after the listener's redial backoff. The hand
 // over gives up when g ends, so a feed the intake will never take leaves no goroutine behind for
@@ -102,10 +104,14 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 	go func() {
 		defer h.running.Done()
 		for attempt := 1; ; attempt++ {
-			feed, err := h.server.eventRelay.subscribe(g.readContext(), deliveryHubFeedBuffer)
+			ctx, live, err := h.liveRead(g)
+			var feed relaySubscription
+			if err == nil {
+				feed, err = h.server.eventRelay.subscribe(ctx, deliveryHubFeedBuffer)
+			}
 			var p0 map[string]struct{}
 			if err == nil {
-				if p0, err = delivery.OpenP0Keys(g.readContext(), h.server.deps.Store.Pool); err != nil {
+				if p0, err = delivery.OpenP0Keys(ctx, live); err != nil {
 					feed.cancel()
 				}
 			}
@@ -140,10 +146,13 @@ func (h *deliveryHub) applyFeed(g *hubGeneration, taken hubEventFeed) {
 	h.note(deliveryHubNote{what: "events seeded", eventID: taken.feed.head})
 }
 
-// readChangeCursor reads where the delivery change log stands.
+// readChangeCursor reads where the delivery change log stands, through the live pool (liveRead).
 func (h *deliveryHub) readChangeCursor(g *hubGeneration) bool {
-	ctx, pool := g.readContext(), h.server.deps.Store.Pool
-	seq, err := delivery.LatestChangeSeq(ctx, pool)
+	ctx, pool, err := h.liveRead(g)
+	var seq int64
+	if err == nil {
+		seq, err = delivery.LatestChangeSeq(ctx, pool)
+	}
 	var at *time.Time
 	if err == nil && seq > 0 {
 		at, err = delivery.ChangeAt(ctx, pool, seq)
@@ -168,13 +177,16 @@ func (h *deliveryHub) catchUp(g *hubGeneration) {
 	}
 }
 
-// catchUpChanges reads every delivery change after the cursor, marking the views each can touch.
-// Before each read it checks for a reset log: one holding no row as far as the cursor, or one whose
-// row at the cursor was recorded at another time than the hub read (a TRUNCATE ... RESTART IDENTITY
-// refilled past it, e2e/seed.ts:150). A reset moves the cursor to the newest row and marks every
-// view dirty.
+// catchUpChanges reads every delivery change after the cursor, marking the views each can touch,
+// through the live pool (liveRead). Before each read it checks for a reset log: one holding no row
+// as far as the cursor, or one whose row at the cursor was recorded at another time than the hub
+// read (a TRUNCATE ... RESTART IDENTITY refilled past it, e2e/seed.ts:150). A reset moves the
+// cursor to the newest row and marks every view dirty.
 func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
-	ctx, pool := g.readContext(), h.server.deps.Store.Pool
+	ctx, pool, err := h.liveRead(g)
+	if err != nil {
+		return err
+	}
 	for {
 		h.mu.Lock()
 		seq, at := g.changeSeq, g.changeAt

@@ -27,12 +27,12 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		where project_key = $1 order by id
 	`, project)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	tree.Sources, err = pgx.CollectRows(rows, pgx.RowToStructByPos[model.ArchitectureTreeSource])
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if len(tree.Sources) == 0 {
@@ -41,7 +41,7 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	}
 	components, byID, err := loadTreeComponents(r.Context(), pool, project)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Each component's prose is registered with the request's reader as the component is shaped
@@ -50,11 +50,11 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	issues, err := loadTreeIssues(r.Context(), pool, project)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := attachTreeIssues(r.Context(), pool, project, issues, byID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 

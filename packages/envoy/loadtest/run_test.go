@@ -24,7 +24,7 @@ import (
 // arrivals runs openLoop over times in the past, so it never sleeps, and records each arrival:
 // whether it is in the window, and the plan that fire draws from the stream after it.
 func arrivals(seed uint64, rate float64, start, winStart, winEnd time.Time) (in []bool, plans []uint64) {
-	openLoop(context.Background(), seed, 1, rate, start, winStart, winEnd, func(r *rand.Rand, inWindow bool) {
+	openLoop(context.Background(), seed, 1, ratePlan(rate, start, winStart, nil), winStart, winEnd, func(r *rand.Rand, _ time.Time, inWindow bool) {
 		in = append(in, inWindow)
 		plans = append(plans, r.Uint64())
 	})
@@ -411,7 +411,7 @@ func TestLoopStepPlansTheSameWritesAndReadsTwice(t *testing.T) {
 			}
 		})
 		var reads []string
-		openLoopPlan(c.rngSeed, requestStream, c.requests, st.start, st.winStart, st.winEnd, func(r *rand.Rand, _ time.Time, in bool) bool {
+		openLoopPlan(c.rngSeed, requestStream, st.ratePlan(c.requests), st.winStart, st.winEnd, func(r *rand.Rand, _ time.Time, in bool) bool {
 			_, path := st.requestPath(st.pops[0], r)
 			if in {
 				reads = append(reads, path)
@@ -568,7 +568,7 @@ func stepPlan(st *step, p *population) ([]eventPlan, []string) {
 		}
 	})
 	var reads []string
-	openLoopPlan(st.cfg.rngSeed, p.requestStream, p.requests, st.start, st.winStart, st.winEnd,
+	openLoopPlan(st.cfg.rngSeed, p.requestStream, st.ratePlan(p.requests), st.winStart, st.winEnd,
 		func(r *rand.Rand, _ time.Time, in bool) bool {
 			_, path := st.requestPath(p, r)
 			if in {

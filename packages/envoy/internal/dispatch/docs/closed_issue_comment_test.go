@@ -34,7 +34,7 @@ import (
 // record and the version the anchor is pinned to.
 func commentAnchor(service *Service, artifactID, markID, quote string, actor model.Actor) (Anchored, error) {
 	var anchored Anchored
-	err := joinedWrite(service, func(ctx context.Context) (err error) {
+	err := joinedWrite(service, artifactID, func(ctx context.Context) (err error) {
 		ctx = WithCommentMarks(ctx)
 		mark := MarkSpec{Kind: MarkComment, ID: markID, By: actor}
 		if anchored, err = service.MarkQuote(ctx, artifactID, mark, quote, nil); err != nil {
@@ -235,7 +235,7 @@ func TestAnAnchoredCommentOnAClosedIssuePinsAStoredVersionWhileItsRoomHoldsAnUns
 	service.beforeFailedEviction = func(string) { failed.Store(true) }
 	var anchored Anchored
 	var snapshot VersionResult
-	if err := joinedWrite(service, func(ctx context.Context) (err error) {
+	if err := joinedWrite(service, artifactID, func(ctx context.Context) (err error) {
 		ctx = WithCommentMarks(ctx)
 		if anchored, err = service.VerifyMark(ctx, artifactID, MarkComment, "c1"); err != nil {
 			return err
@@ -263,7 +263,7 @@ func TestAnAnchoredCommentOnAClosedIssuePinsAStoredVersionWhileItsRoomHoldsAnUns
 	if !strings.Contains(markdown, "before the close") || strings.Contains(markdown, "typed in the room") {
 		t.Fatalf("the pinned version reads %q, want the stored document the mark is in", markdown)
 	}
-	if err := joinedWrite(service, func(ctx context.Context) error {
+	if err := joinedWrite(service, artifactID, func(ctx context.Context) error {
 		_, err := service.VerifyMark(WithCommentMarks(ctx), artifactID, MarkComment, "c1")
 		return err
 	}); err != nil {
@@ -305,7 +305,7 @@ func browserCommentMark(t *testing.T, service *Service, artifactID, markID, text
 func verifyAndPin(service *Service, artifactID, markID string, actor model.Actor) (Anchored, VersionResult, error) {
 	var anchored Anchored
 	var snapshot VersionResult
-	err := joinedWrite(service, func(ctx context.Context) (err error) {
+	err := joinedWrite(service, artifactID, func(ctx context.Context) (err error) {
 		ctx = WithCommentMarks(ctx)
 		if anchored, err = service.VerifyMark(ctx, artifactID, MarkComment, markID); err != nil {
 			return err

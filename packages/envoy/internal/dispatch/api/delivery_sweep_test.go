@@ -425,6 +425,68 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 	}
 }
 
+// The delivery sweep's resume is background work the maintenance loop runs through the server
+// that answers the requests, and it takes none of their connections: a pass that settles a
+// mention attempt nothing can send and sends an owed message attempt, a keyed send with no attempt
+// and an owed mention attempt - its reads, claims, settles and the display trees of its receipts
+// all included - takes every connection from the background pool and none from the request pool.
+func TestTheDeliverySweepTakesNoRequestPoolConnection(t *testing.T) {
+	listener, sends := newBroadcastListener(t, agentSessions)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
+	rig := sweepRig{t: t, database: database}
+	issue := createTestIssue(t, handler, "BGPOOL", "Owed deliveries")
+	message := rig.strandMessages(issue, 1, "5 minutes")[0]
+	keyed := rig.strandKeyedSends(issue, 1, "5 minutes")[0]
+	gone := rig.strandMentions(issue, 1, "6 minutes", false)[0]
+	// A mention the sweep can send is one a comment write made, with the comment.created event its
+	// resend reads: its own send runs after the comment's response, and once it has settled the
+	// attempt is left as a sender that died inside the send leaves it.
+	posted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
+		sweepRoutes["a comment's mention"].body, "alice")
+	if posted.Code != http.StatusCreated {
+		t.Fatalf("post the mentioning comment: status=%d body=%s", posted.Code, posted.Body.String())
+	}
+	mention := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, posted).ID
+	settledCommentDeliveries(t, database, mention)
+	rig.exec(`
+		update comment_deliveries set state = 'pending', envelope_id = null,
+		       claimed_at = now() - interval '5 minutes', created_at = now() - interval '5 minutes'
+		where comment_id = $1
+	`, mention)
+
+	requests := settledAcquires(t, database, store.RequestsPool)
+	background := settledAcquires(t, database, store.BackgroundPool)
+	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	// The server's detached work alone: awaitBackgroundWrites reads the projects on the request
+	// pool itself, which would count as the sweep's.
+	served.detached.wait()
+	took := poolAcquires(database, store.RequestsPool) - requests
+	tookBackground := poolAcquires(database, store.BackgroundPool) - background
+
+	// The comment's own first send, then the sweep's three.
+	mentionKey := mention + ":session:s1:steer"
+	want := []string{mentionKey, mentionKey, message + ":steer", keyed + ":steer"}
+	slices.Sort(want)
+	if keys := keysOf(sends); !slices.Equal(keys, want) {
+		t.Fatalf("the sweep sent %v, want the owed attempts %v", keys, want)
+	}
+	if failed := rig.count(`
+		select count(*) from comment_deliveries where comment_id = $1 and state = 'failed' and error = $2
+	`, gone, undeliverableMentionGone); failed != 1 {
+		t.Fatalf("the mention-gone attempt is not settled failed (%d rows)", failed)
+	}
+	if took != 0 {
+		t.Fatalf("the sweep took %d request-pool connection(s), want none: the resume is background work and runs on the background pool", took)
+	}
+	if tookBackground == 0 {
+		t.Fatal("the sweep took no background-pool connection, want every one of its statements there")
+	}
+}
+
 // sweepRig is a delivery sweep's database seeded straight from SQL, as a process that died
 // mid-delivery leaves it.
 type sweepRig struct {

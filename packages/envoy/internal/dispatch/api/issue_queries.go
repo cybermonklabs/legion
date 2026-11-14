@@ -575,7 +575,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	parent := strings.TrimSpace(query.Get("parent"))
 	labels, err := normalizeIssueLabels(query["label"])
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	for index, label := range labels {
@@ -619,22 +619,22 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	priorities, unsetPriority, err := parsePriorityFilter(query["priority"])
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	advances, noAdvances, anyAdvances, err := parseAdvancesFilter(query["advances"])
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	routeStatus, err := parseRouteStatusFilter(query.Get("route_status"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	page, err := parseIssuePage(query)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A route matters only while there is work to reach, so the route_status filter reads open
@@ -669,7 +669,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		issues, err = s.scanIssueSummaries(r.Context(), listQuery, arguments)
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if routed := slices.ContainsFunc(issues, func(issue model.IssueSummary) bool { return issue.Route != nil }); routed {
@@ -680,7 +680,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 			// read of the stored answer is the database's failure and is answered as one, and only
 			// a listener that did not answer is the listener's.
 			if roster, err = s.readRouteRoster(r.Context()); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		} else {
@@ -826,7 +826,7 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // it was a statement at a time: the issue row, its links, its artifacts, a version query per
 // artifact, its documents' reviews and approval requests, its open asks with their events and
 // counts, its children and its own backlink count, every one of them a connection taken and
-// given back in turn (store.sharedPoolSize says what that costs a loaded server).
+// given back in turn (store.SharedPoolSize says what that costs a loaded server).
 //
 // Batch 1 is everything keyed on the issue key alone: the issue row, its external links, its
 // artifacts, its open asks, its children and its backlink count. A key no issue carries is what
@@ -855,7 +855,7 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	read, err := s.readIssue(r.Context(), r.PathValue("key"), wantsDisplayTrees(r))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// One roster read serves both answers beside the issue: where its route reaches, and what

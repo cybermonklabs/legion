@@ -161,7 +161,7 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	var assignee *string
 	if err := s.deps.Store.Pool.QueryRow(ctx, `select assignee from issues where key = $1`, key).Scan(&assignee); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	people := map[string]*collaboratorTally{}
@@ -172,13 +172,13 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.tallyCollaboratorEvents(ctx, key, people, sessions); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	registry, registryState := s.issueLegionAgents(ctx, key)
 	agents, err := s.collaboratorAgents(ctx, sessions, registry)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, issueCollaborators{

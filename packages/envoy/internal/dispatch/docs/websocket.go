@@ -634,9 +634,17 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// (countResidentBytes).
 	s.countResidentBytes(counted, int64(size))
 	// The room this load publishes holds the state it takes from here until ygo retires it
-	// (releaseIfUnusedLocked). The issue's state is the newest the record holds, this load's read
-	// or a close recorded after it began.
+	// (releaseIfUnusedLocked). The load is this room's first use, which is where the peerless-room
+	// budget orders it from until something uses it again (noteRoomUsed), and the bytes it decoded
+	// are what that budget weighs the room by (roomWeight). The trim is not run
+	// here: the room is not ygo's to close until this hook has returned, and the Apply that caused
+	// the load runs it on that return (roomServer.Apply) - a load a browser's join caused is a
+	// room with a peer, which the budget does not count, and the next Apply or disconnect trims
+	// whatever its arrival pushed past the budget. The issue's state is the newest the record
+	// holds, this load's read or a close recorded after it began.
 	state := s.lockState(room)
+	state.lastUsed = s.now()
+	state.weight = roomWeight(stored)
 	state.recordIssueLocked(issue)
 	open := !state.closed
 	// The room has counted itself loaded here since roomLoaded, above, and stays counted until its
@@ -1087,7 +1095,10 @@ func (s *Service) registerConnectionLocked(state *roomState, id uint64, actor mo
 // The service's count of connections drops only for an id the record held: a failed room's
 // browsers are found on the record that replaced it (handOverFailedRoomLocked), so each leaves
 // the count once. The departure of the last browser of an actor is when the unrecorded marks that
-// actor wrote start to age (sweepUnrecordedMarks).
+// actor wrote start to age (sweepUnrecordedMarks). The last browser to leave is also when a room
+// becomes one of the rooms the peerless-room budget counts, so the room is stamped used from here
+// (noteRoomUsed): the state is stamped under the lock this already holds, and the trim runs after
+// it.
 func (s *Service) removeConnection(room string, id uint64) {
 	state := s.lockExistingState(room)
 	if state == nil {
@@ -1099,7 +1110,9 @@ func (s *Service) removeConnection(room string, id uint64) {
 		s.connections.Add(-1)
 		recordMarkAuthorDeparture(state, actor, s.now())
 	}
+	state.lastUsed = s.now()
 	s.unlockState(room, state)
+	s.trimPeerlessRooms()
 }
 
 // settleLastPeer runs the settlement a room's last browser leaving owes now rather than when its

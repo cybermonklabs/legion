@@ -22,6 +22,8 @@ import (
 
 	"github.com/swaggest/jsonschema-go"
 	"github.com/swaggest/openapi-go/openapi31"
+
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 )
 
 // OpenAPIDocumentPath is where the emitted document is committed, from the repository root. The
@@ -816,16 +818,93 @@ func (e *openAPIEmitter) requestBody(shape routeShape, name string) (*openapi31.
 }
 
 // openAPIAnswer is one status of one operation while it is being built: every schema the route
-// answers at that status, and the content types its bytes are served as.
+// answers at that status, the content types its bytes are served as, and whether the answer
+// carries Retry-After.
 type openAPIAnswer struct {
 	schemas     []map[string]any
 	description string
 	opaque      []string
+	retryAfter  bool
+}
+
+// openAPIServerAnswer is one answer the server's own layers write on top of what a handler
+// answers: a status, the sentence that names the codes it carries, and whether it carries
+// Retry-After.
+type openAPIServerAnswer struct {
+	status      int
+	description string
+	retryAfter  bool
+}
+
+// openAPIRetryAfterHeader is the header a refusal the server will take again carries: how many
+// seconds to wait before sending the request a second time (admission.RetryAfter).
+var openAPIRetryAfterHeader = map[string]openapi31.HeaderOrReference{
+	"Retry-After": {Header: (&openapi31.Header{Schema: map[string]any{"type": "string"}}).
+		WithDescription("how many seconds to wait before sending the request again")},
+}
+
+// openAPIServerAnswers are the answers the server's own layers write for route, which no row of
+// routeShapes carries because no handler writes them: admission's refusals, a read's deadline, a
+// bound of the server's that ended a call before the database answered it, and a commit the
+// database did not answer (serveRoute,
+// admission.WriteUnserved, (*server).writeHandlerError). Each carries the one refusal body every
+// route writes (errorBody), so what the document adds here is the status, the codes it may
+// carry, and the Retry-After beside them.
+//
+// Which of them a row can give is read off the row itself, exactly as serveRoute reads it:
+//
+//   - 429 goes to every row admission admits, which is every row but a test hook, a test's own,
+//     and a stream, whose reader holds it open for the run behind it (apiRoute.Streams);
+//   - 503 goes to every row: only a read servedAsRead bounds by a deadline can run past one, so
+//     REQUEST_TIMEOUT is named on a GET that is no test hook alone, and any row's statement can
+//     meet a pool with no connection free or a database that stops answering on the one it held;
+//   - 500 COMMIT_OUTCOME_UNKNOWN goes to every row that commits a transaction, which is every
+//     row that is not a GET. It is the one of these that carries no Retry-After: the write may
+//     have landed, so what to do next is the caller's to decide after a read.
+func openAPIServerAnswers(route apiRoute) []openAPIServerAnswer {
+	var answers []openAPIServerAnswer
+	if !route.TestHook && !route.Streams {
+		answers = append(answers, openAPIServerAnswer{
+			status: http.StatusTooManyRequests,
+			description: "Refused before anything ran: OVERLOADED, which admission writes for a " +
+				"request the server has no room for and for a heavy read whose lane is full, or " +
+				"EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is " +
+				"given before its transaction opens. Nothing of the request ran, and Retry-After " +
+				"says how long to wait before sending it again.",
+			retryAfter: true,
+		})
+	}
+	busy := "DATABASE_BUSY, a bound of the server's own ended the request before the database " +
+		"answered it and before anything of it had committed: no connection of a pool came " +
+		"free within its acquire bound, so nothing ran, or the database stopped answering on " +
+		"the connection the request held, leaving nothing behind - a read, a call that had " +
+		"not reached the database, or a statement whose transaction then rolled back."
+	unserved := "Unserved: " + busy
+	// A test hook's GET is not served as a read (serveRoute wraps only a row that is not a test
+	// hook in servedAsRead), so it has no deadline to run past.
+	if admission.Reads(route.Method) && !route.TestHook {
+		unserved = "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or " + busy
+	}
+	answers = append(answers, openAPIServerAnswer{
+		status:      http.StatusServiceUnavailable,
+		description: unserved + " Retry-After says how long to wait before sending it again.",
+		retryAfter:  true,
+	})
+	if !admission.Reads(route.Method) {
+		answers = append(answers, openAPIServerAnswer{
+			status: http.StatusInternalServerError,
+			description: "COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's " +
+				"commit, or a statement it ran outside any transaction, so the write may " +
+				"have landed and may not. It carries " +
+				"no Retry-After: read what the write would have written before sending it again.",
+		})
+	}
+	return answers
 }
 
 // responses are every answer the row gives: its success with the shapes that ride it, each of the
-// row's other answers, each refusal richer than errorBody, and the default answer every other
-// refusal writes.
+// row's other answers, each refusal richer than errorBody, the answers the server's own layers
+// write (openAPIServerAnswers), and the default answer every other refusal writes.
 func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31.Responses, error) {
 	answers := map[int]*openAPIAnswer{}
 	var order []int
@@ -886,6 +965,23 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 			return nil, err
 		}
 	}
+	for _, served := range openAPIServerAnswers(route) {
+		if answers[served.status] != nil {
+			return nil, fmt.Errorf("%s %s answers %d itself, which the server's own layers "+
+				"answer too (openAPIServerAnswers): say what the status carries in one place",
+				route.Method, route.Pattern, served.status)
+		}
+		at := answer(served.status)
+		at.description = served.description
+		at.retryAfter = served.retryAfter
+		schema, err := e.schema(errorBody{})
+		if err != nil {
+			return nil, err
+		}
+		if err := at.hold(schema); err != nil {
+			return nil, err
+		}
+	}
 
 	responses := &openapi31.Responses{}
 	sort.Ints(order)
@@ -929,11 +1025,15 @@ func (a *openAPIAnswer) hold(schema map[string]any) error {
 }
 
 // response renders one status: the shape it answers, or one of the shapes it answers, beside every
-// content type its bytes are served as.
+// content type its bytes are served as, and the Retry-After an answer the server will take again
+// carries.
 func (a *openAPIAnswer) response(status int) (*openapi31.Response, error) {
 	response := &openapi31.Response{Description: http.StatusText(status)}
 	if a.description != "" {
 		response.Description = a.description
+	}
+	if a.retryAfter {
+		response.Headers = openAPIRetryAfterHeader
 	}
 	content := map[string]openapi31.MediaType{}
 	switch {

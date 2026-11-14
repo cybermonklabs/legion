@@ -24,7 +24,7 @@ func (s *server) getDeliverySettings(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, http.StatusOK, nil)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)
@@ -60,7 +60,7 @@ type deliverySettingsInput struct {
 func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	var input deliverySettingsInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -69,7 +69,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	}
 	repoOwner, repoName, err := parseSourceRepo(input.DeployRepo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	for name, value := range map[string]string{
@@ -98,7 +98,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "DELIVERY_SETTINGS_ACCESS", http.StatusConflict, err.Error())
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -115,7 +115,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 		PRChecksRollupJobName:   optionalJobName(input.PRChecksRollupJobName),
 	}, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)

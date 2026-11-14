@@ -823,7 +823,12 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 
 			written := make(chan error, 1)
 			go func() {
-				ctx := context.Background()
+				ctx, release, err := takeWriterGates(service, context.Background(), artifactID)
+				if err != nil {
+					written <- err
+					return
+				}
+				defer release()
 				tx, err := service.store.Pool.Begin(ctx)
 				if err != nil {
 					written <- err
@@ -965,7 +970,7 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					closeConn()
 					t.Fatal(err)
 				}
-				joined, ledger := service.Join(ctx, tx)
+				joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 				// committing says the commit goroutine below owns the transaction, and while it
 				// does the release leaves it alone: a rollback beside a live Commit writes the
 				// same pgx transaction and the same connection from a second goroutine,

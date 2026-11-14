@@ -40,14 +40,6 @@ func storedMarkdown(text string) string {
 	return stored
 }
 
-// markdownRoundTripPattern is the route's pattern, and markdownRoundTripRoute that route: with
-// the handoff write, one of the two JSON routes whose body limit is its own rather than
-// maxJSONRequestBytes (routeBody).
-const (
-	markdownRoundTripPattern = "/api/v1/markdown/round-trip"
-	markdownRoundTripRoute   = http.MethodPost + " " + markdownRoundTripPattern
-)
-
 // markdownRoundTripLimit is the most this route's request may hold, derived from the largest
 // text it is ever asked about. That text is the one an inline upload is about to store, which
 // is a markdown document of at most maxDocumentMarkdownBytes - the upload refuses a byte more
@@ -63,7 +55,7 @@ const (
 const markdownRoundTripLimit = 6*maxDocumentMarkdownBytes + 1<<10
 
 // errMarkdownRoundTripTooLarge is this route's answer to a body past its limit, which the
-// drain, the keyed layer and the handler all give alike (routeBody). It names the body's own
+// drain, the keyed layer and the handler all give alike (bodyTooLarge). It names the body's own
 // bound and nothing else: the text a caller asks about is bounded by the write that would store
 // it, which refuses its own, and a refusal here that named the text's bound would send a writer
 // back to a call no repeat gets through.
@@ -98,9 +90,8 @@ func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input markdownRoundTripInput
-	limit, tooLarge := routeBody(http.MethodPost, markdownRoundTripPattern)
-	if err := decodeJSONWithin(r, &input, limit, tooLarge); err != nil {
-		s.writeHandlerError(w, err)
+	if err := decodeJSONWithin(r, &input, markdownRoundTripLimit, errMarkdownRoundTripTooLarge); err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	stored := input.Markdown

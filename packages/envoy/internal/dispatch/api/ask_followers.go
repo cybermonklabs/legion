@@ -55,16 +55,16 @@ func (s *server) listAskFollowers(w http.ResponseWriter, r *http.Request) {
 	}
 	askID, err := parseAskID(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if _, err := s.loadAskOwner(r.Context(), s.deps.Store.Pool, askID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, askID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, askFollowersRead{Followers: followers})
@@ -83,7 +83,7 @@ func (s *server) unfollowAsk(w http.ResponseWriter, r *http.Request) {
 func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follow bool) {
 	askID, err := parseAskID(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	sessionID := strings.TrimSpace(r.PathValue("session_id"))
@@ -93,7 +93,7 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	}
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	// A person at a browser writes as themselves: the credential optionalActor resolved is the
@@ -112,7 +112,7 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 				return
 			}
 		} else if err := decodeJSON(r, &input); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// The session this credential acts as, where it acts as one, is bearerSessionActor's
@@ -140,7 +140,7 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 			// The body still has to name a session, so a bearer that names none is told that
 			// first, as it always was (400 ACTOR_KIND).
 			if sessionErr != nil {
-				s.writeHandlerError(w, sessionErr)
+				s.writeHandlerError(w, r, sessionErr)
 				return
 			}
 			writeError(w, "FOLLOWER_FORBIDDEN", http.StatusForbidden,
@@ -151,17 +151,17 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	own, err := s.loadAskOwner(r.Context(), tx, askID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.deps.Events.LockOwners(r.Context(), tx, own.event("", actor, nil)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	eventType := "ask.follower_added"
@@ -173,7 +173,7 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		changed, err = asks.Unfollow(r.Context(), tx, askID, sessionID)
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !changed {
@@ -188,11 +188,11 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		AskID: askID, SessionID: sessionID, By: actor,
 	}))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

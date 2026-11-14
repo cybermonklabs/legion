@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  A request the database stops answering inside one of the server's own bounds is answered for
+  what that leaves behind, instead of the `500 INTERNAL` with an `API handler failed` ERROR line
+  that named no cause. pgx stops a read in flight by putting a deadline on the socket to
+  Postgres, so a pgx timeout raised while the request's own deadline is nowhere near belongs to a
+  bound of the server's: the pool's acquire bound, which pgx also runs an idle connection's ping
+  and that ping's statement-cache deallocation under, or a bound that passed on an earlier call
+  of the same pooled connection, whose deadline pgx had not lifted yet. Where nothing of the
+  request can have committed - a read, a call that never reached the database, or a statement
+  inside a transaction, which rolls back with it - it is `503 DATABASE_BUSY` with `Retry-After:
+  1`, which the client may send again. Where it may have committed it is not: a statement a write
+  route ran outside any transaction commits itself, so a database that never answered it leaves
+  the same unknown outcome an unanswered `COMMIT` leaves, and it is answered `500
+  COMMIT_OUTCOME_UNKNOWN` with no `Retry-After` and an ERROR line, since a client that sent it
+  again could write twice. The commit itself is answered that way whichever shape its timeout
+  takes. The shape is read both where a pool maps its own errors (`store.ErrPoolBusy`,
+  `store.ErrStatementOutcomeUnknown`) and where a handler's error is classified
+  (`admission.WriteUnserved`), because a statement inside a transaction runs on pgx and passes
+  through no pool of the store's. A document settlement the database did not serve is left to
+  the resumption whichever of the three shapes it met and counts no settlement failure, as it
+  already was for a pool with no connection free: a pass reads the document again and writes
+  what it reads, so a stall of the whole pod no longer walks every room it touches toward the
+  three failures that fail it. At ten times the load three requests a run were answered 500
+  INTERNAL this way, two of them on the statement-cache deallocation pgx runs before a read's
+  first statement.

@@ -113,6 +113,12 @@ type runConfig struct {
 	// args are the run's flags as meta.json records them: the normalized flag list, the token
 	// values redacted and the URL passwords removed (recordedArgs).
 	args []string
+
+	// schedule is -schedule: the window's load factors, empty for the rates as given.
+	schedule schedule
+	// recoveryRefP99 is -recovery-ref-p99, the reference request p99 in ms of the recovery
+	// criterion; nil takes it from the last windows of the step (computeRecovery).
+	recoveryRefP99 *float64
 	// copyMeta is the -copy-meta file's JSON object, which meta.json records under copy; nil
 	// without the flag.
 	copyMeta json.RawMessage
@@ -150,12 +156,14 @@ func runLoad(args []string) error {
 	loopMixFlag := fs.String("loop-event-mix", loopEventMix, "event mix of the loop population, drawn from the loop seed, when the step drives both (-seed with -loop-seed): a preset ("+eventMixPresetNames()+") or kind=weight,...; it applies only with -loop-seed")
 	routeFlag := fs.String("route-mix", "", "route-mix file of the loop population's reads (default: the committed "+defaultRouteMixName+"); the baseline population reads the production routes loadgen holds embedded")
 	human := fs.Float64("human", 0.1, "share of writes made by a person")
-	live := fs.Int("live", -1, "dashboard live sockets (default max(1, round(requests/30)))")
+	live := fs.Int("live", -1, "dashboard live sockets (default max(1, round(requests × the highest -schedule factor / 30)))")
 	liveResume := fs.Bool("live-resume", false, "each dashboard live socket reopens subscribing with since its last event id, after the dashboard's backoff, and its reconnects are recorded")
 	liveStale := fs.Int("live-stale", 0, fmt.Sprintf("live sockets that reopen once, at the restart, with since %d below the event log's max(id) (needs -live-resume and -restart-at)", staleBacklog))
 	restartAt := fs.Duration("restart-at", 0, "restart Dispatch (stack.sh restart-dispatch) this long into the window; 0 restarts nothing")
 	mentionFrac := fs.Float64("mention-frac", 0, "share of comment writes that mention -mentions live sessions")
 	mentions := fs.Int("mentions", 3, "sessions each mentioning comment mentions")
+	scheduleFlag := fs.String("schedule", "", "load factors over the window, <factor>x:<duration>,... (such as 1x:60s,5x:60s,1x:120s); each factor multiplies -events and -requests, and the window is their total")
+	recoveryRefP99 := fs.Float64("recovery-ref-p99", 0, "with -schedule: the reference request p99 in ms of the recovery criterion (default: the last three 10 s windows of the step)")
 	rngSeed := fs.Uint64("rng-seed", 1, "seed of the event and request schedules")
 	natsConns := fs.Int("nats-conns", 50, "NATS connections the sessions share")
 	heapSamples := fs.Bool("heap-samples", false, "read Dispatch's heap profile (/debug/pprof/heap) every 15 s inside the window; off by default, since Dispatch writes the profile itself and the write is charged to the CPU this harness measures")
@@ -204,7 +212,8 @@ func runLoad(args []string) error {
 			baselineOnly = append(baselineOnly, "-"+name)
 		}
 	}
-	// The endpoint guard, then the mixes, then the rates: each refusal names its input.
+	// The endpoint guard, then the mixes, the schedule, then the rates: each refusal names its
+	// input.
 	ep, err := ef.resolve()
 	if err != nil {
 		return err
@@ -235,6 +244,18 @@ func runLoad(args []string) error {
 		if baselineRoutes, err = loadRouteMix(""); err != nil {
 			return err
 		}
+	}
+	sched, err := parseSchedule(*scheduleFlag)
+	if err != nil {
+		return err
+	}
+	*duration, err = scheduleWindow(sched, *duration, given["duration"])
+	if err != nil {
+		return err
+	}
+	refP99, err := recoveryReference(sched, *recoveryRefP99, given["recovery-ref-p99"])
+	if err != nil {
+		return err
 	}
 	replay := *source == sourceReplay
 	if !replay && *source != sourceRequests {
@@ -378,7 +399,7 @@ func runLoad(args []string) error {
 		return fmt.Errorf("-editor-docs %d is more than the seed's %d specs", *editorDocs, len(sf.Issues))
 	}
 	if *live < 0 {
-		*live = max(1, int(math.Round(*requests/30)))
+		*live = defaultLiveSockets(*requests, sched)
 	}
 	if *liveStale < 0 || *liveStale > *live || (*liveStale > 0 && (!*liveResume || *restartAt == 0)) {
 		return fmt.Errorf("-live-stale must be 0 to -live (%d), and needs -live-resume and -restart-at", *live)
@@ -399,9 +420,9 @@ func runLoad(args []string) error {
 		loopFactor: *loopFactor, generatorRole: *generatorRole,
 		human: *human, live: *live, liveResume: *liveResume, liveStale: *liveStale,
 		restartAt: *restartAt, stackSh: stackSh, mentionFrac: *mentionFrac, mentions: *mentions,
-		rngSeed: *rngSeed, natsConns: *natsConns, heapSamples: *heapSamples,
-		unitStarts: *unitStarts, unitLife: *unitLife, loopListeners: loopEndpoints,
-		driverTopics: *driverTopics, receiptDeadline: *receiptDeadline,
+		rngSeed: *rngSeed, natsConns: *natsConns, schedule: sched, recoveryRefP99: refP99,
+		heapSamples: *heapSamples, unitStarts: *unitStarts, unitLife: *unitLife,
+		loopListeners: loopEndpoints, driverTopics: *driverTopics, receiptDeadline: *receiptDeadline,
 		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore,
 		// Fewer editors than documents edit only as many documents as there are editors.
 		editors:  editorConfig{editors: *editors, rate: *editorRate, docs: min(*editorDocs, max(*editors, 1))},
@@ -409,6 +430,39 @@ func runLoad(args []string) error {
 		copyMeta: copyMeta,
 		replay:   rs,
 	}, sf)
+}
+
+// scheduleWindow is the measured window of a step with schedule s: the schedule's total. A
+// -duration given (durationSet) must equal it. With no schedule it is duration.
+func scheduleWindow(s schedule, duration time.Duration, durationSet bool) (time.Duration, error) {
+	if len(s) == 0 {
+		return duration, nil
+	}
+	total := s.total()
+	if durationSet && duration != total {
+		return 0, fmt.Errorf("-duration %s differs from the -schedule total %s; the schedule fills the window, so give no -duration or one equal to that total", duration, total)
+	}
+	return total, nil
+}
+
+// recoveryReference is -recovery-ref-p99 when given (set), nil otherwise. It is refused without a
+// schedule, and when it is not a number of ms more than 0.
+func recoveryReference(s schedule, ms float64, set bool) (*float64, error) {
+	switch {
+	case !set:
+		return nil, nil
+	case len(s) == 0:
+		return nil, fmt.Errorf("-recovery-ref-p99 applies only with -schedule: a step without one has no drop to recover from")
+	case !finite(ms) || ms <= 0:
+		return nil, fmt.Errorf("-recovery-ref-p99 must be a number of ms more than 0")
+	}
+	return &ms, nil
+}
+
+// defaultLiveSockets is the dashboard live sockets when -live is not given: one per 30 requests
+// per second at the schedule's highest factor (1 with no schedule), at least one.
+func defaultLiveSockets(requests float64, s schedule) int {
+	return max(1, int(math.Round(requests*s.maxFactor()/30)))
 }
 
 // redacted replaces a token, or a value whose password cannot be found, in what a step records.
@@ -452,14 +506,18 @@ type session struct {
 type reqRec struct {
 	route  string
 	status int
-	// code is the error code of a non-2xx answer's body ({"code": ...}); "" for none.
+	// code is the refusal code of an answer outside 2xx (callResult.code); "" for none.
 	code string
 	// tolerated says the action expected this non-2xx answer (the CLI's own 404 on an absent
 	// optional resource): it is no failure.
 	tolerated bool
 	transport bool
-	latency   time.Duration // arrival (or start, when the write never completed) to response read
-	connWait  time.Duration
+	// connFailure is the class of a request that got no complete response (connFailureOf).
+	connFailure string
+	// at is when the client began the request, Unix ns.
+	at       int64
+	latency  time.Duration // arrival (or start, when the write never completed) to response read
+	connWait time.Duration
 }
 
 type routeSummary struct {
@@ -473,6 +531,9 @@ type routeSummary struct {
 	// ("<status>" alone when the body named none).
 	Codes           map[string]int `json:"codes,omitempty"`
 	TransportErrors int            `json:"transport_errors"`
+	// Refusals counts the route's answers that carry a refusal code (refusalCodes), by code; a
+	// code with none is absent.
+	Refusals map[string]int `json:"refusals,omitempty"`
 }
 
 type requestsSummary struct {
@@ -480,12 +541,17 @@ type requestsSummary struct {
 	Sent       int     `json:"sent"`
 	SentPerS   float64 `json:"sent_per_s"`
 	// BelowTarget is set when the generator sent under 95% of the target rate.
-	BelowTarget        bool                    `json:"below_target"`
-	OK2xx              int                     `json:"ok_2xx"`
-	DroppedInflightCap int                     `json:"dropped_inflight_cap"`
-	LatencyMs          stat                    `json:"latency_ms"`
-	ConnWaitMs         stat                    `json:"conn_wait_ms"`
-	Routes             map[string]routeSummary `json:"routes"`
+	BelowTarget        bool `json:"below_target"`
+	OK2xx              int  `json:"ok_2xx"`
+	DroppedInflightCap int  `json:"dropped_inflight_cap"`
+	LatencyMs          stat `json:"latency_ms"`
+	ConnWaitMs         stat `json:"conn_wait_ms"`
+	// Refusals splits the sent requests that failed: by refusal code, then by connection failure,
+	// with the latency of the 429 and 503 answers.
+	Refusals refusalSummary `json:"refusals"`
+	// Answered counts the sent requests that got an HTTP status, whatever it was.
+	Answered int                     `json:"answered"`
+	Routes   map[string]routeSummary `json:"routes"`
 }
 
 type summaryConfig struct {
@@ -525,6 +591,9 @@ type summaryConfig struct {
 	NATSConns     int     `json:"nats_conns"`
 	LiveResume    bool    `json:"live_resume"`
 	LiveStale     int     `json:"live_stale"`
+	// Schedule is -schedule, absent without one. EventsPerS and RequestsPerS are the 1x rates the
+	// factors multiply.
+	Schedule schedule `json:"schedule,omitempty"`
 	// Editors, EditorRate and EditorDocs are the editors workload's flags; EditorDocs is the
 	// documents it edited, at most Editors.
 	Editors    int     `json:"editors"`
@@ -575,6 +644,11 @@ type summary struct {
 	LoopSessions *loopSessionsSummary `json:"loop_sessions,omitempty"`
 	Live         liveSummary          `json:"live"`
 	LiveBytes    int64                `json:"live_bytes"`
+	// Metrics is Dispatch's /metrics over the window: the Pools and admission table.
+	Metrics metricsSummary `json:"metrics"`
+	// Recovery is the recovery after the -schedule's last drop, absent without a schedule of two
+	// segments or more.
+	Recovery *recoverySummary `json:"recovery,omitempty"`
 	// LiveReconnects is nil without -live-resume, Restart without -restart-at and
 	// CommentMentions without -mention-frac, and each is nil in a summary.json from before it.
 	LiveReconnects  *reconnectSummary `json:"live_reconnects"`
@@ -668,8 +742,12 @@ func execute(cfg runConfig, sf seedFile) error {
 	defer logf.Close()
 	lg := log.New(io.MultiWriter(os.Stderr, logf), "", log.LstdFlags|log.Lmicroseconds)
 	nonce := newMarkerNonce()
-	lg.Printf("config: step=%s source=%s sessions=%d events=%g/s requests=%g/s event-mix=%s route-mix=%s warmup=%s duration=%s grace=%s human=%.2f live=%d live-resume=%t live-stale=%d restart-at=%s mention-frac=%.2f mentions=%d rng-seed=%d editors=%d editor-rate=%g editor-docs=%d heap-samples=%t marker-nonce=%s",
-		cfg.name, cfg.sourceName(), cfg.sessions, cfg.events, cfg.requests, cfg.mix.Name, cfg.routes.Source, cfg.warmup, cfg.duration, cfg.grace, cfg.human,
+	schedText := "none"
+	if len(cfg.schedule) > 0 {
+		schedText = cfg.schedule.String()
+	}
+	lg.Printf("config: step=%s source=%s sessions=%d events=%g/s requests=%g/s schedule=%s event-mix=%s route-mix=%s warmup=%s duration=%s grace=%s human=%.2f live=%d live-resume=%t live-stale=%d restart-at=%s mention-frac=%.2f mentions=%d rng-seed=%d editors=%d editor-rate=%g editor-docs=%d heap-samples=%t marker-nonce=%s",
+		cfg.name, cfg.sourceName(), cfg.sessions, cfg.events, cfg.requests, schedText, cfg.mix.Name, cfg.routes.Source, cfg.warmup, cfg.duration, cfg.grace, cfg.human,
 		cfg.live, cfg.liveResume, cfg.liveStale, cfg.restartAt, cfg.mentionFrac, cfg.mentions, cfg.rngSeed,
 		cfg.editors.editors, cfg.editors.rate, cfg.editors.docs, cfg.heapSamples, formatNonce(nonce))
 	if cfg.loop != nil {
@@ -988,6 +1066,12 @@ func (st *step) openWindow(start time.Time) {
 	}
 }
 
+// ratePlan is a generator's rate plan for its 1x rate: the warm-up at 1x, then the window's
+// -schedule factors, or the 1x rate throughout without a schedule.
+func (st *step) ratePlan(base float64) []rateSegment {
+	return ratePlan(base, st.start, st.winStart, st.cfg.schedule)
+}
+
 func (st *step) inWindow(t time.Time) bool { return inWindow(t, st.winStart, st.winEnd) }
 
 func inWindow(t, winStart, winEnd time.Time) bool { return !t.Before(winStart) && t.Before(winEnd) }
@@ -1060,34 +1144,37 @@ func (d *dashboard) wait() {
 	d.head.close()
 }
 
-// openLoopPlan walks an open-loop Poisson schedule at rate per second, from stream `stream` of
-// rngSeed, without a clock: it draws the next arrival from start until one is at or after winEnd,
-// and calls plan with the stream, the arrival and whether it is in the window [winStart, winEnd).
-// plan draws what the arrival does from the same stream, so the draws alternate, an arrival then
-// its plan, and one seed gives one schedule; it returns false to end the walk. A rate of 0 or
-// less plans nothing. The schedule is a pure function of the seed, the stream, the rate and the
-// three times, so loadgen plan-docs walks the very schedule a run sends (plandocs.go).
-func openLoopPlan(rngSeed, stream uint64, rate float64, start, winStart, winEnd time.Time, plan func(r *rand.Rand, next time.Time, in bool) bool) {
-	if rate <= 0 {
+// openLoopPlan walks an open-loop Poisson schedule whose rate per second the plan gives
+// (ratePlan), from stream `stream` of rngSeed, without a clock: it draws the next arrival from
+// the plan's start until one is at or after winEnd, and calls fn with the stream, the arrival and
+// whether it is in the window [winStart, winEnd). fn draws what the arrival does from the same
+// stream, so the draws alternate, an arrival then its plan, and one seed gives one schedule; it
+// returns false to end the walk. A plan whose rates are all 0 or less plans nothing. The schedule
+// is a pure function of the seed, the stream, the rate plan and the two window times, so loadgen
+// plan-docs walks the very schedule a run sends (plandocs.go).
+func openLoopPlan(rngSeed, stream uint64, plan []rateSegment, winStart, winEnd time.Time, fn func(r *rand.Rand, next time.Time, in bool) bool) {
+	if !slices.ContainsFunc(plan, func(s rateSegment) bool { return s.rate > 0 }) {
 		return
 	}
 	r := rand.New(rand.NewPCG(rngSeed, stream))
-	for next := start; ; {
-		next = next.Add(time.Duration(r.ExpFloat64() / rate * float64(time.Second)))
-		if !next.Before(winEnd) || !plan(r, next, inWindow(next, winStart, winEnd)) {
+	for next := plan[0].from; ; {
+		var ok bool
+		next, ok = nextArrival(plan, next, r.ExpFloat64())
+		if !ok || !next.Before(winEnd) || !fn(r, next, inWindow(next, winStart, winEnd)) {
 			return
 		}
 	}
 }
 
 // openLoop is openLoopPlan's schedule, sent: it sleeps until each arrival and calls fire with the
-// stream and whether the arrival is in the window. It returns when the schedule ends or ctx does.
-func openLoop(ctx context.Context, rngSeed, stream uint64, rate float64, start, winStart, winEnd time.Time, fire func(r *rand.Rand, in bool)) {
-	openLoopPlan(rngSeed, stream, rate, start, winStart, winEnd, func(r *rand.Rand, next time.Time, in bool) bool {
+// stream, the arrival and whether it is in the window. It returns when the schedule ends or ctx
+// does.
+func openLoop(ctx context.Context, rngSeed, stream uint64, plan []rateSegment, winStart, winEnd time.Time, fire func(r *rand.Rand, at time.Time, in bool)) {
+	openLoopPlan(rngSeed, stream, plan, winStart, winEnd, func(r *rand.Rand, next time.Time, in bool) bool {
 		if !sleepUntil(ctx, next) {
 			return false
 		}
-		fire(r, in)
+		fire(r, next, in)
 		return true
 	})
 }
@@ -1102,11 +1189,11 @@ func (st *step) runEvents(ctx context.Context, p *population) (done <-chan struc
 		defer close(closed)
 		var wg sync.WaitGroup
 		defer wg.Wait()
-		openLoop(ctx, st.cfg.rngSeed, p.eventStream, p.events, st.start, st.winStart, st.winEnd, func(r *rand.Rand, in bool) {
+		openLoop(ctx, st.cfg.rngSeed, p.eventStream, st.ratePlan(p.events), st.winStart, st.winEnd, func(r *rand.Rand, at time.Time, in bool) {
 			plan := planEvent(r, p, st.cfg, st.marker.Add(1))
 			wg.Go(func() {
 				rec := p.wr.do(ctx, plan)
-				rec.InWindow = in
+				rec.Scheduled, rec.InWindow = at.UnixNano(), in
 				p.writes.add(rec)
 			})
 		})
@@ -1121,7 +1208,7 @@ func (st *step) runEvents(ctx context.Context, p *population) (done <-chan struc
 // walking beside it.
 func (st *step) planWrites(p *population, fn func(plan eventPlan, in bool)) {
 	var marker int64
-	openLoopPlan(st.cfg.rngSeed, p.eventStream, p.events, st.start, st.winStart, st.winEnd, func(r *rand.Rand, _ time.Time, in bool) bool {
+	openLoopPlan(st.cfg.rngSeed, p.eventStream, st.ratePlan(p.events), st.winStart, st.winEnd, func(r *rand.Rand, _ time.Time, in bool) bool {
 		marker++
 		fn(planEvent(r, p, st.cfg, marker), in)
 		return true
@@ -1145,7 +1232,7 @@ func (st *step) runRequests(ctx context.Context, a *api, p *population) (load *r
 		defer close(closed)
 		var wg sync.WaitGroup
 		defer wg.Wait()
-		openLoop(ctx, st.cfg.rngSeed, p.requestStream, p.requests, st.start, st.winStart, st.winEnd, func(r *rand.Rand, in bool) {
+		openLoop(ctx, st.cfg.rngSeed, p.requestStream, st.ratePlan(p.requests), st.winStart, st.winEnd, func(r *rand.Rand, _ time.Time, in bool) {
 			rt, path := st.requestPath(p, r)
 			id := who{}
 			if rt.Person {
@@ -1164,7 +1251,8 @@ func (st *step) runRequests(ctx context.Context, a *api, p *population) (load *r
 				if !in {
 					return
 				}
-				load.recs.add(reqRec{route: rt.Name, status: res.status, code: res.errorCode(), transport: res.err != nil, latency: time.Duration(res.end - res.arrival()), connWait: res.connWait})
+				load.recs.add(reqRec{route: rt.Name, status: res.status, transport: res.err != nil, code: res.code, connFailure: res.connFailure,
+					at: res.start, latency: time.Duration(res.end - res.arrival()), connWait: res.connWait})
 			})
 		})
 	}()
@@ -1336,13 +1424,14 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 			LoopSeed: cfg.loopSeedPath, LoopPlanID: cfg.loopPlanID(),
 			LoopFactor: cfg.loopFactor, GeneratorRole: cfg.generatorRole,
 			DurationS: durS, GraceS: cfg.grace.Seconds(), RNGSeed: cfg.rngSeed, NATSConns: cfg.natsConns,
+			Schedule:   cfg.schedule,
 			LiveResume: cfg.liveResume, LiveStale: cfg.liveStale, RestartAtS: cfg.restartAt.Seconds(),
 			MentionFrac: cfg.mentionFrac, Mentions: cfg.mentions,
 			Editors: cfg.editors.editors, EditorRate: cfg.editors.rate, EditorDocs: cfg.editors.docs,
 			MarkerNonce: formatNonce(st.nonce), Source: cfg.sourceName(),
 		},
 		Events:   events,
-		Requests: summarizeRequests(reqs, dropped, cfg.requests, durS),
+		Requests: summarizeRequests(reqs, dropped, cfg.requests*cfg.schedule.meanFactor(), durS),
 		Sessions: sessionsSummary{
 			Registered: int(reg.ok.Load()), RegisterErrors: int(reg.errs.Load()), HeartbeatErrors: reg.heartbeatErrs.Load(),
 			NATSSubscriptions: ns.subs, NATSConnections: len(ns.conns), StreamConsumers: st.consumers,
@@ -1402,6 +1491,10 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 			sum.Resources.DispatchCPUSPerOp = nil
 		}
 	}
+	sum.Metrics = summarizeMetrics(ss, sum.Requests.Answered+sum.Events.Answered)
+	if len(cfg.schedule) >= 2 {
+		sum.Recovery = computeRecovery(cfg.schedule, st.winStart, st.winEnd, reqs, ws, commits, cfg.recoveryRefP99)
+	}
 	if st.restart != nil {
 		st.restart.sum.fillCPU(ss)
 		sum.Restart = &st.restart.sum
@@ -1454,7 +1547,7 @@ func (st *step) populationSummaries(commits []commitRow, receipts []receipt, wat
 			Name: p.name, Seed: p.seedPath, EventMix: p.mix, RouteMix: p.routes.Source,
 			EventsPerS: p.events, RequestsPerS: p.requests,
 			Events:   events,
-			Requests: summarizeRequests(p.rs, int(p.reqs.dropped.Load()), p.requests, durS),
+			Requests: summarizeRequests(p.rs, int(p.reqs.dropped.Load()), p.requests*st.cfg.schedule.meanFactor(), durS),
 		})
 	}
 	return out
@@ -1542,8 +1635,11 @@ func errStreamConsumers(s sessionsSummary) error {
 		bus.Stream, gained, *start, *end, bound, s.Registered)
 }
 
+// summarizeRequests reduces the requests sent in the window; target is the requests per second
+// the generator aimed at over the window: the 1x rate times the schedule's mean factor.
 func summarizeRequests(reqs []reqRec, dropped int, target, durationS float64) requestsSummary {
 	out := requestsSummary{TargetPerS: target, Sent: len(reqs), DroppedInflightCap: dropped, Routes: map[string]routeSummary{}}
+	refusals := newRefusalTally()
 	byRoute := map[string][]float64{}
 	var all, wait []float64
 	for _, r := range reqs {
@@ -1551,6 +1647,10 @@ func summarizeRequests(reqs []reqRec, dropped int, target, durationS float64) re
 		byRoute[r.route] = append(byRoute[r.route], ms)
 		all = append(all, ms)
 		wait = append(wait, float64(r.connWait)/1e6)
+		refusals.add(r.transport, r.connFailure, r.status, r.code, ms)
+		if r.status != 0 {
+			out.Answered++
+		}
 		rs := out.Routes[r.route]
 		if rs.Status == nil {
 			rs.Status = map[string]int{}
@@ -1574,6 +1674,12 @@ func summarizeRequests(reqs []reqRec, dropped int, target, durationS float64) re
 			}
 			rs.Codes[strings.TrimSpace(strconv.Itoa(r.status)+" "+r.code)]++
 		}
+		if !r.transport && slices.Contains(refusalCodes, r.code) {
+			if rs.Refusals == nil {
+				rs.Refusals = map[string]int{}
+			}
+			rs.Refusals[r.code]++
+		}
 		out.Routes[r.route] = rs
 	}
 	for name, rs := range out.Routes {
@@ -1582,6 +1688,7 @@ func summarizeRequests(reqs []reqRec, dropped int, target, durationS float64) re
 	}
 	out.LatencyMs = mkStat(all)
 	out.ConnWaitMs = mkStat(wait)
+	out.Refusals = refusals.summary()
 	if durationS > 0 {
 		out.SentPerS = float64(out.Sent) / durationS
 	}

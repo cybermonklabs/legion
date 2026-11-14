@@ -5,11 +5,112 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// The lease names, one constant per leased loop, which each loop passes to Exclusive: this file is
+// the one place a lease name is spelled, so the list below and the names the loops take cannot
+// drift apart.
+const (
+	// DocumentCompactionLease is docs.RunCompactionSweep's: the hourly pass over every document
+	// with rows to fold.
+	DocumentCompactionLease = "document-compaction"
+	// SuggestionOutcomeLease is api.RunMaintenanceSweep's: the keyed writes' maintenance sweep,
+	// which keeps the name the suggestion-outcome sweep carried that work under. The suggestion
+	// outcome sweep itself takes no lease (api/suggestion_outcomes.go).
+	SuggestionOutcomeLease = "suggestion-outcomes"
+	// ReferenceExcerptLease is docs.RunReferenceExcerptReconciliation's.
+	ReferenceExcerptLease = "reference-excerpts"
+	// BlockIndexLease is docs.RunBlockIndexReconciliation's. The memory harness takes it itself
+	// for the length of each measured window (cmd/dispatch's memoryServer.peakAboveIdle): a pass
+	// that ran inside such a window would read whole documents of its own, and the peak measured
+	// there would be that pass's memory and not the request's.
+	BlockIndexLease = "block-index"
+	// SearchTermStatsLease is api.RunSearchTermStatsRefresh's: the term-statistics refresh that
+	// rebuilds every project's term statistics. Two processes rebuilding the same rows would be
+	// the same work twice.
+	SearchTermStatsLease = "search-term-stats"
+	// EditNoticeLease is docs.RunEditNotices': the sweep that sends each document's edit notice.
+	EditNoticeLease = "edit-notices"
+	// SettlementResumptionLease is docs.RunSettlementResumption's: the pass that arms the
+	// settlement of every document that still owes one. A settlement reads what it settles from
+	// the store under the document's lock whichever process runs it, so one process arming the
+	// owed settlements is the whole of the work.
+	SettlementResumptionLease = "settlement-resumption"
+	// WebhookRedeliveryLease is redeliver's GitHub webhook redelivery sweep's.
+	WebhookRedeliveryLease = "webhook-redelivery"
+	// ArchitectureImportLease is architecture's import ticker's.
+	ArchitectureImportLease = "architecture-import"
+	// DeliveryReconcileLease is delivery.Reconcile's.
+	DeliveryReconcileLease = "delivery-reconcile"
+	// DeliveryEventsConsumerLease and DeliveryJobsConsumerLease are the consumer leases of the two
+	// delivery durables (bus.DispatchDeliveryDurable and bus.DispatchJobDurable), one per durable,
+	// each taken by its intake's bind poll (delivery.consumerLease maps a durable to its name).
+	DeliveryEventsConsumerLease = "delivery-consumer-delivery-events"
+	DeliveryJobsConsumerLease   = "delivery-consumer-delivery-jobs"
+	// IssueAskRepairLease is api.RunIssueAskRepair's: the repair of closed and reopened issues'
+	// asks. Two passes running at once are correct - they serialise on each issue's row, and the
+	// second finds nothing left - but they would read the same documents for the same result,
+	// which is reason enough for one process to run it each interval.
+	IssueAskRepairLease = "issue-ask-repair"
+	// ServerProcessesLease is processes.RunPrune's: the prune of the server process registry, so
+	// one process prunes per PruneInterval however many serve the database.
+	ServerProcessesLease = "server-processes"
+	// CIReconcileLease is cireconcile's pass: one process reads GitHub per period, since each pass
+	// reads every open pull request of every mapped repository and the App's budget pays for every
+	// process that passes.
+	CIReconcileLease = "ci-reconcile"
+	// EmbeddingProjectKeyFillLease is api.RunEmbeddingProjectKeyFill's single pass: one process of
+	// a roll labels the embeddings rows stored before migration 20261109120000 with the project
+	// each belongs to, since a second would walk the same keyset behind the first's commits. It is
+	// the one listed name that is no loop of a cadence, so its connection goes back for good once
+	// the labelling is over. It is counted like any other caller all the same, because the pool is
+	// sized for the names that can be inside Exclusive at once and this pass is inside it for the
+	// whole of a roll's first process: a name left out would take a connection another listed pass
+	// counted on.
+	EmbeddingProjectKeyFillLease = "embeddings-project-key-fill"
+	// TextTreeFillLease is texttreefill.Run's: the hourly pass that stores the display tree of
+	// every stored text that has none at this build's display parser version, and keeps the
+	// table to the two newest versions. Two processes filling inside one period would read the
+	// same texts for the same rows, and the first pass of a version runs for hours, which is
+	// how long one caller is inside Exclusive under this name.
+	TextTreeFillLease = "text-tree-fill"
+)
+
+// leaseNames is every lease Exclusive takes, and Exclusive refuses any other: the lease pool has a
+// connection for each of these and two spare (store.LeasePoolSize, held to this list's length by a
+// test), so a lease taken under a name not counted here would take a connection a listed lease
+// counted on. A loop that leases a new name - or holds a connection of the lease pool for any other
+// reason - adds its constant above and here, and store's count with it.
+var leaseNames = [...]string{
+	DocumentCompactionLease,
+	SuggestionOutcomeLease,
+	ReferenceExcerptLease,
+	BlockIndexLease,
+	SearchTermStatsLease,
+	EditNoticeLease,
+	SettlementResumptionLease,
+	WebhookRedeliveryLease,
+	ArchitectureImportLease,
+	DeliveryReconcileLease,
+	DeliveryEventsConsumerLease,
+	DeliveryJobsConsumerLease,
+	IssueAskRepairLease,
+	ServerProcessesLease,
+	CIReconcileLease,
+	EmbeddingProjectKeyFillLease,
+	TextTreeFillLease,
+}
+
+// LeaseNames is every lease name Exclusive accepts.
+func LeaseNames() []string { return slices.Clone(leaseNames[:]) }
+
+// errUnlistedLease is Exclusive refusing a lease name that is not on leaseNames.
+var errUnlistedLease = errors.New("the lease is not on duty's lease list, which the lease pool is sized from")
 
 // Leases is the slice of a connection pool a lease needs, named here so this package depends on no
 // store: *pgxpool.Pool satisfies it, and the one the server passes is store.Pool.Leases, a pool of
@@ -240,9 +341,26 @@ type ExclusiveFunc func(ctx context.Context, leases Leases, name string, due tim
 // process killed in the middle of a pass - a task replaced by a deploy, an out-of-memory kill -
 // leaves no lease behind, and the surviving process takes it on its next tick. A lease row in a
 // table would instead have to be waited out.
+//
+// name must be on leaseNames: any other is refused with an ERROR line, and its pass does not run,
+// because the lease pool has no connection counted for it. A connection the pool does not hand
+// over within its acquire bound (store.leaseAcquireBound, which the lease pool reports as its
+// store.ErrPoolBusy, wrapping a deadline exceeded with ctx still live - what this package, which
+// depends on no store, reads it by) is a skip too, and not a queue: every listed lease has a
+// connection and two are spare, so a pool with none free is held by something else, and the next
+// tick tries again. That skip logs a WARN line rather than an ERROR, once per tick it costs.
 func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
+	if !slices.Contains(leaseNames[:], name) {
+		slog.Error("dispatch duty: lease refused", "lease", name, "error", errUnlistedLease)
+		return false
+	}
 	conn, err := leases.Acquire(ctx)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			slog.Warn("dispatch duty: leased pass skipped", "lease", name,
+				"reason", "no connection of the lease pool came free within its acquire bound", "error", err)
+			return false
+		}
 		reportFailure(name, "dispatch duty: take the lease", err)
 		return false
 	}
@@ -410,8 +528,9 @@ func recordPassOn(conn *pgxpool.Conn, name string, boundary time.Time, period ti
 // shutdown. errors.Is already keeps the two apart - a context that reaches its deadline wraps
 // DeadlineExceeded and never Canceled - so the check below logs a deadline rather than swallowing
 // it, and the two are not to be tidied into one condition. The record, the unlock and the close log
-// their own failures directly rather than through here. The acquire runs on the pass's own context;
-// the take and the period read run under LeaseCall, so neither is cancelled by shutdown.
+// their own failures directly rather than through here, and so does the lease pool's acquire bound,
+// which Exclusive reports as a skip. The acquire runs on the pass's own context; the take and the
+// period read run under LeaseCall, so neither is cancelled by shutdown.
 func reportFailure(name, message string, err error) {
 	if errors.Is(err, context.Canceled) {
 		return

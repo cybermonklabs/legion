@@ -42,7 +42,7 @@ func (s *server) armSlowWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	var input slowWriteInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !keyedMethod(input.Method) || !strings.HasPrefix(input.Path, "/") ||

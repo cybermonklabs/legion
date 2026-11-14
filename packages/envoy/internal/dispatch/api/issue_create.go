@@ -75,7 +75,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	var input createIssueInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -84,12 +84,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	blockers, err := normalizeIssueBlockers(input.BlockedBy)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	advances, err := normalizeIssueAdvances(input.Advances)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	input.Project = strings.TrimSpace(input.Project)
@@ -105,12 +105,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		externalRepo, externalNumber, err = externalRef(input.External)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		project, err := s.repoProject(r.Context(), externalRepo)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if project == "" {
@@ -155,7 +155,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			if err := s.deps.Store.Pool.QueryRow(r.Context(), `
 				select project_key from issues where key = $1
 			`, existingKey).Scan(&existingProject); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if existingProject != input.Project {
@@ -175,7 +175,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if input.Title == "" {
@@ -200,12 +200,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	labels, err := normalizeIssueLabels(input.Labels)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	priority, _, err := parseIssuePriority(input.Priority)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A create names a person or nobody: no assignee key and a JSON null both leave assignee nil,
@@ -213,17 +213,17 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// PATCH clears an issue's assignee.
 	assignee, _, err := s.parseIssueAssignee(r.Context(), input.Assignee)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	components, componentsProvided, err := parseIssueComponents(input.Components)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	repo, _, err := parseIssueRepo(input.Repo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The near-copy gate, run once for every create it covers whatever `force` says: a forced
@@ -250,7 +250,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		if parentKey != "" {
 			chain, err := refs.IssueAncestors(r.Context(), s.deps.Store.Pool, parentKey)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			ancestors = append([]string{parentKey}, chain...)
@@ -272,7 +272,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -281,7 +281,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// every other blocker and parent write. A new issue with neither takes no dependency lock.
 	if len(blockers) > 0 || parentKey != "" {
 		if err := lockProjectIssueDependencies(r.Context(), tx, input.Project); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -294,7 +294,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if parentProject != input.Project {
@@ -302,7 +302,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -317,7 +317,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		-- chain's last step always lands and this statement reads no other table for it.
 		returning next_number - 1, default_assignee
 	`, input.Project).Scan(&number, &projectDefaultAssignee); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The project's stored default is the chain's last step, and this update already holds the
@@ -330,14 +330,14 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// the project-then-mapping order every mapping write follows (lockRepoProjectWrite).
 	if repo != nil {
 		if err := checkIssueRepoMapped(r.Context(), tx, *repo, input.Project); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	key := fmt.Sprintf("%s-%d", input.Project, number)
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var parent any
@@ -345,13 +345,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		parent = parentKey
 	}
 	if err := lockProjectRankAllocation(r.Context(), tx, input.Project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	lastRank, err := lastProjectRank(r.Context(), tx, input.Project, "")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	issueRank := rank.Between(lastRank, "")
@@ -360,23 +360,23 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := writeBlockedBy(r.Context(), tx, key, input.Project, blockers); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The new issue holds no relation, so every id it names is stated and none is retracted.
 	if len(advances) > 0 {
 		if err := writeIssueAdvances(r.Context(), tx, key, nil, advances, actor, time.Now().UTC()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if componentsProvided {
 		if err := writeIssueComponents(r.Context(), tx, key, input.Project, *components); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -385,16 +385,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github_issue')
 		`, key, externalURL(externalRepo, externalNumber)); err != nil {
 			if !isUniqueViolation(err) {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if err := tx.Rollback(r.Context()); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			existingKey, err := s.resolveIssueRef(r.Context(), input.External)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
@@ -408,7 +408,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3)
 		returning id::text
 	`, key, input.Project, actorJSON).Scan(&artifactID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// An issue created without a spec gets an empty primary document.
@@ -420,12 +420,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	defer ledger.Discard()
 	markdown, err = s.deps.Docs.SeedText(documentCtx, artifactID, markdown, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	authors, err := encodeJSON([]model.Actor{actor})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The seed's own rendering is what this row stores, so the row records what it was rendered
@@ -437,7 +437,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		values ($1, 1, $2, $3, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
 			`+docs.RenderStampValues+`, $4, $5)
 	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The spec is a stored text, so its display tree is stored once this transaction commits
@@ -450,47 +450,44 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// The version row exists now, so the count names it (LEGION-542).
 	err = recordDocumentTaskProgress(r.Context(), tx, artifactID, documentReadBack, markdown)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	specChanges, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	issue, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	issue.LastSeq++
 	// A new issue's blocked_by edges move each blocker's count, beside what its spec cites.
 	blockerChanges, err := issueEdgeChanges(r.Context(), tx, unsetIssue, issue, false)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A new issue changed every field it holds a value in, measured from an issue with none.
 	payload, err := newIssueEventPayload(r.Context(), tx, issue, refs.MergeChanges(specChanges, blockerChanges), issueChangedFields(unsetIssue, issue))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload.Forced = outcome.Forced
 	event, err := s.appendEvent(r.Context(), tx, issueOwner(key).event("issue.created", actor, payload))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "artifact", artifactID, event.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	advice := s.writeAdvice(
-		r.Context(), tx, "POST /api/v1/issues", key, actor, "", issue.Status, false,
-	)
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A seeded spec never passed through a live edit, so nothing has queued the document
@@ -498,8 +495,17 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// transaction is durable.
 	s.deps.Docs.ScheduleSettlement(artifactID)
 	s.publish(r.Context(), event)
-	if advice != nil && input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
-		advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
+	// The issue-scoped advice runs here: after the commit, on the pool (writeAdvice), so none
+	// of its queries holds the issue row this create locked.
+	advice := s.writeAdvice(
+		r.Context(), "POST /api/v1/issues", key, actor, "", issue.Status, false,
+	)
+	// The block report of the spec this create seeded is the write's own read of what it wrote,
+	// so it rides whatever advice the response carries, the issue advice's or the check's alone
+	// (withSuggestions).
+	var blocks *documentBlocks
+	if input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
+		blocks = documentBlocksFor(documentReadBack, markdown)
 	}
 	// The related-item check runs after the write committed, whatever writeAdvice
 	// answered, and waits at most relatedAllowance; its result rides the advice, or advice of its
@@ -519,7 +525,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	suggestions.TitleMatches = outcome.TitleMatches
 	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
 	suggestions.NearCopyCheck = outcome.NearCopyCheck
-	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
+	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions, blocks))
 }
 
 // duplicateGateTimeout bounds the near-copy gate's whole read, on the context and as the read
@@ -607,37 +613,39 @@ func (s *server) respondWithExistingExternalIssue(
 	project string,
 	actor model.Actor,
 ) {
-	adviceReadTx, err := s.begin(r.Context())
+	issueReadTx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	defer adviceReadTx.Rollback(r.Context())
+	defer issueReadTx.Rollback(r.Context())
 	var existingStatus string
-	if err := adviceReadTx.QueryRow(r.Context(), `
+	if err := issueReadTx.QueryRow(r.Context(), `
 		select status from issues where key = $1 for no key update
 	`, existingKey).Scan(&existingStatus); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	existing, err := s.loadIssue(r.Context(), adviceReadTx, existingKey)
+	existing, err := s.loadIssue(r.Context(), issueReadTx, existingKey)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	if err := issueReadTx.Commit(r.Context()); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	// The advice runs once that read has ended, on the pool (writeAdvice): the status it
+	// reports is the one read above under the issue's row lock, as a create's is.
 	advice := s.writeAdvice(
-		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, "", existingStatus, false,
+		r.Context(), "POST /api/v1/issues", existingKey, actor, "", existingStatus, false,
 	)
-	if err := adviceReadTx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	suggestions := s.relatedCheckNotRun(r.Context(), relatedInput{
 		project: project,
 		source:  suggestionSource{kind: "issue", issueKey: existingKey, actor: actor},
 		record:  true,
 	}, relatedReasonAlreadyExists, "Dispatch already holds this issue; nothing was created")
-	WriteJSON(w, http.StatusOK, withSuggestions(existing, advice, suggestions))
+	WriteJSON(w, http.StatusOK, withSuggestions(existing, advice, suggestions, nil))
 }
 
 func isUniqueViolation(err error) bool {

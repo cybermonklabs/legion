@@ -23,8 +23,15 @@ type openAPIDocumentForTest struct {
 }
 
 type openAPIOperationForTest struct {
-	ID       string `json:"operationId"`
-	TestHook bool   `json:"x-test-hook"`
+	ID        string                            `json:"operationId"`
+	TestHook  bool                              `json:"x-test-hook"`
+	Responses map[string]openAPIResponseForTest `json:"responses"`
+}
+
+// openAPIResponseForTest is one answer of one operation, as much of it as these tests read.
+type openAPIResponseForTest struct {
+	Description string                     `json:"description"`
+	Headers     map[string]json.RawMessage `json:"headers"`
 }
 
 // renderOpenAPI writes the document and hands back its bytes.
@@ -178,6 +185,92 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 		if !hooks[name] {
 			t.Errorf("%s carries x-test-hook and is no test hook", name)
 		}
+	}
+}
+
+// The server answers for itself on top of what a handler writes: admission refuses a request it
+// has no room for, a read runs past its deadline, a pool has no connection free, a commit goes
+// unanswered. A client generated from the document is told which of those statuses each route
+// may give it and that the retryable ones carry Retry-After, since a client that sends the
+// request again without reading it is the load that caused the refusal (openAPIServerAnswers).
+func TestOpenAPIDescribesTheAnswersTheServerWritesForItself(t *testing.T) {
+	_, document := readOpenAPI(t)
+	for _, row := range []struct {
+		// what names the row in a failure, and the operation it reads.
+		what    string
+		method  string
+		pattern string
+		// retryable are the statuses the row answers with Retry-After.
+		retryable []string
+		// plain are the statuses it answers without one.
+		plain []string
+		// never are the statuses the server's own layers do not give this row.
+		never []string
+		// timesOut is whether its 503 names REQUEST_TIMEOUT: only a read servedAsRead bounds by
+		// a deadline can run past one.
+		timesOut bool
+	}{
+		{
+			what: "an admitted read", method: "GET", pattern: "/api/v1/issues/{key}",
+			retryable: []string{"429", "503"}, never: []string{"500"}, timesOut: true,
+		},
+		{
+			what: "a test hook's read, which no deadline bounds", method: "GET",
+			pattern:   "/api/v1/artifacts/_test/rooms",
+			retryable: []string{"503"}, never: []string{"429", "500"},
+		},
+		{
+			what: "a write, which commits", method: "POST", pattern: "/api/v1/issues",
+			retryable: []string{"429", "503"}, plain: []string{"500"},
+		},
+		{
+			what: "a stream, which takes no admission unit", method: "GET",
+			pattern:   "/api/v1/going/requests/{id}/stream",
+			retryable: []string{"503"}, never: []string{"429"}, timesOut: true,
+		},
+		{
+			what: "a test hook, which is neither admitted nor bounded", method: "POST",
+			pattern:   "/api/v1/agents/{session_id}/stream/_test/publish",
+			retryable: []string{"503"}, plain: []string{"500"}, never: []string{"429"},
+		},
+	} {
+		t.Run(row.what, func(t *testing.T) {
+			operation, described := document.Paths[row.pattern][strings.ToLower(row.method)]
+			if !described {
+				t.Fatalf("the document describes no %s %s", row.method, row.pattern)
+			}
+			for _, status := range row.retryable {
+				answer, answered := operation.Responses[status]
+				if !answered {
+					t.Errorf("%s %s answers no %s", row.method, row.pattern, status)
+					continue
+				}
+				if _, carried := answer.Headers["Retry-After"]; !carried {
+					t.Errorf("%s %s answers %s with no Retry-After", row.method, row.pattern, status)
+				}
+			}
+			for _, status := range row.plain {
+				answer, answered := operation.Responses[status]
+				if !answered {
+					t.Errorf("%s %s answers no %s", row.method, row.pattern, status)
+					continue
+				}
+				if _, carried := answer.Headers["Retry-After"]; carried {
+					t.Errorf("%s %s answers %s with a Retry-After, and the write may have landed",
+						row.method, row.pattern, status)
+				}
+			}
+			for _, status := range row.never {
+				if _, answered := operation.Responses[status]; answered {
+					t.Errorf("%s %s answers %s, which the server's own layers never give it",
+						row.method, row.pattern, status)
+				}
+			}
+			if named := strings.Contains(operation.Responses["503"].Description, "REQUEST_TIMEOUT"); named != row.timesOut {
+				t.Errorf("%s %s's 503 names REQUEST_TIMEOUT: %t, want %t: only a read served under a deadline gives it",
+					row.method, row.pattern, named, row.timesOut)
+			}
+		})
 	}
 }
 

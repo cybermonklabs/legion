@@ -331,7 +331,7 @@ func TestBlockIndexIndexesAClosedDocumentWhoseAskStatesAreAheadOfItsVersion(t *t
 	// The close's final sweep, as the repair runs it, under the issue's row: it writes resolved
 	// the ask block no settlement has indexed.
 	var marked []BlockRef
-	if err := joinedWrite(service, func(ctx context.Context) (err error) {
+	if err := joinedIssueWrite(service, "CORE-1", func(ctx context.Context) (err error) {
 		tx, _ := txFromContext(ctx)
 		if _, err := tx.Exec(ctx, `select 1 from issues where key = 'CORE-1' for no key update`); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
@@ -2161,7 +2161,7 @@ func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *test
 
 	// An edit that no settlement has written a version for: the live text is ahead of version
 	// 1, and the document owes a settlement this service never runs.
-	if err := joinedWrite(service, func(ctx context.Context) error {
+	if err := joinedWrite(service, document, func(ctx context.Context) error {
 		_, err := service.ReplaceText(ctx, document, stored+"\nThe live paragraph.\n",
 			model.Actor{Kind: "user", ID: "alice"})
 		return err
@@ -2646,8 +2646,12 @@ func TestRetirementSpendsOneBudgetAcrossTheKindsAndKeepsEveryKindsCursor(t *test
 	}
 	commentCursor := ahead[commentAhead-1]
 
+	background, err := service.backgroundPool()
+	if err != nil {
+		t.Fatalf("the background pool: %v", err)
+	}
 	first := BlockIndexTick{}
-	if err := service.retireWholeText(ctx, map[string]string{comments.kind: commentCursor}, &first); err != nil {
+	if err := service.retireWholeText(ctx, background, map[string]string{comments.kind: commentCursor}, &first); err != nil {
 		t.Fatalf("the first tick of the retirement: %v", err)
 	}
 	if first.Retired != blockIndexRetireBatch {
@@ -2672,7 +2676,7 @@ func TestRetirementSpendsOneBudgetAcrossTheKindsAndKeepsEveryKindsCursor(t *test
 	}
 
 	second := BlockIndexTick{}
-	if err := service.retireWholeText(ctx, first.Cursor.Retire, &second); err != nil {
+	if err := service.retireWholeText(ctx, background, first.Cursor.Retire, &second); err != nil {
 		t.Fatalf("the second tick of the retirement: %v", err)
 	}
 	// What says each kind read on from its cursor rather than from the start is what the

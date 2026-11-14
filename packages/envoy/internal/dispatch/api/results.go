@@ -100,7 +100,7 @@ type checkResultRecorded struct {
 func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	var input checkResultInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -108,13 +108,13 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := input.refusal(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	issueKey := r.PathValue("key")
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -127,13 +127,13 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// does protect, the block's indexed version and digest, is read again under it below.
 	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
 	// so no GitHub read is spent on it.
 	if err := refuseCheckProvedByCI(r.Context(), pool, check); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -174,13 +174,13 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// two issue row locks costs. Nothing is written before it, so a refusal leaves no row and no
 	// event behind.
 	if err := s.refuseUnknownCommit(r.Context(), checkRepo, input.Commit); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -192,12 +192,12 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// the parent and another hold the parent while waiting for the child; lockIssueRows is the
 	// one key order every writer of two issue rows takes.
 	if _, err := lockIssueRows(r.Context(), tx, issueKey, check.IssueKey); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	recordingOpen, checkOpen, err := issuesOpenForResult(r.Context(), tx, issueKey, check.IssueKey)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The version, digest and attributes the row is judged by are the block's as this
@@ -208,7 +208,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// attributes only when that digest moved, which is the only way the block's words can have
 	// changed.
 	if err := s.refreshResolvedCheck(r.Context(), tx, &check, input.Check); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Asked again under the locks: a document write can have given the block a ci_check since the
@@ -216,7 +216,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// transaction, so whichever of a racing result and a racing ci_check commits, every reader
 	// reads the block as one kind of check.
 	if err := refuseCheckProvedByCI(r.Context(), tx, check); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A closed issue takes a result only for a check that runs after the merge or on the default
@@ -229,7 +229,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.refuseResultScreenshots(r.Context(), tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -249,17 +249,17 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		When: check.Attributes.When, Verdict: result.Verdict, Role: result.Role, CommitSHA: result.CommitSHA,
 	}))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	seq := int64(event.Seq)
 	result.EventSeq = &seq
 	if err := insertCheckResult(r.Context(), tx, &result); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The read-through runs before the event: the Verification tab refetches on
@@ -309,12 +309,12 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	issueKey := r.PathValue("key")
 	if err := s.requireIssueExists(r.Context(), issueKey); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, issueKey, "")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
@@ -324,17 +324,17 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	retracted, err := loadCheckResultRetractions(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	for index := range checks {
@@ -350,7 +350,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		checks[index].Results = results
 	}
 	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Every head GitHub has to be asked for is learned before the first check is answered, so

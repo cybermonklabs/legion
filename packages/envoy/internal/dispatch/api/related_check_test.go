@@ -1149,6 +1149,167 @@ func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
 	}
 }
 
+// A check that ends while its meaning stage is still running does not return before that stage
+// has given its request-pool connection back: the stage holds one for its query, and a check
+// that answered holds none, so the next decision-block check of the same edit is admitted for
+// its own three connections and not for these as well (decisionBlockChecks). Here the stage is
+// held inside its read, with that connection taken, until past the check's allowance.
+func TestARelatedCheckWaitsForItsHeldMeaningStagesConnection(t *testing.T) {
+	const allowance = 500 * time.Millisecond
+	embedder := &fakeEmbedder{}
+	handler, database, srv := meaningServer(t, embedder)
+	createSuggestionProject(t, handler, "MHOLD")
+	createSearchIssue(t, handler, "MHOLD", "Nightly backups overrun their window", "")
+	awaitTermStatsRefresh(t, srv, "MHOLD")
+	refreshTermStats(t, database, "MHOLD")
+	awaitQuietRequestPool(t, database.Pool)
+	srv.suggestionTimeout = allowance
+
+	holding, release := make(chan struct{}), make(chan struct{})
+	var held, released sync.Once
+	releaseMeaning := func() { released.Do(func() { close(release) }) }
+	defer releaseMeaning()
+	srv.meaningSearchEntered = func() {
+		held.Do(func() { close(holding) })
+		<-release
+	}
+	answered := make(chan *model.Suggestions, 1)
+	go func() {
+		answered <- srv.relatedCheck(context.Background(), relatedInput{project: "MHOLD", text: "Nightly snapshots finish late"})
+	}()
+	<-holding
+	select {
+	case suggestions := <-answered:
+		t.Fatalf("the check answered %+v while its meaning stage still held a request-pool connection", suggestions)
+	case <-time.After(4 * allowance):
+	}
+
+	releaseMeaning()
+	select {
+	case <-answered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the check did not answer within 10s of its meaning stage being let go")
+	}
+	if held := database.Pool.Stat().AcquiredConns(); held != 0 {
+		t.Fatalf("%d request-pool connections taken once the check answered, want 0", held)
+	}
+}
+
+// Stage 1's twin of the test above: a check that ends while its keyword stage is still running
+// does not return before that stage has given its request-pool connection back either. This
+// server has no embedder, so the check runs stage 1 alone and waits for its answer until the
+// allowance runs out, and the stage is held inside its search, with that connection taken, until
+// past that allowance.
+func TestARelatedCheckWaitsForItsHeldKeywordStagesConnection(t *testing.T) {
+	const allowance = 500 * time.Millisecond
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	srv := directServer(deps)
+	createSuggestionProject(t, handler, "KHOLD")
+	createSearchIssue(t, handler, "KHOLD", "Nightly backups overrun their window", "")
+	awaitTermStatsRefresh(t, srv, "KHOLD")
+	refreshTermStats(t, database, "KHOLD")
+	awaitQuietRequestPool(t, database.Pool)
+	srv.suggestionTimeout = allowance
+
+	holding, release := make(chan struct{}), make(chan struct{})
+	var held, released sync.Once
+	releaseKeyword := func() { released.Do(func() { close(release) }) }
+	defer releaseKeyword()
+	srv.relatedSearchEntered = func() {
+		held.Do(func() { close(holding) })
+		<-release
+	}
+	answered := make(chan *model.Suggestions, 1)
+	go func() {
+		answered <- srv.relatedCheck(context.Background(), relatedInput{project: "KHOLD", text: "Nightly snapshots finish late"})
+	}()
+	<-holding
+	select {
+	case suggestions := <-answered:
+		t.Fatalf("the check answered %+v while its keyword stage still held a request-pool connection", suggestions)
+	case <-time.After(4 * allowance):
+	}
+
+	releaseKeyword()
+	select {
+	case <-answered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the check did not answer within 10s of its keyword stage being let go")
+	}
+	// The read the stage was held inside ends on a cancelled context, and the connection it broke
+	// is destroyed on a goroutine of the pool's, so the count is waited on rather than read once.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if held := database.Pool.Stat().AcquiredConns(); held == 0 {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("%d request-pool connections taken 10s after the check answered, want 0", held)
+		}
+	}
+}
+
+// Stage 2's cross-project leg is held to the same rule, and the stage's grace does not take it
+// back: a leg that overran the grace leaves the stage's answer without it, but the stage does
+// not return before that leg has given its request-pool connection back (relatedMeaningStage),
+// so the next decision-block check of the same edit is admitted for its own three connections
+// and not for this one as well (decisionBlockChecks). Here the leg is held inside its read,
+// its scan transaction open and that connection taken (crossProjectScanEntered), until long
+// past both the grace and the check's allowance.
+func TestARelatedCheckWaitsForItsHeldCrossProjectLegsConnection(t *testing.T) {
+	const allowance = 500 * time.Millisecond
+	embedder := &fakeEmbedder{}
+	handler, database, srv := meaningServer(t, embedder)
+	createSuggestionProject(t, handler, "XHOLD")
+	createSearchIssue(t, handler, "XHOLD", "Nightly backups overrun their window", "")
+	awaitTermStatsRefresh(t, srv, "XHOLD")
+	refreshTermStats(t, database, "XHOLD")
+	awaitQuietRequestPool(t, database.Pool)
+	srv.suggestionTimeout = allowance
+
+	holding, release := make(chan struct{}), make(chan struct{})
+	var held, released sync.Once
+	releaseLeg := func() { released.Do(func() { close(release) }) }
+	defer releaseLeg()
+	srv.crossProjectScanEntered = func() {
+		held.Do(func() { close(holding) })
+		<-release
+	}
+	answered := make(chan *model.Suggestions, 1)
+	go func() {
+		// question, which is the only check that runs the leg at all (relatedInput.question).
+		answered <- srv.relatedCheck(context.Background(), relatedInput{
+			project: "XHOLD", text: "Nightly snapshots finish late",
+			title: "Nightly snapshots finish late", question: true,
+		})
+	}()
+	<-holding
+	select {
+	case suggestions := <-answered:
+		t.Fatalf("the check answered %+v while its cross-project leg still held a request-pool connection", suggestions)
+	case <-time.After(4 * allowance):
+	}
+
+	releaseLeg()
+	select {
+	case suggestions := <-answered:
+		// The await is for the connection, never for the result: the leg overran the grace, so
+		// it contributes nothing to what the check answers.
+		if len(suggestions.OtherProjects) != 0 {
+			t.Fatalf("other projects = %+v, want none: the leg overran the stage's grace", suggestions.OtherProjects)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the check did not answer within 10s of its cross-project leg being let go")
+	}
+	// The read the leg was held inside ends on a cancelled context, and the connection it broke
+	// is destroyed on a goroutine of the pool's, so the count is waited on rather than read once.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if held := database.Pool.Stat().AcquiredConns(); held == 0 {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("%d request-pool connections taken 10s after the check answered, want 0", held)
+		}
+	}
+}
+
 // The item the check lists for an issue is the ISSUE, never the issue's own document. Every
 // assertion the related tests above make reads Owner.Key, which an issue and its spec share, so
 // none of them can tell the two apart; the dialog a person reads can, because it follows the

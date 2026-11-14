@@ -119,6 +119,12 @@ func (s *server) relatedOtherProjects(
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	// The second test seam, the one with this leg's connection in hand: a case holds the leg
+	// here, its read transaction open, to measure what one check holds at once
+	// (questionReadWeight). Nothing but a test sets it.
+	if s.crossProjectScanEntered != nil {
+		s.crossProjectScanEntered()
+	}
 	rows, err := tx.Query(ctx, relatedOtherProjectsSQL,
 		embed.Literal(vector), project, identity, searchMeaningFloor, contracts.SearchKindDepth)
 	if err != nil {

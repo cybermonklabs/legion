@@ -47,7 +47,7 @@ type retractedResult struct {
 func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	var input checkResultRetractionInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -71,7 +71,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	person := s.callerHoldsScope(r, model.ScopePerson)
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -83,16 +83,16 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// record route takes its issue rows before it inserts, so the two cannot deadlock.
 	result, err := lockRetractedResult(r.Context(), tx, resultID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.refuseRetractionBy(r.Context(), tx, actor, person, result); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	retracted, err := resultIsRetracted(r.Context(), tx, resultID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if retracted {
@@ -111,7 +111,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 			CheckBlockID: result.CheckBlockID, CommitSHA: result.CommitSHA, Reason: reason,
 		}))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	seq := int64(event.Seq)
@@ -119,11 +119,11 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq,
 	}
 	if err := insertCheckResultRetraction(r.Context(), tx, &retraction); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

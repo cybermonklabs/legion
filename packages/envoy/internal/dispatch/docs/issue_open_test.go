@@ -638,7 +638,7 @@ func TestWritingIssueAskStatesOnARunTheCloseCutsStoresNothing(t *testing.T) {
 	queued := queueAKeystrokeEachSideOfTheClose(t, database, service, alice, artifactID, "Context", 4*closeMargin)
 
 	closer := model.Actor{Kind: "user", ID: "carol"}
-	err := joinedWrite(service, func(ctx context.Context) error {
+	err := joinedIssueWrite(service, "DOC-1", func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		// The issue route holds the issue's row before it writes any document.
 		if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
@@ -2321,4 +2321,59 @@ func settleTheDocumentNow(t *testing.T, service *Service, artifactID string) {
 		}
 		return !owed
 	})
+}
+
+// A settlement owed by a document whose issue closed before the settlement's warm-up has nothing
+// to do, and nothing to answer for: no room of this process holds the document, so no record here
+// remembers the close, and the warm-up's load reads the issue itself and is refused (allowInject,
+// ErrIssueClosed). A closed issue settles nothing, so the settlement ends exactly as a record that
+// remembers the close ends it, writing nothing and failing nothing; the document's
+// pending-settlement row keeps the work for the resumption to arm once the issue reopens. Taken
+// for a settlement that stopped short, as it was here, every closed issue's owed settlement was
+// logged as a failed settlement, counted against its room and run again, and the third failed the
+// room.
+func TestASettlementRefusedByAClosedIssueAtItsWarmUpDoesNothing(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	taskA, _ := newTestServiceInstance(t, database)
+	seedServiceText(t, taskA, artifactID, "Context\n")
+	waitForLandedAppends(t, taskA, artifactID)
+	writeIssueClosed(t, database, "DOC-1", true)
+	// Task B is the process the settlement runs on: it holds no room and no record of the
+	// document, so nothing there remembers the close, and neither task runs a room sync.
+	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	if _, recorded := taskB.recordedIssueClosed(artifactID); recorded {
+		t.Fatal("task B records the document's issue, so its settlement would end before the warm-up it is here to test")
+	}
+	if owed, _, err := readOwedSettlement(ctx, database.Pool, artifactID); err != nil || !owed {
+		t.Fatalf("the document owes no settlement to run (owed %t, %v)", owed, err)
+	}
+
+	logs := captureLogs(t)
+	state := taskB.lockState(artifactID)
+	generation := state.roomGeneration
+	taskB.unlockState(artifactID, state)
+	outcome := taskB.settleRoomWithin(ctx, artifactID, generation, false)
+	// What the timer's settlement does with the outcome, which is where a retry is counted and
+	// logged (retrySettle).
+	taskB.followUpSettlement(artifactID, outcome)
+	if outcome.next != settleEnded || outcome.err != nil {
+		t.Fatalf("the settlement of a closed issue's document ended %d (%v), want settleEnded and no error", outcome.next, outcome.err)
+	}
+	if logged := logs.String(); strings.Contains(logged, "settle document") {
+		t.Fatalf("the settlement logged:\n%s\nwant nothing of a failed settlement: a closed issue has none", logged)
+	}
+	state = taskB.lockState(artifactID)
+	failures, armed := state.settleFailures, taskB.isSettleTimerArmed(state.settle)
+	taskB.unlockState(artifactID, state)
+	if failures != 0 || armed {
+		t.Fatalf("the settlement left %d failures counted against the room and armed=%t, want none and no retry", failures, armed)
+	}
+	if owed, _, err := readOwedSettlement(ctx, database.Pool, artifactID); err != nil || !owed {
+		t.Fatalf("the pending-settlement row says owed=%t (%v), want the work left for the resumption", owed, err)
+	}
+	if taskB.srv.GetDoc(artifactID) != nil {
+		t.Fatal("the refused warm-up left task B holding a room of the closed issue")
+	}
 }

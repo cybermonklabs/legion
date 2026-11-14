@@ -53,7 +53,7 @@ func (s *server) listProjectDefaultAssignees(w http.ResponseWriter, r *http.Requ
 		order by key
 	`)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defaults, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (projectDefaultAssignee, error) {
@@ -62,7 +62,7 @@ func (s *server) listProjectDefaultAssignees(w http.ResponseWriter, r *http.Requ
 		return entry, err
 	})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, defaults)
@@ -94,7 +94,7 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 	key := r.PathValue("key")
 	var input projectDefaultAssigneeInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// encoding/json leaves the string empty for an absent key and for a null alike, and both
@@ -107,13 +107,13 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 	}
 	assignee, err := s.allowedLogin(r.Context(), input.Assignee)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -129,11 +129,11 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 	if err := tx.QueryRow(r.Context(), `
 		select default_assignee from projects where key = $1 for no key update
 	`, key).Scan(&previous); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `update projects set default_assignee = $2 where key = $1`, key, assignee); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	stored := projectDefaultAssignee{Project: key, Assignee: assignee}
@@ -144,11 +144,11 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		},
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
