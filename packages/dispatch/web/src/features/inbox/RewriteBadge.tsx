@@ -5,12 +5,13 @@ import {
   badgeBlockingHoverBg,
   badgeLow,
   badgePrimary,
+  badgePrimaryEdge,
   badgePrimaryHoverBg,
   badgePrimaryOutline,
   borderTransparent,
   groupFocusVisibleRing,
 } from "../../theme/classes";
-import type { AskRewrite } from "./ask-rewrite";
+import type { Rewrite } from "./ask-rewrite";
 
 /** Every state is the same box: a 1 px border, clear unless the state draws it (Original). */
 const PILL =
@@ -20,24 +21,26 @@ const PILL =
 const HIT = "group inline-flex shrink-0 items-center justify-center outline-none";
 
 /**
- * The one mark a rewrite leaves on the card, in its provenance line: **Rewriting…** while it
- * runs, **Rewritten** once it is in place, whoever asked for it (the reader, or Dispatch's check
- * before the reader saw the ask), and **Rewrite failed** when Dispatch did not apply it.
- * Rewritten shows the original wording in place and reads **Original** until it is pressed again
- * (`w`); Rewrite failed tries again (`r`), and why it failed is its tooltip alone.
+ * The one mark a rewrite leaves on an agent's text - an ask's card, a comment, an issue's title -
+ * beside who wrote it and when: **Rewriting…** while it runs, **Rewritten** once it is in place,
+ * whoever asked for it (the reader, or Dispatch's check before the reader saw the text), and
+ * **Rewrite failed** when Dispatch did not apply it. Rewritten shows the original wording in
+ * place and reads **Original** until it is pressed again (`w`); Rewrite failed tries again
+ * (`r`), and why it failed is its tooltip alone. `onRetry` is absent where nothing can be
+ * rewritten again from the page.
  */
-export function AskRewriteBadge({
+export function RewriteBadge({
   onRetry,
   onToggle,
   rewrite,
-  running,
+  running = false,
   showingOriginal,
 }: {
-  onRetry: () => void;
+  onRetry?: () => void;
   onToggle: () => void;
-  rewrite: AskRewrite | undefined;
-  /** The reader's own rewrite is out, before the ask read says so. */
-  running: boolean;
+  rewrite: Pick<Rewrite<unknown>, "state" | "reason"> | undefined;
+  /** The reader's own rewrite is out, before the read says so. */
+  running?: boolean;
   showingOriginal: boolean;
 }): ReactNode {
   if (running || rewrite?.state === "running") {
@@ -71,7 +74,7 @@ export function AskRewriteBadge({
   }
   const tone = showingOriginal
     ? badgePrimaryOutline
-    : `${borderTransparent} ${badgePrimary.bg} ${badgePrimary.text} ${badgePrimaryHoverBg}`;
+    : `${badgePrimaryEdge} ${badgePrimary.bg} ${badgePrimary.text} ${badgePrimaryHoverBg}`;
   return (
     <button
       aria-pressed={showingOriginal}

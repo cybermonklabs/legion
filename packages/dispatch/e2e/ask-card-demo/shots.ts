@@ -37,6 +37,21 @@ const APPROVAL = "a1000000-0000-4000-8000-000000000001";
 /** The decision block in PANE-6's spec, which the check rewrote. */
 const COLD_START = "a6000000-0000-4000-8000-000000000006";
 const BLOCK = '[data-proof-block-type="ask"]';
+/** The question dana handed on to bruno. */
+const HANDED_ON = "a7000000-0000-4000-8000-000000000007";
+/** PANE-5's comment the reviewer rewrote, as its Conversation tab draws it expanded. */
+const COMMENT = '[data-margin-item="c5000000-0000-4000-8000-000000000001"]';
+
+/** PANE-5's Conversation tab with the rewritten comment's thread open. */
+async function openComment(page: Page): Promise<void> {
+  await open(page, "/issues/PANE-5/conversation", COMMENT);
+  await page.locator(`li:has(${COMMENT}) button:has-text("Expand thread")`).click();
+  await page.locator(`${COMMENT} [data-ask-rewrite="done"]`).waitFor();
+  // The tab's top, as a reader who opened it stands: the issue's header above the thread.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await rest(page);
+  await page.waitForTimeout(400);
+}
 
 /** PANE-6's spec with its rewritten decision block in the middle of the window. */
 async function openBlock(page: Page): Promise<void> {
@@ -377,6 +392,63 @@ const shots: Shot[] = [
           documentText?.startsWith("Should a cold start") === true,
         "the block's card shows the original wording in place; the document still holds the rewrite"
       );
+    },
+  },
+  {
+    name: "ask-card-20-handed-on",
+    viewport: DESKTOP,
+    take: async (page) => {
+      // Everyone's questions, since this one waits on bruno rather than on the reader.
+      await open(
+        page,
+        `/?assignee=everyone&item=${HANDED_ON}`,
+        `${card(HANDED_ON)} [data-ask-question]`
+      );
+      const line = await page.locator(`${card(HANDED_ON)} [data-ask-handed-on]`).textContent();
+      check(
+        line?.startsWith("handed on by dana") === true,
+        `the card names who handed the question on and when (${line})`
+      );
+    },
+  },
+  {
+    name: "ask-card-21-comment-rewritten",
+    viewport: DESKTOP,
+    take: openComment,
+  },
+  {
+    name: "ask-card-22-comment-original",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await openComment(page);
+      // `w` with the comment in focus: a press on its text puts the focus on the card.
+      await page.locator(`${COMMENT} .dispatch-markdown`).first().click();
+      await page.keyboard.press("w");
+      await page.locator(`${COMMENT} [data-ask-rewrite="original"]`).waitFor();
+      await rest(page);
+      await page.waitForTimeout(300);
+      const body = await page.locator(`${COMMENT} .dispatch-markdown`).first().textContent();
+      check(body?.startsWith("R3 audit done") === true, "w shows the comment's original wording");
+    },
+  },
+  {
+    name: "ask-card-23-issue-rewritten",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await open(page, "/issues/PANE-7", '[data-ask-rewrite="done"]');
+      await page.waitForTimeout(800);
+      // The badge shows the agent's title and spec in place, and a second press returns.
+      await page.locator('[data-ask-rewrite="done"]').click();
+      const title = await page.locator("h1").first().textContent();
+      const spec = await page.locator("[data-issue-original-spec]").textContent();
+      check(
+        title?.startsWith("R4 log") === true && spec?.includes("Need hb rows") === true,
+        "the issue's badge shows its original title and spec in place"
+      );
+      await page.locator('[data-ask-rewrite="original"]').click();
+      await page.locator('[data-ask-rewrite="done"]').waitFor();
+      await rest(page);
+      await page.waitForTimeout(500);
     },
   },
 ];

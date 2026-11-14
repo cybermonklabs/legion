@@ -21,9 +21,15 @@ the back end is stubbed and the text invented.
 - A rewritten decision block in a document: the block's header carries the badge, and the badge
   or `w` shows the agent's question and options in the block in place of the document's text,
   which still holds the rewrite.
+- The same badge on a comment the reviewer rewrote, beside its author and time on the issue's
+  Conversation tab (the badge, or `w` with the comment in focus, shows the agent's wording), and
+  beside the title of an issue it rewrote as its agent opened it (the badge shows the agent's
+  title and spec in place).
 - The chevron beside the asking agent's name opens a popover: the session's handles to copy, and
   under **Reaches N** every session a person's answer and replies reach, each with its Unfollow
   or Unsubscribe.
+- A question handed from one person to another names, beside whom it waits on, who handed it on
+  and when.
 - Define: select words in an ask's question or options and press `d` (or the menu item). A small
   popover beside the words says what they mean, from the issue's record, with a link to where
   the documents define them; the asking agent's own words join it under the agent's name.
@@ -44,6 +50,11 @@ The fixtures to try it on (project PANE, signed in as `alice`):
 - PANE-1: an approval request; its document reads in the Inbox's reading pane, and its card is on
   the issue's Conversation tab.
 - PANE-6: a decision block in the issue's spec that the check rewrote (`/issues/PANE-6/spec`).
+- PANE-4 "Can the hand-back batch hold 500 leases…": dana handed it on to bruno, so it shows in
+  the Inbox under Assignee: everyone (`/?assignee=everyone`).
+- PANE-5's Conversation tab: a comment of the lease-mirror implementer the reviewer rewrote.
+- PANE-7: an issue the lease-tool implementer opened, whose title and spec the reviewer
+  rewrote (`/issues/PANE-7`).
 
 ## Files
 
@@ -124,8 +135,10 @@ opens by its fragment address.
 - The rewritten wording and each definition are the fixtures' own, not a model's.
 - The asking agent's answer to a definition joins it 3.5 seconds after the request; the server
   sends the running session a side question and adds its answer when it comes.
-- The ask read's `rewrite` field (running, done or failed, who asked, the original wording) is
-  the prototype's own; no Dispatch contract holds it yet.
+- The `rewrite` field on an ask, a comment and an issue (running, done or failed, who asked, the
+  original wording) is the prototype's own; no Dispatch contract holds it yet.
+- The rewritten comment and the rewritten issue come already rewritten, as the check's rewrite
+  of the decision block does; the server's check reads the text after the write and edits it.
 - Document edits are acknowledged and kept for the tab only, and every past version of a
   document reads as its current text.
 - The rewritten decision block comes already rewritten: its spec holds the rewrite as its live

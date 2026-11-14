@@ -60,6 +60,21 @@ ${COLD_START.options.map((option) => `- ${option.label}: ${option.description}`)
 :::
 `;
 
+/** The spec of PANE-7 as the check rewrote it; the issue's `rewrite` keeps the agent's own
+ *  (`AUDIT_ORIGINAL` in fixtures.ts). */
+const AUDIT_MARKDOWN = `# Export the hand-back log as a CSV file for the weekly audit
+
+## Summary
+
+The weekly audit reads every lease the mirror handed back, but today the hand-back log that the lease mirror's spec asks for (its R4) is only in the service's logs. This change writes it out as a CSV file.
+
+## What it does
+
+- One file per ledger shard, with the columns of the hand-back log: the shard, the lease and the reason the ledger gave.
+- It runs every Monday at 06:00, so the file is there before the audit review that morning.
+- A lease the ledger refused and that was never handed back is left out, unless the export runs with \`--all\`.
+`;
+
 /** One issue's spec: its text now, how many versions it has, and its approval. */
 export interface DemoDocument {
   issue: string;
@@ -112,6 +127,7 @@ export const DOCUMENTS: DemoDocument[] = [
   }),
   spec("PANE-5", SPEC_MARKDOWN, ["Retry for 60 seconds", "Renewal", "Flip audit"]),
   spec("PANE-6", COLD_START_MARKDOWN, ["Cold start", "Rewritten by the check"]),
+  spec("PANE-7", AUDIT_MARKDOWN, ["Opened"]),
 ];
 
 /** The spec's artifact id, as `issueSummary` and the approval requests name it. */

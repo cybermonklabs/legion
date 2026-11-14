@@ -13,7 +13,7 @@ import type {
   IssueDetails,
 } from "../api/types";
 import { type DemoDocument, DOCUMENTS, documentById, specId } from "./document-fixtures";
-import { ASKS, DEMO_CLOCK, ISSUES, issueSummary, PROJECT, READER } from "./fixtures";
+import { ASKS, COMMENTS, DEMO_CLOCK, ISSUES, issueSummary, PROJECT, READER } from "./fixtures";
 import { type DemoRoute, goTime, notFound, ok } from "./http";
 
 /** Where server.ts keeps the asks the tab has written, so an ask answered in the Inbox reads
@@ -131,8 +131,44 @@ export const DOCUMENT_ROUTES: DemoRoute[] = [
     pattern: /^\/api\/v1\/issues\/([^/]+)\/asks$/,
     answer: ([key], q) => ok(asksOf(key ?? "", q.get("state"), q.get("thread") === "1")),
   },
-  // No comment, message, handoff or event of the issues is invented: their lists are empty.
-  { method: "GET", pattern: /^\/api\/v1\/issues\/[^/]+\/comments$/, answer: () => ok([]) },
+  {
+    // What a reference to an issue shows: a text that names one (`PANE-5's spec`) reads it.
+    method: "GET",
+    pattern: /^\/api\/v1\/issues\/([^/]+)\/summary$/,
+    answer: ([key]) => {
+      const issue = ISSUES.find((one) => one.key === key);
+      const document = DOCUMENTS.find((one) => one.issue === key);
+      if (issue === undefined || document === undefined) return notFound("NOT_FOUND");
+      return ok({
+        documents: [
+          {
+            id: specId(issue.key),
+            kind: "doc",
+            latest_version: document.versions.length,
+            name: "spec.md",
+            primary: true,
+            slug: "spec-md",
+          },
+        ],
+        key: issue.key,
+        project: PROJECT,
+        status: issue.status,
+        title: issue.title,
+      });
+    },
+  },
+  // No message, handoff or event of the issues is invented: their lists are empty.
+  {
+    method: "GET",
+    pattern: /^\/api\/v1\/issues\/([^/]+)\/comments$/,
+    // An issue's own comments carry no document; a read of one document's comments gets those.
+    answer: ([key], q) =>
+      ok(
+        (COMMENTS[key ?? ""] ?? []).filter(
+          (comment) => !q.has("artifact") || comment.artifact_id === q.get("artifact")
+        )
+      ),
+  },
   { method: "GET", pattern: /^\/api\/v1\/issues\/[^/]+\/messages$/, answer: () => ok([]) },
   { method: "GET", pattern: /^\/api\/v1\/issues\/[^/]+\/handoffs$/, answer: () => ok([]) },
   { method: "GET", pattern: /^\/api\/v1\/issues\/[^/]+\/events$/, answer: () => ok([]) },

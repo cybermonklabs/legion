@@ -33,6 +33,13 @@ import { useHeldSendsUnder } from "../conversation/held-sends";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
+import {
+  type CommentRewrite,
+  rewriteOf,
+  toggleOriginal,
+  useOriginalShown,
+} from "../inbox/ask-rewrite";
+import { RewriteBadge } from "../inbox/RewriteBadge";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -158,6 +165,11 @@ function CommentBody({
   const anchor = comment.anchor;
   const suggestion = comment.suggestion;
   const reference = itemRoute("comment", comment, owner.kind === "document" ? owner : undefined);
+  // A comment the reviewer rewrote before anyone read it: its badge beside the author and time,
+  // and, while it is pressed (or `w` with the card in focus), the agent's wording in place.
+  const rewrite = rewriteOf<CommentRewrite["original"]>(comment);
+  const showingOriginal = useOriginalShown(comment.id);
+  const original = showingOriginal && rewrite?.state === "done" ? rewrite.original : undefined;
   let orphanNotice: ReactNode = null;
   if (showOrphan && anchor?.orphaned) {
     const originalPath =
@@ -198,9 +210,9 @@ function CommentBody({
       {orphanNotice}
       {suggestion === null ? (
         <MarkdownBody
-          markdown={comment.body}
+          markdown={original?.body ?? comment.body}
           source={textSourceOf("comment", comment.id)}
-          tree={comment.body_tree}
+          tree={original === undefined ? comment.body_tree : undefined}
         />
       ) : null}
       {suggestion !== null && anchor !== null ? (
@@ -221,8 +233,14 @@ function CommentBody({
       <p className={`mt-2 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
-          {comment.edited_at === null ? null : " · edited"}
+          {/* A rewrite is an edit of the comment, which its badge already marks. */}
+          {comment.edited_at === null || rewrite !== undefined ? null : " · edited"}
         </span>
+        <RewriteBadge
+          onToggle={() => toggleOriginal(comment.id)}
+          rewrite={rewrite}
+          showingOriginal={original !== undefined}
+        />
         {showReference && reference !== undefined ? <CopyRefButton route={reference} /> : null}
       </p>
     </>
@@ -261,6 +279,12 @@ export function ThreadCard({
   const active = expanded || selected;
   const root = thread.root.comment;
   const rootSuggestion = root.suggestion;
+  // The root the reviewer rewrote: `w`, with the card in focus, shows its agent's wording in
+  // place as its badge does (`CommentBody`), and the folded preview reads the same wording.
+  const rootRewrite = rewriteOf<CommentRewrite["original"]>(root);
+  const rootShowingOriginal = useOriginalShown(root.id);
+  const rootOriginal =
+    rootShowingOriginal && rootRewrite?.state === "done" ? rootRewrite.original : undefined;
   const terminalSuggestion = rootSuggestion !== null && rootSuggestion.accepted !== null;
   // The server refuses accept and reject on an orphaned anchor (409 ANCHOR_ORPHANED), so the
   // card offers neither; the thread is closed with Resolve like a comment.
@@ -355,9 +379,11 @@ export function ThreadCard({
         aria-current={active ? "true" : undefined}
         aria-busy={pendingAction || undefined}
         aria-expanded={expanded}
+        // The card that takes the focus for `w` shows it as the card's own selected border does,
+        // not with the browser's outline.
         className={`rounded-xl border p-3 text-sm shadow-sm ${
           active || hovered ? `${selectedCardBorder} ${selectedCardBg}` : card
-        } ${className ?? ""}`}
+        } ${rootRewrite?.state === "done" ? "outline-none" : ""} ${className ?? ""}`}
         data-hovered={hovered ? "true" : undefined}
         data-anchor-block={thread.anchor?.block_id ?? undefined}
         onClickCapture={() => {
@@ -369,7 +395,24 @@ export function ThreadCard({
             focusBlock(thread.anchor.block_id);
           }
         }}
+        // A card whose root was rewritten takes the focus, so `w` can reach it.
+        tabIndex={rootRewrite?.state === "done" ? -1 : undefined}
         onKeyDown={(event) => {
+          if (
+            event.key === "w" &&
+            !event.metaKey &&
+            !event.ctrlKey &&
+            !event.altKey &&
+            rootRewrite?.state === "done" &&
+            !(
+              event.target instanceof HTMLElement &&
+              (event.target.isContentEditable || event.target.closest("input, textarea") !== null)
+            )
+          ) {
+            event.preventDefault();
+            toggleOriginal(root.id);
+            return;
+          }
           if (
             event.target !== event.currentTarget ||
             (event.key !== "Enter" && event.key !== " ")
@@ -567,9 +610,9 @@ export function ThreadCard({
                   <MarkdownPreview
                     lines={2}
                     links="live"
-                    markdown={root.body}
+                    markdown={rootOriginal?.body ?? root.body}
                     source={textSourceOf("comment", root.id)}
-                    tree={root.body_tree}
+                    tree={rootOriginal === undefined ? root.body_tree : undefined}
                   />
                   <Unfurl body={root.body} source={textSourceOf("comment", root.id)} />
                 </>

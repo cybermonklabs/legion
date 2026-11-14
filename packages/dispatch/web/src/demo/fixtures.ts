@@ -2,8 +2,8 @@
 // project, PANE, with the open questions and documents the pictures show. Every word here is
 // invented; no production read went into it, so the fixtures live in the repository and the
 // single file inlines them with the app.
-import type { Agent, InboxRow, IssueSummary, Project, Subscriber } from "../api/types";
-import type { AskRewrite } from "../features/inbox/ask-rewrite";
+import type { Agent, Comment, InboxRow, IssueSummary, Project, Subscriber } from "../api/types";
+import type { AskRewrite, CommentRewrite, IssueRewrite } from "../features/inbox/ask-rewrite";
 
 /** The moment the page's clock starts from (`clock.ts`), so every age reads the same. */
 export const DEMO_CLOCK = "2026-11-14T15:00:00Z";
@@ -83,7 +83,22 @@ interface DemoIssue {
   title: string;
   priority: number | null;
   status: string;
+  /** Who opened it and how many minutes ago, where it is not the reader three days ago. */
+  createdBy?: InboxRow["author"];
+  openedMinutesAgo?: number;
+  /** For an issue the check rewrote as its agent opened it: its title and spec as the agent
+   *  wrote them. */
+  rewrite?: IssueRewrite;
 }
+
+/** The audit export's title and spec as its agent wrote them, before the check rewrote both. */
+export const AUDIT_ORIGINAL = {
+  title: "R4 log → csv for wkly audit (hb rows)",
+  spec: `# R4 log → csv for wkly audit (hb rows)
+
+Need hb rows out as csv for the wkly audit, same cols as R4, per shard. Cron it Mon 06:00 so it's there before the review. Skip refused-only rows unless --all.
+`,
+};
 
 export const ISSUES: DemoIssue[] = [
   { key: "PANE-1", title: "Ledger rollout", priority: 1, status: "needs_review" },
@@ -97,6 +112,20 @@ export const ISSUES: DemoIssue[] = [
     status: "in_progress",
   },
   { key: "PANE-6", title: "Cold start", priority: 3, status: "backlog" },
+  {
+    key: "PANE-7",
+    title: "Export the hand-back log as a CSV file for the weekly audit",
+    priority: null,
+    status: "triage",
+    createdBy: TOOL,
+    openedMinutesAgo: 12,
+    rewrite: {
+      by: "check",
+      state: "done",
+      at: minutesAgo(11),
+      original: AUDIT_ORIGINAL,
+    },
+  },
 ];
 
 export function issueSummary(issue: DemoIssue, openAsks: number): IssueSummary {
@@ -106,8 +135,8 @@ export function issueSummary(issue: DemoIssue, openAsks: number): IssueSummary {
     claim: null,
     closed_at: null,
     components: [],
-    created_at: minutesAgo(60 * 24 * 3),
-    created_by: { id: READER, kind: "user" },
+    created_at: minutesAgo(issue.openedMinutesAgo ?? 60 * 24 * 3),
+    created_by: issue.createdBy ?? { id: READER, kind: "user" },
     key: issue.key,
     labels: [],
     last_seq: 10,
@@ -125,6 +154,7 @@ export function issueSummary(issue: DemoIssue, openAsks: number): IssueSummary {
     route_status_reason: null,
     status: issue.status,
     title: issue.title,
+    ...(issue.rewrite === undefined ? {} : { rewrite: issue.rewrite }),
     updated_at: minutesAgo(5),
   } as unknown as IssueSummary;
 }
@@ -231,6 +261,9 @@ const DRY_RUN_ORIGINAL = {
   question: "Ship `--dry-run` as is, or hold it for the R3 flip audit?",
   options: [{ label: "Ship as is" }, { label: "Hold" }],
 };
+
+/** The question handed on from one person to another. */
+export const HANDED_ON_ASK_ID = "a7000000-0000-4000-8000-000000000007";
 
 export const ASKS: DemoAsk[] = [
   {
@@ -354,7 +387,56 @@ export const ASKS: DemoAsk[] = [
       },
     }),
   },
+  {
+    // A question one person handed to another: it waits on bruno, and the card names who
+    // handed it on and when.
+    row: ask(HANDED_ON_ASK_ID, "PANE-4", ORDER, 60 * 5, {
+      question: "Can the hand-back batch hold 500 leases, or should it split them by shard?",
+      options: [{ label: "One batch" }, { label: "Split by shard" }],
+      urgency: "med",
+      asked_of: "bruno",
+      asked_of_by: "dana",
+      asked_of_at: minutesAgo(20),
+      waiting_on_person: "bruno",
+    }),
+  },
 ];
+
+/** The comments of each issue's Conversation tab, the reviewer's rewrite on the one it rewrote
+ *  before anyone read it. */
+export const COMMENTS: Record<string, (Comment & { rewrite?: CommentRewrite })[]> = {
+  "PANE-5": [
+    {
+      anchor: null,
+      answers: null,
+      artifact_id: null,
+      ask_id: null,
+      author: MIRROR,
+      body: "The flip audit is done. Of last week's 412 refused leases, 9 went through on a retry, all within 30 seconds, so a retry wins back very little. I recommend Flip in the open question: hand a refused lease back at once and ask again on the next cycle.",
+      created_at: minutesAgo(40),
+      deliveries: [],
+      edited_at: minutesAgo(39),
+      id: "c5000000-0000-4000-8000-000000000001",
+      issue_key: "PANE-5",
+      mentions: [],
+      reply_block: null,
+      reply_to: null,
+      resolved: false,
+      resolved_at: null,
+      resolved_by: null,
+      suggestion: null,
+      turn: null,
+      rewrite: {
+        by: "check",
+        state: "done",
+        at: minutesAgo(39),
+        original: {
+          body: "R3 audit done: 9/412 came good <30s, so B per the train. see ask.",
+        },
+      },
+    } as unknown as Comment & { rewrite?: CommentRewrite },
+  ],
+};
 
 /** What Define answers, by the words the reader selected: the meaning from the record, where
  *  the documents define it, and the asking agent's own words. */

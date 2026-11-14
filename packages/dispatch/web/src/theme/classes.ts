@@ -708,6 +708,10 @@ registerText(
 export const badgePrimaryOutline =
   "border border-sky-300 text-sky-800 hover:bg-sky-50 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-950";
 registerText("primary outline badge text on surface", BADGE_PRIMARY_TEXT, SURFACE);
+/** The Rewritten badge's own edge: a 1 px rule a step darker than its fill, so the badge keeps
+ *  its shape on a tinted surface (a selected comment, a decision block) where the fill alone is
+ *  almost the tint. Decorative; the badge's text pair is registered above. */
+export const badgePrimaryEdge = "border-sky-200 dark:border-sky-800";
 
 /** A menu item's fill while the pointer or the focus is on it, and the rule between a menu's
  *  groups (the card's actions menu). A refused item (`aria-disabled`, so it keeps the focus and

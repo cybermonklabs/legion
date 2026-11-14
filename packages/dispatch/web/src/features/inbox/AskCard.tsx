@@ -71,7 +71,6 @@ import {
 import { AskHandOnPicker } from "./AskHandOnPicker";
 import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
-import { AskRewriteBadge } from "./AskRewriteBadge";
 import { type AskMenuItem, AskSplitButton } from "./AskSplitButton";
 import { AskThread } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
@@ -82,7 +81,7 @@ import {
   useAskCardKeys,
 } from "./ask-card-keys";
 import type { OwnedAsk } from "./ask-name";
-import { askRewrite, rewriteAsk } from "./ask-rewrite";
+import { type AskRewrite, rewriteAsk, rewriteOf } from "./ask-rewrite";
 import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
@@ -91,6 +90,7 @@ import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
 import { invalidateOwnerReads } from "./owner-reads";
+import { RewriteBadge } from "./RewriteBadge";
 import { clearReplyDraft } from "./reply-drafts";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 import { type AskHandOnWrite, useAskHandOn } from "./useAskHandOn";
@@ -389,7 +389,7 @@ export function AskCard({
   const [definition, setDefinition] = useState<SelectedWords | null>(null);
   const [focusWithin, setFocusWithin] = useState(false);
   const handOn = useHeldHandOn(displayedAsk);
-  const rewrite = askRewrite(displayedAsk);
+  const rewrite = rewriteOf<AskRewrite["original"]>(displayedAsk);
   const rewriting = useMutation({
     mutationFn: () => rewriteAsk(displayedAsk.id),
     onSuccess: (rewritten) => {
@@ -532,6 +532,11 @@ export function AskCard({
     ) : waitingOnPerson === "" || waitingOnPerson === viewer ? null : (
       `Waiting on ${waitingOnPerson}`
     );
+  // Who last handed the question on, and when, beside whose turn it is: the stored pair, which a
+  // hand-on back to the issue's assignee writes too.
+  const handedOnBy = displayedAsk.state === "open" ? (displayedAsk.asked_of_by ?? "") : "";
+  const handedOnAt = displayedAsk.asked_of_at ?? "";
+  const handedOn = handedOnBy !== "" && handedOnAt !== "" && !handOn.pending;
   // The thread's newest write the card shows, which the shared thread read mark watches and
   // reads through: the newest reply, unless the record's answer came after it (an answer is a
   // write like a reply).
@@ -809,15 +814,24 @@ export function AskCard({
   const provenanceItems = (
     <>
       <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap">
+        {/* A person's name and the hand-on stay whole; an agent's name is the part that gives up
+            width, as the asker's does. Whose turn it is and who handed the question on read as
+            one phrase: "Waiting on bruno, handed on by dana 20 minutes ago". */}
         {turnLabel === null ? null : (
           <span
-            className={`min-w-0 truncate font-semibold ${textSecondaryOnSurface}`}
+            className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold ${textSecondaryOnSurface}`}
             data-testid={`turn-${displayedAsk.id}`}
           >
             {turnLabel}
+            {handedOn ? "," : null}
           </span>
         )}
-        {turnLabel === null ? null : (
+        {handedOn ? (
+          <span className="shrink-0" data-ask-handed-on="">
+            handed on by {handedOnBy} <Timestamp at={handedOnAt} />
+          </span>
+        ) : null}
+        {turnLabel === null && !handedOn ? null : (
           <span className="shrink-0" aria-hidden="true">
             ·
           </span>
@@ -858,7 +872,7 @@ export function AskCard({
         </span>
       </span>
       {isApproval ? null : (
-        <AskRewriteBadge
+        <RewriteBadge
           onRetry={startRewrite}
           onToggle={() => setShowingOriginal((shown) => !shown)}
           rewrite={shownRewrite}
