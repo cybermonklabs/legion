@@ -76,20 +76,16 @@ type workflowRuntime struct {
 	dispatchProject string
 	stateDir        string
 	log             *slog.Logger
-	// setRepositories replaces the repositories GitHub intake hears, the one route the runtime
-	// reaches that stream call by (updateSubscription). The boot leaves it nil, which means
-	// w.nats.intake().SetRepositories; a test sets it to a stand-in, since the holder's consumers
-	// are the concrete *intake.Consumers and a test of the mapping refresh's ordering has to hold
-	// the call while it proves no transaction waits on it (INFRA-3169).
-	setRepositories func(ctx context.Context, repositories []ghrepo.Repository) error
-	// handRepositories hands the consumers a NATS rebuild opened the repositories they are to
-	// hear, the one route the handover reaches that stream call by (handOverRepositories). The
-	// boot leaves it nil, which means consumers.SetRepositories; a test sets it to a stand-in,
-	// since those consumers are the concrete *intake.Consumers and a test of the handover's
-	// ordering has to hold the call while it proves the consumers it replaces already hand back
-	// what they do not hear.
-	handRepositories func(ctx context.Context, consumers *intake.Consumers, repositories []ghrepo.Repository) error
-	outbox           *outbox
+	// setRepositories has consumers hear repositories, the one route the runtime reaches their
+	// SetRepositories stream call by (setRepositoriesOn): a mapping read hands it the consumers
+	// the NATS holder serves now (updateSubscription), and a NATS rebuild's handover the
+	// consumers that rebuild opened (natsHandover). The boot leaves it nil, which means
+	// consumers.SetRepositories; a test sets it to a stand-in, since the consumers are the
+	// concrete *intake.Consumers and a test of either ordering has to hold the call: the mapping
+	// refresh's while it proves no transaction waits on it (INFRA-3169), and the handover's while
+	// it proves the consumers it replaces already hand back what they do not hear.
+	setRepositories func(ctx context.Context, consumers *intake.Consumers, repositories []ghrepo.Repository) error
+	outbox          *outbox
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
 	// at open, before the outbox exists, and the facts the boot applies before attach write rows
 	// through them, so the wake forwards to whatever attach has stored, and to nothing before
@@ -793,7 +789,7 @@ func (w *workflowRuntime) natsHandover(ctx context.Context, consumers *intake.Co
 	}
 	replaced := w.nats.intake()
 	replaced.HandingOver(true)
-	if err := w.handOverRepositories(ctx, consumers, heard); err != nil {
+	if err := w.setRepositoriesOn(ctx, consumers, heard); err != nil {
 		replaced.HandingOver(false)
 		return fmt.Errorf("hand the rebuilt consumers the repositories this daemon hears: %w", err)
 	}
@@ -801,13 +797,14 @@ func (w *workflowRuntime) natsHandover(ctx context.Context, consumers *intake.Co
 	return nil
 }
 
-// handOverRepositories has consumers, the ones a NATS rebuild opened, hear repositories: the one
-// route natsHandover reaches their SetRepositories by, so the handover never escapes the stand-in
-// a test puts in its place (handRepositories, which the boot leaves nil because the daemon's own
-// answer is those consumers' own SetRepositories).
-func (w *workflowRuntime) handOverRepositories(ctx context.Context, consumers *intake.Consumers, repositories []ghrepo.Repository) error {
-	if w.handRepositories != nil {
-		return w.handRepositories(ctx, consumers, repositories)
+// setRepositoriesOn has consumers hear repositories: the one route the runtime reaches their
+// SetRepositories by, for the consumers a NATS holder serves now (updateSubscription) and for the
+// ones a NATS rebuild opened (natsHandover), so neither escapes the stand-in a test puts in its
+// place (setRepositories, which the boot leaves nil because the daemon's own answer is those
+// consumers' own SetRepositories).
+func (w *workflowRuntime) setRepositoriesOn(ctx context.Context, consumers *intake.Consumers, repositories []ghrepo.Repository) error {
+	if w.setRepositories != nil {
+		return w.setRepositories(ctx, consumers, repositories)
 	}
 	return consumers.SetRepositories(ctx, repositories)
 }

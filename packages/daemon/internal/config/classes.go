@@ -132,7 +132,7 @@ const (
 	whyIdleRel  = "the idle release is settled at boot into the workflow's idle pass and the outbox's backstop, and the daemon builds neither again: a change of it reaches the next boot and nothing before it"
 	whyMemory   = "a tree's memory group is drawn once, as the tree is opened, under the mode admission and the API server were given at boot, and the instructions are read at boot into the launch specs: a change of either reaches the next boot and no tree already drawn"
 	whyPodSweep = "the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it"
-	whyPodGrace = "an update round states its end, its opening plus this bound, in the ask it sends every role (internal/daemon's askRound), so the sweep reads the bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, roundBound) and every role of one round is told the same end, the one the round is then held to: a change of it reaches the next boot and no sweep before it"
+	whyPodGrace = "an update round states its end, its opening plus this bound, in the ask it sends every role (internal/daemon's askRound), so the sweep reads the bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, roundBound) and every role a round asks within one boot is told the same end, the one the round is then held to: a change of it reaches the next boot and no sweep before it"
 	whyWakePace = "the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it"
 	whyStallBst = "the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it"
 	whySilence  = "the silence sweep reads both bounds off the configuration the daemon booted on (internal/daemon's supervision.cfg, tellSilentPhaseWorkers), and admission is handed the same two at boot for the tick's silent list (admit's UseWorkerSilence, internal/daemon's openWorkflow), and nothing builds either reader again: a change of either reaches the next boot and no sweep or tick before it"
@@ -177,6 +177,11 @@ func (c Caller) Admits(path string) (bool, string) {
 	}
 	if row.Plain() {
 		return true, ""
+	}
+	// A path fixed for the process is refused as the apply refuses it to every caller, with its
+	// row's own reason: the two below say what this caller may not set, and no caller sets it.
+	if row.Class == ClassFixed {
+		return false, row.Why
 	}
 	if row.Secret {
 		return false, whyNotData

@@ -90,6 +90,15 @@ func TestAProjectedCallerSetsThePlainDataRowsAndNothingElse(t *testing.T) {
 			t.Errorf("the refusal of %s says nothing", path)
 		}
 	}
+	// A path fixed for the process is refused with the reason its row gives, the one the apply
+	// refuses every caller with, and not with a reason about what a projected token may set.
+	for path, want := range map[string]string{
+		"pod_update_grace_minutes": whyPodGrace,
+	} {
+		if admitted, why := CallerProjected.Admits(path); admitted || why != want {
+			t.Errorf("a projected token's answer for %s is (%v, %q), want it refused with its row's reason %q", path, admitted, why, want)
+		}
+	}
 	// The operator bearer keeps the whole table, the fixed paths included: those the apply
 	// refuses by name with their own reason.
 	for _, path := range []string{"github_apps.implement.private_key_command", "admission_cap", "project"} {

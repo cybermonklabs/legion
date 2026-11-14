@@ -170,12 +170,18 @@ that, so it stops well inside a pod's termination grace. It ends no agent: the n
 every pod or pane still running and relaunches each launch the stop cut short.
 
 A signal that comes before the boot is recorded ends the boot step under way only when that step
-is the plugin gate, the GitHub App token mint, the image probe, or the NATS and Dispatch readiness
-checks; the daemon then stops without recording a boot. The cluster check and opening the store,
-which run before the plugin gate, and migrating the store, building the runtime and recording the
-boot, are not cut short: each runs to its end on a budget of at most 30 seconds, so a signal before
-the gate can wait up to 60 seconds, and the daemon stops at the next such step, or once its boot is
-recorded, which it then stamps.
+is the plugin gate (tmux only), the workflow's opening (its repository mapping read, its GitHub
+App reads and token mint, and the record writes after them), the image probe, the model-fallback
+read (tmux only), the cutover repair, or the NATS and Dispatch readiness checks; the daemon then
+stops without recording a boot, except after the model-fallback read, which the boot goes on past.
+The other steps are not cut short: the cluster check (Kubernetes only), opening the store and
+restoring its route changes, the claims check with the store's migration, building the runtime and
+recording the boot each run to their end on a budget of at most 30 seconds, and the daemon stops at
+the next step that stops it at the signal, or once its boot is recorded, which it then stamps.
+Under Kubernetes a signal early in the boot can therefore wait up to 90 seconds, for the cluster
+check, the store and the migration. Under tmux it waits up to 30 seconds for the store, and then for
+any provider key secretsd holds behind an approval, which the daemon puts no bound on (only
+secretsd's own approval window ends it), before the plugin gate ends at it.
 
 - **`legion daemon stopped draining the API`.** A request was still in flight after those 8
   seconds. The daemon cut it short, the caller got an error, and the next boot takes its claim up;

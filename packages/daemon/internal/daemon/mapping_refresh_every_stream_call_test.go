@@ -14,22 +14,21 @@ import (
 
 // eachHeldSubscription stands in for the runtime's subscription update (workflowRuntime's
 // setRepositories) and holds every call it gets, not only the first: each call hands the test a
-// release of its own on calls and waits there until the test closes it, then goes to intake.
+// release of its own on calls and waits there until the test closes it, then goes to the
+// consumers it was handed.
 type eachHeldSubscription struct {
-	w     *workflowRuntime
 	calls chan chan struct{}
 }
 
 func (h *eachHeldSubscription) install(w *workflowRuntime) {
-	h.w = w
 	w.setRepositories = h.set
 }
 
-func (h *eachHeldSubscription) set(ctx context.Context, repositories []ghrepo.Repository) error {
+func (h *eachHeldSubscription) set(ctx context.Context, consumers *intake.Consumers, repositories []ghrepo.Repository) error {
 	release := make(chan struct{})
 	h.calls <- release
 	<-release
-	return h.w.nats.intake().SetRepositories(ctx, repositories)
+	return consumers.SetRepositories(ctx, repositories)
 }
 
 // No stream call of a mapping read is made inside a transaction that holds the fact serializer,

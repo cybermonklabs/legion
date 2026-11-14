@@ -295,7 +295,6 @@ func TestARefreshThatUnmapsARepositoryKeepsHearingAnIssueAdmittedOnIt(t *testing
 // refresher makes of its own — goes to intake untouched, so the test still reads what intake
 // really hears.
 type heldSubscription struct {
-	w       *workflowRuntime
 	held    atomic.Bool
 	reached chan struct{}
 	release chan struct{}
@@ -309,16 +308,15 @@ func newHeldSubscription() *heldSubscription {
 // install puts the stand-in in the runtime's seam, before the rig's boot: the boot opens its
 // consumers itself, so nothing is held until a mapping read asks for a subscription update.
 func (h *heldSubscription) install(w *workflowRuntime) {
-	h.w = w
 	w.setRepositories = h.set
 }
 
-func (h *heldSubscription) set(ctx context.Context, repositories []ghrepo.Repository) error {
+func (h *heldSubscription) set(ctx context.Context, consumers *intake.Consumers, repositories []ghrepo.Repository) error {
 	if !h.held.Swap(true) {
 		close(h.reached)
 		<-h.release
 	}
-	return h.w.nats.intake().SetRepositories(ctx, repositories)
+	return consumers.SetRepositories(ctx, repositories)
 }
 
 // await waits for the stand-in's call to be in flight, releasing it before it fails so the

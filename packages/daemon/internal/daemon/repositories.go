@@ -1060,17 +1060,13 @@ func sameRepositories(current, next []ghrepo.Repository) bool {
 	return matched == len(seen)
 }
 
-// updateSubscription has GitHub intake hear repositories: the one route the runtime reaches
-// intake's SetRepositories by, so no caller escapes the stand-in a test puts in its place
-// (setRepositories, which the boot leaves nil because the daemon's own answer is the consumers
-// its NATS holder serves now, natsHolder.intake). It is called under no transaction of the pool:
-// the call reaches JetStream and, for a durable consumer that is missing, the pool itself
-// (INFRA-3169).
+// updateSubscription has GitHub intake hear repositories: the consumers its NATS holder serves
+// now (natsHolder.intake), through the one route the runtime reaches their SetRepositories by
+// (setRepositoriesOn), so no mapping read escapes the stand-in a test puts in its place. It is
+// called under no transaction of the pool: the call reaches JetStream and, for a durable consumer
+// that is missing, the pool itself (INFRA-3169).
 func (w *workflowRuntime) updateSubscription(ctx context.Context, repositories []ghrepo.Repository) error {
-	if w.setRepositories != nil {
-		return w.setRepositories(ctx, repositories)
-	}
-	return w.nats.intake().SetRepositories(ctx, repositories)
+	return w.setRepositoriesOn(ctx, w.nats.intake(), repositories)
 }
 
 // mappingChange is Dispatch's consumer's RepositoryMapping: the project's

@@ -831,7 +831,7 @@ Each line below is the reason the route answers with, for the keys it names.
 
 - `runtime.kubernetes.idle_release`, `runtime.kubernetes.idle_release.idle_minutes`, `runtime.kubernetes.idle_release.backstop_minutes` — the idle release is settled at boot into the workflow's idle pass and the outbox's backstop, and the daemon builds neither again: a change of it reaches the next boot and nothing before it.
 
-- `pod_update_grace_minutes` — an update round states its end, its opening plus this bound, in the ask it sends every role (internal/daemon's askRound), so the sweep reads the bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, roundBound) and every role of one round is told the same end, the one the round is then held to: a change of it reaches the next boot and no sweep before it.
+- `pod_update_grace_minutes` — an update round states its end, its opening plus this bound, in the ask it sends every role (internal/daemon's askRound), so the sweep reads the bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, roundBound) and every role a round asks within one boot is told the same end, the one the round is then held to: a change of it reaches the next boot and no sweep before it.
 
 - `pod_update_max_open_rounds`, `pod_update_rounds_per_minute` — the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it.
 
