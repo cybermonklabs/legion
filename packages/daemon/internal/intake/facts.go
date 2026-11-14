@@ -302,6 +302,63 @@ type GateAboveDispatch struct {
 
 func (GateAboveDispatch) isFact() {}
 
+// BasisReview is one review of an ancestor's document that a seed read from Dispatch for a step on
+// that ancestor's approval (dispatch://INFRA-3320, R1 and R3): where Dispatch recorded it in the
+// ancestor's event log (Mark: its time, and its sequence where the read gave one: the review list
+// gives none, so only the review the document's approval shows carries it), who gave it (Actor),
+// and the reason it gave (dispatch.Review.Reason), "" for none.
+type BasisReview struct {
+	Mark   record.EventMark
+	Actor  dispatch.Actor
+	Reason string
+}
+
+// PendingBasisRead is the pending-basis seed's read (record.PendingBasisSeed) of the ancestor's
+// document a root's step waits on, closed, at the version the step names: the root (Issue), its
+// step, its own document (ArtifactID) and the generation that registered the step; the
+// ancestor's document, the version and the approval request the step waits on; and what the read
+// found. Approval is the first review of that version, where it is a person's approval, nil
+// otherwise. Changes is a changes request on that version: after such an approval, the newest
+// one; with none, the first review of that version, where it is a changes request. LatestVersion
+// is the document's latest version, and RequestOpen says the request still stands open.
+//
+// It is a fact of its own and never the gate seed's (intake.DispatchArtifact), whose rows are the
+// root's own document's: applied as one of those, the ancestor's read would reach the ancestor's
+// own gate as well. The workflow applies it only to a step of that generation still pending on
+// that request, so a read of a wait that has ended or opened since changes nothing.
+type PendingBasisRead struct {
+	Issue           string
+	Step            record.DesignStep
+	Generation      uint64
+	ArtifactID      string
+	BasisArtifactID string
+	BasisVersion    int
+	Ask             string
+	Approval        *BasisReview
+	Changes         *BasisReview
+	LatestVersion   int
+	RequestOpen     bool
+}
+
+func (PendingBasisRead) isFact() {}
+
+// BasisChangesRead is the gate seed's read (record.GateSeed) of the ancestor's document a root's
+// step stands open on: a person's changes request on the version the step's basis names, which
+// Dispatch recorded after the approval the step opened on (Changes). Nothing done to the
+// ancestor's document moves an open step (R3), so the workflow only tells it, as the live event of
+// that review tells it (basis-changes-requested, once per review), and only for a step of that
+// generation standing open on that same basis. The root is Issue, and Step its step.
+type BasisChangesRead struct {
+	Issue           string
+	Step            record.DesignStep
+	Generation      uint64
+	BasisArtifactID string
+	BasisVersion    int
+	Changes         BasisReview
+}
+
+func (BasisChangesRead) isFact() {}
+
 // DispatchAskOpened is an ask a session or a person opened on an issue, with its kind (Kind:
 // record.AskQuestion, record.AskApproval, or "" for a kind this daemon does not know, such as an
 // event retained from before Dispatch had the two), the document an approval request asks a person

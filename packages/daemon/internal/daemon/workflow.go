@@ -463,6 +463,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err := w.queueRecordedGatesPublish(ctx); err != nil {
 		return nil, err
 	}
+	if err := w.queuePendingBasisSeeds(ctx); err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -542,6 +545,66 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 	if r := w.outboxWake.Load(); r != nil {
 		r.wake(issue, kind)
 	}
+}
+
+// queuePendingBasisSeeds queues one pending-basis seed (record.PendingBasisSeed) for each step of
+// the project that waits, closed, on an ancestor's approval request
+// (record.DesignGate.PendingOnBasis), whatever phase its root stands in, since the boot's catch-up
+// reads no root in a phase of its tree (catchesUp) and the ancestor's events may have come while
+// the daemon was down or been dropped: each seed reads the ancestor's approval and reviews at the
+// version the step waits on, so the person's approval opens it and a changes request, a newer
+// version or the request's close ends it (dispatch://INFRA-3320, R1). The rows run on each root's
+// lifecycle lane once the outbox attaches. An issue Dispatch shows done is left out by the read
+// (record.GatedIssues), as its gates are left out of the publication. A restart loop that queues
+// a second seed beside one still waiting costs one more read of Dispatch: the seed's fact is the
+// step, the request and what the read found, so it applies once.
+func (w *workflowRuntime) queuePendingBasisSeeds(ctx context.Context) error {
+	now := time.Now().UTC()
+	scoped, committed := intake.WithCommitHooks(ctx)
+	queued := 0
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		gated, err := w.records.GatedIssues(scoped, tx, w.dispatchProject)
+		if err != nil {
+			return err
+		}
+		gates, err := w.records.Gates(scoped, tx, gated)
+		if err != nil {
+			return err
+		}
+		for _, key := range gated {
+			var root *record.Issue
+			for _, gate := range gates[key] {
+				if !gate.PendingOnBasis() {
+					continue
+				}
+				if root == nil {
+					if root, err = w.records.Issue(scoped, tx, key); err != nil {
+						return err
+					}
+					if root == nil {
+						break
+					}
+				}
+				row, err := record.NewOutboxRow(key, record.PendingBasisSeed{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID,
+					BasisArtifactID: gate.Basis.ArtifactID, BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: root.Generation}, now)
+				if err != nil {
+					return err
+				}
+				if err := w.records.Enqueue(scoped, tx, row); err != nil {
+					return err
+				}
+				queued++
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("queue the pending-basis seeds of %s: %w", w.dispatchProject, err)
+	}
+	committed()
+	if queued > 0 {
+		w.log.Info("legion workflow boot queued a pending-basis seed for each step waiting on an ancestor's request", "steps", queued)
+	}
+	return nil
 }
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot

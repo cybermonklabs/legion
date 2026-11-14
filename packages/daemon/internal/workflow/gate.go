@@ -290,14 +290,7 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 	if err != nil || issue == nil {
 		return err
 	}
-	place := "none"
-	switch {
-	case !mark.At.IsZero():
-		place = fmt.Sprint(mark.At.UnixNano())
-	case mark.Seq > 0:
-		place = fmt.Sprintf("s%d", mark.Seq)
-	}
-	fresh, err := e.store.MarkProcessed(ctx, tx, "design-changes-told", fmt.Sprintf("%s:%d:%s:%d:%s", key, issue.Generation, artifact, version, place))
+	fresh, err := e.store.MarkProcessed(ctx, tx, "design-changes-told", fmt.Sprintf("%s:%d:%s:%d:%s", key, issue.Generation, artifact, version, reviewPlace(mark)))
 	if err != nil || !fresh {
 		if err == nil {
 			e.logOnCommit(ctx, "workflow: a changes request the architect was already told of is not told again", "issue", key, "version", version)
@@ -509,7 +502,9 @@ func changesDetail(version int, reason string) string {
 // was never written: a root swept for a lost label or a foreign claim, or moved out by a person,
 // never resumed. Cleared, the request reaches the architect when the root is admitted anew,
 // through its registration, the gate seed or the boot catch-up, rather than staying silent. Each
-// step's row records the review of its own document, so each is read and cleared on its own.
+// step's row records the review of its own document, so each is read and cleared on its own. A
+// wait the end of a step's wait on an ancestor's request answered (basisEndedWait) was answered by
+// no changes request of the root's own document, so only the requests placed after its start are.
 func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root record.Issue) error {
 	if !root.AwaitingPerson() || root.Awaiting.AnsweredAt == nil {
 		return nil
@@ -518,12 +513,13 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 	if err != nil {
 		return err
 	}
+	byChanges := root.Awaiting.AnsweredBy == record.AnsweredByChanges && !basisEndedWait(*root.Awaiting)
 	wrote := false
 	for _, gate := range gates {
 		if gate.ToldChangesVersion == nil {
 			continue
 		}
-		if root.Awaiting.AnsweredBy != record.AnsweredByChanges && !placedAfter(root, gate.ToldChangesMark) {
+		if !byChanges && !placedAfter(root, gate.ToldChangesMark) {
 			continue
 		}
 		e.logOnCommit(ctx, "workflow: a changes request whose resume never ran is no longer recorded as told", "issue", root.Key,
@@ -675,7 +671,12 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // that owns it, by whose key Dispatch sends its events, takes every event (applyArtifact), and each
 // copy a hand-over carried to a child of its tree, now a root of its own (admit's readmit), takes
 // only an approval that opens it or keeps it open (copyTakes). register_gate refuses a document of
-// another issue, so no other gate names it.
+// another issue, so no other gate names it as its own.
+//
+// The steps of other roots that name the document as their basis, an ancestor's approval
+// (dispatch://INFRA-3320), take the event first, apart from everything below (basisArtifact):
+// the ancestor's tree may be live, parked, re-admitted by this very approval, or none, and a step
+// of a root waiting on that ancestor's request opens or ends on it whichever it is.
 //
 // A person's approval of a parked labelled root's primary document is that person's handover of
 // the root (personHandoverQueues), and the daemon queues the root's todo itself, as admission does
@@ -693,6 +694,9 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // is its own. The queue is logged once it commits, under admission's message for a person's
 // handover with source approval, so the proof reads which path queued a root from that field.
 func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) (intake.Result, error) {
+	if err := e.basisArtifact(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	queues, err := e.personHandoverQueues(ctx, tx, fact)
 	if err != nil {
 		return intake.Result{}, err
@@ -882,6 +886,16 @@ func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 // waiting root is told once, by the resume task or by a notice, never both (tellChangesOnce). A
 // changes request that cannot be placed against that wait (unplaceable) is neither told nor
 // recorded as told.
+//
+// A step on an ancestor's approval (dispatch://INFRA-3320, R1 to R3) takes these events as a step
+// a person approved at the version registered takes them (classify.ApplyDesignGateEvent): a newer
+// version closes a step a basis opened, telling the tree as any close does; a person's changes
+// request closes it and is told as design-changes-requested; and a person's approval of the
+// version registered or a later one opens it on that approval, with no basis left. A step that
+// waited, closed, on the ancestor's request ends that wait on any of them, and the end is told
+// besides (tellPendingEnded): basis-ended to the root's architect, naming the act, beside the
+// design-approved or design-changes-requested the act sends, and resting-root to the ancestor's
+// architect.
 func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.DesignGate, fact intake.DispatchArtifact, carried bool) error {
 	key := gate.Issue
 	ungated, stale := e.artifactIgnored(gate, fact)
@@ -991,6 +1005,13 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		}
 		// The members the opening releases take their first phase from admission's pass over this
 		// same fact, each at the slot that phase needs (record.Waiting's LineFirstPhase).
+	}
+	if gate.PendingOnBasis() && !updated.PendingOnBasis() && !carried {
+		return e.tellPendingEnded(ctx, tx, key, gate.Step.OrSpec(), *gate.Basis, ownDocumentEnded(key, gate, fact), fact.Actor.Name(), true)
+	}
+	if gate.OnBasis() && !updated.OnBasis() {
+		e.logOnCommit(ctx, "workflow: an act on the root's own document ended the basis its step stood open on", "issue", key,
+			"artifact", fact.ArtifactID, "event", fact.Kind, "version", fact.Version, "basis", gate.Basis.ArtifactID, "open", isOpen)
 	}
 	return nil
 }

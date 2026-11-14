@@ -178,6 +178,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.dispatchArtifact(ctx, tx, fact)
 	case intake.GateAboveDispatch:
 		return e.gateAboveDispatch(ctx, tx, fact)
+	case intake.PendingBasisRead:
+		return e.pendingBasisRead(ctx, tx, fact)
+	case intake.BasisChangesRead:
+		return e.basisChangesRead(ctx, tx, fact)
 	case intake.GateRequestFound:
 		return e.gateRequestFound(ctx, tx, fact)
 	case intake.CatchUpApplied:
@@ -271,6 +275,12 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.DispatchIssue) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Key)
 	if err != nil {
+		return intake.Result{}, err
+	}
+	// The issue may be an ancestor that steps of other roots wait on, closed, whatever tree it is
+	// in or none (dispatch://INFRA-3320, R1), so this runs before the record's own fences and
+	// before an unrecorded issue's return.
+	if err := e.endPendingOnAncestorIssue(ctx, tx, issue, fact); err != nil {
 		return intake.Result{}, err
 	}
 	if fact, err = SettleRetainedRepository(fact, issue); err != nil {
@@ -1354,6 +1364,14 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
+	// An issue the daemon moves into retro or merging is accepted (record.Accepted), so it leaves
+	// R1's first condition, and every step of another root that waits on it as an ancestor ends
+	// its wait (dispatch://INFRA-3320). A step that stands open on it stays open (R3).
+	if row.To == phase.Retro || row.To == phase.Merging {
+		if err := e.endPendingOn(ctx, tx, issue.Key, fmt.Sprintf("The daemon moved %s into %s, so %s is accepted.", issue.Key, row.To, issue.Key)); err != nil {
+			return err
+		}
+	}
 	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
 	}

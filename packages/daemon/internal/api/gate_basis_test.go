@@ -242,11 +242,11 @@ func TestBasisGateRefusals(t *testing.T) {
 		}, status: http.StatusConflict, code: "ROOT_VERSION_NOT_LATEST", says: []string{"version 5", "names version 4"}},
 		{name: "a person's changes request as R's newest review", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "changes_requested", LatestVersion: 4, Version: new(4), By: basisBob, Reason: new("split it")}
-			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "changes_requested", Kind: "person", Actor: basisBob}}
+			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "changes_requested", Kind: "person", Actor: basisBob, Reason: "split it"}}
 		}, status: http.StatusConflict, code: "ROOT_CHANGES_REQUESTED", says: []string{"changes request on version 4 by user:bob"}},
 		{name: "a changes request on R's v4 followed by v5 with an open approval request", change: func(world *statusRecorder, body map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "awaiting", LatestVersion: 5, Version: new(4), By: basisBob, AskID: "ask-r5", WaitingOn: "human"}
-			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "changes_requested", Kind: "person", Actor: basisBob}}
+			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "changes_requested", Kind: "person", Actor: basisBob, Reason: "split it"}}
 			body["version"] = 5
 		}, status: http.StatusConflict, code: "ROOT_CHANGES_REQUESTED", says: []string{"changes request on version 4 by user:bob", "whatever its approval shows"}},
 
@@ -292,7 +292,7 @@ func TestBasisGateRefusals(t *testing.T) {
 		}, status: http.StatusConflict, code: "BASIS_NOT_APPROVED", says: []string{"no review and no open approval request at its latest version 3"}},
 		{name: "P's latest review a changes request", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[pSpec] = dispatch.Approval{State: "changes_requested", LatestVersion: 3, Version: new(3), By: basisBob, Seq: 23}
-			world.reviews[pSpec] = append([]dispatch.Review{{Version: 3, State: "changes_requested", Kind: "person", Actor: basisBob}}, world.reviews[pSpec]...)
+			world.reviews[pSpec] = append([]dispatch.Review{{Version: 3, State: "changes_requested", Kind: "person", Actor: basisBob, Reason: "drop p3"}}, world.reviews[pSpec]...)
 		}, status: http.StatusConflict, code: "BASIS_NOT_APPROVED", says: []string{"a changes request on version 3 by user:bob"}},
 		{name: "the person's approval of a version older than P's latest", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[pSpec] = dispatch.Approval{State: "stale", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 21}
@@ -317,7 +317,7 @@ func TestBasisGateRefusals(t *testing.T) {
 		}, status: http.StatusConflict, code: "BASIS_REQUEST_NOT_OPEN", says: []string{"open approval request (ask ask-p4) at its latest version 4, waiting on the agent"}},
 		{name: "P's open request on a version that already holds a changes request", change: func(world *statusRecorder, body map[string]any) {
 			world.approvals[pSpec] = dispatch.Approval{State: "awaiting", LatestVersion: 4, Version: new(4), By: basisBob, AskID: "ask-p4", WaitingOn: "human"}
-			world.reviews[pSpec] = append([]dispatch.Review{{Version: 4, State: "changes_requested", Kind: "person", Actor: basisBob}}, world.reviews[pSpec]...)
+			world.reviews[pSpec] = append([]dispatch.Review{{Version: 4, State: "changes_requested", Kind: "person", Actor: basisBob, Reason: "drop p3"}}, world.reviews[pSpec]...)
 			body["basisVersion"] = 4
 		}, status: http.StatusConflict, code: "BASIS_REQUEST_NOT_OPEN", says: []string{"version 4 of LEGION-150's primary document", "changes_requested by user:bob"}},
 		{name: "P's primary document with no requirement block", change: func(world *statusRecorder, _ map[string]any) {
@@ -466,7 +466,7 @@ func TestBasisGateOpenings(t *testing.T) {
 			world.approvals[rSpec] = dispatch.Approval{State: "stale", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 6, At: basisApprovedAt}
 			world.reviews[rSpec] = []dispatch.Review{
 				{Version: 3, State: "approved", Kind: "person", Actor: basisAlice},
-				{Version: 2, State: "changes_requested", Kind: "person", Actor: basisAlice},
+				{Version: 2, State: "changes_requested", Kind: "person", Actor: basisAlice, Reason: "name the rollback path"},
 			}
 		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
 		{name: "G's approval with P neither reviewed nor requested", change: func(world *statusRecorder, body map[string]any) {

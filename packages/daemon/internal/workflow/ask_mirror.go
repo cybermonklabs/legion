@@ -230,11 +230,17 @@ func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake
 	return intake.Result{}, e.itemLeft(ctx, tx, *root, before, after, record.AnsweredByClosed, "Dispatch's settlement, which restored its earlier answer")
 }
 
-// dispatchAskClosed applies the close to the ask's mirror row and the root's wait (closeAsk), and
-// relays a person's answer or resolution of a question on a tree Legion is not running to the
-// controller (relayParkedDecision): nobody inside such a tree hears it. An approval ask's answer
-// arrives again as the document's review, which the gate relays, so it is not relayed as an ask.
+// dispatchAskClosed ends every step of a root that waits, closed, on the ask as an ancestor's
+// approval request, when the close carries no approval (endPendingOnRequest), whatever issue the
+// ask is on and whether or not the daemon records it; applies the close to the ask's mirror row
+// and the root's wait (closeAsk); and relays a person's answer or resolution of a question on a
+// tree Legion is not running to the controller (relayParkedDecision): nobody inside such a tree
+// hears it. An approval ask's answer arrives again as the document's review, which the gate
+// relays, so it is not relayed as an ask.
 func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) (intake.Result, error) {
+	if err := e.endPendingOnRequest(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	if err := e.closeAsk(ctx, tx, fact); err != nil || fact.Kind != record.AskQuestion {
 		return intake.Result{}, err
 	}

@@ -281,8 +281,9 @@ func (a Approval) LatestReviewer() Actor {
 // is `approved` or `changes_requested`. Kind is what gave it: `person` for a person's review and
 // `plan_review` for a plan review's approval of a plan version, a review Dispatch carried forward
 // to a later version keeping the kind of the one it carried. Actor is who Dispatch names as
-// having given it, At its time (Dispatch's `created_at`), and AskID the approval request it
-// answered, empty for none.
+// having given it, At its time (Dispatch's `created_at`), AskID the approval request it answered,
+// empty for none, and Reason the reason the reviewer gave, empty for none (an approval given with
+// nothing written beside it).
 type Review struct {
 	Version int
 	State   string
@@ -290,6 +291,7 @@ type Review struct {
 	Actor   Actor
 	At      time.Time
 	AskID   string
+	Reason  string
 }
 
 // Artifact is one document or file an issue holds, as Dispatch lists it: its id, the slug Dispatch
