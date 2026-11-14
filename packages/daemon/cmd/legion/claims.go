@@ -97,11 +97,13 @@ func decodeAnswer(answer []byte, into any) error {
 
 // printClaim is the claim a route answered, as the one line writeClaimLine writes.
 //
-// A second line follows it when the answer says nothing restarted the claim's phase, which only
-// `retry --fresh-session` sets (api.OperatorClaim.PhaseNotRestarted): the claim is back in a new
-// session owing no task, and the workflow refused the restart that would have handed it one. The
-// claim started either way, so the line above reports it as the success it is, and without this
-// one an operator would read that success as work handed back.
+// A second line follows it when the answer says what the request did not do, which only
+// `retry --fresh-session` sets (api.OperatorClaim.PhaseNotRestarted): the claim is back in a
+// new session owing no task and the workflow refused the restart that would have handed it
+// one, or the claim was stopped and the machine refused the forget or the start that would
+// have brought it back. The line above reports the claim as it stands, which is a success in
+// the first of those and a stopped or launching claim in the second, and without this one an
+// operator would read either as work handed back.
 func printClaim(w io.Writer, answer []byte) error {
 	var c api.OperatorClaim
 	if err := decodeAnswer(answer, &c); err != nil {
@@ -190,15 +192,18 @@ func issuesOrNone(name string, issues []string) string {
 // writeClaimLine is the one line a claim prints as: token, role, issue, state, why it failed
 // (claimCauseWord), generation, the plugin contract its registration declared (0 when none is
 // recorded), the update round the claim is in with the head its worker reported when it
-// answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), and
-// the tool call its agent is in (openCallWord). A claim whose idle pod the daemon released
-// prints `suspended:released` for its state (claimStateWord): it is not a suspension anyone is
-// waiting to lift — its next delivery resumes it in a pod of its own — so an operator reading
-// the list must not read it as one.
+// answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), the
+// tool call its agent is in (openCallWord), and last the sentence its latest launch try was
+// refused with because the shared public leak check could not be installed in its pod, quoted so
+// the line stays one line per claim (`-` for a claim no leak check refused). This listing is
+// where the controller's cause is read, since its claim is on no claim view of the state. A
+// claim whose idle pod the daemon released prints `suspended:released` for its state
+// (claimStateWord): it is not a suspension anyone is waiting to lift — its next delivery resumes
+// it in a pod of its own — so an operator reading the list must not read it as one.
 func writeClaimLine(w io.Writer, c api.OperatorClaim) {
-	fmt.Fprintf(w, "%s %s %s %s %s %d %d %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), orNone(claimCauseWord(c)),
+	fmt.Fprintf(w, "%s %s %s %s %s %d %d %s %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), orNone(claimCauseWord(c)),
 		c.Generation, c.PluginContract,
-		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)))
+		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)), quotedOrNone(c.LeakCheckCause))
 }
 
 // openCallWord is the tool call a claim's agent is in, as the line prints it: the tool, the call

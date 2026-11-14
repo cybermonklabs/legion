@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -103,7 +102,7 @@ func startedAgainGitHub(t *testing.T) string {
 // runtime that provisions each claim's workspace in the claim's own pod), with the board and the
 // GitHub above, a linger no tree of these subtests outlives, and the shipped production check
 // bound.
-func startedAgainDaemon(t *testing.T) (*pgxpool.Pool, config.Config, overrides, *fake.Runtime) {
+func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime) {
 	t.Helper()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.DispatchURL = startedAgainDispatch(t, cfg.Project)
@@ -207,7 +206,7 @@ func seedSlottedMember(t *testing.T, dsn string, member record.Issue, worker sup
 // (admit's readmit). It is written here as finish writes the end of a phase — the record the
 // close would leave, without the close's own rows, whose one worker this subtest has already
 // stopped.
-func lingerTree(t *testing.T, pool *pgxpool.Pool, records record.Store, key string) {
+func lingerTree(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
 	ctx := context.Background()
 	until := time.Now().Add(time.Hour)
@@ -302,7 +301,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		}
 		// The retro is the implementer's own phase, as implementing is, so the move back is one
 		// between two phases of one role: the worker the move starts is the worker the operator
-		// stopped (workflow.RoleFor, TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase).
+		// stopped (phase.RoleFor, TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase).
 		kept := stoppableWorker(cfg, project, implementer, root, root, claim.RoleImplementer, phase.Retro)
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, root, root, phase.Retro), kept)
 		writePrompt(t, cfg, implementer)
@@ -361,7 +360,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		}
 		// Both roots stand where a root's own architect works and no phase worker does: at
 		// admitted, before the first phase, which is the one root phase that holds a slot
-		// (record.AtWork) and which no pass starts a worker for (workflow.RoleFor names none).
+		// (record.AtWork) and which no pass starts a worker for (phase.RoleFor names none).
 		// So the only worker of this fixture is the member's implementer.
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, root, root, phase.Admitted))
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, other, other, phase.Admitted))
@@ -471,7 +470,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 
 // seedMergeablePullRequest records the open pull request of issue that the merge below closes it
 // on: the one GitHub reports merged (intake.PullRequestMerged names the repository and number).
-func seedMergeablePullRequest(t *testing.T, pool *pgxpool.Pool, issue string) {
+func seedMergeablePullRequest(t *testing.T, pool *store.Pool, issue string) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
@@ -485,7 +484,7 @@ func seedMergeablePullRequest(t *testing.T, pool *pgxpool.Pool, issue string) {
 
 // mergingPhase puts key where its merger holds it: the phase the daemon's own reading of the
 // merged pull request closes the issue from.
-func mergingPhase(t *testing.T, pool *pgxpool.Pool, key string) {
+func mergingPhase(t *testing.T, pool *store.Pool, key string) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()

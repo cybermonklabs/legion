@@ -58,8 +58,9 @@ env:
   # why: .github/ci-notes/release.md#what-the-version-argument-lists-are-and-the-envoy-plugins-own
   PI_ENVOY_VERSION_ARGS: >-
     --first-npm @sjawhar/pi-legion-envoy
-    --patch-path skills/agent-secrets/ --patch-path skills/asd-ste100/
-    --patch-path skills/dispatch/ --patch-path skills/dispatch-first/
+    --patch-path skills/agent-secrets/ --patch-path skills/approval-review/
+    --patch-path skills/asd-ste100/ --patch-path skills/dispatch/
+    --patch-path skills/dispatch-first/
     --patch-path skills/dispatch-writing-specs/ --patch-path skills/envoy/
     --patch-path skills/outside-message/ --patch-path skills/plain-words/
     --patch-path skills/thermonuclear-code-quality/ --patch-path skills/thermonuclear-deep-review/
@@ -67,8 +68,9 @@ env:
     --patch-path patches/
     -- packages/pi-envoy/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
     packages/broker-client/
-    skills/agent-secrets/ skills/asd-ste100/ skills/dispatch/ skills/dispatch-first/
-    skills/dispatch-writing-specs/ skills/envoy/ skills/outside-message/ skills/plain-words/
+    skills/agent-secrets/ skills/approval-review/ skills/asd-ste100/ skills/dispatch/
+    skills/dispatch-first/ skills/dispatch-writing-specs/ skills/envoy/
+    skills/outside-message/ skills/plain-words/
     skills/thermonuclear-code-quality/ skills/thermonuclear-deep-review/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # why: .github/ci-notes/release.md#the-legion-plugins-version-arguments

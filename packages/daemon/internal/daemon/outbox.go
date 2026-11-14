@@ -7,13 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -69,7 +69,11 @@ const (
 // work (outbox_lanes.go). Claiming and finishing have separate transactions so a slow external
 // service never holds an issue transition lock.
 type outbox struct {
-	pool       *pgxpool.Pool
+	// pool is the daemon's guarded pool (store.Pool): each lane opens its transactions on it
+	// under a hold mark of the lane's own (runLane), so a row's work that asks for a second
+	// connection while its transaction holds one is refused at that call
+	// (store.ErrNestedAcquire).
+	pool       *store.Pool
 	records    record.Store
 	dispatch   dispatch.Client
 	notices    notify.Publisher
@@ -164,7 +168,7 @@ type outboxTrees interface {
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 }
 
-func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
+func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -1171,6 +1175,9 @@ func (r *outbox) dropHandover(ctx context.Context, issue string, payload record.
 	})
 }
 
+// message posts a message row once: a retried row that finds its own marker on the issue posts
+// nothing more. A row whose message links an artifact puts that document on the issue first
+// (messageArtifact), so the link never names a document that is not there yet.
 func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload record.MessagePost) error {
 	if r.dispatch == nil {
 		return errors.New("dispatch message executor has no Dispatch client")
@@ -1185,10 +1192,50 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 			return nil
 		}
 	}
+	if payload.Artifact != nil {
+		refusal, err := r.messageArtifact(ctx, row, *payload.Artifact)
+		if err != nil {
+			return err
+		}
+		if refusal != nil {
+			payload.Body += fmt.Sprintf("\n\nDispatch refused the full list that this message links, with status %d and code %s.", refusal.Status, refusal.Code)
+		}
+	}
 	if err := r.dispatch.PostMessage(ctx, row.Issue, payload.Posted(row.ID)); err != nil {
 		return fmt.Errorf("post Dispatch message for %s: %w", row.Issue, err)
 	}
 	return nil
+}
+
+// messageArtifact puts on the issue the document a message links. It reads the issue's artifacts
+// and uploads only when none has the document's name, so a row that runs again after its upload
+// writes no second version. A read or an upload Dispatch refuses the same way on every run
+// (dispatch.PermanentRefusal) is logged and answered, and the message is posted all the same with
+// a sentence that says so: the message is the issue's one word on what it carries, and a document
+// it could not hold must not cost it that (dispatch://INFRA-2704). Any other failure fails the
+// run, and the row runs again. So does an upload Dispatch filed under a slug other than the
+// name, since the link names the document by that name.
+func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, artifact record.MessageArtifact) (*dispatch.Error, error) {
+	slugs, err := r.dispatch.ArtifactSlugs(ctx, row.Issue)
+	if err == nil && slices.Contains(slugs, artifact.Name) {
+		return nil, nil
+	}
+	slug := ""
+	if err == nil {
+		slug, err = r.dispatch.UploadArtifact(ctx, row.Issue, artifact.Name, artifact.Content)
+	}
+	if refusal, permanent := dispatch.PermanentRefusal(err); permanent {
+		r.log.Error("outbox Dispatch message's document refused by Dispatch; the message is posted and says so",
+			"row", row.ID, "issue", row.Issue, "artifact", artifact.Name, "status", refusal.Status, "code", refusal.Code, "error", err)
+		return refusal, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("put the document %s of a Dispatch message on %s: %w", artifact.Name, row.Issue, err)
+	}
+	if slug != artifact.Name {
+		return nil, fmt.Errorf("put the document %s of a Dispatch message on %s: Dispatch filed it under %s, so the message's link would name no document", artifact.Name, row.Issue, slug)
+	}
+	return nil, nil
 }
 
 // notice publishes a notice row to the architect that owns its issue, on that architect's own role
@@ -1212,7 +1259,11 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 // confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
 // denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's
 // (noticeAnswered, notice_exceptions.go), which a role-lane exception of an earlier listener
-// reaches by the same route (rehold).
+// reaches by the same route (rehold). A listener of this release never answers that a session
+// did not confirm a delivery (`receipt_timeout`): no session confirms a forward any more, and
+// every forward its stream did not store is `delivery_failed` (dispatch://INFRA-771), so that
+// answer reaches the policy only from a listener of the deployed, older build, until that
+// rollout finishes.
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
 // catch-up a newer ready dropped) is found gone in the tree's snapshot and finishes without a
 // publish, and so does a catch-up a newer one superseded (catchUpSuperseded, read against the
@@ -1547,6 +1598,29 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
 			return nil
 		}
+		// A start carries the phase entry its task is of (record.SuperviseRequest.Entry), and the
+		// role's phases row names the entry its phase is on now (record.PhaseRow.Entry). A row
+		// below that number carries work a later entry of the same phase has superseded, and that
+		// entry's own start carries that entry's task, so running this one would hand the worker
+		// work the record has moved past. Finishing it here is what lets a start row be a message
+		// with no state of its own: a row that outlives its entry is harmless rather than
+		// something to rewrite.
+		//
+		// Only a row that carries an entry and names a phase is held to it: a production check's
+		// look carries neither and is fenced on its check above, and every other start of no
+		// entry (record.SuperviseRequest.Entry, which lists them) is held to the generation
+		// alone.
+		if payload.Entry > 0 && payload.Phase != "" {
+			entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
+			if err != nil {
+				return err
+			}
+			if payload.Entry < entry {
+				r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
+					"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
+				return nil
+			}
+		}
 	}
 	if payload.Tree != issue.Tree {
 		return fmt.Errorf("supervise row %d tree %s does not match issue %s tree %s", row.ID, payload.Tree, issue.Key, issue.Tree)
@@ -1715,15 +1789,55 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if (payload.ResumeTask || ranNothing) && keepsStartTask(held, payload) {
 			r.log.Info("outbox start of a claim that holds its phase's task; not delivered again", "row", row.ID, "issue", issue.Key,
 				"role", payload.Role, "phase", payload.Phase, "held", held.Pending.ID)
+			// Which entry the claim is recorded as given here is the entry of the task it is
+			// holding, never the entry this row carried, and the two differ.
+			//
+			// A start of the entry whose work the claim holds records that entry
+			// (supervise.Machine.EntryGiven): the claim was given that work, so the difference
+			// between the entry the role's phases row names and the entry its claim was given
+			// closes without a second task reaching the worker. Where the delivery that queued
+			// that task recorded the entry already — supervise's queue writes Claim.GivenEntry in
+			// the transaction that writes the delivery — EntryGiven leaves the number where it
+			// stands, since it only rises.
+			//
+			// A start of a later entry, whose task the claim is still working, records nothing.
+			// That claim was given the earlier entry's work and no other, and recording this row's
+			// entry on it is the defect the entry exists to close, rebuilt here: the claim would
+			// read level with its phases row, workflow.OwedEntry would answer false, nothing would
+			// send the row's own task, and every completion of the task the worker actually holds
+			// would be refused as behind. Recording nothing leaves no worker with nothing to do.
+			// Which turn that leaves depends on the state this branch was reached in. A working
+			// claim finishes the turn it is in; its completion of the earlier entry is refused
+			// 409 with nothing recorded, which is right, since the phase was entered again. A
+			// failed claim is in no turn at all: the state switch above relaunched it
+			// (supervise.RequestRetry), and the relaunch hands it the earlier entry's task,
+			// which it still holds unconfirmed (supervise's sendPending), so its first
+			// completion is the one refused instead. Either way the admission pass sends the
+			// row's own entry's task on the first pass after that task is retired, since it
+			// passes over a claim whose pending delivery is still worked (admit's
+			// resumeSlottedWorkers, workflow's SendOwedEntry).
+			//
+			// The gave flag below stays false either way, since what it answers is whether the
+			// task was handed over (settleKept), not whether the entry was recorded.
+			if payload.Entry > 0 && held.Pending.Entry == payload.Entry {
+				if err := machine.EntryGiven(ctx, payload.Entry); err != nil {
+					return fmt.Errorf("record entry %d as given to claim %s: %w", payload.Entry, token, err)
+				}
+			}
 		} else if payload.Task != "" {
 			// The row's phase, already held to the issue's above, travels with the delivery: it is
 			// what says the task is still the work to do once the delivery has outlived its id. The
-			// row's assignment travels with it too, the one the start's own transaction wrote on the
-			// role's phases row: it is what the completion this task's turn reports is held to. A
-			// check start's look and check instance travel the same way, and are what say the
-			// completion this task's turn reports is a report on that look rather than a phase
-			// completion (supervise.Claim.ServingCheck, api/handoff.go). The
-			// row travels as well: the claim writes it with the delivery, so a retry of this row (a
+			// row's entry travels with it too, the number the start's own transaction raised on the
+			// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
+			// reports is held to (api/handoff.go), and what says a later row carrying the same
+			// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
+			// the role the work of the entry its row already names travels with the mark that
+			// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
+			// it was given that entry. A check start's look
+			// and check instance travel the same way, and are what say the completion this task's
+			// turn reports is a report on that look rather than a phase completion
+			// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
+			// writes it with the delivery, so a retry of this row (a
 			// settle or a ClaimReady below that failed, a crash before the row finished) queues the
 			// task again neither while it is pending nor once the claim has retired it
 			// (supervise.Claim.DeliveredRows), and that same record is what says, when the row
@@ -1737,7 +1851,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
-				Assignment: payload.Assignment, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
 				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}); err != nil {
 				return fmt.Errorf("deliver to claim %s: %w", token, err)
 			}
@@ -2620,6 +2734,26 @@ func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.Pro
 		return nil, fmt.Errorf("read the production check of %s: %w", issue, err)
 	}
 	return check, nil
+}
+
+// phaseEntry is the phase entry role's phases row of issue names (record.PhaseRow.Entry), read in
+// a transaction of its own just before the executor acts on a row, and 0 for a role whose row
+// holds no entry and for one the record has no row of at all. The transition writes that number
+// in its own transaction before the start it queues can run (workflow.Engine.enter), so a start
+// reading a number above its own is reading a later entry of the same phase.
+func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) (int64, error) {
+	var entry int64
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := r.records.Phases(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		entry = record.PhaseRowOf(rows, role).Entry
+		return nil
+	}); err != nil {
+		return 0, fmt.Errorf("read the phase entry of %s's %s: %w", issue, role, err)
+	}
+	return entry, nil
 }
 
 // issueBranch creates the issue's branch, legion/<KEY>, on GitHub at the repository's default

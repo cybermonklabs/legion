@@ -31,6 +31,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ReassertStatusWrite("in_progress", "done"),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		MessagePost{Body: "Pull request checks are blocked."},
+		MessagePost{Body: "The push check found work: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a",
+			Artifact: &MessageArtifact{Name: "rescue-pod-9d3f0c7a", Content: "```\nbranch legion/LEGION-208-rescue\n```\n"}},
 		Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass", Version: 4, Reason: ""},
 		ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: "escalated"},
 		Notice{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing, Failure: &NoticeFailure{
@@ -44,6 +46,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		}},
 		ControllerNotice{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
+		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
@@ -252,6 +255,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a todo notice for an architect", payload: Notice{Kind: TodoNotice}, reason: "unknown notice kind"},
 		{name: "a tick notice for an architect", payload: Notice{Kind: TickNotice}, reason: "unknown notice kind"},
 		{name: "a parked-decision notice for an architect", payload: Notice{Kind: ParkedDecisionNotice}, reason: "unknown notice kind"},
+		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
 		{name: "an actor on a phase-finished notice", payload: Notice{Kind: "phase-finished", Actor: "user:a"}, reason: "only a spec decision's does"},
 		{name: "a ref on a child-status notice", payload: Notice{Kind: "child-status", Ref: "dispatch://LEGION-1/spec"}, reason: "only a spec decision's does"},
 		{name: "a decision on an architect's notice", payload: Notice{Kind: "design-approved", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
@@ -278,6 +282,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an update-stalled notice carrying no update round", payload: ControllerNotice{Kind: UpdateStalledNotice}, reason: "carries an update round only when it is one"},
 		{name: "an update-stalled notice with no claims", payload: ControllerNotice{Kind: UpdateStalledNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "requires its round and the claims it waits on"},
 		{name: "an update-stalled notice with no round", payload: ControllerNotice{Kind: UpdateStalledNotice, Update: &UpdateStalled{Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-tester", State: "working"}}}}, reason: "requires its round and the claims it waits on"},
+		{name: "a slot-free wake carrying held issues", payload: ControllerNotice{Kind: SlotFreeNotice, Held: []HeldIssue{{Issue: "LEGION-209", Reason: HeldDesignGate, HeldBy: []string{"LEGION-208"}}}}, reason: "carries held issues only when it is a tick"},
+		{name: "a triage notice carrying held issues", payload: ControllerNotice{Kind: TriageNotice, Held: []HeldIssue{{Issue: "LEGION-209", Reason: HeldUnclassified}}}, reason: "carries held issues only when it is a tick"},
 		{name: "unknown supervise operation", payload: SuperviseRequest{Op: "unknown"}, reason: "unknown supervise operation"},
 		{name: "a stop that is not a tree close", payload: SuperviseRequest{Op: "stop", Tree: "LEGION-208", Role: claim.RoleArchitect}, reason: "unknown supervise operation"},
 		{name: "an issue close naming a linger", payload: SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Linger: 7}, reason: "only a tree close"},
@@ -318,6 +324,57 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 				t.Fatalf("NewOutboxRow error = %v, want %q", err, tc.reason)
 			}
 		})
+	}
+}
+
+// A message's artifact is refused before its row is queued wherever Dispatch would refuse the
+// upload on every run, or would file it under a slug other than its name, which is the slug the
+// message's link names: a name that is no slug, content that is empty or blank, and content past
+// Dispatch's bound on one document. The decode of a stored row holds it to the same rules.
+func TestAMessageArtifactIsRefusedUnlessDispatchWouldFileItUnderItsName(t *testing.T) {
+	now := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	post := func(name, content string) MessagePost {
+		return MessagePost{Body: "dispatch://LEGION-208/artifact/" + name, Artifact: &MessageArtifact{Name: name, Content: content}}
+	}
+	for _, tc := range []struct {
+		name    string
+		payload MessagePost
+		reason  string
+	}{
+		{name: "no name", payload: post("", "the list"), reason: "which is no Dispatch slug"},
+		{name: "an uppercase letter", payload: post("rescue-Pod-9d3f0c7a", "the list"), reason: "which is no Dispatch slug"},
+		{name: "a colon", payload: post("rescue-pod:9d3f0c7a", "the list"), reason: "which is no Dispatch slug"},
+		{name: "an underscore", payload: post("rescue_pod", "the list"), reason: "which is no Dispatch slug"},
+		{name: "two dashes in a row", payload: post("rescue--pod", "the list"), reason: "which is no Dispatch slug"},
+		{name: "a dash at the start", payload: post("-rescue-pod", "the list"), reason: "which is no Dispatch slug"},
+		{name: "a dash at the end", payload: post("rescue-pod-", "the list"), reason: "which is no Dispatch slug"},
+		{name: "a letter outside ASCII", payload: post("rescue-pöd", "the list"), reason: "which is no Dispatch slug"},
+		{name: "empty content", payload: post("rescue-pod", ""), reason: "holds no content"},
+		{name: "blank content", payload: post("rescue-pod", " \n\t\n"), reason: "holds no content"},
+		{name: "content past one document", payload: post("rescue-pod", strings.Repeat("x", MaxMessageArtifactBytes+1)), reason: "more than the 1048576 of one Dispatch document"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewOutboxRow("LEGION-208", tc.payload, now); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("NewOutboxRow error = %v, want %q", err, tc.reason)
+			}
+			encoded, err := json.Marshal(tc.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := OutboxRow{ID: 7, Kind: OutboxKindDispatchMessage, Issue: "LEGION-208", Payload: encoded}
+			if _, err := DecodeOutboxPayload(row); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("DecodeOutboxPayload error = %v, want %q", err, tc.reason)
+			}
+		})
+	}
+	for _, payload := range []MessagePost{
+		post("rescue-pod-9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22", "the list"),
+		post("r", strings.Repeat("x", MaxMessageArtifactBytes)),
+		{Body: "a message that links no document"},
+	} {
+		if _, err := NewOutboxRow("LEGION-208", payload, now); err != nil {
+			t.Errorf("NewOutboxRow of a message whose artifact Dispatch takes as named = %v, want it queued", err)
+		}
 	}
 }
 
@@ -453,6 +510,40 @@ func TestAStartTheReleaseBeforeWroteWithTheRelaunchMarkStillDecodes(t *testing.T
 		Phase: phase.Implementing, Relaunch: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("payload = %#v, want %#v", got, want)
+	}
+}
+
+// The start a role was owed when the release before this one stopped still decodes and still
+// carries its task. That release wrote the token it minted for the start onto the row
+// (SuperviseRequest.Assignment, which the phase entry replaced), and such a row is in the outbox
+// at the moment this release boots: the upgrade's own fill reads exactly that row's task as the
+// work of entry 1 (migrations/20261111225552_phase_entry.up.sql). The outbox decodes strictly
+// (DisallowUnknownFields) and record.Postgres.RoleRuns decodes every supervise row of the issues
+// it reads, so a refused payload is both a row that retries for ever and an admission pass that
+// fails on every fact — which is why the field is kept for one release, written by nothing and
+// read by nothing.
+func TestAnOwedStartTheReleaseBeforeWroteWithItsAssignmentStillDecodes(t *testing.T) {
+	const task = "Test the change. Issue: LEGION-208. Phase: testing."
+	row := OutboxRow{ID: 43, Kind: OutboxKindSupervise, Issue: "LEGION-208",
+		Payload: json.RawMessage(`{"op":"start","tree":"LEGION-208","role":"tester","generation":1,"phase":"testing",` +
+			`"assignment":"A1","needsSlot":true,"task":"` + task + `"}`)}
+	got, err := DecodeOutboxPayload(row)
+	if err != nil {
+		t.Fatalf("decoding the start the previous release owed a tester = %v, want it accepted: a refused payload retries for ever and fails the admission pass that reads it", err)
+	}
+	want := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1,
+		Phase: phase.Testing, Assignment: "A1", NeedsSlot: true, Task: task}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payload = %#v, want %#v: the row carries the task the upgrade reads as the work of entry 1", got, want)
+	}
+	// Nothing writes the field: a start of this release carries its entry and no assignment.
+	encoded, err := json.Marshal(SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester,
+		Generation: 1, Phase: phase.Testing, Entry: 2, NeedsSlot: true, Task: task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "assignment") {
+		t.Fatalf("a start of this release encodes %s, want no assignment field: the entry replaced it", encoded)
 	}
 }
 
@@ -718,6 +809,10 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			PromptFailures: FailureBudget{Limit: 3}, PromptRetires: FailureBudget{Limit: 2}}},
 		{Kind: "worker-stalled", Role: claim.RoleImplementer,
 			Reason: "the daemon ended the implementer's turn and started a replacement in its place: its agent last stepped at 2026-11-08T08:00:00Z, past the bound this deployment gives the role, and its session was brought back on the replacement the daemon started"},
+		{Kind: "worker-silent", Role: claim.RoleTester, Phase: phase.Testing,
+			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, on phase entry 2 its phase row names and its claim was already given. A suspension an operator holds over the claim refuses that start when the outbox runs it."},
+		{Kind: "worker-background-stalled", Role: claim.RoleTester, Phase: phase.Testing,
+			Reason: "LEGION-208's tester is waiting on background work of its own that has stood too long: its session reports async-job running and last said so at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment sets (worker_background_hours). Nothing was sent to it and nothing will be: the daemon cannot tell a background job that hung from a long one, so this is yours to read."},
 		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},
 		{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "pull request #42 is blocked: ci is red at head", Resends: 1},
 		{Kind: "pr-merged", Role: claim.RoleArchitect, Reason: "pull request #42 merged at c0de"},

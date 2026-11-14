@@ -147,6 +147,24 @@ export const ArtifactCreatedEventPayloadSchema = z.object({
     .optional(),
 });
 
+/** `artifact.renamed`: a person corrected a document's title. `artifact` is the document as it
+ *  now is, under its new name; `previous_name` is the name it carried before. The correction
+ *  writes the name alone, so the slug and the reference key the document is cited by do not
+ *  move. */
+export const ArtifactRenamedEventPayloadSchema = z
+  .strictObject({ artifact: ArtifactSchema, previous_name: z.string() })
+  .readonly();
+
+export type ArtifactRenamedEventPayload = z.output<typeof ArtifactRenamedEventPayloadSchema>;
+
+/** `artifact.removed`: a document of an issue that was still untouched is gone. `artifact` is the
+ *  document as it stood when it was removed; nothing of it is left to read. */
+export const ArtifactRemovedEventPayloadSchema = z
+  .strictObject({ artifact: ArtifactSchema })
+  .readonly();
+
+export type ArtifactRemovedEventPayload = z.output<typeof ArtifactRemovedEventPayloadSchema>;
+
 export const artifactVersionEventPayloadFields = {
   artifact_id: z.string(),
   name: z.string(),
@@ -258,13 +276,17 @@ export const BlockRepairedEventPayloadSchema = z
 
 export type BlockRepairedEventPayload = z.output<typeof BlockRepairedEventPayloadSchema>;
 
-/** A browser-authored ask block is malformed and awaits repair. */
+/** A browser-authored block breaks a rule settlement holds it to: an ask block it cannot read,
+ *  which it marks malformed and awaits repair, or, with `block_type: "check"`, a check block whose
+ *  `ci_check` breaks one of the four rules, which settlement deletes. `reason` is the ask's reason
+ *  or the check's rule. An ask's event carries no `block_type`. */
 export const BlockInvalidEventPayloadSchema = z
   .strictObject({
     block_id: z.string(),
     version: z.number().int(),
     reason: z.string(),
     disturbed_by: ActorSchema,
+    block_type: z.literal("check").optional(),
   })
   .readonly();
 

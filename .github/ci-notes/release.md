@@ -57,8 +57,8 @@ also one of the paths after --.
 The Envoy Oh My Pi plugin. The seed before the first pi-envoy-v* tag is the version line this
 package continues, @sjawhar/pi-legion-envoy, which it was split from: its own name on npm holds
 only a placeholder 0.0.0 until its first publish, so reading it would restart the line at 0.x.
-scripts/pi-plugin-prepack.sh copies this plugin's ten skills into dist/skills, which every Oh
-My Pi session loads as the plugin's skills, so a commit there releases whatever its type. Its
+scripts/pi-plugin-prepack.sh copies this plugin's eleven skills into dist/skills, which every
+Oh My Pi session loads as the plugin's skills, so a commit there releases whatever its type. Its
 notices generator, the prepack itself and patches/ (the bundle inlines nats.js with
 patches/nats@2.29.3.patch applied) are shipped build inputs too, so they get the same patch
 release.

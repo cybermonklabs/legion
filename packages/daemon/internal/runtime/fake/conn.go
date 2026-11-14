@@ -51,14 +51,16 @@ type Conn struct {
 	bundled     []Bundling
 	compactions []Compaction
 	compactGate chan struct{}
-	bundle      *runtime.WorkspaceBundle
-	enrollments []string
-	podToken    string
-	tokenReads  int
-	shutdowns   int
-	state       runtime.ConnState
-	unresulted  string
-	failures    map[string]error
+	// compactsHeld is how many Compact calls wait at compactGate now (CompactsHeld).
+	compactsHeld int
+	bundle       *runtime.WorkspaceBundle
+	enrollments  []string
+	podToken     string
+	tokenReads   int
+	shutdowns    int
+	state        runtime.ConnState
+	unresulted   string
+	failures     map[string]error
 }
 
 // NewConn is a connection that accepts everything and reports no turn in flight.
@@ -135,8 +137,16 @@ func (c *Conn) Compact(ctx context.Context, customInstructions string, bound tim
 	c.mu.Lock()
 	c.compactions = append(c.compactions, Compaction{CustomInstructions: customInstructions, Bound: bound})
 	gate, err := c.compactGate, c.failures["Compact"]
+	if gate != nil {
+		c.compactsHeld++
+	}
 	c.mu.Unlock()
 	if gate != nil {
+		defer func() {
+			c.mu.Lock()
+			c.compactsHeld--
+			c.mu.Unlock()
+		}()
 		select {
 		case <-gate:
 		case <-ctx.Done():
@@ -144,6 +154,17 @@ func (c *Conn) Compact(ctx context.Context, customInstructions string, bound tim
 		}
 	}
 	return err
+}
+
+// CompactsHeld is how many Compact calls wait at the gate HoldCompact opened now: a compaction
+// the daemon has asked Oh My Pi for and not been answered on. A claim the machine reports being
+// compacted may not have reached this call yet (supervise's Machine.Compact takes the claim, then
+// asks), so a test that moves the claim under its compaction waits for this rather than for the
+// machine's report alone.
+func (c *Conn) CompactsHeld() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.compactsHeld
 }
 
 // Compactions is every compaction asked over this connection, in order.

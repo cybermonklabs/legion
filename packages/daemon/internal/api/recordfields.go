@@ -71,7 +71,9 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "a path on the pod's own disk, which the operator's tools open and no agent reads of another seat"},
 	{Field: "ServingGeneration", Column: ColumnAgents, Keys: []string{"servingGeneration"},
 		Reason: "says whether the work the claim serves is of this generation, which a re-admission and a worker told to wait both turn on"},
-	{Field: "ServingAssignmentID", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "GivenEntry", Column: ColumnAgents, Keys: []string{"givenEntry"},
+		Reason: "the entry the role's claim was last queued a task of, which its issue carries beside the entry that role's phases row stands on (api.Issue.GivenEntry): the pair says whether the daemon has still to send that role the entry's own work"},
+	{Field: "ServedEntry", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ServingCheckLook", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "LastStartRow", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DeliveredRows", Column: ColumnWithheld, Reason: BookkeepingReason},
@@ -89,6 +91,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the one word for what failed the claim, which a retry, an escalation or a re-admission turns on"},
 	{Field: "FailedAt", Column: ColumnAgents, Keys: []string{"failure.at"},
 		Reason: "when the claim failed, which says whether the record is of this round or an older one"},
+	{Field: "LeakCheckCause", Column: ColumnAgents, Keys: []string{"leakCheckCause"},
+		Reason: "the sentence the latest launch try was refused with because the shared public leak check could not be installed in the role's pod, which says what to fix where the failure's sentence says only that launches ran out"},
 	{Field: "PendingCause", Column: ColumnAgents, Keys: []string{"pendingCause"},
 		Reason: "names the cause of the death whose relaunch is in flight, which an architect reads while `failure` is still empty"},
 	{Field: "Pending", Column: ColumnAgents, Keys: []string{"pendingTask"},
@@ -131,6 +135,14 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the run of provider-error turns, which bounds nothing and which the controller is told of once at six, so without it the number behind that telling stands on no surface its reader can reach"},
 	{Field: "Step", Column: ColumnAgents, Keys: []string{"step"},
 		Reason: "what the daemon last saw the claim's agent do, which says whether a worker mid-turn is still moving"},
+	// The session's own report of what it is doing, which the daemon's minute sweep reads off
+	// the live claim and no reader of these routes acts on: an agent reads what it is doing
+	// from its own process, and the operator's listing of a pod's activity is the idle view's
+	// (pods.IdleClaim), read from the store by a query of its own.
+	{Field: "ActivityAt", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ActivityBackground", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ActivityKinds", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ActivityNextReminderAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "LastTurnStart", Column: ColumnAgents, Keys: []string{"lastTurnStart"},
 		Reason: "when the agent last began a turn, which tells a worker still making progress from one wedged in a turn"},
 	{Field: "LastTurnEnd", Column: ColumnAgents, Keys: []string{"lastTurnEnd"},
@@ -194,4 +206,8 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "MemoryDrawnAt", Column: ColumnAgents, Keys: []string{"memoryDrawnAt"},
 		Reason: "when the tree was drawn, which says the draw happened rather than was never reached"},
 	{Field: "ToldParent", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "MovedAt", Column: ColumnWithheld,
+		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
+	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
+		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
 }

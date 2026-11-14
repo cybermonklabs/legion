@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 86,
-    "caller": 86
+    "daemon": 111,
+    "caller": 111
   },
   "admission": {
     "cap": 3,
@@ -40,6 +40,20 @@
         "blockedBy": [
           "LEGION-210"
         ]
+      }
+    ],
+    "held": [
+      {
+        "issue": "LEGION-209",
+        "reason": "dispatch_blocker",
+        "heldBy": [
+          "LEGION-210",
+          "LEGION-213"
+        ]
+      },
+      {
+        "issue": "LEGION-214",
+        "reason": "label_off"
       }
     ]
   },
@@ -243,7 +257,11 @@
       },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
-      "memoryDrawnAt": "2026-09-20T11:04:05Z"
+      "memoryDrawnAt": "2026-09-20T11:04:05Z",
+      "phaseEntry": 4,
+      "givenEntry": 4,
+      "treeMovedAt": "2026-09-22T09:17:12Z",
+      "quietHours": 0.013333333333333334
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -288,7 +306,8 @@
                 "promptRetires": 0
               }
             },
-            "pendingCause": "died"
+            "pendingCause": "died",
+            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found"
           },
           "pass": 1,
           "rounds": 1
@@ -304,7 +323,9 @@
       "why": {
         "state": "claim_stopped",
         "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
-      }
+      },
+      "treeMovedAt": "2026-09-22T06:18:00Z",
+      "quietHours": 3
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -360,7 +381,11 @@
       "why": {
         "state": "claim_stopped",
         "reason": "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it."
-      }
+      },
+      "phaseEntry": 2,
+      "givenEntry": 1,
+      "treeMovedAt": "2026-09-21T09:18:00Z",
+      "quietHours": 24
     },
     "LEGION-212": {
       "key": "LEGION-212",
@@ -406,7 +431,19 @@
         "since": "2026-09-22T08:05:00Z",
         "answeredAt": "2026-09-22T09:21:00Z",
         "answeredBy": "ask"
-      }
+      },
+      "treeMovedAt": "2026-09-22T09:03:00Z",
+      "quietHours": 0.25
+    },
+    "LEGION-214": {
+      "key": "LEGION-214",
+      "generation": 1,
+      "phase": "admitted",
+      "status": "todo",
+      "tree": "LEGION-214",
+      "repo": "zeta/tools",
+      "defaultBranch": "release/v7.1",
+      "workers": {}
     }
   },
   "pendingStatusWrites": [],
@@ -796,6 +833,9 @@
     "production_check_hours": 240,
     "pod_update_retask_hours": 1,
     "pod_update_notice_hours": 4,
+    "stalled_tree_notice_hours": 6,
+    "worker_silence_minutes": 45,
+    "worker_background_hours": 6,
     "pod_update_max_open_rounds": 6,
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,

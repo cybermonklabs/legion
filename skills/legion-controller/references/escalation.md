@@ -10,9 +10,9 @@ architect with `envoy_publish` to its role, because it is not yours to make.
 
 For capacity, the only lever is order. You cannot change `admission.cap`: it is the operator's
 `legion.yaml` setting, and `set_status` is your only admission move. The cap counts the issues the
-daemon has started, a root or a child, not trees, and an issue keeps its slot from the moment the
-daemon starts it until it is done or leaves the workflow, so a tree's
-own children compete for it with every other
+daemon has started, a root or a child, not trees, and an issue holds one of the cap's slots from
+the moment the daemon starts it until its work is past its review, until it is done, or until
+Dispatch takes it out of the workflow, so a tree's own children compete for it with every other
 tree's. Read `admission.active`, `admission.waiting` and `admission.trees`, tell the architect
 where its tree's issues stand in the line with `envoy_publish`, and
 open a finding ask when the deployment needs a larger cap.
@@ -41,8 +41,9 @@ you release it. Read the record, then choose the release.
    linger, `set_status` to `todo` releases the hold and costs nothing: the issue returns to the
    phase `heldFrom` names, that phase's role starts with its task, and the generation, the review
    rounds, the pod and the place in the admission line stay as they were. Take it when the cause
-   is gone — a launch the runtime refused (`launch_refused`), a process that died (`died`), an
-   agent that never came up (`never_registered`) — and when you fixed what the `detail` names. On
+   is gone, a cause that a relaunch no longer meets: a launch the runtime refused
+   (`launch_refused`), a process that died (`died`), an agent that never came up
+   (`never_registered`); and when you fixed what the `detail` names. On
    a child, the same `todo` brings it back at `admitted` with a new generation of its own, since
    the free release reaches a root alone. Where the claim's own session is what the provider keeps
    refusing (`provider_error`, and `prompt_retires_exhausted` for an agent that takes no turn),
@@ -51,8 +52,10 @@ you release it. Read the record, then choose the release.
    runs no Oh My Pi session to compact — the refusal itself names `fresh_session` as what starts
    the claim again. The claim starts the held phase again in a new session and loses everything
    the old one held. (`compact` is for a claim that still runs, which is the stuck claim of the
-   `provider-errors` wake, not this one.) Where the cause stands, park the tree as the `held`
-   wake says, and mark the park with its comment.
+   `provider-errors` wake, not this one.) Where the cause stands, the tree stays admitted: ask the
+   person whether to park the tree, as
+   `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` says, and park the
+   tree only as the `held` wake says.
 
 ## A child that looks independent
 
@@ -70,8 +73,9 @@ person's yes:
    `--label legion` only when the answer asks Legion to run it. `<PROJECT>` is the issue key's
    prefix before `-<n>` (`ACME-3` → `ACME`), which `read_state` shows as `daemon.project`; it is
    not the lowercase project token in role names such as `legion-<project>-controller`.
-2. Park the child (`set_status` to `icebox`) and comment a pointer to the new root on it. You
-   cannot close it, because only its architect or the daemon sets `done`.
+2. Park the child (`set_status` to `icebox`) and comment the new root's key on it.
+   Park a child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+   You cannot close it, because only its architect or the daemon sets `done`.
 3. A root filed with the label opens in `triage`, and its triage wake brings it back to you
    (`skill://legion-controller/references/triage.md`).
 
@@ -97,15 +101,18 @@ on the pod, so the round does not wait for it. Its retry is the architect's or t
 for any failed role, and yours once the architect escalates the hold
 ([An escalated hold](#an-escalated-hold)). A retried claim is asked like any other.
 
-Before it replaces the pod, the daemon checks every workspace on the pod's disk for work the
-remote lacks, a failed claim's included, and pushes what it finds to a rescue branch of its own,
-`legion/<KEY>-rescue-<pod>-<n>`. When it pushed one, it writes the issue a message naming each
-rescue branch and its commit, for the issue's roles to merge into the issue branch; that message
-asks nothing of you. When the check or a push fails for any workspace, the daemon does not replace
-the pod, and this wake's `reason` says that the check for unpushed work failed and names the claim
-the check ran through, each workspace and its error. Everything else of the pod's disk goes with
-the pod: the round's task tells each worker to put any scratch evidence it still needs on Dispatch
-before it answers.
+Before it replaces the pod, the daemon checks every workspace on the pod's disk for the issue's
+own work the remote lacks, a failed claim's included, and pushes it to the issue's one rescue
+branch, `legion/<KEY>-rescue`, which only moves forward. When it found work the issue branch
+does not have, it writes the issue a message: a short summary of each branch and its commits,
+and a link to an artifact of the issue with the full list, for the issue's roles to merge into
+the issue branch; that message asks nothing of you. A pod of an older image pushes to branches
+of its own, `legion/<KEY>-rescue-<pod>-<n>`, and its message says so in the same shape. When
+the check or a push fails for any workspace, the daemon does not replace the pod, and this
+wake's `reason` says that the check for unpushed work failed and names the claim the check ran
+through, each workspace and its error. Everything else of the pod's disk goes with the pod: the
+round's task tells each worker to put any scratch evidence it still needs on Dispatch before it
+answers.
 One round wakes you once, however many sweeps find it open, so handle it when it arrives.
 Read `read_state` and the issue first, as for every wake: a round that finished since needs
 nothing.
