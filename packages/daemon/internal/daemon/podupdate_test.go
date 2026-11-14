@@ -535,27 +535,17 @@ func (r *podUpdateRig) notices() []record.ControllerNotice {
 	return notices
 }
 
-// posts is every message the sweep wrote on the issue, oldest first, decoded as the outbox
-// decodes its row.
-func (r *podUpdateRig) posts() []record.MessagePost {
+// messages is the body of every message the sweep wrote on the issue, oldest first, decoded as
+// the outbox decodes its row.
+func (r *podUpdateRig) messages() []string {
 	r.t.Helper()
-	var posts []record.MessagePost
+	var bodies []string
 	for _, row := range r.rows(record.OutboxKindDispatchMessage) {
 		payload, err := record.DecodeOutboxPayload(row)
 		if err != nil {
 			r.t.Fatalf("decode message %d: %v", row.ID, err)
 		}
-		posts = append(posts, payload.(record.MessagePost))
-	}
-	return posts
-}
-
-// messages is the body of every message the sweep wrote on the issue, oldest first (posts).
-func (r *podUpdateRig) messages() []string {
-	r.t.Helper()
-	var bodies []string
-	for _, post := range r.posts() {
-		bodies = append(bodies, post.Body)
+		bodies = append(bodies, payload.(record.MessagePost).Body)
 	}
 	return bodies
 }

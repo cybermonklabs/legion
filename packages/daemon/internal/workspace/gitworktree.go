@@ -366,7 +366,7 @@ func chmodDirectory(path string, mode uint32) error {
 // dir's own place in the layout and from nothing inside dir. Location puts a workspace at
 // <state>/workspaces/<owner>/<name>/<issue> and its clone at CloneRoot(<state>)/<owner>/<name>,
 // so the state directory is the layoutDepth directories above dir, and the clone follows from the
-// owner and the name dir carries (LocationOf). What is deliberately not read is the pair jj
+// owner and the name dir carries (locationOf). What is deliberately not read is the pair jj
 // resolves a git directory through, the workspace's .jj/repo and the repository's
 // store/git_target: every process working the workspace can write them, and an absolute path in
 // either is taken as it stands.
@@ -406,7 +406,7 @@ func WorkspaceOf(dir string) (Workspace, error) {
 	if !filepath.IsAbs(dir) {
 		return Workspace{}, fmt.Errorf("the workspace %s is no absolute path, so the clone it belongs to cannot be derived", dir)
 	}
-	workspace, err := LocationOf(dir)
+	workspace, err := locationOf(dir)
 	if err != nil {
 		return Workspace{}, fmt.Errorf("the workspace %s is in no state directory's workspace layout: %w", dir, err)
 	}

@@ -165,7 +165,9 @@ func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 // document. No message of this release sets Artifact: its one producer was the pod rescue's
 // message, removed with the rescue (INFRA-2848). The field stays because the outbox decodes a
 // payload strictly and refuses an unknown field, so a row an older daemon queued with an artifact
-// must still decode and still put its document up.
+// must still decode and still put its document up. It, MessageArtifact and the outbox's upload
+// can go once no daemon of a release before this one shares the database and no unsent
+// dispatch_message row holds an artifact.
 type MessagePost struct {
 	Body     string           `json:"body"`
 	Artifact *MessageArtifact `json:"artifact,omitempty"`

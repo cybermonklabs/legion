@@ -743,7 +743,8 @@ func (d *artifactDispatch) UploadArtifact(_ context.Context, _, name, content st
 	return slug, nil
 }
 
-// rescueListRow is a message row whose body links its own document.
+// rescueListRow is a message row whose body links its own document: the row an older daemon's
+// rescue message queued, the one producer of MessagePost.Artifact a database can still hold.
 func rescueListRow(t *testing.T) (record.OutboxRow, record.MessageArtifact) {
 	t.Helper()
 	document := record.MessageArtifact{Name: "rescue-pod-9d3f0c7a", Content: "```\nbranch: legion/LEGION-208-rescue\n```\n"}
