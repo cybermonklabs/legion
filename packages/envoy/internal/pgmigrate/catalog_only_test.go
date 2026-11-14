@@ -30,7 +30,9 @@ import (
 // after the rename. proc_view is a view over pg_proc, for the row that writes pg_proc through it.
 // The schema late holds evt_shadow, a view over pg_event_trigger, under the name of the table
 // public.evt_shadow, for the row that drops that table under a search_path that lists public
-// before late.
+// before late. The schema sp_1792 holds mood, a domain with a constraint under the name of the
+// enum public.mood. The view sp_view and the rule of the table sp_ruled each call set_config to
+// put sp_1792 first in the session's search_path, for the rows whose statement runs one of them.
 const catalogOnlyFixtureSQL = `
 create table schema_migrations (version bigint primary key);
 insert into schema_migrations (version) values (1);
@@ -73,6 +75,11 @@ create view proc_view as select * from pg_proc;
 create schema late;
 create view late.evt_shadow as select * from pg_event_trigger;
 create table public.evt_shadow (id int);
+create schema sp_1792;
+create domain sp_1792.mood as text check (value <> 'x');
+create view sp_view as select set_config('search_path', 'sp_1792, public', false) as sp;
+create table sp_ruled (id int);
+create rule sp_ruled_sets as on insert to sp_ruled do also select set_config('search_path', 'sp_1792, public', false);
 `
 
 // catalogOnlyFixture is catalogOnlyFixtureSQL with rows rows in each large table. The census
@@ -545,6 +552,16 @@ var refusedRows = []refusedRow{
 	{name: "after a set_config call, an update of a view over pg_event_trigger", migrations: []string{"select set_config('work_mem', '64MB', false)", "update late.evt_shadow set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
 	{name: "after a set local in the same migration, an update of a view over pg_event_trigger", migrations: []string{"set local work_mem = '64MB'; update late.evt_shadow set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
 	{name: "after a create of a table named like a pg_catalog type, an update of a view over pg_event_trigger", migrations: []string{"create table public.int8range (id int)", "update late.evt_shadow set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
+	// A statement on the keep-on list that reads a view, or writes a table with a rule, runs the
+	// query of that view or rule, and a query that calls set_config changes the session's
+	// search_path as a set_config call in the statement does. After the fixture's sp_view or
+	// sp_ruled puts sp_1792 first, mood names the domain sp_1792.mood, so the census must not judge
+	// the second migration's column by the enum public.mood. On PostgreSQL 18.6, with
+	// artifact_versions at 1.2 GiB, the census exempted such an ADD COLUMN after a select of such a
+	// view, and when the migrations applied, Postgres gave the column the domain and rewrote the
+	// table under ACCESS EXCLUSIVE.
+	{name: "after a select of a view whose query calls set_config", migrations: []string{"select * from sp_view", "alter table big add column c mood default 'calm'"}},
+	{name: "after an insert into a table whose rule calls set_config", migrations: []string{"insert into sp_ruled values (1)", "alter table big add column c mood default 'calm'"}},
 }
 
 // censusOf runs one census, with the table limit at one byte, of sqls as pending migrations
