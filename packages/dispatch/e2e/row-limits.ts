@@ -1140,14 +1140,16 @@ function shortOfBound(limit: WallClockLimit, total: number | undefined): string 
  *  total the scan cannot read covers the row as stated. Where the file states its limit only
  *  otherwise - `setDefaultTimeout(90_000)` - the refusal names that limit as what stops the row,
  *  and the lane's `--timeout` where the file states none. Where that limit is a number written as
- *  digits, it is compared with `rowLimit` of the row's bound, as `shortOfBound` compares a total:
- *  below that, the refusal says the row needs that much at the least, or the clock fires before
- *  the bound of the child or poll and names neither; at it or above, that the number does not
- *  move with the bound. A name or an expression is not read, and the refusal says only that the
- *  clock can fire first. The row's bound is the largest one the scan reads among what it waits
- *  for, not their sum: WHAT A ROWLIMIT COVERS. So a row that awaits two `short` children one
- *  after the other under `setDefaultTimeout(90_000)` is told that the number does not move,
- *  although 90 s can fire before the second child's bound. */
+ *  digits, it is compared with the row's bound and with `rowLimit` of it, as `shortOfBound`
+ *  compares a total. At the bound or below, the refusal says the row needs `rowLimit` at the
+ *  least, and that the file's clock fires no later than the bound and names neither. Above the
+ *  bound and below `rowLimit`, it says the bound fires first and names the child, but the number
+ *  leaves the row less than the time it gets after the bound for its own work. At `rowLimit` or
+ *  above, it says the number does not move with the bound. A name or an expression is not read,
+ *  and the refusal says only that the clock can fire first. The row's bound is the largest one
+ *  the scan reads among what it waits for, not their sum: WHAT A ROWLIMIT COVERS. So a row that
+ *  awaits two `short` children one after the other under `setDefaultTimeout(90_000)` is told
+ *  that the number does not move, although 90 s can fire before the second child's bound. */
 function unstatedRefusal(
   limit: WallClockLimit,
   limits: readonly WallClockLimit[]
@@ -1179,14 +1181,22 @@ function unstatedRefusal(
     if (otherwise.length > 0 && limit.bound !== undefined && numbers.length === written.length) {
       const bound = bounds[limit.bound];
       const needed = rowLimit(limit.bound);
-      order =
-        Math.min(...numbers) < needed
-          ? `that number is below \`rowLimit("${limit.bound}")\`, ${needed} ms, which a ` +
-            `${limit.kind} under the \`${limit.bound}\` bound of ${bound} ms needs at the least, ` +
-            "or that clock fires before the bound of the child or the poll it waits for, and " +
-            "names neither"
-          : "that number is not read from the bounds, so it does not move when the " +
-            `\`${limit.bound}\` bound of ${bound} ms moves`;
+      const least = Math.min(...numbers);
+      const short =
+        `that number is below \`rowLimit("${limit.bound}")\`, ${needed} ms, which a ` +
+        `${limit.kind} under the \`${limit.bound}\` bound of ${bound} ms needs at the least`;
+      if (least <= bound) {
+        order = `${short}, so that clock fires no later than the bound of the child or the poll it waits for, and names neither`;
+      } else if (least < needed) {
+        order =
+          `${short}: the bound of the child or the poll it waits for fires first and names it, ` +
+          `but that number leaves the ${limit.kind} less than the ${needed - bound} ms it gets ` +
+          "after that bound for its own work, so its clock can fire before the failure is read";
+      } else {
+        order =
+          "that number is not read from the bounds, so it does not move when the " +
+          `\`${limit.bound}\` bound of ${bound} ms moves`;
+      }
     }
     return `${at} waits for ${waits} and states no limit, so ${clock}, and ${order}: ${waitingRemedy(limit)}`;
   }

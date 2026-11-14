@@ -685,14 +685,14 @@ test(
 // `heldUnderMs`. The lower bound stands at half the timer rather than at the timer itself
 // because the time between is the timer give or take the scheduling of the probe's dial and of
 // this process's accept and close handlers, so load can shorten it as well as lengthen it: with
-// six busy loops on two CPUs, 11 of 30 runs of the 1 s timer measured below 1 000 ms, the lowest
-// at 994.9 ms. The upper bound follows the module's rule, three times the largest reading of its
-// kind under load: the largest accept-to-close of a correct 1 s timer, in 44 runs under six busy
-// loops on two CPUs on 2026-11-14, was 1 012.4 ms, so the bound is 3 100 ms, three times that
-// rounded up to the next 100 ms. So the row catches a timer set well short, one set several times
-// too long and one left at the 45 s default; it does not catch one set between about 0.5 s and
-// about 3 s, such as 2 s for 1 s, which held 1 987-2 029 ms.
-const heldUnderMs = 3_100;
+// six busy loops on two CPUs, the lowest of 74 runs of the 1 s timer measured 988.8 ms. The upper
+// bound follows the module's rule, three times the largest reading of its kind under load: the
+// largest accept-to-close of a correct 1 s timer, in 74 runs under six busy loops on two CPUs on
+// 2026-11-14, was 1 031.7 ms, so the bound is 3 200 ms, three times that rounded up to the next
+// 100 ms. So the row catches a timer set well short, one set several times too long and one left
+// at the 45 s default; it does not catch one set between about 0.5 s and about 3 s, such as 2 s
+// for 1 s, which held 1 987-2 029 ms.
+const heldUnderMs = 3_200;
 
 test(
   "a watch whose socket never opens ends on its own, and not as a clean watch",
@@ -731,8 +731,16 @@ test(
         accepted,
         "the silent server accepted no connection from the probe, or more than one"
       ).toHaveLength(1);
-      // The probe has exited, so its connection is closed, and the close is on its way here.
-      const held = (await closed.promise) - accepted[0];
+      // The probe has exited, so its connection is closed, and the close is on its way here; a
+      // close that never comes fails by name rather than on the row's own clock.
+      const close = await beforeDeadline(closed.promise, performance.now() + heldUnderMs);
+      if (close === pastDeadline) {
+        throw new Error(
+          `the silent server saw no close of the probe's connection within ${heldUnderMs} ms of ` +
+            "the probe's exit"
+        );
+      }
+      const held = close - accepted[0];
       expect(
         held,
         `the probe gave up on its connection before ${openWithinMs / 2} ms, half the ` +

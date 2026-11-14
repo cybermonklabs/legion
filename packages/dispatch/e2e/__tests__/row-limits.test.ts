@@ -455,12 +455,24 @@ test("a file's own rowLimit states the limit of each waiting row that states non
       `${file}:4 the row "waits" waits for \`runBounded\` and states no limit, so the file's own ` +
       `setDefaultTimeout on line 3 stops it at ${fileLimit}, and `;
 
-    const below = refusedUnder("60_000");
-    expect(below.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
-    expect(below[1].why).toBe(
+    const atBound = refusedUnder("60_000");
+    expect(atBound.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
+    expect(atBound[1].why).toBe(
       `${stoppedBy("60_000")}that number is below \`rowLimit("short")\`, 90000 ms, which a row ` +
-        "under the `short` bound of 60000 ms needs at the least, or that clock fires before the " +
-        `bound of the child or the poll it waits for, and names neither: ${remedy}`
+        "under the `short` bound of 60000 ms needs at the least, so that clock fires no later " +
+        `than the bound of the child or the poll it waits for, and names neither: ${remedy}`
+    );
+
+    // Above the bound the child's own bound fires first and names the child, so the refusal
+    // says that, and that the number still cuts the time the row gets after it.
+    const aboveBound = refusedUnder("70_000");
+    expect(aboveBound.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
+    expect(aboveBound[1].why).toBe(
+      `${stoppedBy("70_000")}that number is below \`rowLimit("short")\`, 90000 ms, which a row ` +
+        "under the `short` bound of 60000 ms needs at the least: the bound of the child or the " +
+        "poll it waits for fires first and names it, but that number leaves the row less than " +
+        "the 30000 ms it gets after that bound for its own work, so its clock can fire before " +
+        `the failure is read: ${remedy}`
     );
 
     const atNeed = refusedUnder("90_000");

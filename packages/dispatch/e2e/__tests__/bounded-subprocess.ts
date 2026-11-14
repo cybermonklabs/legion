@@ -28,9 +28,10 @@
  * end-line and late-open rows of `delivery-live-probe.test.ts` read the probe's own `open` and
  * `end` lines. Two of its rows read a probe's time against its flag: a hold of a connection never
  * answered, and SIGINT to exit while a read receives nothing. Each holds it to at least half the
- * flag's 1 s and under three times the largest correct reading under load, by the rule below,
- * so only a probe three times slower than any correct one measured fails there. A bound exists
- * so that a child which will never end fails with a name, before its job is killed from outside.
+ * flag's 1 s and under a limit of at least three times the largest correct reading under load,
+ * rounded up, by the rule below, beside its exit code and stderr; a slow probe fails there only
+ * when it is more than three times slower than any correct one measured. A bound exists so that
+ * a child which will never end fails with a name, before its job is killed from outside.
  *
  * The rule for each value: each bound is at least three times the largest reading of its kind.
  * The readings behind `short`, `listing` and `generation` were taken under load in a pod with two
