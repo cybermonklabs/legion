@@ -22,13 +22,11 @@
 -- reads its own claims table. This drop is the exception that rule allows, as
 -- 20261109060737_drop_awaiting_slot_notice.up.sql is: every release from legion-v19.16.0 on names
 -- both columns in its claim read and in its PutClaim, so pinning one of them after this migration
--- fails every claim read and every claim write until the columns are back. The five statements
--- that bring them back, delete this migration's schema_version row so that a roll forward runs
--- this file again, delete the queued update_ask rows that a roll forward asks again, and clear
--- the ask mark of each claim that has not answered, so that the earlier release asks it at once
--- rather than after its re-ask bound, and why nothing else need come with them, are in
--- docs/kubernetes.md under their own heading. This table holds the claims of every project that
--- shares the database, so every daemon of one database moves to this release, and back, together.
+-- fails every claim read and every claim write until the columns are back. The statements that
+-- bring them back and let a roll forward run this file again, and why nothing else need come with
+-- them, are in docs/kubernetes.md under "Rolling back the release whose update round ends at its
+-- bound". This table holds the claims of every project that shares the database, so every daemon
+-- of one database moves to this release, and back, together.
 --
 -- What the reset changes: for every claim whose update_round starts with 'pod:', it sets
 -- update_opened_at to the moment of this migration, and it clears update_tasked_at and

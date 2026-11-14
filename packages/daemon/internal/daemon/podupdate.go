@@ -23,11 +23,11 @@ import (
 // role of the issue is asked, on its own Envoy topic, to push its work and answer (openPodUpdate,
 // record.UpdateAsk, api's claims/ready-for-update) — and replaces the pod once each has answered,
 // or at the round's bound (pod_update_grace_minutes after the round opened, roundBound) whatever
-// the roles said, and in both cases only after the daemon's own push check has carried what the
-// disk still held off it (replacementDue, checkUnpushed). An answer from every role ends the
-// round early; no answer holds it past the bound. An operator's suspension of a claim is the one
-// wait that outlasts the bound, and only over a pod that is there: a gone pod ends its round
-// whatever the hold (readReplacement).
+// the roles said, and in both cases only after the daemon's own push check has carried the
+// issue's own line and the workspace's files off the disk, and nothing else of it (replacementDue,
+// checkUnpushed). An answer from every role ends the round early; no answer holds it past the
+// bound. An operator's suspension of a claim is the one wait that outlasts the bound, and only
+// over a pod that is there: a gone pod ends its round whatever the hold (readReplacement).
 //
 // The round is the issue's, not the locator's: a suspended claim's locator is nil (supervise's
 // letGo), and before the bound no pod disk may be deleted before every worker in it, suspended

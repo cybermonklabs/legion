@@ -27,9 +27,10 @@ var _ supervise.Store = (*Store)(nil)
 // the previous release's daemon still reads its own claims table, so dropping it would make
 // rolling the image back need a database restore.
 // The two marks of how a claim answered its update round are an exception, dropped by
-// migration 20261113110610 once no rule read them: an operator who rolls the image back adds them
-// again first, with the five statements docs/kubernetes.md gives (one of them deletes the
-// migration's schema_version row, so a roll forward runs it again), and needs no restore.
+// migration 20261113110610 once no rule read them: an operator who rolls the image back runs the
+// statements in docs/kubernetes.md under "Rolling back the release whose update round ends at its
+// bound" first, which add them again and let a roll forward run the migration again, and needs no
+// restore.
 //
 // The four activity columns are read here beside the eight step columns and under the same rule
 // (putClaim's own comment): PutClaimActivity and PutClaimStep own them, and a machine's write

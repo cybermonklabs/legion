@@ -332,7 +332,7 @@ The push check does not save a commit that is not on the line of this issue. If 
 		fmt.Sprintf("The push check pushes the work that it saves to the branch %s.", rescue) +
 		` This branch only moves forward. It keeps the work of each earlier rescue of this issue. After the replacement, the daemon writes on this issue the name of each branch that holds rescued work.
 
-If the shim of the pod is older than this daemon, the push check pushes to branches of the pod. ` +
+If the shim of the pod is from before the daemon used one rescue branch for each issue, the push check pushes to branches of the pod. ` +
 		fmt.Sprintf("The name of each such branch is %s, a dash, the first 8 characters of the uid of the pod, a dash and a number.", rescue) +
 		` If the shim of the pod is older than the push check, the daemon does not run the push check. On such a pod, work that you do not push is lost.
 

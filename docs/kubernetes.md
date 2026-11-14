@@ -1990,6 +1990,11 @@ its message tells it to push its work and end its turn, and its round ends at th
 A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either ("Contract discipline" below).
 What holds a round past its bound is a claim an operator's own suspension holds, a push check that fails, a pod replacement the cluster refuses, no process in the round's pod, or two pods at once,
 and the daemon reports such a round to the project's controller as `update-stalled`, once, after the bound has passed.
+After this release deploys, move the project's controller onto this release's `skills/legion-controller`.
+The earlier playbook reads an `update-stalled` notice by its `waiting` entries, and for a role that did not answer and is not suspended it opens no ask: it sends that role the round's steps instead.
+This release sends the notice once the bound has passed whatever the roles answered, so the usual notice names roles that did not answer, and on the earlier playbook such a notice reaches no operator.
+For a daemon-launched controller, suspend its claim and resume it (`legion claims suspend --claim <token>`, then `legion claims resume --claim <token>`), which launches it on the new image (below).
+For an operator-launched controller, stop `legion controller start` and run it again with this release's `pi-legion` installed: this release does not move the daemon API contract, so `legion controller start` accepts the earlier `pi-legion` and nothing else moves that controller.
 
 The daemon-launched controller's pod is in scope for the warning and in no round:
 it has no issue workspace and nothing to push, so `PodDrift` answers nothing for it (`internal/runtime/sandbox/drift.go`).
@@ -4685,7 +4690,7 @@ and a round whose workers have all answered but whose pod no live claim records 
 
 What a pod's disk carries is therefore the issue's work in progress and nothing more:
 the clone and the jj workspace, the issue's scratch and caches, uv's Pythons and packages, the workspace's CodeGraph index and each role's state home with Oh My Pi's logs under it.
-None of it reaches the next pod but what the push check before an update round's replacement pushes to a rescue branch, and that check carries commits and the workspace's own files alone: the issue's scratch, a role's temporary directory, its logs and every other file outside the workspace go with the pod, which is why the round's message tells each role to put any of them it still needs as evidence on Dispatch before it answers.
+None of it reaches the next pod but what the push check before an update round's replacement pushes to a rescue branch, and that check carries the commits of the issue's own line and the workspace's own files alone: a commit off that line, the issue's scratch, a role's temporary directory, its logs and every other file outside the workspace go with the pod, which is why the round's message tells each role to push the commits it wants kept and to put any of those files it still needs as evidence on Dispatch before it answers.
 What does reach it is what lives elsewhere
 — each role's session, a row in the session database ([Selecting the store](#selecting-the-store));
 the issue's branch on GitHub, `legion/<KEY>`, which every pushed turn is in;

@@ -129,6 +129,7 @@ Take the wake by what its `reason` names:
 | a refused pod replacement | The runtime refused `ReplacePod`. The daemon tries again at each sweep. | Open a finding ask naming the issue, the round and the `ReplacePod` error, so an operator reads the pod. |
 | no process in the pod | No claim of the issue records a process in the round's pod, or in any pod, so the daemon has nothing to replace the pod through. The round waits for a role of the issue to run again. | Open a finding ask naming the issue, the round and `reason`, so an operator reads the pod. |
 | two pods | The claims of the issue record two pods, so a replacement is in flight, and the round waits for it. | Open a finding ask naming the issue, the round and `reason`, so an operator reads the pod. |
+| anything no row above names | An earlier release can send a `reason` that no row above names, for example that the round waited for its workers to answer. | Open a finding ask naming the issue, the round and `reason`, so an operator reads it. |
 
 Send no role a message about the round. The daemon published the round's message itself, and a
 message from you starts a turn that answers nothing. Park nothing and write no status for this

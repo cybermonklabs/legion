@@ -165,7 +165,7 @@ func rescueSummary(round string, branches []rescuedBranch, link string, listed i
 		fmt.Fprintf(&text, "\n\nWhen this work is necessary, merge %s into the issue branch. The branch keeps each earlier rescue of this issue.", rescueJoin(names, len(names)))
 	}
 	if len(older) > 0 {
-		fmt.Fprintf(&text, "\n\nThe pod's shim is older than this daemon. It reported %s of this pod. It did not report their commits.", rescueCount(len(older), "rescue branch", "rescue branches"))
+		fmt.Fprintf(&text, "\n\nThe pod's shim is from before the daemon used one rescue branch for each issue. It reported %s of this pod. It did not report their commits.", rescueCount(len(older), "rescue branch", "rescue branches"))
 		if listed > 0 {
 			text.WriteString("\n")
 			for _, b := range older[:min(listed, len(older))] {
@@ -261,7 +261,7 @@ func rescueList(issue, round string, branches []rescuedBranch) string {
 		switch b.kind {
 		case olderShimBranch:
 			// Such a shim reports no commits, so there are none to count or to list.
-			lines = append(lines, "tip before: not reported, because the pod's shim is older than the daemon")
+			lines = append(lines, "tip before: not reported, because the pod's shim is from before the daemon used one rescue branch for each issue")
 			continue
 		case heldBranch:
 			lines = append(lines, "tip before: the push check pushed nothing, and these commits are only on this branch")

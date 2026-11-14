@@ -88,9 +88,9 @@ func (h *harness) leftAsk(round string) Delivery {
 	return h.olderDaemonsAsk(round, true)
 }
 
-// unsentAsk is leftAsk for an ask the older daemon queued and did not send: the claim was in a
-// turn when that daemon queued the ask, so the end of that turn was where that daemon sent it.
-// The claim is in round already, in that turn.
+// unsentAsk is leftAsk for an ask the older daemon queued and did not send: the claim could not
+// take it then, in a turn of its agent's own or suspended, so that daemon held it for the end of
+// that turn or for the resume. The claim is in round already, in the state the caller left it in.
 func (h *harness) unsentAsk(round string) Delivery {
 	h.t.Helper()
 	return h.olderDaemonsAsk(round, false)
@@ -132,10 +132,10 @@ func (h *harness) olderDaemonsAsk(round string, sent bool, set ...func(*Delivery
 }
 
 // carriesAsk is whether a prompt carries ask or any other ask of an update round: an update
-// round's delivery id, ask's own id, or ask's words.
+// round's delivery id, which ask's own id is (updateTaskID), or ask's words.
 func carriesAsk(p fake.Prompt, ask Delivery) bool {
 	_, asks := updateRoundOf(p.DeliveryID)
-	return asks || p.DeliveryID == ask.ID || strings.Contains(p.Message, ask.Task)
+	return asks || strings.Contains(p.Message, ask.Task)
 }
 
 // asksRound is whether a delivery id is an ask of round. Each ask of a round has an id of its own
@@ -624,7 +624,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"- One commit of the workspace's files as they are at that moment. This commit does not hold the files that .gitignore ignores.",
 		"The push check does not save a commit that is not on the line of this issue. If you want to keep such a commit, push it in step 1.",
 		"The push check pushes the work that it saves to the branch " + testRescue + ". This branch only moves forward. It keeps the work of each earlier rescue of this issue.",
-		"If the shim of the pod is older than this daemon, the push check pushes to branches of the pod. The name of each such branch is " + testRescue + ", a dash, the first 8 characters of the uid of the pod, a dash and a number.",
+		"If the shim of the pod is from before the daemon used one rescue branch for each issue, the push check pushes to branches of the pod. The name of each such branch is " + testRescue + ", a dash, the first 8 characters of the uid of the pod, a dash and a number.",
 		"If the shim of the pod is older than the push check, the daemon does not run the push check. On such a pod, work that you do not push is lost.",
 		"The daemon holds your next task until your process runs again.",
 	} {
