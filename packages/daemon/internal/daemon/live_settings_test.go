@@ -1,8 +1,11 @@
 package daemon
 
 import (
+	"bufio"
+	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,12 +14,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -167,6 +173,52 @@ func TestARebuildClassChangeRebuildsOnlyItsHolderAndKeepsTheWorkerConnected(t *t
 		t.Fatalf("the worker's claim across the rebuild = %s, want it still ready on the connection it held", got)
 	}
 	stillOpen(t, worker)
+}
+
+// A hello's store reads are bound by `worker_rpc_timeout_seconds` as it now stands: the worker
+// stream's hello resolver reads the bound from the settings holder at each hello, so a change of
+// the timeout under a running daemon bounds the next hello with it rather than with the value the
+// daemon booted on. The test holds the claims table under its own lock, so the read of the
+// hello's boot token waits until its bound cuts it: under the changed second the read is cut and
+// the hello closes unacked while the lock still holds, which under the file's five seconds it
+// would not be.
+func TestAHelloIsBoundByTheChangedRPCTimeout(t *testing.T) {
+	live := liveSettings(t)
+	if timeout := live.Snapshot().WorkerRPCTimeout; timeout != 5*time.Second {
+		t.Fatalf("the file boots on worker_rpc_timeout_seconds %s, want 5s", timeout)
+	}
+	rec := &built{}
+	logs := &syncBuffer{}
+	startDaemonOn(t, live, fakeRuntime(fake.NewRuntime(), rec), slog.New(slog.NewJSONHandler(logs, nil)), 10*time.Second)
+	apply(t, live, map[string]any{"worker_rpc_timeout_seconds": 1})
+	awaitLog(t, logs, `"holder":"worker-stream"`, 5*time.Second, "the worker stream's settings were not rebuilt")
+
+	ctx := context.Background()
+	lock, err := pgx.Connect(ctx, live.Snapshot().PostgresDSN)
+	if err != nil {
+		t.Fatalf("connect the locking session: %v", err)
+	}
+	t.Cleanup(func() { _ = lock.Close(context.Background()) })
+	tx, err := lock.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the locking transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, "lock table claims in access exclusive mode"); err != nil {
+		t.Fatalf("lock the claims table against the daemon: %v", err)
+	}
+
+	conn, err := net.Dial("unix", strings.TrimPrefix(rec.address, "unix://"))
+	if err != nil {
+		t.Fatalf("dial the worker stream %s: %v", rec.address, err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	worker := &shim{t: t, conn: conn, lines: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
+	worker.send(shimwire.Hello2{BootToken: "a-boot-token-the-lock-holds-unread"})
+
+	awaitLog(t, logs, "worker-stream: could not resolve a hello's boot token", 3*time.Second,
+		"the hello's read of its boot token was not cut at the changed one-second bound")
+	worker.closed()
 }
 
 // A rebuild that fails leaves the old holder serving: an operator_token_file the daemon cannot

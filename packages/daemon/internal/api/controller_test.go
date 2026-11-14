@@ -39,7 +39,7 @@ func (h *harness) serve(controllerLaunched bool) {
 	h.t.Helper()
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: operatorSettings(),
-		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: func() bool { return controllerLaunched },
+		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: controllerLaunched,
 	}).Handler
 }
 
@@ -126,7 +126,7 @@ func newControllerCredentialHarness(t *testing.T, tokens appauth.Tokens, launche
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: operatorSettings(),
-		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: func() bool { return launched },
+		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: launched,
 		Tokens: tokens, GitHubRepositories: func() []ghrepo.Repository {
 			return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
 		},

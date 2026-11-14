@@ -37,6 +37,12 @@ func (s fixedClaimStore) ClaimByBootTokenHash(context.Context, []byte) (supervis
 	return s.claim, s.found, nil
 }
 
+// fixedRPCTimeout is a hello resolver's bound that no settings change moves: the tests below hold
+// the resolver's own rules, and the live bound is TestAHelloIsBoundByTheChangedRPCTimeout's.
+func fixedRPCTimeout(d time.Duration) func() time.Duration {
+	return func() time.Duration { return d }
+}
+
 // An unknown boot token — no claim this daemon's store holds minted it — is rejected at once,
 // bounded by its own resolve timeout, never held waiting for restoration: the worker-stream port
 // is plaintext and reachable from any pod, so holding an unresolved connection with no deadline
@@ -45,7 +51,7 @@ func (s fixedClaimStore) ClaimByBootTokenHash(context.Context, []byte) (supervis
 func TestHelloResolverRejectsAnUnknownTokenAtOnceDuringTheBootWait(t *testing.T) {
 	sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
 	const resolveTimeout = 20 * time.Millisecond
-	resolve := sup.helloResolver(api.NewBootTokens(fixedClaimStore{found: false}), resolveTimeout)
+	resolve := sup.helloResolver(api.NewBootTokens(fixedClaimStore{found: false}), fixedRPCTimeout(resolveTimeout))
 
 	done := make(chan struct{})
 	go func() {
@@ -71,7 +77,7 @@ func TestHelloResolverHoldsAKnownTokenUntilRestoredRatherThanRejectingItAfterThe
 	sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
 	const resolveTimeout = 20 * time.Millisecond
 	store := fixedClaimStore{found: true, claim: supervise.Claim{Token: claim.Token("a-claim"), Generation: 1}}
-	resolve := sup.helloResolver(api.NewBootTokens(store), resolveTimeout)
+	resolve := sup.helloResolver(api.NewBootTokens(store), fixedRPCTimeout(resolveTimeout))
 
 	done := make(chan struct{})
 	go func() {
@@ -104,7 +110,7 @@ func TestHelloResolverReleasesAKnownTokenWhenTheBootGivesUpRatherThanBecomingRea
 	sup := newSupervisor(ctx, nil, "PROJECT", "", quietLogger())
 	const resolveTimeout = 20 * time.Millisecond
 	store := fixedClaimStore{found: true, claim: supervise.Claim{Token: claim.Token("a-claim"), Generation: 1}}
-	resolve := sup.helloResolver(api.NewBootTokens(store), resolveTimeout)
+	resolve := sup.helloResolver(api.NewBootTokens(store), fixedRPCTimeout(resolveTimeout))
 
 	done := make(chan struct{})
 	go func() {
@@ -161,7 +167,7 @@ func TestAHelloWhoseClaimReadFailsOnceIsAcceptedOnTheRedialWithNoRefusal(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	listener, err := stream.Listen(ctx, "unix://"+filepath.Join(shortTempDir(t), "worker-stream.sock"),
-		sup.helloResolver(api.NewBootTokens(store), time.Second),
+		sup.helloResolver(api.NewBootTokens(store), fixedRPCTimeout(time.Second)),
 		stream.Options{RPCTimeout: time.Second, Log: slog.New(slog.NewTextHandler(logs, nil))})
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -312,7 +318,7 @@ func TestHelloResolverResolvesAgainAfterRestorationSoARelaunchDuringTheHoldIsNot
 			sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
 			sup.machines[claim.Token("a-claim")] = &member{}
 			const resolveTimeout = 20 * time.Millisecond
-			resolve := sup.helloResolver(tokens, resolveTimeout)
+			resolve := sup.helloResolver(tokens, fixedRPCTimeout(resolveTimeout))
 
 			done := make(chan result, 1)
 			go func() {

@@ -149,6 +149,49 @@ func TestTheDaemonSaysWhenNoControllerIsRegistered(t *testing.T) {
 	}
 }
 
+// The not-registered line's cadence is `worker_boot_timeout_seconds` as it now stands: the sweep
+// reads the bound from the settings holder at each line it may write, so a change of the timeout
+// under a running daemon moves the cadence with it. The sweep here starts under the file's 120
+// seconds and logs its first line; the timeout then moves to one second, and the next line comes
+// a second after the first rather than two minutes.
+func TestTheNotRegisteredLineFollowsAChangedBootTimeout(t *testing.T) {
+	live := liveSettings(t)
+	cfg := *live.Snapshot()
+	if cfg.WorkerBootTimeout != 120*time.Second {
+		t.Fatalf("the file boots on worker_boot_timeout_seconds %s, want 120s", cfg.WorkerBootTimeout)
+	}
+	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if _, err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate the store: %v", err)
+	}
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &syncBuffer{}
+	p := plan{project: project, orphanSweep: 20 * time.Millisecond, live: live}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		watchController(ctx, st, cfg, p, newPublisherHolder(cfg.EnvoyURL, ""), slog.New(slog.NewJSONHandler(logs, nil)))
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	lines := func() int { return len(loggedLines(t, logs.String(), notRegisteredLine)) }
+	testwait.Eventually(t, "the first not-registered line", func() bool { return lines() == 1 })
+
+	apply(t, live, map[string]any{"worker_boot_timeout_seconds": 1})
+
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "a second not-registered line one changed boot timeout after the first", func() bool { return lines() >= 2 })
+}
+
 // checkDaemonModeLine fails the test unless line is the not-registered line of a daemon that launches
 // its own controller: the operator's text leading this mode's remedy, the mode, and the state of the
 // controller's claim as the store holds it, which is never a live controller's (empty before the

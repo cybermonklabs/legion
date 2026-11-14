@@ -191,6 +191,7 @@ func TestClassOfReadsTheTemplatedPaths(t *testing.T) {
 		{"projects.DEMO.slack_channels", "Project.SlackChannels"},
 		{"projects.DEMO.memory.mode", "Memory.Mode"},
 		{"github_apps.implement.app_id", "GitHubApp.AppID"},
+		{"github_apps.review.token_command", "GitHubApp.TokenCommand"},
 		{"runtime.kubernetes.resources.issue", "PodResources.Issue"},
 		{"runtime.kubernetes.resources.controller.cpu", "Reservation.CPU"},
 		{"runtime.kubernetes.scheduling.tolerations[1].effect", "Toleration.Effect"},
@@ -205,7 +206,8 @@ func TestClassOfReadsTheTemplatedPaths(t *testing.T) {
 			t.Errorf("ClassOf(%q) = %s, want %s", tc.path, row.Field, tc.field)
 		}
 	}
-	for _, path := range []string{"", "admission", "gates.designn", "projects.DEMO.merge", "projects.DEMO.memory.mode[x", "runtime.kubernetes.resources.issue.cpu.core"} {
+	// The two Apps are named, not templated: an App the file cannot hold is no setting.
+	for _, path := range []string{"", "admission", "gates.designn", "projects.DEMO.merge", "projects.DEMO.memory.mode[x", "runtime.kubernetes.resources.issue.cpu.core", "github_apps.other.app_id"} {
 		if row, known := ClassOf(path); known {
 			t.Errorf("ClassOf(%q) = %s, want no row", path, row.Field)
 		}
@@ -219,9 +221,10 @@ func TestClassOfReadsTheTemplatedPaths(t *testing.T) {
 // something the daemon never builds again (the idle release, in the workflow's idle pass and the
 // outbox's backstop; a project's memory mode and instructions, in admission, the API server and
 // the launch specs; the wake pacing, in the one limiter the engine and every machine reserve
-// from). A new fixed path belongs in this list deliberately, with a reason an
-// operator can act on: the alternative is a key the route answers `rebuilt` for and that reaches
-// nothing.
+// from; whether the daemon launches its controller, in the keeper and the API; the review App,
+// whose login the engine and the review checks judge by). A new fixed path belongs in this list
+// deliberately, with a reason an operator can act on: the alternative is a key the route answers
+// `rebuilt` for and that reaches nothing.
 func TestTheFixedPathsAreTheOnesBootSettled(t *testing.T) {
 	var fixed []string
 	for _, row := range Classes {
@@ -231,7 +234,10 @@ func TestTheFixedPathsAreTheOnesBootSettled(t *testing.T) {
 	}
 	slices.Sort(fixed)
 	want := []string{
-		"bind", "hooks", "hooks[].every", "hooks[].moves", "hooks[].name", "hooks[].on",
+		"bind", "controller", "github_apps.review", "github_apps.review.app_id",
+		"github_apps.review.installations", "github_apps.review.private_key",
+		"github_apps.review.private_key_command", "github_apps.review.private_key_secret",
+		"github_apps.review.token_command", "hooks", "hooks[].every", "hooks[].moves", "hooks[].name", "hooks[].on",
 		"hooks[].prompt", "hooks[].prompt_file", "hooks[].roles",
 		"pod_update_grace_minutes", "pod_update_max_open_rounds", "pod_update_rounds_per_minute", "port",
 		"postgres_dsn", "project", "projects.<KEY>.memory",

@@ -628,7 +628,7 @@ The two credentials may change different keys.
 The operator bearer, and the file itself, may change every key but those fixed for the process.
 A change under a projected ServiceAccount token may set only keys whose value is plain data — the keys the daemon reads at each decision and holds nowhere, such as `admission_cap`, `review_round_cap`, `linger_hours`, `production_check_hours` and the supervision limits — and is refused by name for any key naming a command to run, a credential or the file holding one, an address the daemon connects to or listens on, the rules of who may call the route, or a value a holder keeps a copy of.
 `gates` and every key under it, `gates.design` included, is refused by that last rule: the API server and the launch specs each hold the design gate, and a gate is the rule that says a person decides a tree's specification, so the token a whole service holds is not the party that may switch that rule off, and that key stays the operator bearer's and the file's.
-That is why a person changing the admission cap from Dispatch's Legion view can, while the same path cannot reach `github_apps.<app>.private_key_command`, whose value the daemon would run, or `gates.design`, which decides whether a person approves a specification at all.
+That is why a person changing the admission cap from Dispatch's Legion view can, while the same path cannot reach `github_apps.implement.private_key_command`, whose value the daemon would run, or `gates.design`, which decides whether a person approves a specification at all.
 The other is the file itself changing under the daemon, which a watcher on the directory holding `legion.yaml`, and on each directory holding a file a setting names, notices within a few seconds.
 A change the route made is kept in Postgres and laid back over the file at every boot, so it outlives a restart, until the file's own value for that key changes and takes the key back.
 `GET /legion/v1/state` carries a `settingSources` block beside `settings`, which says for each key whether the file or the route decides it now and when that was written.
@@ -675,7 +675,7 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `bind` | fixed | — |
 | `capabilities` | decision | — |
 | `capabilities.decided` | decision | — |
-| `controller` | rebuild | `controller-keeper` |
+| `controller` | fixed | — |
 | `controller_wake_interval_seconds` | rebuild | `controller-keeper` |
 | `daemon_url` | launch | `runtime` |
 | `dispatch_token_file` | rebuild | `dispatch-client` |
@@ -685,14 +685,20 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `gates` | decision | `api-server` |
 | `gates.design` | decision | `api-server` |
 | `github_apps` | rebuild | `github-apps` |
-| `github_apps.<app>.app_id` | rebuild | `github-apps` |
-| `github_apps.<app>.installations` | rebuild | `github-apps` |
-| `github_apps.<app>.private_key` | rebuild | `github-apps` |
-| `github_apps.<app>.private_key_command` | rebuild | `github-apps` |
-| `github_apps.<app>.private_key_secret` | rebuild | `github-apps` |
-| `github_apps.<app>.token_command` | rebuild | `github-apps` |
 | `github_apps.implement` | rebuild | `github-apps` |
-| `github_apps.review` | rebuild | `github-apps` |
+| `github_apps.implement.app_id` | rebuild | `github-apps` |
+| `github_apps.implement.installations` | rebuild | `github-apps` |
+| `github_apps.implement.private_key` | rebuild | `github-apps` |
+| `github_apps.implement.private_key_command` | rebuild | `github-apps` |
+| `github_apps.implement.private_key_secret` | rebuild | `github-apps` |
+| `github_apps.implement.token_command` | rebuild | `github-apps` |
+| `github_apps.review` | fixed | — |
+| `github_apps.review.app_id` | fixed | — |
+| `github_apps.review.installations` | fixed | — |
+| `github_apps.review.private_key` | fixed | — |
+| `github_apps.review.private_key_command` | fixed | — |
+| `github_apps.review.private_key_secret` | fixed | — |
+| `github_apps.review.token_command` | fixed | — |
 | `hooks` | fixed | — |
 | `hooks[].every` | fixed | — |
 | `hooks[].moves` | fixed | — |
@@ -844,3 +850,9 @@ Each line below is the reason the route answers with, for the keys it names.
 - `stalled_tree_notice_hours` — the stalled-tree notice's bound is handed to admission once, at boot (admit's UseStalledTreeNotice, internal/daemon's openWorkflow), and nothing builds admission again: a change of it reaches the next boot and no admission pass before it.
 
 - `hooks` and every key under it — the hook list the engine fires is built once, at boot, from the file's hooks and the words read then for every hook that names a `prompt_file` (internal/daemon's readBoot, engineHooks and openWorkflow), and the daemon builds it again at no later moment: a change of it reaches the next boot and no firing before it.
+
+- `controller` — the daemon decides at boot whether it launches the project's controller itself or leaves it to the operator, and a switch under a running tree would start or stop a controller beneath it, where a mistake is two controllers or none: the switch is rare and deliberate, so a change of it reaches the next boot and nothing before it.
+
+- `github_apps.review` and every key under it — the review App's login is read once, at boot, and the engine, every review body and the check of a reviewer's write access judge by it (internal/daemon's appLoginsAtBoot, engineConfig, reviewBody and reviewerCanWrite): another App under open rounds would change whose reviews decide them, and a mistake there misattributes a verdict, so a change of any key of it reaches the next boot and nothing before it.
+  That holds for a new private key of the same App too, whether the file writes it, its `private_key_command` prints it or its `private_key_secret` holds it: the daemon keeps signing with the key it booted on until it is restarted.
+  A `token_command` App rotates its key in the broker and needs no restart ([Rotating broker-held App keys](#rotating-broker-held-app-keys)), since the command's text, which is the setting, does not move.

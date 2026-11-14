@@ -249,7 +249,9 @@ const controllerNotRegistered = "controller not registered; run legion controlle
 // verdict, so it says nothing more. Every line the sweep and its Prober write names the mode, and
 // both modes write the same lines on the same cadence. The Prober asks envoy, the daemon's Envoy
 // holder, for the listener's URL and bearer at every probe, so a probe after a change of
-// `envoy_url` or `envoy_token_file` asks the listener the change names.
+// `envoy_url` or `envoy_token_file` asks the listener the change names, and the cadence is
+// `worker_boot_timeout_seconds` as the settings holder holds it at each line, so a change of it
+// moves the next line. The mode is cfg's: `controller` is fixed for the process.
 func watchController(ctx context.Context, st *store.Store, cfg config.Config, p plan, envoy *publisherHolder, log *slog.Logger) {
 	launched := cfg.ControllerLaunch == config.ControllerLaunchDaemon
 	log = log.With("mode", string(cfg.ControllerLaunch))
@@ -273,7 +275,7 @@ func watchController(ctx context.Context, st *store.Store, cfg config.Config, p 
 		case controller.Live:
 			logged = time.Time{}
 		case controller.Gone:
-			if logged.IsZero() || time.Since(logged) >= cfg.WorkerBootTimeout {
+			if logged.IsZero() || time.Since(logged) >= p.live.Snapshot().WorkerBootTimeout {
 				if launched {
 					state, err := launchedControllerState(ctx, st, p.project)
 					attrs := []any{"project", cfg.Project, "registered", record.Registered(), "claimState", state}

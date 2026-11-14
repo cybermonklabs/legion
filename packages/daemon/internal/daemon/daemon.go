@@ -1532,9 +1532,11 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
 	// The listener's RPC bound is a holder of its own: the socket is bound once here and never
 	// rebound, and a change of worker_rpc_timeout_seconds swaps the bound alone
-	// (workerStreamHolder), so no worker connection drops.
+	// (workerStreamHolder), so no worker connection drops. A hello's store reads take the same
+	// bound from the settings holder at each hello, so a change reaches them too.
 	listener, err := stream.Listen(draining, p.stream,
-		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
+		sup.helloResolver(tokens, func() time.Duration { return p.live.Snapshot().WorkerRPCTimeout }),
+		stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
 	if err != nil {
 		cancel()
 		endDrain()
@@ -2467,21 +2469,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		consumerLag = workflow.nats.Lag
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
-	// its ready. The liveness sweep runs beside it under either mode, never behind it. Both the
-	// launch mode and the wake are a holder of their own (keeperHolder): a change of either stops
-	// or starts the keeper's loop and moves the tick, and no running controller is touched.
+	// its ready. The liveness sweep runs beside it under either mode, never behind it. The launch
+	// mode is fixed for the process (config's whyCtlMode), so boot builds the keeper or does not,
+	// and the API is told which once; the tick's wake is the one value of the controller's that a
+	// holder keeps (keeperHolder).
 	var keeper *controllerKeeper
-	// ensureKeeper builds the keeper the first time one is needed and answers the one there is:
-	// boot builds it under `controller: daemon`, and the holder's start builds it where a change
-	// moved the launch mode to the daemon while the daemon runs.
-	ensureKeeper := func() *controllerKeeper {
-		if keeper == nil {
-			keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
-		}
-		return keeper
-	}
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
-		ensureKeeper()
+		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
 	}
 	// The settings the API server holds, behind the pointer its routes read through: the operator
 	// bearer, the design gate, the repository equivalence and the settings route's own admission
@@ -2503,22 +2497,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	sources.Restore(restoredSources(p.restored))
 	p.live.OnChange(sources.Observe)
 	group, serving := errgroup.WithContext(ctx)
-	// The keeper's loop runs under a context of its own, so the holder can stop it when
-	// `controller` moves to the operator and start it again when it moves back, and ends with
-	// serving either way. The holder is the one thing that starts it (keeperHolder.begin) and
-	// the one thing that knows whether this daemon launches the controller now, which the API
-	// reads at every request that turns on it. The loop runs beside every other goroutine of the
-	// process, so it takes a hold mark of its own (store.ForConcurrentWorker).
-	keeping := newKeeperHolder(cfg.ControllerWakeInterval, keeper != nil, func() context.CancelFunc {
-		kept, stop := context.WithCancel(serving)
-		running := ensureKeeper()
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			running.run(store.ForConcurrentWorker(kept), p.orphanSweep)
-		}()
-		return stop
-	})
+	keeping := newKeeperHolder(cfg.ControllerWakeInterval)
 	p.rebuild.register(keeping)
 	if workflow != nil {
 		workflow.keeper = keeping
@@ -2574,7 +2553,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		// is answered failed and not `rebuilt` (rebuilder.route).
 		ApplySettings:      p.rebuild.route(p.settings.Route),
 		Controller:         st,
-		ControllerLaunched: keeping.launchedNow,
+		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, p.live, c) },
 		// The harness a role's claims run on is read as the route asks, like every other value
@@ -2710,10 +2689,16 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			return nil
 		})
 	}
-	// The keeper's loop, where this daemon launches the controller itself: started through the
-	// holder, which is also what a change of `controller` starts and stops it through, so the
-	// loop has one beginning (keeperHolder.begin).
-	keeping.begin()
+	// The keeper's loop, where this daemon launches the controller itself. It runs beside every
+	// other goroutine of the process, so it takes a hold mark of its own
+	// (store.ForConcurrentWorker), and the supervision's stop waits for it.
+	if keeper != nil {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			keeper.run(store.ForConcurrentWorker(serving), p.orphanSweep)
+		}()
+	}
 	group.Go(func() error {
 		watchController(store.ForConcurrentWorker(serving), st, cfg, p, s.envoy, s.log)
 		return nil

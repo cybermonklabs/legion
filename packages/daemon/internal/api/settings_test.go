@@ -223,7 +223,7 @@ func TestSettingSourcesNameEverySettablePath(t *testing.T) {
 		t.Fatalf("settingSources name %d paths, want the class table's %d; first difference at %s",
 			len(got), len(want), firstDifference(got, want))
 	}
-	for _, path := range []string{"postgres_dsn", "github_apps.<app>.private_key", "provider_keys.<NAME>", "operator_token_file"} {
+	for _, path := range []string{"postgres_dsn", "github_apps.implement.private_key", "github_apps.review.private_key", "provider_keys.<NAME>", "operator_token_file"} {
 		source, held := sources[path]
 		if !held {
 			t.Errorf("settingSources carry no %s: a path the state withholds still carries its provenance", path)

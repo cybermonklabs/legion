@@ -105,15 +105,12 @@ type Options struct {
 	// the registered session against.
 	Controller ControllerStore
 	// ControllerLaunched is whether the daemon launches the project's controller itself
-	// (`controller: daemon`), read at every request that needs it: one controller runs per
-	// project, so the controller secret route refuses the operator and a registration registers
-	// the controller only from a launch of the controller's claim. Nil, and a daemon under
-	// `controller: operator`, answers false, and only the operator's capability registers it.
-	//
-	// It is read rather than stated because `controller` is a setting that changes under a
-	// running daemon: the keeper's holder answers what the daemon does now (internal/daemon's
-	// keeperHolder), so a change of the mode moves this answer with it.
-	ControllerLaunched func() bool
+	// (`controller: daemon`): one controller runs per project, so the controller secret route
+	// refuses the operator and a registration registers the controller only from a launch of the
+	// controller's claim. False, a daemon under `controller: operator`, has only the operator's
+	// capability register it. `controller` is fixed for the process (config's whyCtlMode), so the
+	// answer is the boot's for the server's whole life.
+	ControllerLaunched bool
 	// PluginRelaunchable is supervise.Deps.PluginRelaunchable as the API sees it: whether this
 	// daemon can relaunch a stale process onto a plugin at all. False is Kubernetes's degraded
 	// mode, where a stale registration is recorded and the process is left running: nothing here
@@ -310,9 +307,8 @@ type server struct {
 	// server answers the new value without rebinding its socket or dropping a request.
 	settings   *LiveSettings
 	controller ControllerStore
-	// controllerLaunched is Options.ControllerLaunched, read at every request that needs it and
-	// never nil here: NewServer fills a caller's nil with the daemon that launches no controller.
-	controllerLaunched func() bool
+	// controllerLaunched is Options.ControllerLaunched.
+	controllerLaunched bool
 	// pluginRelaunchable is Options.PluginRelaunchable, noPluginInstall Options.NoPluginInstall.
 	pluginRelaunchable bool
 	noPluginInstall    func(c supervise.Claim) bool
@@ -431,9 +427,6 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	}
 	if s.settings == nil {
 		s.settings = NewLiveSettings(HeldSettings{})
-	}
-	if s.controllerLaunched == nil {
-		s.controllerLaunched = func() bool { return false }
 	}
 	if s.stateBound == 0 {
 		s.stateBound = stateReadBound

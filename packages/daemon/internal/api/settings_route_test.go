@@ -30,6 +30,20 @@ admission_cap: 4
 instructions: /etc/legion/instructions.md
 `
 
+// settingsRouteAppsFile is that configuration with both GitHub Apps, each on a key command. The
+// review App is fixed for the process, so a route change cannot bring it: a test that changes
+// the implement App's keys boots on a file that already holds the review App.
+const settingsRouteAppsFile = settingsRouteFile + `projects:
+  DEMO: {}
+github_apps:
+  implement:
+    app_id: "4141"
+    private_key_command: "/bin/echo file-key"
+  review:
+    app_id: "4343"
+    private_key_command: "/bin/echo key"
+`
+
 // settingsRouteServer is a server whose settings route reaches a real settings holder over a
 // legion.yaml of the test's own: the route is held to what the daemon's own holder answers —
 // the class of each path, its holder and the values as a log line shows them — and not to a
@@ -46,8 +60,14 @@ func settingsRouteServer(t *testing.T, auth SettingsRouteAuth) (http.Handler, *c
 // asked for them.
 func settingsRouteServerFailing(t *testing.T, auth SettingsRouteAuth, failed SettingsRebuildFailures) (http.Handler, *config.Live) {
 	t.Helper()
+	return settingsRouteServerOn(t, settingsRouteFile, auth, failed)
+}
+
+// settingsRouteServerOn is settingsRouteServerFailing over the configuration file the test names.
+func settingsRouteServerOn(t *testing.T, file string, auth SettingsRouteAuth, failed SettingsRebuildFailures) (http.Handler, *config.Live) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
-	if err := os.WriteFile(path, []byte(settingsRouteFile), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
 	live, err := config.NewLive(path, func(string) string { return "" }, nil)
@@ -375,19 +395,18 @@ func TestAProjectedTokenChangesTheDecisionKeysAndNoCommandCredentialOrAddress(t 
 	}
 }
 
-// The operator bearer keeps the whole table: the same two keys the projected arm is held to one
-// of, both applied, the command key included.
+// The operator bearer keeps the whole table but for the keys fixed for the process: the same two
+// keys the projected arm is held to one of, both applied, the command key included, and the
+// review App's own `app_id` refused by name with the reason its row gives every caller.
 func TestTheOperatorBearerChangesACommandKeyAndADecisionKeyAlike(t *testing.T) {
-	handler, live := settingsRouteServer(t, SettingsRouteAuth{})
+	handler, live := settingsRouteServerOn(t, settingsRouteAppsFile, SettingsRouteAuth{}, nil)
 
 	recorder := settingsCall(t, handler, testOperatorToken, SettingsChangeRequest{
 		By: "ana@example.com",
 		Changes: map[string]json.RawMessage{
 			"github_apps.implement.app_id":              json.RawMessage(`4242`),
 			"github_apps.implement.private_key_command": json.RawMessage(`"/bin/echo key"`),
-			"github_apps.review.app_id":                 json.RawMessage(`4343`),
-			"github_apps.review.private_key_command":    json.RawMessage(`"/bin/echo key"`),
-			"projects":                                  json.RawMessage(`{"DEMO":{}}`),
+			"github_apps.review.app_id":                 json.RawMessage(`4444`),
 			"admission_cap":                             json.RawMessage(`9`),
 		},
 	})
@@ -406,6 +425,13 @@ func TestTheOperatorBearerChangesACommandKeyAndADecisionKeyAlike(t *testing.T) {
 	}
 	if cap := live.Snapshot().AdmissionCap; cap != 9 {
 		t.Fatalf("admission_cap = %d, want the applied 9", cap)
+	}
+	row, _ := config.ClassOf("github_apps.review.app_id")
+	if got := answer["github_apps.review.app_id"]; got.Applied != "" || got.Refused == "" || got.Refused != row.Why {
+		t.Fatalf("the answer for github_apps.review.app_id = %+v, want it refused with its row's reason %q", got, row.Why)
+	}
+	if id := live.Snapshot().GitHubApps.Review.AppID; id != "4343" {
+		t.Fatalf("the review App's app_id = %q, want the file's 4343", id)
 	}
 }
 

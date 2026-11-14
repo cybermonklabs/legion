@@ -6073,6 +6073,7 @@ The controller is the one Legion session a person talks to.
 `controller` in `legion.yaml` says who launches it:
 `operator` (the default), a person running `legion controller start` on a machine of theirs ([Operator-launched controller](#operator-launched-controller)), or `daemon`, the daemon itself, as an Agent Sandbox pod it supervises ([Daemon-launched controller](#daemon-launched-controller)), or under `runtime: tmux` as a pane in a window of its own (docs/deployment.md, "The `runtime.tmux` block").
 `controller: daemon` needs `dispatch_url` (`controller: daemon needs dispatch_url: …`), and the loader refuses any value but the two.
+The daemon reads the key at boot alone: a change of it under a running daemon is refused by name and takes effect at the next restart (docs/deployment.md, "Why a fixed key is refused").
 
 Under either mode a controller reads its daemon's resolved settings
 — `review_round_cap`, `worker_boot_timeout_seconds`, `admission_cap`, `hooks` (each hook's `name`, `on`, `moves`, `every`, `roles` and `prompt_file`, and never the words it puts in front of its roles) and the rest of `legion.yaml`, with every credential, credential source and credential file path left out
@@ -6082,7 +6083,7 @@ Under either mode a controller reads its daemon's resolved settings
 
 Under either `controller` mode the daemon checks the project's controller every minute:
 it reads the controller's record and, while a session holds it, that session's liveness from the Envoy role registry.
-While no session holds the current capability, or the registry says the session is gone, it logs `controller not registered; run legion controller start` at most once per `worker_boot_timeout_seconds`.
+While no session holds the current capability, or the registry says the session is gone, it logs `controller not registered; run legion controller start` at most once per `worker_boot_timeout_seconds`, read as each line falls due, so a change of that key under a running daemon moves the next line.
 Under `controller: daemon` the line goes on with that mode's remedy, `… only under controller: operator; this daemon launches its own controller and relaunches it`, and names the state of the controller's claim as the daemon's store holds it (`claimState`):
 `launching` while a launch is in flight, `failed` or `retired` while the daemon waits to retry it, so a launch or a backoff reads apart from a death.
 A boot under `controller: daemon` with no live controller logs the line from its first check until its first launch registers, and again each `worker_boot_timeout_seconds` while scheduling and the image pull take longer than that.

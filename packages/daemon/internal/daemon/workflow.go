@@ -63,8 +63,8 @@ type workflowRuntime struct {
 	// "Test the concurrent packages under the race detector"). A reader that outlives a rebuild
 	// holds the holder, never what it holds (natsHolder.DispatchPosition says why).
 	nats *natsHolder
-	// keeper is the controller keeper and the controller tick's wake behind their holder; nil in
-	// a runtime a test built by hand, which runs no keeper.
+	// keeper is the controller tick's wake behind its holder; nil in a runtime a test built by
+	// hand, which runs no tick.
 	keeper *keeperHolder
 	tokens appauth.Tokens
 	// forget drops the token source's cached leases for an App and owner, a token GitHub refused
@@ -193,7 +193,9 @@ type workflowRuntime struct {
 	commitIssueTrailerRepos []ghrepo.Repository
 	// reviewAppLogin is the review App's bot login from its boot lease, as the engine holds it: a
 	// review it submits decides a round by that login and the reviewer's recorded session
-	// (workflow's DecidesRound), so reviewerCanWrite asks GitHub nothing about it.
+	// (workflow's DecidesRound), so reviewerCanWrite asks GitHub nothing about it. The review App
+	// is fixed for the process (`github_apps.review`, config's whyReview), so the App manager
+	// every rebuild builds answers for the App this login is of.
 	reviewAppLogin string
 	// permissions holds, by repository and login, until when reviewerCanWrite's read of GitHub
 	// stands as no write access; permissionTTL is how long one stands, zero, in production, being
@@ -1827,19 +1829,17 @@ const firstControllerTick = time.Minute
 // `controller_wake_interval_seconds` the keeper's holder answers (keeperHolder.interval), so
 // admission wakes the controller even when no event arrives: the last tree finishing, a tree
 // waiting on a refused root claim, or a quiet day would otherwise leave the controller idle and the
-// daily report unposted until the next wake. Each tick's event id is its
-// own (the project, this boot, and the tick's time), since processed_events is shared by every
-// project's daemon. A failed apply is logged, and the next tick tries again.
+// daily report unposted until the next wake. A change of the interval resets the ticker at once
+// (keeperHolder.changed), so the next tick comes one new interval after the change rather than at
+// the end of the interval it replaced. Each tick's event id is its own (the project, this boot,
+// and the tick's time), since processed_events is shared by every project's daemon. A failed
+// apply is logged, and the next tick tries again.
 func (w *workflowRuntime) tickController(ctx context.Context) {
-	interval := w.keeper.interval()
-	if interval <= 0 {
-		interval = time.Hour
-	}
 	delay := firstControllerTick
 	if w.controllerFirstWake > 0 {
 		delay = w.controllerFirstWake
 	}
-	first := time.NewTimer(min(delay, interval))
+	first := time.NewTimer(min(delay, w.controllerWake()))
 	defer first.Stop()
 	select {
 	case <-ctx.Done():
@@ -1847,16 +1847,27 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 	case at := <-first.C:
 		w.applyControllerTick(ctx, at)
 	}
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(w.controllerWake())
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-w.keeper.changed():
+			ticker.Reset(w.controllerWake())
 		case at := <-ticker.C:
 			w.applyControllerTick(ctx, at)
 		}
 	}
+}
+
+// controllerWake is the interval the controller tick runs on now: the keeper's holder's, or an
+// hour where it holds none.
+func (w *workflowRuntime) controllerWake() time.Duration {
+	if interval := w.keeper.interval(); interval > 0 {
+		return interval
+	}
+	return time.Hour
 }
 
 // entrySweepInterval is how often the daemon converges the phase entries with no fact of its

@@ -2,7 +2,7 @@
 // the rebuilder — the Dispatch client (dispatchHolder), the Envoy listener (publisherHolder),
 // the GitHub App manager (appsHolder), the API server (apiHolder), the repository mapping
 // (mappingHolder), the design gate's steps (gatedStepsHolder), the worker stream listener
-// (workerStreamHolder), the launch specs (specsHolder) and the controller keeper
+// (workerStreamHolder), the launch specs (specsHolder) and the controller tick's wake
 // (keeperHolder) — beside the three readers a decision takes the settings through rather than
 // holding a copy of them (liveBudgets, gatedStepsOf, sandboxOf). The two holders with a file of
 // their own are the NATS connection (nats_holder.go) and the process runtime
@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -577,82 +576,46 @@ func (h *specsHolder) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime
 	return h.current.Load().SpawnSpec(ctx, c)
 }
 
-// keeperHolder is the controller keeper and the controller tick
-// (config.HolderControllerKeeper): whether this daemon launches the project's controller itself
-// (`controller`) and how often it wakes it (`controller_wake_interval_seconds`). A rebuild
-// stores the new interval, which the controller tick reads as it starts its ticker, and starts
-// or stops the keeper's own loop when the launch mode changed — the controller's claim is the
-// store's either way, so neither start nor stop touches a running controller.
+// keeperHolder is the controller tick's wake (config.HolderControllerKeeper):
+// `controller_wake_interval_seconds`, which a rebuild stores and the controller tick reads. A
+// rebuild that moves the wake says so on changed, and the tick resets its ticker to the new
+// interval at once (workflowRuntime.tickController), so the next wake comes one new interval
+// after the change rather than at the end of the interval the tick was running on.
 //
-// The loop is started here and nowhere else (begin): the boot starts it through this holder
-// under `controller: daemon`, and so does a change that moves the mode to the daemon, so there
-// is one way the keeper runs and one place that knows whether it is running.
+// Whether the daemon launches the controller itself is no part of it: `controller` is fixed for
+// the process (config's whyCtlMode), so boot builds the keeper or does not and starts its loop
+// once (serve).
 type keeperHolder struct {
-	// wake is controller_wake_interval_seconds in nanoseconds, which the controller tick reads
-	// as it starts its ticker: the one place the daemon holds it (workflowRuntime.tickController).
+	// wake is controller_wake_interval_seconds in nanoseconds: the one place the daemon holds it.
 	wake atomic.Int64
-	// launched is whether the daemon launches the controller itself, and start runs the keeper's
-	// own loop until the context it is given ends; start is nil in a deployment with no keeper
-	// to run (a test's workflow runtime built by hand).
-	mu       sync.Mutex
-	launched bool
-	start    func() context.CancelFunc
-	stop     context.CancelFunc
+	// moved holds a signal while a wake a rebuild moved is unread by the tick: a buffer of one,
+	// so a rebuild never waits on the tick, and two moves before the tick looks are one signal,
+	// the tick reading the wake as it then stands.
+	moved chan struct{}
 }
 
-// newKeeperHolder is the holder of a daemon whose configuration wakes its controller every wake
-// and launches it itself where launched; start runs the keeper's loop and answers the cancel
-// that ends it (nil in a deployment with no keeper to run). It starts nothing: begin does, once
-// the caller has registered the holder.
-func newKeeperHolder(wake time.Duration, launched bool, start func() context.CancelFunc) *keeperHolder {
-	h := &keeperHolder{launched: launched, start: start}
+// newKeeperHolder is the holder of a daemon whose configuration wakes its controller every wake.
+func newKeeperHolder(wake time.Duration) *keeperHolder {
+	h := &keeperHolder{moved: make(chan struct{}, 1)}
 	h.wake.Store(int64(wake))
 	return h
 }
 
 func (h *keeperHolder) holder() string { return config.HolderControllerKeeper }
 
-// begin runs the keeper's loop where this daemon launches the controller itself, and nothing
-// where it does not. It is the boot's one call, and a change of the mode starts and stops the
-// same loop through the same start (rebuild).
-func (h *keeperHolder) begin() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.launched && h.start != nil && h.stop == nil {
-		h.stop = h.start()
-	}
-}
-
-// launchedNow is whether the daemon launches the project's controller itself as its settings
-// now stand, which the API reads at every request that turns on it
-// (api.Options.ControllerLaunched).
-func (h *keeperHolder) launchedNow() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.launched
-}
-
 // interval is the wake the controller tick runs on now.
 func (h *keeperHolder) interval() time.Duration { return time.Duration(h.wake.Load()) }
 
+// changed signals once a rebuild has moved the wake since the tick last read it.
+func (h *keeperHolder) changed() <-chan struct{} { return h.moved }
+
 func (h *keeperHolder) rebuild(cfg *config.Config) error {
-	if cfg.ControllerWakeInterval > 0 {
-		h.wake.Store(int64(cfg.ControllerWakeInterval))
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	launched := cfg.ControllerLaunch == config.ControllerLaunchDaemon
-	if launched == h.launched || h.start == nil {
+	if cfg.ControllerWakeInterval <= 0 || h.wake.Swap(int64(cfg.ControllerWakeInterval)) == int64(cfg.ControllerWakeInterval) {
 		return nil
 	}
-	h.launched = launched
-	if !launched {
-		if h.stop != nil {
-			h.stop()
-			h.stop = nil
-		}
-		return nil
+	select {
+	case h.moved <- struct{}{}:
+	default:
 	}
-	h.stop = h.start()
 	return nil
 }

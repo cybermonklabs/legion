@@ -274,6 +274,54 @@ func TestTheFileArmPinsAFixedPathToTheValueBootSettled(t *testing.T) {
 	}
 }
 
+// The review App is fixed for the process: its login is read once at boot, and the engine, every
+// review body and the check of a reviewer's write access judge by it, so no key of it moves under
+// a running daemon. A file edit of its `app_id` is pinned back to the App boot settled and named
+// with the row's reason, while the implement App beside it, which the GitHub App manager is
+// built again for, takes the edit made to it in the same settle. The route refuses a member of
+// the review App by name, as it refuses every fixed path, and keeps nothing of it.
+func TestTheFileArmPinsTheReviewAppAndAppliesTheImplementApp(t *testing.T) {
+	live, path := newLive(t, minimalFile, nil)
+
+	rewrite(t, path, edited(edited(minimalFile, `app_id: "2"`, `app_id: "3"`), "private_key: implement-test-key", "private_key: implement-rotated-key"))
+	applied, refused, err := live.Apply(SourceFile, "", nil)
+
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if review := live.Snapshot().GitHubApps.Review; review.AppID != "2" || review.PrivateKey != "review-test-key" {
+		t.Errorf("the settled review App after the file edit has app_id %q, want the boot's App, app_id 2 and its key: a review App changed under open rounds misattributes their verdicts", review.AppID)
+	}
+	row, _ := ClassOf("github_apps.review")
+	if len(refused) != 1 || refused[0].Path != "github_apps.review" || refused[0].Reason == "" || refused[0].Reason != row.Why {
+		t.Fatalf("the settle refused %+v, want github_apps.review pinned and named with its row's reason", refused)
+	}
+	if key := live.Snapshot().GitHubApps.Implement.PrivateKey; key != "implement-rotated-key" {
+		t.Errorf("the settled implement App key = %q, want the file's rotated key: the pin is of the review App alone", key)
+	}
+	if len(applied) != 1 || applied[0].Path != "github_apps.implement" || applied[0].Holder != HolderGitHubApps || applied[0].Outcome != OutcomeRebuilt {
+		t.Errorf("applied %+v, want the one implement App change rebuilding the App manager", applied)
+	}
+
+	applied, refused, err = live.Apply(SourceRoute, "sami@theorem.dev", map[string]any{"github_apps.review.app_id": "4"})
+
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("the route applied %+v, want nothing", applied)
+	}
+	if len(refused) != 1 || refused[0].Path != "github_apps.review.app_id" || refused[0].Reason != row.Why {
+		t.Fatalf("the route refused %+v, want github_apps.review.app_id refused with the review App's reason", refused)
+	}
+	if id := live.Snapshot().GitHubApps.Review.AppID; id != "2" {
+		t.Errorf("the review App's app_id after the route's change = %q, want the boot's 2", id)
+	}
+	if _, held := live.overlay["github_apps.review.app_id"]; held {
+		t.Error("the refused review App path is in the stored overlay")
+	}
+}
+
 // The pin is of every resolution and not of the file arm alone: the route reads the file again
 // too, so a route change of some other key would otherwise settle the file's edited `project`
 // as a side effect of the key its caller asked about. The caller is answered for the paths it
