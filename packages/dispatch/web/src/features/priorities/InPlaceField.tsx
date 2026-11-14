@@ -123,7 +123,8 @@ export function InPlaceField({
         onKeyDown={(event) => {
           if (event.key !== "Enter") return;
           event.preventDefault();
-          save();
+          // Leaving the field saves it, once: a save here as well would send the text again,
+          // since the value the second compares with is the render's, from before the first.
           event.currentTarget.blur();
         }}
         type="text"

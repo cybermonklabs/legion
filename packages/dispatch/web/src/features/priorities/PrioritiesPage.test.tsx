@@ -123,9 +123,11 @@ function answerListing(issues: readonly IssueSummary[]) {
 }
 
 /** The page as a signed-in person sees it, with the reads it makes answered from `answer`; a
- *  reader who is not a person, and so may not write a priority, where `writer` is false. */
+ *  reader who is not a person, and so may not write a priority, where `writer` is false. Dispatch
+ *  keeps what it makes: a patch it answers changes the rows every later read answers with. */
 function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue(answer);
+  let held = answer;
+  const priorities = spyOn(api, "listPriorities").mockImplementation(async () => held);
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
@@ -135,7 +137,22 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
     : ({ event_head: "0", kind: "token", login: "ci" } as never);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const create = spyOn(api, "createPriority").mockResolvedValue(saved("new"));
-  const patch = answerPriorityPatches().mockImplementation(async (id) => saved(id));
+  const patch = answerPriorityPatches().mockImplementation(async (id, input) => {
+    held = {
+      ...held,
+      priorities: (held.priorities ?? []).map((row) =>
+        row.id === id
+          ? {
+              ...row,
+              description: input.description ?? row.description,
+              owner: input.owner ?? row.owner,
+              title: input.title ?? row.title,
+            }
+          : row
+      ),
+    };
+    return saved(id);
+  });
   // The unit DOM lays nothing out: give every table's box the height a window would.
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
