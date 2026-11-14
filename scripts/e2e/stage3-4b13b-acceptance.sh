@@ -1089,13 +1089,14 @@ send_agent "$root1" merger "Acceptance merge operation: merge pull request #${pr
 await_merger_merge "$repo" "${pr_of[$root1]}"
 # The message the merger's own --subject and --body wrote: the pull request's title and number
 # alone. GitHub's default squash message joins every commit message of the branch, which would put
-# this tree's Dispatch key, its Omp-Session trailers and its skip-checks lines on the base.
+# this tree's Dispatch key, its Omp-Session and Legion-Role trailers and its skip-checks lines on the
+# base.
 merge_message=$(gh api "repos/$repo/commits/$merge_when_clean_commit" --jq .commit.message)
 printf '%s\n' "$merge_message" >"$evidence/merge-commit-message-$root1.txt"
 [ "$merge_message" = "$pr1_title (#${pr_of[$root1]})" ] ||
   soft "$repo#${pr_of[$root1]}'s squash commit message is '$merge_message', want the pull request's title and number alone"
 case "$merge_message" in
-  *"Omp-Session:"* | *"skip-checks: true"* | *"Dispatch: $root1"*)
+  *"Omp-Session:"* | *"Legion-Role:"* | *"skip-checks: true"* | *"Dispatch: $root1"*)
     soft "the squash commit message of $repo#${pr_of[$root1]} carries the branch's own commit messages: $merge_message" ;;
 esac
 # The merge closes the issue, and its architect is told no pr-merged: nothing of $root1's tree is

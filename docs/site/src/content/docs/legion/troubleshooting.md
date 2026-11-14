@@ -949,13 +949,45 @@ The report counts for the process the claim runs now and for no other.
 A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is prompted at the silence bound like any other, and it earns no `worker-background-stalled` notice.
 That is why the daemon clears a worker's report when it launches the worker again, and why a worker on the Claude Code backend is repaired at all: that session reports at the end of a turn alone, and a worker nothing prompts has no turn to end.
 
-## A commit carries another role's App as its author
+## Which role made a commit
 
-Every role of an issue works in one jj workspace, and each role's commits must carry that role's own GitHub App as their author.
+Two trailers in a commit's message name the session and the role that made the commit: `Omp-Session: <session id>` and `Legion-Role: <role>`.
+Each role process writes them from its own environment, so the workspace that the roles of an issue share does not mix them up.
+A jj commit gets them from the role's jj overlay: the `omp-attribution-<session id>.toml` file that the role's harness plugin writes and puts at the end of `JJ_CONFIG`.
+The overlay sets `templates.commit_trailers`, `templates.revert_description` and `templates.duplicate_description`, so a `jj revert` and a `jj duplicate` get the two lines too.
+A `git commit` gets them from the git wrapper first on the role's `PATH`, which hands the commit to `legion git`: the image's `/opt/legion/bin/git` in a pod, and under tmux the `git` in the state directory's `bin/`, or the image's wrapper where that is the first git on the daemon's `PATH`.
+`Omp-Session` holds the role's session id, and `Legion-Role` holds the role process's `LEGION_ROLE`.
+Read the two lines of each commit on a branch with the template of `skills/legion-worker/references/default-branch-check.md`:
+
+```sh
+jj log --no-graph -r 'trunk()..<branch>@origin' -T '
+  commit_id.short() ++ " " ++ description.first_line() ++ "\n"
+  ++ trailers.filter(|t| t.key() == "Omp-Session" || t.key() == "Legion-Role")
+    .map(|t| "  " ++ t.key() ++ ": " ++ t.value() ++ "\n").join("")'
+```
+
+Nothing adds the two lines to these commits:
+
+- A commit that a process with no overlay made outside a role's shell.
+
+- A commit that a git command other than `git commit` made: a merge, a revert, a cherry-pick or a rebase.
+
+- A `git commit` through a git older than 2.32, the first git with `git commit --trailer`.
+
+- Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (anthropics/claude-code#46696).
+  That subagent's `git commit` still gets the `Legion-Role` line.
+
+**The git author and committer name no role.**
+jj sets a commit's git author and committer by its own rules in the shared workspace.
+They depend on which role's jj command made or last rewrote the shared working-copy commit `@`, and not on which role committed.
+So a commit can show the GitHub App of another role as its author, and its trailers still name the role that made it.
+
+**The adoption sets the author of `@`.**
 Before the daemon sends a role a phase task, it asks that role's shim to adopt the working copy under the role's App identity.
 The shim runs `jj log` on `@`, which snapshots the working copy.
 Then it runs `jj metaedit --update-author` on an `@` that has no description, or `jj new` on an `@` that has one.
-So an adoption at the wrong time can make one role the author of another role's work.
+The metaedit fills an author that is empty: an `@` that jj makes with no identity has an empty author, and `jj git push` refuses such a commit.
+An adoption can also make one role the author of edits that another role left in `@`.
 
 **Which tasks adopt the working copy.**
 The daemon adopts only for a task that names a phase, and only for the role that owns that phase:
@@ -1008,7 +1040,7 @@ grep -i '<KEY>-' daemon.log | grep -e 'adopted for the phase task' \
 `kubectl logs` gives only the log file that the node keeps now, for the daemon's pod that runs now.
 On a busy daemon, that file can hold only the last minutes, and a new daemon pod starts with an empty log.
 Read the time of the first line.
-If the wrong commit is older than that line, read the daemon's lines from the log store of your cluster.
+If the commit is older than that line, read the daemon's lines from the log store of your cluster.
 A search that finds no line for a time before the first line does not show that no adoption occurred.
 
 - `supervise: the working copy was adopted for the phase task` is one adoption that the shim answered `ok`.
@@ -1026,7 +1058,7 @@ A search that finds no line for a time before the first line does not show that 
   The shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
   The task stays queued.
 
-Compare the time of the wrong commit with these lines.
+Compare the time of the commit with these lines.
 An adoption line for another role of the issue just before the commit shows that the adoption moved the author.
 On a daemon that carries the rule, every adoption line names a phase, and its `claim` is the claim of the role that owns that phase.
 
@@ -1036,11 +1068,21 @@ On such a daemon, an update round or a message wake can take the author of the c
 **Other paths change an author, and no adoption line shows them.**
 
 - A role's own jj command in the shared workspace snapshots the working copy under that role's identity.
-  An architect's `jj git fetch` and the shell of a subagent are two such commands.
-  The roles container gives every role one git identity, and a subagent's shell can carry another identity: `dispatch://INFRA-2791` holds both.
+  An architect's `jj git fetch` and a jj command in the shell of a subagent are two such commands.
 
 - `jj split` keeps the author of the commit that it splits, so a role that splits a commit that another role made keeps that other role's App on both halves.
-  A check at push time that refuses a commit that the review App authored is `dispatch://INFRA-1185`.
+
+**Where jj reads the identity and the trailers.**
+
+- jj keeps one configuration file for each repository, `~/.config/jj/repos/<id>/config.toml`, and every workspace of that repository reads it.
+  In an issue pod it holds `trunk()` and `git.abandon-unreachable-commits`, and no identity and no trailer.
+  Print it with no jj command, from the `.jj` directory of the issue's workspace: `cd "$LEGION_WORKSPACE/.jj" && cat ~/.config/jj/repos/"$(cat "$(cat repo)/config-id")"/config.toml`.
+
+- A `templates.commit_trailers` in that file replaces the overlay's trailers: a commit then carries the trailers of that file, and neither line of the overlay.
+
+- `JJ_USER` and `JJ_EMAIL` rank above every jj configuration file, and only `--config` and `--config-file` on the command line rank above them.
+
+So a role sets no `user.name`, no `user.email`, none of the overlay's three templates and no `trailer.*` key in any jj or git scope (`skills/legion-worker/references/default-branch-check.md`).
 
 ## A pod does not come up
 

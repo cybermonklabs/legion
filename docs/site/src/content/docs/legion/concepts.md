@@ -405,8 +405,8 @@ that lands under the merger is refused instead of merged unseen.
 The merge carries a message the merger writes itself,
 `--subject '<pull request title> (#<n>)' --body ''`. GitHub's own default
 (`squash_merge_commit_message` of `COMMIT_MESSAGES`) joins every commit message of the branch into
-the squash commit, which would put the tree's Dispatch keys and its `Omp-Session:` trailers on your
-default branch. `enqueuePullRequest` can carry no message, so on a
+the squash commit, which would put the tree's Dispatch keys and its `Omp-Session:` and
+`Legion-Role:` trailers on your default branch. `enqueuePullRequest` can carry no message, so on a
 merge-queue base whose repository setting still joins them the merger enqueues nothing and tells
 the architect: only a person can change that setting, to `PR_BODY` or `BLANK`.
 

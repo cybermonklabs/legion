@@ -90,8 +90,8 @@ See [Rotating broker-held App keys](#rotating-broker-held-app-keys) for the rota
 ## What a pane's `gh`, `git` and `jj` are
 
 A tmux pane's `PATH` is the daemon's own with the state directory's `bin/` put first: its `legion`
-launcher and its `gh`, a script that runs `legion gh`. Nothing else of Legion's is on it, so the
-`git` and `jj` a pane runs are whatever the daemon's `PATH` resolves. The daemon resolves at boot a
+launcher, its `gh`, a script that runs `legion gh`, and its `git`, a script that runs `legion git`
+(below). The `jj` a pane runs is the first `jj` on the daemon's `PATH`. The daemon resolves at boot a
 jj of 0.38 or later — the jj bound it refuses to boot below (`resolveTools`, naming
 `LEGION_JJ_PATH`, its own override for the jj it runs) — and the real `gh` (`LEGION_GH_PATH`, or the
 first `gh` on its `PATH`, refused when that is a script), which every pane is told as `LEGION_GH_PATH`. A pane's GitHub identity is
@@ -153,7 +153,30 @@ The shared clone's `credential.helper` is `!legion git-credential` with `credent
 on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in the path git asks
 about where the bundle holds its directory, the owner's otherwise, and nothing else.
 
-A pane keeps the machine's own `git` and `jj`, unwrapped.
+The `git` in `bin/` runs `legion git --after <state_dir>/bin` (`packages/daemon/cmd/legion/git.go`).
+The daemon writes it at boot, unless the first `git` on the daemon's own `PATH` is the worker
+image's wrapper, `/opt/legion/bin/git`, which hands a commit to `legion git` itself. In that case
+the daemon writes no `git` and removes one that an earlier boot wrote.
+For a `git commit`, `legion git` adds two trailers: `Omp-Session`, with the session id that the
+`dispatch` command acts as, and `Legion-Role`, with the pane's `LEGION_ROLE`. It adds each line
+only when its value is valid, and only when git alone would accept the commit's message and the
+two lines change nothing else.
+It then runs the next `git` on `PATH` after `bin/`, a host's own git wrapper included, and it runs
+every other command through that `git` unchanged.
+Where a host's git wrapper runs `bin/git` again, as a wrapper that searches `PATH` for the next
+`git` can, that second run goes on past the host's wrapper and adds nothing, so the loop ends.
+The trailers need git 2.32 or later, the first git with `git commit --trailer`, and a commit
+through an older git gets neither line.
+`legion controller start` writes the same `git` into the `bin/` of its own state directory, by the
+same rule, for the operator's controller.
+The two lines record which session and which role made a commit, and they guard nothing.
+
+A release older than the first one that writes `bin/git` leaves `<state_dir>/bin/git` in place,
+and that file names a `legion` that has no `git` command, so every `git` command in a pane fails.
+So before you start the older daemon, remove `<state_dir>/bin/git`. Before you run an older
+`legion controller start`, remove the `bin/git` of its state directory too.
+
+No leak guard runs in a pane's `git` or `jj`.
 Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under
 `/opt/legion` in a filesystem no role can write ([Worker image](kubernetes.md#worker-image)), and
 a shared box has no such boundary: the daemon, its panes and the operator are one Unix user, so a
@@ -452,14 +475,15 @@ provider_keys:
   whose commits carry their issue key
   (`commit_issue_trailer_repos: [acme/widgets]`).
   A pane working one of them is told that key, and its jj appends a `Dispatch: <KEY>` line to
-  every commit the pane makes in its own workspace, beside the `Omp-Session:` line every pane's
-  commits carry, so a squash landing that branch carries the issue key in its message.
+  every commit the pane makes in its own workspace, after the `Omp-Session:` and `Legion-Role:`
+  lines every pane's commits carry, so a squash landing that branch carries the issue key in its
+  message. A `git commit` gets the session and role lines from the pane's `git`, and no issue line.
   A repository the key names must be one Dispatch maps to the project (Settings → Repositories →
   Projects): the mapping is what the project serves, and this key only selects among it, so a name
   the project does not serve stamps nothing and boot says so once, naming the name and the
   project.
   A pane of a repository the key does not name is told no key and its commits carry the session
-  line alone, as does a commit the pane's shell makes in any other jj repository.
+  and role lines alone, as does a commit the pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so a spec, a `pane_env` and a
   `runtime.kubernetes.pod.env` are each refused for setting it.
   The loader refuses a name that is no `owner/name`, and a repository the list names twice,

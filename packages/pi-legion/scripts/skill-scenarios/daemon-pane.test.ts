@@ -17,10 +17,11 @@ const rig = temporaryDirectory("skill-scenarios-pane");
 // no envoy.json of the person running the test is read.
 const home = path.join(rig, "caller-home");
 
-// The pane's git and jj are whatever its PATH resolves, and its gh the launcher directory's
-// wrapper over the real gh the daemon resolves on its PATH at boot: the inherited PATH holds a
-// stand-in gh, the one tool the daemon needs on it for the pane to be built. It reads as a
-// compiled program (no `#!` line), since the daemon refuses a script as the first gh on PATH.
+// A pane's jj is the first jj on its PATH, and its git the launcher directory's git wrapper where
+// the daemon's boot writes one. Its gh is the launcher directory's wrapper over the real gh the
+// daemon resolves on its PATH at boot: the inherited PATH holds a stand-in gh, the one tool the
+// daemon needs on it for the pane to be built. It reads as a compiled program (no `#!` line),
+// since the daemon refuses a script as the first gh on PATH.
 // Both bins are staged in a hook, below the one the reservation above registered: a run that
 // selects no row of this file makes neither, and the run directory itself is never made.
 const outerBin = path.join(rig, "outer-bin");

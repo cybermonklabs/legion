@@ -314,7 +314,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   --provider-env-dir exports each mounted secret file as NAME=contents into the OMP child's environment only (skipping a NAME the pod already consumes through a NAME_FILE pointer, e.g. DISPATCH_TOKEN;
   and refusing to start — exit 1 naming the key and its file, Oh My Pi never spawned
   — when a key's name is already a variable of the shim's own environment, since the export would override it silently (LEGION-186));
-  the shim also answers the daemon's `adopt-working-copy` frame by running the shared `jj metaedit --update-author` in its workspace;
+  the shim also answers the daemon's `adopt-working-copy` frame by running the shared `jj metaedit --update-author` in its workspace, which fills an empty author that `jj git push` refuses;
   with `--pod-safety` (the Sandbox runtime passes it; a tmux pane never does), the shim starts Oh My Pi on Legion's pod baseline (`packages/daemon/internal/podsafety`), which names no model, provider or route and holds nothing of a repository's settings off:
   `PI_CONFIG_DIR=.omp` and `OMP_SESSION_STORAGE=file`, each set only when the pod leaves it unset (the runtime refuses both in an operator's pod, since they place the sessions a resume reads), and nothing else — Legion writes no settings overlay of its own, so `PI_CONFIG_FILES` rides through as the runtime composed it, the operator's own overlays with the role's own (`role_config_files`) after them, and `OTEL_RESOURCE_ATTRIBUTES` the same, the operator's attributes then the launch's issue and role, and background work is on for every role, the pinned binary's own default under `--mode rpc`;
   with `--warm-codegraph` (the Sandbox runtime passes it for a role in an issue pod;
@@ -373,6 +373,18 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   the real gh runs with GH_PATH at that wrapper, so the git gh runs itself (a clone, a fork's parent, `pr checkout`) asks `legion gh auth git-credential`, which answers as `legion git-credential` does, and with gh's update check and prompts off;
   it sends nothing when only gh's help or `gh --version` alone runs;
   it fails closed, refusing with exit 2 and naming the argument, and sending nothing, a command it cannot read for certain (an option the leaf's help does not list or names a repository with in a way it does not know, a subcommand gh does not know, a first word gh's own help does not list, anything before the command other than -R or --help, an argument the leaf's usage has no place for or names in a way it does not know, a search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot`, `gh extension exec`), one naming two owners (an option or another repository naming one owner while gh acts on another's repository among them), one naming an owner the bundle holds no directory for, every command run where PATH's first gh is not Legion's wrapper (a script that execs `legion gh` by its absolute path), and every command under a GH_HOST other than github.com or a set GH_TOKEN or GITHUB_TOKEN (docs/deployment.md "What a pane's gh, git and jj are")
+
+- `legion git --real <git> -- <git argument>…` and `legion git --after <directory> -- <git argument>…`
+
+  A git wrapper runs it, never a person.
+  The pod's `/opt/legion/bin/git` (`packages/daemon/docker/git`) hands it a `git commit` with `--real /usr/bin/git`.
+  On a host, `workerbin.Install` writes a `git` into the launcher directory of a tmux daemon's panes and of `legion controller start`, and that `git` hands it every command with `--after` and that directory.
+  `workerbin.Install` writes no `git` where the first git on the inherited PATH is the image's wrapper, which hands a commit to `legion git` itself.
+  For a `git commit` it adds two trailers: `Omp-Session`, with the session id that the `dispatch` command acts as, and `Legion-Role`, with `LEGION_ROLE`.
+  It adds each line only when its value is valid, and only when git alone would accept the commit's message and the two lines change nothing else.
+  It then runs the real git (`--real`) or the next git on PATH after the directory (`--after`), a host's own git wrapper included, and it runs every other command unchanged.
+  Where a host's git wrapper runs the `--after` form again, that second run goes on past the host's wrapper and adds nothing, so the loop ends.
+  The trailers need git 2.32 or later (`git commit --trailer`), and a commit through an older git gets neither line.
 
 - `legion git-credential get|store|erase`
 
@@ -1155,7 +1167,7 @@ A head GitHub still merges (every state but dirty and unknown) conflicted with a
 A dirty head conflicts with the base itself, which sends the issue back to `implementing` and tells the architect; an unknown merge state is asked again on the merger's own backoff for up to five minutes and then read the same way; and a second conflict removal of the same head, its one further enqueue already spent, sends the issue back too.
 A round such a conflict costs counts against no `review_round_cap`.
 The repository's required reviews and checks decide when a pull request merges; Legion bypasses none, and a review only a person can give is waited for.
-The merge carries a message the merger writes itself, `--subject '<pull request title> (#<n>)' --body ''`, because GitHub's default squash message (`squash_merge_commit_message` of `COMMIT_MESSAGES`) joins every commit message of the branch and would put the tree's Dispatch keys and its `Omp-Session:` trailers on the default branch;
+The merge carries a message the merger writes itself, `--subject '<pull request title> (#<n>)' --body ''`, because GitHub's default squash message (`squash_merge_commit_message` of `COMMIT_MESSAGES`) joins every commit message of the branch and would put the tree's Dispatch keys and its `Omp-Session:` and `Legion-Role:` trailers on the default branch;
 `enqueuePullRequest` can pass no message, so on a merge-queue base whose setting reads `COMMIT_MESSAGES` the merger enqueues nothing and tells the architect, since only a person can change that setting.
 The merger's completion records its phase row and moves nothing; what closes the issue is the daemon's own reading of the merged pull request.
 A head that starts conflicting with its base (GitHub computes no merge ref for such a head and runs no checks on it at all) sends the issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging` alike, and its architect is told with a `checks-red` notice.
@@ -1176,6 +1188,32 @@ No lifecycle labels carry worker state.
 
 - Learnings: a retro's `dispatch comment` on its issue, for the skill librarian (`skills/legion-retro/references/learnings.md`).
   `docs/solutions/` holds the learnings written before that and stays as history; no role writes there.
+
+- Commit attribution in `docs/solutions/`: the trailer rule of `skills/legion-worker/references/default-branch-check.md` replaces the rule of the eleven pages below, which tell a worker to check the GitHub App of a commit's author or committer.
+  A commit's `Omp-Session` and `Legion-Role` trailers name the session and the role that made it, and its App fields name no role.
+  The pages keep their text, because no role writes under `docs/solutions/`:
+
+  - `docs/solutions/delegation/a-shared-issue-workspace-hands-your-commit-another-roles-app-check-the-author-next-to-the-commit-INFRA-42.md`
+
+  - `docs/solutions/legion/a-child-of-two-open-pull-requests-waits-for-main-re-verifies-every-cited-symbol-and-treats-the-pane-as-a-surface-to-check.md`
+
+  - `docs/solutions/legion/a-commit-made-outside-your-assignment-or-outside-your-panes-shell-carries-the-wrong-author-check-author-and-trailer-before-every-push-LEGION-631.md`
+
+  - `docs/solutions/legion/a-forward-merge-of-a-feature-whose-premise-the-branch-removed-drops-the-callerless-method-and-the-premiseless-test-and-adapts-the-rest-and-main-can-move-again-before-github-reads-the-head-LEGION-632.md`
+
+  - `docs/solutions/legion/fixing-a-defect-that-is-live-in-your-own-pane.md`
+
+  - `docs/solutions/legion/jj-commit-identity-is-per-process-and-the-working-copy-is-adopted-at-assignment.md`
+
+  - `docs/solutions/legion/shared-main-repo-hazards-for-concurrent-issue-workspaces.md`
+
+  - `docs/solutions/legion/the-authorship-guard-reads-false-once-you-have-edited-and-an-unpushed-mis-authored-commit-is-rebuilt-not-recorded-INFRA-127.md`
+
+  - `docs/solutions/legion/the-issue-workspace-outlives-your-turn-INFRA-31.md`
+
+  - `docs/solutions/legion/template-names-a-ci-check-the-repository-never-produces.md`
+
+  - `docs/solutions/legion/handoff-complete-checks-the-handoff-commits-app-and-nothing-checks-a-code-commits-INFRA-92.md`
 
 > Many docs in `docs/plans/` and `docs/solutions/` predate the TypeScript rewrite and contain Python-era references.
 > These are marked with `[HISTORICAL]` headers.
