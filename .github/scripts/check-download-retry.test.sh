@@ -3464,6 +3464,37 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the first site's verb in the sentence" "$(contains "$out" 'What one call of .curl. there takes')"
 
+# The two loops in the other order: the first loop's call has a bound the check reads and the
+# second's is unread. Every blocked-item case above has the unread one first, or both alike,
+# so reading `blocking[-1].one` where the gate reads `blocking[0].one` passed the whole harness
+# and told the reader that the first call's bound is a variable when it is `--max-time 60`
+# (dispatch://INFRA-1545, the tester's mutation pass at 663a6c05a083, mutant T045).
+echo "case: a step with two uncounted loops, the first with a read bound, prices the first"
+root=$(fixture two-uncounted-first-read)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch every name twice over
+        timeout-minutes: 30
+        run: |
+          while read -r id; do
+            curl -fsSL --retry 7 --retry-all-errors --max-time 60 -o a "https://example.com/$id"
+          done <<<"$ids"
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the run $id" "$T" -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "prices the first loop's call at its read bound" "$(contains "$out" 'One call there takes 607 s')"
+check "does not call the first call's bound a variable" \
+  "$(is "$(contains "$out" 'What one call of .curl. there takes is a figure this check cannot make')" false)"
+
 echo "case: a step looping over two scripts, the first with an unread bound, names the first"
 root=$(fixture two-uncounted-scripts)
 cat > "$root/.github/scripts/early-unread.sh" <<'SH'
