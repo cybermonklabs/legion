@@ -1,11 +1,15 @@
 import { plannerSession, setLiveSessions } from "./agents";
 import {
+  baseUrl,
   createAgentMessage,
   createComment,
   createIssue,
+  createIssueArtifact,
   createProject,
   editArtifact,
+  getIssueArtifactText,
   patchIssue,
+  userHeaders,
 } from "./api";
 import { documentEditor } from "./editor";
 import {
@@ -204,6 +208,61 @@ test("a document its issue does not hold, a component of a project with no archi
 
     await page.goto(`/issues/${host.key}/spec`);
     await expectWordsWithNoLink(documentEditor(page));
+  } finally {
+    await alice.close();
+  }
+});
+
+// The read route finds a document by its name when no slug is it (`resolveDocumentReference`),
+// and a correction of a document's title moves no slug (`renameArtifact`), so a document renamed
+// to a slug-shaped name opens at `artifact/<its name>`. The reference written so names it: it
+// links and reads as that name, in a comment and in the document editor alike.
+// SLOW(>=2s): two page loads, each waiting for the reference to draw the document's name.
+test("a document's address written with its current name, which is not its slug, links and reads as that name, in a comment as in a document", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const host = await createIssue({ project: "CORE", title: "Reference host" });
+  const target = await createIssue({ project: "CORE", title: "Warm the cache" });
+  const uploaded = await createIssueArtifact(target.key, {
+    content: "# Notes\n\nThe cache warms first.\n",
+    name: "notes.md",
+  });
+  expect(uploaded.artifact.slug).toBe("notes-md");
+  const renamed = "launch-notes";
+  const correction = await fetch(new URL(`/api/v1/artifacts/${uploaded.artifact.id}`, baseUrl), {
+    body: JSON.stringify({ name: renamed }),
+    headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
+    method: "PATCH",
+  });
+  expect(correction.status).toBe(200);
+  // The precondition: the read route opens the document by the name the reference writes.
+  expect((await getIssueArtifactText(target.key, renamed)).markdown).toContain("warms first");
+
+  const address = `dispatch://${target.key}/artifact/${renamed}`;
+  const body = `The notes are ${address} now.\n`;
+  await editArtifact(
+    host.primary_artifact_id,
+    { ops: [{ after: "end", markdown: body, op: "insert" }] },
+    referenceAgent
+  );
+  const comment = await createComment(host.key, { body }, referenceAgent);
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    const expectDocumentName = async (scope: Locator) => {
+      await expect(scope.getByRole("link", { exact: true, name: renamed })).toHaveCount(1);
+      await expect(scope.getByRole("link", { exact: true, name: address })).toHaveCount(0);
+    };
+
+    await page.goto(`/issues/${host.key}/conversation`);
+    await expectDocumentName(
+      (await expandedComment(page, comment.id)).locator(RENDERED_BODY).first()
+    );
+
+    await page.goto(`/issues/${host.key}/spec`);
+    await expectDocumentName(documentEditor(page));
   } finally {
     await alice.close();
   }

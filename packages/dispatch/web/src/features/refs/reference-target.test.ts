@@ -13,7 +13,8 @@ import { createElement, type ReactNode } from "react";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
-import type { GraphReferences, IssueReferenceSummary } from "../../api/types";
+import type { Agent, GraphReferences, IssueReferenceSummary } from "../../api/types";
+import { agentsQuery } from "./agent-registry";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import {
   blockQuery,
@@ -436,4 +437,94 @@ test("watchPicturePath answers undefined at once for a reference to no artifact"
     reported.push(path)
   );
   expect(reported).toEqual([undefined]);
+});
+
+/** Renders `useReferenceTarget` for `route` over `queryClient`, which the test has seeded. */
+function renderTarget(queryClient: QueryClient, route: Parameters<typeof useReferenceTarget>[0]) {
+  return renderHook(() => useReferenceTarget(route, { text: false }), {
+    wrapper: ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children),
+  });
+}
+
+// The read route finds an artifact by its slug, else a document by its name
+// (`resolveDocumentReference`), and a document renamed to a slug-shaped name keeps its first
+// slug: a reference written with either names the document, and a name finds no file or image.
+test("an artifact reference finds its document by slug or by its current name, and a file by its slug alone", () => {
+  spyReads();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(issueSummaryQuery("CORE-1").queryKey, {
+    documents: [
+      {
+        id: "notes",
+        kind: "doc",
+        latest_version: 1,
+        name: "launch-notes",
+        primary: false,
+        slug: "notes-md",
+      },
+      {
+        id: "shot",
+        kind: "image",
+        latest_version: 1,
+        name: "shot",
+        primary: false,
+        slug: "shot-png",
+      },
+    ],
+    key: "CORE-1",
+    project: "CORE",
+    status: "in_progress",
+    title: "Core one",
+  } satisfies IssueReferenceSummary);
+  const read = (slug: string) => {
+    const hook = renderTarget(queryClient, { key: "CORE-1", kind: "artifact", slug });
+    const { missing, title } = hook.result.current;
+    hook.unmount();
+    return { missing, title };
+  };
+  expect(read("notes-md")).toEqual({ missing: false, title: "launch-notes" });
+  expect(read("launch-notes")).toEqual({ missing: false, title: "launch-notes" });
+  expect(read("shot-png")).toEqual({ missing: false, title: "shot" });
+  expect(read("shot")).toEqual({ missing: true, title: undefined });
+});
+
+test("a session the registry lists reads as its title trimmed, and one it lists untitled links in its words", () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  restore = () => listAgents.mockRestore();
+  const listed = (session_id: string, title: string): Agent => ({
+    capabilities: ["aside"],
+    dir: "/workspaces/legion",
+    host: "build-host",
+    last_activity: null,
+    last_seen: Date.now(),
+    machine_id: "build-host",
+    open_asks: 0,
+    roles: [],
+    session_id,
+    state: "running",
+    title,
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(agentsQuery().queryKey, [
+    listed("11111111-1111-4111-8111-111111111111", "  Planner  "),
+    listed("22222222-2222-4222-8222-222222222222", "   "),
+  ]);
+  const read = (session: string) => {
+    const hook = renderTarget(queryClient, { kind: "agent-session", session });
+    const { known, missing, title } = hook.result.current;
+    hook.unmount();
+    return { known, missing, title };
+  };
+  expect(read("11111111-1111-4111-8111-111111111111")).toEqual({
+    known: false,
+    missing: false,
+    title: "Planner",
+  });
+  expect(read("22222222-2222-4222-8222-222222222222")).toEqual({
+    known: true,
+    missing: false,
+    title: undefined,
+  });
+  expect(listAgents).not.toHaveBeenCalled();
 });

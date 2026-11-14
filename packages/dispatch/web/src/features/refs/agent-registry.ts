@@ -65,6 +65,16 @@ export function registeredAgent(
   return agents === undefined ? undefined : registryLookup(agents).byId.get(sessionId);
 }
 
+/** The title the registry response `agents` gives `sessionId`, trimmed: undefined for a session
+ *  it does not list or lists with a blank title, which names nobody. */
+export function registeredTitle(
+  agents: readonly Agent[] | undefined,
+  sessionId: string
+): string | undefined {
+  const title = registeredAgent(agents, sessionId)?.title.trim();
+  return title === undefined || title === "" ? undefined : title;
+}
+
 let pollingReaders = 0;
 const pollingListeners = new Set<() => void>();
 
@@ -143,7 +153,8 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
     enabled,
     refetchOnMount: false,
   });
-  const lookup = registryLookup(data ?? EMPTY_AGENTS);
+  const agents = data ?? EMPTY_AGENTS;
+  const lookup = registryLookup(agents);
   // A failed refetch keeps the last response's data, so the state goes back to unknown while
   // the cached titles go on naming agents.
   const known = !(isPending || isError);
@@ -162,12 +173,9 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
         if (agent === undefined) return "not-running";
         return agent.state === "unresponsive" ? "unresponsive" : "running";
       },
-      title: (sessionId: string) => {
-        const title = lookup.byId.get(sessionId)?.title.trim();
-        return title === undefined || title === "" ? undefined : title;
-      },
+      title: (sessionId: string) => registeredTitle(agents, sessionId),
       titles: lookup.titles,
     }),
-    [isError, known, lookup, refilling]
+    [agents, isError, known, lookup, refilling]
   );
 }
