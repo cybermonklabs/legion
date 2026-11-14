@@ -1026,6 +1026,37 @@ func TestADeletersReplyIsKeptToItsBoundAndTheNextReplyIsReadWhole(t *testing.T) 
 	}
 }
 
+// The bound is the most a reply may hold and still be kept whole, so a reply of exactly
+// volumeDeleteReplyBytes is read as the deleter wrote it, and one byte more is cut. A reader that
+// took the bound for a size a reply must stay below would mark a reply at the bound as cut and
+// answer it still quoted, with the cut mark after a refusal nothing was cut from; the case above
+// reads only a reply far past the bound and one far within it, so it cannot tell the two apart.
+func TestADeletersReplyAtItsBoundIsKeptWholeAndOneByteMoreIsCut(t *testing.T) {
+	for _, size := range []int{volumeDeleteReplyBytes, volumeDeleteReplyBytes + 1} {
+		refusal := strings.Repeat("x", size-len("failed ")-len(`""`))
+		reply := "failed " + strconv.Quote(refusal)
+		if len(reply) != size {
+			t.Fatalf("the reply is %d bytes, want %d", len(reply), size)
+		}
+		dir := &sweepDir{}
+		remover := &containedRemover{requests: discardRequests{}, replies: newDeleterReplies(strings.NewReader(reply + "\nremoved\n")),
+			at: map[*sweepDir]int{dir: 0}, said: &saidBuffer{}}
+
+		got := remover.removeAll(dir, "entry")
+		switch {
+		case got == nil || errors.Is(got, errRemoverGone):
+			t.Fatalf("a reply of %d bytes was answered %.200v, want it as a refusal of that entry", size, got)
+		case size <= volumeDeleteReplyBytes && got.Error() != refusal:
+			t.Errorf("a reply of %d bytes, the bound, was answered as %d bytes ending %q, want the refusal whole", size, len(got.Error()), got.Error()[max(0, len(got.Error())-len(volumeDeleteReplyCut)):])
+		case size > volumeDeleteReplyBytes && !strings.HasSuffix(got.Error(), volumeDeleteReplyCut):
+			t.Errorf("a reply of %d bytes, one past the bound, was answered without the mark %q", size, volumeDeleteReplyCut)
+		}
+		if next := remover.removeAll(dir, "entry"); next != nil {
+			t.Errorf("the reply after one of %d bytes was answered %v, want the removal it says", size, next)
+		}
+	}
+}
+
 // discardRequests is a deleter's request pipe that goes nowhere, for a case that writes its
 // replies itself.
 type discardRequests struct{}
