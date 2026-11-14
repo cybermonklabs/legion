@@ -182,7 +182,7 @@ func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 	// reaches the fake's launch without the daemon cloning acme/widgets from github.com, which the
 	// tmux answer would have it try.
 	r.rt.InPod = true
-	o := withTaskValues(fakeRuntime(r.rt, r.built))
+	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
 	// The wall clock, in place of this package's still one (daemon.go's RealClock for a nil

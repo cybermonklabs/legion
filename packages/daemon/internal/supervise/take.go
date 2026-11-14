@@ -132,9 +132,37 @@ type TakeAdopted struct {
 	Err        error
 }
 
+// TaskValueRead is what the task bucket holds for the claim's key, as the daemon read it
+// (internal/daemon's task bucket): once at its boot, for every claim it supervises, again for
+// every claim when the bucket was created again, and from then on at each change its watch of the
+// whole bucket hands over on a key of this daemon's project. The machine compares it with the
+// record and writes the record's value again where the two differ (valueRead), so the record
+// stays the one truth and the bucket its delivered copy (R3 of dispatch://INFRA-2811).
+//
+// Value is the bucket's entry: the task its value names, the bucket's epoch, and the entry's
+// revision. Held is false where the bucket holds no value for the key: one deleted, whose
+// Revision is the delete's, and one never written or since purged, whose Revision is the bucket's
+// last revision when the daemon read it, so a read made before the daemon's own last write is
+// told apart from one made after. Cause is TaskValueBoot or TaskValueRepair, the cause a write it
+// makes is logged under.
+type TaskValueRead struct {
+	Claim claim.Token
+	Value TaskValue
+	Held  bool
+	Cause string
+}
+
+// The causes a write a TaskValueRead makes is logged under: the boot's read of the bucket, and
+// the watch's, which reads the bucket again whole once it was created again.
+const (
+	TaskValueBoot   = "boot"
+	TaskValueRepair = "repair"
+)
+
 func (RequestTaskSeen) isEvent() {}
 func (RequestTake) isEvent()     {}
 func (TakeAdopted) isEvent()     {}
+func (TaskValueRead) isEvent()   {}
 
 // TakeOutcome is how a take was answered.
 type TakeOutcome string
@@ -787,6 +815,67 @@ func taskSeen(m *Machine, ctx context.Context, ev Event) error {
 	c.TaskSeenEpoch, c.TaskSeenRevision, c.TaskTakeState = seen.Epoch, seen.Revision, ""
 	m.log.Debug("supervise: a task value was seen", "task", seen.Number, "epoch", seen.Epoch, "revision", seen.Revision)
 	return m.persist(ctx)
+}
+
+// valueRead compares the bucket's value for the claim with the record (TaskValueRead). A read
+// older than the daemon's own last write of the value — its epoch, an earlier revision — is one the
+// record has moved past, and changes nothing: the watch hands over each change in order, and the
+// daemon may have written again before this read reached the machine. Otherwise:
+//
+//   - a claim the record owes a task has its value written again, under the pending task's own
+//     number, wherever the bucket holds anything but the daemon's own last write: no value,
+//     another number, a later revision someone else wrote, or another epoch, which is the bucket
+//     created again (writeValue). Nothing of the record's numbers moves; the write only records
+//     the daemon's new last write (Claim.TaskWrittenEpoch, TaskWrittenRevision);
+//   - where the bucket holds that last write, nothing is written, but for the one value R3 names:
+//     at the boot, a task the record owes again after a take accepted at its latest revision —
+//     a provider error's wait or a compaction the restart cut off took it back — is written once,
+//     since its worker asks once per revision and has asked at this one (owedAgainAfterTake). A
+//     take that revision's hold refused is written at that hold's end instead (offerPending), and
+//     a value still unseen or seen and not asked about is left as it stands;
+//   - a claim the record owes nothing has the value the bucket holds deleted, unless it is the
+//     daemon's own last write, whose delete is already on its way; at the boot, whatever it is,
+//     since no write of this daemon's is in flight then.
+func valueRead(m *Machine, ctx context.Context, ev Event) error {
+	read := ev.(TaskValueRead)
+	c := m.claim
+	if read.Value.Epoch == c.TaskWrittenEpoch && read.Value.Revision < c.TaskWrittenRevision {
+		return nil
+	}
+	own := read.Held && read.Value.Epoch == c.TaskWrittenEpoch && read.Value.Revision == c.TaskWrittenRevision
+	p := c.Pending
+	if p == nil || p.Number == 0 {
+		if read.Held && (!own || read.Cause == TaskValueBoot) {
+			m.log.Info("supervise: the task bucket holds a value for a claim the record owes nothing; it is deleted",
+				"task", read.Value.Number, "epoch", read.Value.Epoch, "revision", read.Value.Revision, "cause", read.Cause)
+			m.deleteValue(ctx, read.Value.Number, read.Cause)
+		}
+		return nil
+	}
+	if own && read.Value.Number == p.Number {
+		if read.Cause == TaskValueBoot && m.owedAgainAfterTake() {
+			m.log.Info("supervise: the task was taken back after a take at its latest revision, and its worker asks once per revision; it is written again",
+				"task", p.Number, "revision", c.TaskWrittenRevision)
+			return m.writeValue(ctx, read.Cause)
+		}
+		m.log.Debug("supervise: the task bucket holds the value the record wrote", "task", p.Number,
+			"epoch", read.Value.Epoch, "revision", read.Value.Revision, "cause", read.Cause)
+		return nil
+	}
+	m.log.Info("supervise: the task bucket holds another value than the record's; it is written again from the record",
+		"task", p.Number, "held", read.Held, "heldTask", read.Value.Number, "epoch", read.Value.Epoch,
+		"revision", read.Value.Revision, "written", c.TaskWrittenRevision, "writtenEpoch", c.TaskWrittenEpoch, "cause", read.Cause)
+	return m.writeValue(ctx, read.Cause)
+}
+
+// owedAgainAfterTake is whether the claim owes its pending task again after a take accepted at
+// the latest revision the daemon wrote of its value: the worker reported that revision seen and
+// its take was accepted, and the take has since gone (takeBack) with the task still pending. Its
+// worker asks once per revision, so nothing but a new revision makes it ask again (R3).
+func (m *Machine) owedAgainAfterTake() bool {
+	c := m.claim
+	return c.TaskTakeState == TakeAccepted && c.TaskSeenEpoch == c.TaskWrittenEpoch &&
+		c.TaskSeenRevision == c.TaskWrittenRevision && !c.Pending.taken()
 }
 
 // takeBack returns a taken task to waiting under the number it has, for a reason that keeps the

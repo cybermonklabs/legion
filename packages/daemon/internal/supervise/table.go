@@ -642,6 +642,7 @@ const (
 	onCompact       eventKind = "request_compact"
 	onTaskSeen      eventKind = "request_task_seen"
 	onTake          eventKind = "request_take"
+	onTaskValueRead eventKind = "task_value_read"
 
 	onCompactEnded eventKind = "compact_ended"
 
@@ -724,6 +725,8 @@ func kindOf(ev Event) eventKind {
 		return onTaskSeen
 	case RequestTake:
 		return onTake
+	case TaskValueRead:
+		return onTaskValueRead
 	case RequestCompact:
 		return onCompact
 	case CompactEnded:
@@ -873,6 +876,12 @@ func fillTable(t *builder) {
 		StateLaunching, StateShimConnected, StateRegistered)
 	t.ignore(onTake, noTake, StateQueued, StateLaunchUncertain)
 	t.ignore(onTake, noProcess, gone...)
+
+	// The task bucket's value for the claim, as the daemon's boot and its watch of the bucket
+	// read it. The record is the truth in every state, so every state compares it and writes the
+	// record's value again where the bucket holds another (valueRead); no state moves.
+	t.row(onTaskValueRead, "the task bucket's value: write the record's value again where the bucket holds another", valueRead,
+		nil, append(slices.Clone(live), processless...)...)
 
 	// The working copy's adoption a take made with the lock let go (Machine.Take). Every state
 	// answers it, since a take is waiting on the answer: a ready or idle claim decides the take

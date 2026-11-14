@@ -268,7 +268,7 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	var record built
-	d := startDaemon(t, cfg, withTaskValues(fakeRuntime(rt, &record)))
+	d := startDaemon(t, cfg, fakeRuntime(rt, &record))
 	spawn := architect()
 	spawn.Task = "Say hello."
 	token := d.spawn(spawn)
@@ -448,7 +448,7 @@ func TestRunRelaunchesAClaimWhoseAgentRegisteredAndNeverSaidReady(t *testing.T) 
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	var record built
-	o := withTaskValues(fakeRuntime(rt, &record))
+	o := fakeRuntime(rt, &record)
 	clock := &heldClock{}
 	o.clock = clock
 	d := startDaemon(t, cfg, o)

@@ -48,6 +48,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -305,7 +306,11 @@ type built struct {
 }
 
 // fakeRuntime is a daemon whose runtime is rt — the fake, or a test's runtime built over it: the
-// real stream listener, store, and machines, with nothing launched for real.
+// real stream listener, store, and machines, with nothing launched for real. Its task bucket is
+// in memory (supervisetest), in place of the daemon's own on Envoy's NATS, so a test of a daemon
+// whose configuration names no NATS still launches its workers, and a takeDriver reads through
+// claims/task the value this bucket holds; a test of the daemon's own bucket sets taskValues back
+// to nil.
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
@@ -315,8 +320,9 @@ func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 			record.conns, record.address, record.apps, record.repository, record.store, record.mapped = listener, address, apps, repository, st, mapped
 			return rt, nil
 		},
-		clock:  stillClock{},
-		listen: heldListen,
+		clock:      stillClock{},
+		listen:     heldListen,
+		taskValues: supervisetest.NewTaskValues(),
 	}
 }
 

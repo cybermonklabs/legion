@@ -289,6 +289,9 @@ func pluginsLine(cfg config.Config) string {
 // top level — in the words boot logs it with: what the key would have been refused for, and what
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
 // since such a key is ignored and never refused.
+// Then, for a file that names no NATS (`nats_urls`), the line a booting daemon logs for it
+// (daemon.NoNATSLine): such a daemon boots and launches no worker, since it has no task bucket to
+// hand one its task through. It is a report, so the exit stays 0.
 // Then one line per project, in key order, naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge. After them, one line per configured repository rename
@@ -337,6 +340,9 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, ok)
 	for _, warning := range cfg.Warnings {
 		fmt.Fprintln(stdout, warning)
+	}
+	if line := daemon.NoNATSLine(cfg); line != "" {
+		fmt.Fprintln(stdout, line)
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))

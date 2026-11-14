@@ -580,35 +580,23 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 	return running
 }
 
-// connect opens Envoy's JetStream and this project's durable consumers, so a missing
-// notification stream refuses boot rather than leaving a daemon that reads no events. Boot runs it
-// before reconcile, whose Dispatch listing covers only what precedes a consumer created now. It
-// connects as nc, the user readBoot chose (natsConnection), and logs what the server reports about
-// the connection: every permission it refuses at error, every disconnect at warn and every
-// reconnect at info (natsauth.LogEvents), under natsauth.ReconnectForever so a reconnect never
-// gives up: a NATS outage mid-run never closes the connection for good. A failed attempt here
-// closes whatever it opened and clears it, so a later call — this one retried after an unreachable
-// NATS — starts clean rather than leaking the connection this one could not finish setting up.
-// Close comes before natsauth.WithLastError on both failure paths, never after: WithLastError only
-// looks once the connection reports itself closed, and Close does not clear what the connection
-// last recorded.
-func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
-	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, "legion-daemon "+cfg.Project, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
-	if err != nil {
-		return fmt.Errorf("connect Envoy NATS: %w", err)
-	}
+// connect opens Envoy's JetStream and this project's durable consumers on conn, the daemon's own
+// connection to Envoy's NATS, so a missing notification stream refuses boot rather than leaving a
+// daemon that reads no events. Boot runs it before reconcile, whose Dispatch listing covers only
+// what precedes a consumer created now, as part of its attempt at NATS (connectNATS), which dials
+// conn and closes it again when this fails. A failed call clears the connection it kept, so the
+// attempt after it — the boot waits out an unreachable NATS — keeps the one it dials.
+func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, conn *nats.Conn) error {
 	w.conn.Store(conn)
 	js, err := jetstream.New(conn)
 	if err != nil {
-		conn.Close()
 		w.conn.Store(nil)
-		return fmt.Errorf("open Envoy JetStream: %w", natsauth.WithLastError(err, conn))
+		return fmt.Errorf("open Envoy JetStream: %w", err)
 	}
 	w.log.Info("legion workflow boot stage", "stage", "intake")
 	logIntakeHandlerLimit(ctx, w.log, cfg)
 	heard, err := w.heardAtBoot(ctx)
 	if err != nil {
-		conn.Close()
 		w.conn.Store(nil)
 		return err
 	}
@@ -619,9 +607,8 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 	})
 	if err != nil {
-		conn.Close()
 		w.conn.Store(nil)
-		return natsauth.WithLastError(err, conn)
+		return err
 	}
 	w.bootID = fmt.Sprintf("%d", time.Now().UnixNano())
 	return nil

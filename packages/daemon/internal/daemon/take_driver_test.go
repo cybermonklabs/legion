@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -27,9 +26,10 @@ import (
 // (claims/turn-outcome), which is what finishes the task. It asks once per value, as the plugin
 // does, so a take a hold refused is asked again only at the value the hold's end writes.
 //
-// The value is the one the daemon's task bucket holds, which a test's daemon is given in memory
-// (withTaskValues): the driver reads it from the record's own route rather than from a relayed
-// frame, so nothing of Envoy's relay stands between the test and the take.
+// The value is the one the daemon's task bucket holds: a test's daemon is given one in memory
+// (fakeRuntime), or the daemon's own on the test NATS. The driver reads it from the record's own
+// route rather than from a relayed frame, so nothing of Envoy's relay stands between the test and
+// the take.
 //
 // Every test that speaks the daemon's real routes and stream drives its worker through it, tagged
 // e2e or not, and so does the idle rig's role process, which runs outside any test. So it answers a
@@ -110,13 +110,6 @@ func postJSON(client *http.Client, url string, body, answer any) error {
 		return nil
 	}
 	return json.Unmarshal(read, answer)
-}
-
-// withTaskValues is o with a task bucket of the test's own, in memory (supervisetest), in place of
-// the daemon's: the value a takeDriver reads through claims/task is the one this bucket holds.
-func withTaskValues(o overrides) overrides {
-	o.taskValues = supervisetest.NewTaskValues()
-	return o
 }
 
 // task is the claim's value now, nil where the bucket holds none, and the number of the last task

@@ -625,6 +625,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/googleidentity/*'
+              # packages/envoy/legiontasks names the task bucket, its keys and its value, which the
+              # daemon's task bucket (internal/daemon/taskbucket.go) writes and reads.
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
@@ -1185,8 +1188,9 @@ jobs:
               - 'packages/daemon/internal/**'
               # daemon-pane.go compiles the daemon module, which reaches these envoy packages:
               # the migration identifier rule, the generated session timings the daemon reads
-              # through their one public package, and the Dispatch body check the close route and
-              # the merger's READY completion make with the server's own splitter
+              # through their one public package, the task bucket's names the daemon's task bucket
+              # is built on (packages/envoy/legiontasks), and the Dispatch body check the close
+              # route and the merger's READY completion make with the server's own splitter
               # (packages/envoy/dispatchbody, and the parser and contracts under it).
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/contracts/*'
@@ -1195,6 +1199,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'

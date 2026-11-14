@@ -167,7 +167,7 @@ func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 	// reaches the fake's launch without the daemon cloning acme/widgets from github.com, which the
 	// tmux answer would have it try.
 	r.rt.InPod = true
-	o := withTaskValues(fakeRuntime(r.rt, r.built))
+	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
 	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)

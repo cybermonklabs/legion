@@ -68,7 +68,7 @@ func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
 	var record built
-	d := startDaemon(t, cfg, withTaskValues(fakeRuntime(rt, &record)))
+	d := startDaemon(t, cfg, fakeRuntime(rt, &record))
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)

@@ -131,6 +131,7 @@ on:
       - 'packages/envoy/internal/dispatch/pmdoc/**'
       - 'packages/envoy/internal/dispatch/text/*'
       - 'packages/envoy/internal/googleidentity/*'
+      - 'packages/envoy/legiontasks/*'
       - 'packages/envoy/listenfd/*'
       - 'packages/envoy/migrationid/*'
       - 'packages/envoy/roleholder/*'

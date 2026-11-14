@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/nats-io/nats.go"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
@@ -83,14 +84,14 @@ const (
 	// running at the budget's end, a call into a process that does not answer, is logged with each
 	// claim still deciding and not waited on: the next boot re-adopts each process a claim records
 	// and relaunches each launch left unrecorded. natsCloseTimeout bounds the close of the
-	// workflow's NATS connection, stampTimeout the stamp, and storeCloseTimeout the store's close
+	// daemon's NATS connection, stampTimeout the stamp, and storeCloseTimeout the store's close
 	// after it, so the daemon returns at most
 	// stopBudget+natsCloseTimeout+stampTimeout+storeCloseTimeout (24 s) after its stop begins,
 	// inside the 30 seconds a pod is given between SIGTERM and SIGKILL. Before the boot is
 	// recorded, a signal ends the daemon through each boot step's own bounds, as Run says.
 	stopBudget = 10 * time.Second
-	// natsCloseTimeout bounds the close of the workflow's Envoy NATS connection on the stop path
-	// (closeWorkflowNATS). nats.Conn.Close flushes the outbound buffer while it holds the
+	// natsCloseTimeout bounds the close of the daemon's Envoy NATS connection on the stop path
+	// (closeNATS). nats.Conn.Close flushes the outbound buffer while it holds the
 	// connection's own lock (nats.go v1.53.1, nats.go:6098-6101: nc.bw.flush() when the socket is
 	// up and no reconnect is in progress), that write goes through timeoutWriter, whose deadline
 	// is Opts.FlusherTimeout (nats.go:2295-2296, :6827), and the default is a minute
@@ -209,8 +210,13 @@ type overrides struct {
 	// taskValues is the task bucket the machines write each claim's value to, in place of the
 	// daemon's own (supervise.Deps.TaskValues): a test's in-memory bucket
 	// (supervise/supervisetest), which its worker reads its value back from through
-	// claims/task. nil is the daemon's own bucket, which none is until the daemon builds one.
+	// claims/task. nil is the daemon's own, legiontasks.Bucket on Envoy's NATS (taskBucket), which
+	// a daemon whose configuration names no NATS has none of, and launches no worker for
+	// (NoNATSLine).
 	taskValues supervise.TaskValues
+	// taskBucketCheck is how often the daemon's own task bucket is read for a bucket gone or
+	// created again (taskBucket.watch); zero is taskBucketCheckEvery.
+	taskBucketCheck time.Duration
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -411,6 +417,52 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		return fmt.Errorf("listen on %s: %w", address, err)
 	}
 
+	// Envoy's NATS, whenever the configuration names it, workflow or not, and before the machines
+	// are built: every machine writes its claim's task value through the task bucket on it
+	// (supervise.Deps.TaskValues), so the bucket is open, or created, before the first machine
+	// can queue a task (connectNATS). The workflow's durable consumers are opened on the same
+	// connection in the same attempt, and they exist before the listing is read: a consumer
+	// created now delivers only what is published after it, so everything earlier is the
+	// listing's, and what the listing misses (a move published while it is read) the consumer
+	// delivers. The attempt waits out an unreachable NATS on ctx, not the bounded boot budget,
+	// through the same bootprobe.Run mechanism mintAtBoot already uses, with Attempts left at its
+	// unbounded zero, and refuses at once what no wait fixes (natsauth.Unreachable): a server
+	// that refuses the daemon's user a subject the bucket or a consumer needs. A shim that dials
+	// the worker stream meanwhile is refused and dials again; the stream listens once supervision
+	// is open.
+	var natsConn *nats.Conn
+	if len(cfg.NatsURLs) > 0 {
+		plan.nats.log(log)
+		err := bootprobe.Run(store.WithTransactionTracking(ctx), "connect Envoy NATS", readinessRetry, log,
+			readinessAttempt(func(attempt context.Context) error {
+				var err error
+				natsConn, plan.bucket, err = connectNATS(attempt, cfg, plan, workflow, log)
+				return err
+			}, bootTimeout, natsauth.Unreachable))
+		if err != nil {
+			listener.Close()
+			workflow.stop()
+			st.Close()
+			if ctx.Err() != nil {
+				log.Info("legion daemon stopped before Envoy's NATS was reachable", "project", cfg.Project)
+				return nil
+			}
+			return err
+		}
+		defer func() { closeNATS(natsConn, log) }()
+		if plan.bucket != nil {
+			plan.taskValues = plan.bucket
+		}
+		// The wait was on ctx, which the boot budget does not bound: what follows gets a budget
+		// of its own, as the App mint and the image probe's callers already do.
+		var cancelAfterNATS context.CancelFunc
+		boot, cancelAfterNATS = bootBudget(ctx)
+		defer cancelAfterNATS()
+	}
+	if plan.noLaunch != nil {
+		log.Warn(plan.noLaunch.Error())
+	}
+
 	var apps appauth.Tokens
 	if workflow != nil {
 		apps = workflow.tokens
@@ -451,29 +503,18 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	s.reportCapabilities()
 	if workflow != nil {
 		workflow.admission.ReportCapabilities(s.reportCapabilities)
-		// The durable consumers exist before the listing is read: a consumer created now delivers
-		// only what is published after it, so everything earlier is the listing's, and what the
-		// listing misses (a move published while it is read) the consumer delivers. Both wait out
-		// an unreachable dependency on ctx, not the bounded boot budget just spent on everything
-		// before them, through the same bootprobe.Run mechanism mintAtBoot already uses, here with
-		// Attempts left at its unbounded zero. natsauth.Unreachable and dispatch.Unreachable each
-		// judge their own dependency; their own docs are the record of what each one waits on and
-		// what it still refuses loud. reconcile's own Postgres transaction is judged by neither: a
-		// design choice, not an inability to tell its failures apart from NATS's or Dispatch's — an
-		// unreachable Postgres refuses earlier, at store.Open
+		// The listing and the catch-up wait out an unreachable Dispatch on ctx, not the bounded
+		// boot budget just spent on everything before them, through the same bootprobe.Run
+		// mechanism. dispatch.Unreachable judges that dependency; its own doc is the record of
+		// what it waits on and what it still refuses loud. reconcile's own Postgres transaction is
+		// judged by none: a design choice, not an inability to tell its failures apart from
+		// Dispatch's — an unreachable Postgres refuses earlier, at store.Open
 		// (TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword, scripts/e2e/stage1-skeleton.sh).
-		plan.nats.log(log)
-		// The three probes run one after another on this goroutine, so they share one hold mark
+		// The two probes run one after another on this goroutine, so they share one hold mark
 		// (a sequential flow); whether the daemon is stopping is still read from ctx.
 		probing := store.WithTransactionTracking(ctx)
-		err := bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
-			readinessAttempt(func(attempt context.Context) error {
-				return workflow.connect(attempt, cfg, plan.nats)
-			}, bootTimeout, natsauth.Unreachable))
-		if err == nil {
-			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
-				readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))
-		}
+		err := bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
+			readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))
 		// The catch-up of the roots that run or wait on a person is its own probe, after the
 		// reconcile that held them (holdForCatchUp). It reads Dispatch once or twice per root (the
 		// issue's latest sequence, its event log after the root's cursor, and the approval of a
@@ -573,20 +614,22 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	}()
 	liveErr := s.awaitStop(lived, failed, bootID)
 	// awaitStop can return through its deadline arm while the goroutine above is still inside
-	// supervision.stop, whose wait is unbounded (stop's own comment), so the connection the stop
-	// asked workflowRuntime.stop to close is still open when run returns, and the daemon dials
-	// under natsauth.ReconnectForever, which never gives a connection up by itself. Only the
+	// supervision.stop, whose wait is unbounded (stop's own comment), so the NATS connection the
+	// stop asked workflowRuntime.stop to close is still open when run returns, and the daemon
+	// dials under natsauth.ReconnectForever, which never gives a connection up by itself. Only the
 	// connection is closed here, not the whole of workflowRuntime.stop: that also closes the token
 	// manager, whose Close waits for every running token_command with no bound
 	// (internal/appauth/tokencommand.go, Manager.Close), while the daemon's stop contract is that
 	// it returns at most stopBudget+natsCloseTimeout+stampTimeout+storeCloseTimeout (24 s) after
-	// its stop begins, inside a pod's 30 s grace. The close itself is bounded as well
-	// (closeWorkflowNATS), because nats.Conn.Close flushes the connection's outbound buffer under
-	// its own lock with the default minute's write deadline, which a server that has stopped
-	// reading would otherwise hold the stop in, long past that contract. The close is harmless
-	// when the goroutine later reaches workflowRuntime.stop, because closing the connection is
-	// idempotent.
-	closeWorkflowNATS(workflow, log)
+	// its stop begins, inside a pod's 30 s grace. A daemon with no workflow has no stop of the
+	// workflow's to close it at all. The close itself is bounded as well (closeNATS), because
+	// nats.Conn.Close flushes the connection's outbound buffer under its own lock with the default
+	// minute's write deadline, which a server that has stopped reading would otherwise hold the
+	// stop in, long past that contract. The close is harmless when the goroutine later reaches
+	// workflowRuntime.stop, because closing the connection is idempotent; it is then left nil, so
+	// the close an early return defers has nothing to wait on a second time.
+	closeNATS(natsConn, log)
+	natsConn = nil
 
 	// The stop cancelled store queries in flight, and a pooled connection one of them ran on can
 	// still carry the read deadline that cancellation set, which failed the stamp with `stop boot N:
@@ -625,16 +668,19 @@ func (s *supervision) awaitStop(lived, failed <-chan error, bootID int64) error 
 	}
 }
 
-// closeWorkflowNATS closes the workflow's Envoy NATS connection and nothing else
-// (workflowRuntime.closeNATS), waiting for it up to natsCloseTimeout: nats.Conn.Close flushes the
-// outbound buffer under the connection's own lock, with a write deadline of a minute by default,
-// which the stop has no room for (natsCloseTimeout). It is safe on a nil workflow, as
-// workflowRuntime.closeNATS is.
-func closeWorkflowNATS(workflow *workflowRuntime, log *slog.Logger) {
+// closeNATS closes the daemon's Envoy NATS connection and nothing else, waiting for it up to
+// natsCloseTimeout: nats.Conn.Close flushes the outbound buffer under the connection's own lock,
+// with a write deadline of a minute by default, which the stop has no room for
+// (natsCloseTimeout). It is safe on a nil connection, which a daemon whose configuration names no
+// NATS holds.
+func closeNATS(conn *nats.Conn, log *slog.Logger) {
+	if conn == nil {
+		return
+	}
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
-		workflow.closeNATS()
+		conn.Close()
 	}()
 	timer := time.NewTimer(natsCloseTimeout)
 	defer timer.Stop()
@@ -643,6 +689,56 @@ func closeWorkflowNATS(workflow *workflowRuntime, log *slog.Logger) {
 	case <-timer.C:
 		log.Warn("legion daemon stopped waiting for its NATS connection to close", "after", natsCloseTimeout.String())
 	}
+}
+
+// dialNATS dials Envoy's NATS as the user nc authenticates as (natsConnection), logging what the
+// server reports about the connection: every permission it refuses at error, every disconnect at
+// warn and every reconnect at info (natsauth.LogEvents). options follow, so the daemon's own boot
+// passes natsauth.ReconnectForever and `legion probe-boot`, which reads once and exits, does not.
+func dialNATS(cfg config.Config, nc natsConnection, log *slog.Logger, options ...nats.Option) (*nats.Conn, error) {
+	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, "legion-daemon "+cfg.Project,
+		append([]nats.Option{natsauth.LogEvents(log)}, options...)...)
+	if err != nil {
+		return nil, fmt.Errorf("connect Envoy NATS: %w", err)
+	}
+	return conn, nil
+}
+
+// connectNATS is one attempt of the boot at Envoy's NATS (run): it dials the daemon's connection
+// under natsauth.ReconnectForever, so an outage mid-run never closes it for good; opens the task
+// bucket on it (openTaskBucket), unless a test stands in for the bucket (plan.taskValues); and,
+// for a daemon with the workflow, opens the workflow's JetStream and durable consumers on it
+// (workflowRuntime.connect), so a missing notification stream refuses the boot rather than
+// leaving a daemon that reads no events. An attempt that fails closes what it opened, so the next
+// one — the boot waits out an unreachable NATS — starts clean. Close comes before
+// natsauth.WithLastError, never after: WithLastError only looks once the connection reports itself
+// closed, and Close does not clear what the connection last recorded, so the cause a terminal close
+// left, or a permission the server refused, reaches the wait's judgement (natsauth.Unreachable).
+// A bucket refusal already carries the refusal, and is returned as it is.
+func connectNATS(ctx context.Context, cfg config.Config, p plan, workflow *workflowRuntime, log *slog.Logger) (*nats.Conn, *taskBucket, error) {
+	conn, err := dialNATS(cfg, p.nats, log, natsauth.ReconnectForever())
+	if err != nil {
+		return nil, nil, err
+	}
+	failed := func(err error) error {
+		conn.Close()
+		if errors.Is(err, nats.ErrPermissionViolation) {
+			return err
+		}
+		return natsauth.WithLastError(err, conn)
+	}
+	var bucket *taskBucket
+	if p.taskValues == nil {
+		if bucket, err = openTaskBucket(ctx, conn, p.project, p.nats, log); err != nil {
+			return nil, nil, failed(err)
+		}
+	}
+	if workflow != nil {
+		if err := workflow.connect(ctx, cfg, conn); err != nil {
+			return nil, nil, failed(err)
+		}
+	}
+	return conn, bucket, nil
 }
 
 // closeStore closes the store, waiting for it up to storeCloseTimeout: the pool's close waits for
@@ -779,8 +875,17 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
-	// taskValues is overrides.taskValues: the task bucket the machines write to, nil for none.
+	// taskValues is the task bucket the machines write to: overrides.taskValues, or the daemon's own
+	// once the boot opened it (bucket); nil for a daemon whose configuration names no NATS.
 	taskValues supervise.TaskValues
+	// bucket is the daemon's own task bucket, which the boot opens on its NATS connection before
+	// the machines are built (connectNATS) and serve watches (taskBucket.watch); nil where a test
+	// stands in for it (overrides.taskValues) and where the configuration names no NATS.
+	bucket *taskBucket
+	// taskBucketCheck is how often the watch reads the bucket's stream (taskBucket.watch).
+	taskBucketCheck time.Duration
+	// noLaunch is why this daemon launches no worker (launchRefusal), nil for one that launches.
+	noLaunch error
 }
 
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
@@ -853,6 +958,10 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if o.pluginRelaunchable != nil {
 		pluginRelaunchable = *o.pluginRelaunchable
 	}
+	taskBucketCheck := o.taskBucketCheck
+	if taskBucketCheck == 0 {
+		taskBucketCheck = taskBucketCheckEvery
+	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames),
 		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
@@ -862,7 +971,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		taskValues: o.taskValues,
+		taskValues: o.taskValues, taskBucketCheck: taskBucketCheck, noLaunch: launchRefusal(cfg, o.taskValues),
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1420,6 +1529,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	draining, endDrain := context.WithCancel(context.Background())
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
+	sup.noLaunch = p.noLaunch
 	listener, err := stream.Listen(draining, p.stream,
 		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
 	if err != nil {
@@ -1442,7 +1552,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	sup.deps = supervise.Deps{
 		Runtime: rt,
 		Conns:   listener,
-		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
+		// A daemon that launches no worker (NoNATSLine) refuses every launch at its lifecycle
+		// recheck, ahead of a test's refusal and of the store's own (noLaunch).
+		Store: pruning(gateLaunch(gateLaunch(tokens.Recording(st), p.checkLaunch), noLaunch(p.noLaunch)),
+			runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, repository: p.repository,
@@ -1456,9 +1569,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Identity:    adoptIdentity(p.identity, p.repository),
 		IssueInTurn: sup.claimInTurn,
 		LockIssue:   sup.lockIssue,
-		// T4 wires the bucket: until the daemon's task bucket (taskbucket.go) is built here, no
-		// value is written but a test's (overrides.taskValues), and a worker is told its task by
-		// nothing.
+		// Every claim's value: the daemon's own task bucket on Envoy's NATS (taskBucket), a test's
+		// in its place, or none for a daemon whose configuration names no NATS, which launches no
+		// worker to read one (plan.noLaunch).
 		TaskValues:              p.taskValues,
 		Secrets:                 p.secretsEnroller,
 		PhaseHolds:              p.phaseHolds,
@@ -2461,6 +2574,15 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		watchController(store.ForConcurrentWorker(serving), st, cfg, p, s.log)
 		return nil
 	})
+	// The task bucket's watch, from the moment the daemon serves: every stored claim has its
+	// machine by now (supervision.start restored them), so the boot's read of the whole bucket
+	// reaches every claim the record owes a value (taskBucket.watch).
+	if p.bucket != nil {
+		group.Go(func() error {
+			p.bucket.watch(serving, s.supervisor, p.taskBucketCheck)
+			return nil
+		})
+	}
 	return group.Wait()
 }
 

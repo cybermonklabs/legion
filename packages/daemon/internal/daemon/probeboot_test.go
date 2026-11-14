@@ -16,6 +16,7 @@ import (
 
 	"k8s.io/client-go/rest"
 
+	"github.com/sjawhar/envoy/legiontasks"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
@@ -23,8 +24,8 @@ import (
 
 // probeBootConfig is a Kubernetes daemon's configuration over the cluster at server, with the whole
 // workflow configured, whose Postgres cannot be reached, whose NATS listens nowhere and whose
-// Dispatch counts every request it gets: a probe-boot that opened its store, connected to NATS or
-// asked Dispatch anything would fail or show it.
+// Dispatch counts every request it gets: a probe-boot that opened its store or asked Dispatch
+// anything would fail or show it, and one that reaches NATS is given a NATS of the test's own.
 func probeBootConfig(t *testing.T, server string) (config.Config, *atomic.Int32) {
 	t.Helper()
 	t.Setenv("LEGION_TEST_PG_DSN", "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1")
@@ -147,16 +148,19 @@ func TestProbeBootRefusesAClusterWithoutAgentSandboxBeforeAnyProbe(t *testing.T)
 	}
 }
 
-// On a cluster boot's check passes, probe-boot runs the cluster check and then the image probe a
-// booting daemon runs (sandboxBootOf, one value for both), on a runtime built from the Options boot
-// reads and holding no token source, store or connections, and it answers the probe's report. The
-// prober is built only once the check's last read, the census's Sandbox list, has been made. It
-// opens no store (its Postgres cannot be reached), connects to no NATS and asks Dispatch nothing.
+// On a cluster boot's check passes, probe-boot runs the cluster check, then opens the task bucket
+// as a booting daemon does, creating it on the test's NATS where it does not exist, and then runs
+// the image probe a booting daemon runs (sandboxBootOf, one value for both), on a runtime built
+// from the Options boot reads and holding no token source, store or connections, and it answers
+// the probe's report. The prober is built only once the check's last read, the census's Sandbox
+// list, has been made. It opens no store (its Postgres cannot be reached) and asks Dispatch
+// nothing.
 func TestProbeBootRunsTheDaemonsImageProbeAfterTheClusterCheck(t *testing.T) {
 	var mu sync.Mutex
 	var requested []string
 	server := agentSandboxCluster(t, &requested, &mu)
 	cfg, dispatched := probeBootConfig(t, server.URL)
+	cfg.NatsURLs = []string{workflowNATS(t)}
 	prober := &recordedProber{report: bootprobe.ImageReport{ModelFallback: "off"}}
 	var built []sandbox.Options
 	var checkedFirst bool
@@ -207,4 +211,60 @@ func TestProbeBootRunsTheDaemonsImageProbeAfterTheClusterCheck(t *testing.T) {
 			t.Errorf("probe-boot sent %s before its probe; the cluster check may only read", request)
 		}
 	}
+}
+
+// probe-boot opens the task bucket a booting daemon opens, and creates it where it does not exist,
+// as the daemon's own user: the bucket is there once it has passed, at the shape a daemon gives it.
+func TestProbeBootCreatesTheTaskBucketABootingDaemonOpens(t *testing.T) {
+	var mu sync.Mutex
+	var requested []string
+	server := agentSandboxCluster(t, &requested, &mu)
+	cfg, _ := probeBootConfig(t, server.URL)
+	natsURL := workflowNATS(t)
+	cfg.NatsURLs = []string{natsURL}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := probeBoot(ctx, cfg, lookup(nil), quietLogger(),
+		func(context.Context, *rest.Config, sandbox.Options) (imageProber, error) {
+			return &recordedProber{}, nil
+		}); err != nil {
+		t.Fatalf("ProbeBoot = %v, want a pass", err)
+	}
+	kv, err := workflowJetStream(t, natsURL).KeyValue(ctx, legiontasks.Bucket)
+	if err != nil {
+		t.Fatalf("open the task bucket probe-boot made: %v", err)
+	}
+	status, err := kv.Status(ctx)
+	if err != nil {
+		t.Fatalf("read the task bucket's status: %v", err)
+	}
+	if status.History() != 1 || status.TTL() != 0 || status.BackingStore() != "JetStream" {
+		t.Fatalf("the task bucket keeps %d revisions with TTL %s on %s, want one revision, no TTL, on JetStream", status.History(), status.TTL(), status.BackingStore())
+	}
+}
+
+// `legion probe-boot` runs a booting daemon's open-or-create of the task bucket and refuses with
+// that boot's own refusal, naming the bucket and the subject the daemon's NATS user is refused,
+// and the pane seed's user where that is who the daemon connects as, before it probes any image.
+// The refused-grant server is a container, so CI's Docker runs this.
+func TestProbeBootNamesAMissingTaskBucketGrant(t *testing.T) {
+	taskBucketRefusals(t, func(t *testing.T, configure func(config.Config) config.Config, want []string) {
+		var mu sync.Mutex
+		var requested []string
+		server := agentSandboxCluster(t, &requested, &mu)
+		cfg, _ := probeBootConfig(t, server.URL)
+		cfg = configure(cfg)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_, err := probeBoot(ctx, cfg, lookup(nil), quietLogger(),
+			func(context.Context, *rest.Config, sandbox.Options) (imageProber, error) {
+				t.Error("the image probe ran past a task bucket the daemon's user cannot open")
+				return &recordedProber{}, nil
+			})
+		for _, w := range want {
+			if err == nil || !strings.Contains(err.Error(), w) {
+				t.Errorf("ProbeBoot = %v, want a refusal naming %s", err, w)
+			}
+		}
+	})
 }

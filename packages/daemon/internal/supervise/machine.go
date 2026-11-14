@@ -3281,6 +3281,8 @@ func claimOf(ev Event) claim.Token {
 		return ev.Claim
 	case RequestTake:
 		return ev.Claim
+	case TaskValueRead:
+		return ev.Claim
 	case RequestCompact:
 		return ev.Claim
 	case CompactEnded:

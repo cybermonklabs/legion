@@ -209,6 +209,21 @@ func detectSilentCuts(o *nats.Options) error {
 // (`Permissions Violation for Subscription to "<subject>"`, or `… Publish to …`).
 var permissionRefusal = regexp.MustCompile(`(?i)(publish|subscription) to "([^"]+)"`)
 
+// RefusedPermission is what a server's permissions violation err refused: the operation,
+// "publish" or "subscription", and the subject. ok is false for an error that is no permissions
+// violation (nats.ErrPermissionViolation); one whose text names no subject answers ok with both
+// empty. A caller reads it from a connection's LastError, where nats.go keeps the refusal of a
+// publish that no call of its own is answered for: the request just goes unanswered.
+func RefusedPermission(err error) (operation, subject string, ok bool) {
+	if !errors.Is(err, nats.ErrPermissionViolation) {
+		return "", "", false
+	}
+	if m := permissionRefusal.FindStringSubmatch(err.Error()); m != nil {
+		return strings.ToLower(m[1]), m[2], true
+	}
+	return "", "", true
+}
+
 // LogEvents is the connection option that logs what the server reports about the connection
 // asynchronously: at error, every permission the server refuses it, a subscription or a publish,
 // the JetStream API requests a consumer makes included, and a terminal close (a fatal server -ERR,
@@ -222,17 +237,14 @@ var permissionRefusal = regexp.MustCompile(`(?i)(publish|subscription) to "([^"]
 func LogEvents(log *slog.Logger) nats.Option {
 	return func(o *nats.Options) error {
 		o.AsyncErrorCB = func(_ *nats.Conn, sub *nats.Subscription, err error) {
-			if !errors.Is(err, nats.ErrPermissionViolation) {
+			operation, subject, refused := RefusedPermission(err)
+			if !refused {
 				subject := ""
 				if sub != nil {
 					subject = sub.Subject
 				}
 				log.Warn("NATS reported an asynchronous error", "subject", subject, "error", err)
 				return
-			}
-			operation, subject := "", ""
-			if m := permissionRefusal.FindStringSubmatch(err.Error()); m != nil {
-				operation, subject = strings.ToLower(m[1]), m[2]
 			}
 			log.Error("NATS refused the daemon a permission: its NATS user lacks that grant", "operation", operation, "subject", subject, "error", err)
 		}

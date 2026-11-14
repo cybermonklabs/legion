@@ -173,6 +173,7 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestTurnOutcome":   {RequestTurnOutcome{}},
 		"RequestTaskSeen":      {RequestTaskSeen{}},
 		"RequestTake":          {RequestTake{}},
+		"TaskValueRead":        {TaskValueRead{}},
 		"RequestCompact":       {RequestCompact{}},
 		"CompactEnded":         {CompactEnded{}},
 	}

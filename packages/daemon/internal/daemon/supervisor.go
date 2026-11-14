@@ -42,6 +42,9 @@ type supervisor struct {
 	// durableState is the one callback every machine of this supervisor reports its durable
 	// transitions to (supervise.Machine.OnDurableState): ready, working and failed.
 	durableState func(supervise.Claim, supervise.ClaimState)
+	// noLaunch is why the daemon launches no worker (NoNATSLine), nil for one that launches:
+	// Create stores no new claim, so a refused spawn leaves nothing queued behind it.
+	noLaunch error
 
 	mu       sync.RWMutex
 	machines map[claim.Token]*member
@@ -185,7 +188,7 @@ func (s *supervisor) OnDurableState(callback func(supervise.Claim, supervise.Cla
 // Create stores a new claim, queued, and supervises it. An explicit operator prompt is kept
 // under the state directory as a test override; ordinary claims have no override and the specs
 // composer supplies their role prompt parts. A claim the daemon already supervises is returned as
-// it is.
+// it is. A daemon that launches no worker (noLaunch) creates none, with a refusal naming why.
 func (s *supervisor) Create(ctx context.Context, c supervise.Claim, rolePrompt string) (*supervise.Machine, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -194,6 +197,9 @@ func (s *supervisor) Create(ctx context.Context, c supervise.Claim, rolePrompt s
 	}
 	if s.stopped {
 		return nil, false, errors.New("the daemon is stopping")
+	}
+	if err := errNoLaunch(s.noLaunch); err != nil {
+		return nil, false, err
 	}
 	if rolePrompt != "" {
 		path := rolePromptPath(s.stateDir, c.Token)

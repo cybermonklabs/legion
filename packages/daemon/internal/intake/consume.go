@@ -18,7 +18,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-const notificationStream = "ENVOY_NOTIFICATIONS"
+// NotificationStream is Envoy's notification stream, which intake's durable consumers read and
+// whose replica count the daemon's task bucket is created at (internal/daemon's task bucket).
+const NotificationStream = "ENVOY_NOTIFICATIONS"
 
 const (
 	defaultAckWait  = 30 * time.Second
@@ -262,9 +264,9 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	if err != nil {
 		return nil, err
 	}
-	stream, err := js.Stream(ctx, notificationStream)
+	stream, err := js.Stream(ctx, NotificationStream)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
+		return nil, fmt.Errorf("open %s: %w", NotificationStream, err)
 	}
 
 	dispatch, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
@@ -372,7 +374,7 @@ func createConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, log
 	}
 	info, err := stream.Info(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("read %s info: %w", notificationStream, err)
+		return nil, fmt.Errorf("read %s info: %w", NotificationStream, err)
 	}
 	config.DeliverPolicy, config.OptStartTime = jetstream.DeliverByStartTimePolicy, &start
 	consumer, err := stream.CreateConsumer(ctx, config)

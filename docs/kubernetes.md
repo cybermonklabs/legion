@@ -5177,12 +5177,16 @@ What it holds, and what it touches in production, is in [`scripts/e2e/README.md`
 
 ### Probing a configuration before the daemon boots on it
 
-`legion probe-boot --config <legion.yaml>` runs the part of a Kubernetes daemon's boot that the operator's worker pod can refuse, from that configuration (`packages/daemon/internal/daemon/probeboot.go`):
-boot's reads of the configuration, the caller's environment and the files they name (the loader that runs neither App's `private_key_command`, then `readBoot`), then the cluster check (Agent Sandbox installed, no Sandbox of an older layout) and the image probe a booting daemon runs, one value for both (`sandboxBootOf`).
+`legion probe-boot --config <legion.yaml>` runs the part of a Kubernetes daemon's boot that the operator's worker pod and the daemon's NATS grant can refuse, from that configuration (`packages/daemon/internal/daemon/probeboot.go`):
+boot's reads of the configuration, the caller's environment and the files they name (the loader that runs neither App's `private_key_command`, then `readBoot`), then the cluster check (Agent Sandbox installed, no Sandbox of an older layout), then the open of the task bucket a booting daemon makes before it supervises anything, and last the image probe a booting daemon runs, one value for the check and the probe (`sandboxBootOf`).
 The probe Sandbox is built by the same code from the operator's pod
 — its ServiceAccount, volumes, mounts and environment — and judged the same way (`sandbox.NewProber`).
-It skips every boot stage that reads nothing of the worker pod:
-the store, its legacy-claims fence, the migration and the GitHub App mint, which a booting daemon runs before the probe, and the NATS connection and the Dispatch listing, which it runs after.
+It connects to Envoy's NATS (`nats_urls`) as the daemon's own user (`nats_daemon_nkey_seed_file`, else the pane seed), once and with no reconnect, and opens the task bucket `legion_tasks`, creating it where it does not exist yet, as a booting daemon does (`openTaskBucket`: one revision of each key, file storage, no TTL, the replica count of `ENVOY_NOTIFICATIONS`).
+So a grant that lacks a subject of the bucket refuses the probe with the boot's own refusal, which names the bucket and the subject the server refused,
+and a daemon that connects as the pane seed's user (`NATS_NKEY_SEED_FILE`), the session user every pane shares and which holds no grant on the bucket, is refused and told to take a user of its own.
+It skips every other boot stage that reads nothing of the worker pod or the grant:
+the store, its legacy-claims fence, the migration and the GitHub App mint, which a booting daemon runs before the probe, the workflow's durable consumers it opens beside the bucket, and the Dispatch listing, which it runs after.
+It writes nothing but the task bucket, where it creates it, and its probe Sandbox, which it deletes.
 On a pass it prints `probe-boot: OK project=<project> image=<image> model-fallback=<mark> capacity-waits=<n>` and exits 0;
 a refusal is boot's own, on stderr, and exits 1.
 
