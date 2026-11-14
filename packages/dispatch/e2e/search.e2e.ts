@@ -219,7 +219,8 @@ test("an ask hit says whether it is answered, and an answered one shows its late
 // A search for an issue's key, the commonest search there is, over the marks Postgres itself
 // writes: ts_headline marks `CORE-1` as `<b>CORE</b><b>-1</b>`, inside an address and as a bare key
 // alike, so no fixture of this suite decides the shape the palette draws. Each hit that cites the
-// issue reads as its name, marked whole, with no address left.
+// issue reads as its name, with no address left, and the name is marked whole: it is drawn in
+// place of the words the server marked, so no character of it is one the server matched.
 test("a search for an issue key names the issue in every hit that cites it, marked whole", async ({
   browser,
 }) => {
@@ -241,7 +242,7 @@ test("a search for an issue key names the issue in every hit that cites it, mark
       const hit = dialog.getByRole("option", { name });
       await expect(hit).toHaveCount(1);
       await expect(hit.locator("mark")).toHaveText([`${cited.key} Gyroscope alignment`]);
-      await expect(hit.locator("mark [data-dispatch-ref]")).toHaveCount(1);
+      await expect(hit.locator("[data-dispatch-ref] mark")).toHaveCount(1);
       await expect(hit).not.toContainText("dispatch://");
       // A body the headline window holds whole is the hit whole, its stop included
       // (`pmdoc.SearchSnippet`), which ts_headline alone drops.
@@ -348,17 +349,17 @@ test("a search hit cut inside a code span, a worded link or an address reads as 
   }
 });
 
-// The same pass, held to what the link pass links, over Postgres's own marks. A mark grows over a
-// reference only where that reference names something and is drawn as a link: `ts_headline`
-// marks `<b>SHA</b>-256`, `<b>UTF</b>-8`, `#<b>general</b>`, `#<b>1234</b>`, `<b>COVID</b>-19`
-// and, for an issue that does not exist, `<b>CORE</b>-99`, and none of those is a reference that
-// links, so each keeps the mark the server sent. The `COVID-19` body also cites an issue that
-// does exist, so the link pass runs over it and its filter is what holds the mark. The query
-// `CORE` marks `<b>CORE</b>-1` of that issue, and that mark grows to the whole key, which reads
-// as the issue's name. Each body fits the headline window, so each hit is its whole body
+// The same pass, held to what the link pass links, over Postgres's own marks. A mark stays on the
+// words exactly as the server sent it, and only a title drawn in place of those words is marked,
+// whole: `ts_headline` marks `<b>SHA</b>-256`, `<b>UTF</b>-8`, `#<b>general</b>`, `#<b>1234</b>`,
+// `<b>COVID</b>-19` and, for an issue that does not exist, `<b>CORE</b>-99`, and none of those is a
+// reference that links, so each keeps the mark the server sent. The `COVID-19` body also cites an
+// issue that does exist, so the link pass runs over it and its filter is what holds the mark. The
+// query `CORE` marks `<b>CORE</b>-1` of that issue, which links and reads as the issue's name, and
+// the name is marked whole. Each body fits the headline window, so each hit is its whole body
 // (`pmdoc.SearchSnippet`), and the rows find their hit by words of it.
 // SLOW(>=2s): seven seeded comments and seven searches, each answered by Postgres's headline.
-test("a search mark grows over a reference only where it links, and stays as the server sent it elsewhere", async ({
+test("a search mark stays as the server sent it, and a reference it falls in that links reads as its name marked whole", async ({
   browser,
 }) => {
   // Each soft read that fails waits out its own 15 s, and a run against a wrong pass should name
@@ -439,7 +440,77 @@ test("a search mark grows over a reference only where it links, and stays as the
       .filter({ hasText: "is waiting on" });
     await expect(linked).toHaveCount(1);
     await expect(linked.locator("mark")).toHaveText([`${issue.key} Bench work`]);
-    await expect(linked.locator("mark [data-dispatch-ref]")).toHaveCount(1);
+    await expect(linked.locator("[data-dispatch-ref] mark")).toHaveCount(1);
+  } finally {
+    await context.close();
+  }
+});
+
+// The same rule over references that link while the page does not yet know whether their targets
+// exist. `ts_headline` marks only `CORE` of `dispatch://<b>CORE</b>-1`, `dispatch://<b>CORE</b>-99`
+// and `dispatch://<b>CORE</b>-1/artifact/no-such-doc-md`, and `CORE/component/nope` whole of
+// `dispatch://<b>CORE/component/nope</b>` (measured on the pod's Postgres 18, 2026-11-14); each is
+// a reference the link pass links, so each link holds the server's marks. Wherever the words are
+// drawn they keep those marks as sent: the issue's address while its summary is held, then the
+// issue that does not exist, the document that does not exist and the component of a project with
+// no architecture, which stay words with no link. Only the issue's name, once it answers, is
+// marked, and whole.
+// SLOW(>=2s): two seeded comments, two searches, and a summary read held until the row lets go.
+test("a search mark inside a reference stays on the words as the server sent it, and marks only a title whole", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Bench work" });
+  const missingIssue = "dispatch://CORE-99";
+  const missingDocument = `dispatch://${issue.key}/artifact/no-such-doc-md`;
+  const missingComponent = "dispatch://CORE/component/nope";
+  await createComment(issue.key, {
+    body: `Compare dispatch://${issue.key}, ${missingIssue} and ${missingDocument} before the quokka review.`,
+  });
+  await createComment(issue.key, { body: `See ${missingComponent} here.` });
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    const summaryHeld = Promise.withResolvers<void>();
+    await page.route(new RegExp(`/api/v1/issues/${issue.key}/summary$`), async (route) => {
+      await summaryHeld.promise;
+      await route.continue();
+    });
+    await openSearchFromRail(page, false);
+    const search = page.getByRole("combobox", { name: "Search" });
+    const dialog = page.getByRole("dialog", { name: "Search" });
+
+    await search.fill("CORE");
+    const hit = dialog.getByRole("option", { name: /^comment / }).filter({ hasText: "quokka" });
+    await expect(hit).toHaveCount(1);
+    // The issue's title has not come, so its address is words, marked where the server marked it.
+    await expect(hit.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
+      `dispatch://${issue.key}`
+    );
+    await expect(hit.locator("mark")).toHaveText(["CORE", "CORE", "CORE"]);
+
+    summaryHeld.resolve();
+    await expect(hit.locator("mark")).toHaveText([`${issue.key} Bench work`, "CORE", "CORE"]);
+    await expect(hit.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
+      `${issue.key} Bench work`
+    );
+    await expect(hit.locator("[data-dispatch-missing]")).toHaveText([
+      missingIssue,
+      missingDocument,
+    ]);
+    await expect(hit.locator("[data-dispatch-missing][href]")).toHaveCount(0);
+    await expect(hit.locator("[data-dispatch-ref]")).toHaveCount(1);
+
+    await search.fill("CORE/component/nope");
+    const component = dialog
+      .getByRole("option", { name: /^comment / })
+      .filter({ hasText: missingComponent });
+    await expect(component).toHaveCount(1);
+    await expect(component.locator("mark")).toHaveText(["CORE/component/nope"]);
+    await expect(component.locator("[data-dispatch-missing]")).toHaveText([missingComponent]);
+    await expect(component.locator("[data-dispatch-missing][href]")).toHaveCount(0);
+    await expect(component.locator("[data-dispatch-ref]")).toHaveCount(0);
   } finally {
     await context.close();
   }

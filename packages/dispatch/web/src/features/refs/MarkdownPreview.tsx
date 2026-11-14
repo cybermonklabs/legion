@@ -4,7 +4,7 @@ import { type ReactNode, useCallback, useRef } from "react";
 import type { DisplayTree } from "../../api/types";
 import { markdownClassName } from "./markdown-engine";
 import { usePlainHeadline } from "./plain-text";
-import { SEARCH_HIGHLIGHT_SELECTOR, searchMark } from "./search-highlight";
+import { SEARCH_HIGHLIGHT_SELECTOR, SearchHighlightClassName } from "./search-highlight";
 import type { TextSource } from "./text-references";
 import {
   type DecorateMarkdown,
@@ -44,7 +44,10 @@ function unmarkedText(node: ProseMirrorNode): string | undefined {
  * paragraph's bold and code and links, then each list item, space-separated. (Not
  * `MarkdownBody`'s inline flattening, whose later blocks are plain text: a preview whose first
  * block is a heading would lose the formatting of everything after it.) A code block's text goes
- * inside a `<code>`, so it reads as code and `linkifyDispatchRefs` leaves it alone.
+ * inside a `<code>`, so it reads as code and `linkifyDispatchRefs` leaves it alone. A search
+ * mark stays where the server put it, inside a link's words as anywhere else: a link whose words
+ * `RefLink` draws keeps the server's marks on them, and a title it draws in their place is marked
+ * whole (`collectReferenceAnchors` reads the marks off the link before it clears it).
  *
  * Blocks holding nothing but unmarked words go in as one text node, however many they are: a
  * preview is one run of text, and a body of thousands of plain blocks - the 8,000 items of a
@@ -97,22 +100,6 @@ const paintOneLine: PaintMarkdown = (element, parsed, serializer) => {
   for (const br of element.querySelectorAll("br")) {
     br.replaceWith(document.createTextNode(" "));
   }
-  // A hit the server marked inside a link's own words marks the whole link instead: a
-  // reference's words are replaced by its title a moment later (`collectReferenceAnchors`
-  // empties the anchor), so a mark left inside would go with them. A bare reference the server
-  // marked is made whole inside one mark by the link pass itself, which links it from the text
-  // that mark holds (`linkifyDispatchRefs`).
-  for (const link of element.querySelectorAll("a")) {
-    if (link.querySelector(SEARCH_HIGHLIGHT_SELECTOR) === null) {
-      continue;
-    }
-    for (const inner of link.querySelectorAll(SEARCH_HIGHLIGHT_SELECTOR)) {
-      inner.replaceWith(...inner.childNodes);
-    }
-    const whole = searchMark();
-    link.replaceWith(whole);
-    whole.appendChild(link);
-  }
 };
 
 /**
@@ -139,9 +126,10 @@ const paintOneLine: PaintMarkdown = (element, parsed, serializer) => {
  * then clamp). `className` styles the element, whose `display` is the clamp's own, so a parent
  * that needs a flex item passes `min-w-0` there as it would for any block.
  * `highlightClassName` styles each run the server marked as matching a search, which rides in
- * the snippet's own tree (`SEARCH_HIGHLIGHT_SELECTOR`); a reference the link pass links whose
- * words hold one is marked whole, since those words are replaced by its title, and every other
- * mark stays where the server put it. Until the engine has answered (one
+ * the snippet's own tree (`SEARCH_HIGHLIGHT_SELECTOR`). Every mark stays on the words where the
+ * server put it, wherever those words are drawn, a reference's included; only a title a
+ * reference draws in place of words a mark fell in is marked, whole (`RefLink`), since no
+ * character of it is one the server matched. Until the engine has answered (one
  * pre-paint commit once it is loaded on the page) the element is empty; a text with no tree
  * that is too long for the page's own thread holds its own source, clamped, marked
  * `data-markdown-pending`, until the parse worker answers (`markdown-engine.ts`); and when the
@@ -181,6 +169,8 @@ export function MarkdownPreview({
   const root = useRef<HTMLSpanElement>(null);
   const decorate = useCallback<DecorateMarkdown>(
     (element) => {
+      // The marks the paint drew; a mark a reference draws is React's, and it reads the class
+      // from the context around the portals.
       if (highlightClassName !== "") {
         for (const mark of element.querySelectorAll<HTMLElement>(SEARCH_HIGHLIGHT_SELECTOR)) {
           mark.className = highlightClassName;
@@ -219,7 +209,9 @@ export function MarkdownPreview({
       title={title?.text}
     >
       {reads}
-      {portals}
+      <SearchHighlightClassName.Provider value={highlightClassName}>
+        {portals}
+      </SearchHighlightClassName.Provider>
     </span>
   );
 }

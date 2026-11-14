@@ -235,7 +235,9 @@ test("search hits mark the runs the server matched, and a reference it matched i
     await waitFor(() => expect(element).toHaveTextContent("Design decision"));
     const marks = Array.from(element.querySelectorAll("mark"), (mark) => mark.textContent);
     expect(marks).toEqual(["port", "CORE-1 Design decision"]);
-    const marked = element.querySelector("mark [data-dispatch-ref]");
+    const marked = element
+      .querySelector("[data-dispatch-ref] mark")
+      ?.closest("[data-dispatch-ref]");
     expect(marked?.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1");
     expect(element.textContent).not.toContain("dispatch://");
   } finally {

@@ -162,7 +162,7 @@ test("a preview marks the runs the server matched, from the snippet's own tree",
   expect(parses).toBe(0);
 });
 
-test("a hit inside a link's own words marks the whole link, whose title replaces them", () => {
+test("a hit inside a reference's own words is drawn inside the reference, in the surface's class", () => {
   // The snippet's own text cites `dispatch://CORE-1`, so the preview resolves that reference and
   // reads the issue's summary; without the spy that read reaches the network and the row fails on
   // it rather than on what it asserts (main's #2906 made a snippet's references its body's own).
@@ -188,9 +188,12 @@ test("a hit inside a link's own words marks the whole link, whose title replaces
         />
       )
     );
+    // The title has not come yet, so the reference draws the words with the server's mark
+    // where the server put it, over `CORE-1` and not the scheme; the title replaces them later.
     const mark = view.container.querySelector("mark");
     expect(mark?.className).toBe("hit");
-    expect(mark?.querySelector("[data-dispatch-ref]")).not.toBeNull();
+    expect(mark?.textContent).toBe("CORE-1");
+    expect(mark?.closest("[data-dispatch-ref]")?.textContent).toBe("dispatch://CORE-1");
     expect(parses).toBe(0);
   } finally {
     getIssueSummary.mockRestore();

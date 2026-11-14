@@ -119,7 +119,7 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
     if (reference === null) throw new Error("the reference did not render as one");
     expect(reference.textContent).toBe("CORE-1 Design decision");
     expect(marks(preview())).toEqual(["CORE-1 Design decision"]);
-    expect(reference.closest("mark")).not.toBeNull();
+    expect(reference.querySelector("mark")?.textContent).toBe("CORE-1 Design decision");
     expect(preview().textContent).toBe("Tracked as CORE-1 Design decision since Monday.");
 
     // The same search over a bare key: `Tracked as <b>CORE</b><b>-1</b> since Monday`.
@@ -131,7 +131,9 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
       tree: key.snippet,
     });
     await waitFor(() => expect(marks(preview())).toEqual(["CORE-1 Design decision"]));
-    expect(preview().querySelector("mark [data-dispatch-ref]")).not.toBeNull();
+    expect(preview().querySelector("[data-dispatch-ref] mark")?.textContent).toBe(
+      "CORE-1 Design decision"
+    );
 
     // q=design on a hand-written link to the same target: a link whose words its author wrote
     // keeps those words (R8), so the hit is marked where the reader reads it.
@@ -146,7 +148,8 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
       expect(preview().querySelector("[data-dispatch-ref]")?.textContent).toBe("the design")
     );
     const linked = preview().querySelector<HTMLElement>("[data-dispatch-ref]");
-    expect(linked?.closest("mark") !== null || linked?.querySelector("mark") !== null).toBe(true);
+    expect(linked?.querySelector("mark")?.textContent).toBe("design");
+    expect(marks(preview())).toEqual(["design"]);
     expect(preview().textContent).not.toContain("](");
   } finally {
     view.unmount();

@@ -1,4 +1,4 @@
-import { type ReactNode, useLayoutEffect, useState } from "react";
+import { type ReactNode, useContext, useLayoutEffect, useState } from "react";
 
 import { borderDefault } from "../../theme/classes";
 import { useReferenceHref, useReferenceTarget } from "./reference-target";
@@ -9,8 +9,21 @@ import {
   referenceHref,
   referenceRouteFromHref,
 } from "./routes";
-import { SEARCH_HIGHLIGHT_SELECTOR, searchMark } from "./search-highlight";
+import {
+  SEARCH_HIGHLIGHT_ATTRIBUTE,
+  SEARCH_HIGHLIGHT_SELECTOR,
+  SearchHighlightClassName,
+} from "./search-highlight";
 import { readTextReferences, type TextReference, type TextReferenceFacts } from "./text-references";
+
+/** A stretch of a reference's words, as UTF-16 offsets into them: `text.slice(start, end)`. */
+export interface WordStretch {
+  readonly start: number;
+  readonly end: number;
+}
+
+/** A reference whose words hold no search mark of their own. */
+const NO_STRETCHES: readonly WordStretch[] = [];
 
 export interface ReferenceAnchor {
   /** The element the `RefLink` portal renders into: the `<a>` itself, or whatever a surface put
@@ -26,6 +39,10 @@ export interface ReferenceAnchor {
    *  names - what a Markdown autolink is stored as. A link whose words its author wrote keeps
    *  those words (`RefLink`). */
   readonly addressed: boolean;
+  /** The stretches of `text` the server marked as matching a search, in order and apart, each
+   *  under a mark inside the anchor (`collectReferenceAnchors`); none where the anchor's words
+   *  held no mark, or where a mark around the anchor already covers all it draws. */
+  readonly marked: readonly WordStretch[];
 }
 
 /** The 40 px square a picture shows as beside its title, wherever a line holds it: the Artifacts
@@ -54,6 +71,12 @@ export interface ReferenceLinking {
  * Dispatch answered does not exist is its words with no link at all (R8), as the document editor
  * draws it: the element it renders into stops being a link (`unlinkMissingReference`).
  *
+ * A search hit's marks follow the same rule (`marked`). Wherever the words are drawn, the server's
+ * marks stay on them exactly as it sent them; only a title drawn in their place is marked, whole,
+ * since none of its characters is one the server matched. A late answer moves them either way:
+ * the words keep their marks while the title loads, the title is marked whole once it comes, and
+ * the words have their marks back when the target turns out not to exist.
+ *
  * Beside the words goes the picture's thumbnail when the reference names an image artifact. It
  * shows no document text, so it reads none. A thumbnail the browser cannot draw (a pinned
  * version the server does not serve) is dropped, leaving the title alone, so a stale or
@@ -63,12 +86,15 @@ export interface ReferenceLinking {
 export function RefLink({
   addressed,
   anchor,
+  marked = NO_STRETCHES,
   route,
   text,
 }: {
   /** Whether the words the anchor showed are its own address (`ReferenceAnchor.addressed`). */
   addressed: boolean;
   anchor?: HTMLElement;
+  /** The stretches of `text` a search marked (`ReferenceAnchor.marked`); none by default. */
+  marked?: readonly WordStretch[];
   route: DispatchReferenceRoute;
   /** The words the anchor showed before they were cleared for this portal: the reference as the
    *  author wrote it, or a Markdown link's own text. */
@@ -107,19 +133,63 @@ export function RefLink({
       )}
       {/* An issue reads as its key then its title, as the project's issues table writes a key
           beside one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the
-          thing`. Until the title resolves, and for an issue the reader cannot read, the words
-          the author wrote stand. */}
-      {!addressed || title === undefined ? (
-        text
-      ) : route.kind === "issue" ? (
-        <>
-          <span className="font-semibold whitespace-nowrap">{route.key}</span> {title}
-        </>
+          thing`. Until the title resolves, for an issue the reader cannot read, and for a target
+          that does not exist, the words the author wrote stand. */}
+      {!addressed || missing || title === undefined ? (
+        markedWords(text, marked)
       ) : (
-        title
+        <MarkedWhole marked={marked.length > 0}>
+          {route.kind === "issue" ? (
+            <>
+              <span className="font-semibold whitespace-nowrap">{route.key}</span> {title}
+            </>
+          ) : (
+            title
+          )}
+        </MarkedWhole>
       )}
     </>
   );
+}
+
+/** A search mark React draws: the element the serializer draws over a run the server marked
+ *  (`SEARCH_HIGHLIGHT_SELECTOR`), with the class the surface styles its marks with
+ *  (`SearchHighlightClassName`). */
+function SearchMark({ children }: { children: ReactNode }): ReactNode {
+  const className = useContext(SearchHighlightClassName);
+  return (
+    <mark
+      {...{ [SEARCH_HIGHLIGHT_ATTRIBUTE]: "" }}
+      className={className === "" ? undefined : className}
+    >
+      {children}
+    </mark>
+  );
+}
+
+/** `children` under one search mark where `marked`, else as they are. */
+function MarkedWhole({ children, marked }: { children: ReactNode; marked: boolean }): ReactNode {
+  return marked ? <SearchMark>{children}</SearchMark> : children;
+}
+
+/** `text` with each of the `marked` stretches under a search mark of its own. */
+function markedWords(text: string, marked: readonly WordStretch[]): ReactNode {
+  if (marked.length === 0) {
+    return text;
+  }
+  const drawn: ReactNode[] = [];
+  let from = 0;
+  for (const { end, start } of marked) {
+    if (from < start) {
+      drawn.push(text.slice(from, start));
+    }
+    drawn.push(<SearchMark key={start}>{text.slice(start, end)}</SearchMark>);
+    from = end;
+  }
+  if (from < text.length) {
+    drawn.push(text.slice(from));
+  }
+  return drawn;
 }
 
 /** What makes a reference element a link, or a link-styled span a reader and the hover card take
@@ -179,43 +249,62 @@ function linksReference(reference: TextReference, cited: ReadonlySet<string>): b
  *  nothing but text, which is how the serializer draws the highlight over a run (it is the
  *  schema's last mark, so its element is the innermost over the words). */
 interface RunPiece {
+  readonly node: ChildNode;
   readonly text: string;
   readonly marked: boolean;
 }
 
 function runPiece(node: ChildNode): RunPiece | undefined {
   if (node instanceof Text) {
-    return { marked: false, text: node.data };
+    return { marked: false, node, text: node.data };
   }
   if (
     node instanceof HTMLElement &&
     node.matches(SEARCH_HIGHLIGHT_SELECTOR) &&
     Array.from(node.childNodes).every((child) => child instanceof Text)
   ) {
-    return { marked: true, text: node.textContent ?? "" };
+    return { marked: true, node, text: node.textContent ?? "" };
   }
   return undefined;
 }
 
+/** The link the link pass wraps `reference` in, holding `words`. Its href is the reference as
+ *  resolved, so a prefix links to the whole id it names. */
+function referenceLink(reference: TextReference, ...words: Node[]): HTMLAnchorElement {
+  const anchor = document.createElement("a");
+  anchor.setAttribute("href", reference.reference ?? "");
+  // The reference stands on its own here, whatever it was written as: a `dispatch://` address,
+  // an issue key, or a `#` and a question block's id. Each reads as the target's current name,
+  // which `collectReferenceAnchors` cannot tell from the href alone - a key and its address are
+  // not the same characters.
+  anchor.setAttribute("data-dispatch-bare", "");
+  anchor.append(...words);
+  return anchor;
+}
+
 /**
- * Puts each reference the link pass will link, where a search mark falls in it, under one mark
- * of its own, whole. Postgres's `ts_headline` marks the words it matched, and it cuts an address
- * or a key into its own words to do so: a search for `CORE-1` answers
- * `dispatch://<b>CORE</b><b>-1</b>` and `<b>CORE</b><b>-1</b>`, and one for `CORE` answers
- * `<b>CORE</b>-1` (measured against the pod's Postgres, 2026-11-13, INFRA-1702). The snippet's
- * tree then holds the reference in more than one text node, and the link pass reads one text
- * node at a time, so it would find no reference there and the hit would show the raw address.
+ * Links each reference the link pass links where a search mark falls in it, with the server's
+ * marks inside the link where the server put them. Postgres's `ts_headline` marks the words it
+ * matched, and it cuts an address or a key into its own words to do so: a search for `CORE-1`
+ * answers `dispatch://<b>CORE</b><b>-1</b>` and `<b>CORE</b><b>-1</b>`, and one for `CORE`
+ * answers `<b>CORE</b>-1` (measured against the pod's Postgres, 2026-11-13, INFRA-1702). The
+ * snippet's tree then holds the reference in more than one text node, and the link pass reads one
+ * text node at a time, so it would find no reference there and the hit would show the raw address.
  *
  * So each run of adjacent text nodes and search marks the link pass reads is read as the one
  * text it is, with the link pass's own reader, facts and filter (`linksReference`). A reference
- * it would link that holds a marked character is marked from its first character to its last,
- * and the run is written again as one node per stretch of marked or unmarked words. Nothing else
- * moves: a mark over a word the link pass does not link - `SHA-256`, `UTF-8`, `#general`,
- * `#1234`, the key of an issue that does not exist - stays exactly where the server put it, and
- * a run whose marks touch no linked reference, or a body with no search mark at all, is left as
- * it was.
+ * it would link that holds a marked character becomes the link the link pass makes of one
+ * (`referenceLink`), holding the server's own pieces of it - its text nodes and its marks, cut
+ * where the reference starts and ends - and the rest of the run stays the server's pieces too;
+ * the link pass then leaves those links alone, as it leaves every link. No mark grows: which
+ * characters read as marked is `RefLink`'s to draw, from the marks `collectReferenceAnchors`
+ * finds inside the link, and it keeps them on the words wherever it draws the words, marking
+ * only a title drawn in their place whole. A mark over a word the link pass does not link -
+ * `SHA-256`, `UTF-8`, `#general`, `#1234`, the key of an issue that does not exist - stays exactly
+ * where the server put it, and a run whose marks touch no linked reference, or a body with no
+ * search mark at all, is left as it was.
  */
-function markLinkedReferencesWhole(root: HTMLElement, { cited, facts }: ReferenceLinking): void {
+function linkMarkedReferences(root: HTMLElement, linking: ReferenceLinking): void {
   if (root.querySelector(SEARCH_HIGHLIGHT_SELECTOR) === null) {
     return;
   }
@@ -227,62 +316,86 @@ function markLinkedReferencesWhole(root: HTMLElement, { cited, facts }: Referenc
     }
   }
   for (const container of containers) {
-    let run: ChildNode[] = [];
+    let run: RunPiece[] = [];
     for (const child of Array.from(container.childNodes)) {
-      if (runPiece(child) === undefined) {
-        markRunReferencesWhole(container, run, child, cited, facts);
+      const piece = runPiece(child);
+      if (piece === undefined) {
+        linkRunReferences(container, run, child, linking);
         run = [];
       } else {
-        run.push(child);
+        run.push(piece);
       }
     }
-    markRunReferencesWhole(container, run, null, cited, facts);
+    linkRunReferences(container, run, null, linking);
   }
 }
 
-/** `markLinkedReferencesWhole` over one run of `container`'s children, the run ending before
- *  `next` (`null` at the container's end). */
-function markRunReferencesWhole(
+/** `linkMarkedReferences` over one run of `container`'s children, the run ending before `next`
+ *  (`null` at the container's end). */
+function linkRunReferences(
   container: HTMLElement,
-  run: readonly ChildNode[],
+  run: readonly RunPiece[],
   next: ChildNode | null,
-  cited: ReadonlySet<string>,
-  facts: TextReferenceFacts
+  { cited, facts }: ReferenceLinking
 ): void {
-  const pieces = run.flatMap((node) => runPiece(node) ?? []);
-  if (!pieces.some((piece) => piece.marked)) {
+  if (!run.some((piece) => piece.marked)) {
     return;
   }
-  const text = pieces.map((piece) => piece.text).join("");
-  // One entry per UTF-16 unit, which is what a reference's `start` and `end` count.
-  const marked = pieces.flatMap((piece) =>
-    Array.from({ length: piece.text.length }, () => piece.marked)
-  );
-  let widened = false;
-  for (const reference of readTextReferences(text, facts).references) {
-    if (
+  // Where each piece's words start and end in the run's text, in UTF-16 units, which is what a
+  // reference's `start` and `end` count.
+  let length = 0;
+  const placed = run.map((piece) => {
+    const start = length;
+    length += piece.text.length;
+    return { end: length, piece, start };
+  });
+  const text = run.map((piece) => piece.text).join("");
+  const linked = readTextReferences(text, facts).references.filter(
+    (reference) =>
       linksReference(reference, cited) &&
-      marked.slice(reference.start, reference.end).includes(true)
-    ) {
-      marked.fill(true, reference.start, reference.end);
-      widened = true;
-    }
-  }
-  if (!widened) {
+      placed.some(
+        ({ end, piece, start }) => piece.marked && start < reference.end && reference.start < end
+      )
+  );
+  if (linked.length === 0) {
     return;
   }
+  /** The server's pieces of `text.slice(from, to)`: a piece that lies inside it whole is moved,
+   *  and one it cuts is cut, a mark into a copy of itself holding the words it keeps. */
+  const piecesOf = (from: number, to: number): Node[] =>
+    placed.flatMap(({ end, piece, start }) => {
+      const cutStart = Math.max(from, start);
+      const cutEnd = Math.min(to, end);
+      if (cutStart >= cutEnd) {
+        return [];
+      }
+      if (cutStart === start && cutEnd === end) {
+        return [piece.node];
+      }
+      const words = document.createTextNode(piece.text.slice(cutStart - start, cutEnd - start));
+      if (!piece.marked) {
+        return [words];
+      }
+      const mark = piece.node.cloneNode(false);
+      mark.appendChild(words);
+      return [mark];
+    });
   const fragment = document.createDocumentFragment();
-  for (let from = 0; from < text.length; ) {
-    let to = from + 1;
-    while (to < text.length && marked[to] === marked[from]) {
-      to += 1;
-    }
-    const words = document.createTextNode(text.slice(from, to));
-    fragment.append(marked[from] === true ? searchMark(words) : words);
-    from = to;
+  let from = 0;
+  for (const reference of linked) {
+    fragment.append(
+      ...piecesOf(from, reference.start),
+      referenceLink(reference, ...piecesOf(reference.start, reference.end))
+    );
+    from = reference.end;
   }
-  for (const node of run) {
-    node.remove();
+  fragment.append(...piecesOf(from, text.length));
+  // A piece moved whole has left the container already; one that was cut, or held no words, is
+  // still in it.
+  for (const { node } of run) {
+    if (node.parentNode === container) {
+      node.remove();
+    }
   }
   container.insertBefore(fragment, next);
 }
@@ -308,16 +421,16 @@ function markRunReferencesWhole(
  * links only while the body's own source cites it (`ReferenceLinking.cited`), which is what the
  * server indexed for the same body.
  *
- * A search mark the server put inside a reference it will link is widened to the whole
- * reference first (`markLinkedReferencesWhole`), so a reference a search split is still one
- * text node when this pass reads it.
+ * A reference a search mark falls in is linked first (`linkMarkedReferences`), since a reference
+ * a search split is no longer one text node for this pass to read; its link holds the server's
+ * marks where the server put them.
  */
 export function linkifyDispatchRefs(root: HTMLElement, linking: ReferenceLinking): void {
   const { cited, facts } = linking;
   if (cited.size === 0) {
     return;
   }
-  markLinkedReferencesWhole(root, linking);
+  linkMarkedReferences(root, linking);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const candidates: Text[] = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
@@ -337,15 +450,7 @@ export function linkifyDispatchRefs(root: HTMLElement, linking: ReferenceLinking
     let lastIndex = 0;
     for (const reference of found) {
       fragment.appendChild(document.createTextNode(value.slice(lastIndex, reference.start)));
-      const anchor = document.createElement("a");
-      anchor.setAttribute("href", reference.reference ?? "");
-      // The reference stands on its own here, whatever it was written as: a `dispatch://`
-      // address, an issue key, or a `#` and a question block's id. Each reads as the target's
-      // current name, which `collectReferenceAnchors` cannot tell from the href alone - a key
-      // and its address are not the same characters.
-      anchor.setAttribute("data-dispatch-bare", "");
-      anchor.textContent = reference.text;
-      fragment.appendChild(anchor);
+      fragment.appendChild(referenceLink(reference, document.createTextNode(reference.text)));
       lastIndex = reference.end;
     }
     fragment.appendChild(document.createTextNode(value.slice(lastIndex)));
@@ -375,12 +480,17 @@ function isTextUrl(target: string, text: string): boolean {
  * (`isTextUrl`) is read as the server's `text.Extract` reads text (`referenceRouteFromHref`): one
  * whose block is past the bounds the index keys names its document, as the server cites it; an
  * `http(s)://` one past them stays the link it is; and a `dispatch://` one that names nothing
- * becomes its words as plain text, as a bare one already renders, with no link to click and no
- * hover trigger. A link its author wrote names its target explicitly, and drawing or opening it
+ * becomes its words as they were drawn, as a bare one already renders, with no link to click and
+ * no hover trigger. A link its author wrote names its target explicitly, and drawing or opening it
  * is a read, so its href is read as the server reads a request (`nodeRouteFromHref`), whatever the
  * length of its names. An external link, or an author's href that fails to parse as a reference,
  * is left untouched, and so is a picture's link (`data-dispatch-picture`, the engine's
  * `pictureSerializer`), whose content is a `DispatchPicture` rather than a title.
+ *
+ * Before it clears an anchor, it notes which of the anchor's words a search mark inside it
+ * covers (`ReferenceAnchor.marked`, `markedStretches`), so `RefLink` can draw the server's marks
+ * again wherever it draws those words. An anchor that becomes its words keeps its own nodes, and
+ * with them the marks inside it.
  *
  * `@legion/proof-editor`'s Markdown link serializer sanitizes a `dispatch://` href to `""`
  * (Milkdown's link sanitizer only allows http/https/mailto/tel/ftp — a document strangers can
@@ -419,7 +529,7 @@ export function collectReferenceAnchors(
       // worded one `href=""` with `data-dispatch-href`, which would click to the current page
       // and open a hover card for a reference the server never recorded.
       if (href.startsWith("dispatch://")) {
-        anchor.replaceWith(document.createTextNode(text));
+        anchor.replaceWith(...anchor.childNodes);
       }
       continue;
     }
@@ -428,15 +538,43 @@ export function collectReferenceAnchors(
     // this origin, which no route writes today and none may start writing unnoticed.
     const path = referenceHref(route);
     if (path === undefined) {
-      anchor.replaceWith(document.createTextNode(text));
+      anchor.replaceWith(...anchor.childNodes);
       continue;
     }
     anchor.setAttribute("href", path);
     const reference = buildDispatchReference(route);
     anchor.setAttribute("data-dispatch-ref", reference);
+    const marked = markedStretches(anchor);
     anchor.replaceChildren();
-    targets.push({ addressed, anchor, key: `${reference}:${index}`, route, text });
+    targets.push({ addressed, anchor, key: `${reference}:${index}`, marked, route, text });
     index += 1;
   }
   return targets;
+}
+
+/** The stretches of `anchor`'s words (its `textContent`) that sit under a search mark inside it,
+ *  in order, with stretches that touch merged into one. A mark around the anchor covers every
+ *  character it draws, title or words alike, so it is no stretch of the anchor's own. */
+function markedStretches(anchor: HTMLElement): readonly WordStretch[] {
+  if (anchor.querySelector(SEARCH_HIGHLIGHT_SELECTOR) === null) {
+    return NO_STRETCHES;
+  }
+  const stretches: { start: number; end: number }[] = [];
+  const walker = document.createTreeWalker(anchor, NodeFilter.SHOW_TEXT);
+  let offset = 0;
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const start = offset;
+    offset += node.textContent?.length ?? 0;
+    const mark = node.parentElement?.closest(SEARCH_HIGHLIGHT_SELECTOR);
+    if (offset === start || mark === null || mark === undefined || !anchor.contains(mark)) {
+      continue;
+    }
+    const last = stretches.at(-1);
+    if (last !== undefined && last.end === start) {
+      last.end = offset;
+    } else {
+      stretches.push({ end: offset, start });
+    }
+  }
+  return stretches;
 }
