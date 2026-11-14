@@ -2864,9 +2864,10 @@ type UserAgentStateEventPayload struct {
 // PriorityEventPayload is `priority.updated`: one write of one priority committed, through
 // POST /api/v1/priorities or PATCH or DELETE /api/v1/priorities/{id} (api/priorities.go). It
 // names the priority and which of the three writes it was, and carries nothing else: a reader
-// refetches the priorities page, the priority's own page and the issue listings an `advances`
-// filter narrows, whatever moved. It names no owner, since a priority belongs to no project,
-// so the outbox publishes it nowhere and it never notifies (events.Quiet).
+// refetches its priorities reads on every write, and on a delete also the work under that
+// priority, the work under none and every issue read or listing whose rows advance it
+// (packages/dispatch/web/src/api/event-refresh.ts). It names no owner, since a priority belongs
+// to no project, so the outbox publishes it nowhere and it never notifies (events.Quiet).
 type PriorityEventPayload struct {
 	ID string `json:"id"`
 	// Change is PriorityCreated, PriorityChanged or PriorityDeleted.

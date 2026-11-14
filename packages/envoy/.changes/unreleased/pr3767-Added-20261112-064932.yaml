@@ -22,7 +22,8 @@ body: |-
   Each of the three writes appends one `priority.updated` event (`{id, change}`, `change` being
   `created`, `updated` or `deleted`) in its own transaction, owned by nothing: it wakes nobody,
   the outbox publishes it on no subject, and `/ws/live` carries it to every open page, which
-  refetches the priorities and the `advances` listings on it. A refused write appends none.
+  refetches the priorities on it, and on a delete also the issues that advanced the priority and
+  the work under none. A refused write appends none.
 time: 2026-11-12T06:49:32.000000000Z
 custom:
     Issue: pr3767
