@@ -25,8 +25,6 @@ import {
   brokerTokenClient,
   IDENTITY_VAR,
   machineIdentity,
-  SESSION_VAR,
-  tradeSession,
 } from "@legion/broker-client/environment";
 import { chooseSignIn, type SignInRecord } from "@legion/broker-client/signins";
 import {
@@ -46,7 +44,8 @@ import type { RequestCredential } from "./bearer";
  * names the trade: the machine's own under whatever `AGENT_SECRETS_SESSION` names, which is how a
  * daemon names its own (`tradeSession`, `@legion/broker-client/environment`, the one rule both
  * clients read), and a person's under their sign-in's own name (`signInSessionName`), never that
- * variable's.
+ * variable's. Such a caller is never answered the client of one that names the very session
+ * `AGENT_SECRETS_SESSION` names, nor the reverse (`CLIENTS`): a person's trade names the two apart.
  */
 export type BrokerSessionName = string | (() => string);
 
@@ -77,16 +76,6 @@ export function brokerRouteConfigured(env: BrokerEnvironment): BrokerRoute {
   return { traded: true };
 }
 
-/**
- * The variables that describe a client beside the session it trades under: every variable the
- * factory reads (`BROKER_VARIABLES`) but `AGENT_SECRETS_SESSION` — the broker, this machine's
- * identity and what each kind of identity reads, and where a person's sign-in is kept, which
- * person a session acts for and the sign-in client that renews theirs (`chooseSignIn`,
- * `signInFlow`). Two environments that differ in any of them are two clients, so neither is
- * answered the client the other described.
- */
-const CLIENT_VARIABLES = BROKER_VARIABLES.filter((name) => name !== SESSION_VAR);
-
 /** A client the factory made, and the sign-in it trades as {@link signInName} names one, or ""
  *  where it trades this machine's own identity. */
 interface Made {
@@ -94,7 +83,7 @@ interface Made {
   readonly signIn: string;
 }
 
-/** One session's client under one set of {@link CLIENT_VARIABLES}, and what it was refused. */
+/** One caller's client under one set of {@link BROKER_VARIABLES}, and what it was refused. */
 interface Held {
   /**
    * The factory's answer, under way or given. A factory that failed is not kept, so the next
@@ -119,15 +108,28 @@ interface Held {
 }
 
 /**
- * The clients this process has made, by the session they trade under and, under it, by the
- * variables that describe them. One process holds one client per broker, identity and session,
- * and keeps one token live under it, which both Dispatch and the listener of that session
- * present: two clients would be two credentials for one session, and the broker records the key
- * the token is bound to. The session is part of the identity, not of the process: a token names
- * one session, and the listener answers 403 to a session presenting another's, so two sessions of
- * one process hold two clients. An entry is one client and one token, made only for a session
- * this process actually traded for, and dropped when the host leaves that session
- * (`forgetBrokerSession`).
+ * The clients this process has made, by the session their callers act as ("" for a caller that
+ * acts as none) and, under it, by the value of every variable the factory reads ({@link keyOf}).
+ * That key is what the factory is handed, so the name a trade asks under is one per entry: a
+ * caller acting as no session and one acting as the session `AGENT_SECRETS_SESSION` names are two
+ * entries, since a person's trade asks under the sign-in's own name for the first and under that
+ * session for the second. One token shared between them would name one of the two wrongly, and
+ * the listener refuses every write of a session whose token names another (`sessionNotBound`,
+ * `packages/envoy/cmd/listener/brokerauth.go`).
+ *
+ * One process holds one client per broker, identity and caller's session, and keeps one token
+ * live under it, which both Dispatch and the listener of that session present: two clients would
+ * be two credentials for one session, and the broker records the key the token is bound to. The
+ * session is part of the identity, not of the process: a token names one session, and the
+ * listener answers 403 to a session presenting another's, so two sessions of one process hold two
+ * clients. An entry is one client and one token, made only for a caller this process actually
+ * traded for, and dropped when the host leaves that session (`forgetBrokerSession`).
+ *
+ * The key is the caller's session rather than the name its trade asks under because a person's
+ * name is their sign-in's, which only the store says, and the store is read when the client is
+ * made. That has one cost, where nobody signed in: a process whose `AGENT_SECRETS_SESSION` names
+ * S, and which has callers both acting as no session and acting as S, holds two clients that both
+ * trade the machine under S — two key pairs, two trades and two tokens renewing for one name.
  */
 const CLIENTS = new Map<string, Map<string, Held>>();
 
@@ -137,8 +139,9 @@ export function forgetBrokerClients(): void {
 }
 
 /**
- * Drops what this process traded for `session`: its client, the key pair it made, the token
- * renewing under it, and the sign-ins it was refused.
+ * Drops what this process traded for callers acting as `session`: their client, the key pair it
+ * made, the token renewing under it, and the sign-ins it was refused. A caller acting as no
+ * session is kept apart (`CLIENTS`), so it keeps its own, whatever `AGENT_SECRETS_SESSION` names.
  *
  * For the host that has left that session, once it has made its last call for it — Oh My Pi's
  * pass once the role of the session it left is handed back, Claude Code's handoff once the old
@@ -156,21 +159,43 @@ function signInName(record: Pick<SignInRecord, "person" | "thumbprint">): string
   return `${record.person}\u0000${record.thumbprint}`;
 }
 
+/** Where {@link CLIENTS} keeps a client: by the session its callers act as, then by the
+ *  variables the factory reads. */
+interface ClientKey {
+  /** The session the caller acts as, trimmed as `headers` and `stale` resolve it; "" for a
+   *  caller that acts as none. */
+  readonly session: string;
+  /** The value of every one of {@link BROKER_VARIABLES} in the caller's environment, as one
+   *  string. */
+  readonly variables: string;
+}
+
 /**
- * The entry of `CLIENTS` for a caller of `env` acting as the session `own`, made empty where
- * there is none yet. It is held under the name {@link tradeSession} gives the caller rather than
- * under `own`: a caller that acts as no session and one that acts as the session
- * `AGENT_SECRETS_SESSION` names are one client, and two environments naming two sessions are two.
+ * The key of the client for a caller of `env` acting as the session `own`: `own` itself, and the
+ * value of every variable the factory reads ({@link BROKER_VARIABLES}) — the broker, this
+ * machine's identity and what each kind of identity reads, `AGENT_SECRETS_SESSION`, where a
+ * person's sign-in is kept, which person a session acts for and the sign-in client that renews
+ * theirs (`chooseSignIn`, `signInFlow`). Two environments that differ in any of them are two
+ * clients, so neither is answered the client the other described.
  */
-function entryFor(env: BrokerEnvironment, own: string): Held {
-  const session = tradeSession(env, own);
-  const variables = JSON.stringify(CLIENT_VARIABLES.map((name) => env[name]));
-  const sessions = CLIENTS.get(session) ?? new Map<string, Held>();
-  CLIENTS.set(session, sessions);
-  let entry = sessions.get(variables);
+function keyOf(env: BrokerEnvironment, own: string): ClientKey {
+  return {
+    session: own.trim(),
+    variables: JSON.stringify(BROKER_VARIABLES.map((name) => env[name])),
+  };
+}
+
+/** The entry of `CLIENTS` at `key`, made empty where there is none yet. */
+function entryFor(key: ClientKey): Held {
+  let sessions = CLIENTS.get(key.session);
+  if (sessions === undefined) {
+    sessions = new Map();
+    CLIENTS.set(key.session, sessions);
+  }
+  let entry = sessions.get(key.variables);
   if (entry === undefined) {
     entry = { making: undefined, made: undefined, refused: new Map() };
-    sessions.set(variables, entry);
+    sessions.set(key.variables, entry);
   }
   return entry;
 }
@@ -183,17 +208,19 @@ async function make(env: BrokerEnvironment, own: string): Promise<Made> {
 }
 
 /**
- * The client `env` describes for a caller acting as the session `own`, made once per process
- * (`entryFor`), with its entry. The factory is handed `own` as the caller gave it, since the
- * factory decides the name the trade asks under: a person's sign-in asks under the sign-in's own
- * name where the caller acts as no session, and never under `AGENT_SECRETS_SESSION`, which the
- * machine trades under.
+ * The client `env` describes for a caller acting as the session `own`, made once per process for
+ * each key ({@link keyOf}), with its entry. The factory is handed the session the entry is kept
+ * under and the environment whose variables key it, and decides from those and the sign-in the
+ * store holds the name the trade asks under: the caller's own session where it acts as one, else
+ * the machine's under `AGENT_SECRETS_SESSION` and a person's under their sign-in's own name, never
+ * under that variable. So every caller one entry answers is one the factory names alike.
  */
 async function clientFor(
   env: BrokerEnvironment,
   own: string
 ): Promise<{ readonly entry: Held; readonly made: Made }> {
-  const entry = entryFor(env, own);
+  const key = keyOf(env, own);
+  const entry = entryFor(key);
   if (entry.refused.size > 0) {
     const record = await chooseSignIn(env);
     const chosen = record === undefined ? "" : signInName(record);
@@ -205,7 +232,7 @@ async function clientFor(
   }
   let making = entry.making;
   if (making === undefined) {
-    const started = make(env, own);
+    const started = make(env, key.session);
     making = started;
     entry.making = started;
     started.then(
@@ -292,7 +319,9 @@ export function brokerCredential(
       };
     },
     stale(acting?: string): void {
-      entryFor(env, own(acting)).made?.client?.drop();
+      // Looked up, never made: a session this process never traded for is given no entry.
+      const key = keyOf(env, own(acting));
+      CLIENTS.get(key.session)?.get(key.variables)?.made?.client?.drop();
     },
     secret: () => presented,
   };

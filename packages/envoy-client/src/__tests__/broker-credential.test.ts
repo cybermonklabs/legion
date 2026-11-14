@@ -533,6 +533,34 @@ test("stale() has the session's client drop its token, so its next headers() tra
   ]);
 });
 
+test("stale() for a session this process never traded for trades nothing, drops nothing, and that session's first call trades", async () => {
+  // A server may say a token is not live for a session whose calls never reached this process's
+  // broker credential. Telling it so asks nothing of the broker and takes no other session's
+  // token, and the session it names trades afresh at its first call, once.
+  const broker = stubBroker(600);
+  const env = podEnvironment(broker.url, "http://dispatch.test");
+  const credential = brokerCredential(env, "session-one");
+  const url = "http://dispatch.test/api/v1/issues";
+
+  credential.stale?.("session-never");
+  await credential.headers("GET", url);
+  credential.stale?.("session-never");
+  expect(broker.trades).toHaveLength(1);
+  expect((await credential.headers("GET", url)).Authorization).toBe("DPoP broker-access-token-1");
+
+  forgetBrokerSession("session-never");
+  expect((await credential.headers("POST", url, "session-never")).Authorization).toBe(
+    "DPoP broker-access-token-2"
+  );
+  expect((await credential.headers("POST", url, "session-never")).Authorization).toBe(
+    "DPoP broker-access-token-2"
+  );
+  expect(broker.trades.map((trade) => trade.form.get("session"))).toEqual([
+    "session-one",
+    "session-never",
+  ]);
+});
+
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
 /** The name this machine trades its own identity under, as a daemon's environment sets it. */
@@ -663,6 +691,77 @@ test("a person's trade asks under the caller's own session, else the sign-in's n
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([
     "DPoP broker-token-1",
     "DPoP broker-token-2",
+  ]);
+});
+
+test("a caller acting as no session and one acting as AGENT_SECRETS_SESSION's session trade apart, whichever calls first", async () => {
+  // With a sign-in, a caller acting as no session trades under the sign-in's own name and one
+  // acting as the session AGENT_SECRETS_SESSION names trades under that session. One token for
+  // both would name one of them wrongly, whichever called first, and the listener refuses every
+  // write of a session whose token names another (`sessionNotBound`).
+  const broker = signInBroker();
+  const dispatch = stubDispatch();
+  const issuer = await issuerFor();
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
+  const asNone = () => dispatchOf(env).listAllIssues({});
+  const asMachineSession = () => dispatchOf(env, MACHINE_SESSION).listAllIssues({});
+
+  await asNone();
+  await asMachineSession();
+  await asNone();
+  await asMachineSession();
+  // A process that has traded nothing yet, whose first caller is the other one.
+  forgetBrokerClients();
+  await asMachineSession();
+  await asNone();
+  await asMachineSession();
+  await asNone();
+
+  expect(broker.trades.map((trade) => trade.form.get("session"))).toEqual([
+    signInSessionName(record),
+    MACHINE_SESSION,
+    MACHINE_SESSION,
+    signInSessionName(record),
+  ]);
+  // Every call presents the token its own caller's trade was answered.
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
+    "DPoP broker-token-1",
+    "DPoP broker-token-2",
+    "DPoP broker-token-1",
+    "DPoP broker-token-2",
+    "DPoP broker-token-3",
+    "DPoP broker-token-4",
+    "DPoP broker-token-3",
+    "DPoP broker-token-4",
+  ]);
+});
+
+test("with nobody signed in, a caller acting as no session and one acting as AGENT_SECRETS_SESSION's session both trade the machine under it", async () => {
+  const broker = stubBroker(600);
+  const dispatch = stubDispatch();
+  const env = {
+    ...podEnvironment(broker.url, dispatch.url),
+    AGENT_SECRETS_SESSION: MACHINE_SESSION,
+  };
+
+  await dispatchOf(env).listAllIssues({});
+  await dispatchOf(env, MACHINE_SESSION).listAllIssues({});
+  forgetBrokerClients();
+  await dispatchOf(env, MACHINE_SESSION).listAllIssues({});
+  await dispatchOf(env).listAllIssues({});
+
+  // Two clients in each process, one per caller, as `CLIENTS` keeps them: the cost of keeping a
+  // caller acting as no session apart from one acting as the session the variable names.
+  const machine = ["projected.service.account.token", MACHINE_SESSION];
+  expect(
+    broker.trades.map((trade) => [trade.form.get("subject_token"), trade.form.get("session")])
+  ).toEqual([machine, machine, machine, machine]);
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
+    "DPoP broker-access-token-1",
+    "DPoP broker-access-token-2",
+    "DPoP broker-access-token-3",
+    "DPoP broker-access-token-4",
   ]);
 });
 

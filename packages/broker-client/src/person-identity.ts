@@ -17,6 +17,7 @@ import {
   type ServerMetadata,
   type TokenEndpointResponse,
 } from "openid-client";
+import { messageOf } from "./error-text";
 import { SIGNIN_COMMAND, type SignInFlow, type SignInRecord } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
 import { requestInit, SignInEndedError, statusOf } from "./token-client";
@@ -48,7 +49,7 @@ function issuerSaid(error: unknown): string {
     const description = error.error_description ?? "";
     return `HTTP ${error.status} ${error.error}${description === "" ? "" : `: ${description}`}`;
   }
-  let message = error instanceof Error ? error.message : String(error);
+  let message = messageOf(error);
   const cause = error instanceof Error ? error.cause : undefined;
   if (cause instanceof Error && cause.message !== message) message += `: ${cause.message}`;
   const status = statusOf(error);
@@ -71,16 +72,18 @@ function issuerSaid(error: unknown): string {
  * is an ordinary error, which leaves a client's live token in hand. An answer with no `id_token`
  * is an error. A record made with a client other than `flow`'s is refused here, before any
  * request, in the words of Go's `registerSignInSession`
- * (`packages/envoy/cmd/agent-secrets/login.go`), since no other client can renew it.
+ * (`packages/envoy/cmd/agent-secrets/login.go`), since no other client can renew it. The source
+ * keeps only the record's person and refresh token, so the box key's PEM is not held for its life.
  */
 export function personIdentity(
   record: SignInRecord,
   flow: SignInFlow,
   options: PersonIdentityOptions = {}
 ): TokenSource {
-  if (record.client_id !== "" && record.client_id !== flow.clientId) {
+  const { person, refresh_token: refreshToken, client_id: clientId } = record;
+  if (clientId !== "" && clientId !== flow.clientId) {
     throw new Error(
-      `${record.person} signed in with another client than this machine now has (${record.client_id}), so their sign-in cannot be renewed; run: ${SIGNIN_COMMAND}`
+      `${person} signed in with another client than this machine now has (${clientId}), so their sign-in cannot be renewed; run: ${SIGNIN_COMMAND}`
     );
   }
   const send = options.fetch ?? fetch;
@@ -132,14 +135,14 @@ export function personIdentity(
         if (insecure) allowInsecureRequests(config);
         config.timeout = ISSUER_TIMEOUT_SECONDS;
         config[customFetch] = through(signal);
-        answered = await refreshTokenGrant(config, record.refresh_token);
+        answered = await refreshTokenGrant(config, refreshToken);
       } catch (error) {
         if (error instanceof ResponseBodyError && error.error === INVALID_GRANT) {
-          throw new SignInEndedError(flow.issuer, record.person, { cause: error });
+          throw new SignInEndedError(flow.issuer, person, { cause: error });
         }
         // No `cause`: an answer the library refused hangs off its error, and that answer can hold
         // the person's fresh ID token, which no log of this error may carry.
-        throw new Error(`renew ${record.person}'s sign-in at ${flow.issuer}: ${issuerSaid(error)}`);
+        throw new Error(`renew ${person}'s sign-in at ${flow.issuer}: ${issuerSaid(error)}`);
       }
       const idToken = answered.id_token ?? "";
       if (idToken === "") {
@@ -149,6 +152,6 @@ export function personIdentity(
       }
       return { token: idToken, tokenType: SUBJECT_TOKEN_TYPE_PERSON };
     },
-    describe: () => `${record.person}'s sign-in on this machine`,
+    describe: () => `${person}'s sign-in on this machine`,
   };
 }

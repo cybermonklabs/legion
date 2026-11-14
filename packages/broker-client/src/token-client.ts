@@ -416,7 +416,7 @@ export class BrokerTokenClient {
       );
     }
     const status = statusOf(error);
-    const message = error instanceof Error ? error.message : String(error);
+    const message = messageOf(error);
     const said = status === 0 ? message : `HTTP ${status}: ${message}`;
     return new Error(`trade ${this.#subject.describe()} at ${endpoint}: ${said}`, {
       cause: error,
