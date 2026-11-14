@@ -4315,7 +4315,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   The record is kept by role and holder session, not by process, though:
   a failure another process of the session recorded - a restarted one whose registration or claim read failed while the claim still names the stopped process before it - is cleared by no renewal, since none of that claim can land, and refuses until it is one live window old.
   A relaunched process's own registrations clear no failure recorded against the claim that names the process before it, and record none while their store calls answer (`TestTheGrantGuardRefusesARelaunchedProcessOnlyUntilItsPredecessorsLastFailureAges`).
-  So that arm refuses the relaunched process until one live window after the last failure recorded, which is inside claude-envoy's wait, unless this listener's store calls keep failing.
+  So that arm refuses the relaunched process until one live window after the last failure recorded.
+  That is inside claude-envoy's wait unless one of this listener's store calls for that session fails again more than about 10 s after the relaunched process's first claim, which moves the end of the refusal past the wait.
   The record is this listener's own, in memory, and a restart loses it, and a grant may reach another listener, so the repair's bound and not this record is what bounds the harm.
 
 - A soft claim that states no `if_claim_revision` is conditional all the same, on a revision the route supplies rather than the caller: the revision of the claim record it made its decision on (`store.RoleClaim.Revision`, which a role with no record at all reports as `0`, so the precondition is that there is still no record), weighed by the write exactly as a stated revision is.

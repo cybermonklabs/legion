@@ -283,9 +283,10 @@ const (
 // of the roles named by the interest row its own write returned and by the role claim copy, each
 // as that claim's own record says (store.Registry.RenewRoleClaims). So, once the claim's renewal
 // is older than the window, three states of this listener refuse the claim, each with an error
-// that names it, nothing claimed and nothing written, and the claimant asks again. None of the
-// three makes a bucket call. The first answers roleHolderUnread, which the route answers as the
-// bus-unavailable 503, as every route answers a role claim view that cannot be served; the other
+// that names it, nothing claimed and nothing written. None of the three makes a bucket call. The
+// first answers roleHolderUnread, which the route answers as the bus-unavailable 503, as every
+// route answers a role claim view that cannot be served, and on which a relaunched Legion pane
+// stops after envoy-client's two attempts, as on main; the other
 // two are the grant guard's own and answer roleGrantGuarded, which the route answers as it
 // answers roleHeldByAnotherProcess, with the 409 naming the claimant's own session id as the
 // holder, and with an error under grantGuardPrefix, since the bus answered every read they rest

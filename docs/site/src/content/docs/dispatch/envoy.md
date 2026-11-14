@@ -365,8 +365,9 @@ session as the holder, carries no `Retry-After`, and its error opens with
 `envoy: the role grant guard refused the claim` and names which of the two cases it is. Both
 Oh My Pi and Claude Code wait out that `409`, where a `503` stops a relaunched Legion pane after
 two attempts. Claude Code waits for at most the live window and 10 seconds. A refusal for a
-failed renewal ends at most one live window after the last failure, so it ends inside that wait
-unless the listener's calls to NATS keep failing. A claim from the
+failed renewal ends one live window after the last failure, so it ends inside that wait unless
+one of the listener's calls to NATS for that session fails again more than about 10 seconds
+into the wait. A claim from the
 process the standing claim already names is granted in all three cases, since it takes the role
 from nobody. `GET /v1/roles/<role>` answers the holding process's `client_instance_id` beside the
 holder's session id where the claim names a process, and leaves
