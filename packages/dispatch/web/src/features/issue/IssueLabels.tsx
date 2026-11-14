@@ -174,12 +174,18 @@ export function IssueLabels({
           searchLabel="Search or create label"
           selected={draft}
           triggerAriaLabel="Edit labels"
-          triggerClassName={`inline-flex min-h-11 shrink-0 items-center rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+          triggerClassName={`inline-flex min-h-11 shrink-0 items-center rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-0 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
         >
           {/* The trigger reserves one box for every word it wears — `Labels`, `+` and
               `Saving labels…` — so picking a label moves nothing beside it, and the box is on
-              this text rather than on the button, whose padding changes with the width. */}
-          <TruncatedText className={reservedOpenTextWidth}>
+              this text rather than on the button, whose padding changes with the width. From
+              `sm`, where that box is reserved, the word sits in its middle and the button draws
+              no padding of its own: fourteen characters hold the widest word with room on both
+              sides of it, so padding outside them only widened the details rail, and with
+              priorities' `+` beside them it ran a bare issue's rail past its width at 1920 px
+              (e2e/issue.e2e.ts, "the details rail fades its trailing edge only while it has
+              somewhere to scroll"). */}
+          <TruncatedText className={`${reservedOpenTextWidth} sm:text-center`}>
             {saving ? "Saving labels…" : displayLabels.length === 0 ? "Labels" : "+"}
           </TruncatedText>
         </MultiSelect>

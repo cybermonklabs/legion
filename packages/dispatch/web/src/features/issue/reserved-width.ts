@@ -7,8 +7,9 @@
  *
  * Both bound the content box (`box-content`), so the characters they name are the whole of the
  * bound whatever padding the control draws around them: the repository badge's fourteen are
- * fourteen of its monospace characters, and the labels trigger's are fourteen whether its
- * padding is the phone's or the desk's.
+ * fourteen of its monospace characters, and the labels trigger's are fourteen whether it draws
+ * the phone's padding or, from `sm`, none — its word centred in the fourteen, which hold the
+ * widest of them with room on both sides, so a bare issue's details still fit the desktop rail.
  *
  * Both start at `sm`, because below it the header has no room for them: measured in this pod
  * at 390 px, the state row holds Status, the priority, the assignee and Close in 316 px with
